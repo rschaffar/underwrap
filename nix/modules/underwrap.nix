@@ -9,7 +9,11 @@ let
       read = "/run/underwrap/read.sock";
       control = "/run/underwrap/control.sock";
     };
-    storage = {
+    storage = if cfg.encryption.enable then {
+      backend = "encrypted";
+      dir = "/var/lib/underwrap/secrets";
+      key_file = cfg.encryption.keyFile;
+    } else {
       backend = "plain";
       dir = "/var/lib/underwrap/secrets";
     };
@@ -118,6 +122,15 @@ in {
       type = lib.types.attrsOf secretSubmodule;
       default = {};
       description = "Secret definitions.";
+    };
+
+    encryption = {
+      enable = lib.mkEnableOption "encrypted storage backend";
+      keyFile = lib.mkOption {
+        type = lib.types.path;
+        default = "/var/lib/underwrap/master.key";
+        description = "Path to the master key file (32 raw bytes or 64 hex chars).";
+      };
     };
   };
 

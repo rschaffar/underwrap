@@ -4,10 +4,22 @@
 sockets:
   read: /run/underwrap/read.sock
   control: /run/underwrap/control.sock
+  read_mode: 432       # 0660 octal = 432 decimal (group-readable)
+  control_mode: 384    # 0600 octal = 384 decimal (owner-only)
+  # Uncomment to restrict socket access by UID/GID:
+  # read_allow_gids: [1000]
+  # control_allow_uids: [0]
 
+# Plain storage (default):
 storage:
   backend: plain
   dir: /var/lib/underwrap/secrets
+
+# Or encrypted storage:
+# storage:
+#   backend: encrypted
+#   dir: /var/lib/underwrap/secrets
+#   key_file: /var/lib/underwrap/master.key
 
 wrappers:
   gh-authorized:
@@ -23,7 +35,7 @@ wrappers:
     injection:
       mode: env
       variable: GOOGLE_WORKSPACE_CLI_TOKEN
-    derivation: none  # Phase 4: oauth_refresh_to_access_token
+    derivation: oauth_refresh_to_access_token
     require_unlock: true  # Must run: underwrapctl unlock gws-castlabs --seconds 1800
 
   agent-slack:
