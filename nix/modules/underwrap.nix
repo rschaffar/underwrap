@@ -126,8 +126,9 @@ in {
     users.groups.underwrap = {};
 
     # Systemd tmpfiles: create runtime directory.
+    # /run/underwrap is 0750 so only underwrap user and group can access sockets.
     systemd.tmpfiles.rules = [
-      "d /run/underwrap 0755 underwrap underwrap -"
+      "d /run/underwrap 0750 underwrap underwrap -"
       "d /var/lib/underwrap 0700 underwrap underwrap -"
       "d /var/lib/underwrap/secrets 0700 underwrap underwrap -"
     ];

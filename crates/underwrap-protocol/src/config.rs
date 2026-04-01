@@ -33,6 +33,30 @@ pub struct SocketConfig {
     /// Path for the control socket.
     #[serde(default = "default_control_socket")]
     pub control: PathBuf,
+
+    /// Unix permission mode for the read socket (octal, e.g. 0o660).
+    #[serde(default = "default_read_mode")]
+    pub read_mode: u32,
+
+    /// Unix permission mode for the control socket (octal, e.g. 0o600).
+    #[serde(default = "default_control_mode")]
+    pub control_mode: u32,
+
+    /// Allowed UIDs for the read socket. Empty = allow all.
+    #[serde(default)]
+    pub read_allow_uids: Vec<u32>,
+
+    /// Allowed GIDs for the read socket. Empty = allow all.
+    #[serde(default)]
+    pub read_allow_gids: Vec<u32>,
+
+    /// Allowed UIDs for the control socket. Empty = allow all.
+    #[serde(default)]
+    pub control_allow_uids: Vec<u32>,
+
+    /// Allowed GIDs for the control socket. Empty = allow all.
+    #[serde(default)]
+    pub control_allow_gids: Vec<u32>,
 }
 
 impl Default for SocketConfig {
@@ -40,8 +64,22 @@ impl Default for SocketConfig {
         Self {
             read: default_read_socket(),
             control: default_control_socket(),
+            read_mode: default_read_mode(),
+            control_mode: default_control_mode(),
+            read_allow_uids: Vec::new(),
+            read_allow_gids: Vec::new(),
+            control_allow_uids: Vec::new(),
+            control_allow_gids: Vec::new(),
         }
     }
+}
+
+fn default_read_mode() -> u32 {
+    0o660
+}
+
+fn default_control_mode() -> u32 {
+    0o600
 }
 
 fn default_read_socket() -> PathBuf {

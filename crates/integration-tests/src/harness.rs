@@ -43,6 +43,7 @@ impl TestDaemon {
             sockets: SocketConfig {
                 read: read_socket.clone(),
                 control: control_socket.clone(),
+                ..Default::default()
             },
             storage: StorageConfig::Plain {
                 dir: storage_dir.clone(),

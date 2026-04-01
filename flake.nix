@@ -137,97 +137,95 @@
                 };
               };
 
-              testScript = ''
+              testScript = let
+                uwctl = "${perSystem.packages.${system}.default}/bin/underwrapctl --socket /run/underwrap/control.sock";
+                wrapDir = "$(echo /nix/store/*-underwrap-wrappers)";
+              in ''
                 machine.wait_for_unit("underwrapd.service")
                 machine.wait_for_file("/run/underwrap/read.sock")
                 machine.wait_for_file("/run/underwrap/control.sock")
 
-                # Verify the daemon is running.
+                # === Service & user ===
                 machine.succeed("systemctl is-active underwrapd.service")
-
-                # Verify the underwrap user exists.
                 machine.succeed("id underwrap")
 
-                # Verify sockets exist with correct ownership.
+                # === Socket existence and permissions ===
                 machine.succeed("test -S /run/underwrap/read.sock")
                 machine.succeed("test -S /run/underwrap/control.sock")
 
-                # Store a secret via underwrapctl.
-                machine.succeed(
-                    "echo -n 'ghp_testvmtoken' | "
-                    "${perSystem.packages.${system}.default}/bin/underwrapctl "
-                    "--socket /run/underwrap/control.sock "
-                    "store test/token"
-                )
+                # Directory should be 0750.
+                perms = machine.succeed("stat -c %a /run/underwrap").strip()
+                assert perms == "750", f"expected dir perms 750, got {perms}"
 
-                # Store a second secret.
-                machine.succeed(
-                    "echo -n 'other_secret_val' | "
-                    "${perSystem.packages.${system}.default}/bin/underwrapctl "
-                    "--socket /run/underwrap/control.sock "
-                    "store test/other"
-                )
+                # Read socket should be 0660.
+                perms = machine.succeed("stat -c %a /run/underwrap/read.sock").strip()
+                assert perms == "660", f"expected read socket perms 660, got {perms}"
 
-                # Query general status.
-                status = machine.succeed(
-                    "${perSystem.packages.${system}.default}/bin/underwrapctl "
-                    "--socket /run/underwrap/control.sock "
-                    "status"
-                )
+                # Control socket should be 0600.
+                perms = machine.succeed("stat -c %a /run/underwrap/control.sock").strip()
+                assert perms == "600", f"expected control socket perms 600, got {perms}"
+
+                # === Store & read secrets ===
+                machine.succeed("echo -n 'ghp_testvmtoken' | ${uwctl} store test/token")
+                machine.succeed("echo -n 'other_secret_val' | ${uwctl} store test/other")
+
+                # === Status queries ===
+                status = machine.succeed("${uwctl} status")
                 assert "test-echo" in status, f"expected test-echo in status: {status}"
                 assert "test-echo2" in status, f"expected test-echo2 in status: {status}"
 
-                # Query specific wrapper status — should show secret_stored = true.
-                status = machine.succeed(
-                    "${perSystem.packages.${system}.default}/bin/underwrapctl "
-                    "--socket /run/underwrap/control.sock "
-                    "status test-echo"
-                )
+                status = machine.succeed("${uwctl} status test-echo")
                 assert "true" in status, f"expected secret_stored true: {status}"
 
-                # Run the wrapper and verify secret injection.
-                # test-echo wraps `env`, which prints all env vars.
+                # === Wrapper env injection ===
                 output = machine.succeed(
-                    "UNDERWRAP_CONFIG_DIR=$(echo /nix/store/*-underwrap-wrappers/etc/underwrap/wrappers) "
-                    "$(echo /nix/store/*-underwrap-wrappers/bin/test-echo)"
+                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
+                    "${wrapDir}/bin/test-echo"
                 )
                 assert "MY_TOKEN=ghp_testvmtoken" in output, (
                     f"expected MY_TOKEN in env output: {output}"
                 )
 
-                # Run the second wrapper.
+                # === Wrapper argument passthrough ===
                 output = machine.succeed(
-                    "UNDERWRAP_CONFIG_DIR=$(echo /nix/store/*-underwrap-wrappers/etc/underwrap/wrappers) "
-                    "$(echo /nix/store/*-underwrap-wrappers/bin/test-echo2) hello world"
+                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
+                    "${wrapDir}/bin/test-echo2 hello world"
                 )
-                assert "hello world" in output, f"expected 'hello world' in output: {output}"
+                assert "hello world" in output, f"expected 'hello world': {output}"
 
-                # Try storing an undeclared secret — should fail.
-                machine.fail(
-                    "echo -n 'bad' | "
-                    "${perSystem.packages.${system}.default}/bin/underwrapctl "
-                    "--socket /run/underwrap/control.sock "
-                    "store undeclared/secret"
+                # === Undeclared secret → rejected ===
+                machine.fail("echo -n 'bad' | ${uwctl} store undeclared/secret")
+
+                # === Immutable secret rejects overwrite ===
+                machine.fail("echo -n 'overwrite' | ${uwctl} store test/token")
+
+                # Original value preserved after failed overwrite.
+                output = machine.succeed(
+                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
+                    "${wrapDir}/bin/test-echo"
+                )
+                assert "MY_TOKEN=ghp_testvmtoken" in output, (
+                    f"immutable secret was overwritten: {output}"
                 )
 
-                # Overwrite mutable secret and verify.
-                machine.succeed(
-                    "echo -n 'updated_val' | "
-                    "${perSystem.packages.${system}.default}/bin/underwrapctl "
-                    "--socket /run/underwrap/control.sock "
-                    "store test/other"
-                )
-                status = machine.succeed(
-                    "${perSystem.packages.${system}.default}/bin/underwrapctl "
-                    "--socket /run/underwrap/control.sock "
-                    "status test/other"
-                )
+                # === Mutable secret accepts overwrite ===
+                machine.succeed("echo -n 'updated_val' | ${uwctl} store test/other")
+                status = machine.succeed("${uwctl} status test/other")
                 assert "true" in status, f"expected stored true after overwrite: {status}"
 
-                # Verify daemon logs don't contain secret material.
+                # === Multi-line secret (OAuth JSON) ===
+                machine.succeed(
+                    'printf \'{"refresh_token":"rt_abc","client_id":"123"}\' | '
+                    "${uwctl} store test/other"
+                )
+                status = machine.succeed("${uwctl} status test/other")
+                assert "true" in status
+
+                # === No secret material in daemon logs ===
                 logs = machine.succeed("journalctl -u underwrapd.service --no-pager")
                 assert "ghp_testvmtoken" not in logs, "secret leaked to logs!"
                 assert "other_secret_val" not in logs, "secret leaked to logs!"
+                assert "refresh_token" not in logs, "secret leaked to logs!"
 
                 machine.log("All underwrap VM tests passed!")
               '';

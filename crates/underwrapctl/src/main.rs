@@ -77,10 +77,17 @@ async fn send_control(socket_path: &PathBuf, request: &ControlRequest) -> Result
 }
 
 async fn read_stdin() -> Result<String> {
-    use tokio::io::AsyncBufReadExt;
-    let stdin = tokio::io::stdin();
-    let mut reader = tokio::io::BufReader::new(stdin);
-    let mut line = String::new();
-    reader.read_line(&mut line).await?;
-    Ok(line.trim_end().to_string())
+    use tokio::io::AsyncReadExt;
+    let mut stdin = tokio::io::stdin();
+    let mut buf = String::new();
+    stdin.read_to_string(&mut buf).await?;
+    // Trim a single trailing newline (common from echo/heredoc), but
+    // preserve all other content including embedded newlines.
+    if buf.ends_with('\n') {
+        buf.pop();
+        if buf.ends_with('\r') {
+            buf.pop();
+        }
+    }
+    Ok(buf)
 }

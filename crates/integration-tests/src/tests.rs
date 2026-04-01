@@ -307,6 +307,45 @@ async fn overwrite_mutable_secret() {
 }
 
 // ===========================================================================
+// Immutable secret rejects overwrite
+// ===========================================================================
+
+#[tokio::test]
+async fn immutable_secret_rejects_overwrite() {
+    let (wrappers, secrets) = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+
+    // First store succeeds (secret doesn't exist yet).
+    let resp = daemon
+        .store_secret("github/token", "initial")
+        .await
+        .unwrap();
+    assert!(matches!(resp, ControlResponse::Ok { .. }));
+
+    // Second store fails — secret is immutable and already exists.
+    let resp = daemon
+        .store_secret("github/token", "overwrite_attempt")
+        .await
+        .unwrap();
+    match resp {
+        ControlResponse::Error { code, message } => {
+            assert!(matches!(code, ErrorCode::Unauthorized));
+            assert!(message.contains("immutable"), "message: {message}");
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+
+    // Original value preserved.
+    let resp = daemon.read_request("gh-authorized").await.unwrap();
+    match resp {
+        ReadResponse::Ok { material } => assert_eq!(material, "initial"),
+        other => panic!("expected Ok, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
+}
+
+// ===========================================================================
 // Status — general
 // ===========================================================================
 
@@ -819,14 +858,21 @@ async fn exec_wrapper_secret_not_in_target_output_unless_echoed() {
 
 #[tokio::test]
 async fn rapid_store_read_cycles() {
-    let (wrappers, secrets) = one_wrapper_config();
+    // Need mutable secret for repeated overwrites.
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "rapid-wrapper".to_string(),
+        wrapper("/usr/bin/true", "rapid/tok", "TOK"),
+    );
+    let mut secrets = HashMap::new();
+    secrets.insert("rapid/tok".to_string(), secret(true));
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     for i in 0..50 {
         let val = format!("tok_{i}");
-        daemon.store_secret("github/token", &val).await.unwrap();
+        daemon.store_secret("rapid/tok", &val).await.unwrap();
 
-        let resp = daemon.read_request("gh-authorized").await.unwrap();
+        let resp = daemon.read_request("rapid-wrapper").await.unwrap();
         match resp {
             ReadResponse::Ok { material } => assert_eq!(material, val),
             other => panic!("iteration {i}: expected Ok, got {other:?}"),
@@ -891,6 +937,7 @@ async fn underwrapd_binary_start_and_status() {
         sockets: underwrap_protocol::config::SocketConfig {
             read: read_sock.clone(),
             control: control_sock.clone(),
+            ..Default::default()
         },
         storage: underwrap_protocol::config::StorageConfig::Plain {
             dir: storage_dir.clone(),
