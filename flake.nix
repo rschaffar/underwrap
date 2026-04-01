@@ -31,6 +31,7 @@
         # Common build inputs.
         commonArgs = {
           inherit src;
+          pname = "underwrap";
           strictDeps = true;
           buildInputs = [ ];
           nativeBuildInputs = [ ];
@@ -61,6 +62,8 @@
 
         checks = {
           # Workspace-wide cargo test.
+          # Binary-dependent integration tests skip gracefully when
+          # binaries aren't available (e.g. in the nix sandbox test phase).
           workspace-test = craneLib.cargoTest (commonArgs // {
             inherit cargoArtifacts;
           });
