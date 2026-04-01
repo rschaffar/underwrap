@@ -1,0 +1,49 @@
+# Example underwrap daemon configuration.
+# Copy to /etc/underwrap/config.yaml or point underwrapd --config at it.
+
+sockets:
+  read: /run/underwrap/read.sock
+  control: /run/underwrap/control.sock
+
+storage:
+  backend: plain
+  dir: /var/lib/underwrap/secrets
+
+wrappers:
+  gh-authorized:
+    target: /usr/bin/gh
+    secret: github/token
+    injection:
+      mode: env
+      variable: GH_TOKEN
+
+  gws-castlabs:
+    target: /usr/bin/gws
+    secret: google/castlabs
+    injection:
+      mode: env
+      variable: GOOGLE_WORKSPACE_CLI_TOKEN
+    derivation: none  # Phase 4: oauth_refresh_to_access_token
+
+  agent-slack:
+    target: /usr/bin/slack-cli
+    secret: slack/xoxp
+    injection:
+      mode: env
+      variable: SLACK_TOKEN
+
+secrets:
+  github/token:
+    mutable: false
+    labels:
+      owner: projektbuero
+
+  google/castlabs:
+    mutable: true
+    labels:
+      owner: castlabs
+
+  slack/xoxp:
+    mutable: false
+    labels:
+      owner: projektbuero

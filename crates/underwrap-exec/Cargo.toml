@@ -1,0 +1,18 @@
+[package]
+name = "underwrap-exec"
+description = "Execution wrapper — obtains secret from daemon, injects, drops privilege, execs target"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "underwrap-exec"
+path = "src/main.rs"
+
+[dependencies]
+underwrap-protocol = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
