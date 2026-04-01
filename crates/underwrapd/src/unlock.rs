@@ -31,6 +31,12 @@ pub struct UnlockState {
     grants: Mutex<HashMap<GrantKey, Grant>>,
 }
 
+impl Default for UnlockState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UnlockState {
     pub fn new() -> Self {
         Self {
@@ -79,18 +85,18 @@ impl UnlockState {
 
         // Try exact match (wrapper + scope) first.
         let scoped_key = (wrapper.to_string(), scope.map(|s| s.to_string()));
-        if let Some(grant) = grants.get(&scoped_key) {
-            if grant.is_valid() {
-                return Ok(());
-            }
+        if let Some(grant) = grants.get(&scoped_key)
+            && grant.is_valid()
+        {
+            return Ok(());
         }
 
         // Try global (no scope) grant for this wrapper.
         let global_key = (wrapper.to_string(), None);
-        if let Some(grant) = grants.get(&global_key) {
-            if grant.is_valid() {
-                return Ok(());
-            }
+        if let Some(grant) = grants.get(&global_key)
+            && grant.is_valid()
+        {
+            return Ok(());
         }
 
         Err(format!("wrapper '{wrapper}' is locked"))

@@ -15,6 +15,7 @@ use underwrap_protocol::config::DaemonConfig;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 
+use crate::audit;
 use crate::storage::Store;
 use crate::unlock::UnlockState;
 
@@ -216,7 +217,12 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
         &state.config.sockets.read_allow_uids,
         &state.config.sockets.read_allow_gids,
     ) {
-        warn!(peer = ?peer, reason = %reason, "read auth denied");
+        audit::auth_denied(
+            "read",
+            &reason,
+            peer.as_ref().map(|p| p.uid),
+            peer.as_ref().map(|p| p.gid),
+        );
         let response = ReadResponse::Error {
             code: ErrorCode::Unauthorized,
             message: reason,
@@ -233,14 +239,15 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
         "read request"
     );
 
-    let response = process_read(&request, &state);
+    let peer_uid = peer.as_ref().map(|p| p.uid);
+    let response = process_read(&request, &state, peer_uid);
 
     write_frame_async(&mut stream, &response).await?;
     stream.shutdown().await?;
     Ok(())
 }
 
-fn process_read(request: &ReadRequest, state: &State) -> ReadResponse {
+fn process_read(request: &ReadRequest, state: &State, peer_uid: Option<u32>) -> ReadResponse {
     let wrapper_def = match state.config.wrappers.get(&request.wrapper) {
         Some(w) => w,
         None => {
@@ -253,31 +260,41 @@ fn process_read(request: &ReadRequest, state: &State) -> ReadResponse {
     };
 
     // Check unlock state if wrapper requires it.
-    if wrapper_def.require_unlock {
-        if let Err(reason) = state
+    if wrapper_def.require_unlock
+        && let Err(reason) = state
             .unlock
             .check(&request.wrapper, request.scope.as_deref())
-        {
-            warn!(wrapper = %request.wrapper, "locked");
-            return ReadResponse::Error {
-                code: ErrorCode::Locked,
-                message: reason,
-            };
-        }
+    {
+        audit::read_denied(
+            &request.wrapper,
+            &reason,
+            peer_uid,
+            request.scope.as_deref(),
+        );
+        return ReadResponse::Error {
+            code: ErrorCode::Locked,
+            message: reason,
+        };
     }
 
     let secret_id = &wrapper_def.secret;
 
     match state.store.read(secret_id) {
         Ok(Some(material)) => {
-            info!(wrapper = %request.wrapper, secret = %secret_id, "read granted");
+            audit::read_granted(
+                &request.wrapper,
+                secret_id,
+                peer_uid,
+                request.scope.as_deref(),
+            );
             ReadResponse::Ok { material }
         }
         Ok(None) => {
-            warn!(secret = %secret_id, "secret not found in store");
+            let msg = format!("secret '{secret_id}' not found in store");
+            audit::read_denied(&request.wrapper, &msg, peer_uid, request.scope.as_deref());
             ReadResponse::Error {
                 code: ErrorCode::NotFound,
-                message: format!("secret '{secret_id}' not found in store"),
+                message: msg,
             }
         }
         Err(e) => {
@@ -303,7 +320,12 @@ async fn handle_control(mut stream: UnixStream, state: Arc<State>) -> Result<()>
         &state.config.sockets.control_allow_uids,
         &state.config.sockets.control_allow_gids,
     ) {
-        warn!(peer = ?peer, reason = %reason, "control auth denied");
+        audit::auth_denied(
+            "control",
+            &reason,
+            peer.as_ref().map(|p| p.uid),
+            peer.as_ref().map(|p| p.gid),
+        );
         let response = ControlResponse::Error {
             code: ErrorCode::Unauthorized,
             message: reason,
@@ -336,14 +358,19 @@ async fn handle_control(mut stream: UnixStream, state: Arc<State>) -> Result<()>
         }
     }
 
-    let response = process_control(&request, &state);
+    let peer_uid = peer.as_ref().map(|p| p.uid);
+    let response = process_control(&request, &state, peer_uid);
 
     write_frame_async(&mut stream, &response).await?;
     stream.shutdown().await?;
     Ok(())
 }
 
-fn process_control(request: &ControlRequest, state: &State) -> ControlResponse {
+fn process_control(
+    request: &ControlRequest,
+    state: &State,
+    peer_uid: Option<u32>,
+) -> ControlResponse {
     match request {
         ControlRequest::Status { target } => {
             let info = build_status(target, state);
@@ -361,12 +388,12 @@ fn process_control(request: &ControlRequest, state: &State) -> ControlResponse {
                 };
             }
             state.unlock.unlock(target, scope.as_deref(), *seconds);
-            info!(wrapper = %target, "unlocked");
+            audit::unlocked(target, scope.as_deref(), *seconds, peer_uid);
             ControlResponse::Ok { info: None }
         }
         ControlRequest::Lock { target, scope } => {
             state.unlock.lock(target.as_deref(), scope.as_deref());
-            info!(target = ?target, "locked");
+            audit::locked(target.as_deref(), scope.as_deref(), peer_uid);
             ControlResponse::Ok { info: None }
         }
         ControlRequest::Store {
@@ -388,16 +415,17 @@ fn process_control(request: &ControlRequest, state: &State) -> ControlResponse {
             if !secret_def.mutable
                 && let Ok(Some(_)) = state.store.read(secret_id)
             {
-                warn!(secret = %secret_id, "rejected overwrite of immutable secret");
+                let reason = "immutable and already exists";
+                audit::store_denied(secret_id, reason, peer_uid);
                 return ControlResponse::Error {
                     code: ErrorCode::Unauthorized,
-                    message: format!("secret '{secret_id}' is immutable and already exists"),
+                    message: format!("secret '{secret_id}' is {reason}"),
                 };
             }
 
             match state.store.write(secret_id, material) {
                 Ok(()) => {
-                    info!(secret = %secret_id, "secret stored");
+                    audit::secret_stored(secret_id, peer_uid);
                     ControlResponse::Ok { info: None }
                 }
                 Err(e) => {

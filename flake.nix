@@ -253,6 +253,15 @@
                     "${wrapDir}/bin/test-locked"
                 )
 
+                # === Audit log verification ===
+                # Use --no-pager and strip ANSI escapes for reliable matching.
+                logs = machine.succeed("journalctl -u underwrapd.service --no-pager | sed 's/\\x1b\\[[0-9;]*m//g'")
+                assert 'audit="read_granted"' in logs, f"missing read_granted audit event in:\n{logs[-500:]}"
+                assert 'audit="secret_stored"' in logs, "missing secret_stored audit event"
+                assert 'audit="read_denied"' in logs, "missing read_denied audit event"
+                assert 'audit="unlocked"' in logs, "missing unlocked audit event"
+                assert 'audit="locked"' in logs, "missing locked audit event"
+
                 # === No secret material in daemon logs ===
                 logs = machine.succeed("journalctl -u underwrapd.service --no-pager")
                 assert "ghp_testvmtoken" not in logs, "secret leaked to logs!"
