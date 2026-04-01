@@ -68,11 +68,7 @@ fn bind_socket(path: &std::path::Path, label: &str) -> Result<UnixListener> {
     Ok(listener)
 }
 
-async fn accept_loop<F, Fut>(
-    listener: UnixListener,
-    state: Arc<State>,
-    handler: F,
-) -> Result<()>
+async fn accept_loop<F, Fut>(listener: UnixListener, state: Arc<State>, handler: F) -> Result<()>
 where
     F: Fn(UnixStream, Arc<State>) -> Fut + Send + Sync + Copy + 'static,
     Fut: std::future::Future<Output = Result<()>> + Send,

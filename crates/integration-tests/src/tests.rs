@@ -10,8 +10,10 @@ use crate::harness::*;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn one_wrapper_config() -> (HashMap<String, underwrap_protocol::config::WrapperDef>,
-                             HashMap<String, underwrap_protocol::config::SecretDef>) {
+fn one_wrapper_config() -> (
+    HashMap<String, underwrap_protocol::config::WrapperDef>,
+    HashMap<String, underwrap_protocol::config::SecretDef>,
+) {
     let mut wrappers = HashMap::new();
     wrappers.insert(
         "gh-authorized".to_string(),
@@ -22,8 +24,10 @@ fn one_wrapper_config() -> (HashMap<String, underwrap_protocol::config::WrapperD
     (wrappers, secrets)
 }
 
-fn multi_wrapper_config() -> (HashMap<String, underwrap_protocol::config::WrapperDef>,
-                               HashMap<String, underwrap_protocol::config::SecretDef>) {
+fn multi_wrapper_config() -> (
+    HashMap<String, underwrap_protocol::config::WrapperDef>,
+    HashMap<String, underwrap_protocol::config::SecretDef>,
+) {
     let mut wrappers = HashMap::new();
     wrappers.insert(
         "gh-authorized".to_string(),
@@ -35,7 +39,11 @@ fn multi_wrapper_config() -> (HashMap<String, underwrap_protocol::config::Wrappe
     );
     wrappers.insert(
         "gws-castlabs".to_string(),
-        wrapper("/usr/bin/gws", "google/castlabs", "GOOGLE_WORKSPACE_CLI_TOKEN"),
+        wrapper(
+            "/usr/bin/gws",
+            "google/castlabs",
+            "GOOGLE_WORKSPACE_CLI_TOKEN",
+        ),
     );
 
     let mut secrets = HashMap::new();
@@ -55,7 +63,10 @@ async fn store_then_read_secret() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     // Store the secret.
-    let resp = daemon.store_secret("github/token", "ghp_test123").await.unwrap();
+    let resp = daemon
+        .store_secret("github/token", "ghp_test123")
+        .await
+        .unwrap();
     assert!(matches!(resp, ControlResponse::Ok { .. }));
 
     // Read it back through the read socket.
@@ -141,9 +152,15 @@ async fn multiple_wrappers_isolate_secrets() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     // Store different secrets.
-    daemon.store_secret("github/token", "ghp_AAA").await.unwrap();
+    daemon
+        .store_secret("github/token", "ghp_AAA")
+        .await
+        .unwrap();
     daemon.store_secret("slack/xoxp", "xoxp-BBB").await.unwrap();
-    daemon.store_secret("google/castlabs", "goog-CCC").await.unwrap();
+    daemon
+        .store_secret("google/castlabs", "goog-CCC")
+        .await
+        .unwrap();
 
     // Each wrapper reads only its own secret.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
@@ -177,7 +194,10 @@ async fn overwrite_mutable_secret() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     // Store initial value.
-    daemon.store_secret("google/castlabs", "refresh_v1").await.unwrap();
+    daemon
+        .store_secret("google/castlabs", "refresh_v1")
+        .await
+        .unwrap();
     let resp = daemon.read_request("gws-castlabs").await.unwrap();
     match resp {
         ReadResponse::Ok { material } => assert_eq!(material, "refresh_v1"),
@@ -185,7 +205,10 @@ async fn overwrite_mutable_secret() {
     }
 
     // Overwrite.
-    daemon.store_secret("google/castlabs", "refresh_v2").await.unwrap();
+    daemon
+        .store_secret("google/castlabs", "refresh_v2")
+        .await
+        .unwrap();
     let resp = daemon.read_request("gws-castlabs").await.unwrap();
     match resp {
         ReadResponse::Ok { material } => assert_eq!(material, "refresh_v2"),
@@ -300,7 +323,10 @@ async fn concurrent_reads() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
-    daemon.store_secret("github/token", "ghp_concurrent").await.unwrap();
+    daemon
+        .store_secret("github/token", "ghp_concurrent")
+        .await
+        .unwrap();
 
     // Spawn 20 concurrent read requests.
     let mut handles = Vec::new();
@@ -315,8 +341,9 @@ async fn concurrent_reads() {
             underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
                 .await
                 .unwrap();
-            let resp: ReadResponse =
-                underwrap_protocol::ipc::read_frame_async(&mut stream).await.unwrap();
+            let resp: ReadResponse = underwrap_protocol::ipc::read_frame_async(&mut stream)
+                .await
+                .unwrap();
             resp
         }));
     }
@@ -349,7 +376,10 @@ async fn hierarchical_secret_ids() {
 
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
-    daemon.store_secret("org/team/service/token", "deep_val").await.unwrap();
+    daemon
+        .store_secret("org/team/service/token", "deep_val")
+        .await
+        .unwrap();
 
     let resp = daemon.read_request("deep-wrapper").await.unwrap();
     match resp {
@@ -423,10 +453,15 @@ async fn exec_wrapper_end_to_end() {
 
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
-    daemon.store_secret("test/secret", "s3cret_value").await.unwrap();
+    daemon
+        .store_secret("test/secret", "s3cret_value")
+        .await
+        .unwrap();
 
     // Write the sidecar wrapper config for underwrap-exec.
-    daemon.write_wrapper_config("test-wrapper", &env_bin, "MY_SECRET").unwrap();
+    daemon
+        .write_wrapper_config("test-wrapper", &env_bin, "MY_SECRET")
+        .unwrap();
 
     // Build the underwrap-exec binary path (from cargo target dir).
     let exec_bin = cargo_bin("underwrap-exec");
@@ -434,7 +469,10 @@ async fn exec_wrapper_end_to_end() {
     // Invoke underwrap-exec with argv[0] set to "test-wrapper".
     let output = tokio::process::Command::new(&exec_bin)
         .arg0("test-wrapper")
-        .env("UNDERWRAP_CONFIG_DIR", daemon.wrappers_dir.to_str().unwrap())
+        .env(
+            "UNDERWRAP_CONFIG_DIR",
+            daemon.wrappers_dir.to_str().unwrap(),
+        )
         .output()
         .await
         .unwrap();
@@ -504,7 +542,10 @@ async fn underwrapctl_store_and_status() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("\"secret_stored\": true"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("\"secret_stored\": true"),
+        "stdout: {stdout}"
+    );
 
     daemon.stop().await.unwrap();
 }
@@ -537,7 +578,10 @@ async fn underwrapctl_store_undeclared_exits_nonzero() {
     }
 
     let output = child.wait_with_output().await.unwrap();
-    assert!(!output.status.success(), "expected failure for undeclared secret");
+    assert!(
+        !output.status.success(),
+        "expected failure for undeclared secret"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("bogus/secret"), "stderr: {stderr}");
 
@@ -570,12 +614,18 @@ async fn exec_wrapper_missing_secret_exits_nonzero() {
 
     let output = tokio::process::Command::new(&exec_bin)
         .arg0("test-nosecret")
-        .env("UNDERWRAP_CONFIG_DIR", daemon.wrappers_dir.to_str().unwrap())
+        .env(
+            "UNDERWRAP_CONFIG_DIR",
+            daemon.wrappers_dir.to_str().unwrap(),
+        )
         .output()
         .await
         .unwrap();
 
-    assert!(!output.status.success(), "expected nonzero exit when secret missing");
+    assert!(
+        !output.status.success(),
+        "expected nonzero exit when secret missing"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("NotFound") || stderr.contains("not found"),
@@ -612,7 +662,10 @@ async fn exec_wrapper_passes_args() {
     let output = tokio::process::Command::new(&exec_bin)
         .arg0("echo-wrapper")
         .args(["hello", "world", "123"])
-        .env("UNDERWRAP_CONFIG_DIR", daemon.wrappers_dir.to_str().unwrap())
+        .env(
+            "UNDERWRAP_CONFIG_DIR",
+            daemon.wrappers_dir.to_str().unwrap(),
+        )
         .output()
         .await
         .unwrap();
@@ -641,7 +694,10 @@ async fn exec_wrapper_secret_not_in_target_output_unless_echoed() {
     secrets.insert("test/tok".to_string(), secret(false));
 
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
-    daemon.store_secret("test/tok", "super_secret_42").await.unwrap();
+    daemon
+        .store_secret("test/tok", "super_secret_42")
+        .await
+        .unwrap();
 
     daemon
         .write_wrapper_config("echo-wrapper", &echo, "SECRET_TOK")
@@ -653,13 +709,19 @@ async fn exec_wrapper_secret_not_in_target_output_unless_echoed() {
     let output = tokio::process::Command::new(&exec_bin)
         .arg0("echo-wrapper")
         .args(["safe output"])
-        .env("UNDERWRAP_CONFIG_DIR", daemon.wrappers_dir.to_str().unwrap())
+        .env(
+            "UNDERWRAP_CONFIG_DIR",
+            daemon.wrappers_dir.to_str().unwrap(),
+        )
         .output()
         .await
         .unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.contains("super_secret_42"), "secret leaked to stdout!");
+    assert!(
+        !stdout.contains("super_secret_42"),
+        "secret leaked to stdout!"
+    );
 
     daemon.stop().await.unwrap();
 }
@@ -701,8 +763,7 @@ async fn parse_example_config() {
         .unwrap();
     let config_path = workspace_root.join("examples/config.yaml");
     let text = std::fs::read_to_string(&config_path).unwrap();
-    let config: underwrap_protocol::config::DaemonConfig =
-        serde_yaml::from_str(&text).unwrap();
+    let config: underwrap_protocol::config::DaemonConfig = serde_yaml::from_str(&text).unwrap();
 
     assert_eq!(config.wrappers.len(), 3);
     assert_eq!(config.secrets.len(), 3);
@@ -733,27 +794,25 @@ async fn underwrapd_binary_start_and_status() {
     let control_sock = base.join("control.sock");
     let storage_dir = base.join("secrets");
 
-    let config = serde_yaml::to_string(
-        &underwrap_protocol::config::DaemonConfig {
-            sockets: underwrap_protocol::config::SocketConfig {
-                read: read_sock.clone(),
-                control: control_sock.clone(),
-            },
-            storage: underwrap_protocol::config::StorageConfig::Plain {
-                dir: storage_dir.clone(),
-            },
-            wrappers: {
-                let mut m = HashMap::new();
-                m.insert("w".to_string(), wrapper(&which_echo(), "s/t", "T"));
-                m
-            },
-            secrets: {
-                let mut m = HashMap::new();
-                m.insert("s/t".to_string(), secret(false));
-                m
-            },
+    let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
+        sockets: underwrap_protocol::config::SocketConfig {
+            read: read_sock.clone(),
+            control: control_sock.clone(),
         },
-    )
+        storage: underwrap_protocol::config::StorageConfig::Plain {
+            dir: storage_dir.clone(),
+        },
+        wrappers: {
+            let mut m = HashMap::new();
+            m.insert("w".to_string(), wrapper(&which_echo(), "s/t", "T"));
+            m
+        },
+        secrets: {
+            let mut m = HashMap::new();
+            m.insert("s/t".to_string(), secret(false));
+            m
+        },
+    })
     .unwrap();
 
     let config_path = base.join("config.yaml");
@@ -779,13 +838,16 @@ async fn underwrapd_binary_start_and_status() {
     assert!(control_sock.exists(), "control socket never appeared");
 
     // Send a status request directly.
-    let mut stream = tokio::net::UnixStream::connect(&control_sock).await.unwrap();
+    let mut stream = tokio::net::UnixStream::connect(&control_sock)
+        .await
+        .unwrap();
     let req = ControlRequest::Status { target: None };
     underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
         .await
         .unwrap();
-    let resp: ControlResponse =
-        underwrap_protocol::ipc::read_frame_async(&mut stream).await.unwrap();
+    let resp: ControlResponse = underwrap_protocol::ipc::read_frame_async(&mut stream)
+        .await
+        .unwrap();
 
     match resp {
         ControlResponse::Ok { info: Some(info) } => {

@@ -66,10 +66,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn send_control(
-    socket_path: &PathBuf,
-    request: &ControlRequest,
-) -> Result<ControlResponse> {
+async fn send_control(socket_path: &PathBuf, request: &ControlRequest) -> Result<ControlResponse> {
     let mut stream = UnixStream::connect(socket_path)
         .await
         .with_context(|| format!("connecting to {}", socket_path.display()))?;

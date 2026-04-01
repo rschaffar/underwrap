@@ -28,10 +28,7 @@ pub enum ReadResponse {
         material: String,
     },
     #[serde(rename = "error")]
-    Error {
-        code: ErrorCode,
-        message: String,
-    },
+    Error { code: ErrorCode, message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -47,10 +44,7 @@ pub enum ControlRequest {
         target: Option<String>,
     },
     #[serde(rename = "store")]
-    Store {
-        secret_id: String,
-        material: String,
-    },
+    Store { secret_id: String, material: String },
     // Future: Unlock, Lock, Reauth, Delete, ...
 }
 
@@ -63,10 +57,7 @@ pub enum ControlResponse {
         info: Option<serde_json::Value>,
     },
     #[serde(rename = "error")]
-    Error {
-        code: ErrorCode,
-        message: String,
-    },
+    Error { code: ErrorCode, message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -85,4 +76,81 @@ pub enum ErrorCode {
     DerivationFailed,
     /// Internal daemon error.
     Internal,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_request_roundtrip() {
+        let req = ReadRequest {
+            wrapper: "gh-authorized".to_string(),
+            scope: Some("session-42".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: ReadRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.wrapper, "gh-authorized");
+        assert_eq!(parsed.scope.as_deref(), Some("session-42"));
+    }
+
+    #[test]
+    fn read_response_ok() {
+        let resp = ReadResponse::Ok {
+            material: "secret123".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"material\":\"secret123\""));
+    }
+
+    #[test]
+    fn read_response_error() {
+        let resp = ReadResponse::Error {
+            code: ErrorCode::NotFound,
+            message: "nope".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"error\""));
+        let parsed: ReadResponse = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, ReadResponse::Error { .. }));
+    }
+
+    #[test]
+    fn control_request_store_roundtrip() {
+        let req = ControlRequest::Store {
+            secret_id: "a/b".to_string(),
+            material: "val".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"command\":\"store\""));
+        let parsed: ControlRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ControlRequest::Store {
+                secret_id,
+                material,
+            } => {
+                assert_eq!(secret_id, "a/b");
+                assert_eq!(material, "val");
+            }
+            other => panic!("expected Store, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn control_response_ok_with_info() {
+        let resp = ControlResponse::Ok {
+            info: Some(serde_json::json!({"key": "val"})),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"key\":\"val\""));
+    }
+
+    #[test]
+    fn control_response_ok_without_info() {
+        let resp = ControlResponse::Ok { info: None };
+        let json = serde_json::to_string(&resp).unwrap();
+        // "info" should be absent due to skip_serializing_if.
+        assert!(!json.contains("\"info\""));
+    }
 }

@@ -54,9 +54,10 @@ impl TestDaemon {
         let shutdown = Arc::new(Notify::new());
         let shutdown_clone = Arc::clone(&shutdown);
 
-        let handle = tokio::spawn(async move {
-            underwrapd::server::run(config, Some(shutdown_clone)).await
-        });
+        let handle =
+            tokio::spawn(
+                async move { underwrapd::server::run(config, Some(shutdown_clone)).await },
+            );
 
         // Wait for sockets to appear.
         for _ in 0..100 {

@@ -149,3 +149,158 @@ pub struct SecretDef {
     #[serde(default)]
     pub labels: HashMap<String, String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimal_config() {
+        let yaml = "{}";
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.wrappers.is_empty());
+        assert!(config.secrets.is_empty());
+    }
+
+    #[test]
+    fn full_wrapper_config() {
+        let yaml = r#"
+wrappers:
+  gh-authorized:
+    target: /usr/bin/gh
+    secret: github/token
+    injection:
+      mode: env
+      variable: GH_TOKEN
+secrets:
+  github/token:
+    mutable: false
+"#;
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.wrappers.len(), 1);
+        let w = &config.wrappers["gh-authorized"];
+        assert_eq!(w.target, PathBuf::from("/usr/bin/gh"));
+        assert_eq!(w.secret, "github/token");
+        match &w.injection {
+            InjectionMode::Env { variable } => assert_eq!(variable, "GH_TOKEN"),
+            other => panic!("expected Env, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn injection_defaults() {
+        let yaml = r#"
+wrappers:
+  w:
+    target: /bin/true
+    secret: s
+"#;
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        let w = &config.wrappers["w"];
+        match &w.injection {
+            InjectionMode::Env { variable } => assert_eq!(variable, "UNDERWRAP_SECRET"),
+            other => panic!("expected default Env, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stdin_injection() {
+        let yaml = r#"
+wrappers:
+  w:
+    target: /bin/true
+    secret: s
+    injection:
+      mode: stdin
+"#;
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config.wrappers["w"].injection,
+            InjectionMode::Stdin
+        ));
+    }
+
+    #[test]
+    fn tempfile_injection() {
+        let yaml = r#"
+wrappers:
+  w:
+    target: /bin/true
+    secret: s
+    injection:
+      mode: tempfile
+      path_variable: MY_PATH
+"#;
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        match &config.wrappers["w"].injection {
+            InjectionMode::TempFile { path_variable } => assert_eq!(path_variable, "MY_PATH"),
+            other => panic!("expected TempFile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutable_secret() {
+        let yaml = r#"
+secrets:
+  google/castlabs:
+    mutable: true
+    labels:
+      owner: castlabs
+"#;
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        let s = &config.secrets["google/castlabs"];
+        assert!(s.mutable);
+        assert_eq!(s.labels["owner"], "castlabs");
+    }
+
+    #[test]
+    fn storage_plain_config() {
+        let yaml = r#"
+storage:
+  backend: plain
+  dir: /tmp/test-secrets
+"#;
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        match &config.storage {
+            StorageConfig::Plain { dir } => assert_eq!(dir, &PathBuf::from("/tmp/test-secrets")),
+        }
+    }
+
+    #[test]
+    fn config_roundtrip() {
+        let config = DaemonConfig {
+            sockets: SocketConfig::default(),
+            storage: StorageConfig::default(),
+            wrappers: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "test".to_string(),
+                    WrapperDef {
+                        target: PathBuf::from("/bin/test"),
+                        secret: "test/secret".to_string(),
+                        injection: InjectionMode::Env {
+                            variable: "MY_VAR".to_string(),
+                        },
+                        derivation: DerivationMode::None,
+                    },
+                );
+                m
+            },
+            secrets: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "test/secret".to_string(),
+                    SecretDef {
+                        mutable: true,
+                        labels: HashMap::new(),
+                    },
+                );
+                m
+            },
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let parsed: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.wrappers.len(), 1);
+        assert_eq!(parsed.secrets.len(), 1);
+    }
+}

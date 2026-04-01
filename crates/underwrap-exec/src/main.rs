@@ -6,7 +6,7 @@
 //!
 //! Phase 1: synchronous, env injection only.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 
@@ -57,8 +57,8 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
     let config_dir = std::env::var("UNDERWRAP_CONFIG_DIR")
         .unwrap_or_else(|_| "/etc/underwrap/wrappers".to_string());
     let path = format!("{config_dir}/{wrapper_name}.yaml");
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading wrapper config {path}"))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading wrapper config {path}"))?;
 
     #[derive(serde::Deserialize)]
     struct WrapperFile {

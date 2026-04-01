@@ -5,7 +5,7 @@
 //! Provides both sync (std) and async (tokio) variants so that
 //! underwrap-exec can stay synchronous while the daemon uses tokio.
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 /// Maximum allowed frame size (64 KiB). Prevents allocation bombs.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024;
@@ -32,9 +32,7 @@ pub fn write_frame_sync(
 }
 
 /// Read a length-prefixed JSON frame from a std stream.
-pub fn read_frame_sync<T: DeserializeOwned>(
-    stream: &mut impl std::io::Read,
-) -> anyhow::Result<T> {
+pub fn read_frame_sync<T: DeserializeOwned>(stream: &mut impl std::io::Read) -> anyhow::Result<T> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
