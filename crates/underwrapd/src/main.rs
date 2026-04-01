@@ -3,9 +3,6 @@ use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
 
-mod server;
-mod storage;
-
 #[derive(Parser, Debug)]
 #[command(name = "underwrapd", about = "underwrap secret broker daemon")]
 struct Cli {
@@ -36,5 +33,5 @@ async fn main() -> Result<()> {
         "loaded configuration"
     );
 
-    server::run(config).await
+    underwrapd::server::run(config, None).await
 }

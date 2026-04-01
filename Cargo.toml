@@ -5,6 +5,7 @@ members = [
     "crates/underwrapd",
     "crates/underwrapctl",
     "crates/underwrap-exec",
+    "crates/integration-tests",
 ]
 
 [workspace.package]
@@ -25,3 +26,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
+tempfile = "3"

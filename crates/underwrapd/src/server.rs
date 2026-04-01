@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
 use underwrap_protocol::config::DaemonConfig;
@@ -22,7 +23,8 @@ struct State {
     store: Store,
 }
 
-pub async fn run(config: DaemonConfig) -> Result<()> {
+/// Run the daemon until `shutdown` is notified (or forever if `None`).
+pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let store = Store::open(&config.storage)?;
     let state = Arc::new(State {
         config: config.clone(),
@@ -34,9 +36,23 @@ pub async fn run(config: DaemonConfig) -> Result<()> {
 
     info!("daemon ready");
 
-    tokio::select! {
-        r = accept_loop(read_listener, Arc::clone(&state), handle_read) => r,
-        r = accept_loop(control_listener, state, handle_control) => r,
+    match shutdown {
+        Some(notify) => {
+            tokio::select! {
+                r = accept_loop(read_listener, Arc::clone(&state), handle_read) => r,
+                r = accept_loop(control_listener, state, handle_control) => r,
+                _ = notify.notified() => {
+                    info!("shutdown signal received");
+                    Ok(())
+                }
+            }
+        }
+        None => {
+            tokio::select! {
+                r = accept_loop(read_listener, Arc::clone(&state), handle_read) => r,
+                r = accept_loop(control_listener, state, handle_control) => r,
+            }
+        }
     }
 }
 
@@ -222,9 +238,10 @@ fn process_control(request: &ControlRequest, state: &State) -> ControlResponse {
 fn build_status(target: &Option<String>, state: &State) -> serde_json::Value {
     match target {
         None => {
-            // General status: list wrappers and secrets.
-            let wrappers: Vec<&String> = state.config.wrappers.keys().collect();
-            let secrets: Vec<&String> = state.config.secrets.keys().collect();
+            let mut wrappers: Vec<&String> = state.config.wrappers.keys().collect();
+            wrappers.sort();
+            let mut secrets: Vec<&String> = state.config.secrets.keys().collect();
+            secrets.sort();
             serde_json::json!({
                 "wrappers": wrappers,
                 "secrets": secrets,
