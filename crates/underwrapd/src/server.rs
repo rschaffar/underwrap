@@ -188,7 +188,16 @@ async fn handle_control(mut stream: UnixStream, state: Arc<State>) -> Result<()>
     let peer = get_peer_cred(&stream);
 
     let request: ControlRequest = read_frame_async(&mut stream).await?;
-    info!(command = ?request, peer = ?peer, "control request");
+
+    // Log the command type but NEVER the secret material.
+    match &request {
+        ControlRequest::Status { target } => {
+            info!(command = "status", target = ?target, peer = ?peer, "control request");
+        }
+        ControlRequest::Store { secret_id, .. } => {
+            info!(command = "store", secret_id = %secret_id, peer = ?peer, "control request");
+        }
+    }
 
     let response = process_control(&request, &state);
 
