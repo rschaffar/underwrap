@@ -131,6 +131,11 @@ pub struct WrapperDef {
     /// Optional: the derivation to perform on the stored secret before injection.
     #[serde(default)]
     pub derivation: DerivationMode,
+
+    /// Whether this wrapper requires an explicit unlock before reads.
+    /// If true, reads are denied unless an active unlock grant exists.
+    #[serde(default)]
+    pub require_unlock: bool,
 }
 
 /// How the secret material is delivered to the child process.
@@ -320,6 +325,7 @@ storage:
                             variable: "MY_VAR".to_string(),
                         },
                         derivation: DerivationMode::None,
+                        require_unlock: false,
                     },
                 );
                 m

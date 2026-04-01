@@ -16,6 +16,7 @@ use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 
 use crate::storage::Store;
+use crate::unlock::UnlockState;
 
 /// Maximum concurrent connections per socket.
 const MAX_CONNECTIONS: usize = 128;
@@ -24,6 +25,7 @@ const MAX_CONNECTIONS: usize = 128;
 struct State {
     config: DaemonConfig,
     store: Store,
+    unlock: UnlockState,
 }
 
 /// Run the daemon until `shutdown` is notified (or forever if `None`).
@@ -35,6 +37,7 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     let state = Arc::new(State {
         config: config.clone(),
         store,
+        unlock: UnlockState::new(),
     });
 
     let read_listener = bind_socket(&config.sockets.read, config.sockets.read_mode, "read")?;
@@ -249,6 +252,20 @@ fn process_read(request: &ReadRequest, state: &State) -> ReadResponse {
         }
     };
 
+    // Check unlock state if wrapper requires it.
+    if wrapper_def.require_unlock {
+        if let Err(reason) = state
+            .unlock
+            .check(&request.wrapper, request.scope.as_deref())
+        {
+            warn!(wrapper = %request.wrapper, "locked");
+            return ReadResponse::Error {
+                code: ErrorCode::Locked,
+                message: reason,
+            };
+        }
+    }
+
     let secret_id = &wrapper_def.secret;
 
     match state.store.read(secret_id) {
@@ -306,6 +323,17 @@ async fn handle_control(mut stream: UnixStream, state: Arc<State>) -> Result<()>
         ControlRequest::Store { secret_id, .. } => {
             info!(command = "store", secret_id = %secret_id, peer = ?peer, "control request");
         }
+        ControlRequest::Unlock {
+            target,
+            scope,
+            seconds,
+            ..
+        } => {
+            info!(command = "unlock", target = %target, scope = ?scope, seconds = ?seconds, peer = ?peer, "control request");
+        }
+        ControlRequest::Lock { target, scope } => {
+            info!(command = "lock", target = ?target, scope = ?scope, peer = ?peer, "control request");
+        }
     }
 
     let response = process_control(&request, &state);
@@ -320,6 +348,26 @@ fn process_control(request: &ControlRequest, state: &State) -> ControlResponse {
         ControlRequest::Status { target } => {
             let info = build_status(target, state);
             ControlResponse::Ok { info: Some(info) }
+        }
+        ControlRequest::Unlock {
+            target,
+            scope,
+            seconds,
+        } => {
+            if !state.config.wrappers.contains_key(target) {
+                return ControlResponse::Error {
+                    code: ErrorCode::NotFound,
+                    message: format!("unknown wrapper '{target}'"),
+                };
+            }
+            state.unlock.unlock(target, scope.as_deref(), *seconds);
+            info!(wrapper = %target, "unlocked");
+            ControlResponse::Ok { info: None }
+        }
+        ControlRequest::Lock { target, scope } => {
+            state.unlock.lock(target.as_deref(), scope.as_deref());
+            info!(target = ?target, "locked");
+            ControlResponse::Ok { info: None }
         }
         ControlRequest::Store {
             secret_id,
@@ -379,11 +427,14 @@ fn build_status(target: &Option<String>, state: &State) -> serde_json::Value {
         Some(name) => {
             if let Some(w) = state.config.wrappers.get(name) {
                 let stored = state.store.read(&w.secret).ok().flatten().is_some();
+                let unlock_status = state.unlock.status(name);
                 serde_json::json!({
                     "wrapper": name,
                     "target": w.target,
                     "secret": w.secret,
                     "secret_stored": stored,
+                    "require_unlock": w.require_unlock,
+                    "unlock": unlock_status,
                 })
             } else if state.config.secrets.contains_key(name) {
                 let stored = state.store.read(name).ok().flatten().is_some();

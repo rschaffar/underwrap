@@ -45,7 +45,24 @@ pub enum ControlRequest {
     },
     #[serde(rename = "store")]
     Store { secret_id: String, material: String },
-    // Future: Unlock, Lock, Reauth, Delete, ...
+    /// Unlock a wrapper for a duration.
+    #[serde(rename = "unlock")]
+    Unlock {
+        /// Wrapper name to unlock.
+        target: String,
+        /// Optional scope (e.g. shell session id).
+        scope: Option<String>,
+        /// Seconds until auto-lock. None = indefinite (until explicit lock).
+        seconds: Option<u64>,
+    },
+    /// Explicitly lock a wrapper.
+    #[serde(rename = "lock")]
+    Lock {
+        /// Wrapper name to lock. None = lock everything.
+        target: Option<String>,
+        /// Optional scope. None = all scopes.
+        scope: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

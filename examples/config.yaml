@@ -24,6 +24,7 @@ wrappers:
       mode: env
       variable: GOOGLE_WORKSPACE_CLI_TOKEN
     derivation: none  # Phase 4: oauth_refresh_to_access_token
+    require_unlock: true  # Must run: underwrapctl unlock gws-castlabs --seconds 1800
 
   agent-slack:
     target: /usr/bin/slack-cli

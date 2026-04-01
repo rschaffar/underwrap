@@ -883,6 +883,230 @@ async fn rapid_store_read_cycles() {
 }
 
 // ===========================================================================
+// Unlock: locked wrapper denies reads
+// ===========================================================================
+
+#[tokio::test]
+async fn locked_wrapper_denies_read() {
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "locked-w".to_string(),
+        locked_wrapper("/usr/bin/true", "locked/tok", "TOK"),
+    );
+    let mut secrets = HashMap::new();
+    secrets.insert("locked/tok".to_string(), secret(false));
+
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    daemon.store_secret("locked/tok", "val").await.unwrap();
+
+    // Read should be denied — wrapper is locked.
+    let resp = daemon.read_request("locked-w").await.unwrap();
+    match resp {
+        ReadResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Locked)),
+        other => panic!("expected Locked error, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
+}
+
+// ===========================================================================
+// Unlock: unlock then read succeeds
+// ===========================================================================
+
+#[tokio::test]
+async fn unlock_then_read_succeeds() {
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "locked-w".to_string(),
+        locked_wrapper("/usr/bin/true", "locked/tok", "TOK"),
+    );
+    let mut secrets = HashMap::new();
+    secrets.insert("locked/tok".to_string(), secret(false));
+
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    daemon
+        .store_secret("locked/tok", "secret_val")
+        .await
+        .unwrap();
+
+    // Unlock the wrapper.
+    let resp = daemon
+        .control_request(&ControlRequest::Unlock {
+            target: "locked-w".to_string(),
+            scope: None,
+            seconds: None,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(resp, ControlResponse::Ok { .. }));
+
+    // Now reads succeed.
+    let resp = daemon.read_request("locked-w").await.unwrap();
+    match resp {
+        ReadResponse::Ok { material } => assert_eq!(material, "secret_val"),
+        other => panic!("expected Ok, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
+}
+
+// ===========================================================================
+// Unlock: lock after unlock denies again
+// ===========================================================================
+
+#[tokio::test]
+async fn lock_after_unlock_denies() {
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "locked-w".to_string(),
+        locked_wrapper("/usr/bin/true", "locked/tok", "TOK"),
+    );
+    let mut secrets = HashMap::new();
+    secrets.insert("locked/tok".to_string(), secret(false));
+
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    daemon.store_secret("locked/tok", "val").await.unwrap();
+
+    // Unlock, then lock.
+    daemon
+        .control_request(&ControlRequest::Unlock {
+            target: "locked-w".to_string(),
+            scope: None,
+            seconds: None,
+        })
+        .await
+        .unwrap();
+    daemon
+        .control_request(&ControlRequest::Lock {
+            target: Some("locked-w".to_string()),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // Should be locked again.
+    let resp = daemon.read_request("locked-w").await.unwrap();
+    assert!(matches!(
+        resp,
+        ReadResponse::Error {
+            code: ErrorCode::Locked,
+            ..
+        }
+    ));
+
+    daemon.stop().await.unwrap();
+}
+
+// ===========================================================================
+// Unlock: time-based expiry
+// ===========================================================================
+
+#[tokio::test]
+async fn unlock_time_expiry() {
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "locked-w".to_string(),
+        locked_wrapper("/usr/bin/true", "locked/tok", "TOK"),
+    );
+    let mut secrets = HashMap::new();
+    secrets.insert("locked/tok".to_string(), secret(false));
+
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    daemon.store_secret("locked/tok", "val").await.unwrap();
+
+    // Unlock for 0 seconds — should expire immediately.
+    daemon
+        .control_request(&ControlRequest::Unlock {
+            target: "locked-w".to_string(),
+            scope: None,
+            seconds: Some(0),
+        })
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let resp = daemon.read_request("locked-w").await.unwrap();
+    assert!(matches!(
+        resp,
+        ReadResponse::Error {
+            code: ErrorCode::Locked,
+            ..
+        }
+    ));
+
+    daemon.stop().await.unwrap();
+}
+
+// ===========================================================================
+// Unlock: scoped grants
+// ===========================================================================
+
+#[tokio::test]
+async fn unlock_scoped() {
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "locked-w".to_string(),
+        locked_wrapper("/usr/bin/true", "locked/tok", "TOK"),
+    );
+    let mut secrets = HashMap::new();
+    secrets.insert("locked/tok".to_string(), secret(false));
+
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    daemon.store_secret("locked/tok", "val").await.unwrap();
+
+    // Unlock for scope "session-1" only.
+    daemon
+        .control_request(&ControlRequest::Unlock {
+            target: "locked-w".to_string(),
+            scope: Some("session-1".to_string()),
+            seconds: None,
+        })
+        .await
+        .unwrap();
+
+    // Read with matching scope succeeds.
+    let resp = daemon
+        .read_request_with_scope("locked-w", "session-1")
+        .await
+        .unwrap();
+    assert!(matches!(resp, ReadResponse::Ok { .. }));
+
+    // Read with different scope fails.
+    let resp = daemon
+        .read_request_with_scope("locked-w", "session-2")
+        .await
+        .unwrap();
+    assert!(matches!(
+        resp,
+        ReadResponse::Error {
+            code: ErrorCode::Locked,
+            ..
+        }
+    ));
+
+    daemon.stop().await.unwrap();
+}
+
+// ===========================================================================
+// Unlock: wrapper without require_unlock works without unlock
+// ===========================================================================
+
+#[tokio::test]
+async fn no_require_unlock_works_without_unlock() {
+    let (wrappers, secrets) = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+
+    daemon.store_secret("github/token", "tok").await.unwrap();
+
+    // gh-authorized has require_unlock=false, so it works without unlock.
+    let resp = daemon.read_request("gh-authorized").await.unwrap();
+    assert!(matches!(resp, ReadResponse::Ok { .. }));
+
+    daemon.stop().await.unwrap();
+}
+
+// ===========================================================================
 // Config parsing: round-trip the example config
 // ===========================================================================
 

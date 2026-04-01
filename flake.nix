@@ -128,11 +128,19 @@
                       injection = { mode = "env"; variable = "OTHER_SECRET"; };
                       envVariable = "OTHER_SECRET";
                     };
+                    test-locked = {
+                      target = "${pkgs.coreutils}/bin/env";
+                      secret = "test/locked-tok";
+                      injection = { mode = "env"; variable = "LOCKED_TOKEN"; };
+                      envVariable = "LOCKED_TOKEN";
+                      requireUnlock = true;
+                    };
                   };
 
                   secrets = {
                     "test/token" = { mutable = false; };
                     "test/other" = { mutable = true; };
+                    "test/locked-tok" = { mutable = false; };
                   };
                 };
               };
@@ -221,11 +229,36 @@
                 status = machine.succeed("${uwctl} status test/other")
                 assert "true" in status
 
+                # === Unlock: locked wrapper denied before unlock ===
+                machine.succeed("echo -n 'locked_secret' | ${uwctl} store test/locked-tok")
+                machine.fail(
+                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
+                    "${wrapDir}/bin/test-locked"
+                )
+
+                # === Unlock: unlock then read succeeds ===
+                machine.succeed("${uwctl} unlock test-locked --seconds 60")
+                output = machine.succeed(
+                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
+                    "${wrapDir}/bin/test-locked"
+                )
+                assert "LOCKED_TOKEN=locked_secret" in output, (
+                    f"expected LOCKED_TOKEN after unlock: {output}"
+                )
+
+                # === Unlock: lock again, denied ===
+                machine.succeed("${uwctl} lock test-locked")
+                machine.fail(
+                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
+                    "${wrapDir}/bin/test-locked"
+                )
+
                 # === No secret material in daemon logs ===
                 logs = machine.succeed("journalctl -u underwrapd.service --no-pager")
                 assert "ghp_testvmtoken" not in logs, "secret leaked to logs!"
                 assert "other_secret_val" not in logs, "secret leaked to logs!"
                 assert "refresh_token" not in logs, "secret leaked to logs!"
+                assert "locked_secret" not in logs, "secret leaked to logs!"
 
                 machine.log("All underwrap VM tests passed!")
               '';

@@ -28,6 +28,25 @@ enum Commands {
         /// Secret id, e.g. "github/token".
         secret_id: String,
     },
+    /// Unlock a wrapper for a duration.
+    Unlock {
+        /// Wrapper name.
+        target: String,
+        /// Duration in seconds. Omit for indefinite.
+        #[arg(long)]
+        seconds: Option<u64>,
+        /// Scope identifier (e.g. shell session).
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// Lock a wrapper (or everything).
+    Lock {
+        /// Wrapper name. Omit to lock everything.
+        target: Option<String>,
+        /// Scope identifier. Omit to lock all scopes.
+        #[arg(long)]
+        scope: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -45,6 +64,19 @@ async fn main() -> Result<()> {
                 material,
             }
         }
+        Commands::Unlock {
+            target,
+            seconds,
+            scope,
+        } => ControlRequest::Unlock {
+            target: target.clone(),
+            scope: scope.clone(),
+            seconds: *seconds,
+        },
+        Commands::Lock { target, scope } => ControlRequest::Lock {
+            target: target.clone(),
+            scope: scope.clone(),
+        },
     };
 
     let response: ControlResponse = send_control(&cli.socket, &request).await?;

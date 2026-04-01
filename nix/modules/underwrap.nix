@@ -17,6 +17,7 @@ let
       target = w.target;
       secret = w.secret;
       injection = w.injection;
+      require_unlock = w.requireUnlock;
     } // lib.optionalAttrs (w.derivation != null) {
       derivation = w.derivation;
     }) cfg.wrappers;
@@ -74,6 +75,11 @@ let
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Derivation mode (e.g. 'none').";
+      };
+      requireUnlock = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether this wrapper requires an explicit unlock before reads.";
       };
     };
   };
