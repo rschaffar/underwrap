@@ -30,10 +30,10 @@ impl TokenCache {
 
     fn get(&self, key: &str) -> Option<String> {
         let cache = self.cache.lock().unwrap();
-        if let Some(entry) = cache.get(key) {
-            if Instant::now() < entry.expires_at {
-                return Some(entry.access_token.clone());
-            }
+        if let Some(entry) = cache.get(key)
+            && Instant::now() < entry.expires_at
+        {
+            return Some(entry.access_token.clone());
         }
         None
     }

@@ -79,7 +79,7 @@ impl Store {
         };
 
         String::from_utf8(plaintext)
-            .map(|s| Some(s))
+            .map(Some)
             .with_context(|| format!("secret {secret_id} is not valid UTF-8"))
     }
 
@@ -251,7 +251,7 @@ mod tests {
 
         // Generate a random key.
         let key: [u8; 32] = rand::random();
-        std::fs::write(&key_path, &key).unwrap();
+        std::fs::write(&key_path, key).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -403,7 +403,7 @@ mod tests {
         // Open a new store with a different key.
         let key_path = dir.path().join("other.key");
         let key: [u8; 32] = rand::random();
-        std::fs::write(&key_path, &key).unwrap();
+        std::fs::write(&key_path, key).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
