@@ -100,13 +100,30 @@ pub enum StorageConfig {
         #[serde(default = "default_storage_dir")]
         dir: PathBuf,
     },
-    // Future: encrypted, hardware-assisted, etc.
+    /// Encrypted directory: secrets encrypted at rest with a master key.
+    /// The master key file must be readable only by the daemon user.
+    #[serde(rename = "encrypted")]
+    Encrypted {
+        #[serde(default = "default_storage_dir")]
+        dir: PathBuf,
+        /// Path to the master key file (32 bytes, raw or hex-encoded).
+        key_file: PathBuf,
+    },
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self::Plain {
             dir: default_storage_dir(),
+        }
+    }
+}
+
+impl StorageConfig {
+    /// Get the storage directory regardless of backend type.
+    pub fn dir(&self) -> &PathBuf {
+        match self {
+            Self::Plain { dir } | Self::Encrypted { dir, .. } => dir,
         }
     }
 }
@@ -310,6 +327,7 @@ storage:
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         match &config.storage {
             StorageConfig::Plain { dir } => assert_eq!(dir, &PathBuf::from("/tmp/test-secrets")),
+            _ => panic!("expected Plain backend"),
         }
     }
 
