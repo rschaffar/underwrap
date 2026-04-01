@@ -16,6 +16,7 @@ use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 
 use crate::audit;
+use crate::derive::{self, TokenCache};
 use crate::storage::Store;
 use crate::unlock::UnlockState;
 
@@ -27,6 +28,7 @@ struct State {
     config: DaemonConfig,
     store: Store,
     unlock: UnlockState,
+    token_cache: TokenCache,
 }
 
 /// Run the daemon until `shutdown` is notified (or forever if `None`).
@@ -39,6 +41,7 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         config: config.clone(),
         store,
         unlock: UnlockState::new(),
+        token_cache: TokenCache::new(),
     });
 
     let read_listener = bind_socket(&config.sockets.read, config.sockets.read_mode, "read")?;
@@ -240,14 +243,14 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
     );
 
     let peer_uid = peer.as_ref().map(|p| p.uid);
-    let response = process_read(&request, &state, peer_uid);
+    let response = process_read(&request, &state, peer_uid).await;
 
     write_frame_async(&mut stream, &response).await?;
     stream.shutdown().await?;
     Ok(())
 }
 
-fn process_read(request: &ReadRequest, state: &State, peer_uid: Option<u32>) -> ReadResponse {
+async fn process_read(request: &ReadRequest, state: &State, peer_uid: Option<u32>) -> ReadResponse {
     let wrapper_def = match state.config.wrappers.get(&request.wrapper) {
         Some(w) => w,
         None => {
@@ -281,13 +284,32 @@ fn process_read(request: &ReadRequest, state: &State, peer_uid: Option<u32>) -> 
 
     match state.store.read(secret_id) {
         Ok(Some(material)) => {
-            audit::read_granted(
-                &request.wrapper,
+            // Apply derivation (e.g. OAuth refresh → access token).
+            match derive::derive(
+                &wrapper_def.derivation,
                 secret_id,
-                peer_uid,
-                request.scope.as_deref(),
-            );
-            ReadResponse::Ok { material }
+                &material,
+                &state.token_cache,
+            )
+            .await
+            {
+                Ok(derived) => {
+                    audit::read_granted(
+                        &request.wrapper,
+                        secret_id,
+                        peer_uid,
+                        request.scope.as_deref(),
+                    );
+                    ReadResponse::Ok { material: derived }
+                }
+                Err(e) => {
+                    error!(wrapper = %request.wrapper, secret = %secret_id, err = %e, "derivation failed");
+                    ReadResponse::Error {
+                        code: ErrorCode::DerivationFailed,
+                        message: format!("derivation failed: {e}"),
+                    }
+                }
+            }
         }
         Ok(None) => {
             let msg = format!("secret '{secret_id}' not found in store");

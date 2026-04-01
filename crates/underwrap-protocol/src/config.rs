@@ -178,7 +178,11 @@ pub enum DerivationMode {
     #[default]
     #[serde(rename = "none")]
     None,
-    // Future: OAuthRefreshToAccessToken, etc.
+    /// Exchange an OAuth refresh token (stored as Google authorized-user JSON)
+    /// for a short-lived access token. The daemon performs the token exchange
+    /// and returns only the access token.
+    #[serde(rename = "oauth_refresh_to_access_token")]
+    OAuthRefreshToAccessToken,
 }
 
 /// A secret entry definition.
