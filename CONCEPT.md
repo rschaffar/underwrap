@@ -179,9 +179,9 @@ Examples:
 These may be provisioned by:
 
 - import from file
-- import from stdin
-- integration with sops/age
-- integration with cloud secret systems later
+- import from stdin via `underwrapctl store`
+
+Integration with sops/age or cloud secret systems is a future possibility via the exec-based provider model, not an immediate goal.
 
 #### Mutable secrets
 Examples:
@@ -209,25 +209,25 @@ Encrypted-at-rest is useful, but it is not magic. If the machine is already unlo
 - optional second unlock boundary after login
 - better separation from generic file access
 
-### Proposed storage model
+### Implemented storage model
 
-Support pluggable storage backends:
+The current implementation provides two built-in backends behind a `StorageBackend` trait:
 
 1. **plain local backend**
    - plaintext files owned by daemon user
-   - simplest for development
-   - not ideal for production secrets
+   - simplest, good default for most deployments
 
 2. **encrypted local backend**
-   - secrets encrypted under a local master key
+   - secrets encrypted with ChaCha20-Poly1305 under a local master key file
    - daemon decrypts on demand
-   - master key can be file-based or hardware-unsealed
 
-3. **hardware-assisted backend**
-   - master key unsealed via TPM, YubiKey, age plugin, or OS keyring integration
-   - optional second unlock for the daemon store
+The backend is abstracted behind a trait so the wrapper and daemon protocol do not care which backend is used.
 
-The backend should be abstracted so the wrapper and daemon protocol do not care which backend is used.
+### Future storage directions (not yet implemented)
+
+Later, additional backends could be added via an exec-based provider model — the daemon spawns a configured command and reads secret material from its stdout. This would enable integration with external systems (Secret Service / libsecret, Vault, 1Password, cloud secret managers) without linking their libraries into the daemon. Built-in backends would stay minimal; external providers handle everything else.
+
+Hardware-assisted unseal (TPM, YubiKey) for the encrypted backend's master key is another future possibility.
 
 ## Unlock model
 
@@ -702,17 +702,24 @@ This keeps documentation, behavior, and debugging aligned across:
 - optional token caching
 - update-on-refresh if upstream rotates material
 
-### Phase 5: encrypted backend
+### Phase 5: encrypted backend ✅
 
-- local encrypted store
+- local encrypted store (ChaCha20-Poly1305)
 - file master key backend
-- optional TPM/YubiKey backed unseal later
+- TPM/YubiKey backed unseal deferred to future work
 
-### Phase 6: polished integrations
+### Phase 6: polished integrations (in progress)
 
 - examples for GitHub, Slack, Google Workspace
-- generic Linux install docs
-- package manager integration
+- NixOS module with VM tests
+- generic Linux install docs — TODO
+- package manager integration — TODO
+
+### Future: pluggable storage providers (not yet planned)
+
+- exec-based provider interface for external secret sources
+- libsecret, Vault, 1Password, cloud secret managers — all via exec providers
+- built-in backends stay minimal (plain + encrypted only)
 
 ## Open questions
 

@@ -73,7 +73,7 @@ YAML-based. See [examples/config.yaml](examples/config.yaml).
 - **Unlock gates**: `require_unlock: true` blocks reads until `underwrapctl unlock`
 - **Privilege drop**: `setgid`/`setgroups` return values checked, abort on failure
 - **Atomic writes**: temp file + rename, 0600 perms
-- **Encrypted at rest**: optional ChaCha20-Poly1305 backend
+- **Storage**: plain files or encrypted (ChaCha20-Poly1305); `StorageBackend` trait for extensibility
 - **Audit trail**: structured events for all operations, never includes secret material
 - **No log leaks**: secret material never appears in daemon logs
 
@@ -115,6 +115,17 @@ YAML-based. See [examples/config.yaml](examples/config.yaml).
 - **Derivation**: OAuth JSON parsing, token cache, passthrough
 - **Integration**: full daemon lifecycle, binary exec, concurrent access
 - **NixOS VM**: systemd service, socket perms, unlock flow, immutability, audit trail, no-leak check
+
+## Storage
+
+Current scope: **plain file-based local storage only** (plus an encrypted variant).
+Both are built-in backends behind a `StorageBackend` trait.
+
+External providers (Secret Service, Vault, 1Password, cloud secret managers) are
+deferred. When needed, they'll likely use an exec-based provider model — the daemon
+spawns a command and reads material from stdout. No provider SPI work is planned now.
+
+See [TODO.md](TODO.md) for details.
 
 ## License
 
