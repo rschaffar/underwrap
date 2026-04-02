@@ -68,30 +68,58 @@ macro_rules! require_bin {
     };
 }
 
-/// Find the `env` binary.
-fn which_env() -> String {
+/// Find the `env` binary (absolute path). Returns None if not found.
+fn which_env() -> Option<String> {
     find_bin("env")
 }
 
-/// Find the `echo` binary.
-fn which_echo() -> String {
+/// Find the `echo` binary (absolute path). Returns None if not found.
+fn which_echo() -> Option<String> {
     find_bin("echo")
 }
 
 /// Search common paths for a binary (NixOS-compatible).
-fn find_bin(name: &str) -> String {
+/// Always returns an absolute path or None.
+fn find_bin(name: &str) -> Option<String> {
     if let Ok(output) = std::process::Command::new("which").arg(name).output()
         && output.status.success()
     {
-        return String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if p.starts_with('/') {
+            return Some(p);
+        }
     }
     for prefix in &["/usr/bin", "/bin", "/run/current-system/sw/bin"] {
         let p = format!("{prefix}/{name}");
         if std::path::Path::new(&p).exists() {
-            return p;
+            return Some(p);
         }
     }
-    name.to_string()
+    None
+}
+
+macro_rules! require_env {
+    () => {
+        match which_env() {
+            Some(p) => p,
+            None => {
+                eprintln!("SKIP: env binary not found, skipping test");
+                return;
+            }
+        }
+    };
+}
+
+macro_rules! require_echo {
+    () => {
+        match which_echo() {
+            Some(p) => p,
+            None => {
+                eprintln!("SKIP: echo binary not found, skipping test");
+                return;
+            }
+        }
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +520,7 @@ async fn concurrent_reads() {
 
 #[tokio::test]
 async fn hierarchical_secret_ids() {
-    let echo = which_echo();
+    let echo = require_echo!();
     let mut wrappers = HashMap::new();
     wrappers.insert(
         "deep-wrapper".to_string(),
@@ -570,7 +598,7 @@ async fn exec_wrapper_end_to_end() {
 
     // We configure the daemon with "test-wrapper" as a wrapper name, using
     // `env` as the target binary — it prints all env vars to stdout.
-    let env_bin = which_env();
+    let env_bin = require_env!();
 
     let mut wrappers = HashMap::new();
     wrappers.insert(
@@ -723,7 +751,7 @@ async fn exec_wrapper_missing_secret_exits_nonzero() {
     let exec_bin = require_bin!("underwrap-exec");
 
     // Daemon has the wrapper but no secret stored.
-    let env_bin = which_env();
+    let env_bin = require_env!();
     let mut wrappers = HashMap::new();
     wrappers.insert(
         "test-nosecret".to_string(),
@@ -769,7 +797,7 @@ async fn exec_wrapper_missing_secret_exits_nonzero() {
 async fn exec_wrapper_passes_args() {
     let exec_bin = require_bin!("underwrap-exec");
 
-    let echo = which_echo();
+    let echo = require_echo!();
     let mut wrappers = HashMap::new();
     wrappers.insert(
         "echo-wrapper".to_string(),
@@ -812,7 +840,7 @@ async fn exec_wrapper_passes_args() {
 async fn exec_wrapper_secret_not_in_target_output_unless_echoed() {
     let exec_bin = require_bin!("underwrap-exec");
 
-    let echo = which_echo();
+    let echo = require_echo!();
     let mut wrappers = HashMap::new();
     wrappers.insert(
         "echo-wrapper".to_string(),
@@ -1134,12 +1162,8 @@ async fn parse_example_config() {
 
     let gh = &config.wrappers["gh-authorized"];
     assert_eq!(gh.secret, "github/token");
-    match &gh.injection {
-        underwrap_protocol::config::InjectionMode::Env { variable } => {
-            assert_eq!(variable, "GH_TOKEN");
-        }
-        other => panic!("expected env injection, got {other:?}"),
-    }
+    let underwrap_protocol::config::InjectionMode::Env { variable } = &gh.injection;
+    assert_eq!(variable, "GH_TOKEN");
 }
 
 // ===========================================================================
@@ -1168,7 +1192,8 @@ async fn underwrapd_binary_start_and_status() {
         },
         wrappers: {
             let mut m = HashMap::new();
-            m.insert("w".to_string(), wrapper(&which_echo(), "s/t", "T"));
+            let echo = which_echo().unwrap_or_else(|| "/bin/true".to_string());
+            m.insert("w".to_string(), wrapper(&echo, "s/t", "T"));
             m
         },
         secrets: {

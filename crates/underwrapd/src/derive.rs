@@ -38,6 +38,12 @@ impl TokenCache {
         None
     }
 
+    /// Remove a cached token (e.g. after secret rotation).
+    pub fn invalidate(&self, key: &str) {
+        let mut cache = self.cache.lock().unwrap();
+        cache.remove(key);
+    }
+
     fn put(&self, key: &str, token: &str, expires_in_secs: u64) {
         let mut cache = self.cache.lock().unwrap();
         cache.insert(
@@ -97,20 +103,24 @@ pub async fn derive(
     }
 }
 
+/// Hardcoded Google OAuth token endpoint.
+/// We intentionally do NOT trust token_uri from stored credential JSON
+/// to prevent SSRF / credential exfiltration if secret material is tampered with.
+const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
+
 /// Google authorized-user credentials JSON format.
 #[derive(Debug, Deserialize, Serialize)]
 struct AuthorizedUserCredentials {
     client_id: String,
     client_secret: String,
     refresh_token: String,
-    #[serde(default = "default_token_uri")]
-    token_uri: String,
+    /// Ignored — we always use GOOGLE_TOKEN_ENDPOINT.
+    #[serde(default)]
+    #[allow(dead_code)]
+    token_uri: Option<String>,
     #[serde(rename = "type", default)]
+    #[allow(dead_code)]
     credential_type: String,
-}
-
-fn default_token_uri() -> String {
-    "https://oauth2.googleapis.com/token".to_string()
 }
 
 /// Token exchange response.
@@ -129,7 +139,10 @@ fn default_expires_in() -> u64 {
 
 /// Perform the OAuth2 token exchange via HTTP POST.
 async fn exchange_refresh_token(creds: &AuthorizedUserCredentials) -> Result<TokenResponse> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("building HTTP client")?;
 
     let params = [
         ("grant_type", "refresh_token"),
@@ -139,7 +152,7 @@ async fn exchange_refresh_token(creds: &AuthorizedUserCredentials) -> Result<Tok
     ];
 
     let response = client
-        .post(&creds.token_uri)
+        .post(GOOGLE_TOKEN_ENDPOINT)
         .form(&params)
         .send()
         .await
@@ -177,7 +190,9 @@ mod tests {
         }"#;
         let creds: AuthorizedUserCredentials = serde_json::from_str(json).unwrap();
         assert_eq!(creds.client_id, "123.apps.googleusercontent.com");
-        assert_eq!(creds.token_uri, "https://oauth2.googleapis.com/token");
+        assert_eq!(creds.refresh_token, "1//refresh");
+        // token_uri is not trusted — we always use the hardcoded endpoint.
+        assert!(creds.token_uri.is_none());
     }
 
     #[test]

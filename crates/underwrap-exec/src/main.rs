@@ -3,8 +3,6 @@
 //! Designed to be installed under wrapper-specific names (symlinks or copies).
 //! Determines which wrapper it is from argv[0], contacts the daemon, receives
 //! secret material, injects it, drops privilege, and execs the target.
-//!
-//! Phase 1: synchronous, env injection only.
 
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
@@ -12,6 +10,10 @@ use std::os::unix::process::CommandExt;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{ReadRequest, ReadResponse};
+
+/// Fixed config directory used when running with elevated privileges.
+/// UNDERWRAP_CONFIG_DIR is ignored in that case to prevent secret exfil.
+const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
 
 fn main() -> Result<()> {
     let wrapper_name = detect_wrapper_name()?;
@@ -53,10 +55,27 @@ struct WrapperExecConfig {
     read_socket: String,
 }
 
+/// Determine the config directory.
+///
+/// **Security**: when running with elevated privileges (setuid/setgid),
+/// the UNDERWRAP_CONFIG_DIR env var is ignored and we use a fixed
+/// trusted path. This prevents a caller from redirecting the wrapper
+/// to an attacker-controlled config that exfiltrates secrets.
+fn config_dir() -> String {
+    if is_elevated() {
+        return TRUSTED_CONFIG_DIR.to_string();
+    }
+    std::env::var("UNDERWRAP_CONFIG_DIR").unwrap_or_else(|_| TRUSTED_CONFIG_DIR.to_string())
+}
+
+/// Check if we're running with elevated privileges (setuid or setgid).
+fn is_elevated() -> bool {
+    unsafe { libc::geteuid() != libc::getuid() || libc::getegid() != libc::getgid() }
+}
+
 fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
-    let config_dir = std::env::var("UNDERWRAP_CONFIG_DIR")
-        .unwrap_or_else(|_| "/etc/underwrap/wrappers".to_string());
-    let path = format!("{config_dir}/{wrapper_name}.yaml");
+    let dir = config_dir();
+    let path = format!("{dir}/{wrapper_name}.yaml");
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading wrapper config {path}"))?;
 
@@ -76,6 +95,15 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
     }
 
     let wf: WrapperFile = serde_yaml::from_str(&text)?;
+
+    // Validate target is an absolute path.
+    if !wf.target.starts_with('/') {
+        bail!(
+            "wrapper target must be an absolute path, got: {:?}",
+            wf.target
+        );
+    }
+
     Ok(WrapperExecConfig {
         target: wf.target,
         env_variable: wf.env_variable,
@@ -112,8 +140,6 @@ fn drop_privilege() -> Result<()> {
 
     let ret = unsafe { libc::setgroups(0, std::ptr::null()) };
     if ret != 0 {
-        // setgroups may fail for unprivileged users (EPERM) — that's OK,
-        // it means we didn't have supplementary groups to drop.
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(libc::EPERM) {
             bail!("setgroups(0) failed: {err}");

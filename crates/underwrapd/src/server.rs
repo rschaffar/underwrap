@@ -207,6 +207,34 @@ fn check_peer_auth(
     ))
 }
 
+/// Verify that the peer process is running the expected executable.
+/// Reads /proc/<pid>/exe to get the real binary path.
+fn check_peer_exe(
+    peer: &Option<PeerCred>,
+    allowed_exe: &std::path::Path,
+) -> std::result::Result<(), String> {
+    let cred = match peer {
+        Some(c) => c,
+        None => return Err("could not determine peer credentials for exe check".to_string()),
+    };
+
+    let exe_link = format!("/proc/{}/exe", cred.pid);
+    match std::fs::read_link(&exe_link) {
+        Ok(exe_path) => {
+            if exe_path == allowed_exe {
+                Ok(())
+            } else {
+                Err(format!(
+                    "peer exe {} does not match allowed {}",
+                    exe_path.display(),
+                    allowed_exe.display()
+                ))
+            }
+        }
+        Err(e) => Err(format!("cannot read {exe_link}: {e}")),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Read socket handler
 // ---------------------------------------------------------------------------
@@ -220,6 +248,25 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
         &state.config.sockets.read_allow_uids,
         &state.config.sockets.read_allow_gids,
     ) {
+        audit::auth_denied(
+            "read",
+            &reason,
+            peer.as_ref().map(|p| p.uid),
+            peer.as_ref().map(|p| p.gid),
+        );
+        let response = ReadResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: reason,
+        };
+        write_frame_async(&mut stream, &response).await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+
+    // Verify peer executable if configured.
+    if let Some(ref allowed_exe) = state.config.sockets.read_allow_exe
+        && let Err(reason) = check_peer_exe(&peer, allowed_exe)
+    {
         audit::auth_denied(
             "read",
             &reason,
@@ -264,9 +311,10 @@ async fn process_read(request: &ReadRequest, state: &State, peer_uid: Option<u32
 
     // Check unlock state if wrapper requires it.
     if wrapper_def.require_unlock
-        && let Err(reason) = state
-            .unlock
-            .check(&request.wrapper, request.scope.as_deref())
+        && let Err(reason) =
+            state
+                .unlock
+                .check(&request.wrapper, request.scope.as_deref(), peer_uid)
     {
         audit::read_denied(
             &request.wrapper,
@@ -409,7 +457,9 @@ fn process_control(
                     message: format!("unknown wrapper '{target}'"),
                 };
             }
-            state.unlock.unlock(target, scope.as_deref(), *seconds);
+            state
+                .unlock
+                .unlock(target, scope.as_deref(), *seconds, peer_uid);
             audit::unlocked(target, scope.as_deref(), *seconds, peer_uid);
             ControlResponse::Ok { info: None }
         }
@@ -447,6 +497,8 @@ fn process_control(
 
             match state.store.write(secret_id, material) {
                 Ok(()) => {
+                    // Invalidate any cached derived token for this secret.
+                    state.token_cache.invalidate(secret_id);
                     audit::secret_stored(secret_id, peer_uid);
                     ControlResponse::Ok { info: None }
                 }
