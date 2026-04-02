@@ -34,12 +34,17 @@ pub struct SocketConfig {
     #[serde(default = "default_control_socket")]
     pub control: PathBuf,
 
-    /// Unix permission mode for the read socket (octal, e.g. 0o660).
-    #[serde(default = "default_read_mode")]
+    /// Unix permission mode for the read socket.
+    /// Accepts integer (432) or octal string ("0660").
+    #[serde(default = "default_read_mode", deserialize_with = "deserialize_mode")]
     pub read_mode: u32,
 
-    /// Unix permission mode for the control socket (octal, e.g. 0o600).
-    #[serde(default = "default_control_mode")]
+    /// Unix permission mode for the control socket.
+    /// Accepts integer (384) or octal string ("0600").
+    #[serde(
+        default = "default_control_mode",
+        deserialize_with = "deserialize_mode"
+    )]
     pub control_mode: u32,
 
     /// Allowed UIDs for the read socket. Empty = allow all.
@@ -87,6 +92,43 @@ fn default_read_mode() -> u32 {
 
 fn default_control_mode() -> u32 {
     0o600
+}
+
+/// Deserialize a Unix permission mode from either an integer or an octal string.
+/// Accepts: 432 (decimal), "0660" (octal string), "660" (octal string without prefix).
+fn deserialize_mode<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct ModeVisitor;
+
+    impl<'de> de::Visitor<'de> for ModeVisitor {
+        type Value = u32;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an integer or octal string like \"0660\"")
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<u32, E> {
+            u32::try_from(v).map_err(|_| E::custom(format!("mode {v} out of range")))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<u32, E> {
+            u32::try_from(v).map_err(|_| E::custom(format!("mode {v} out of range")))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<u32, E> {
+            let s = v
+                .strip_prefix("0o")
+                .or_else(|| v.strip_prefix("0"))
+                .unwrap_or(v);
+            u32::from_str_radix(s, 8).map_err(|_| E::custom(format!("invalid octal mode: {v:?}")))
+        }
+    }
+
+    deserializer.deserialize_any(ModeVisitor)
 }
 
 fn default_read_socket() -> PathBuf {

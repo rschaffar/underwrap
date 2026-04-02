@@ -4,8 +4,8 @@
 sockets:
   read: /run/underwrap/read.sock
   control: /run/underwrap/control.sock
-  read_mode: 432       # 0660 octal = 432 decimal (group-readable)
-  control_mode: 384    # 0600 octal = 384 decimal (owner-only)
+  read_mode: "0660"    # group-readable
+  control_mode: "0600" # owner-only
   # Uncomment to restrict socket access by UID/GID:
   # read_allow_gids: [1000]
   # control_allow_uids: [0]

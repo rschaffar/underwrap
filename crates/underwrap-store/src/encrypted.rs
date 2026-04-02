@@ -2,11 +2,14 @@
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::StorageBackend;
 use crate::path::{atomic_write, prepare_dir, validated_path};
 
-type MasterKey = [u8; 32];
+/// Master key — zeroed from memory on drop.
+#[derive(Zeroize, ZeroizeOnDrop)]
+struct MasterKey([u8; 32]);
 
 /// Files encrypted with ChaCha20-Poly1305 using a master key.
 ///
@@ -51,7 +54,7 @@ impl StorageBackend for EncryptedBackend {
             Err(e) => return Err(e).with_context(|| format!("reading secret {secret_id}")),
         };
         let plaintext =
-            decrypt(&self.key, &raw).with_context(|| format!("decrypting secret {secret_id}"))?;
+            decrypt(&self.key.0, &raw).with_context(|| format!("decrypting secret {secret_id}"))?;
         String::from_utf8(plaintext)
             .map(Some)
             .with_context(|| format!("secret {secret_id} is not valid UTF-8"))
@@ -59,7 +62,7 @@ impl StorageBackend for EncryptedBackend {
 
     fn write(&self, secret_id: &str, material: &str) -> Result<()> {
         let path = validated_path(&self.dir, secret_id)?;
-        let data = encrypt(&self.key, material.as_bytes())?;
+        let data = encrypt(&self.key.0, material.as_bytes())?;
         atomic_write(&path, &self.dir, secret_id, &data)
     }
 }
@@ -69,13 +72,14 @@ impl StorageBackend for EncryptedBackend {
 // ---------------------------------------------------------------------------
 
 fn load_master_key(path: &Path) -> Result<MasterKey> {
-    let raw = std::fs::read(path)
+    let mut raw = std::fs::read(path)
         .with_context(|| format!("reading master key from {}", path.display()))?;
 
     if raw.len() == 32 {
         let mut key = [0u8; 32];
         key.copy_from_slice(&raw);
-        return Ok(key);
+        raw.zeroize();
+        return Ok(MasterKey(key));
     }
 
     let hex_str = std::str::from_utf8(&raw)
@@ -88,7 +92,8 @@ fn load_master_key(path: &Path) -> Result<MasterKey> {
             key[i] = u8::from_str_radix(s, 16)
                 .with_context(|| format!("invalid hex in master key at position {}", i * 2))?;
         }
-        return Ok(key);
+        raw.zeroize();
+        return Ok(MasterKey(key));
     }
 
     bail!(
@@ -101,7 +106,7 @@ fn load_master_key(path: &Path) -> Result<MasterKey> {
 // Encryption
 // ---------------------------------------------------------------------------
 
-fn encrypt(key: &MasterKey, plaintext: &[u8]) -> Result<Vec<u8>> {
+fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
     use chacha20poly1305::aead::{Aead, KeyInit, OsRng};
     use chacha20poly1305::{AeadCore, ChaCha20Poly1305};
 
@@ -117,7 +122,7 @@ fn encrypt(key: &MasterKey, plaintext: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn decrypt(key: &MasterKey, data: &[u8]) -> Result<Vec<u8>> {
+fn decrypt(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
     use chacha20poly1305::ChaCha20Poly1305;
     use chacha20poly1305::aead::{Aead, KeyInit};
 

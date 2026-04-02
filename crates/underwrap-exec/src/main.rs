@@ -131,25 +131,40 @@ fn request_secret(wrapper_name: &str, socket_path: &str) -> Result<String> {
     }
 }
 
-/// Drop any setgid or supplementary group privilege before exec.
+/// Drop all elevated privileges (UID, GID, supplementary groups) before exec.
 ///
 /// Aborts the process if privilege cannot be dropped — executing the target
 /// with elevated privileges is worse than failing.
 fn drop_privilege() -> Result<()> {
+    let ruid = unsafe { libc::getuid() };
     let rgid = unsafe { libc::getgid() };
 
+    // Drop supplementary groups first (requires privilege).
     let ret = unsafe { libc::setgroups(0, std::ptr::null()) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
+        // EPERM is expected for unprivileged users — no groups to drop.
         if err.raw_os_error() != Some(libc::EPERM) {
             bail!("setgroups(0) failed: {err}");
         }
     }
 
-    let ret = unsafe { libc::setgid(rgid) };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        bail!("setgid({rgid}) failed: {err}");
+    // Drop GID.
+    if unsafe { libc::getegid() } != rgid {
+        let ret = unsafe { libc::setgid(rgid) };
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            bail!("setgid({rgid}) failed: {err}");
+        }
+    }
+
+    // Drop UID (must be last — after this we lose privilege to change anything).
+    if unsafe { libc::geteuid() } != ruid {
+        let ret = unsafe { libc::setuid(ruid) };
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            bail!("setuid({ruid}) failed: {err}");
+        }
     }
 
     Ok(())

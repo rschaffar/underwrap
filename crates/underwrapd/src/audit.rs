@@ -6,8 +6,10 @@
 //!
 //! This module provides helper functions that emit audit events with
 //! consistent field names. Secret material is NEVER included.
+//!
+//! Grants are logged at `info`; denials at `warn`.
 
-use tracing::info;
+use tracing::{info, warn};
 
 /// Audit event for a secret read.
 pub fn read_granted(wrapper: &str, secret: &str, peer_uid: Option<u32>, scope: Option<&str>) {
@@ -22,7 +24,7 @@ pub fn read_granted(wrapper: &str, secret: &str, peer_uid: Option<u32>, scope: O
 
 /// Audit event for a denied read.
 pub fn read_denied(wrapper: &str, reason: &str, peer_uid: Option<u32>, scope: Option<&str>) {
-    info!(
+    warn!(
         audit = "read_denied",
         wrapper = wrapper,
         reason = reason,
@@ -42,7 +44,7 @@ pub fn secret_stored(secret: &str, peer_uid: Option<u32>) {
 
 /// Audit event for a denied store.
 pub fn store_denied(secret: &str, reason: &str, peer_uid: Option<u32>) {
-    info!(
+    warn!(
         audit = "store_denied",
         secret = secret,
         reason = reason,
@@ -73,7 +75,7 @@ pub fn locked(target: Option<&str>, scope: Option<&str>, peer_uid: Option<u32>) 
 
 /// Audit event for auth denial on a socket.
 pub fn auth_denied(socket: &str, reason: &str, peer_uid: Option<u32>, peer_gid: Option<u32>) {
-    info!(
+    warn!(
         audit = "auth_denied",
         socket = socket,
         reason = reason,

@@ -28,6 +28,24 @@ pub fn validated_path(base: &Path, secret_id: &str) -> Result<PathBuf> {
 
     let candidate = base.join(secret_id);
 
+    // Always canonicalize the parent directory and verify containment.
+    // This closes a TOCTOU gap where a symlink could be planted in a
+    // parent component between validation and the actual write/rename.
+    if let Some(parent) = candidate.parent()
+        && parent.exists()
+    {
+        let canonical_parent = parent
+            .canonicalize()
+            .with_context(|| format!("canonicalizing parent for {secret_id:?}"))?;
+        if !canonical_parent.starts_with(base) {
+            bail!(
+                "secret parent escapes storage directory: {secret_id:?} -> {}",
+                canonical_parent.display()
+            );
+        }
+    }
+
+    // For existing files, also verify the file itself.
     if candidate.exists() {
         let canonical = candidate
             .canonicalize()

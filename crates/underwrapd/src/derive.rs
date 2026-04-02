@@ -29,10 +29,10 @@ impl TokenCache {
     }
 
     fn get(&self, key: &str) -> Option<String> {
-        let cache = self.cache.lock().unwrap();
-        if let Some(entry) = cache.get(key)
-            && Instant::now() < entry.expires_at
-        {
+        let mut cache = self.cache.lock().unwrap();
+        // Prune all expired entries while we hold the lock.
+        cache.retain(|_, v| Instant::now() < v.expires_at);
+        if let Some(entry) = cache.get(key) {
             return Some(entry.access_token.clone());
         }
         None
@@ -164,8 +164,10 @@ async fn exchange_refresh_token(creds: &AuthorizedUserCredentials) -> Result<Tok
             .text()
             .await
             .unwrap_or_else(|_| "<unreadable>".to_string());
+        // Truncate body to avoid leaking sensitive info from upstream.
+        let safe_body: String = body.chars().take(200).collect();
         warn!(status = %status, "token exchange failed");
-        bail!("token exchange failed (HTTP {status}): {body}");
+        bail!("token exchange failed (HTTP {status}): {safe_body}");
     }
 
     let token: TokenResponse = response
