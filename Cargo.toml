@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/underwrap-protocol",
+    "crates/underwrap-store",
     "crates/underwrapd",
     "crates/underwrapctl",
     "crates/underwrap-exec",
@@ -16,6 +17,7 @@ repository = "https://github.com/projektbuero/underwrap"
 
 [workspace.dependencies]
 underwrap-protocol = { path = "crates/underwrap-protocol" }
+underwrap-store = { path = "crates/underwrap-store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

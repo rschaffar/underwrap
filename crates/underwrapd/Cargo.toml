@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 underwrap-protocol = { workspace = true }
+underwrap-store = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -21,8 +22,6 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 libc = { workspace = true }
 reqwest = { workspace = true }
-chacha20poly1305 = { workspace = true }
-rand = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

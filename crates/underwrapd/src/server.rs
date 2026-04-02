@@ -17,8 +17,8 @@ use underwrap_protocol::message::*;
 
 use crate::audit;
 use crate::derive::{self, TokenCache};
-use crate::storage::Store;
 use crate::unlock::UnlockState;
+use underwrap_store::StorageBackend;
 
 /// Maximum concurrent connections per socket.
 const MAX_CONNECTIONS: usize = 128;
@@ -26,7 +26,7 @@ const MAX_CONNECTIONS: usize = 128;
 /// Shared daemon state passed to connection handlers.
 struct State {
     config: DaemonConfig,
-    store: Store,
+    store: Box<dyn StorageBackend>,
     unlock: UnlockState,
     token_cache: TokenCache,
 }
@@ -36,7 +36,7 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     // Validate config at startup: every wrapper.secret must reference a declared secret.
     validate_config(&config)?;
 
-    let store = Store::open(&config.storage)?;
+    let store = underwrap_store::open(&config.storage)?;
     let state = Arc::new(State {
         config: config.clone(),
         store,

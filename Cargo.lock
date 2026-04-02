@@ -1573,6 +1573,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "underwrap-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chacha20poly1305",
+ "rand 0.8.5",
+ "tempfile",
+ "underwrap-protocol",
+]
+
+[[package]]
 name = "underwrapctl"
 version = "0.1.0"
 dependencies = [
@@ -1588,10 +1599,8 @@ name = "underwrapd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chacha20poly1305",
  "clap",
  "libc",
- "rand 0.8.5",
  "reqwest",
  "serde",
  "serde_json",
@@ -1601,6 +1610,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "underwrap-protocol",
+ "underwrap-store",
 ]
 
 [[package]]
