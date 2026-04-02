@@ -3,6 +3,14 @@
 //! Designed to be installed under wrapper-specific names (symlinks or copies).
 //! Determines which wrapper it is from argv[0], contacts the daemon, receives
 //! secret material, injects it, drops privilege, and execs the target.
+//!
+//! Security hardening:
+//! - Ignores UNDERWRAP_CONFIG_DIR under elevated privilege
+//! - Validates target is an absolute path
+//! - Drops UID, GID, supplementary groups before exec
+//! - Sets PR_SET_DUMPABLE=0 via pre_exec hook so /proc/<pid>/environ
+//!   is owned by root:root, preventing same-UID processes from reading
+//!   the injected secret from the child's environment
 
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
@@ -24,13 +32,37 @@ fn main() -> Result<()> {
     // Request secret from daemon.
     let material = request_secret(&wrapper_name, &wrapper_config.read_socket)?;
 
+    // Drop supplementary groups / setgid / setuid before exec.
+    drop_privilege()?;
+
     // Build child command.
     let mut cmd = std::process::Command::new(&wrapper_config.target);
     cmd.args(&args);
     cmd.env(&wrapper_config.env_variable, &material);
 
-    // Drop supplementary groups / setgid before exec.
-    drop_privilege()?;
+    // Install pre_exec hook to set PR_SET_DUMPABLE=0.
+    //
+    // This runs in the child after fork() but before exec(). It causes
+    // the kernel to set /proc/<pid>/* ownership to root:root, which:
+    // - Blocks same-UID processes from reading /proc/<pid>/environ
+    // - Blocks ptrace attach from same-UID processes (even with ptrace_scope=0)
+    // - Prevents core dumps from leaking the secret
+    //
+    // The child process itself could undo this with prctl(PR_SET_DUMPABLE, 1),
+    // but if the child is compromised it already has the secret in memory.
+    //
+    // SAFETY: prctl(PR_SET_DUMPABLE, 0) is async-signal-safe and cannot fail
+    // with these arguments. The closure only calls this one syscall.
+    unsafe {
+        cmd.pre_exec(|| {
+            let ret = libc::prctl(libc::PR_SET_DUMPABLE, 0);
+            if ret != 0 {
+                // Should never happen, but don't proceed if it does.
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 
     let err = cmd.exec();
     bail!("exec failed: {err}");
