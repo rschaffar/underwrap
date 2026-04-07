@@ -124,12 +124,80 @@ fn run() -> Result<(), String> {
 
         let mut cmd = std::process::Command::new(target);
         cmd.args(target_args);
-        cmd.env(env_var, &material);
 
-        // Remove libsecret env vars — target should not see these.
-        cmd.env_remove("UNDERWRAP_LIBSECRET");
-        cmd.env_remove("UNDERWRAP_DBUS_DAEMON");
-        cmd.env_remove("UNDERWRAP_SECRETSD");
+        // === ENVIRONMENT SANITIZATION ===
+        // Start with a clean environment. Only pass through vars from a
+        // trusted whitelist + sidecar config. This prevents LD_PRELOAD,
+        // LD_LIBRARY_PATH, and other injection vectors.
+        cmd.env_clear();
+
+        // Default safe whitelist — vars the target typically needs.
+        const DEFAULT_PASSTHROUGH: &[&str] = &[
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "PATH",
+            "TERM",
+            "COLORTERM",
+            "LANG",
+            "LC_ALL",
+            "LC_COLLATE",
+            "LC_CTYPE",
+            "LC_MESSAGES",
+            "LC_MONETARY",
+            "LC_NUMERIC",
+            "LC_TIME",
+            "TZ",
+            "XDG_RUNTIME_DIR",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "TMPDIR",
+            "SSH_AUTH_SOCK",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+        ];
+
+        // Pass through default whitelist.
+        for var in DEFAULT_PASSTHROUGH {
+            if let Ok(val) = std::env::var(var) {
+                cmd.env(var, val);
+            }
+        }
+
+        // Parse env config from the trusted sidecar (set by underwrap-exec).
+        if let Ok(env_json) = std::env::var("UNDERWRAP_ENV_CONFIG") {
+            #[derive(serde::Deserialize)]
+            struct EnvConfig {
+                #[serde(default)]
+                passthrough: Vec<String>,
+                #[serde(default)]
+                set: std::collections::HashMap<String, String>,
+            }
+            if let Ok(cfg) = serde_json::from_str::<EnvConfig>(&env_json) {
+                // Additional passthrough from sidecar config.
+                for var in &cfg.passthrough {
+                    if let Ok(val) = std::env::var(var) {
+                        cmd.env(var, val);
+                    }
+                }
+                // Fixed vars from sidecar config.
+                for (key, val) in &cfg.set {
+                    cmd.env(key, val);
+                }
+            }
+        }
+
+        // Inject the secret.
+        cmd.env(env_var, &material);
 
         if libsecret {
             // Launch private D-Bus session bus + secretsd inside the namespace.

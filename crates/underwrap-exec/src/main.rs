@@ -359,8 +359,12 @@ fn exec_via_ns(
         cmd.arg(&config.env_variable);
         cmd.arg(&config.target);
 
-        // Pass libsecret config via env vars (safe: child hasn't exec'd yet,
-        // and these are paths, not secrets).
+        // ALWAYS strip internal env vars from the child — a malicious user
+        // could set these to inject code into the PID namespace.
+        cmd.env_remove("UNDERWRAP_LIBSECRET");
+        cmd.env_remove("UNDERWRAP_DBUS_DAEMON");
+        cmd.env_remove("UNDERWRAP_SECRETSD");
+        cmd.env_remove("UNDERWRAP_ENV_CONFIG");
         if config.libsecret {
             // channel_fd is guaranteed Some here — we bail above if recv_fd fails.
             cmd.env("UNDERWRAP_LIBSECRET", "1");
@@ -371,6 +375,14 @@ fn exec_via_ns(
                 cmd.env("UNDERWRAP_SECRETSD", bin);
             }
         }
+
+        // Pass env sanitization config from the trusted sidecar to underwrap-ns.
+        // This is a JSON blob containing passthrough list and fixed vars.
+        let env_config = serde_json::json!({
+            "passthrough": config.env_passthrough,
+            "set": config.env_set,
+        });
+        cmd.env("UNDERWRAP_ENV_CONFIG", env_config.to_string());
 
         cmd.args(args);
 
@@ -448,6 +460,10 @@ struct WrapperExecConfig {
     dbus_daemon_binary: Option<String>,
     /// Path to the underwrap-secretsd binary (for libsecret mode).
     secretsd_binary: Option<String>,
+    /// Env vars to pass through from the user's environment to the target.
+    env_passthrough: Vec<String>,
+    /// Fixed env vars to set on the target (from trusted config).
+    env_set: std::collections::HashMap<String, String>,
 }
 
 fn config_dir() -> String {
@@ -478,6 +494,10 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
         dbus_daemon_binary: Option<String>,
         #[serde(default)]
         secretsd_binary: Option<String>,
+        #[serde(default)]
+        env_passthrough: Vec<String>,
+        #[serde(default)]
+        env_set: std::collections::HashMap<String, String>,
     }
     fn default_env() -> String {
         "UNDERWRAP_SECRET".to_string()
@@ -502,6 +522,8 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
         libsecret: wf.libsecret,
         dbus_daemon_binary: wf.dbus_daemon_binary,
         secretsd_binary: wf.secretsd_binary,
+        env_passthrough: wf.env_passthrough,
+        env_set: wf.env_set,
     })
 }
 

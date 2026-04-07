@@ -65,6 +65,8 @@ let
         env_variable = w.injection.variable or "UNDERWRAP_SECRET";
         read_socket = "${runDir}/read.sock";
         ns_binary = nsBinaryPath;
+        env_passthrough = w.envPassthrough;
+        env_set = w.envSet;
       } // lib.optionalAttrs w.libsecret {
         libsecret = true;
         dbus_daemon_binary = "${pkgs.dbus}/bin/dbus-daemon";
@@ -197,6 +199,25 @@ let
           org.freedesktop.secrets, with storage going through the underwrap
           backend (encrypted/remote).
         '';
+      };
+      envPassthrough = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = ''
+          Additional environment variables to pass through from the user's
+          environment to the target process. These are added to the default
+          safe whitelist (HOME, USER, PATH, TERM, LANG, etc.).
+        '';
+        example = [ "GITHUB_TOKEN" "EDITOR" ];
+      };
+      envSet = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        description = ''
+          Fixed environment variables to set on the target process.
+          These override any inherited values.
+        '';
+        example = { NO_COLOR = "1"; };
       };
     };
   };
