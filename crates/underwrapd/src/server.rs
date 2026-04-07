@@ -32,6 +32,8 @@ struct State {
     /// GID → wrapper name lookup for kernel-verified identity.
     /// Built at startup from wrappers that have `group` set.
     gid_to_wrapper: std::collections::HashMap<u32, String>,
+    /// Per-secret write serialization to prevent immutability TOCTOU.
+    write_locks: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// Run the daemon until `shutdown` is notified (or forever if `None`).
@@ -47,6 +49,7 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         unlock: UnlockState::new(),
         token_cache: TokenCache::new(),
         gid_to_wrapper,
+        write_locks: std::sync::Mutex::new(std::collections::HashSet::new()),
     });
 
     let read_listener = bind_socket(&config.sockets.read, config.sockets.read_mode, "read")?;
@@ -581,33 +584,54 @@ fn process_control(
                 }
             };
 
-            // Enforce mutability: if mutable=false and secret already exists, reject.
-            if !secret_def.mutable
-                && let Ok(Some(_)) = state.store.read(secret_id)
+            // Serialize writes per secret to prevent immutability TOCTOU.
             {
-                let reason = "immutable and already exists";
-                audit::store_denied(secret_id, reason, peer_uid);
-                return ControlResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: format!("secret '{secret_id}' is {reason}"),
-                };
+                let mut locks = state.write_locks.lock().unwrap();
+                if !locks.insert(secret_id.clone()) {
+                    // Another concurrent write is in progress for this secret.
+                    return ControlResponse::Error {
+                        code: ErrorCode::Internal,
+                        message: format!("concurrent write to '{secret_id}'"),
+                    };
+                }
             }
 
-            match state.store.write(secret_id, material) {
-                Ok(()) => {
-                    // Invalidate any cached derived token for this secret.
-                    state.token_cache.invalidate(secret_id);
-                    audit::secret_stored(secret_id, peer_uid);
-                    ControlResponse::Ok { info: None }
+            // Now we hold the per-secret lock. Check + write atomically.
+            let result = (|| {
+                if !secret_def.mutable
+                    && let Ok(Some(_)) = state.store.read(secret_id)
+                {
+                    let reason = "immutable and already exists";
+                    audit::store_denied(secret_id, reason, peer_uid);
+                    return ControlResponse::Error {
+                        code: ErrorCode::Unauthorized,
+                        message: format!("secret '{secret_id}' is {reason}"),
+                    };
                 }
-                Err(e) => {
-                    error!(secret = %secret_id, err = %e, "storage write error");
-                    ControlResponse::Error {
-                        code: ErrorCode::Internal,
-                        message: "internal storage error".to_string(),
+
+                match state.store.write(secret_id, material) {
+                    Ok(()) => {
+                        state.token_cache.invalidate(secret_id);
+                        audit::secret_stored(secret_id, peer_uid);
+                        ControlResponse::Ok { info: None }
+                    }
+                    Err(e) => {
+                        error!(secret = %secret_id, err = %e, "storage write error");
+                        ControlResponse::Error {
+                            code: ErrorCode::Internal,
+                            message: "internal storage error".to_string(),
+                        }
                     }
                 }
+            })();
+
+            // Release per-secret lock.
+            {
+                let mut locks = state.write_locks.lock().unwrap();
+                locks.remove(secret_id);
             }
+
+            result
         }
     }
 }
@@ -626,22 +650,38 @@ fn build_status(target: &Option<String>, state: &State) -> serde_json::Value {
         }
         Some(name) => {
             if let Some(w) = state.config.wrappers.get(name) {
-                let stored = state.store.read(&w.secret).ok().flatten().is_some();
+                let (stored, storage_error) = match state.store.read(&w.secret) {
+                    Ok(Some(_)) => (true, None),
+                    Ok(None) => (false, None),
+                    Err(e) => (false, Some(format!("{e}"))),
+                };
                 let unlock_status = state.unlock.status(name);
-                serde_json::json!({
+                let mut status = serde_json::json!({
                     "wrapper": name,
                     "target": w.target,
                     "secret": w.secret,
                     "secret_stored": stored,
                     "require_unlock": w.require_unlock,
                     "unlock": unlock_status,
-                })
+                });
+                if let Some(err) = storage_error {
+                    status["storage_error"] = serde_json::json!(err);
+                }
+                status
             } else if state.config.secrets.contains_key(name) {
-                let stored = state.store.read(name).ok().flatten().is_some();
-                serde_json::json!({
+                let (stored, storage_error) = match state.store.read(name) {
+                    Ok(Some(_)) => (true, None),
+                    Ok(None) => (false, None),
+                    Err(e) => (false, Some(format!("{e}"))),
+                };
+                let mut status = serde_json::json!({
                     "secret": name,
                     "stored": stored,
-                })
+                });
+                if let Some(err) = storage_error {
+                    status["storage_error"] = serde_json::json!(err);
+                }
+                status
             } else {
                 serde_json::json!({
                     "error": format!("unknown target '{name}'"),

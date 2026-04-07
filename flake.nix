@@ -136,32 +136,27 @@
                       target = "${pkgs.coreutils}/bin/env";
                       secret = "test/token";
                       injection = { mode = "env"; variable = "MY_TOKEN"; };
-                      envVariable = "MY_TOKEN";
                     };
                     test-echo2 = {
                       target = "${pkgs.coreutils}/bin/echo";
                       secret = "test/other";
                       injection = { mode = "env"; variable = "OTHER_SECRET"; };
-                      envVariable = "OTHER_SECRET";
                     };
                     test-locked = {
                       target = "${pkgs.coreutils}/bin/env";
                       secret = "test/locked-tok";
                       injection = { mode = "env"; variable = "LOCKED_TOKEN"; };
-                      envVariable = "LOCKED_TOKEN";
                       requireUnlock = true;
                     };
                     test-sleep = {
                       target = "${pkgs.coreutils}/bin/sleep";
                       secret = "test/dumpable-tok";
                       injection = { mode = "env"; variable = "DUMPABLE_SECRET"; };
-                      envVariable = "DUMPABLE_SECRET";
                     };
                     test-crash = {
                       target = "${crashScript}";
                       secret = "test/crash-tok";
                       injection = { mode = "env"; variable = "CRASH_SECRET"; };
-                      envVariable = "CRASH_SECRET";
                     };
                   };
 

@@ -1,87 +1,46 @@
 # underwrap — TODO
 
-## Open issues
-
-### Unlock for non-root users (partially resolved)
-
-Root unlock grants now create admin grants (uid=None) that cover all UIDs.
-A normal user can use a locked wrapper after root runs `underwrapctl unlock`.
-
-Remaining: normal users still cannot *initiate* an unlock because the control
-socket is 0600. Options for future:
-- Setgid `underwrapctl` wrapper for unlock operations
-- Make unlock a command on the read socket (authenticated by wrapper GID)
-
-### Immutability TOCTOU
-
-Two concurrent stores to a new immutable secret can both observe "absent" and
-both succeed. Low practical risk (stores are rare admin operations on the
-restricted control socket) but violates the documented contract.
-
-Fix: per-secret mutex in the store path.
-
-### NixOS module: injection config duplication
-
-`injection.variable` (daemon config) and `envVariable` (sidecar config) can
-drift. Should derive one from the other.
-
-### Status error suppression
-
-`build_status()` catches storage read errors and reports them as "not stored",
-which can hide corruption.
+## Resolved
 
 ### /proc/pid/environ protection
+Two-stage wrapper: underwrap-exec (setgid) → underwrap-ns (cap_sys_admin).
+Target runs in PID namespace, invisible to parent namespace.
 
-Resolved: the two-stage wrapper (underwrap-exec → underwrap-ns) runs the
-target in a PID namespace. The target's `/proc` entries are invisible to
-processes in the parent namespace, so same-UID attackers cannot read
-`/proc/<pid>/environ`.
+### Wrapper process memory protection
+Both wrapper parent processes call `prctl(PR_SET_DUMPABLE, 0)` and zeroize
+the secret after handoff. Since they never exec again, the flag persists.
 
-This requires `cap_sys_admin` on `underwrap-ns`, granted via NixOS
-`security.wrappers`. On non-NixOS systems, the binary needs `setcap
-cap_sys_admin+ep`. If the capability is unavailable, the wrapper falls
-back to direct exec (no namespace isolation).
+### Core dump prevention
+`RLIMIT_CORE=0` set in PID namespace child before exec.
 
-### Encrypted backend: key management is weak
+### Unlock for non-root users
+Root unlock grants create admin grants (uid=None) covering all UIDs.
 
-The encrypted storage backend reads its master key from a plaintext file on
-the same disk as the encrypted secrets. This provides minimal real protection —
-if an attacker can read the secret files, they can almost certainly read the
-key file too.
+### Immutability TOCTOU
+Per-secret write serialization prevents concurrent stores from both
+observing "absent" and bypassing the immutability check.
 
-To make this meaningful, the master key should be derived from a passphrase
-at daemon startup (e.g. Argon2 KDF), so the key never exists on disk at rest.
-The daemon would prompt for the passphrase on start (or receive it via a
-socket/systemd credential), derive the key in memory, and zeroize the
-passphrase. This ties naturally into the unlock model — the daemon starts
-locked and can't serve secrets until the passphrase is provided.
+### NixOS module injection config duplication
+`envVariable` removed. Sidecar config derives `env_variable` from
+`injection.variable` — single source of truth.
 
-Other future options: TPM-sealed key, YubiKey challenge-response, or
-integration with a remote KMS. None of these are planned now.
+### Status error suppression
+`build_status()` now surfaces storage read errors as `storage_error`
+field instead of silently reporting "not stored".
 
 ## Not yet implemented
 
 - [ ] stdin and tempfile injection modes in `underwrap-exec`
-- [ ] Secret Service / libsecret-compatible delivery mode for wrapped tools that support it
-  - Provide a minimal, wrapper-scoped Secret Service API to the child process
-  - Prefer a private D-Bus session/bus with access limited to only the secret(s) needed by that wrapper
-  - Keep `env` injection as a supported fallback for tools that do not support libsecret / Secret Service
 - [ ] `underwrapctl reauth` workflow for OAuth credential refresh
 - [ ] SSH-agent challenge auth for unlock
+- [ ] Self-service unlock for non-root users (root can unlock for them today)
 - [ ] Secret metadata / versioning
 - [ ] Home Manager helpers (scope setup, completions)
 - [ ] Generic Linux packaging (deb, rpm)
-- [ ] Startup warning when socket auth allowlists are empty
 
 ## Deferred scope
 
-The following are explicitly not planned for now:
-
-- **External secret providers**: Secret Service / libsecret, Vault, AWS SSM,
-  1Password, Doppler — none built-in. When needed, likely via exec-based
-  providers behind the `StorageBackend` trait.
-- **Provider plugin SPI**: no exec-based or shared-library plugin system yet.
-  The trait is the extension point.
-- **Hardware-assisted unseal**: TPM, YubiKey for the encrypted backend's
-  master key.
+- **External secret providers**: via exec-based providers behind `StorageBackend` trait
+- **Hardware-assisted unseal**: TPM, YubiKey for encrypted backend master key
+- **Encrypted backend key management**: passphrase-derived key via Argon2
 - **sops / age import pipeline**

@@ -51,7 +51,7 @@ let
   wrapperConfigs = lib.mapAttrs (name: w:
     pkgs.writeText "${name}.yaml" (builtins.toJSON {
       target = w.target;
-      env_variable = w.envVariable;
+      env_variable = w.injection.variable or "UNDERWRAP_SECRET";
       read_socket = "/run/underwrap/read.sock";
       ns_binary = nsBinaryPath;
     })
@@ -82,11 +82,6 @@ let
         type = lib.types.attrs;
         default = { mode = "env"; variable = "UNDERWRAP_SECRET"; };
         description = "Injection mode configuration.";
-      };
-      envVariable = lib.mkOption {
-        type = lib.types.str;
-        default = "UNDERWRAP_SECRET";
-        description = "Environment variable name for the secret (used in wrapper sidecar config).";
       };
       derivation = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
