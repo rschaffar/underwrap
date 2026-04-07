@@ -16,7 +16,7 @@ which may run on any Linux machine holding your secrets.
 underwrap is a secret brokerage system for local CLI tool execution.
 A daemon holds secrets and serves them to wrapper binaries over Unix sockets.
 The wrappers inject secrets into the target tool's environment, then exec it
-inside an isolated PID namespace where it's invisible to other processes.
+inside a PID namespace with Yama LSM protection against same-UID `/proc` inspection.
 
 ```
 $ work-gh-authorized pr list
@@ -25,7 +25,7 @@ $ work-gh-authorized pr list
 #   2. Daemon verifies identity from kernel-provided GID
 #   3. Daemon fetches secret (local or via SSH tunnel from your workstation)
 #   4. Wrapper drops privilege, creates PID namespace
-#   5. Target runs with secret in env, invisible to other processes
+#   5. Target runs with secret in env, protected by Yama LSM + PID namespace
 ```
 
 ## Why it exists
@@ -54,9 +54,10 @@ for a detailed analysis.
   The daemon verifies the effective GID via `SO_PEERCRED` — not a client-supplied
   string. A process can only read the secret mapped to its kernel-assigned GID.
 
-- **PID namespace isolation**: the target runs inside its own PID namespace.
-  Same-UID processes cannot see it in `/proc`, cannot read its environment,
-  cannot ptrace it. This is enforced by the kernel, not by file permissions.
+- **PID namespace + Yama protection**: the target runs inside its own PID namespace.
+  Same-UID processes cannot read its `/proc/<pid>/environ` or ptrace it,
+  enforced by Yama LSM (`ptrace_scope=1`, the NixOS default). The PID
+  namespace provides defense-in-depth (different PID space, harder discovery).
 
 - **Two-stage wrapper**: stage 1 (setgid) handles identity and secret retrieval.
   Stage 2 (`cap_sys_admin`) creates the PID namespace. Splitting these avoids

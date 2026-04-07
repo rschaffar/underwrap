@@ -44,9 +44,9 @@ The VM configuration is in `nix/tests/node.nix`. The test script is
 | 11 | Locked wrapper blocks unprivileged user | Unlock required |
 | 12 | Lock/unlock lifecycle | Unlock → use → lock → denied |
 | 13 | Secrets persist across daemon restart | Storage durability |
-| 14 | Target invisible to `pgrep` | PID namespace isolation works |
-| 15 | Wrapper `/proc/pid/mem` not readable by same-UID | `PR_SET_DUMPABLE=0` persists |
-| 16 | Wrapper `/proc/pid/environ` not readable by same-UID | Same mechanism |
+| 14 | Target `/proc/<host_pid>/environ` not readable by same-UID | Yama LSM (ptrace_scope=1) blocks non-descendant access |
+| 15 | Target `/proc/<host_pid>/mem` not readable by same-UID | Same Yama mechanism |
+| 16 | Wrapper `/proc/pid/environ` not readable by same-UID | `PR_SET_DUMPABLE=0` persists (wrapper never execs) |
 | 17 | No core dump on SIGSEGV | `RLIMIT_CORE=0` works |
 
 ### Remote instance assertions

@@ -59,7 +59,8 @@ underwrap-ns (cap_sys_admin)
   ▼  parent zeroizes secret, waitpid, forwards exit code
 target (e.g. gh, gws)
   ├── secret in environment variable
-  ├── invisible to parent PID namespace
+  ├── /proc protected by Yama LSM (ptrace_scope=1)
+  ├── PID namespace provides defense-in-depth
   ├── no core dumps possible
   └── runs normally
 ```

@@ -79,7 +79,7 @@ default-gh-authorized pr list
 This is equivalent to `GH_TOKEN=ghp_... gh pr list`, except:
 
 - The token never appears in your shell environment
-- The `gh` process runs inside a PID namespace (invisible to other processes)
+- The `gh` process runs inside a PID namespace, its `/proc` entries protected by Yama LSM
 - The wrapper's memory is non-dumpable (same-UID processes can't read it)
 - Core dumps are disabled for the target process
 

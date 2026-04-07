@@ -73,7 +73,7 @@ into `/run/secrets/`.
 **How underwrap differs**: secrets are delivered per-process, not per-file.
 The daemon mediates access with GID-based identity verification. Mutable
 secrets can be updated without rebuilds. Unlock gates add time-scoped access
-control. PID namespace isolation prevents same-UID theft.
+control. Yama LSM + PID namespace isolation prevents same-UID `/proc` inspection.
 
 ## HashiCorp Vault / AWS Secrets Manager / cloud KMS
 
@@ -175,7 +175,7 @@ delivery with full process isolation.
 
 **How underwrap differs**: secrets are delivered directly into an isolated
 process, not via stdout or shell substitution. Wrapper identity is
-kernel-verified. The target is invisible to other processes. Mutable
+kernel-verified. The target's `/proc` entries are protected by Yama LSM. Mutable
 credentials are updated in-place without re-encryption.
 
 ## Why NixOS only
