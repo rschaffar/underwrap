@@ -233,12 +233,19 @@ backend_files = machine.succeed(
 assert backend_files != "none", "expected libsecret backend files"
 machine.log("PASS: libsecret data stored in backend")
 
-# Verify the secret IS in the backend storage (via the daemon).
-backend_files = machine.succeed(
-    "find /var/lib/underwrap-local/secrets/test-libsecret/ -type f 2>/dev/null || echo none"
+# Find ALL files on the system containing the secret, outside the backend.
+leak_files = machine.succeed(
+    "find / -type f "
+    "-not -path '/var/lib/underwrap-local/secrets/*' "
+    "-not -path '/proc/*' "
+    "-not -path '/sys/*' "
+    "-not -path '/nix/store/*' "
+    "-not -path '/dev/*' "
+    "-exec grep -l 'my_gh_token_123' {} + 2>/dev/null || echo NONE"
 ).strip()
-assert backend_files != "none", "expected libsecret backend files"
-machine.log("PASS: libsecret data stored in backend")
+machine.log(f"SECRET LEAK CHECK: files containing secret outside backend: {leak_files}")
+assert leak_files == "NONE", f"SECRET LEAKED to files outside backend: {leak_files}"
+machine.log("PASS: no secret material leaked outside backend")
 
 # ============================================================
 # REMOTE INSTANCE: tunnel lifecycle
