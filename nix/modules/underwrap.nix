@@ -33,16 +33,18 @@ let
         backend = "plain";
         dir = "${stateDir}/secrets";
       };
-      wrappers = lib.mapAttrs (name: w: {
-        target = w.target;
-        secret = w.secret;
-        injection = w.injection;
-        require_unlock = w.requireUnlock;
-        group = wrapperGroupName name;
-        libsecret = w.libsecret;
-      } // lib.optionalAttrs (w.derivation != null) {
-        derivation = w.derivation;
-      }) inst.wrappers;
+      wrappers = lib.mapAttrs' (name: w:
+        lib.nameValuePair "${instName}-${name}" ({
+          target = w.target;
+          secret = w.secret;
+          injection = w.injection;
+          require_unlock = w.requireUnlock;
+          group = wrapperGroupName name;
+          libsecret = w.libsecret;
+        } // lib.optionalAttrs (w.derivation != null) {
+          derivation = w.derivation;
+        })
+      ) inst.wrappers;
       secrets = lib.mapAttrs (_name: s: {
         inherit (s) mutable;
       } // lib.optionalAttrs (s.labels != {}) {

@@ -67,8 +67,8 @@ machine.succeed(f"echo -n 'caps_test_val' | {UWCTL_LOCAL} store test/caps-tok")
 
 # Status.
 status = machine.succeed(f"{UWCTL_LOCAL} status")
-assert "test-echo" in status
-status = machine.succeed(f"{UWCTL_LOCAL} status test-echo")
+assert "local-test-echo" in status
+status = machine.succeed(f"{UWCTL_LOCAL} status local-test-echo")
 assert "true" in status
 
 # Immutability.
@@ -149,11 +149,11 @@ machine.log("PASS: raw socket spoofing rejected")
 machine.fail(su("/run/wrappers/bin/local-test-locked"))
 machine.log("PASS: locked wrapper blocks unprivileged user")
 
-machine.succeed(f"{UWCTL_LOCAL} unlock test-locked --seconds 60")
+machine.succeed(f"{UWCTL_LOCAL} unlock local-test-locked --seconds 60")
 output = machine.succeed(su("/run/wrappers/bin/local-test-locked"))
 assert "LOCKED_TOKEN=locked_secret" in output
 
-machine.succeed(f"{UWCTL_LOCAL} lock test-locked")
+machine.succeed(f"{UWCTL_LOCAL} lock local-test-locked")
 machine.fail(su("/run/wrappers/bin/local-test-locked"))
 machine.log("PASS: lock/unlock lifecycle works")
 
@@ -350,7 +350,7 @@ machine.log("PASS: secret-tool lookup via libsecret wrapper")
 
 # Verify the secret IS in the backend storage (via the daemon).
 backend_files = machine.succeed(
-    "find /var/lib/underwrap-local/secrets/test-libsecret/ -type f 2>/dev/null || echo none"
+    "find /var/lib/underwrap-local/secrets/local-test-libsecret/ -type f 2>/dev/null || echo none"
 ).strip()
 assert backend_files != "none", "expected libsecret backend files"
 machine.log("PASS: libsecret data stored in backend")
