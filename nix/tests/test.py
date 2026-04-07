@@ -207,16 +207,23 @@ machine.log("PASS: no core dump on crash")
 # ============================================================
 
 # Store a secret via secret-tool through the libsecret wrapper.
-# Write the secret to a temp file first — putting it in the command line
-# would leak it to the systemd journal via PAM session logging.
+# Write the secret value to a temp file using Python's file write (not
+# a shell command) to prevent it appearing in the systemd journal.
+# Shell command lines are logged by PAM session tracking.
+import tempfile, os
+with tempfile.NamedTemporaryFile(mode='w', suffix='.secret', delete=False) as f:
+    f.write('my_gh_token_value')
+    secret_file = f.name
+machine.copy_from_host(secret_file, "/tmp/.secretsd-test")
+os.unlink(secret_file)
+machine.succeed("chmod 600 /tmp/.secretsd-test && chown testuser /tmp/.secretsd-test")
 machine.succeed(
     'su testuser -s /bin/sh -c "'
-    'umask 077 && printf my_gh_token_value > /tmp/.secretsd-test && '
     'cat /tmp/.secretsd-test | '
     '/run/wrappers/bin/local-test-libsecret store '
-    '--label=TestToken service gh account github.com && '
-    'rm -f /tmp/.secretsd-test"'
+    '--label=TestToken service gh account github.com"'
 )
+machine.succeed("rm -f /tmp/.secretsd-test")
 machine.log("PASS: secret-tool store via libsecret wrapper")
 
 # Retrieve the secret via secret-tool through the libsecret wrapper.
