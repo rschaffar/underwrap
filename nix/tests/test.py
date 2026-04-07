@@ -207,11 +207,15 @@ machine.log("PASS: no core dump on crash")
 # ============================================================
 
 # Store a secret via secret-tool through the libsecret wrapper.
+# Write the secret to a temp file first — putting it in the command line
+# would leak it to the systemd journal via PAM session logging.
 machine.succeed(
-    'su testuser -s /bin/sh -c '
-    '"echo -n my_gh_token_123 | '
+    'su testuser -s /bin/sh -c "'
+    'umask 077 && printf my_gh_token_value > /tmp/.secretsd-test && '
+    'cat /tmp/.secretsd-test | '
     '/run/wrappers/bin/local-test-libsecret store '
-    '--label=TestToken service gh account github.com"'
+    '--label=TestToken service gh account github.com && '
+    'rm -f /tmp/.secretsd-test"'
 )
 machine.log("PASS: secret-tool store via libsecret wrapper")
 
@@ -223,7 +227,7 @@ output = machine.succeed(
 # The output may include secretsd log lines on stderr mixed in;
 # the actual secret is the last line.
 last_line = output.split("\n")[-1].strip()
-assert last_line == "my_gh_token_123", f"expected 'my_gh_token_123', got '{last_line}'"
+assert last_line == "my_gh_token_value", f"expected 'my_gh_token_value', got '{last_line}'"
 machine.log("PASS: secret-tool lookup via libsecret wrapper")
 
 # Verify the secret IS in the backend storage (via the daemon).
@@ -234,14 +238,16 @@ assert backend_files != "none", "expected libsecret backend files"
 machine.log("PASS: libsecret data stored in backend")
 
 # Find ALL files on the system containing the secret, outside the backend.
+# Exclude: backend dir (correct storage), /nix/ (test script literals),
+# /proc, /sys, /dev.
 leak_files = machine.succeed(
     "find / -type f "
     "-not -path '/var/lib/underwrap-local/secrets/*' "
     "-not -path '/proc/*' "
     "-not -path '/sys/*' "
-    "-not -path '/nix/store/*' "
+    "-not -path '/nix/*' "
     "-not -path '/dev/*' "
-    "-exec grep -l 'my_gh_token_123' {} + 2>/dev/null || echo NONE"
+    "-exec grep -l 'my_gh_token_value' {} + 2>/dev/null || echo NONE"
 ).strip()
 machine.log(f"SECRET LEAK CHECK: files containing secret outside backend: {leak_files}")
 assert leak_files == "NONE", f"SECRET LEAKED to files outside backend: {leak_files}"
@@ -361,7 +367,7 @@ assert 'audit="secret_stored"' in logs, "missing secret_stored"
 assert "ghp_testvmtoken" not in logs, "secret leaked!"
 assert "locked_secret" not in logs, "secret leaked!"
 assert "secret_via_tunnel" not in logs, "secret leaked!"
-assert "my_gh_token_123" not in logs, "libsecret secret leaked!"
+assert "my_gh_token_value" not in logs, "libsecret secret leaked!"
 machine.log("PASS: audit events present, no secrets in logs")
 
 machine.log("ALL TESTS PASSED")
