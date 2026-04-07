@@ -454,11 +454,18 @@ When libsecret mode is enabled, `underwrap-ns` creates a mount namespace
    bus even if it ignores `DBUS_SESSION_BUS_ADDRESS`.
 
 **Limitation**: D-Bus abstract sockets (name starts with `\0` in `sun_path`)
-live in the network namespace, not the filesystem. If something uses an
-abstract socket for the session bus, the bind mount does not help. Modern
-systemd uses the filesystem socket by default, and `DBUS_SESSION_BUS_ADDRESS`
-is always set, so this is a defense-in-depth gap rather than a practical
-bypass.
+live in the network namespace, not the filesystem. They have no file path,
+so bind mounts cannot hide them. If the real session bus uses an abstract
+socket (e.g., `unix:abstract=/tmp/dbus-XXXXX`), a target that ignores
+`DBUS_SESSION_BUS_ADDRESS` could potentially connect to it. Blocking
+abstract sockets would require a network namespace (`CLONE_NEWNET`), which
+would also cut off the target's network access entirely.
+
+Modern systemd creates the session bus at `unix:path=/run/user/<uid>/bus`
+(a filesystem socket, which we hide). `DBUS_SESSION_BUS_ADDRESS` is always
+set, so all well-behaved libsecret clients use our private bus. This is a
+defense-in-depth gap (theoretical, not practical) that is inherent to the
+Linux socket model.
 
 ## Rejected approaches
 
