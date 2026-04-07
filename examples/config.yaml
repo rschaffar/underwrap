@@ -58,6 +58,14 @@ wrappers:
     injection:
       mode: env
       variable: GH_UNUSED      # Not used when libsecret handles credentials
+    # Environment sanitization: target gets a clean env (no LD_PRELOAD etc).
+    # Additional vars to pass through from the user's shell:
+    # env_passthrough:
+    #   - EDITOR
+    #   - GITHUB_ENTERPRISE_TOKEN
+    # Fixed vars to set on every invocation:
+    # env_set:
+    #   NO_COLOR: "1"
 
 secrets:
   github/token:

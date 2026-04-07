@@ -88,6 +88,9 @@ See [remote-backend.md](remote-backend.md) for the full tunnel setup.
 | `injection` | attrs | `{ mode = "env"; variable = "UNDERWRAP_SECRET"; }` | How the secret is delivered |
 | `derivation` | string or null | `null` | Derivation mode (e.g. `"oauth_refresh_to_access_token"`) |
 | `requireUnlock` | bool | `false` | Require explicit unlock before reads |
+| `libsecret` | bool | `false` | Enable private D-Bus Secret Service in the PID namespace |
+| `envPassthrough` | list of strings | `[]` | Additional env vars to pass from user's env to target |
+| `envSet` | attrs | `{}` | Fixed env vars to set on the target |
 
 ### Secret options
 

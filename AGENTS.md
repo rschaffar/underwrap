@@ -85,6 +85,8 @@ examples/config.yaml     # Annotated example daemon config
   root cause instead
 - Never put secret values in shell command lines (they leak to systemd journal
   via PAM session logging, process table, and shell history)
+- Never let the target inherit the user's full environment — use env_clear()
+  with a whitelist. Blocks LD_PRELOAD, LD_LIBRARY_PATH, PATH manipulation.
 
 ### Always do
 
