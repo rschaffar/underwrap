@@ -450,7 +450,7 @@ When libsecret mode is enabled, `underwrap-ns` creates a mount namespace
    are visible. **Failure is fatal.**
 
 3. **Private tmpfs for the bus socket.** The dbus-daemon socket is created
-   on a tmpfs mounted inside the namespace at `/run/underwrap-ns-bus/`.
+   on a tmpfs mounted inside the namespace at `/tmp/.underwrap-ns-bus/`.
    This path does not exist in the parent namespace — the socket is
    completely unreachable from outside. **Failure is fatal.**
 
@@ -474,6 +474,20 @@ Modern systemd creates the session bus at `unix:path=/run/user/<uid>/bus`
 set, so all well-behaved libsecret clients use our private bus. This is a
 defense-in-depth gap (theoretical, not practical) that is inherent to the
 Linux socket model.
+
+## Dependency advisories
+
+**RUSTSEC-2023-0071** (rsa 0.9.10, medium severity): Marvin Attack timing
+side-channel in RSA decryption. Pulled in via `ssh-key` → `underwrapd`.
+
+**Not exploitable in this project.** We use the `rsa` crate only for RSA SSH
+signature **verification** during the unlock challenge-response flow. The
+Marvin Attack targets RSA **decryption** (PKCS#1 v1.5 unpadding), which
+requires the private key. Our daemon never holds RSA private keys and never
+performs RSA decryption. No fixed version is available upstream.
+
+Audit performed with `cargo-audit` 0.22.0 against the RustSec advisory DB.
+Last checked: 2026-04-07.
 
 ## Rejected approaches
 
