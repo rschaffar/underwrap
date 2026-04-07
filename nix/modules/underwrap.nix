@@ -16,7 +16,10 @@ let
       read_mode = "0666";
       control_mode = "0600";
     };
-    storage = if cfg.encryption.enable then {
+    storage = if cfg.remote.enable then {
+      backend = "remote";
+      socket = cfg.remote.socket;
+    } else if cfg.encryption.enable then {
       backend = "encrypted";
       dir = "/var/lib/underwrap/secrets";
       key_file = cfg.encryption.keyFile;
@@ -140,6 +143,20 @@ in {
         description = "Path to the master key file (32 raw bytes or 64 hex chars).";
       };
     };
+
+    remote = {
+      enable = lib.mkEnableOption "remote backend (secrets served over SSH tunnel)";
+      socket = lib.mkOption {
+        type = lib.types.str;
+        default = "/run/underwrap/backend.sock";
+        description = "Path to the remote backend Unix socket (SSH-tunneled).";
+      };
+      tunnelPublicKey = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "SSH public key (OpenSSH format) authorized for the tunnel connection.";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -173,12 +190,30 @@ in {
       group = wrapperGroup name;
     }) cfg.wrappers;
 
-    # Sidecar configs in /etc/underwrap/wrappers/.
-    environment.etc = lib.mapAttrs' (name: _w:
+    # Sidecar configs + optional tunnel SSH authorized_keys.
+    environment.etc = (lib.mapAttrs' (name: _w:
       lib.nameValuePair "underwrap/wrappers/${name}.yaml" {
         source = wrapperConfigs.${name};
       }
-    ) cfg.wrappers;
+    ) cfg.wrappers) // lib.optionalAttrs (cfg.remote.enable && cfg.remote.tunnelPublicKey != "") {
+      "ssh/authorized_keys.d/underwrap-tunnel" = {
+        text = "restrict,streamlocal-forward=${cfg.remote.socket} ${cfg.remote.tunnelPublicKey}\n";
+        mode = "0644";
+      };
+    };
+
+    # Tunnel user for remote backend.
+    users.users.underwrap-tunnel = lib.mkIf cfg.remote.enable {
+      isSystemUser = true;
+      group = "underwrap";
+      home = "/var/empty";
+      description = "underwrap SSH tunnel endpoint";
+    };
+
+    # Enable StreamLocalBindUnlink so reconnecting tunnels work.
+    services.openssh.settings = lib.mkIf cfg.remote.enable {
+      StreamLocalBindUnlink = "yes";
+    };
 
     # Runtime directories.
     systemd.tmpfiles.rules = [
