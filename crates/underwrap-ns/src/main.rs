@@ -189,6 +189,17 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     let (ready_read, ready_write) = (ready_fds[0], ready_fds[1]);
 
     // --- Fork dbus-daemon ---
+    // Use --print-address to a pipe so we know the bus is ready.
+    let mut dbus_addr_fds = [0i32; 2];
+    let ret = unsafe { libc::pipe(dbus_addr_fds.as_mut_ptr()) };
+    if ret != 0 {
+        return Err(format!(
+            "pipe() for dbus address failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let (dbus_addr_read, dbus_addr_write) = (dbus_addr_fds[0], dbus_addr_fds[1]);
+
     let dbus_pid = unsafe { libc::fork() };
     if dbus_pid < 0 {
         return Err(format!(
@@ -198,12 +209,12 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     }
     if dbus_pid == 0 {
         // Child: exec dbus-daemon.
-        // Close fds we don't need.
         unsafe {
-            libc::close(SECRET_FD); // Already consumed.
-            libc::close(CHANNEL_FD); // dbus-daemon doesn't need it.
+            libc::close(SECRET_FD);
+            libc::close(CHANNEL_FD);
             libc::close(ready_read);
             libc::close(ready_write);
+            libc::close(dbus_addr_read);
         }
         use std::os::unix::process::CommandExt;
         let err = std::process::Command::new(&dbus_daemon)
@@ -211,20 +222,29 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
             .arg(format!("--address={bus_address}"))
             .arg("--nofork")
             .arg("--nopidfile")
+            .arg(format!("--print-address={dbus_addr_write}"))
             .exec();
         eprintln!("underwrap-ns: exec dbus-daemon failed: {err}");
         std::process::exit(1);
     }
 
-    // Wait for the bus socket to appear (poll up to 5 seconds).
-    for i in 0..50 {
-        if std::path::Path::new(&bus_socket).exists() {
-            break;
-        }
-        if i == 49 {
-            return Err("dbus-daemon socket did not appear within 5 seconds".to_string());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    // Close write end in parent.
+    unsafe { libc::close(dbus_addr_write) };
+
+    // Read the actual bus address from dbus-daemon (blocks until it writes a line).
+    let actual_bus_address = {
+        use std::io::BufRead;
+        use std::os::unix::io::FromRawFd;
+        let file = unsafe { std::fs::File::from_raw_fd(dbus_addr_read) };
+        let mut reader = std::io::BufReader::new(file);
+        let mut addr = String::new();
+        reader
+            .read_line(&mut addr)
+            .map_err(|e| format!("reading dbus-daemon address: {e}"))?;
+        addr.trim().to_string()
+    };
+    if actual_bus_address.is_empty() {
+        return Err("dbus-daemon did not print its address (crashed?)".to_string());
     }
 
     // --- Fork secretsd ---
@@ -246,7 +266,7 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
         use std::os::unix::process::CommandExt;
         let err = std::process::Command::new(&secretsd)
             .arg("--bus-address")
-            .arg(&bus_address)
+            .arg(&actual_bus_address)
             .arg("--channel-fd")
             .arg(CHANNEL_FD.to_string())
             .arg("--ready-fd")
@@ -290,7 +310,7 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     unsafe { libc::close(ready_read) };
 
     // Set DBUS_SESSION_BUS_ADDRESS so the target uses our private bus.
-    cmd.env("DBUS_SESSION_BUS_ADDRESS", &bus_address);
+    cmd.env("DBUS_SESSION_BUS_ADDRESS", &actual_bus_address);
 
     Ok(())
 }
