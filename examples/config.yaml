@@ -29,10 +29,10 @@ wrappers:
       mode: env
       variable: GH_TOKEN
 
-  gws-castlabs:
+  gws-example:
     target: /usr/bin/gws
-    secret: google/castlabs
-    group: underwrap-gws-castlabs
+    secret: google/workspace-creds
+    group: underwrap-gws-example
     injection:
       mode: env
       variable: GOOGLE_WORKSPACE_CLI_TOKEN
@@ -51,7 +51,7 @@ secrets:
   github/token:
     mutable: false
 
-  google/castlabs:
+  google/workspace-creds:
     mutable: true
 
   slack/xoxp:

@@ -15,7 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/projektbuero/underwrap"
+repository = "https://github.com/example/underwrap"
 
 [workspace.dependencies]
 underwrap-protocol = { path = "crates/underwrap-protocol" }

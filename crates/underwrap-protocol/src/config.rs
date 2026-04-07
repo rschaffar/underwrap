@@ -333,15 +333,15 @@ wrappers:
     fn mutable_secret() {
         let yaml = r#"
 secrets:
-  google/castlabs:
+  google/workspace-creds:
     mutable: true
     labels:
-      owner: castlabs
+      owner: example-org
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        let s = &config.secrets["google/castlabs"];
+        let s = &config.secrets["google/workspace-creds"];
         assert!(s.mutable);
-        assert_eq!(s.labels["owner"], "castlabs");
+        assert_eq!(s.labels["owner"], "example-org");
     }
 
     #[test]
