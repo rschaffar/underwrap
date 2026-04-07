@@ -58,6 +58,10 @@ integration with a remote KMS. None of these are planned now.
 ## Not yet implemented
 
 - [ ] stdin and tempfile injection modes in `underwrap-exec`
+- [ ] Secret Service / libsecret-compatible delivery mode for wrapped tools that support it
+  - Provide a minimal, wrapper-scoped Secret Service API to the child process
+  - Prefer a private D-Bus session/bus with access limited to only the secret(s) needed by that wrapper
+  - Keep `env` injection as a supported fallback for tools that do not support libsecret / Secret Service
 - [ ] `underwrapctl reauth` workflow for OAuth credential refresh
 - [ ] SSH-agent challenge auth for unlock
 - [ ] Secret metadata / versioning

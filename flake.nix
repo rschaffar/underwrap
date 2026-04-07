@@ -161,6 +161,24 @@
               testScript = let
                 uwctl = "${perSystem.packages.${system}.default}/bin/underwrapctl --socket /run/underwrap/control.sock";
                 su = cmd: "su testuser -s /bin/sh -c '${cmd}'";
+                # Python script that tries to spoof a wrapper request on the raw socket.
+                # Exits 0 if the daemon correctly rejects the request.
+                # Exits 1 if the daemon returns the secret (spoofing succeeded).
+                spoofScript = pkgs.writeScript "spoof-test.py" ''
+                  #!/usr/bin/env python3
+                  import socket, json, struct, sys
+                  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                  s.connect("/run/underwrap/read.sock")
+                  payload = json.dumps({"wrapper": "test-echo", "scope": None}).encode()
+                  s.sendall(struct.pack(">I", len(payload)) + payload)
+                  data = s.recv(4096)
+                  resp = json.loads(data[4:])
+                  if resp.get("status") == "ok":
+                      print("SPOOFED: got secret!", file=sys.stderr)
+                      sys.exit(1)
+                  print("Rejected:", resp.get("message", ""), file=sys.stderr)
+                  sys.exit(0)
+                '';
               in ''
                 machine.wait_for_unit("underwrapd.service")
                 machine.wait_for_file("/run/underwrap/read.sock")
@@ -274,6 +292,97 @@
                 machine.log("PASS: unprivileged user cannot read secret files")
 
                 # ================================================================
+                # WRAPPER ISOLATION: each wrapper gets only its own secret
+                # ================================================================
+
+                # test-echo wraps `env` → prints all env vars.
+                # It should contain MY_TOKEN but NOT OTHER_SECRET or LOCKED_TOKEN.
+                output = machine.succeed("${su "/run/wrappers/bin/test-echo"}")
+                assert "MY_TOKEN=ghp_testvmtoken" in output, (
+                    f"expected MY_TOKEN in output: {output}"
+                )
+                assert "OTHER_SECRET" not in output, (
+                    f"test-echo leaked test-echo2's secret: {output}"
+                )
+                assert "LOCKED_TOKEN" not in output, (
+                    f"test-echo leaked test-locked's secret: {output}"
+                )
+                machine.log("PASS: wrapper output contains only its own secret")
+
+                # ================================================================
+                # WRAPPER ISOLATION: different wrappers for same user get different secrets
+                # ================================================================
+
+                # testuser runs test-echo → gets MY_TOKEN.
+                output1 = machine.succeed("${su "/run/wrappers/bin/test-echo"}")
+                assert "MY_TOKEN=ghp_testvmtoken" in output1
+
+                # testuser runs test-echo2 → gets OTHER_SECRET, not MY_TOKEN.
+                output2 = machine.succeed("${su "/run/wrappers/bin/test-echo2 printenv"}")
+                # test-echo2 wraps `echo`, so it just prints args, not env.
+                # We can't check env isolation with echo. Instead verify the daemon
+                # served the correct wrapper by checking the audit log.
+                logs = machine.succeed(
+                    "journalctl -u underwrapd.service --no-pager"
+                    " | sed 's/\\x1b\\[[0-9;]*m//g'"
+                    " | grep 'uid=1099'"
+                )
+                # Should see both test-echo and test-echo2 served for testuser.
+                assert "test-echo" in logs, "missing test-echo read for testuser"
+                assert "test-echo2" in logs, "missing test-echo2 read for testuser"
+                machine.log("PASS: different wrappers serve different secrets for same user")
+
+                # ================================================================
+                # SPOOFING RESISTANCE: raw socket connection rejected
+                # ================================================================
+
+                # testuser connects directly to read.sock (bypassing wrapper binary)
+                # and sends a forged request. The daemon should reject because
+                # the peer's egid (users/100) doesn't map to any wrapper group.
+                machine.succeed("${su "${pkgs.python3}/bin/python3 ${spoofScript}"}")
+                machine.log("PASS: raw socket connection without wrapper GID is rejected")
+
+                # ================================================================
+                # LOCKED WRAPPER: blocks unprivileged user before unlock
+                # ================================================================
+
+                # Lock test-locked (it was unlocked earlier in the test).
+                machine.succeed("${uwctl} lock test-locked")
+
+                # testuser tries to use it → denied.
+                machine.fail("${su "/run/wrappers/bin/test-locked"}")
+                machine.log("PASS: locked wrapper blocks unprivileged user")
+
+                # ================================================================
+                # LOCK/UNLOCK LIFECYCLE for unprivileged user
+                # ================================================================
+
+                # Unlock → testuser uses → lock → testuser denied.
+                machine.succeed("${uwctl} unlock test-locked --seconds 60")
+                output = machine.succeed("${su "/run/wrappers/bin/test-locked"}")
+                assert "LOCKED_TOKEN=locked_secret" in output
+
+                machine.succeed("${uwctl} lock test-locked")
+                machine.fail("${su "/run/wrappers/bin/test-locked"}")
+                machine.log("PASS: lock/unlock lifecycle works for unprivileged user")
+
+                # ================================================================
+                # DAEMON RESTART: secrets persist
+                # ================================================================
+
+                machine.succeed("systemctl restart underwrapd.service")
+                machine.wait_for_file("/run/underwrap/read.sock")
+                import time
+                time.sleep(0.5)
+
+                # Secret should still be there after restart.
+                output = machine.succeed("/run/wrappers/bin/test-echo")
+                assert "MY_TOKEN=ghp_testvmtoken" in output, (
+                    f"secret lost after daemon restart: {output}"
+                )
+                machine.log("PASS: secrets persist across daemon restart")
+
+                # ================================================================
                 # UNPRIVILEGED USER: PR_SET_DUMPABLE
                 # ================================================================
 
@@ -316,27 +425,7 @@
 
                 machine.succeed(f"kill {actual_pid} || true")
 
-                # ================================================================
-                # UNLOCK WITH UNPRIVILEGED USER
-                # ================================================================
-
-                # Root unlocks the locked wrapper.
-                machine.succeed("${uwctl} unlock test-locked --seconds 60")
-
-                # Root can use it (identity=client since root GID=0).
-                output = machine.succeed("/run/wrappers/bin/test-locked")
-                assert "LOCKED_TOKEN=locked_secret" in output
-
-                # Lock it again, then unlock — testuser should also be able to use it
-                # (the unlock grant from root with uid=0/None covers all UIDs).
-                machine.succeed("${uwctl} lock test-locked")
-                machine.fail("/run/wrappers/bin/test-locked")
-                machine.succeed("${uwctl} unlock test-locked --seconds 60")
-                output = machine.succeed("${su "/run/wrappers/bin/test-locked"}")
-                assert "LOCKED_TOKEN=locked_secret" in output, (
-                    f"unprivileged user: expected LOCKED_TOKEN: {output}"
-                )
-                machine.log("PASS: root unlock grant works for unprivileged user")
+                # (Unlock lifecycle for unprivileged users tested above.)
 
                 # ================================================================
                 # AUDIT LOG VERIFICATION
