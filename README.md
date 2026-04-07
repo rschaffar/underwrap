@@ -8,7 +8,9 @@ into the child process environment, drop privilege, and exec the target tool.
 ## Quick start
 
 ```bash
-nix develop          # dev shell
+direnv allow         # auto-load the flake dev shell
+# or: nix develop
+
 cargo build          # build all binaries
 cargo test --workspace   # 80+ tests
 cargo clippy --all-targets --workspace -- -D warnings
