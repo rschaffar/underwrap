@@ -99,8 +99,11 @@ on the same binary — they're mutually exclusive. So the wrapper is split:
 - **underwrap-ns** (stage 2, `cap_sys_admin`): creates PID namespace,
   drops capabilities, execs target.
 
-The secret passes between stages via a pipe — never in environment variables,
-command-line arguments, or the filesystem during handoff.
+The secret passes between stages via a pipe on file descriptor 3 — never in
+environment variables (visible in `/proc/pid/environ`), command-line arguments
+(visible in `/proc/pid/cmdline` and `ps`), or the filesystem (visible to any
+process with directory access). fd 3 was chosen because fd 0/1/2 are
+stdin/stdout/stderr which must flow through to the target untouched.
 
 ### Why not user namespaces (CLONE_NEWUSER)?
 

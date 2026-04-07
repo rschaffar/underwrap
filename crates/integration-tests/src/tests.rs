@@ -1152,7 +1152,7 @@ async fn parse_example_config() {
     assert_eq!(config.wrappers.len(), 3);
     assert_eq!(config.secrets.len(), 3);
     assert!(config.wrappers.contains_key("gh-authorized"));
-    assert!(config.wrappers.contains_key("gws-example"));
+    assert!(config.wrappers.contains_key("gws"));
     assert!(config.wrappers.contains_key("agent-slack"));
 
     let gh = &config.wrappers["gh-authorized"];

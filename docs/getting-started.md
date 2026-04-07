@@ -14,7 +14,7 @@ first wrapper, and verifying it works.
 In your flake.nix inputs:
 
 ```nix
-inputs.underwrap.url = "github:example/underwrap";
+inputs.underwrap.url = "github:your-org/underwrap  # replace with your actual repo";
 ```
 
 In your NixOS configuration:
@@ -111,3 +111,51 @@ sudo underwrapctl --socket /run/underwrap-default/control.sock \
 - [Configuration](configuration.md) — multi-instance, unlock, OAuth derivation
 - [Remote backend](remote-backend.md) — keep secrets off the target machine entirely
 - [Security](security.md) — understand every protection mechanism
+
+## Troubleshooting
+
+### "peer egid does not map to any configured wrapper"
+
+The daemon couldn't match the connecting process's effective GID to a wrapper.
+This means the process didn't go through a setgid wrapper binary. Check:
+- Is the wrapper installed? `ls -la /run/wrappers/bin/<instance>-<wrapper>`
+- Does it have the setgid bit? Look for `s` in the group permissions.
+- Is the group correct? The group name should be `underwrap-<instance>-<wrapper>`.
+
+### "underwrap-ns not found"
+
+The PID namespace binary isn't at the expected path. Check:
+- `ls -la /run/wrappers/bin/underwrap-ns`
+- It should have `cap_sys_admin`: `getcap /run/wrappers/bin/underwrap-ns`
+
+### "unshare(CLONE_NEWPID) failed: Operation not permitted"
+
+`underwrap-ns` doesn't have `cap_sys_admin`. This can happen if:
+- `/run/wrappers` is mounted with `nosuid` (shouldn't happen on NixOS)
+- The binary was copied without capabilities (rebuild should fix this)
+
+### Wrapper just hangs
+
+The daemon might not be running. Check:
+`systemctl status underwrapd-<instance>.service`
+
+### "connecting to daemon" error
+
+The read socket doesn't exist or isn't accessible. Check:
+- `ls -la /run/underwrap-<instance>/read.sock`
+- The socket should be mode 0666.
+
+### Naming convention
+
+Binary names and daemon wrapper names differ:
+- **Binary name** (what you type): `/run/wrappers/bin/<instance>-<wrapper>`
+- **Daemon wrapper name** (in config, status, unlock): `<wrapper>` (without instance prefix)
+- **Group name**: `underwrap-<instance>-<wrapper>`
+- **Service name**: `underwrapd-<instance>.service`
+- **Control socket**: `/run/underwrap-<instance>/control.sock`
+
+Example for instance `work`, wrapper `gh-authorized`:
+- Binary: `/run/wrappers/bin/work-gh-authorized`
+- Daemon name: `gh-authorized`
+- Group: `underwrap-work-gh-authorized`
+- Unlock: `underwrapctl --socket /run/underwrap-work/control.sock unlock gh-authorized`

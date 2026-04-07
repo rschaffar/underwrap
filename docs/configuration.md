@@ -11,7 +11,7 @@ services.underwrap = {
 
   instances.myproject = {
     wrappers = {
-      gws-example = {
+      gws = {
         target = "${pkgs.gws}/bin/gws";
         secret = "google/workspace-creds";
         injection = { mode = "env"; variable = "GOOGLE_WORKSPACE_CLI_TOKEN"; };
@@ -45,7 +45,7 @@ services.underwrap = {
   instances = {
     work = {
       remote.enable = true;  # secrets via SSH tunnel
-      wrappers.gws-example = { ... };
+      wrappers.gws = { ... };
       secrets."google/workspace-creds" = { mutable = true; };
     };
     personal = {
@@ -59,10 +59,10 @@ services.underwrap = {
 Instance `work` gets:
 - User `underwrap-work`, group `underwrap-work`
 - Tunnel user `underwrap-work-tunnel`
-- Wrapper group `underwrap-work-gws-example`
+- Wrapper group `underwrap-work-gws`
 - Service `underwrapd-work.service`
 - Runtime dir `/run/underwrap-work/`
-- Wrapper binary `/run/wrappers/bin/work-gws-example`
+- Wrapper binary `/run/wrappers/bin/work-gws`
 
 Instance `personal` gets the same pattern with `personal-` prefix.
 No group membership overlaps between instances.
@@ -171,12 +171,12 @@ sudo underwrapctl --socket /run/underwrap-myproject/control.sock \
 ```bash
 # Unlock for 30 minutes (root).
 sudo underwrapctl --socket /run/underwrap-myproject/control.sock \
-  unlock myproject-gws-example --seconds 1800
+  unlock myproject-gws --seconds 1800
 
 # Self-service unlock via wrapper (SSH agent challenge).
-/run/wrappers/bin/myproject-gws-example --unlock --seconds 1800
+/run/wrappers/bin/myproject-gws --unlock --seconds 1800
 
 # Lock.
 sudo underwrapctl --socket /run/underwrap-myproject/control.sock \
-  lock myproject-gws-example
+  lock myproject-gws
 ```

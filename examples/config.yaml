@@ -29,10 +29,10 @@ wrappers:
       mode: env
       variable: GH_TOKEN
 
-  gws-example:
+  gws:
     target: /usr/bin/gws
     secret: google/workspace-creds
-    group: underwrap-gws-example
+    group: underwrap-gws
     injection:
       mode: env
       variable: GOOGLE_WORKSPACE_CLI_TOKEN

@@ -19,7 +19,7 @@ The wrappers inject secrets into the target tool's environment, then exec it
 inside an isolated PID namespace where it's invisible to other processes.
 
 ```
-$ gws-example gmail users.labels.list
+$ work-gh-authorized pr list
 # ↑ This just works. Behind the scenes:
 #   1. Setgid wrapper connects to daemon
 #   2. Daemon verifies identity from kernel-provided GID
@@ -47,7 +47,7 @@ for a detailed analysis.
 
 ## Key features
 
-- **Wrapper-first UX**: `gws-example gmail list` feels like running `gws` directly.
+- **Wrapper-first UX**: `work-gh-authorized pr list` feels like running `gh` directly.
   No environment setup, no secret prefixing, no source files.
 
 - **Kernel-verified identity**: each wrapper runs `setgid` to a dedicated group.

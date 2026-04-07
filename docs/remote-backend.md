@@ -4,6 +4,11 @@ In remote mode, secrets never exist on the target machine. A backend daemon
 runs on your workstation (or any trusted machine) and serves secrets over
 an SSH-tunneled Unix socket.
 
+The backend daemon (`underwrap-backendd`) is the one component that can run
+on any Linux system, not just NixOS. It has no setgid requirements, no
+capability requirements, no complex user management — just a binary that
+listens on a socket and serves secrets from a directory.
+
 ## Architecture
 
 ```
@@ -70,7 +75,7 @@ services.underwrap.instances.work = {
       secret = "github/token";
       injection = { mode = "env"; variable = "GH_TOKEN"; };
     };
-    gws-example = {
+    gws = {
       target = "${pkgs.gws}/bin/gws";
       secret = "google/workspace-creds";
       injection = { mode = "env"; variable = "GWS_TOKEN"; };
@@ -104,7 +109,7 @@ Once the tunnel is up:
 
 ```bash
 work-gh-authorized pr list          # works
-work-gws-example gmail list         # works, OAuth token derived on your workstation
+work-gws gmail list         # works, OAuth token derived on your workstation
 ```
 
 Disconnect the SSH session:

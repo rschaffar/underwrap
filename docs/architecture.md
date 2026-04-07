@@ -27,7 +27,7 @@ crates/
 ## Request flow
 
 ```
-User runs /run/wrappers/bin/default-gws-example gmail list ...
+User runs /run/wrappers/bin/default-gws gmail users.labels list ...
   │
   ▼  NixOS security.wrappers sets effective GID
 underwrap-exec (setgid)

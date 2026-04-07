@@ -160,6 +160,24 @@ The actual secrets are stored in the daemon's backend. SSH agent provides
 the "who are you" proof; underwrap provides the "here's your secret"
 delivery with full process isolation.
 
+## pass (Unix password manager)
+
+**How it works**: GPG-encrypted files in `~/.password-store/`, accessed via
+`pass show github/token` or `pass -c github/token`.
+
+**Problems**:
+- Retrieved secret goes to stdout or clipboard — no process isolation
+- When used in a wrapper script (`GH_TOKEN=$(pass show ...) gh`), the secret
+  lives in the shell's environment and is visible to same-UID processes
+- No per-wrapper identity verification — any process can call `pass`
+- GPG agent keeps the passphrase cached for the session, not per-invocation
+- No mutable credential support (OAuth tokens require manual re-encryption)
+
+**How underwrap differs**: secrets are delivered directly into an isolated
+process, not via stdout or shell substitution. Wrapper identity is
+kernel-verified. The target is invisible to other processes. Mutable
+credentials are updated in-place without re-encryption.
+
 ## Why NixOS only
 
 underwrap's security model requires precise coordination of:
@@ -194,15 +212,15 @@ NixOS frontends run on target VMs.
 
 ## Summary
 
-| Feature | underwrap | env vars | sops-nix | Vault | 1Password CLI | keyring |
-|---------|-----------|----------|----------|-------|---------------|---------|
-| Per-process isolation | ✓ PID namespace | ✗ | ✗ | ✗ | ✗ | ✗ |
-| Kernel-verified identity | ✓ setgid GID | ✗ | ✗ | policy-based | ✗ | ✗ |
-| No secret on disk | ✓ remote mode | ✗ | ✗ | ✓ | ✓ | ✓ |
-| Mutable credentials | ✓ | manual | rebuild | ✓ | ✓ | ✓ |
-| Headless operation | ✓ | ✓ | ✓ | ✓ | partial | ✗ |
-| No network dependency | ✓ local mode | ✓ | ✓ | ✗ | ✗ | ✓ |
-| OAuth derivation | ✓ built-in | ✗ | ✗ | plugin | ✗ | ✗ |
-| Time-scoped unlock | ✓ | ✗ | ✗ | lease-based | session | session |
-| NixOS-native module | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ |
-| Wrapper-first UX | ✓ | partial | ✗ | ✗ | ✓ | ✗ |
+| Feature | underwrap | env vars | sops-nix | Vault | 1Password CLI | pass | keyring |
+|---------|-----------|----------|----------|-------|---------------|------|---------|
+| Per-process isolation | ✓ PID namespace | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| Kernel-verified identity | ✓ setgid GID | ✗ | ✗ | policy-based | ✗ | ✗ | ✗ |
+| No secret on disk | ✓ remote mode | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ |
+| Mutable credentials | ✓ | manual | rebuild | ✓ | ✓ | manual | ✓ |
+| Headless operation | ✓ | ✓ | ✓ | ✓ | partial | ✓ | ✗ |
+| No network dependency | ✓ local mode | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| OAuth derivation | ✓ built-in | ✗ | ✗ | plugin | ✗ | ✗ | ✗ |
+| Time-scoped unlock | ✓ | ✗ | ✗ | lease-based | session | GPG cache | session |
+| NixOS-native module | ✓ | ✗ | ✓ | ✗ | ✗ | partial | ✗ |
+| Wrapper-first UX | ✓ | partial | ✗ | ✗ | ✓ | partial | ✗ |
