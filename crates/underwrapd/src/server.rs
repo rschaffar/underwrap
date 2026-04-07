@@ -45,7 +45,7 @@ const MAX_CONNECTIONS: usize = 128;
 /// Shared daemon state passed to connection handlers.
 struct State {
     config: DaemonConfig,
-    store: Box<dyn StorageBackend>,
+    store: Arc<dyn StorageBackend>,
     /// If the store is a RemoteBackend, this holds a reference for derive().
     /// (We can't downcast Box<dyn StorageBackend> cleanly, so we keep both.)
     remote: Option<Arc<underwrap_store::RemoteBackend>>,
@@ -55,6 +55,13 @@ struct State {
     write_locks: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
+impl State {
+    /// Get a clone of the storage backend Arc for sharing with channel handlers.
+    fn store_arc(&self) -> Arc<dyn StorageBackend> {
+        Arc::clone(&self.store)
+    }
+}
+
 /// Run the daemon until `shutdown` is notified (or forever if `None`).
 pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     // Validate config at startup: every wrapper.secret must reference a declared secret.
@@ -62,17 +69,21 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
 
     // Open the storage backend. If remote, keep a separate handle for derive().
     let (store, remote): (
-        Box<dyn StorageBackend>,
+        Arc<dyn StorageBackend>,
         Option<Arc<underwrap_store::RemoteBackend>>,
     ) = match &config.storage {
         underwrap_protocol::config::StorageConfig::Remote { socket } => {
             let backend = Arc::new(underwrap_store::RemoteBackend::open(socket)?);
             (
-                Box::new(RemoteStorageWrapper(Arc::clone(&backend))),
+                Arc::new(RemoteStorageWrapper(Arc::clone(&backend))),
                 Some(backend),
             )
         }
-        other => (underwrap_store::open(other)?, None),
+        other => {
+            let boxed = underwrap_store::open(other)?;
+            // Convert Box<dyn StorageBackend> to Arc<dyn StorageBackend>.
+            (Arc::from(boxed), None)
+        }
     };
 
     let gid_to_wrapper = build_gid_map(&config)?;
@@ -424,14 +435,14 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
 
     let peer_uid = peer.as_ref().map(|p| p.uid);
 
-    let response = match request {
+    let response = match &request {
         WrapperRequest::Read { scope, .. } => {
             info!(wrapper = %wrapper_name, peer = ?peer, "read request");
             process_read_for(&wrapper_name, scope.as_deref(), &state, peer_uid).await
         }
         WrapperRequest::Unlock { scope, seconds, .. } => {
             info!(wrapper = %wrapper_name, peer = ?peer, "unlock request via read socket");
-            process_wrapper_unlock(&wrapper_name, scope.as_deref(), seconds, peer_uid, &state)
+            process_wrapper_unlock(&wrapper_name, scope.as_deref(), *seconds, peer_uid, &state)
         }
         WrapperRequest::UnlockResponse {
             scope,
@@ -445,18 +456,85 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
             process_wrapper_unlock_response(
                 &wrapper_name,
                 scope.as_deref(),
-                seconds,
+                *seconds,
                 peer_uid,
                 &state,
-                &challenge,
-                &signature,
-                &public_key,
+                challenge,
+                signature,
+                public_key,
             )
         }
     };
 
     write_frame_async(&mut stream, &response).await?;
+
+    // If this is a successful read for a libsecret-enabled wrapper,
+    // create a socketpair and send one end via SCM_RIGHTS.
+    if matches!(
+        &response,
+        WrapperResponse::Ok {
+            material: Some(_),
+            ..
+        }
+    ) && matches!(&request, WrapperRequest::Read { .. })
+        && let Some(wrapper_def) = state.config.wrappers.get(&wrapper_name)
+        && wrapper_def.libsecret
+    {
+        match setup_secretsd_channel(&stream, &wrapper_name, &state).await {
+            Ok(()) => {
+                info!(wrapper = %wrapper_name, "secretsd channel established");
+            }
+            Err(e) => {
+                error!(wrapper = %wrapper_name, err = %e, "failed to setup secretsd channel");
+            }
+        }
+    }
+
     stream.shutdown().await?;
+    Ok(())
+}
+
+/// Create a socketpair, send one end to the wrapper via SCM_RIGHTS,
+/// and spawn a channel handler for the daemon's end.
+async fn setup_secretsd_channel(
+    stream: &UnixStream,
+    wrapper_name: &str,
+    state: &State,
+) -> Result<()> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    // Create socketpair.
+    let (daemon_end, wrapper_end) =
+        underwrap_protocol::scm_rights::create_socketpair().context("creating socketpair")?;
+
+    // Send the wrapper's end via SCM_RIGHTS on the existing connection.
+    // We need the std UnixStream for sendmsg. We borrow the fd without
+    // transferring ownership (forget the wrapper to avoid double-close).
+    let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(stream.as_raw_fd()) };
+
+    let wrapper_fd = wrapper_end.as_raw_fd();
+    let send_result = underwrap_protocol::scm_rights::send_fd(&std_stream, wrapper_fd);
+
+    // Don't let std_stream close the fd — it's owned by tokio.
+    std::mem::forget(std_stream);
+
+    send_result.context("sending secretsd channel fd")?;
+
+    // Close wrapper's end — only the wrapper process should have it.
+    drop(wrapper_end);
+
+    // Convert daemon's end to tokio async stream and spawn handler.
+    daemon_end.set_nonblocking(true)?;
+    let daemon_stream = UnixStream::from_std(daemon_end)?;
+
+    let prefix = format!("{wrapper_name}/libsecret/");
+    let store: Arc<dyn underwrap_store::StorageBackend> = state.store_arc();
+    let name = wrapper_name.to_string();
+
+    tokio::spawn(async move {
+        crate::secretsd_channel::run_channel(daemon_stream, store, prefix, name).await;
+    });
+
     Ok(())
 }
 
