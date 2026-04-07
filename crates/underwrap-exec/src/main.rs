@@ -8,9 +8,12 @@
 //! - Ignores UNDERWRAP_CONFIG_DIR under elevated privilege
 //! - Validates target is an absolute path
 //! - Drops UID, GID, supplementary groups before exec
-//! - Sets PR_SET_DUMPABLE=0 via pre_exec hook so /proc/<pid>/environ
-//!   is owned by root:root, preventing same-UID processes from reading
-//!   the injected secret from the child's environment
+//!
+//! Known limitation: after privilege drop + exec of a non-setuid target,
+//! the child process is dumpable, meaning same-UID processes can read
+//! /proc/<pid>/environ. PID namespace isolation (CLONE_NEWPID) would
+//! prevent this but is incompatible with NixOS security.wrappers' setgid
+//! model. See TODO.md for details.
 
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
@@ -20,7 +23,6 @@ use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{ReadRequest, ReadResponse};
 
 /// Fixed config directory used when running with elevated privileges.
-/// UNDERWRAP_CONFIG_DIR is ignored in that case to prevent secret exfil.
 const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
 
 fn main() -> Result<()> {
@@ -29,40 +31,16 @@ fn main() -> Result<()> {
 
     let wrapper_config = load_wrapper_config(&wrapper_name)?;
 
-    // Request secret from daemon.
+    // Request secret from daemon (while still setgid — daemon checks egid).
     let material = request_secret(&wrapper_name, &wrapper_config.read_socket)?;
 
-    // Drop supplementary groups / setgid / setuid before exec.
+    // Drop all elevated privileges.
     drop_privilege()?;
 
-    // Build child command.
+    // Exec the target with the secret in its environment.
     let mut cmd = std::process::Command::new(&wrapper_config.target);
     cmd.args(&args);
     cmd.env(&wrapper_config.env_variable, &material);
-
-    // Install pre_exec hook to set PR_SET_DUMPABLE=0.
-    //
-    // This runs in the child after fork() but before exec(). It causes
-    // the kernel to set /proc/<pid>/* ownership to root:root, which:
-    // - Blocks same-UID processes from reading /proc/<pid>/environ
-    // - Blocks ptrace attach from same-UID processes (even with ptrace_scope=0)
-    // - Prevents core dumps from leaking the secret
-    //
-    // The child process itself could undo this with prctl(PR_SET_DUMPABLE, 1),
-    // but if the child is compromised it already has the secret in memory.
-    //
-    // SAFETY: prctl(PR_SET_DUMPABLE, 0) is async-signal-safe and cannot fail
-    // with these arguments. The closure only calls this one syscall.
-    unsafe {
-        cmd.pre_exec(|| {
-            let ret = libc::prctl(libc::PR_SET_DUMPABLE, 0);
-            if ret != 0 {
-                // Should never happen, but don't proceed if it does.
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
 
     let err = cmd.exec();
     bail!("exec failed: {err}");
@@ -80,19 +58,12 @@ fn detect_wrapper_name() -> Result<String> {
     Ok(name)
 }
 
-/// Per-wrapper config loaded from a sidecar YAML.
 struct WrapperExecConfig {
     target: String,
     env_variable: String,
     read_socket: String,
 }
 
-/// Determine the config directory.
-///
-/// **Security**: when running with elevated privileges (setuid/setgid),
-/// the UNDERWRAP_CONFIG_DIR env var is ignored and we use a fixed
-/// trusted path. This prevents a caller from redirecting the wrapper
-/// to an attacker-controlled config that exfiltrates secrets.
 fn config_dir() -> String {
     if is_elevated() {
         return TRUSTED_CONFIG_DIR.to_string();
@@ -100,7 +71,6 @@ fn config_dir() -> String {
     std::env::var("UNDERWRAP_CONFIG_DIR").unwrap_or_else(|_| TRUSTED_CONFIG_DIR.to_string())
 }
 
-/// Check if we're running with elevated privileges (setuid or setgid).
 fn is_elevated() -> bool {
     unsafe { libc::geteuid() != libc::getuid() || libc::getegid() != libc::getgid() }
 }
@@ -127,8 +97,6 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
     }
 
     let wf: WrapperFile = serde_yaml::from_str(&text)?;
-
-    // Validate target is an absolute path.
     if !wf.target.starts_with('/') {
         bail!(
             "wrapper target must be an absolute path, got: {:?}",
@@ -163,25 +131,19 @@ fn request_secret(wrapper_name: &str, socket_path: &str) -> Result<String> {
     }
 }
 
-/// Drop all elevated privileges (UID, GID, supplementary groups) before exec.
-///
-/// Aborts the process if privilege cannot be dropped — executing the target
-/// with elevated privileges is worse than failing.
+/// Drop all elevated privileges (UID, GID, supplementary groups).
 fn drop_privilege() -> Result<()> {
     let ruid = unsafe { libc::getuid() };
     let rgid = unsafe { libc::getgid() };
 
-    // Drop supplementary groups first (requires privilege).
     let ret = unsafe { libc::setgroups(0, std::ptr::null()) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
-        // EPERM is expected for unprivileged users — no groups to drop.
         if err.raw_os_error() != Some(libc::EPERM) {
             bail!("setgroups(0) failed: {err}");
         }
     }
 
-    // Drop GID.
     if unsafe { libc::getegid() } != rgid {
         let ret = unsafe { libc::setgid(rgid) };
         if ret != 0 {
@@ -190,7 +152,6 @@ fn drop_privilege() -> Result<()> {
         }
     }
 
-    // Drop UID (must be last — after this we lose privilege to change anything).
     if unsafe { libc::geteuid() } != ruid {
         let ret = unsafe { libc::setuid(ruid) };
         if ret != 0 {

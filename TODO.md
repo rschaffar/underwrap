@@ -30,12 +30,25 @@ drift. Should derive one from the other.
 `build_status()` catches storage read errors and reports them as "not stored",
 which can hide corruption.
 
-### PR_SET_DUMPABLE requires suid_dumpable=0
+### /proc/pid/environ readable by same-UID processes
 
-The `pre_exec` hook sets `PR_SET_DUMPABLE=0`, but the kernel resets it after
-exec of a non-setuid target when `suid_dumpable != 0`. NixOS VMs default to
-`suid_dumpable=2`. For full `/proc/pid/environ` protection, the system needs
-`boot.kernel.sysctl."fs.suid_dumpable" = 0` or the NixOS module should set it.
+After the wrapper drops privilege and execs the target, the child process is
+dumpable (kernel resets dumpable flag when euid==uid and egid==gid at exec
+time). This means same-UID processes can read `/proc/<pid>/environ` and
+extract the injected secret.
+
+`PR_SET_DUMPABLE=0` in a `pre_exec` hook does not survive exec.
+`suid_dumpable=0` also does not help because we drop credentials before exec.
+
+PID namespace isolation (`CLONE_NEWPID`) would solve this — the child's
+`/proc` entries would be invisible in the parent namespace. However, NixOS
+`security.wrappers` does not allow both `setgid` (needed for GID identity)
+and `capabilities` (needed for `CLONE_NEWPID`) on the same wrapper.
+
+Options for future:
+- Two-stage wrapper: outer with setgid, inner with `cap_sys_admin`
+- stdin/tempfile injection mode (avoids putting secrets in env entirely)
+- Per-wrapper dedicated users with their own UID (no same-UID attacker)
 
 ### Encrypted backend: key management is weak
 

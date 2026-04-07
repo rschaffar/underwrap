@@ -117,6 +117,8 @@
                   uid = 1099;
                 };
 
+
+
                 services.underwrap = {
                   enable = true;
                   package = perSystem.packages.${system}.default;
@@ -167,12 +169,30 @@
                 spoofScript = pkgs.writeScript "spoof-test.py" ''
                   #!/usr/bin/env python3
                   import socket, json, struct, sys
+
                   s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                   s.connect("/run/underwrap/read.sock")
                   payload = json.dumps({"wrapper": "test-echo", "scope": None}).encode()
                   s.sendall(struct.pack(">I", len(payload)) + payload)
-                  data = s.recv(4096)
-                  resp = json.loads(data[4:])
+
+                  # Read length-prefixed response.
+                  header = b""
+                  while len(header) < 4:
+                      chunk = s.recv(4 - len(header))
+                      if not chunk:
+                          print("Connection closed before response", file=sys.stderr)
+                          sys.exit(0)  # Rejection by disconnect is fine.
+                      header += chunk
+
+                  length = struct.unpack(">I", header)[0]
+                  body = b""
+                  while len(body) < length:
+                      chunk = s.recv(length - len(body))
+                      if not chunk:
+                          break
+                      body += chunk
+
+                  resp = json.loads(body)
                   if resp.get("status") == "ok":
                       print("SPOOFED: got secret!", file=sys.stderr)
                       sys.exit(1)
@@ -382,48 +402,11 @@
                 )
                 machine.log("PASS: secrets persist across daemon restart")
 
-                # ================================================================
-                # UNPRIVILEGED USER: PR_SET_DUMPABLE
-                # ================================================================
-
-                # Launch sleep wrapper as testuser in background.
-                machine.succeed(
-                    "su testuser -s /bin/sh -c '"
-                    "setsid /run/wrappers/bin/test-sleep 300 </dev/null >/dev/null 2>&1 &"
-                    "echo $! > /tmp/sleep.pid"
-                    "'"
-                )
-                import time
-                time.sleep(1)
-
-                # Find the actual sleep process.
-                actual_pid = machine.succeed(
-                    "pgrep -n sleep || cat /tmp/sleep.pid"
-                ).strip().split("\n")[0]
-                machine.log(f"sleep PID: {actual_pid}")
-                machine.succeed(f"test -d /proc/{actual_pid}")
-
-                # As testuser (same UID), try to read /proc/<pid>/environ.
-                # PR_SET_DUMPABLE=0 should make this fail.
-                rc = machine.execute(
-                    f"su testuser -s /bin/sh -c 'cat /proc/{actual_pid}/environ'"
-                )[0]
-                suid_dumpable = machine.succeed("cat /proc/sys/fs/suid_dumpable").strip()
-                machine.log(f"suid_dumpable = {suid_dumpable}")
-                if rc != 0:
-                    machine.log("PASS: PR_SET_DUMPABLE blocks same-UID /proc/pid/environ read")
-                elif suid_dumpable != "0":
-                    machine.log(
-                        f"NOTE: suid_dumpable={suid_dumpable}, kernel resets dumpable after exec. "
-                        "Set suid_dumpable=0 for full /proc/pid/environ protection."
-                    )
-                else:
-                    machine.log(
-                        "NOTE: /proc/pid/environ readable despite suid_dumpable=0. "
-                        "Kernel may have reset dumpable after exec chain."
-                    )
-
-                machine.succeed(f"kill {actual_pid} || true")
+                # NOTE: /proc/<pid>/environ of the child process IS readable by
+                # same-UID processes. PID namespace isolation (CLONE_NEWPID) would
+                # prevent this but is incompatible with NixOS security.wrappers'
+                # setgid model (setgid and capabilities are mutually exclusive).
+                # This is a known limitation documented in TODO.md.
 
                 # (Unlock lifecycle for unprivileged users tested above.)
 

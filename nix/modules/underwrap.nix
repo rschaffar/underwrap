@@ -169,6 +169,7 @@ in {
       owner = "root";
       setgid = true;
       group = wrapperGroup name;
+
     }) cfg.wrappers;
 
     # Sidecar configs in /etc/underwrap/wrappers/ (fixed trusted path).
