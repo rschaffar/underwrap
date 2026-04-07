@@ -62,6 +62,7 @@ machine.succeed(f"echo -n 'other_secret_val' | {UWCTL_LOCAL} store test/other")
 machine.succeed(f"echo -n 'locked_secret' | {UWCTL_LOCAL} store test/locked-tok")
 machine.succeed(f"echo -n 'dumpable_test_secret' | {UWCTL_LOCAL} store test/dumpable-tok")
 machine.succeed(f"echo -n 'crash_secret_value' | {UWCTL_LOCAL} store test/crash-tok")
+machine.succeed(f"echo -n 'libsecret_base' | {UWCTL_LOCAL} store test/libsecret-tok")
 
 # Status.
 status = machine.succeed(f"{UWCTL_LOCAL} status")
@@ -202,6 +203,38 @@ assert core_files == "", f"FAIL: core dump produced: {core_files}"
 machine.log("PASS: no core dump on crash")
 
 # ============================================================
+# LOCAL INSTANCE: libsecret mode (Secret Service via D-Bus)
+# ============================================================
+
+# Store a secret via secret-tool through the libsecret wrapper.
+machine.succeed(
+    su(
+        "echo -n 'my_gh_token_123' | "
+        "/run/wrappers/bin/local-test-libsecret store --label 'GitHub Token' service gh account github.com"
+    )
+)
+machine.log("PASS: secret-tool store via libsecret wrapper")
+
+# Retrieve the secret via secret-tool through the libsecret wrapper.
+output = machine.succeed(
+    su("/run/wrappers/bin/local-test-libsecret lookup service gh account github.com")
+).strip()
+assert output == "my_gh_token_123", f"expected 'my_gh_token_123', got '{output}'"
+machine.log("PASS: secret-tool lookup via libsecret wrapper")
+
+# Verify no local JSON files with secret material.
+machine.fail("find /var/lib/underwrap-local/ -name '*.json' -exec grep -l 'my_gh_token_123' {} +")
+machine.fail("find /tmp/ -name '*.json' -exec grep -l 'my_gh_token_123' {} +")
+machine.log("PASS: no local files contain secret material")
+
+# Verify the secret IS in the backend storage (via the daemon).
+backend_files = machine.succeed(
+    "find /var/lib/underwrap-local/secrets/test-libsecret/ -type f 2>/dev/null || echo none"
+).strip()
+assert backend_files != "none", "expected libsecret backend files"
+machine.log("PASS: libsecret data stored in backend")
+
+# ============================================================
 # REMOTE INSTANCE: tunnel lifecycle
 # ============================================================
 
@@ -315,6 +348,7 @@ assert 'audit="secret_stored"' in logs, "missing secret_stored"
 assert "ghp_testvmtoken" not in logs, "secret leaked!"
 assert "locked_secret" not in logs, "secret leaked!"
 assert "secret_via_tunnel" not in logs, "secret leaked!"
+assert "my_gh_token_123" not in logs, "libsecret secret leaked!"
 machine.log("PASS: audit events present, no secrets in logs")
 
 machine.log("ALL TESTS PASSED")

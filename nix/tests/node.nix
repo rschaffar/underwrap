@@ -8,7 +8,7 @@ let
 in {
   imports = [ nixosModule ];
 
-  environment.systemPackages = [ pkgs.openssh ];
+  environment.systemPackages = [ pkgs.openssh pkgs.libsecret ];
 
   # Normal user who runs wrappers.
   users.users.testuser = {
@@ -93,6 +93,12 @@ in {
             secret = "test/crash-tok";
             injection = { mode = "env"; variable = "CRASH_SECRET"; };
           };
+          test-libsecret = {
+            target = "${pkgs.libsecret}/bin/secret-tool";
+            secret = "test/libsecret-tok";
+            injection = { mode = "env"; variable = "LIBSECRET_UNUSED"; };
+            libsecret = true;
+          };
         };
 
         secrets = {
@@ -101,6 +107,7 @@ in {
           "test/locked-tok" = { mutable = false; };
           "test/dumpable-tok" = { mutable = false; };
           "test/crash-tok" = { mutable = false; };
+          "test/libsecret-tok" = { mutable = false; };
         };
       };
 
