@@ -158,6 +158,13 @@ pub enum StorageConfig {
         /// Path to the master key file (32 bytes, raw or hex-encoded).
         key_file: PathBuf,
     },
+    /// Remote backend: connects to underwrap-backendd over a Unix socket.
+    /// The socket is typically SSH-tunneled from a workstation.
+    #[serde(rename = "remote")]
+    Remote {
+        /// Path to the backend Unix socket.
+        socket: PathBuf,
+    },
 }
 
 impl Default for StorageConfig {
@@ -170,9 +177,10 @@ impl Default for StorageConfig {
 
 impl StorageConfig {
     /// Get the storage directory regardless of backend type.
-    pub fn dir(&self) -> &PathBuf {
+    pub fn dir(&self) -> Option<&PathBuf> {
         match self {
-            Self::Plain { dir } | Self::Encrypted { dir, .. } => dir,
+            Self::Plain { dir } | Self::Encrypted { dir, .. } => Some(dir),
+            Self::Remote { .. } => None,
         }
     }
 }

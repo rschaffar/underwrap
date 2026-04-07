@@ -11,9 +11,11 @@
 mod encrypted;
 mod path;
 mod plain;
+mod remote;
 
 pub use encrypted::EncryptedBackend;
 pub use plain::PlainBackend;
+pub use remote::RemoteBackend;
 
 use anyhow::Result;
 use underwrap_protocol::config::StorageConfig;
@@ -39,5 +41,6 @@ pub fn open(config: &StorageConfig) -> Result<Box<dyn StorageBackend>> {
         StorageConfig::Encrypted { dir, key_file } => {
             Ok(Box::new(EncryptedBackend::open(dir, key_file)?))
         }
+        StorageConfig::Remote { socket } => Ok(Box::new(RemoteBackend::open(socket)?)),
     }
 }
