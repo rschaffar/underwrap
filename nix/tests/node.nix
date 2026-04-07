@@ -1,0 +1,125 @@
+# VM test node: both local and remote instances on one machine.
+{ pkgs, underwrapPackage, nixosModule, ... }:
+
+let
+  crashScript = pkgs.writeShellScript "crash-target" ''
+    kill -SEGV $$
+  '';
+in {
+  imports = [ nixosModule ];
+
+  environment.systemPackages = [ pkgs.openssh ];
+
+  # Normal user who runs wrappers.
+  users.users.testuser = {
+    isNormalUser = true;
+    uid = 1099;
+  };
+
+  # Backend operator user (simulates workstation side for remote test).
+  users.users.underwrap-backend = {
+    isSystemUser = true;
+    group = "underwrap-backend";
+    home = "/var/lib/underwrap-backend";
+    createHome = true;
+    description = "underwrap backend operator";
+  };
+  users.groups.underwrap-backend = {};
+
+  # Backend daemon service (for remote test).
+  systemd.services.underwrap-backendd = {
+    description = "underwrap backend daemon";
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "simple";
+      User = "underwrap-backend";
+      Group = "underwrap-backend";
+      ExecStart = let
+        cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
+          socket = "/run/underwrap-backend/backend.sock";
+          storage = {
+            backend = "plain";
+            dir = "/var/lib/underwrap-backend/secrets";
+          };
+        });
+      in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
+      Restart = "on-failure";
+    };
+  };
+
+  systemd.tmpfiles.rules = [
+    "d /run/underwrap-backend 0700 underwrap-backend underwrap-backend -"
+    "d /var/lib/underwrap-backend/secrets 0700 underwrap-backend underwrap-backend -"
+  ];
+
+  # SSH server for the tunnel.
+  services.openssh = {
+    enable = true;
+    settings.StreamLocalBindUnlink = "yes";
+  };
+
+  # Two underwrap instances: local storage + remote/tunnel.
+  services.underwrap = {
+    enable = true;
+    package = underwrapPackage;
+
+    instances = {
+      # Local instance: plain storage on disk.
+      local = {
+        wrappers = {
+          test-echo = {
+            target = "${pkgs.coreutils}/bin/env";
+            secret = "test/token";
+            injection = { mode = "env"; variable = "MY_TOKEN"; };
+          };
+          test-echo2 = {
+            target = "${pkgs.coreutils}/bin/echo";
+            secret = "test/other";
+            injection = { mode = "env"; variable = "OTHER_SECRET"; };
+          };
+          test-locked = {
+            target = "${pkgs.coreutils}/bin/env";
+            secret = "test/locked-tok";
+            injection = { mode = "env"; variable = "LOCKED_TOKEN"; };
+            requireUnlock = true;
+          };
+          test-sleep = {
+            target = "${pkgs.coreutils}/bin/sleep";
+            secret = "test/dumpable-tok";
+            injection = { mode = "env"; variable = "DUMPABLE_SECRET"; };
+          };
+          test-crash = {
+            target = "${crashScript}";
+            secret = "test/crash-tok";
+            injection = { mode = "env"; variable = "CRASH_SECRET"; };
+          };
+        };
+
+        secrets = {
+          "test/token" = { mutable = false; };
+          "test/other" = { mutable = true; };
+          "test/locked-tok" = { mutable = false; };
+          "test/dumpable-tok" = { mutable = false; };
+          "test/crash-tok" = { mutable = false; };
+        };
+      };
+
+      # Remote instance: secrets served over SSH tunnel.
+      tunnel = {
+        remote.enable = true;
+
+        wrappers = {
+          remote-echo = {
+            target = "${pkgs.coreutils}/bin/env";
+            secret = "remote/token";
+            injection = { mode = "env"; variable = "REMOTE_TOKEN"; };
+          };
+        };
+
+        secrets = {
+          "remote/token" = { mutable = false; };
+        };
+      };
+    };
+  };
+}

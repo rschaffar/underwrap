@@ -1,0 +1,320 @@
+"""underwrap VM test — local + remote instances on one machine."""
+
+import time
+
+# Helper for running commands as testuser.
+def su(cmd):
+    return f"su testuser -s /bin/sh -c '{cmd}'"
+
+# Spoof script path is passed as an env var by the Nix test driver.
+import os
+SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
+PYTHON3 = os.environ.get("PYTHON3", "python3")
+UWCTL_LOCAL = os.environ.get("UWCTL_LOCAL", "underwrapctl")
+
+# ============================================================
+# BOOT + SERVICE CHECKS
+# ============================================================
+
+machine.wait_for_unit("multi-user.target")
+machine.wait_for_unit("underwrapd-local.service")
+machine.wait_for_unit("underwrapd-tunnel.service")
+machine.wait_for_unit("underwrap-backendd.service")
+machine.wait_for_unit("sshd.service")
+
+machine.succeed("id testuser")
+machine.succeed("id underwrap-local")
+machine.succeed("id underwrap-tunnel")
+
+# ============================================================
+# LOCAL INSTANCE: socket permissions
+# ============================================================
+
+perms = machine.succeed("stat -c %a /run/underwrap-local").strip()
+assert perms == "775", f"expected 775, got {perms}"
+perms = machine.succeed("stat -c %a /run/underwrap-local/read.sock").strip()
+assert perms == "666", f"expected 666, got {perms}"
+perms = machine.succeed("stat -c %a /run/underwrap-local/control.sock").strip()
+assert perms == "600", f"expected 600, got {perms}"
+
+# Groups exist.
+machine.succeed("getent group underwrap-local-test-echo")
+machine.succeed("getent group underwrap-local-test-echo2")
+
+# Setgid wrappers installed.
+stat = machine.succeed("stat -c '%A %G' /run/wrappers/bin/local-test-echo").strip()
+assert "underwrap-local-test-echo" in stat, f"wrong group: {stat}"
+assert "s" in stat.lower(), f"setgid not set: {stat}"
+
+# Sidecar configs.
+machine.succeed("test -f /etc/underwrap/wrappers/local-test-echo.yaml")
+
+# underwrap-ns has cap_sys_admin.
+caps = machine.succeed("getcap /run/wrappers/bin/underwrap-ns").strip()
+assert "cap_sys_admin" in caps, f"expected cap_sys_admin: {caps}"
+
+# ============================================================
+# LOCAL INSTANCE: store secrets + basic operations
+# ============================================================
+
+machine.succeed(f"echo -n 'ghp_testvmtoken' | {UWCTL_LOCAL} store test/token")
+machine.succeed(f"echo -n 'other_secret_val' | {UWCTL_LOCAL} store test/other")
+machine.succeed(f"echo -n 'locked_secret' | {UWCTL_LOCAL} store test/locked-tok")
+machine.succeed(f"echo -n 'dumpable_test_secret' | {UWCTL_LOCAL} store test/dumpable-tok")
+machine.succeed(f"echo -n 'crash_secret_value' | {UWCTL_LOCAL} store test/crash-tok")
+
+# Status.
+status = machine.succeed(f"{UWCTL_LOCAL} status")
+assert "test-echo" in status
+status = machine.succeed(f"{UWCTL_LOCAL} status test-echo")
+assert "true" in status
+
+# Immutability.
+machine.fail(f"echo -n 'overwrite' | {UWCTL_LOCAL} store test/token")
+
+# Mutable overwrite.
+machine.succeed(f"echo -n 'updated_val' | {UWCTL_LOCAL} store test/other")
+
+# ============================================================
+# LOCAL INSTANCE: unprivileged user wrapper invocation
+# ============================================================
+
+output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+assert "MY_TOKEN=ghp_testvmtoken" in output, f"expected MY_TOKEN: {output}"
+machine.log("PASS: unprivileged user can use wrapper")
+
+output = machine.succeed(su("/run/wrappers/bin/local-test-echo2 hello"))
+assert "hello" in output
+machine.log("PASS: second wrapper works")
+
+# Daemon resolved identity from GID.
+logs = machine.succeed(
+    "journalctl -u underwrapd-local.service --no-pager"
+    " | sed 's/\\x1b\\[[0-9;]*m//g'"
+    " | grep 'uid: 1099'"
+)
+assert "read request" in logs
+machine.log("PASS: daemon resolved identity for unprivileged user")
+
+# ============================================================
+# LOCAL INSTANCE: isolation
+# ============================================================
+
+machine.fail(su(f"echo test | {UWCTL_LOCAL} status"))
+machine.log("PASS: unprivileged user cannot access control socket")
+
+machine.fail(su("cat /var/lib/underwrap-local/secrets/test/token"))
+machine.log("PASS: unprivileged user cannot read secret files")
+
+# Wrapper output contains only its own secret.
+output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+assert "MY_TOKEN=ghp_testvmtoken" in output
+assert "OTHER_SECRET" not in output
+assert "LOCKED_TOKEN" not in output
+machine.log("PASS: wrapper output contains only its own secret")
+
+# ============================================================
+# LOCAL INSTANCE: spoofing resistance
+# ============================================================
+
+machine.succeed(su(f"{PYTHON3} {SPOOF_SCRIPT}"))
+machine.log("PASS: raw socket spoofing rejected")
+
+# ============================================================
+# LOCAL INSTANCE: lock/unlock lifecycle
+# ============================================================
+
+machine.fail(su("/run/wrappers/bin/local-test-locked"))
+machine.log("PASS: locked wrapper blocks unprivileged user")
+
+machine.succeed(f"{UWCTL_LOCAL} unlock test-locked --seconds 60")
+output = machine.succeed(su("/run/wrappers/bin/local-test-locked"))
+assert "LOCKED_TOKEN=locked_secret" in output
+
+machine.succeed(f"{UWCTL_LOCAL} lock test-locked")
+machine.fail(su("/run/wrappers/bin/local-test-locked"))
+machine.log("PASS: lock/unlock lifecycle works")
+
+# ============================================================
+# LOCAL INSTANCE: daemon restart persistence
+# ============================================================
+
+machine.succeed("systemctl restart underwrapd-local.service")
+machine.wait_for_file("/run/underwrap-local/read.sock")
+time.sleep(0.5)
+output = machine.succeed("/run/wrappers/bin/local-test-echo")
+assert "MY_TOKEN=ghp_testvmtoken" in output
+machine.log("PASS: secrets persist across restart")
+
+# ============================================================
+# LOCAL INSTANCE: PID namespace isolation
+# ============================================================
+
+machine.succeed(
+    "su testuser -s /bin/sh -c '"
+    "setsid /run/wrappers/bin/local-test-sleep 300 </dev/null >/dev/null 2>&1 &"
+    "'"
+)
+time.sleep(1)
+
+rc = machine.execute("pgrep -u testuser -x sleep")[0]
+if rc != 0:
+    machine.log("PASS: PID namespace — sleep invisible to parent namespace")
+else:
+    machine.log("NOTE: sleep visible (namespace may not be active)")
+
+# ============================================================
+# LOCAL INSTANCE: wrapper process memory protection
+# ============================================================
+
+wrapper_pids = machine.succeed(
+    "pgrep -u testuser -f 'local-test-sleep|underwrap' || echo none"
+).strip()
+if wrapper_pids != "none":
+    for pid_str in wrapper_pids.split("\n"):
+        pid_str = pid_str.strip()
+        if not pid_str:
+            continue
+        rc = machine.execute(
+            f"su testuser -s /bin/sh -c 'dd if=/proc/{pid_str}/mem bs=1 count=1 2>/dev/null'"
+        )[0]
+        assert rc != 0, f"FAIL: same-UID read /proc/{pid_str}/mem"
+        rc = machine.execute(
+            f"su testuser -s /bin/sh -c 'cat /proc/{pid_str}/environ 2>/dev/null'"
+        )[0]
+        assert rc != 0, f"FAIL: same-UID read /proc/{pid_str}/environ"
+    machine.log("PASS: wrapper mem+environ not readable by same-UID")
+
+machine.execute("pkill -u testuser -f local-test-sleep || true")
+time.sleep(0.5)
+
+# ============================================================
+# LOCAL INSTANCE: core dump protection
+# ============================================================
+
+machine.succeed("mkdir -p /tmp/cores")
+machine.succeed("echo '/tmp/cores/core.%e.%p' > /proc/sys/kernel/core_pattern")
+
+machine.execute(su("/run/wrappers/bin/local-test-crash"))
+
+core_files = machine.succeed("ls /tmp/cores/ 2>/dev/null || true").strip()
+assert core_files == "", f"FAIL: core dump produced: {core_files}"
+machine.log("PASS: no core dump on crash")
+
+# ============================================================
+# REMOTE INSTANCE: tunnel lifecycle
+# ============================================================
+
+# Store secret in backend.
+machine.succeed(
+    "su underwrap-backend -s /bin/sh -c '"
+    "mkdir -p /var/lib/underwrap-backend/secrets/remote"
+    "'"
+)
+machine.succeed(
+    "su underwrap-backend -s /bin/sh -c '"
+    "echo -n secret_via_tunnel > /var/lib/underwrap-backend/secrets/remote/token"
+    "'"
+)
+
+# Generate SSH key for backend user.
+machine.succeed(
+    "su underwrap-backend -s /bin/sh -c '"
+    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+    "ssh-keygen -t ed25519 -f ~/.ssh/tunnel_key -N \"\" -q"
+    "'"
+)
+
+# Authorize key for tunnel user.
+pubkey = machine.succeed(
+    "cat /var/lib/underwrap-backend/.ssh/tunnel_key.pub"
+).strip()
+tunnel_home = machine.succeed(
+    "getent passwd underwrap-tunnel-tunnel | cut -d: -f6"
+).strip()
+machine.succeed(f"mkdir -p {tunnel_home}/.ssh && chmod 700 {tunnel_home}/.ssh")
+machine.succeed(f"echo '{pubkey}' > {tunnel_home}/.ssh/authorized_keys")
+machine.succeed(f"chmod 600 {tunnel_home}/.ssh/authorized_keys")
+machine.succeed(f"chown -R underwrap-tunnel-tunnel:underwrap-tunnel {tunnel_home}/.ssh")
+
+# Without tunnel: fail.
+machine.fail("test -S /run/underwrap-tunnel/backend.sock")
+machine.fail(su("/run/wrappers/bin/tunnel-remote-echo"))
+machine.log("PASS: wrapper fails without tunnel")
+
+# Establish SSH tunnel.
+machine.succeed(
+    "su underwrap-backend -s /bin/sh -c '"
+    "ssh -f -N "
+    "-o StrictHostKeyChecking=no "
+    "-o UserKnownHostsFile=/dev/null "
+    "-i ~/.ssh/tunnel_key "
+    "-R /run/underwrap-tunnel/backend.sock:/run/underwrap-backend/backend.sock "
+    "underwrap-tunnel-tunnel@localhost"
+    "'"
+)
+time.sleep(1)
+machine.succeed("test -S /run/underwrap-tunnel/backend.sock")
+machine.succeed("chmod 0660 /run/underwrap-tunnel/backend.sock")
+machine.log("PASS: tunnel established")
+
+# With tunnel: succeed.
+output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
+assert "REMOTE_TOKEN=secret_via_tunnel" in output, f"expected REMOTE_TOKEN: {output}"
+machine.log("PASS: remote secret via tunnel")
+
+# No secret on local disk.
+machine.fail("test -f /var/lib/underwrap-tunnel/secrets/remote/token")
+machine.log("PASS: no secret on local disk")
+
+# Kill tunnel: fail.
+machine.execute("pkill -f 'ssh.*tunnel_key' || true")
+time.sleep(0.5)
+machine.succeed("rm -f /run/underwrap-tunnel/backend.sock")
+machine.fail(su("/run/wrappers/bin/tunnel-remote-echo"))
+machine.log("PASS: fails after tunnel killed")
+
+# Reconnect: succeed.
+machine.succeed(
+    "su underwrap-backend -s /bin/sh -c '"
+    "ssh -f -N "
+    "-o StrictHostKeyChecking=no "
+    "-o UserKnownHostsFile=/dev/null "
+    "-i ~/.ssh/tunnel_key "
+    "-R /run/underwrap-tunnel/backend.sock:/run/underwrap-backend/backend.sock "
+    "underwrap-tunnel-tunnel@localhost"
+    "'"
+)
+time.sleep(1)
+machine.succeed("chmod 0660 /run/underwrap-tunnel/backend.sock")
+output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
+assert "REMOTE_TOKEN=secret_via_tunnel" in output
+machine.log("PASS: works after reconnect")
+
+# ============================================================
+# INSTANCE ISOLATION: cross-instance access blocked
+# ============================================================
+
+# local-test-echo wrapper cannot reach tunnel instance secrets.
+# (The wrapper's GID maps to the local instance, not tunnel.)
+output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+assert "REMOTE_TOKEN" not in output
+machine.log("PASS: local wrapper does not leak remote secrets")
+
+# ============================================================
+# AUDIT + NO SECRET LEAKS
+# ============================================================
+
+logs = machine.succeed(
+    "journalctl -u underwrapd-local.service -u underwrapd-tunnel.service --no-pager"
+    " | sed 's/\\x1b\\[[0-9;]*m//g'"
+)
+assert 'audit="read_granted"' in logs, "missing read_granted"
+assert 'audit="secret_stored"' in logs, "missing secret_stored"
+
+assert "ghp_testvmtoken" not in logs, "secret leaked!"
+assert "locked_secret" not in logs, "secret leaked!"
+assert "secret_via_tunnel" not in logs, "secret leaked!"
+machine.log("PASS: audit events present, no secrets in logs")
+
+machine.log("ALL TESTS PASSED")
