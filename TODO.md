@@ -9,4 +9,3 @@
 - [ ] External secret providers via exec-based commands behind `StorageBackend` trait
 - [ ] sops / age import pipeline
 - [ ] Home Manager helpers (scope setup, completions)
-- [ ] Generic Linux packaging (deb, rpm)
