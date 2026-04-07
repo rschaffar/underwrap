@@ -25,13 +25,15 @@ nix build .#checks.x86_64-linux.vm-test              # NixOS VM test (21 asserti
 
 ```
 crates/
-  underwrap-protocol/    # Shared: IPC framing, config schema, messages
+  underwrap-protocol/    # Shared: IPC framing, config schema, messages, SCM_RIGHTS
   underwrap-store/       # StorageBackend trait: plain, encrypted, remote
-  underwrapd/            # Frontend daemon: identity, unlock, audit
+  underwrapd/            # Frontend daemon: identity, unlock, audit, secretsd channels
   underwrap-backendd/    # Backend daemon: storage, OAuth derivation
   underwrapctl/          # CLI: status, store, unlock, lock
   underwrap-exec/        # Wrapper stage 1 (setgid): get secret, pipe to stage 2
   underwrap-ns/          # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
+  underwrap-secretsd/    # D-Bus Secret Service provider for libsecret mode
+  underwrap-secretsd-store/ # In-memory Secret Service data model + JSON serialization
   integration-tests/     # Cargo integration tests
 nix/
   modules/underwrap.nix  # Multi-instance NixOS module
@@ -45,11 +47,15 @@ examples/config.yaml     # Annotated example daemon config
 ## Key files to understand first
 
 - `crates/underwrap-exec/src/main.rs` — two-stage wrapper entry point
-- `crates/underwrap-ns/src/main.rs` — PID namespace + hardening
+- `crates/underwrap-ns/src/main.rs` — PID namespace + hardening + libsecret mode
 - `crates/underwrapd/src/server.rs` — daemon: identity resolution, unlock, dispatch
-- `crates/underwrap-store/src/lib.rs` — StorageBackend trait
+- `crates/underwrapd/src/secretsd_channel.rs` — scoped channel handler for secretsd
+- `crates/underwrap-store/src/lib.rs` — StorageBackend trait (read/write/list/delete)
+- `crates/underwrap-secretsd/src/main.rs` — D-Bus Secret Service provider
+- `crates/underwrap-secretsd/src/dbus_service.rs` — D-Bus interface implementations
 - `nix/modules/underwrap.nix` — NixOS module (generates everything)
 - `docs/security.md` — every security mechanism explained
+- `docs/libsecret-implementation.md` — libsecret mode design and architecture
 
 ## Code conventions
 
@@ -71,16 +77,29 @@ examples/config.yaml     # Annotated example daemon config
 - Never put secrets in argv, environment variables between stages, or temp files
   during the wrapper handoff (use pipe fd 3)
 - Never skip return value checks on privilege-drop syscalls
+- Never store secret material in local files outside the StorageBackend — no JSON
+  files, no sidecar databases, no caches. ALL secret values flow through the
+  daemon's StorageBackend (see `docs/security.md` "Design invariants")
+- Never pass the secretsd channel fd (fd 4) to the target process — close it
+  before exec'ing the target
+- Never remove security test assertions to make tests pass — find and fix the
+  root cause instead
+- Never put secret values in shell command lines (they leak to systemd journal
+  via PAM session logging, process table, and shell history)
 
 ### Always do
 
 - Verify wrapper identity from `SO_PEERCRED` effective GID (read from `/proc/pid/status`)
 - Zeroize secret material after use (`zeroize` crate)
 - Set `PR_SET_DUMPABLE=0` on wrapper processes that hold secrets
+- Set `PR_SET_DUMPABLE=0` in secretsd as first action before reading secrets
+  (exec resets dumpable to 1 for normal binaries — see `prctl(2)`)
 - Set `RLIMIT_CORE=0` before exec of target
 - Use `tempfile::NamedTempFile::persist()` for atomic writes
 - Run the full test suite before committing: `cargo test --workspace`
 - Run the VM test for NixOS module changes: `nix build .#checks.x86_64-linux.vm-test`
+- When synchronizing with dbus-daemon, use `--print-address=<fd>` and read from
+  the pipe (NOT socket file polling — the file appears before accept is ready)
 
 ### Ask first
 
@@ -109,11 +128,28 @@ Tunnel connect = unlock. Tunnel disconnect = lock.
 
 **Multi-instance:** `services.underwrap.instances.<name>` — fully isolated users, groups, sockets.
 
+**Libsecret mode:** When `libsecret = true` on a wrapper:
+1. Daemon creates a `socketpair()` during the GID-authenticated read request
+2. One end sent to wrapper via `SCM_RIGHTS`, other kept by daemon as scoped channel
+3. `underwrap-ns` launches private `dbus-daemon` + `underwrap-secretsd` in PID namespace
+4. secretsd claims `org.freedesktop.secrets` on the private bus
+5. Target sees `DBUS_SESSION_BUS_ADDRESS` pointing to the private bus
+6. All libsecret read/write goes through secretsd → daemon channel → StorageBackend
+7. fd 4 (channel) is CLOSED before exec'ing the target
+8. On namespace exit: kernel SIGKILL kills dbus-daemon + secretsd
+
+See `docs/security.md` "Design invariants" and "Secretsd channel" for security analysis.
+See `docs/libsecret-implementation.md` for full design.
+
+## Completed work
+
+The libsecret mode is implemented. See `docs/libsecret-implementation.md`.
+
 ## Planned work
 
-See `docs/libsecret-implementation.md` for the next major feature: a freedesktop
-Secret Service D-Bus provider that runs inside the PID namespace, enabling tools
-like `gh auth login` to store credentials via libsecret → underwrap backend.
-
-Reference implementation to study: `pass-secret-service` (github.com/grimsteel/pass-secret-service)
-— pure Rust, zbus v4, ~3100 lines. Cloned at `~/projects/3rdparty/pass-secret-service`.
+- Per-operation backend calls: currently secretsd loads all state at startup
+  and syncs targeted saves on mutation (write-through cache). Consider making
+  each D-Bus operation a direct backend round-trip for stricter correctness.
+- Redirect secretsd stderr to a log file instead of suppressing it.
+- Mount namespace isolation: add `CLONE_NEWNS` to hide the real session bus
+  socket at `/run/user/<uid>/bus` from the target.

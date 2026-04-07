@@ -223,6 +223,7 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
             .arg("--nofork")
             .arg("--nopidfile")
             .arg(format!("--print-address={dbus_addr_write}"))
+            .stderr(std::process::Stdio::null())
             .exec();
         eprintln!("underwrap-ns: exec dbus-daemon failed: {err}");
         std::process::exit(1);
@@ -271,6 +272,7 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
             .arg(CHANNEL_FD.to_string())
             .arg("--ready-fd")
             .arg(ready_write.to_string())
+            .stderr(std::process::Stdio::null())
             .exec();
         eprintln!("underwrap-ns: exec secretsd failed: {err}");
         std::process::exit(1);

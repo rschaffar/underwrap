@@ -148,15 +148,19 @@ pub fn load_initial_state(channel: &DaemonChannel) -> Result<SecretStore> {
     Ok(store)
 }
 
-/// Persist the entire store state back to the daemon.
-/// Called after any mutation.
-pub fn save_state(channel: &DaemonChannel, store: &SecretStore) -> Result<()> {
-    // Save aliases.
+/// Save only the aliases to the daemon.
+pub fn save_aliases(channel: &DaemonChannel, store: &SecretStore) -> Result<()> {
     let aliases_json = serde_json::to_string(&store.aliases)?;
-    channel.write("_aliases", &aliases_json)?;
+    channel.write("_aliases", &aliases_json)
+}
 
-    // Save each collection's metadata and items.
-    for (col_id, col) in &store.collections {
+/// Save a single collection's metadata to the daemon.
+pub fn save_collection_meta(
+    channel: &DaemonChannel,
+    col_id: &str,
+    store: &SecretStore,
+) -> Result<()> {
+    if let Some(col) = store.collections.get(col_id) {
         let meta = CollectionMeta {
             label: col.label.clone(),
             created: col.created,
@@ -164,21 +168,33 @@ pub fn save_state(channel: &DaemonChannel, store: &SecretStore) -> Result<()> {
         };
         let meta_json = serde_json::to_string(&meta)?;
         channel.write(&format!("{col_id}/_meta"), &meta_json)?;
-
-        for (item_id, item) in &col.items {
-            let item_data = ItemData {
-                secret: item.secret.clone(),
-                content_type: item.content_type.clone(),
-                attributes: item.attributes.clone(),
-                label: item.label.clone(),
-                created: item.created,
-                modified: item.modified,
-            };
-            let item_json = serde_json::to_string(&item_data)?;
-            channel.write(&format!("{col_id}/{item_id}"), &item_json)?;
-        }
     }
+    Ok(())
+}
 
+/// Save a single item to the daemon.
+pub fn save_item(
+    channel: &DaemonChannel,
+    col_id: &str,
+    item_id: &str,
+    store: &SecretStore,
+) -> Result<()> {
+    if let Some(item) = store
+        .collections
+        .get(col_id)
+        .and_then(|c| c.items.get(item_id))
+    {
+        let item_data = ItemData {
+            secret: item.secret.clone(),
+            content_type: item.content_type.clone(),
+            attributes: item.attributes.clone(),
+            label: item.label.clone(),
+            created: item.created,
+            modified: item.modified,
+        };
+        let item_json = serde_json::to_string(&item_data)?;
+        channel.write(&format!("{col_id}/{item_id}"), &item_json)?;
+    }
     Ok(())
 }
 

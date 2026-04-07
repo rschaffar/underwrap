@@ -89,7 +89,9 @@ impl SecretService {
         let col_id = {
             let mut store = self.store.write().await;
             let id = store.create_collection(label.as_deref(), alias);
-            channel::save_state(&self.channel, &store)
+            channel::save_aliases(&self.channel, &store)
+                .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
+            channel::save_collection_meta(&self.channel, &id, &store)
                 .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
             id
         };
@@ -194,7 +196,7 @@ impl SecretService {
 
         let mut store = self.store.write().await;
         store.set_alias(name, col_id.as_deref());
-        channel::save_state(&self.channel, &store)
+        channel::save_aliases(&self.channel, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
@@ -238,7 +240,7 @@ impl CollectionInterface {
         let _ = self.channel.delete(&format!("{}/_meta", self.id));
 
         store.delete_collection(&self.id);
-        channel::save_state(&self.channel, &store)
+        channel::save_aliases(&self.channel, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
 
         Ok(ObjectPath::try_from("/").unwrap())
@@ -293,7 +295,9 @@ impl CollectionInterface {
                 .map_err(|e| fdo::Error::Failed(format!("create_item error: {e}")))?;
 
             // Save the item to backend.
-            channel::save_state(&self.channel, &store)
+            channel::save_item(&self.channel, &self.id, &id, &store)
+                .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
+            channel::save_collection_meta(&self.channel, &self.id, &store)
                 .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
             (id, replaced)
         };
@@ -341,7 +345,7 @@ impl CollectionInterface {
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_collection_label(&self.id, &label);
-        channel::save_state(&self.channel, &store)
+        channel::save_collection_meta(&self.channel, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
@@ -399,7 +403,8 @@ impl ItemInterface {
         let _ = self.channel.delete(&key);
 
         store.delete_item(&self.collection_id, &self.id);
-        channel::save_state(&self.channel, &store)
+        // Item already deleted from backend above. Update collection modified time.
+        channel::save_collection_meta(&self.channel, &self.collection_id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
 
         Ok(ObjectPath::try_from("/").unwrap())
@@ -425,7 +430,7 @@ impl ItemInterface {
     async fn set_secret(&self, secret: Secret) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_secret(&self.collection_id, &self.id, &secret.value);
-        channel::save_state(&self.channel, &store)
+        channel::save_item(&self.channel, &self.collection_id, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
@@ -448,7 +453,7 @@ impl ItemInterface {
     async fn set_attributes(&mut self, attributes: HashMap<String, String>) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_attributes(&self.collection_id, &self.id, attributes);
-        channel::save_state(&self.channel, &store)
+        channel::save_item(&self.channel, &self.collection_id, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
@@ -466,7 +471,7 @@ impl ItemInterface {
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_label(&self.collection_id, &self.id, &label);
-        channel::save_state(&self.channel, &store)
+        channel::save_item(&self.channel, &self.collection_id, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
