@@ -1,6 +1,6 @@
 # Testing
 
-## Cargo tests (126+)
+## Cargo tests (122+)
 
 Run with `cargo test --workspace`.
 
@@ -20,11 +20,10 @@ Run with `cargo test --workspace`. Covers:
 | `underwrap-protocol` | 20 | Message serialization, config parsing, IPC framing, backend protocol |
 | `underwrap-store` | 19 | Plain + encrypted backends, path traversal rejection, atomic writes, wrong-key detection |
 | `underwrapd` | 17 | Unlock state (time expiry, scopes, UID binding, admin grants), OAuth derivation, token cache |
-| `integration-tests` | 30 | Full daemon lifecycle, store/read flow, immutability, concurrent access, unlock_key challenge-response |
+| `integration-tests` | 26 | Full daemon lifecycle, store/read flow, immutability, concurrent access, unlock_key challenge-response |
 
-Some integration tests (exec wrapper binary, underwrapctl binary) require
-the NixOS wrapper environment (`/etc/underwrap/wrappers/`, `cap_sys_admin`
-on `underwrap-ns`). These are covered by the VM test and skip outside it.
+All cargo tests must pass in a standard `cargo test` environment. No tests
+skip — missing prerequisites are hard failures.
 
 ## NixOS VM test (26+ assertions)
 

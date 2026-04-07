@@ -18,7 +18,6 @@ pub struct TestDaemon {
     pub read_socket: PathBuf,
     pub control_socket: PathBuf,
     pub storage_dir: PathBuf,
-    pub wrappers_dir: PathBuf,
     shutdown: Arc<Notify>,
     _tempdir: tempfile::TempDir,
     handle: tokio::task::JoinHandle<Result<()>>,
@@ -36,8 +35,6 @@ impl TestDaemon {
         let read_socket = base.join("read.sock");
         let control_socket = base.join("control.sock");
         let storage_dir = base.join("secrets");
-        let wrappers_dir = base.join("wrappers");
-        std::fs::create_dir_all(&wrappers_dir)?;
 
         let config = DaemonConfig {
             sockets: SocketConfig {
@@ -72,7 +69,6 @@ impl TestDaemon {
             read_socket,
             control_socket,
             storage_dir,
-            wrappers_dir,
             shutdown,
             _tempdir: tempdir,
             handle,
@@ -136,22 +132,6 @@ impl TestDaemon {
             target: target.map(|s| s.to_string()),
         })
         .await
-    }
-
-    /// Write a wrapper sidecar YAML config file (for underwrap-exec).
-    pub fn write_wrapper_config(
-        &self,
-        name: &str,
-        target: &str,
-        env_variable: &str,
-    ) -> Result<PathBuf> {
-        let path = self.wrappers_dir.join(format!("{name}.yaml"));
-        let content = format!(
-            "target: {target}\nenv_variable: {env_variable}\nread_socket: {}\n",
-            self.read_socket.display()
-        );
-        std::fs::write(&path, content)?;
-        Ok(path)
     }
 
     /// Shut down the daemon.
