@@ -504,6 +504,7 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
     if matches!(
         &response,
         WrapperResponse::Ok {
+            wrapper_name: None,
             material: Some(_),
             ..
         }
@@ -613,6 +614,7 @@ async fn process_read_for(
             Ok(Some(material)) => {
                 audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
                 WrapperResponse::Ok {
+                    wrapper_name: Some(wrapper_name.to_string()),
                     material: Some(material),
                     message: None,
                 }
@@ -649,6 +651,7 @@ async fn process_read_for(
                     Ok(derived) => {
                         audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
                         WrapperResponse::Ok {
+                            wrapper_name: Some(wrapper_name.to_string()),
                             material: Some(derived),
                             message: None,
                         }
@@ -728,6 +731,7 @@ fn process_wrapper_unlock(
         state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
         audit::unlocked(wrapper_name, scope, seconds, peer_uid);
         WrapperResponse::Ok {
+            wrapper_name: None,
             material: None,
             message: Some("unlocked".to_string()),
         }
@@ -866,6 +870,7 @@ fn process_wrapper_unlock_response(
     state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
     audit::unlocked(wrapper_name, scope, seconds, peer_uid);
     WrapperResponse::Ok {
+        wrapper_name: None,
         material: None,
         message: Some("unlocked".to_string()),
     }

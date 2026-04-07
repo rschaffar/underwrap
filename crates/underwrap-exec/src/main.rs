@@ -42,11 +42,25 @@ fn main() -> Result<()> {
     // Request secret from daemon (while still setgid — daemon checks egid).
     // The daemon returns the canonical wrapper name from GID-based identity.
     // If libsecret mode, also receive the secretsd channel fd.
-    let (mut material, channel_fd) = request_secret(
+    let (mut material, canonical_name, channel_fd) = request_secret(
         &wrapper_name,
         &wrapper_config.read_socket,
         wrapper_config.libsecret,
     )?;
+
+    // CRITICAL: verify argv[0]-derived name matches the daemon's canonical name.
+    // This prevents symlink attacks where a user creates a symlink from one
+    // wrapper name to another wrapper's binary, causing the wrong sidecar
+    // config (and thus the wrong target) to be paired with the wrong secret.
+    if wrapper_name != canonical_name {
+        // Zeroize the secret before bailing — don't leave it in memory.
+        use zeroize::Zeroize;
+        material.zeroize();
+        bail!(
+            "wrapper name mismatch: argv[0] says '{wrapper_name}' but daemon \
+             authenticated as '{canonical_name}'. Possible symlink attack."
+        );
+    }
 
     // Drop all elevated privileges.
     drop_privilege()?;
@@ -561,12 +575,12 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
 
 /// Request the secret from the daemon. If `libsecret` is true, also
 /// receive the secretsd channel fd via SCM_RIGHTS.
-/// Returns (secret_material, optional_channel_fd).
+/// Returns (secret_material, canonical_wrapper_name, optional_channel_fd).
 fn request_secret(
     wrapper_name: &str,
     socket_path: &str,
     libsecret: bool,
-) -> Result<(String, Option<i32>)> {
+) -> Result<(String, String, Option<i32>)> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
@@ -578,10 +592,20 @@ fn request_secret(
     write_frame_sync(&mut stream, &req)?;
 
     let response: WrapperResponse = read_frame_sync(&mut stream)?;
-    let material = match response {
+    let (material, canonical_name) = match response {
         WrapperResponse::Ok {
-            material: Some(m), ..
-        } => m,
+            material: Some(m),
+            wrapper_name: Some(name),
+            ..
+        } => (m, name),
+        WrapperResponse::Ok {
+            material: Some(_),
+            wrapper_name: None,
+            ..
+        } => {
+            // Daemon didn't return canonical name — fail closed.
+            bail!("daemon response missing wrapper_name (protocol version mismatch?)");
+        }
         WrapperResponse::Ok { material: None, .. } => {
             bail!("daemon returned no material");
         }
@@ -607,7 +631,7 @@ fn request_secret(
         None
     };
 
-    Ok((material, channel_fd))
+    Ok((material, canonical_name, channel_fd))
 }
 
 fn drop_privilege() -> Result<()> {
