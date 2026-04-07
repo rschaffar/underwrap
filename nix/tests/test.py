@@ -159,10 +159,8 @@ machine.succeed(
 time.sleep(1)
 
 rc = machine.execute("pgrep -u testuser -x sleep")[0]
-if rc != 0:
-    machine.log("PASS: PID namespace — sleep invisible to parent namespace")
-else:
-    machine.log("NOTE: sleep visible (namespace may not be active)")
+assert rc != 0, "FAIL: sleep process visible in parent namespace — PID namespace isolation broken"
+machine.log("PASS: PID namespace — sleep invisible to parent namespace")
 
 # ============================================================
 # LOCAL INSTANCE: wrapper process memory protection
@@ -243,6 +241,35 @@ backend_files = machine.succeed(
 ).strip()
 assert backend_files != "none", "expected libsecret backend files"
 machine.log("PASS: libsecret data stored in backend")
+
+# Verify the private bus is NOT reachable from outside the namespace.
+# Run a libsecret wrapper in the background, then try to connect to the
+# bus socket from a host process. The socket should not exist on the host.
+machine.succeed(
+    'su testuser -s /bin/sh -c "'
+    'setsid /run/wrappers/bin/local-test-libsecret lookup service gh account github.com '
+    '</dev/null >/dev/null 2>&1 &"'
+)
+time.sleep(1)
+# The bus socket is on a namespace-private tmpfs — it should not be visible.
+rc = machine.execute("find /tmp/.underwrap-ns-bus/ -type s 2>/dev/null | head -1")[0]
+bus_files = machine.succeed(
+    "find /tmp/.underwrap-ns-bus/ -type s 2>/dev/null || echo NONE"
+).strip()
+assert bus_files == "NONE" or bus_files == "", \
+    f"FAIL: private bus socket visible on host: {bus_files}"
+machine.log("PASS: private bus socket not reachable from host")
+
+# Also check that no dbus sockets under /tmp are accessible.
+tmp_bus = machine.succeed(
+    "find /tmp/ -path '*underwrap*' -type s 2>/dev/null || echo NONE"
+).strip()
+assert tmp_bus == "NONE" or tmp_bus == "", \
+    f"FAIL: bus socket found in /tmp: {tmp_bus}"
+machine.log("PASS: no bus sockets in /tmp")
+
+machine.execute("pkill -u testuser -f local-test-libsecret || true")
+time.sleep(0.5)
 
 # Find ALL files on the system containing the secret, outside the backend.
 # Exclude: backend dir (correct storage), /nix/ (test script literals),

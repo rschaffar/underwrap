@@ -56,8 +56,12 @@ fn run() -> Result<(), String> {
     // (this process after fork) never execs, the flag persists for its
     // entire lifetime. This prevents same-UID processes from reading
     // the secret out of /proc/<pid>/mem.
-    unsafe {
-        libc::prctl(libc::PR_SET_DUMPABLE, 0);
+    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
+    if ret != 0 {
+        return Err(format!(
+            "prctl(PR_SET_DUMPABLE, 0) failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
     // Create new PID namespace (and mount namespace for libsecret isolation).
@@ -74,7 +78,13 @@ fn run() -> Result<(), String> {
         return Err(format!("unshare failed: {err}"));
     }
 
-    // Drop all capabilities now that we've done the unshare.
+    // If libsecret mode, set up the mount namespace BEFORE dropping caps.
+    // We need cap_sys_admin for mount operations.
+    if libsecret {
+        setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
+    }
+
+    // Drop all capabilities now that we've done the unshare and mounts.
     drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
 
     // Fork. Child gets PID 1 in the new namespace.
@@ -92,8 +102,13 @@ fn run() -> Result<(), String> {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        unsafe {
-            libc::setrlimit(libc::RLIMIT_CORE, &rlim);
+        let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
+        if ret != 0 {
+            eprintln!(
+                "underwrap-ns: setrlimit(RLIMIT_CORE, 0) failed: {}",
+                std::io::Error::last_os_error()
+            );
+            std::process::exit(1);
         }
 
         // Set non-dumpable. Inside the PID namespace this flag persists
@@ -101,8 +116,13 @@ fn run() -> Result<(), String> {
         // This is defense-in-depth: the PID namespace already hides the
         // process, but if someone obtains the PID through other means,
         // non-dumpable blocks /proc/<pid>/mem and ptrace.
-        unsafe {
-            libc::prctl(libc::PR_SET_DUMPABLE, 0);
+        let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
+        if ret != 0 {
+            eprintln!(
+                "underwrap-ns: prctl(PR_SET_DUMPABLE, 0) failed: {}",
+                std::io::Error::last_os_error()
+            );
+            std::process::exit(1);
         }
 
         // Check if libsecret mode is enabled.
@@ -163,25 +183,12 @@ fn run() -> Result<(), String> {
     std::process::exit(1);
 }
 
-/// Set up libsecret mode: launch dbus-daemon and secretsd inside the PID namespace.
-///
-/// 1. Create temp dir for bus socket
-/// 2. Fork+exec dbus-daemon
-/// 3. Wait for socket to appear
-/// 4. Fork+exec secretsd (inherits fd 4 = channel to daemon)
-/// 5. Close fd 4 (CRITICAL: target must not inherit it)
-/// 6. Wait for secretsd readiness
-/// 7. Set DBUS_SESSION_BUS_ADDRESS on the target command
-fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
-    let dbus_daemon =
-        std::env::var("UNDERWRAP_DBUS_DAEMON").unwrap_or_else(|_| DEFAULT_DBUS_DAEMON.to_string());
-    let secretsd =
-        std::env::var("UNDERWRAP_SECRETSD").unwrap_or_else(|_| DEFAULT_SECRETSD.to_string());
-
+/// Set up the mount namespace for libsecret isolation.
+/// MUST be called after unshare(CLONE_NEWNS) but BEFORE drop_caps(),
+/// because mount operations require cap_sys_admin.
+fn setup_mount_namespace() -> Result<(), String> {
     // Make all mounts private so our bind mounts don't propagate back
-    // to the parent namespace. Without this, shared mount propagation
-    // (the default on systemd-based systems) would leak our bind mounts
-    // to the host, potentially hiding the real session bus for everyone.
+    // to the parent namespace.
     let root = std::ffi::CString::new("/").unwrap();
     let ret = unsafe {
         libc::mount(
@@ -198,7 +205,6 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     }
 
     // Mount a fresh /proc so the PID namespace is properly isolated.
-    // Without this, the target sees the host's /proc with all host PIDs.
     let proc_path = std::ffi::CString::new("/proc").unwrap();
     let proc_type = std::ffi::CString::new("proc").unwrap();
     let ret = unsafe {
@@ -211,12 +217,34 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
         )
     };
     if ret != 0 {
-        // Non-fatal: /proc mount may fail in some environments.
         let err = std::io::Error::last_os_error();
-        eprintln!("underwrap-ns: warning: could not mount fresh /proc: {err}");
+        return Err(format!("mount fresh /proc failed: {err}"));
     }
 
-    // Hide the real session bus socket so the target can't bypass our private bus.
+    // Mount a private tmpfs for the bus socket. Create the mount point
+    // under /tmp (user-writable), then mount tmpfs over it. The tmpfs
+    // content is only visible inside this mount namespace. We use a
+    // fixed path since we're in our own mount namespace (no collision).
+    let bus_dir = "/tmp/.underwrap-ns-bus";
+    std::fs::create_dir_all(bus_dir)
+        .map_err(|e| format!("creating bus mount point {bus_dir}: {e}"))?;
+    let bus_dir_c = std::ffi::CString::new(bus_dir).unwrap();
+    let tmpfs_c = std::ffi::CString::new("tmpfs").unwrap();
+    let ret = unsafe {
+        libc::mount(
+            tmpfs_c.as_ptr(),
+            bus_dir_c.as_ptr(),
+            tmpfs_c.as_ptr(),
+            0,
+            c"size=4m,mode=0700".as_ptr() as *const libc::c_void,
+        )
+    };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(format!("mount tmpfs for private bus failed: {err}"));
+    }
+
+    // Hide the real session bus socket.
     let uid = unsafe { libc::getuid() };
     let real_bus = format!("/run/user/{uid}/bus");
     if std::path::Path::new(&real_bus).exists() {
@@ -233,13 +261,26 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
         };
         if ret != 0 {
             let err = std::io::Error::last_os_error();
-            eprintln!("underwrap-ns: warning: could not hide real session bus: {err}");
+            return Err(format!(
+                "hiding real session bus at {real_bus} failed: {err}"
+            ));
         }
     }
 
-    // Create temp directory for the bus socket.
-    let bus_dir = format!("/tmp/underwrap-dbus-{}", unsafe { libc::getpid() });
-    std::fs::create_dir_all(&bus_dir).map_err(|e| format!("creating bus dir {bus_dir}: {e}"))?;
+    Ok(())
+}
+
+/// Set up libsecret mode: launch dbus-daemon and secretsd inside the PID namespace.
+/// The mount namespace (tmpfs, /proc, bus hiding) is already set up by
+/// setup_mount_namespace() which ran before cap drop.
+fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
+    let dbus_daemon =
+        std::env::var("UNDERWRAP_DBUS_DAEMON").unwrap_or_else(|_| DEFAULT_DBUS_DAEMON.to_string());
+    let secretsd =
+        std::env::var("UNDERWRAP_SECRETSD").unwrap_or_else(|_| DEFAULT_SECRETSD.to_string());
+
+    // The private tmpfs is already mounted by setup_mount_namespace().
+    let bus_dir = "/tmp/.underwrap-ns-bus";
     let bus_socket = format!("{bus_dir}/bus");
     let bus_address = format!("unix:path={bus_socket}");
 

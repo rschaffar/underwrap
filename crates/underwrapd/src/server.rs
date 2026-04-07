@@ -135,11 +135,9 @@ fn build_gid_map(config: &DaemonConfig) -> Result<std::collections::HashMap<u32,
         let gid = resolve_group_gid(group_name)
             .with_context(|| format!("resolving group '{group_name}' for wrapper '{name}'"))?;
         if let Some(existing) = map.get(&gid) {
-            warn!(
-                gid = gid,
-                existing = %existing,
-                new = %name,
-                "multiple wrappers share GID — last one wins (wrapper isolation is weakened)"
+            anyhow::bail!(
+                "wrappers '{existing}' and '{name}' resolve to the same GID {gid} \
+                 (group '{group_name}'). Wrapper identity requires unique GIDs."
             );
         }
         info!(wrapper = %name, group = %group_name, gid = gid, "resolved wrapper group");

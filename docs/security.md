@@ -427,10 +427,10 @@ and writing to the system keyring.
 
 ### The solution
 
-`underwrap-ns` launches a private `dbus-daemon` on an anonymous Unix socket
-inside the PID namespace. `underwrap-secretsd` connects to this private bus
-and claims `org.freedesktop.secrets`. The target's `DBUS_SESSION_BUS_ADDRESS`
-points to the private bus.
+`underwrap-ns` launches a private `dbus-daemon` on a Unix socket inside
+a namespace-private tmpfs mount. `underwrap-secretsd` connects to this
+private bus and claims `org.freedesktop.secrets`. The target's
+`DBUS_SESSION_BUS_ADDRESS` points to the private bus.
 
 All libsecret operations go to our secretsd, which routes secret values
 through the daemon via the authenticated socketpair channel.
@@ -447,11 +447,19 @@ When libsecret mode is enabled, `underwrap-ns` creates a mount namespace
 2. **Fresh `/proc` mounted** so the PID namespace is properly isolated.
    Without this, the target would see the host's `/proc` with all host
    PIDs visible. With the fresh mount, only namespace-local processes
-   are visible.
+   are visible. **Failure is fatal.**
 
-3. **Real session bus socket hidden** by bind-mounting `/dev/null` over
-   `/run/user/<uid>/bus`. The target cannot connect to the real session
-   bus even if it ignores `DBUS_SESSION_BUS_ADDRESS`.
+3. **Private tmpfs for the bus socket.** The dbus-daemon socket is created
+   on a tmpfs mounted inside the namespace at `/run/underwrap-ns-bus/`.
+   This path does not exist in the parent namespace — the socket is
+   completely unreachable from outside. **Failure is fatal.**
+
+4. **Real session bus socket hidden** by bind-mounting `/dev/null` over
+   `/run/user/<uid>/bus`. **Failure is fatal** if the socket exists.
+
+All mount operations are hard failures (abort, not warn). This follows
+the project's no-fallback rule: if a security mechanism fails, the
+wrapper does not execute.
 
 **Limitation**: D-Bus abstract sockets (name starts with `\0` in `sun_path`)
 live in the network namespace, not the filesystem. They have no file path,

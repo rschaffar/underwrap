@@ -81,8 +81,12 @@ async fn main() -> Result<()> {
 
     // Set non-dumpable BEFORE reading any secrets from the channel.
     // This blocks /proc/<pid>/fd/ access from same-UID processes.
-    unsafe {
-        libc::prctl(libc::PR_SET_DUMPABLE, 0);
+    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
+    if ret != 0 {
+        bail!(
+            "prctl(PR_SET_DUMPABLE, 0) failed: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     let args = parse_args()?;

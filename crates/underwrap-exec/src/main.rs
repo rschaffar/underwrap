@@ -295,8 +295,12 @@ fn exec_via_ns(
     // Make this process non-dumpable. Since we don't exec after this point
     // (we fork and waitpid), the flag persists. This prevents same-UID
     // processes from reading the secret out of our /proc/<pid>/mem.
-    unsafe {
-        libc::prctl(libc::PR_SET_DUMPABLE, 0);
+    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
+    if ret != 0 {
+        bail!(
+            "prctl(PR_SET_DUMPABLE, 0) failed: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     // Create pipe for secret transfer.
@@ -352,7 +356,8 @@ fn exec_via_ns(
 
         // Pass libsecret config via env vars (safe: child hasn't exec'd yet,
         // and these are paths, not secrets).
-        if config.libsecret && channel_fd.is_some() {
+        if config.libsecret {
+            // channel_fd is guaranteed Some here — we bail above if recv_fd fails.
             cmd.env("UNDERWRAP_LIBSECRET", "1");
             if let Some(ref bin) = config.dbus_daemon_binary {
                 cmd.env("UNDERWRAP_DBUS_DAEMON", bin);
@@ -535,12 +540,12 @@ fn request_secret(
 
     // If libsecret is enabled, the daemon sends the secretsd channel fd
     // via SCM_RIGHTS immediately after the response.
+    // Failure is fatal — no fallback to non-libsecret mode.
     let channel_fd = if libsecret {
         match underwrap_protocol::scm_rights::recv_fd(&stream) {
             Ok(fd) => Some(fd),
             Err(e) => {
-                eprintln!("underwrap-exec: warning: failed to receive secretsd channel fd: {e}");
-                None
+                bail!("libsecret enabled but failed to receive secretsd channel fd: {e}");
             }
         }
     } else {
