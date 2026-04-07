@@ -38,6 +38,23 @@ drift. Should derive one from the other.
 `build_status()` catches storage read errors and reports them as "not stored",
 which can hide corruption.
 
+### Encrypted backend: key management is weak
+
+The encrypted storage backend reads its master key from a plaintext file on
+the same disk as the encrypted secrets. This provides minimal real protection —
+if an attacker can read the secret files, they can almost certainly read the
+key file too.
+
+To make this meaningful, the master key should be derived from a passphrase
+at daemon startup (e.g. Argon2 KDF), so the key never exists on disk at rest.
+The daemon would prompt for the passphrase on start (or receive it via a
+socket/systemd credential), derive the key in memory, and zeroize the
+passphrase. This ties naturally into the unlock model — the daemon starts
+locked and can't serve secrets until the passphrase is provided.
+
+Other future options: TPM-sealed key, YubiKey challenge-response, or
+integration with a remote KMS. None of these are planned now.
+
 ## Not yet implemented
 
 - [ ] stdin and tempfile injection modes in `underwrap-exec`
