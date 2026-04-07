@@ -448,14 +448,10 @@ struct WrapperExecConfig {
 }
 
 fn config_dir() -> String {
-    if is_elevated() {
-        return TRUSTED_CONFIG_DIR.to_string();
-    }
-    std::env::var("UNDERWRAP_CONFIG_DIR").unwrap_or_else(|_| TRUSTED_CONFIG_DIR.to_string())
-}
-
-fn is_elevated() -> bool {
-    unsafe { libc::geteuid() != libc::getuid() || libc::getegid() != libc::getgid() }
+    // Always use the trusted config directory. No environment variable
+    // override — that would allow config redirection attacks when the
+    // binary is run without the setgid wrapper.
+    TRUSTED_CONFIG_DIR.to_string()
 }
 
 fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {

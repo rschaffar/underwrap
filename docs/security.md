@@ -279,10 +279,14 @@ target with elevated privilege is worse than not executing at all.
 
 ## Config directory trust
 
-When running with elevated privilege (`geteuid() != getuid()` or
-`getegid() != getgid()`), `underwrap-exec` ignores `UNDERWRAP_CONFIG_DIR`
-and uses the hardcoded path `/etc/underwrap/wrappers/`. The target path in
-the sidecar config must be absolute — relative paths are rejected.
+`underwrap-exec` always uses the hardcoded path `/etc/underwrap/wrappers/`
+for sidecar configs. There is no environment variable or command-line
+override — this prevents config redirection attacks where an attacker
+could point the wrapper at a malicious config with an attacker-controlled
+target binary.
+
+The target path in the sidecar config must be absolute — relative paths
+are rejected.
 
 This prevents an attacker from pointing the wrapper at an attacker-controlled
 config that redirects the target to a binary that exfiltrates the secret.

@@ -565,9 +565,15 @@ async fn secret_with_special_chars() {
 
 #[tokio::test]
 async fn exec_wrapper_end_to_end() {
+    // This test requires the NixOS setgid wrapper and /etc/underwrap/wrappers.
+    // The full exec flow is tested in the VM test instead.
     let exec_bin = require_bin!("underwrap-exec");
     if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists() {
-        eprintln!("SKIP: underwrap-ns not available with cap_sys_admin");
+        eprintln!("SKIP: exec_wrapper tests require NixOS VM environment");
+        return;
+    }
+    if !std::path::Path::new("/etc/underwrap/wrappers").exists() {
+        eprintln!("SKIP: exec_wrapper tests require NixOS wrapper configs");
         return;
     }
 
@@ -598,10 +604,6 @@ async fn exec_wrapper_end_to_end() {
     // Invoke underwrap-exec with argv[0] set to "test-wrapper".
     let output = tokio::process::Command::new(&exec_bin)
         .arg0("test-wrapper")
-        .env(
-            "UNDERWRAP_CONFIG_DIR",
-            daemon.wrappers_dir.to_str().unwrap(),
-        )
         .output()
         .await
         .unwrap();
@@ -727,8 +729,10 @@ async fn underwrapctl_store_undeclared_exits_nonzero() {
 #[tokio::test]
 async fn exec_wrapper_missing_secret_exits_nonzero() {
     let exec_bin = require_bin!("underwrap-exec");
-    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists() {
-        eprintln!("SKIP: underwrap-ns not available with cap_sys_admin");
+    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists()
+        || !std::path::Path::new("/etc/underwrap/wrappers").exists()
+    {
+        eprintln!("SKIP: exec_wrapper tests require NixOS VM environment");
         return;
     }
 
@@ -750,10 +754,6 @@ async fn exec_wrapper_missing_secret_exits_nonzero() {
 
     let output = tokio::process::Command::new(&exec_bin)
         .arg0("test-nosecret")
-        .env(
-            "UNDERWRAP_CONFIG_DIR",
-            daemon.wrappers_dir.to_str().unwrap(),
-        )
         .output()
         .await
         .unwrap();
@@ -778,8 +778,10 @@ async fn exec_wrapper_missing_secret_exits_nonzero() {
 #[tokio::test]
 async fn exec_wrapper_passes_args() {
     let exec_bin = require_bin!("underwrap-exec");
-    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists() {
-        eprintln!("SKIP: underwrap-ns not available with cap_sys_admin");
+    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists()
+        || !std::path::Path::new("/etc/underwrap/wrappers").exists()
+    {
+        eprintln!("SKIP: exec_wrapper tests require NixOS VM environment");
         return;
     }
 
@@ -802,10 +804,6 @@ async fn exec_wrapper_passes_args() {
     let output = tokio::process::Command::new(&exec_bin)
         .arg0("echo-wrapper")
         .args(["hello", "world", "123"])
-        .env(
-            "UNDERWRAP_CONFIG_DIR",
-            daemon.wrappers_dir.to_str().unwrap(),
-        )
         .output()
         .await
         .unwrap();
@@ -825,8 +823,10 @@ async fn exec_wrapper_passes_args() {
 #[tokio::test]
 async fn exec_wrapper_secret_not_in_target_output_unless_echoed() {
     let exec_bin = require_bin!("underwrap-exec");
-    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists() {
-        eprintln!("SKIP: underwrap-ns not available with cap_sys_admin");
+    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists()
+        || !std::path::Path::new("/etc/underwrap/wrappers").exists()
+    {
+        eprintln!("SKIP: exec_wrapper tests require NixOS VM environment");
         return;
     }
 
@@ -853,10 +853,6 @@ async fn exec_wrapper_secret_not_in_target_output_unless_echoed() {
     let output = tokio::process::Command::new(&exec_bin)
         .arg0("echo-wrapper")
         .args(["safe output"])
-        .env(
-            "UNDERWRAP_CONFIG_DIR",
-            daemon.wrappers_dir.to_str().unwrap(),
-        )
         .output()
         .await
         .unwrap();
