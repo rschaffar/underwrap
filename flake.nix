@@ -132,47 +132,50 @@
                   enable = true;
                   package = perSystem.packages.${system}.default;
 
-                  wrappers = {
-                    test-echo = {
-                      target = "${pkgs.coreutils}/bin/env";
-                      secret = "test/token";
-                      injection = { mode = "env"; variable = "MY_TOKEN"; };
+                  instances.local = {
+                    wrappers = {
+                      test-echo = {
+                        target = "${pkgs.coreutils}/bin/env";
+                        secret = "test/token";
+                        injection = { mode = "env"; variable = "MY_TOKEN"; };
+                      };
+                      test-echo2 = {
+                        target = "${pkgs.coreutils}/bin/echo";
+                        secret = "test/other";
+                        injection = { mode = "env"; variable = "OTHER_SECRET"; };
+                      };
+                      test-locked = {
+                        target = "${pkgs.coreutils}/bin/env";
+                        secret = "test/locked-tok";
+                        injection = { mode = "env"; variable = "LOCKED_TOKEN"; };
+                        requireUnlock = true;
+                      };
+                      test-sleep = {
+                        target = "${pkgs.coreutils}/bin/sleep";
+                        secret = "test/dumpable-tok";
+                        injection = { mode = "env"; variable = "DUMPABLE_SECRET"; };
+                      };
+                      test-crash = {
+                        target = "${crashScript}";
+                        secret = "test/crash-tok";
+                        injection = { mode = "env"; variable = "CRASH_SECRET"; };
+                      };
                     };
-                    test-echo2 = {
-                      target = "${pkgs.coreutils}/bin/echo";
-                      secret = "test/other";
-                      injection = { mode = "env"; variable = "OTHER_SECRET"; };
-                    };
-                    test-locked = {
-                      target = "${pkgs.coreutils}/bin/env";
-                      secret = "test/locked-tok";
-                      injection = { mode = "env"; variable = "LOCKED_TOKEN"; };
-                      requireUnlock = true;
-                    };
-                    test-sleep = {
-                      target = "${pkgs.coreutils}/bin/sleep";
-                      secret = "test/dumpable-tok";
-                      injection = { mode = "env"; variable = "DUMPABLE_SECRET"; };
-                    };
-                    test-crash = {
-                      target = "${crashScript}";
-                      secret = "test/crash-tok";
-                      injection = { mode = "env"; variable = "CRASH_SECRET"; };
+
+                    secrets = {
+                      "test/token" = { mutable = false; };
+                      "test/other" = { mutable = true; };
+                      "test/locked-tok" = { mutable = false; };
+                      "test/dumpable-tok" = { mutable = false; };
+                      "test/crash-tok" = { mutable = false; };
                     };
                   };
-
-                  secrets = {
-                    "test/token" = { mutable = false; };
-                    "test/other" = { mutable = true; };
-                    "test/locked-tok" = { mutable = false; };
-                    "test/dumpable-tok" = { mutable = false; };
-                    "test/crash-tok" = { mutable = false; };
                   };
                 };
               };
 
               testScript = let
-                uwctl = "${perSystem.packages.${system}.default}/bin/underwrapctl --socket /run/underwrap/control.sock";
+                uwctl = "${perSystem.packages.${system}.default}/bin/underwrapctl --socket /run/underwrap-local/control.sock";
                 su = cmd: "su testuser -s /bin/sh -c '${cmd}'";
                 # Python script that tries to spoof a wrapper request on the raw socket.
                 # Exits 0 if the daemon correctly rejects the request.
@@ -182,7 +185,7 @@
                   import socket, json, struct, sys
 
                   s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                  s.connect("/run/underwrap/read.sock")
+                  s.connect("/run/underwrap-local/read.sock")
                   payload = json.dumps({"wrapper": "test-echo", "scope": None}).encode()
                   s.sendall(struct.pack(">I", len(payload)) + payload)
 
@@ -211,36 +214,36 @@
                   sys.exit(0)
                 '';
               in ''
-                machine.wait_for_unit("underwrapd.service")
-                machine.wait_for_file("/run/underwrap/read.sock")
-                machine.wait_for_file("/run/underwrap/control.sock")
+                machine.wait_for_unit("underwrapd-local.service")
+                machine.wait_for_file("/run/underwrap-local/read.sock")
+                machine.wait_for_file("/run/underwrap-local/control.sock")
 
                 # ================================================================
                 # ROOT-LEVEL SETUP AND BASIC CHECKS
                 # ================================================================
 
-                machine.succeed("systemctl is-active underwrapd.service")
+                machine.succeed("systemctl is-active underwrapd-local.service")
                 machine.succeed("id underwrap")
                 machine.succeed("id testuser")
 
                 # --- Socket permissions ---
                 perms = machine.succeed("stat -c %a /run/underwrap").strip()
                 assert perms == "775", f"expected dir perms 775, got {perms}"
-                perms = machine.succeed("stat -c %a /run/underwrap/read.sock").strip()
+                perms = machine.succeed("stat -c %a /run/underwrap-local/read.sock").strip()
                 assert perms == "666", f"expected read socket perms 666, got {perms}"
-                perms = machine.succeed("stat -c %a /run/underwrap/control.sock").strip()
+                perms = machine.succeed("stat -c %a /run/underwrap-local/control.sock").strip()
                 assert perms == "600", f"expected control socket perms 600, got {perms}"
 
                 # --- Per-wrapper groups exist ---
-                machine.succeed("getent group underwrap-test-echo")
-                machine.succeed("getent group underwrap-test-echo2")
-                machine.succeed("getent group underwrap-test-locked")
-                machine.succeed("getent group underwrap-test-sleep")
+                machine.succeed("getent group underwrap-local-test-echo")
+                machine.succeed("getent group underwrap-local-test-echo2")
+                machine.succeed("getent group underwrap-local-test-locked")
+                machine.succeed("getent group underwrap-local-test-sleep")
 
                 # --- Setgid wrappers installed correctly ---
-                stat = machine.succeed("stat -c '%A %G' /run/wrappers/bin/test-echo").strip()
+                stat = machine.succeed("stat -c '%A %G' /run/wrappers/bin/local-test-echo").strip()
                 machine.log(f"test-echo wrapper: {stat}")
-                assert "underwrap-test-echo" in stat, f"wrong group: {stat}"
+                assert "underwrap-local-test-echo" in stat, f"wrong group: {stat}"
                 assert "s" in stat.lower(), f"setgid not set: {stat}"
 
                 # --- Sidecar configs installed ---
@@ -276,12 +279,12 @@
                 # ROOT WRAPPER TESTS (baseline — verify wrappers work at all)
                 # ================================================================
 
-                output = machine.succeed("/run/wrappers/bin/test-echo")
+                output = machine.succeed("/run/wrappers/bin/local-test-echo")
                 assert "MY_TOKEN=ghp_testvmtoken" in output, (
                     f"expected MY_TOKEN: {output}"
                 )
 
-                output = machine.succeed("/run/wrappers/bin/test-echo2 hello world")
+                output = machine.succeed("/run/wrappers/bin/local-test-echo2 hello world")
                 assert "hello world" in output
 
                 # ================================================================
@@ -289,14 +292,14 @@
                 # ================================================================
 
                 # --- testuser can run wrappers and get secrets injected ---
-                output = machine.succeed("${su "/run/wrappers/bin/test-echo"}")
+                output = machine.succeed("${su "/run/wrappers/bin/local-test-echo"}")
                 assert "MY_TOKEN=ghp_testvmtoken" in output, (
                     f"unprivileged user: expected MY_TOKEN: {output}"
                 )
                 machine.log("PASS: unprivileged user can use wrapper and gets secret")
 
                 # --- testuser can run a second wrapper ---
-                output = machine.succeed("${su "/run/wrappers/bin/test-echo2 hello"}")
+                output = machine.succeed("${su "/run/wrappers/bin/local-test-echo2 hello"}")
                 assert "hello" in output
                 machine.log("PASS: unprivileged user can use second wrapper")
 
@@ -304,7 +307,7 @@
                 # The daemon should log read requests with the resolved wrapper name
                 # for the testuser's requests (not "wrapper identity rejected").
                 logs = machine.succeed(
-                    "journalctl -u underwrapd.service --no-pager"
+                    "journalctl -u underwrapd-local.service --no-pager"
                     " | sed 's/\\x1b\\[[0-9;]*m//g'"
                     " | grep 'uid: 1099'"
                 )
@@ -326,7 +329,7 @@
                 machine.log("PASS: unprivileged user cannot access control socket")
 
                 # --- testuser cannot read secret files directly ---
-                machine.fail("${su "cat /var/lib/underwrap/secrets/test/token"}")
+                machine.fail("${su "cat /var/lib/underwrap-local/secrets/test/token"}")
                 machine.log("PASS: unprivileged user cannot read secret files")
 
                 # ================================================================
@@ -335,7 +338,7 @@
 
                 # test-echo wraps `env` → prints all env vars.
                 # It should contain MY_TOKEN but NOT OTHER_SECRET or LOCKED_TOKEN.
-                output = machine.succeed("${su "/run/wrappers/bin/test-echo"}")
+                output = machine.succeed("${su "/run/wrappers/bin/local-test-echo"}")
                 assert "MY_TOKEN=ghp_testvmtoken" in output, (
                     f"expected MY_TOKEN in output: {output}"
                 )
@@ -352,16 +355,16 @@
                 # ================================================================
 
                 # testuser runs test-echo → gets MY_TOKEN.
-                output1 = machine.succeed("${su "/run/wrappers/bin/test-echo"}")
+                output1 = machine.succeed("${su "/run/wrappers/bin/local-test-echo"}")
                 assert "MY_TOKEN=ghp_testvmtoken" in output1
 
                 # testuser runs test-echo2 → gets OTHER_SECRET, not MY_TOKEN.
-                output2 = machine.succeed("${su "/run/wrappers/bin/test-echo2 printenv"}")
+                output2 = machine.succeed("${su "/run/wrappers/bin/local-test-echo2 printenv"}")
                 # test-echo2 wraps `echo`, so it just prints args, not env.
                 # We can't check env isolation with echo. Instead verify the daemon
                 # served the correct wrapper by checking the audit log.
                 logs = machine.succeed(
-                    "journalctl -u underwrapd.service --no-pager"
+                    "journalctl -u underwrapd-local.service --no-pager"
                     " | sed 's/\\x1b\\[[0-9;]*m//g'"
                     " | grep 'uid: 1099'"
                 )
@@ -388,7 +391,7 @@
                 machine.succeed("${uwctl} lock test-locked")
 
                 # testuser tries to use it → denied.
-                machine.fail("${su "/run/wrappers/bin/test-locked"}")
+                machine.fail("${su "/run/wrappers/bin/local-test-locked"}")
                 machine.log("PASS: locked wrapper blocks unprivileged user")
 
                 # ================================================================
@@ -397,24 +400,24 @@
 
                 # Unlock → testuser uses → lock → testuser denied.
                 machine.succeed("${uwctl} unlock test-locked --seconds 60")
-                output = machine.succeed("${su "/run/wrappers/bin/test-locked"}")
+                output = machine.succeed("${su "/run/wrappers/bin/local-test-locked"}")
                 assert "LOCKED_TOKEN=locked_secret" in output
 
                 machine.succeed("${uwctl} lock test-locked")
-                machine.fail("${su "/run/wrappers/bin/test-locked"}")
+                machine.fail("${su "/run/wrappers/bin/local-test-locked"}")
                 machine.log("PASS: lock/unlock lifecycle works for unprivileged user")
 
                 # ================================================================
                 # DAEMON RESTART: secrets persist
                 # ================================================================
 
-                machine.succeed("systemctl restart underwrapd.service")
-                machine.wait_for_file("/run/underwrap/read.sock")
+                machine.succeed("systemctl restart underwrapd-local.service")
+                machine.wait_for_file("/run/underwrap-local/read.sock")
                 import time
                 time.sleep(0.5)
 
                 # Secret should still be there after restart.
-                output = machine.succeed("/run/wrappers/bin/test-echo")
+                output = machine.succeed("/run/wrappers/bin/local-test-echo")
                 assert "MY_TOKEN=ghp_testvmtoken" in output, (
                     f"secret lost after daemon restart: {output}"
                 )
@@ -435,7 +438,7 @@
                 # Launch sleep wrapper as testuser in background.
                 machine.succeed(
                     "su testuser -s /bin/sh -c '"
-                    "setsid /run/wrappers/bin/test-sleep 300 </dev/null >/dev/null 2>&1 &"
+                    "setsid /run/wrappers/bin/local-test-sleep 300 </dev/null >/dev/null 2>&1 &"
                     "'"
                 )
                 import time
@@ -535,7 +538,7 @@
                 )
 
                 # Run the crash wrapper as testuser. The target sends itself SIGSEGV.
-                rc = machine.execute("${su "/run/wrappers/bin/test-crash"}")[0]
+                rc = machine.execute("${su "/run/wrappers/bin/local-test-crash"}")[0]
                 machine.log(f"crash wrapper exit code: {rc}")
                 # The wrapper should exit non-zero (the target was killed by signal).
                 # Exit code 0 would mean the crash was swallowed.
@@ -554,7 +557,7 @@
                 # ================================================================
 
                 logs = machine.succeed(
-                    "journalctl -u underwrapd.service --no-pager"
+                    "journalctl -u underwrapd-local.service --no-pager"
                     " | sed 's/\\x1b\\[[0-9;]*m//g'"
                 )
                 assert 'audit="read_granted"' in logs, "missing read_granted"
@@ -631,21 +634,20 @@
                   enable = true;
                   package = perSystem.packages.${system}.default;
 
-                  remote = {
-                    enable = true;
-                    socket = "/run/underwrap/backend.sock";
-                  };
+                  instances.tunnel = {
+                    remote.enable = true;
 
-                  wrappers = {
-                    remote-echo = {
-                      target = "${pkgs.coreutils}/bin/env";
-                      secret = "remote/token";
-                      injection = { mode = "env"; variable = "REMOTE_TOKEN"; };
+                    wrappers = {
+                      remote-echo = {
+                        target = "${pkgs.coreutils}/bin/env";
+                        secret = "remote/token";
+                        injection = { mode = "env"; variable = "REMOTE_TOKEN"; };
+                      };
                     };
-                  };
 
-                  secrets = {
-                    "remote/token" = { mutable = false; };
+                    secrets = {
+                      "remote/token" = { mutable = false; };
+                    };
                   };
                 };
 
@@ -663,7 +665,7 @@
 
                 machine.wait_for_unit("multi-user.target")
                 machine.wait_for_unit("underwrap-backendd.service")
-                machine.wait_for_unit("underwrapd.service")
+                machine.wait_for_unit("underwrapd-tunnel.service")
                 machine.wait_for_unit("sshd.service")
 
                 # === Setup: store a secret in the backend ===
@@ -710,8 +712,8 @@
                 machine.succeed(f"chown -R underwrap-tunnel:underwrap {tunnel_home}/.ssh")
 
                 # === Without tunnel: wrapper should fail ===
-                machine.fail("test -S /run/underwrap/backend.sock")
-                machine.fail("su testuser -s /bin/sh -c '/run/wrappers/bin/remote-echo'")
+                machine.fail("test -S /run/underwrap-tunnel/backend.sock")
+                machine.fail("su testuser -s /bin/sh -c '/run/wrappers/bin/tunnel-remote-echo'")
                 machine.log("PASS: wrapper fails without tunnel")
 
                 # === Establish SSH tunnel ===
@@ -722,24 +724,24 @@
                     "-o StrictHostKeyChecking=no "
                     "-o UserKnownHostsFile=/dev/null "
                     "-i ~/.ssh/tunnel_key "
-                    "-R /run/underwrap/backend.sock:/run/underwrap-backend/backend.sock "
+                    "-R /run/underwrap-tunnel/backend.sock:/run/underwrap-backend/backend.sock "
                     "underwrap-tunnel@localhost"
                     "'"
                 )
                 time.sleep(1)
 
                 # Verify the socket appeared.
-                machine.succeed("test -S /run/underwrap/backend.sock")
+                machine.succeed("test -S /run/underwrap-tunnel/backend.sock")
                 machine.log("PASS: SSH tunnel established, backend socket present")
 
                 # Fix socket permissions: SSH creates it owned by underwrap-tunnel,
                 # but the daemon needs to read it. Since underwrap-tunnel is in the
                 # underwrap group, we need the socket group-readable.
-                machine.succeed("chmod 0660 /run/underwrap/backend.sock")
+                machine.succeed("chmod 0660 /run/underwrap-tunnel/backend.sock")
 
                 # === With tunnel: wrapper should succeed ===
                 output = machine.succeed(
-                    "su testuser -s /bin/sh -c '/run/wrappers/bin/remote-echo'"
+                    "su testuser -s /bin/sh -c '/run/wrappers/bin/tunnel-remote-echo'"
                 )
                 assert "REMOTE_TOKEN=secret_via_tunnel" in output, (
                     f"expected REMOTE_TOKEN in output: {output}"
@@ -747,16 +749,16 @@
                 machine.log("PASS: wrapper reads secret from remote backend via SSH tunnel")
 
                 # === Verify the secret came from the backend, not local storage ===
-                # The vm's /var/lib/underwrap/secrets/ should be empty.
-                machine.fail("test -f /var/lib/underwrap/secrets/remote/token")
+                # The vm's /var/lib/underwrap-local/secrets/ should be empty.
+                machine.fail("test -f /var/lib/underwrap-local/secrets/remote/token")
                 machine.log("PASS: no secret on local disk")
 
                 # === Kill tunnel: wrapper should fail ===
                 machine.execute("pkill -f 'ssh.*tunnel_key' || true")
                 time.sleep(0.5)
-                machine.succeed("rm -f /run/underwrap/backend.sock")
+                machine.succeed("rm -f /run/underwrap-tunnel/backend.sock")
 
-                machine.fail("su testuser -s /bin/sh -c '/run/wrappers/bin/remote-echo'")
+                machine.fail("su testuser -s /bin/sh -c '/run/wrappers/bin/tunnel-remote-echo'")
                 machine.log("PASS: wrapper fails after tunnel killed")
 
                 # === Re-establish tunnel: wrapper should succeed again ===
@@ -766,15 +768,15 @@
                     "-o StrictHostKeyChecking=no "
                     "-o UserKnownHostsFile=/dev/null "
                     "-i ~/.ssh/tunnel_key "
-                    "-R /run/underwrap/backend.sock:/run/underwrap-backend/backend.sock "
+                    "-R /run/underwrap-tunnel/backend.sock:/run/underwrap-backend/backend.sock "
                     "underwrap-tunnel@localhost"
                     "'"
                 )
                 time.sleep(1)
-                machine.succeed("chmod 0660 /run/underwrap/backend.sock")
+                machine.succeed("chmod 0660 /run/underwrap-tunnel/backend.sock")
 
                 output = machine.succeed(
-                    "su testuser -s /bin/sh -c '/run/wrappers/bin/remote-echo'"
+                    "su testuser -s /bin/sh -c '/run/wrappers/bin/tunnel-remote-echo'"
                 )
                 assert "REMOTE_TOKEN=secret_via_tunnel" in output, (
                     f"expected REMOTE_TOKEN after reconnect: {output}"
@@ -782,7 +784,7 @@
                 machine.log("PASS: wrapper works after tunnel reconnected")
 
                 # === No secret material in daemon logs ===
-                logs = machine.succeed("journalctl -u underwrapd.service --no-pager")
+                logs = machine.succeed("journalctl -u underwrapd-tunnel.service --no-pager")
                 assert "secret_via_tunnel" not in logs, "secret leaked to frontend logs!"
                 machine.log("PASS: no secret in frontend daemon logs")
 
@@ -790,7 +792,6 @@
               '';
             };
           };
-        };
 
     in
       # Merge all outputs.
