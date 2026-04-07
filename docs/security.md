@@ -486,6 +486,19 @@ Marvin Attack targets RSA **decryption** (PKCS#1 v1.5 unpadding), which
 requires the private key. Our daemon never holds RSA private keys and never
 performs RSA decryption. No fixed version is available upstream.
 
+**Why no fix exists (as of 2026-04):** The RustCrypto `rsa` crate's fix
+(tracked in [RustCrypto/RSA#390](https://github.com/RustCrypto/RSA/issues/390))
+depends on `crypto-bigint` implementing constant-time modular exponentiation.
+That work is in progress but has no release date. The crate is still pre-1.0.
+There is no alternative pure-Rust RSA implementation to switch to — the
+`ssh-key` crate (the standard Rust SSH key parser) depends on `rsa` for RSA
+key support.
+
+**Why we keep RSA support:** Users with legacy RSA SSH keys need to be able
+to use the unlock challenge-response flow. Dropping RSA would be a
+functionality regression. Since the vulnerable code path (decryption) is
+never invoked, the advisory is a dependency-tree artifact, not a real risk.
+
 Audit performed with `cargo-audit` 0.22.0 against the RustSec advisory DB.
 Last checked: 2026-04-07.
 
