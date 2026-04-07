@@ -61,7 +61,26 @@ fn run() -> Result<(), String> {
     }
 
     if pid == 0 {
-        // Child: exec the target with the secret in env.
+        // Child: harden and exec the target with the secret in env.
+
+        // Disable core dumps so a crashing target can't write the secret to disk.
+        let rlim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        unsafe {
+            libc::setrlimit(libc::RLIMIT_CORE, &rlim);
+        }
+
+        // Set non-dumpable. Inside the PID namespace this flag persists
+        // because there's no further credential change before exec.
+        // This is defense-in-depth: the PID namespace already hides the
+        // process, but if someone obtains the PID through other means,
+        // non-dumpable blocks /proc/<pid>/mem and ptrace.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, 0);
+        }
+
         let mut cmd = std::process::Command::new(target);
         cmd.args(target_args);
         cmd.env(env_var, &material);

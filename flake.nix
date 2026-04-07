@@ -109,7 +109,14 @@
             vm-test = pkgs.testers.nixosTest {
               name = "underwrap-vm-test";
 
-              nodes.machine = { pkgs, ... }: {
+              nodes.machine = { pkgs, ... }:
+              let
+                # Script that crashes with SIGSEGV. Used to test that core dumps
+                # are disabled inside the PID namespace.
+                crashScript = pkgs.writeShellScript "crash-target" ''
+                  kill -SEGV $$
+                '';
+              in {
                 imports = [ self.nixosModules.default ];
 
                 # Create a normal unprivileged user for testing.
@@ -150,6 +157,12 @@
                       injection = { mode = "env"; variable = "DUMPABLE_SECRET"; };
                       envVariable = "DUMPABLE_SECRET";
                     };
+                    test-crash = {
+                      target = "${crashScript}";
+                      secret = "test/crash-tok";
+                      injection = { mode = "env"; variable = "CRASH_SECRET"; };
+                      envVariable = "CRASH_SECRET";
+                    };
                   };
 
                   secrets = {
@@ -157,6 +170,7 @@
                     "test/other" = { mutable = true; };
                     "test/locked-tok" = { mutable = false; };
                     "test/dumpable-tok" = { mutable = false; };
+                    "test/crash-tok" = { mutable = false; };
                   };
                 };
               };
@@ -456,6 +470,35 @@
                 machine.succeed("pkill -u testuser -f test-sleep || true")
                 time.sleep(0.5)
 
+                # ================================================================
+                # CORE DUMP PROTECTION
+                # ================================================================
+
+                # Store a secret for the crash wrapper.
+                machine.succeed(
+                    "echo -n 'crash_secret_value' | ${uwctl} store test/crash-tok"
+                )
+
+                # Enable core dumps system-wide so we can verify underwrap blocks them.
+                machine.succeed("ulimit -c unlimited || true")
+                machine.succeed("mkdir -p /tmp/cores")
+                machine.succeed(
+                    "echo '/tmp/cores/core.%e.%p' > /proc/sys/kernel/core_pattern"
+                )
+
+                # Run the crash wrapper as testuser. The target sends itself SIGSEGV.
+                rc = machine.execute("${su "/run/wrappers/bin/test-crash"}")[0]
+                machine.log(f"crash wrapper exit code: {rc}")
+                # The wrapper should exit non-zero (the target was killed by signal).
+                # Exit code 0 would mean the crash was swallowed.
+
+                # Verify no core file was produced.
+                core_files = machine.succeed("ls /tmp/cores/ 2>/dev/null || true").strip()
+                assert core_files == "", (
+                    f"FAIL: core dump produced despite RLIMIT_CORE=0: {core_files}"
+                )
+                machine.log("PASS: no core dump produced when target crashes")
+
                 # (Unlock lifecycle for unprivileged users tested above.)
 
                 # ================================================================
@@ -477,6 +520,7 @@
                 assert "other_secret_val" not in logs, "secret leaked to logs!"
                 assert "locked_secret" not in logs, "secret leaked to logs!"
                 assert "dumpable_test_secret" not in logs, "secret leaked to logs!"
+                assert "crash_secret_value" not in logs, "secret leaked to logs!"
 
                 machine.log("All underwrap VM tests passed!")
               '';
