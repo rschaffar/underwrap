@@ -89,6 +89,38 @@ impl StorageBackend for RemoteBackend {
             BackendResponse::Error { message } => bail!("backend error: {message}"),
         }
     }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        let resp = self.send_request(&BackendRequest::List {
+            prefix: prefix.to_string(),
+        })?;
+
+        match resp {
+            BackendResponse::Ok {
+                info: Some(info), ..
+            } => {
+                let ids: Vec<String> =
+                    serde_json::from_value(info).context("parsing list response")?;
+                Ok(ids)
+            }
+            BackendResponse::Ok { info: None, .. } => Ok(Vec::new()),
+            BackendResponse::Error { message } => bail!("backend list error: {message}"),
+        }
+    }
+
+    fn delete(&self, secret_id: &str) -> Result<bool> {
+        let resp = self.send_request(&BackendRequest::Delete {
+            secret_id: secret_id.to_string(),
+        })?;
+
+        match resp {
+            BackendResponse::Ok {
+                info: Some(info), ..
+            } => Ok(info.as_bool().unwrap_or(false)),
+            BackendResponse::Ok { info: None, .. } => Ok(true),
+            BackendResponse::Error { message } => bail!("backend delete error: {message}"),
+        }
+    }
 }
 
 impl RemoteBackend {

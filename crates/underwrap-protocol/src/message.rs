@@ -152,6 +152,14 @@ pub enum BackendRequest {
     #[serde(rename = "write")]
     Write { secret_id: String, material: String },
 
+    /// List secret IDs under a prefix.
+    #[serde(rename = "list")]
+    List { prefix: String },
+
+    /// Delete a secret.
+    #[serde(rename = "delete")]
+    Delete { secret_id: String },
+
     /// Check backend health / list available secrets.
     #[serde(rename = "status")]
     Status,
@@ -305,6 +313,36 @@ mod tests {
         assert!(json.contains("\"action\":\"write\""));
         // Material should be present in JSON (backend protocol, not user-facing logs).
         assert!(json.contains("\"material\":\"secret_value\""));
+    }
+
+    #[test]
+    fn backend_list_roundtrip() {
+        let req = BackendRequest::List {
+            prefix: "gh-authorized/libsecret".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"action\":\"list\""));
+        let parsed: BackendRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            BackendRequest::List { prefix } => assert_eq!(prefix, "gh-authorized/libsecret"),
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backend_delete_roundtrip() {
+        let req = BackendRequest::Delete {
+            secret_id: "gh-authorized/libsecret/default/item_1".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"action\":\"delete\""));
+        let parsed: BackendRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            BackendRequest::Delete { secret_id } => {
+                assert_eq!(secret_id, "gh-authorized/libsecret/default/item_1")
+            }
+            other => panic!("expected Delete, got {other:?}"),
+        }
     }
 
     #[test]

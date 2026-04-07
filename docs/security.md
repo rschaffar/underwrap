@@ -26,6 +26,105 @@ underwrap does NOT protect against:
 - **Kernel compromise**: the security model depends on kernel namespaces,
   credentials, and capabilities.
 
+## Design invariants
+
+These rules are absolute. No feature, optimization, or future extension may
+violate them. They exist because past design iterations made wrong assumptions
+that would have silently degraded the security model.
+
+### All secret material flows through StorageBackend
+
+**Every byte of secret material** — whether injected via environment variable,
+stored via libsecret, or derived via OAuth — must be read from and written to
+the daemon's `StorageBackend`. No exceptions.
+
+This means:
+- No local JSON files containing secret values.
+- No sidecar files, temp files, or caches containing secret values.
+- No in-process databases (redb, sqlite) containing secret values.
+- Metadata (attributes, labels, timestamps) may be stored alongside secret
+  values in the backend as a structured envelope, but the envelope itself
+  goes through `StorageBackend::write()` and `StorageBackend::read()`.
+
+**Rationale**: The `StorageBackend` is the single enforcement point for
+encryption at rest (encrypted backend), remote storage (remote backend),
+and audit logging (daemon layer above the backend). Any secret that bypasses
+it loses all three properties silently. A plain JSON file on disk is an
+unencrypted, unaudited, local copy of secret material — exactly what the
+remote backend is designed to prevent.
+
+### Running a wrapper does not expose the raw secret
+
+A user who executes a wrapper binary can *use* the secret through the fixed
+target binary (e.g., `work-gh-authorized pr list` uses the GitHub token via
+`gh`). But the user **cannot read the raw secret value** through underwrap's
+mechanisms:
+
+- The secret passes from daemon → `underwrap-exec` → pipe fd 3 →
+  `underwrap-ns` → target env. The user never holds it.
+- The wrapper processes that briefly hold the secret set
+  `PR_SET_DUMPABLE=0` and never `exec()` again, so the flag persists.
+  This blocks `/proc/<pid>/mem`, `/proc/<pid>/environ`, and `ptrace`
+  from same-UID processes (requires `CAP_SYS_PTRACE` to bypass;
+  see `ptrace(2)` access mode algorithm step 4).
+- The target binary path is locked in a root-owned sidecar config
+  (`/etc/underwrap/wrappers/`). The user cannot substitute a binary
+  that exfiltrates the secret.
+
+Whether the target binary *itself* offers a way to print the secret (e.g.,
+`gh auth token`) is outside underwrap's control — the choice of target
+binary is part of the trust model, made by the administrator in the NixOS
+configuration.
+
+### Authenticated channels only
+
+Any communication channel that carries secret material must be authenticated
+at creation time. Authentication means: the daemon verified the peer's
+identity via kernel-provided credentials (SO_PEERCRED effective GID) before
+the channel was established. No tokens, no passwords, no environment
+variables.
+
+Channels that carry secrets:
+- **Read socket connection**: authenticated by SO_PEERCRED effective GID.
+- **Pipe fd 3** (underwrap-exec → underwrap-ns): inherited through fork,
+  no filesystem path, no way for outside processes to access it.
+- **Secretsd channel fd** (libsecret mode): `socketpair()` created during
+  the GID-authenticated read request, one end kept by the daemon, the other
+  inherited through the fork chain. Anonymous — no filesystem path.
+
+### File descriptors carrying secrets must not leak
+
+Any fd that carries secret material or provides an authenticated channel to
+the daemon must be closed before exec'ing untrusted processes. Specifically:
+
+- Pipe fd 3 is consumed (read + closed) by `underwrap-ns` before exec'ing
+  the target.
+- The secretsd channel fd must be closed before exec'ing the target. Only
+  `underwrap-secretsd` (forked before the target) should hold it.
+
+### Processes holding secrets must be non-dumpable
+
+Any process that holds secret material in memory must call
+`prctl(PR_SET_DUMPABLE, 0)`. This blocks `/proc/<pid>/mem`,
+`/proc/<pid>/environ`, `/proc/<pid>/fd/`, and `ptrace` access from
+same-UID processes without `CAP_SYS_PTRACE`.
+
+Critical detail: `exec()` of a normal binary (no setuid/setgid/capabilities)
+**resets dumpable to 1** (`prctl(2)` man page: "Normally, the dumpable
+attribute is set to 1"; it is only reset to `suid_dumpable` when credentials
+change). Therefore:
+
+- Wrapper parent processes (`underwrap-exec`, `underwrap-ns`) set
+  `PR_SET_DUMPABLE=0` and **never exec again** — the flag persists.
+- `underwrap-secretsd` is exec'd, so it starts dumpable. It **must** call
+  `PR_SET_DUMPABLE=0` as its first action, before reading any secrets from
+  the channel. Between exec and that `prctl` call there is a brief window,
+  but no secrets have been read yet, and no other processes in the namespace
+  have started.
+- The target process is exec'd and becomes dumpable. It is protected by
+  the PID namespace (defense in depth, not sole protection — see
+  limitations below).
+
 ## Wrapper identity: setgid + effective GID
 
 ### The problem
@@ -232,6 +331,121 @@ directory, and systemd service. No group membership overlap between instances.
 
 The encrypted backend's master key is wrapped in `ZeroizeOnDrop`. Raw key
 file bytes are zeroized after copying into the key struct.
+
+## Secretsd channel (libsecret mode)
+
+### The problem
+
+In libsecret mode, `underwrap-secretsd` runs inside the PID namespace and
+needs to read/write secrets through the daemon for the lifetime of the
+target process. But secretsd runs as the regular user — it doesn't have the
+wrapper's setgid GID, so it can't authenticate to the daemon's read socket.
+It needs a pre-authenticated, persistent, bidirectional channel.
+
+### The solution: socketpair() created during GID-authenticated request
+
+When a libsecret-enabled wrapper connects to the daemon, the daemon:
+
+1. Verifies the wrapper's identity via SO_PEERCRED effective GID (standard
+   read-socket authentication).
+2. Creates a `socketpair(AF_UNIX, SOCK_STREAM, 0)`.
+3. Sends one end back to `underwrap-exec` via `SCM_RIGHTS` fd passing,
+   alongside the normal secret response.
+4. Keeps the other end and spawns a scoped handler task that only permits
+   read/write of that wrapper's libsecret secret.
+
+The socketpair fd is then inherited through the fork/exec chain:
+
+```
+underwrap-exec (receives fd via SCM_RIGHTS during GID-authenticated request)
+  └─ fork → child inherits fd
+       └─ exec underwrap-ns (fd survives exec, no FD_CLOEXEC)
+            ├─ fork → secretsd (inherits fd, uses it for daemon I/O)
+            ├─ close fd  ← CRITICAL: must happen before target exec
+            └─ exec target (does NOT have the fd)
+```
+
+### Why this is secure
+
+**Anonymous socket — no discovery path.** `socketpair()` creates connected
+sockets with no filesystem path and no abstract name (`unix(7)`: "Sockets
+created by socketpair(2) are anonymous"). The only way to obtain the fd is
+to inherit it through `fork()` or receive it via `SCM_RIGHTS`.
+
+**Authenticated by construction.** The daemon creates the socketpair during
+a GID-verified request. The channel is born authenticated — there are no
+credentials to steal, replay, or forge. The daemon handler on its end knows
+which wrapper this channel belongs to and scopes all operations to that
+wrapper's libsecret secret.
+
+**Lifetime-bound.** When the PID namespace's init process exits, the kernel
+sends `SIGKILL` to all remaining processes in the namespace
+(`pid_namespaces(7)`). Secretsd dies, its fd closes, the daemon detects EOF
+and tears down the handler. No cleanup race, no leaked channels.
+
+**secretsd is non-dumpable.** After exec, secretsd calls
+`prctl(PR_SET_DUMPABLE, 0)` before reading secrets from the channel. This
+blocks `/proc/<pid>/fd/` access from same-UID processes: reading symlinks
+in `/proc/<pid>/fd/` requires passing `ptrace_may_access()` with
+`PTRACE_MODE_READ_FSCREDS`, which checks dumpable at step 4 and denies
+access without `CAP_SYS_PTRACE` (`ptrace(2)`).
+
+**Target cannot access the fd.** The secretsd channel fd is closed before
+the target is exec'd. Even if the target could discover secretsd's PID,
+`/proc/<secretsd-pid>/fd/` access is blocked by `PR_SET_DUMPABLE=0`. The
+target interacts with secrets only through the D-Bus Secret Service API on
+the private bus.
+
+### Daemon-side handler scoping
+
+The daemon handler for a secretsd channel:
+
+- Allows read/write of exactly one secret: `<wrapper-name>/libsecret`.
+- Rejects all other secret IDs.
+- Terminates when the socketpair is closed (EOF).
+
+This scoping is structural, not policy-based — the handler is created with
+the wrapper name baked in. A compromised secretsd can only access the secret
+it was authorized for.
+
+### Concurrent invocations
+
+Two simultaneous invocations of the same wrapper each get their own
+socketpair and daemon handler, both scoped to the same secret ID. The
+`StorageBackend` provides atomic writes via `tempfile::persist()`, so
+the last write wins. This is a consistency concern for rare edge cases,
+not a security issue.
+
+## Libsecret mode: private D-Bus bus
+
+### The problem
+
+Tools like `gh` use libsecret to store/retrieve credentials via the system's
+`org.freedesktop.secrets` D-Bus service. If the target connects to the real
+session bus, it would bypass underwrap's isolation entirely — reading from
+and writing to the system keyring.
+
+### The solution
+
+`underwrap-ns` launches a private `dbus-daemon` on an anonymous Unix socket
+inside the PID namespace. `underwrap-secretsd` connects to this private bus
+and claims `org.freedesktop.secrets`. The target's `DBUS_SESSION_BUS_ADDRESS`
+points to the private bus.
+
+All libsecret operations go to our secretsd, which routes secret values
+through the daemon via the authenticated socketpair channel.
+
+### Limitation: no mount namespace
+
+The target shares the host filesystem (underwrap only creates a PID namespace,
+not a mount namespace). The real session bus socket at
+`/run/user/<uid>/bus` is still accessible. A program that ignores
+`DBUS_SESSION_BUS_ADDRESS` and connects to the well-known path would reach
+the real session bus.
+
+In practice, all well-behaved libsecret clients respect
+`DBUS_SESSION_BUS_ADDRESS`. This is documented as a known limitation, not
+a security guarantee.
 
 ## Rejected approaches
 

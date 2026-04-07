@@ -31,6 +31,12 @@ impl StorageBackend for RemoteStorageWrapper {
     fn write(&self, secret_id: &str, material: &str) -> anyhow::Result<()> {
         self.0.write(secret_id, material)
     }
+    fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
+        self.0.list(prefix)
+    }
+    fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
+        self.0.delete(secret_id)
+    }
 }
 
 /// Maximum concurrent connections per socket.

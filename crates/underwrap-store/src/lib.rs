@@ -32,6 +32,16 @@ pub trait StorageBackend: Send + Sync {
     /// Write (create or replace) secret material. Implementations should
     /// write atomically where possible.
     fn write(&self, secret_id: &str, material: &str) -> Result<()>;
+
+    /// List secret IDs under a prefix. Returns IDs relative to the
+    /// storage root (not relative to the prefix). Only returns leaf
+    /// entries (actual secrets), not intermediate directories.
+    /// An empty prefix lists all secrets.
+    fn list(&self, prefix: &str) -> Result<Vec<String>>;
+
+    /// Delete a secret by id. Returns `Ok(true)` if the secret existed
+    /// and was deleted, `Ok(false)` if it did not exist.
+    fn delete(&self, secret_id: &str) -> Result<bool>;
 }
 
 /// Open a storage backend from a [`StorageConfig`].

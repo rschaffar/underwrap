@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::StorageBackend;
-use crate::path::{atomic_write, prepare_dir, validated_path};
+use crate::path::{
+    atomic_write, cleanup_empty_parents, list_files_recursive, prepare_dir, validated_path,
+};
 
 /// Master key — zeroed from memory on drop.
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -64,6 +66,22 @@ impl StorageBackend for EncryptedBackend {
         let path = validated_path(&self.dir, secret_id)?;
         let data = encrypt(&self.key.0, material.as_bytes())?;
         atomic_write(&path, &self.dir, secret_id, &data)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        list_files_recursive(&self.dir, prefix)
+    }
+
+    fn delete(&self, secret_id: &str) -> Result<bool> {
+        let path = validated_path(&self.dir, secret_id)?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                cleanup_empty_parents(&path, &self.dir);
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e).with_context(|| format!("deleting secret {secret_id}")),
+        }
     }
 }
 
@@ -232,5 +250,26 @@ mod tests {
         let big = "x".repeat(32_000);
         b.write("big", &big).unwrap();
         assert_eq!(b.read("big").unwrap().unwrap(), big);
+    }
+
+    #[test]
+    fn list_and_delete() {
+        let (_dir, b) = test_backend();
+        b.write("a/item1", "v1").unwrap();
+        b.write("a/item2", "v2").unwrap();
+        b.write("b/item3", "v3").unwrap();
+
+        let mut ids = b.list("a").unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["a/item1", "a/item2"]);
+
+        assert!(b.delete("a/item1").unwrap());
+        assert!(!b.delete("nonexistent").unwrap());
+
+        let ids = b.list("a").unwrap();
+        assert_eq!(ids, vec!["a/item2"]);
+
+        // Deleted item can't be read.
+        assert!(b.read("a/item1").unwrap().is_none());
     }
 }

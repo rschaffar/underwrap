@@ -143,6 +143,32 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
             },
         },
 
+        BackendRequest::List { prefix } => match state.store.list(prefix) {
+            Ok(ids) => {
+                info!(prefix = %prefix, count = ids.len(), "backend list");
+                BackendResponse::Ok {
+                    material: None,
+                    info: Some(serde_json::json!(ids)),
+                }
+            }
+            Err(e) => BackendResponse::Error {
+                message: format!("storage error: {e}"),
+            },
+        },
+
+        BackendRequest::Delete { secret_id } => match state.store.delete(secret_id) {
+            Ok(existed) => {
+                info!(secret = %secret_id, existed = existed, "backend delete");
+                BackendResponse::Ok {
+                    material: None,
+                    info: Some(serde_json::json!(existed)),
+                }
+            }
+            Err(e) => BackendResponse::Error {
+                message: format!("storage error: {e}"),
+            },
+        },
+
         BackendRequest::Status => {
             info!("backend status");
             BackendResponse::Ok {
