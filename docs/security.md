@@ -165,7 +165,14 @@ second field).
 `security.wrappers` handles setgid binary installation correctly: it mounts
 `/run/wrappers` without `nosuid` and creates a small C helper that sets
 credentials before exec. The source binaries are copies (not symlinks) so
-`argv[0]` contains the wrapper name for loading the correct sidecar config.
+`argv[0]` contains the wrapper name for loading the sidecar config.
+
+However, `argv[0]` alone is not trusted for identity — a user could create
+a symlink from one wrapper name to another wrapper's binary (confused deputy).
+To prevent this, the daemon includes the canonical wrapper name (from
+GID-based identity) in every response, and `underwrap-exec` verifies that
+`argv[0]` matches the daemon's canonical name. A mismatch aborts immediately
+with the secret zeroized.
 
 ## PID namespace isolation
 
@@ -573,6 +580,7 @@ Last checked: 2026-04-07.
 | Approach | Why rejected |
 |----------|-------------|
 | Trust client-supplied wrapper names | Trivially spoofable |
+| Trust `argv[0]` alone for config selection | Symlink confused deputy: user pairs wrong secret with wrong target |
 | `/proc/<pid>/exe` identity check | All wrappers are the same binary |
 | `PR_SET_DUMPABLE` on target | Kernel resets after exec without credential mismatch |
 | `suid_dumpable=0` sysctl | Same exec-time reset issue |
