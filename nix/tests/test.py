@@ -148,41 +148,105 @@ assert "MY_TOKEN=ghp_testvmtoken" in output
 machine.log("PASS: secrets persist across restart")
 
 # ============================================================
-# LOCAL INSTANCE: PID namespace isolation
+# LOCAL INSTANCE: PID namespace and /proc isolation (DECISIVE TEST)
 # ============================================================
+# This test answers: can a same-UID host-namespace process read
+# /proc/<host_pid>/environ of the final target process?
+#
+# Design:
+# 1. Launch a long-lived wrapped target (sleep 300) as testuser
+# 2. As ROOT (test instrumentation only), find the host-visible PID
+#    of the actual "sleep" process inside the namespace
+# 3. As TESTUSER (same-UID attacker), attempt to read its /proc entries
+# 4. Hard assertion on the result
 
 machine.succeed(
     "su testuser -s /bin/sh -c '"
     "setsid /run/wrappers/bin/local-test-sleep 300 </dev/null >/dev/null 2>&1 &"
     "'"
 )
-time.sleep(1)
+time.sleep(2)
 
-rc = machine.execute("pgrep -u testuser -x sleep")[0]
-assert rc != 0, "FAIL: sleep process visible in parent namespace — PID namespace isolation broken"
-machine.log("PASS: PID namespace — sleep invisible to parent namespace")
+# Step 2: As root, find the host PID of the final "sleep" target.
+# Root can always see all processes regardless of namespaces.
+host_pid = machine.succeed(
+    "pgrep -u testuser -x sleep || echo NONE"
+).strip()
 
-# ============================================================
-# LOCAL INSTANCE: wrapper process memory protection
-# ============================================================
+if host_pid == "NONE" or host_pid == "":
+    # The sleep process is not visible to root via pgrep.
+    # This means something unexpected happened (process died, or
+    # pgrep can't find it). This is not a security pass — it's
+    # an inconclusive test. Fail explicitly.
+    assert False, \
+        "INCONCLUSIVE: root cannot find sleep process via pgrep. " \
+        "Process may have died or test setup failed."
 
+machine.log(f"Found target sleep process at host PID {host_pid}")
+
+# Verify it's actually the right process (running sleep, owned by testuser).
+cmdline = machine.succeed(f"cat /proc/{host_pid}/cmdline 2>/dev/null || echo UNKNOWN").strip()
+machine.log(f"Target cmdline: {cmdline}")
+assert "sleep" in cmdline, f"Host PID {host_pid} is not a sleep process: {cmdline}"
+
+# Step 3: As testuser (same-UID), attempt to read the target's environ.
+# This is THE decisive test. If this succeeds, the secret is exposed.
+rc_environ = machine.execute(
+    f"su testuser -s /bin/sh -c 'cat /proc/{host_pid}/environ 2>/dev/null'"
+)[0]
+
+rc_mem = machine.execute(
+    f"su testuser -s /bin/sh -c 'dd if=/proc/{host_pid}/mem bs=1 count=1 2>/dev/null'"
+)[0]
+
+rc_maps = machine.execute(
+    f"su testuser -s /bin/sh -c 'cat /proc/{host_pid}/maps 2>/dev/null'"
+)[0]
+
+machine.log(f"Same-UID access to target PID {host_pid}: "
+            f"environ={rc_environ} mem={rc_mem} maps={rc_maps}")
+
+# Record what actually happened, then assert.
+if rc_environ == 0:
+    # Same-UID CAN read the target's environ. This means the secret
+    # in the environment IS exposed. Document this as the actual behavior.
+    leaked_env = machine.succeed(
+        f"cat /proc/{host_pid}/environ 2>/dev/null | tr '\\0' '\\n' | head -5"
+    ).strip()
+    machine.log(f"LEAKED environ (first 5 vars): {leaked_env}")
+    # Check if the actual secret is in there.
+    full_env = machine.succeed(
+        f"cat /proc/{host_pid}/environ 2>/dev/null | tr '\\0' '\\n' || true"
+    )
+    if "dumpable_test_secret" in full_env:
+        assert False, \
+            f"CRITICAL: same-UID host process CAN read target's environ " \
+            f"AND the secret is visible! PID {host_pid}"
+    else:
+        assert False, \
+            f"EXPOSED: same-UID host process CAN read target's environ " \
+            f"(secret not found in first read, but access is open). PID {host_pid}"
+else:
+    machine.log(f"PASS: same-UID host process CANNOT read target environ (PID {host_pid})")
+
+assert rc_mem != 0, f"FAIL: same-UID can read /proc/{host_pid}/mem"
+assert rc_maps != 0, f"FAIL: same-UID can read /proc/{host_pid}/maps"
+machine.log("PASS: final target process is protected from same-UID /proc inspection")
+
+# Also verify the wrapper parent processes are still protected.
 wrapper_pids = machine.succeed(
     "pgrep -u testuser -f 'local-test-sleep|underwrap' || echo none"
 ).strip()
 if wrapper_pids != "none":
     for pid_str in wrapper_pids.split("\n"):
         pid_str = pid_str.strip()
-        if not pid_str:
-            continue
-        rc = machine.execute(
-            f"su testuser -s /bin/sh -c 'dd if=/proc/{pid_str}/mem bs=1 count=1 2>/dev/null'"
-        )[0]
-        assert rc != 0, f"FAIL: same-UID read /proc/{pid_str}/mem"
+        if not pid_str or pid_str == host_pid:
+            continue  # Already tested the target above.
         rc = machine.execute(
             f"su testuser -s /bin/sh -c 'cat /proc/{pid_str}/environ 2>/dev/null'"
         )[0]
-        assert rc != 0, f"FAIL: same-UID read /proc/{pid_str}/environ"
-    machine.log("PASS: wrapper mem+environ not readable by same-UID")
+        assert rc != 0, f"FAIL: same-UID read /proc/{pid_str}/environ (wrapper process)"
+    machine.log("PASS: wrapper parent processes also protected")
 
 machine.execute("pkill -u testuser -f local-test-sleep || true")
 time.sleep(0.5)
