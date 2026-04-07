@@ -20,6 +20,15 @@ use std::os::unix::process::CommandExt;
 /// The fd number used to pass the secret from underwrap-exec.
 const SECRET_FD: i32 = 3;
 
+/// The fd number used for the secretsd channel (from underwrap-exec).
+const CHANNEL_FD: i32 = 4;
+
+/// Default dbus-daemon binary path.
+const DEFAULT_DBUS_DAEMON: &str = "dbus-daemon";
+
+/// Default secretsd binary path.
+const DEFAULT_SECRETSD: &str = "underwrap-secretsd";
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("underwrap-ns: {e}");
@@ -89,9 +98,31 @@ fn run() -> Result<(), String> {
             libc::prctl(libc::PR_SET_DUMPABLE, 0);
         }
 
+        // Check if libsecret mode is enabled.
+        let libsecret = std::env::var("UNDERWRAP_LIBSECRET").is_ok();
+
         let mut cmd = std::process::Command::new(target);
         cmd.args(target_args);
         cmd.env(env_var, &material);
+
+        // Remove libsecret env vars — target should not see these.
+        cmd.env_remove("UNDERWRAP_LIBSECRET");
+        cmd.env_remove("UNDERWRAP_DBUS_DAEMON");
+        cmd.env_remove("UNDERWRAP_SECRETSD");
+
+        if libsecret {
+            // Launch private D-Bus session bus + secretsd inside the namespace.
+            match setup_libsecret(&mut cmd) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("underwrap-ns: libsecret setup failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            // No libsecret — close fd 4 if it happens to be open.
+            unsafe { libc::close(CHANNEL_FD) };
+        }
 
         let err = cmd.exec();
         eprintln!("underwrap-ns: exec failed: {err}");
@@ -123,6 +154,145 @@ fn run() -> Result<(), String> {
         std::process::exit(128 + sig);
     }
     std::process::exit(1);
+}
+
+/// Set up libsecret mode: launch dbus-daemon and secretsd inside the PID namespace.
+///
+/// 1. Create temp dir for bus socket
+/// 2. Fork+exec dbus-daemon
+/// 3. Wait for socket to appear
+/// 4. Fork+exec secretsd (inherits fd 4 = channel to daemon)
+/// 5. Close fd 4 (CRITICAL: target must not inherit it)
+/// 6. Wait for secretsd readiness
+/// 7. Set DBUS_SESSION_BUS_ADDRESS on the target command
+fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
+    let dbus_daemon =
+        std::env::var("UNDERWRAP_DBUS_DAEMON").unwrap_or_else(|_| DEFAULT_DBUS_DAEMON.to_string());
+    let secretsd =
+        std::env::var("UNDERWRAP_SECRETSD").unwrap_or_else(|_| DEFAULT_SECRETSD.to_string());
+
+    // Create temp directory for the bus socket.
+    let bus_dir = format!("/tmp/underwrap-dbus-{}", unsafe { libc::getpid() });
+    std::fs::create_dir_all(&bus_dir).map_err(|e| format!("creating bus dir {bus_dir}: {e}"))?;
+    let bus_socket = format!("{bus_dir}/bus");
+    let bus_address = format!("unix:path={bus_socket}");
+
+    // Create a readiness pipe for secretsd.
+    let mut ready_fds = [0i32; 2];
+    let ret = unsafe { libc::pipe(ready_fds.as_mut_ptr()) };
+    if ret != 0 {
+        return Err(format!(
+            "pipe() for readiness failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let (ready_read, ready_write) = (ready_fds[0], ready_fds[1]);
+
+    // --- Fork dbus-daemon ---
+    let dbus_pid = unsafe { libc::fork() };
+    if dbus_pid < 0 {
+        return Err(format!(
+            "fork dbus-daemon failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if dbus_pid == 0 {
+        // Child: exec dbus-daemon.
+        // Close fds we don't need.
+        unsafe {
+            libc::close(SECRET_FD); // Already consumed.
+            libc::close(CHANNEL_FD); // dbus-daemon doesn't need it.
+            libc::close(ready_read);
+            libc::close(ready_write);
+        }
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&dbus_daemon)
+            .arg("--session")
+            .arg(format!("--address={bus_address}"))
+            .arg("--nofork")
+            .arg("--nopidfile")
+            .exec();
+        eprintln!("underwrap-ns: exec dbus-daemon failed: {err}");
+        std::process::exit(1);
+    }
+
+    // Wait for the bus socket to appear (poll up to 5 seconds).
+    for i in 0..50 {
+        if std::path::Path::new(&bus_socket).exists() {
+            break;
+        }
+        if i == 49 {
+            return Err("dbus-daemon socket did not appear within 5 seconds".to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // --- Fork secretsd ---
+    let secretsd_pid = unsafe { libc::fork() };
+    if secretsd_pid < 0 {
+        return Err(format!(
+            "fork secretsd failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if secretsd_pid == 0 {
+        // Child: exec secretsd.
+        // secretsd inherits fd 4 (channel to daemon).
+        // Pass the readiness write fd so it can signal when ready.
+        unsafe {
+            libc::close(SECRET_FD);
+            libc::close(ready_read);
+        }
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&secretsd)
+            .arg("--bus-address")
+            .arg(&bus_address)
+            .arg("--channel-fd")
+            .arg(CHANNEL_FD.to_string())
+            .arg("--ready-fd")
+            .arg(ready_write.to_string())
+            .exec();
+        eprintln!("underwrap-ns: exec secretsd failed: {err}");
+        std::process::exit(1);
+    }
+
+    // CRITICAL: Close fd 4 (secretsd channel) in this process.
+    // The target must NOT inherit it.
+    unsafe { libc::close(CHANNEL_FD) };
+    // Close write end of readiness pipe.
+    unsafe { libc::close(ready_write) };
+
+    // Wait for secretsd to signal readiness (it writes one byte when ready).
+    let mut ready_buf = [0u8; 1];
+    let mut waited = 0;
+    loop {
+        let n = unsafe { libc::read(ready_read, ready_buf.as_mut_ptr() as *mut libc::c_void, 1) };
+        if n > 0 {
+            break; // secretsd is ready.
+        }
+        if n == 0 {
+            // Pipe closed without writing — secretsd crashed.
+            return Err("secretsd exited before signaling readiness".to_string());
+        }
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(format!("reading secretsd readiness: {err}"));
+        }
+        waited += 1;
+        if waited > 50 {
+            return Err("secretsd did not become ready within 5 seconds".to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    unsafe { libc::close(ready_read) };
+
+    // Set DBUS_SESSION_BUS_ADDRESS so the target uses our private bus.
+    cmd.env("DBUS_SESSION_BUS_ADDRESS", &bus_address);
+
+    Ok(())
 }
 
 /// Read the secret from the pipe on fd 3 and close the fd.
