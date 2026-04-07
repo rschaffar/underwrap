@@ -9,6 +9,7 @@ members = [
     "crates/underwrap-exec",
     "crates/underwrap-ns",
     "crates/underwrap-secretsd-store",
+    "crates/underwrap-secretsd",
     "crates/integration-tests",
 ]
 
