@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 
 use crate::harness::*;
@@ -1112,7 +1113,96 @@ async fn unlock_scoped() {
 }
 
 // ===========================================================================
-// Unlock: wrapper without require_unlock works without unlock
+// Unlock: challenge-response with unlock_key on same connection
+// ===========================================================================
+
+#[tokio::test]
+async fn unlock_key_challenge_response_same_connection() {
+    use ssh_key::PrivateKey;
+    use ssh_key::private::{Ed25519Keypair, KeypairData};
+
+    // Generate a test ed25519 key pair.
+    let keypair = Ed25519Keypair::random(&mut rand::thread_rng());
+    let private_key = PrivateKey::new(KeypairData::Ed25519(keypair.clone()), "test-key").unwrap();
+    let public_key_openssh = private_key.public_key().to_openssh().unwrap();
+
+    let mut wrappers = HashMap::new();
+    let mut w = locked_wrapper("/usr/bin/true", "key-locked/tok", "TOK");
+    w.unlock_key = Some(public_key_openssh.clone());
+    wrappers.insert("key-locked-w".to_string(), w);
+    let mut secrets = HashMap::new();
+    secrets.insert("key-locked/tok".to_string(), secret(false));
+
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    daemon
+        .store_secret("key-locked/tok", "key_secret")
+        .await
+        .unwrap();
+
+    // Send Unlock on a single connection — should get Challenge back.
+    let mut stream = daemon.connect_read().await.unwrap();
+    let req = WrapperRequest::Unlock {
+        wrapper: "key-locked-w".to_string(),
+        scope: None,
+        seconds: None,
+    };
+    write_frame_async(&mut stream, &req).await.unwrap();
+    let resp: WrapperResponse = read_frame_async(&mut stream).await.unwrap();
+
+    let nonce = match resp {
+        WrapperResponse::Challenge { nonce } => nonce,
+        other => panic!("expected Challenge, got {other:?}"),
+    };
+
+    // Sign the nonce with our private key.
+    let nonce_bytes = hex::decode(&nonce).unwrap();
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&keypair.private.to_bytes());
+    use ed25519_dalek::Signer;
+    let raw_sig = signing_key.sign(&nonce_bytes);
+
+    // Build the SSH wire format signature:
+    // [4-byte algo-name-len][algo-name][4-byte sig-len][sig-bytes]
+    let algo = b"ssh-ed25519";
+    let sig_bytes = raw_sig.to_bytes();
+    let mut wire_sig = Vec::new();
+    wire_sig.extend_from_slice(&(algo.len() as u32).to_be_bytes());
+    wire_sig.extend_from_slice(algo);
+    wire_sig.extend_from_slice(&(sig_bytes.len() as u32).to_be_bytes());
+    wire_sig.extend_from_slice(&sig_bytes);
+
+    let sig_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wire_sig);
+
+    // Send UnlockResponse on the SAME connection.
+    let req2 = WrapperRequest::UnlockResponse {
+        wrapper: "key-locked-w".to_string(),
+        scope: None,
+        seconds: None,
+        challenge: nonce,
+        signature: sig_b64,
+        public_key: public_key_openssh,
+    };
+    write_frame_async(&mut stream, &req2).await.unwrap();
+    let resp2: WrapperResponse = read_frame_async(&mut stream).await.unwrap();
+
+    match resp2 {
+        WrapperResponse::Ok { message, .. } => {
+            assert!(message.unwrap_or_default().contains("unlocked"));
+        }
+        other => panic!("expected Ok (unlocked), got {other:?}"),
+    }
+
+    // Now reads should succeed.
+    let resp = daemon.read_request("key-locked-w").await.unwrap();
+    match resp {
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material, "key_secret"),
+        other => panic!("expected Ok with material, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
+}
 // ===========================================================================
 
 #[tokio::test]

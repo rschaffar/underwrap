@@ -5,6 +5,10 @@ let
   crashScript = pkgs.writeShellScript "crash-target" ''
     kill -SEGV $$
   '';
+  # Print capabilities from /proc/self/status.
+  capsScript = pkgs.writeShellScript "caps-target" ''
+    grep '^Cap' /proc/self/status
+  '';
 in {
   imports = [ nixosModule ];
 
@@ -99,6 +103,11 @@ in {
             injection = { mode = "env"; variable = "LIBSECRET_UNUSED"; };
             libsecret = true;
           };
+          test-caps = {
+            target = "${capsScript}";
+            secret = "test/caps-tok";
+            injection = { mode = "env"; variable = "CAPS_SECRET"; };
+          };
         };
 
         secrets = {
@@ -108,6 +117,7 @@ in {
           "test/dumpable-tok" = { mutable = false; };
           "test/crash-tok" = { mutable = false; };
           "test/libsecret-tok" = { mutable = false; };
+          "test/caps-tok" = { mutable = false; };
         };
       };
 

@@ -63,6 +63,7 @@ machine.succeed(f"echo -n 'locked_secret' | {UWCTL_LOCAL} store test/locked-tok"
 machine.succeed(f"echo -n 'dumpable_test_secret' | {UWCTL_LOCAL} store test/dumpable-tok")
 machine.succeed(f"echo -n 'crash_secret_value' | {UWCTL_LOCAL} store test/crash-tok")
 machine.succeed(f"echo -n 'libsecret_base' | {UWCTL_LOCAL} store test/libsecret-tok")
+machine.succeed(f"echo -n 'caps_test_val' | {UWCTL_LOCAL} store test/caps-tok")
 
 # Status.
 status = machine.succeed(f"{UWCTL_LOCAL} status")
@@ -96,6 +97,26 @@ logs = machine.succeed(
 )
 assert "read request" in logs
 machine.log("PASS: daemon resolved identity for unprivileged user")
+
+# ============================================================
+# LOCAL INSTANCE: verify capabilities are dropped for target
+# ============================================================
+
+caps_output = machine.succeed(su("/run/wrappers/bin/local-test-caps")).strip()
+machine.log(f"Target capabilities: {caps_output}")
+# All effective and permitted capability lines should show 0 (no caps).
+# CapBnd (bounding set) may be non-zero — it limits what can be gained
+# through exec of setcap binaries, not what the process currently has.
+for line in caps_output.split("\n"):
+    line = line.strip()
+    if line.startswith("Cap") and ":" in line:
+        name, value = line.split(":", 1)
+        name = name.strip()
+        value = value.strip()
+        if name in ("CapEff", "CapPrm", "CapInh", "CapAmb"):
+            assert value == "0000000000000000", \
+                f"FAIL: target has non-zero capability {name}: {value}"
+machine.log("PASS: target process has zero capabilities")
 
 # ============================================================
 # LOCAL INSTANCE: isolation

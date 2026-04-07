@@ -91,6 +91,11 @@ impl TestDaemon {
         Ok(resp)
     }
 
+    /// Get a raw connection to the read socket for multi-message tests.
+    pub async fn connect_read(&self) -> Result<UnixStream> {
+        Ok(UnixStream::connect(&self.read_socket).await?)
+    }
+
     /// Send a read request with a scope.
     #[allow(dead_code)]
     pub async fn read_request_with_scope(
