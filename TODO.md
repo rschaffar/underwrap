@@ -3,7 +3,6 @@
 ## Future work
 
 - [ ] `underwrapctl reauth` workflow for re-doing OAuth browser flows
-- [ ] stdin and tempfile injection modes in `underwrap-exec`
 - [ ] Secret metadata / versioning
 - [ ] Encrypted backend: passphrase-derived key via Argon2 (currently plaintext key file)
 - [ ] Hardware-assisted unseal: TPM, YubiKey
