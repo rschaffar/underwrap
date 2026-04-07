@@ -185,6 +185,7 @@ pub fn wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         require_unlock: false,
         group: current_group_name(),
         unlock_key: None,
+        libsecret: false,
     }
 }
 
@@ -200,6 +201,7 @@ pub fn locked_wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         require_unlock: true,
         group: current_group_name(),
         unlock_key: None,
+        libsecret: false,
     }
 }
 

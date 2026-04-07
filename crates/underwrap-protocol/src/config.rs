@@ -224,6 +224,12 @@ pub struct WrapperDef {
     /// If unset, unlock is granted without challenge (GID identity only).
     #[serde(default)]
     pub unlock_key: Option<String>,
+
+    /// Whether this wrapper provides a private D-Bus session with a
+    /// Secret Service provider (underwrap-secretsd) inside the PID namespace.
+    /// Enables tools using libsecret (e.g. gh) to store/retrieve credentials.
+    #[serde(default)]
+    pub libsecret: bool,
 }
 /// How the secret material is delivered to the child process.
 ///
@@ -377,6 +383,7 @@ storage:
                         require_unlock: false,
                         group: "testgroup".to_string(),
                         unlock_key: None,
+                        libsecret: false,
                     },
                 );
                 m
