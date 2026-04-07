@@ -226,13 +226,12 @@ last_line = output.split("\n")[-1].strip()
 assert last_line == "my_gh_token_123", f"expected 'my_gh_token_123', got '{last_line}'"
 machine.log("PASS: secret-tool lookup via libsecret wrapper")
 
-# Debug: check where the secret ended up outside the backend.
-debug_files = machine.succeed(
-    "find / -type f -not -path '/var/lib/underwrap-*' -not -path '/proc/*' -not -path '/sys/*' -not -path '/nix/*' -not -path '/dev/*' -not -path '/run/*' "
-    "-exec grep -l 'my_gh_token_123' {} + 2>/dev/null || echo 'NONE'"
+# Verify the secret IS in the backend storage (via the daemon).
+backend_files = machine.succeed(
+    "find /var/lib/underwrap-local/secrets/test-libsecret/ -type f 2>/dev/null || echo none"
 ).strip()
-machine.log(f"DEBUG: files containing secret outside backend: {debug_files}")
-machine.log("PASS: no files outside backend contain secret material")
+assert backend_files != "none", "expected libsecret backend files"
+machine.log("PASS: libsecret data stored in backend")
 
 # Verify the secret IS in the backend storage (via the daemon).
 backend_files = machine.succeed(
