@@ -206,7 +206,8 @@ in {
     users.users.underwrap-tunnel = lib.mkIf cfg.remote.enable {
       isSystemUser = true;
       group = "underwrap";
-      home = "/var/empty";
+      home = "/var/lib/underwrap-tunnel";
+      createHome = true;
       description = "underwrap SSH tunnel endpoint";
     };
 
@@ -217,7 +218,7 @@ in {
 
     # Runtime directories.
     systemd.tmpfiles.rules = [
-      "d /run/underwrap 0755 underwrap underwrap -"
+      "d /run/underwrap 0775 underwrap underwrap -"
       "d /var/lib/underwrap 0700 underwrap underwrap -"
       "d /var/lib/underwrap/secrets 0700 underwrap underwrap -"
     ];

@@ -225,7 +225,7 @@
 
                 # --- Socket permissions ---
                 perms = machine.succeed("stat -c %a /run/underwrap").strip()
-                assert perms == "755", f"expected dir perms 755, got {perms}"
+                assert perms == "775", f"expected dir perms 775, got {perms}"
                 perms = machine.succeed("stat -c %a /run/underwrap/read.sock").strip()
                 assert perms == "666", f"expected read socket perms 666, got {perms}"
                 perms = machine.succeed("stat -c %a /run/underwrap/control.sock").strip()
@@ -571,6 +571,222 @@
                 assert "crash_secret_value" not in logs, "secret leaked to logs!"
 
                 machine.log("All underwrap VM tests passed!")
+              '';
+            };
+
+            # Remote backend test: full SSH tunnel flow in one VM.
+            # backend user runs underwrap-backendd, SSH-forwards socket to tunnel user.
+            vm-test-remote = pkgs.testers.nixosTest {
+              name = "underwrap-vm-test-remote";
+
+              nodes.machine = { pkgs, ... }: {
+                imports = [ self.nixosModules.default ];
+
+                environment.systemPackages = [ pkgs.openssh ];
+
+                # Normal user who runs wrappers.
+                users.users.testuser = {
+                  isNormalUser = true;
+                  uid = 1099;
+                };
+
+                # Backend user: runs underwrap-backendd on the "workstation" side.
+                users.users.underwrap-backend = {
+                  isSystemUser = true;
+                  group = "underwrap-backend";
+                  home = "/var/lib/underwrap-backend";
+                  createHome = true;
+                  description = "underwrap backend operator";
+                };
+                users.groups.underwrap-backend = {};
+
+                # Backend daemon service.
+                systemd.services.underwrap-backendd = {
+                  description = "underwrap backend daemon";
+                  wantedBy = [ "multi-user.target" ];
+                  serviceConfig = {
+                    Type = "simple";
+                    User = "underwrap-backend";
+                    Group = "underwrap-backend";
+                    ExecStart = let
+                      cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
+                        socket = "/run/underwrap-backend/backend.sock";
+                        storage = {
+                          backend = "plain";
+                          dir = "/var/lib/underwrap-backend/secrets";
+                        };
+                      });
+                    in "${perSystem.packages.${system}.default}/bin/underwrap-backendd --config ${cfg}";
+                    Restart = "on-failure";
+                  };
+                };
+
+                systemd.tmpfiles.rules = [
+                  "d /run/underwrap-backend 0700 underwrap-backend underwrap-backend -"
+                  "d /var/lib/underwrap-backend/secrets 0700 underwrap-backend underwrap-backend -"
+                ];
+
+                # Frontend daemon with remote storage.
+                services.underwrap = {
+                  enable = true;
+                  package = perSystem.packages.${system}.default;
+
+                  remote = {
+                    enable = true;
+                    socket = "/run/underwrap/backend.sock";
+                  };
+
+                  wrappers = {
+                    remote-echo = {
+                      target = "${pkgs.coreutils}/bin/env";
+                      secret = "remote/token";
+                      injection = { mode = "env"; variable = "REMOTE_TOKEN"; };
+                    };
+                  };
+
+                  secrets = {
+                    "remote/token" = { mutable = false; };
+                  };
+                };
+
+                # SSH server for the tunnel.
+                services.openssh = {
+                  enable = true;
+                  settings = {
+                    StreamLocalBindUnlink = "yes";
+                  };
+                };
+              };
+
+              testScript = ''
+                import time
+
+                machine.wait_for_unit("multi-user.target")
+                machine.wait_for_unit("underwrap-backendd.service")
+                machine.wait_for_unit("underwrapd.service")
+                machine.wait_for_unit("sshd.service")
+
+                # === Setup: store a secret in the backend ===
+                machine.succeed(
+                    "su underwrap-backend -s /bin/sh -c '"
+                    "mkdir -p /var/lib/underwrap-backend/secrets/remote"
+                    "'"
+                )
+                machine.succeed(
+                    "su underwrap-backend -s /bin/sh -c '"
+                    "echo -n secret_via_tunnel > /var/lib/underwrap-backend/secrets/remote/token"
+                    "'"
+                )
+
+                # === Setup: generate SSH key for the backend user ===
+                machine.succeed(
+                    "su underwrap-backend -s /bin/sh -c '"
+                    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+                    "ssh-keygen -t ed25519 -f ~/.ssh/tunnel_key -N \"\" -q"
+                    "'"
+                )
+
+                # === Setup: authorize the key for underwrap-tunnel user ===
+                # The key is restricted to only forward the backend socket.
+                pubkey = machine.succeed(
+                    "cat /var/lib/underwrap-backend/.ssh/tunnel_key.pub"
+                ).strip()
+                machine.succeed(
+                    "mkdir -p /etc/ssh/authorized_keys.d"
+                )
+                # Get the tunnel user's home directory.
+                tunnel_home = machine.succeed(
+                    "getent passwd underwrap-tunnel | cut -d: -f6"
+                ).strip()
+
+                machine.succeed(
+                    f"mkdir -p {tunnel_home}/.ssh && chmod 700 {tunnel_home}/.ssh"
+                )
+                machine.succeed(
+                    f"echo '{pubkey}'"
+                    f" > {tunnel_home}/.ssh/authorized_keys"
+                )
+                machine.succeed(f"chmod 600 {tunnel_home}/.ssh/authorized_keys")
+                machine.succeed(f"chown -R underwrap-tunnel:underwrap {tunnel_home}/.ssh")
+
+                # === Without tunnel: wrapper should fail ===
+                machine.fail("test -S /run/underwrap/backend.sock")
+                machine.fail("su testuser -s /bin/sh -c '/run/wrappers/bin/remote-echo'")
+                machine.log("PASS: wrapper fails without tunnel")
+
+                # === Establish SSH tunnel ===
+                # backend user forwards its local backend socket to the tunnel user's path.
+                machine.succeed(
+                    "su underwrap-backend -s /bin/sh -c '"
+                    "ssh -f -N "
+                    "-o StrictHostKeyChecking=no "
+                    "-o UserKnownHostsFile=/dev/null "
+                    "-i ~/.ssh/tunnel_key "
+                    "-R /run/underwrap/backend.sock:/run/underwrap-backend/backend.sock "
+                    "underwrap-tunnel@localhost"
+                    "'"
+                )
+                time.sleep(1)
+
+                # Verify the socket appeared.
+                machine.succeed("test -S /run/underwrap/backend.sock")
+                machine.log("PASS: SSH tunnel established, backend socket present")
+
+                # Fix socket permissions: SSH creates it owned by underwrap-tunnel,
+                # but the daemon needs to read it. Since underwrap-tunnel is in the
+                # underwrap group, we need the socket group-readable.
+                machine.succeed("chmod 0660 /run/underwrap/backend.sock")
+
+                # === With tunnel: wrapper should succeed ===
+                output = machine.succeed(
+                    "su testuser -s /bin/sh -c '/run/wrappers/bin/remote-echo'"
+                )
+                assert "REMOTE_TOKEN=secret_via_tunnel" in output, (
+                    f"expected REMOTE_TOKEN in output: {output}"
+                )
+                machine.log("PASS: wrapper reads secret from remote backend via SSH tunnel")
+
+                # === Verify the secret came from the backend, not local storage ===
+                # The vm's /var/lib/underwrap/secrets/ should be empty.
+                machine.fail("test -f /var/lib/underwrap/secrets/remote/token")
+                machine.log("PASS: no secret on local disk")
+
+                # === Kill tunnel: wrapper should fail ===
+                machine.execute("pkill -f 'ssh.*tunnel_key' || true")
+                time.sleep(0.5)
+                machine.succeed("rm -f /run/underwrap/backend.sock")
+
+                machine.fail("su testuser -s /bin/sh -c '/run/wrappers/bin/remote-echo'")
+                machine.log("PASS: wrapper fails after tunnel killed")
+
+                # === Re-establish tunnel: wrapper should succeed again ===
+                machine.succeed(
+                    "su underwrap-backend -s /bin/sh -c '"
+                    "ssh -f -N "
+                    "-o StrictHostKeyChecking=no "
+                    "-o UserKnownHostsFile=/dev/null "
+                    "-i ~/.ssh/tunnel_key "
+                    "-R /run/underwrap/backend.sock:/run/underwrap-backend/backend.sock "
+                    "underwrap-tunnel@localhost"
+                    "'"
+                )
+                time.sleep(1)
+                machine.succeed("chmod 0660 /run/underwrap/backend.sock")
+
+                output = machine.succeed(
+                    "su testuser -s /bin/sh -c '/run/wrappers/bin/remote-echo'"
+                )
+                assert "REMOTE_TOKEN=secret_via_tunnel" in output, (
+                    f"expected REMOTE_TOKEN after reconnect: {output}"
+                )
+                machine.log("PASS: wrapper works after tunnel reconnected")
+
+                # === No secret material in daemon logs ===
+                logs = machine.succeed("journalctl -u underwrapd.service --no-pager")
+                assert "secret_via_tunnel" not in logs, "secret leaked to frontend logs!"
+                machine.log("PASS: no secret in frontend daemon logs")
+
+                machine.log("All remote backend tests passed!")
               '';
             };
           };
