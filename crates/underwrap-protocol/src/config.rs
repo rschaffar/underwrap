@@ -202,6 +202,18 @@ pub struct WrapperDef {
     /// If true, reads are denied unless an active unlock grant exists.
     #[serde(default)]
     pub require_unlock: bool,
+
+    /// Unix group name for GID-based wrapper identity.
+    ///
+    /// When set, the daemon resolves this group to a GID at startup and
+    /// uses SO_PEERCRED.gid to verify the caller's identity. The wrapper
+    /// binary must be installed setgid to this group (e.g. via
+    /// security.wrappers on NixOS).
+    ///
+    /// When unset, the daemon trusts the client-supplied wrapper name
+    /// (less secure, suitable for development).
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// How the secret material is delivered to the child process.
@@ -352,6 +364,7 @@ storage:
                         },
                         derivation: DerivationMode::None,
                         require_unlock: false,
+                        group: None,
                     },
                 );
                 m

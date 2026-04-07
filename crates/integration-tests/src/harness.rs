@@ -161,7 +161,7 @@ impl TestDaemon {
 // Builder helpers for common test configs
 // ---------------------------------------------------------------------------
 
-/// Create a simple wrapper def for testing (no unlock required).
+/// Create a simple wrapper def for testing (no unlock required, no GID identity).
 pub fn wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
     WrapperDef {
         target: PathBuf::from(target),
@@ -171,6 +171,7 @@ pub fn wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         },
         derivation: DerivationMode::None,
         require_unlock: false,
+        group: None,
     }
 }
 
@@ -184,6 +185,7 @@ pub fn locked_wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         },
         derivation: DerivationMode::None,
         require_unlock: true,
+        group: None,
     }
 }
 

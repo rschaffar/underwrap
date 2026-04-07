@@ -154,7 +154,6 @@
 
               testScript = let
                 uwctl = "${perSystem.packages.${system}.default}/bin/underwrapctl --socket /run/underwrap/control.sock";
-                wrapDir = "$(echo /nix/store/*-underwrap-wrappers)";
               in ''
                 machine.wait_for_unit("underwrapd.service")
                 machine.wait_for_file("/run/underwrap/read.sock")
@@ -194,8 +193,7 @@
 
                 # === Wrapper env injection ===
                 output = machine.succeed(
-                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
-                    "${wrapDir}/bin/test-echo"
+                    "/run/wrappers/bin/test-echo"
                 )
                 assert "MY_TOKEN=ghp_testvmtoken" in output, (
                     f"expected MY_TOKEN in env output: {output}"
@@ -203,8 +201,7 @@
 
                 # === Wrapper argument passthrough ===
                 output = machine.succeed(
-                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
-                    "${wrapDir}/bin/test-echo2 hello world"
+                    "/run/wrappers/bin/test-echo2 hello world"
                 )
                 assert "hello world" in output, f"expected 'hello world': {output}"
 
@@ -216,8 +213,7 @@
 
                 # Original value preserved after failed overwrite.
                 output = machine.succeed(
-                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
-                    "${wrapDir}/bin/test-echo"
+                    "/run/wrappers/bin/test-echo"
                 )
                 assert "MY_TOKEN=ghp_testvmtoken" in output, (
                     f"immutable secret was overwritten: {output}"
@@ -239,15 +235,13 @@
                 # === Unlock: locked wrapper denied before unlock ===
                 machine.succeed("echo -n 'locked_secret' | ${uwctl} store test/locked-tok")
                 machine.fail(
-                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
-                    "${wrapDir}/bin/test-locked"
+                    "/run/wrappers/bin/test-locked"
                 )
 
                 # === Unlock: unlock then read succeeds ===
                 machine.succeed("${uwctl} unlock test-locked --seconds 60")
                 output = machine.succeed(
-                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
-                    "${wrapDir}/bin/test-locked"
+                    "/run/wrappers/bin/test-locked"
                 )
                 assert "LOCKED_TOKEN=locked_secret" in output, (
                     f"expected LOCKED_TOKEN after unlock: {output}"
@@ -256,8 +250,7 @@
                 # === Unlock: lock again, denied ===
                 machine.succeed("${uwctl} lock test-locked")
                 machine.fail(
-                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
-                    "${wrapDir}/bin/test-locked"
+                    "/run/wrappers/bin/test-locked"
                 )
 
                 # === PR_SET_DUMPABLE: verify child process is non-dumpable ===
@@ -267,8 +260,7 @@
                 # and writes the PID. This avoids machine.succeed() waiting for sleep.
                 machine.succeed(
                     "setsid sh -c '"
-                    "UNDERWRAP_CONFIG_DIR=${wrapDir}/etc/underwrap/wrappers "
-                    "${wrapDir}/bin/test-sleep 300 "
+                    "/run/wrappers/bin/test-sleep 300 "
                     "</dev/null >/dev/null 2>&1 & echo $! > /tmp/sleep.pid"
                     "'"
                 )

@@ -29,6 +29,9 @@ struct State {
     store: Box<dyn StorageBackend>,
     unlock: UnlockState,
     token_cache: TokenCache,
+    /// GID → wrapper name lookup for kernel-verified identity.
+    /// Built at startup from wrappers that have `group` set.
+    gid_to_wrapper: std::collections::HashMap<u32, String>,
 }
 
 /// Run the daemon until `shutdown` is notified (or forever if `None`).
@@ -37,11 +40,13 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     validate_config(&config)?;
 
     let store = underwrap_store::open(&config.storage)?;
+    let gid_to_wrapper = build_gid_map(&config)?;
     let state = Arc::new(State {
         config: config.clone(),
         store,
         unlock: UnlockState::new(),
         token_cache: TokenCache::new(),
+        gid_to_wrapper,
     });
 
     let read_listener = bind_socket(&config.sockets.read, config.sockets.read_mode, "read")?;
@@ -71,6 +76,40 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
             }
         }
     }
+}
+
+/// Build a GID → wrapper-name lookup table from wrappers that have `group` set.
+/// Resolves group names to GIDs via libc getgrnam at startup.
+fn build_gid_map(config: &DaemonConfig) -> Result<std::collections::HashMap<u32, String>> {
+    let mut map = std::collections::HashMap::new();
+    for (name, wrapper) in &config.wrappers {
+        if let Some(ref group_name) = wrapper.group {
+            let gid = resolve_group_gid(group_name)
+                .with_context(|| format!("resolving group '{group_name}' for wrapper '{name}'"))?;
+            if let Some(existing) = map.get(&gid) {
+                anyhow::bail!(
+                    "GID {gid} (group '{group_name}') maps to both '{existing}' and '{name}'"
+                );
+            }
+            info!(wrapper = %name, group = %group_name, gid = gid, "resolved wrapper group");
+            map.insert(gid, name.clone());
+        }
+    }
+    if map.is_empty() {
+        warn!("no wrappers have group-based identity; read socket trusts client-supplied names");
+    }
+    Ok(map)
+}
+
+/// Resolve a Unix group name to a GID.
+fn resolve_group_gid(name: &str) -> Result<u32> {
+    let c_name = std::ffi::CString::new(name)
+        .with_context(|| format!("group name '{name}' contains null byte"))?;
+    let grp = unsafe { libc::getgrnam(c_name.as_ptr()) };
+    if grp.is_null() {
+        anyhow::bail!("group '{name}' not found");
+    }
+    Ok(unsafe { (*grp).gr_gid })
 }
 
 /// Validate configuration at load time.
@@ -235,6 +274,27 @@ fn check_peer_exe(
     }
 }
 
+/// Determine wrapper identity from the request and peer credentials.
+///
+/// If the peer's effective GID maps to a known wrapper (via the `group` config),
+/// that identity takes precedence over the client-supplied name. This prevents
+/// wrapper spoofing — the identity is kernel-verified via SO_PEERCRED.
+///
+/// Returns (wrapper_name, identity_source) for logging.
+fn resolve_wrapper_identity(
+    request: &ReadRequest,
+    peer: &Option<PeerCred>,
+    gid_map: &std::collections::HashMap<u32, String>,
+) -> (String, &'static str) {
+    if let Some(cred) = peer
+        && let Some(name) = gid_map.get(&cred.gid)
+    {
+        return (name.clone(), "gid");
+    }
+    // Fallback: trust client-supplied name (development / no-group mode).
+    (request.wrapper.clone(), "client")
+}
+
 // ---------------------------------------------------------------------------
 // Read socket handler
 // ---------------------------------------------------------------------------
@@ -283,45 +343,49 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
     }
 
     let request: ReadRequest = read_frame_async(&mut stream).await?;
+
+    // Determine wrapper identity: prefer kernel-verified GID over client-supplied name.
+    let (wrapper_name, identity_source) =
+        resolve_wrapper_identity(&request, &peer, &state.gid_to_wrapper);
+
     info!(
-        wrapper = %request.wrapper,
+        wrapper = %wrapper_name,
+        identity = %identity_source,
         peer = ?peer,
         "read request"
     );
 
     let peer_uid = peer.as_ref().map(|p| p.uid);
-    let response = process_read(&request, &state, peer_uid).await;
+    let response =
+        process_read_for(&wrapper_name, request.scope.as_deref(), &state, peer_uid).await;
 
     write_frame_async(&mut stream, &response).await?;
     stream.shutdown().await?;
     Ok(())
 }
 
-async fn process_read(request: &ReadRequest, state: &State, peer_uid: Option<u32>) -> ReadResponse {
-    let wrapper_def = match state.config.wrappers.get(&request.wrapper) {
+async fn process_read_for(
+    wrapper_name: &str,
+    scope: Option<&str>,
+    state: &State,
+    peer_uid: Option<u32>,
+) -> ReadResponse {
+    let wrapper_def = match state.config.wrappers.get(wrapper_name) {
         Some(w) => w,
         None => {
-            warn!(wrapper = %request.wrapper, "unknown wrapper");
+            warn!(wrapper = %wrapper_name, "unknown wrapper");
             return ReadResponse::Error {
                 code: ErrorCode::NotFound,
-                message: format!("unknown wrapper '{}'", request.wrapper),
+                message: format!("unknown wrapper '{wrapper_name}'"),
             };
         }
     };
 
     // Check unlock state if wrapper requires it.
     if wrapper_def.require_unlock
-        && let Err(reason) =
-            state
-                .unlock
-                .check(&request.wrapper, request.scope.as_deref(), peer_uid)
+        && let Err(reason) = state.unlock.check(wrapper_name, scope, peer_uid)
     {
-        audit::read_denied(
-            &request.wrapper,
-            &reason,
-            peer_uid,
-            request.scope.as_deref(),
-        );
+        audit::read_denied(wrapper_name, &reason, peer_uid, scope);
         return ReadResponse::Error {
             code: ErrorCode::Locked,
             message: reason,
@@ -342,16 +406,11 @@ async fn process_read(request: &ReadRequest, state: &State, peer_uid: Option<u32
             .await
             {
                 Ok(derived) => {
-                    audit::read_granted(
-                        &request.wrapper,
-                        secret_id,
-                        peer_uid,
-                        request.scope.as_deref(),
-                    );
+                    audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
                     ReadResponse::Ok { material: derived }
                 }
                 Err(e) => {
-                    error!(wrapper = %request.wrapper, secret = %secret_id, err = %e, "derivation failed");
+                    error!(wrapper = %wrapper_name, secret = %secret_id, err = %e, "derivation failed");
                     ReadResponse::Error {
                         code: ErrorCode::DerivationFailed,
                         message: format!("derivation failed: {e}"),
@@ -361,7 +420,7 @@ async fn process_read(request: &ReadRequest, state: &State, peer_uid: Option<u32
         }
         Ok(None) => {
             let msg = format!("secret '{secret_id}' not found in store");
-            audit::read_denied(&request.wrapper, &msg, peer_uid, request.scope.as_deref());
+            audit::read_denied(wrapper_name, &msg, peer_uid, scope);
             ReadResponse::Error {
                 code: ErrorCode::NotFound,
                 message: msg,

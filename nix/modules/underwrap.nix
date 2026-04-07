@@ -3,6 +3,9 @@
 let
   cfg = config.services.underwrap;
 
+  # Per-wrapper group name.
+  wrapperGroup = name: "underwrap-${name}";
+
   # Build the runtime YAML config from Nix options.
   runtimeConfig = {
     sockets = {
@@ -17,11 +20,12 @@ let
       backend = "plain";
       dir = "/var/lib/underwrap/secrets";
     };
-    wrappers = lib.mapAttrs (_name: w: {
+    wrappers = lib.mapAttrs (name: w: {
       target = w.target;
       secret = w.secret;
       injection = w.injection;
       require_unlock = w.requireUnlock;
+      group = wrapperGroup name;
     } // lib.optionalAttrs (w.derivation != null) {
       derivation = w.derivation;
     }) cfg.wrappers;
@@ -35,8 +39,8 @@ let
   configFile = pkgs.writeText "underwrap-config.yaml"
     (builtins.toJSON runtimeConfig);
 
-  # Generate wrapper symlinks: each wrapper name -> underwrap-exec
-  # Plus a sidecar YAML config for each wrapper.
+  # Sidecar YAML configs for underwrap-exec (one per wrapper).
+  # Installed to /etc/underwrap/wrappers/<name>.yaml
   wrapperConfigs = lib.mapAttrs (name: w:
     pkgs.writeText "${name}.yaml" (builtins.toJSON {
       target = w.target;
@@ -45,15 +49,15 @@ let
     })
   ) cfg.wrappers;
 
-  wrappersDir = pkgs.runCommand "underwrap-wrappers" {} (
+  # Per-wrapper launcher scripts. Each is a tiny script that execs
+  # underwrap-exec with argv[0] set to the wrapper name so it loads
+  # the correct sidecar config. This is needed because security.wrappers
+  # passes the source binary path as argv[0], not the wrapper name.
+  wrapperScripts = lib.mapAttrs (name: _w:
+    pkgs.writeShellScript "underwrap-${name}" ''
+      exec -a ${name} ${cfg.package}/bin/underwrap-exec "$@"
     ''
-      mkdir -p $out/bin $out/etc/underwrap/wrappers
-    ''
-    + lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _w: ''
-      ln -s ${cfg.package}/bin/underwrap-exec $out/bin/${name}
-      cp ${wrapperConfigs.${name}} $out/etc/underwrap/wrappers/${name}.yaml
-    '') cfg.wrappers)
-  );
+  ) cfg.wrappers;
 
   wrapperSubmodule = lib.types.submodule {
     options = {
@@ -142,7 +146,27 @@ in {
       home = "/var/lib/underwrap";
       description = "underwrap secret broker";
     };
-    users.groups.underwrap = {};
+    users.groups = { underwrap = {}; } // lib.mapAttrs' (name: _w:
+      lib.nameValuePair (wrapperGroup name) {}
+    ) cfg.wrappers;
+
+    # Install wrappers via security.wrappers (setgid, root-owned).
+    # Each wrapper is the same underwrap-exec binary, installed with
+    # a per-wrapper group. The kernel sets egid on exec; the daemon
+    # uses SO_PEERCRED.gid to verify wrapper identity.
+    security.wrappers = lib.mapAttrs (name: _w: {
+      source = "${wrapperScripts.${name}}";
+      owner = "root";
+      setgid = true;
+      group = wrapperGroup name;
+    }) cfg.wrappers;
+
+    # Sidecar configs in /etc/underwrap/wrappers/ (fixed trusted path).
+    environment.etc = lib.mapAttrs' (name: _w:
+      lib.nameValuePair "underwrap/wrappers/${name}.yaml" {
+        source = wrapperConfigs.${name};
+      }
+    ) cfg.wrappers;
 
     # Systemd tmpfiles: create runtime directory.
     # /run/underwrap is 0750 so only underwrap user and group can access sockets.
@@ -177,12 +201,5 @@ in {
         ];
       };
     };
-
-    # Add wrapper binaries and sidecar configs to system path.
-    environment.systemPackages = [ wrappersDir ];
-
-    # Set UNDERWRAP_CONFIG_DIR so underwrap-exec finds sidecar configs.
-    environment.sessionVariables.UNDERWRAP_CONFIG_DIR =
-      "${wrappersDir}/etc/underwrap/wrappers";
   };
 }
