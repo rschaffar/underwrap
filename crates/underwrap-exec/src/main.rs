@@ -37,7 +37,12 @@ fn main() -> Result<()> {
     let wrapper_config = load_wrapper_config(&wrapper_name)?;
 
     // Request secret from daemon (while still setgid — daemon checks egid).
-    let mut material = request_secret(&wrapper_name, &wrapper_config.read_socket)?;
+    // If libsecret mode, also receive the secretsd channel fd.
+    let (mut material, channel_fd) = request_secret(
+        &wrapper_name,
+        &wrapper_config.read_socket,
+        wrapper_config.libsecret,
+    )?;
 
     // Drop all elevated privileges.
     drop_privilege()?;
@@ -47,7 +52,13 @@ fn main() -> Result<()> {
         .as_deref()
         .unwrap_or(DEFAULT_NS_BINARY);
 
-    exec_via_ns(ns_binary, &wrapper_config, &all_args, &mut material)
+    exec_via_ns(
+        ns_binary,
+        &wrapper_config,
+        &all_args,
+        &mut material,
+        channel_fd,
+    )
 }
 
 /// Handle --unlock: request unlock via the read socket with SSH agent challenge.
@@ -271,6 +282,7 @@ fn exec_via_ns(
     config: &WrapperExecConfig,
     args: &[String],
     material: &mut String,
+    channel_fd: Option<i32>,
 ) -> Result<()> {
     // Verify underwrap-ns exists before proceeding.
     if !std::path::Path::new(ns_binary).exists() {
@@ -319,11 +331,37 @@ fn exec_via_ns(
             unsafe { libc::close(pipe_read) };
         }
 
+        // If we have a secretsd channel fd, move it to fd 4.
+        if let Some(ch_fd) = channel_fd
+            && ch_fd != 4
+        {
+            let ret = unsafe { libc::dup2(ch_fd, 4) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                eprintln!("underwrap-exec: dup2 channel fd failed: {err}");
+                std::process::exit(1);
+            }
+            unsafe { libc::close(ch_fd) };
+        }
+
         // Build argv for underwrap-ns: <ns_binary> <env_var> <target> [args...]
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new(ns_binary);
         cmd.arg(&config.env_variable);
         cmd.arg(&config.target);
+
+        // Pass libsecret config via env vars (safe: child hasn't exec'd yet,
+        // and these are paths, not secrets).
+        if config.libsecret && channel_fd.is_some() {
+            cmd.env("UNDERWRAP_LIBSECRET", "1");
+            if let Some(ref bin) = config.dbus_daemon_binary {
+                cmd.env("UNDERWRAP_DBUS_DAEMON", bin);
+            }
+            if let Some(ref bin) = config.secretsd_binary {
+                cmd.env("UNDERWRAP_SECRETSD", bin);
+            }
+        }
+
         cmd.args(args);
 
         let err = cmd.exec();
@@ -335,6 +373,11 @@ fn exec_via_ns(
 
     // Close read end.
     unsafe { libc::close(pipe_read) };
+
+    // Close channel fd in parent — only the child needs it.
+    if let Some(ch_fd) = channel_fd {
+        unsafe { libc::close(ch_fd) };
+    }
 
     // Write secret to pipe.
     {
@@ -389,6 +432,12 @@ struct WrapperExecConfig {
     env_variable: String,
     read_socket: String,
     ns_binary: Option<String>,
+    /// Whether libsecret mode is enabled for this wrapper.
+    libsecret: bool,
+    /// Path to the dbus-daemon binary (for libsecret mode).
+    dbus_daemon_binary: Option<String>,
+    /// Path to the underwrap-secretsd binary (for libsecret mode).
+    secretsd_binary: Option<String>,
 }
 
 fn config_dir() -> String {
@@ -417,6 +466,12 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
         read_socket: String,
         #[serde(default)]
         ns_binary: Option<String>,
+        #[serde(default)]
+        libsecret: bool,
+        #[serde(default)]
+        dbus_daemon_binary: Option<String>,
+        #[serde(default)]
+        secretsd_binary: Option<String>,
     }
     fn default_env() -> String {
         "UNDERWRAP_SECRET".to_string()
@@ -438,10 +493,20 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
         env_variable: wf.env_variable,
         read_socket: wf.read_socket,
         ns_binary: wf.ns_binary,
+        libsecret: wf.libsecret,
+        dbus_daemon_binary: wf.dbus_daemon_binary,
+        secretsd_binary: wf.secretsd_binary,
     })
 }
 
-fn request_secret(wrapper_name: &str, socket_path: &str) -> Result<String> {
+/// Request the secret from the daemon. If `libsecret` is true, also
+/// receive the secretsd channel fd via SCM_RIGHTS.
+/// Returns (secret_material, optional_channel_fd).
+fn request_secret(
+    wrapper_name: &str,
+    socket_path: &str,
+    libsecret: bool,
+) -> Result<(String, Option<i32>)> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
@@ -453,10 +518,10 @@ fn request_secret(wrapper_name: &str, socket_path: &str) -> Result<String> {
     write_frame_sync(&mut stream, &req)?;
 
     let response: WrapperResponse = read_frame_sync(&mut stream)?;
-    match response {
+    let material = match response {
         WrapperResponse::Ok {
             material: Some(m), ..
-        } => Ok(m),
+        } => m,
         WrapperResponse::Ok { material: None, .. } => {
             bail!("daemon returned no material");
         }
@@ -466,7 +531,23 @@ fn request_secret(wrapper_name: &str, socket_path: &str) -> Result<String> {
         WrapperResponse::Challenge { .. } => {
             bail!("unexpected challenge response for read request");
         }
-    }
+    };
+
+    // If libsecret is enabled, the daemon sends the secretsd channel fd
+    // via SCM_RIGHTS immediately after the response.
+    let channel_fd = if libsecret {
+        match underwrap_protocol::scm_rights::recv_fd(&stream) {
+            Ok(fd) => Some(fd),
+            Err(e) => {
+                eprintln!("underwrap-exec: warning: failed to receive secretsd channel fd: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    Ok((material, channel_fd))
 }
 
 fn drop_privilege() -> Result<()> {
