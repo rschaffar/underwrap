@@ -62,32 +62,29 @@ pub fn validated_path(base: &Path, secret_id: &str) -> Result<PathBuf> {
 }
 
 /// Atomically write `data` to `path` via temp-file + rename.
-/// Sets file permissions to 0600 on unix.
-pub fn atomic_write(path: &Path, base: &Path, secret_id: &str, data: &[u8]) -> Result<()> {
+///
+/// Uses `tempfile::NamedTempFile` for guaranteed-unique temp files with
+/// secure default permissions, then `persist()` for the atomic rename.
+pub fn atomic_write(path: &Path, base: &Path, _secret_id: &str, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
     let parent = path.parent().unwrap_or(base);
-    let tmp_path = parent.join(format!(
-        ".tmp.{}.{}",
-        std::process::id(),
-        secret_id.replace('/', "_")
-    ));
 
-    std::fs::write(&tmp_path, data)
-        .with_context(|| format!("writing temp file for secret {secret_id}"))?;
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).context("creating temp file for atomic write")?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))?;
     }
 
-    std::fs::rename(&tmp_path, path).with_context(|| {
-        let _ = std::fs::remove_file(&tmp_path);
-        format!("renaming temp file for secret {secret_id}")
-    })?;
+    std::io::Write::write_all(&mut tmp, data).context("writing secret to temp file")?;
+
+    tmp.persist(path)
+        .context("persisting temp file to final path")?;
 
     Ok(())
 }
