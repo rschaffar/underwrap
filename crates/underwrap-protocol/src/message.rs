@@ -128,6 +128,50 @@ pub enum ErrorCode {
     Internal,
 }
 
+// ---------------------------------------------------------------------------
+// Backend protocol (frontend daemon <-> backend daemon over tunnel socket)
+// ---------------------------------------------------------------------------
+
+/// Request from the frontend daemon to the remote backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action")]
+pub enum BackendRequest {
+    /// Read secret material (raw or derived).
+    #[serde(rename = "read")]
+    Read { secret_id: String },
+
+    /// Read and derive (e.g. OAuth refresh → access token).
+    #[serde(rename = "derive")]
+    Derive {
+        secret_id: String,
+        /// Derivation mode name (e.g. "oauth_refresh_to_access_token").
+        mode: String,
+    },
+
+    /// Write/update secret material.
+    #[serde(rename = "write")]
+    Write { secret_id: String, material: String },
+
+    /// Check backend health / list available secrets.
+    #[serde(rename = "status")]
+    Status,
+}
+
+/// Response from the remote backend to the frontend daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status")]
+pub enum BackendResponse {
+    #[serde(rename = "ok")]
+    Ok {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        material: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        info: Option<serde_json::Value>,
+    },
+    #[serde(rename = "error")]
+    Error { message: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,7 +260,70 @@ mod tests {
     fn control_response_ok_without_info() {
         let resp = ControlResponse::Ok { info: None };
         let json = serde_json::to_string(&resp).unwrap();
-        // "info" should be absent due to skip_serializing_if.
         assert!(!json.contains("\"info\""));
+    }
+
+    #[test]
+    fn backend_read_roundtrip() {
+        let req = BackendRequest::Read {
+            secret_id: "github/token".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"action\":\"read\""));
+        let parsed: BackendRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            BackendRequest::Read { secret_id } => assert_eq!(secret_id, "github/token"),
+            other => panic!("expected Read, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backend_derive_roundtrip() {
+        let req = BackendRequest::Derive {
+            secret_id: "google/creds".to_string(),
+            mode: "oauth_refresh_to_access_token".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"action\":\"derive\""));
+        let parsed: BackendRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            BackendRequest::Derive { secret_id, mode } => {
+                assert_eq!(secret_id, "google/creds");
+                assert_eq!(mode, "oauth_refresh_to_access_token");
+            }
+            other => panic!("expected Derive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backend_write_roundtrip() {
+        let req = BackendRequest::Write {
+            secret_id: "tok".to_string(),
+            material: "secret_value".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"action\":\"write\""));
+        // Material should be present in JSON (backend protocol, not user-facing logs).
+        assert!(json.contains("\"material\":\"secret_value\""));
+    }
+
+    #[test]
+    fn backend_response_ok_with_material() {
+        let resp = BackendResponse::Ok {
+            material: Some("derived_token".to_string()),
+            info: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"material\":\"derived_token\""));
+        assert!(!json.contains("\"info\""));
+    }
+
+    #[test]
+    fn backend_response_error() {
+        let resp = BackendResponse::Error {
+            message: "not found".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"error\""));
     }
 }
