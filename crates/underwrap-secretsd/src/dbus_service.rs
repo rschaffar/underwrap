@@ -11,6 +11,7 @@ use zbus::{
     fdo, interface,
     zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value},
 };
+use zeroize::Zeroize;
 
 use underwrap_secretsd_store::SecretStore;
 
@@ -24,6 +25,12 @@ pub struct Secret {
     pub parameters: Vec<u8>,
     pub value: Vec<u8>,
     pub content_type: String,
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
 }
 
 // ---- Session ----

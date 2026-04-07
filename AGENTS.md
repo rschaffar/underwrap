@@ -54,8 +54,7 @@ examples/config.yaml     # Annotated example daemon config
 - `crates/underwrap-secretsd/src/main.rs` — D-Bus Secret Service provider
 - `crates/underwrap-secretsd/src/dbus_service.rs` — D-Bus interface implementations
 - `nix/modules/underwrap.nix` — NixOS module (generates everything)
-- `docs/security.md` — every security mechanism explained
-- `docs/libsecret-implementation.md` — libsecret mode design and architecture
+- `docs/security.md` — every security mechanism explained (including libsecret mode)
 
 ## Code conventions
 
@@ -129,21 +128,46 @@ Tunnel connect = unlock. Tunnel disconnect = lock.
 **Multi-instance:** `services.underwrap.instances.<name>` — fully isolated users, groups, sockets.
 
 **Libsecret mode:** When `libsecret = true` on a wrapper:
-1. Daemon creates a `socketpair()` during the GID-authenticated read request
+
+```
+PID + mount namespace (created by underwrap-ns)
+┌─────────────────────────────────────────────────────┐
+│  dbus-daemon (private session bus)                  │
+│  underwrap-secretsd (org.freedesktop.secrets)       │
+│    └── reads/writes via daemon channel (fd 4)        │
+│  target (e.g. gh)                                   │
+│    └── DBUS_SESSION_BUS_ADDRESS → private bus        │
+└─────────────────────────────────────────────────────┘
+```
+
+1. Daemon creates `socketpair()` during GID-authenticated read request
 2. One end sent to wrapper via `SCM_RIGHTS`, other kept by daemon as scoped channel
-3. `underwrap-ns` launches private `dbus-daemon` + `underwrap-secretsd` in PID namespace
-4. secretsd claims `org.freedesktop.secrets` on the private bus
-5. Target sees `DBUS_SESSION_BUS_ADDRESS` pointing to the private bus
-6. All libsecret read/write goes through secretsd → daemon channel → StorageBackend
-7. fd 4 (channel) is CLOSED before exec'ing the target
-8. On namespace exit: kernel SIGKILL kills dbus-daemon + secretsd
+3. `underwrap-ns` creates PID + mount namespace, mounts fresh `/proc`,
+   hides real session bus at `/run/user/<uid>/bus`
+4. Launches private `dbus-daemon` + `underwrap-secretsd` in namespace
+5. secretsd claims `org.freedesktop.secrets` on the private bus
+6. Target sees `DBUS_SESSION_BUS_ADDRESS` pointing to private bus
+7. All libsecret read/write: secretsd → daemon channel → StorageBackend
+8. fd 4 (channel) is CLOSED before exec'ing the target
+9. On namespace exit: kernel SIGKILL kills dbus-daemon + secretsd
 
 See `docs/security.md` "Design invariants" and "Secretsd channel" for security analysis.
-See `docs/libsecret-implementation.md` for full design.
+
+**Bootstrap flow** (e.g., `gh auth login` via libsecret wrapper):
+```
+1. User runs:  work-gh auth login
+2. underwrap-exec gets secret + secretsd channel fd from daemon
+3. underwrap-ns creates namespace, launches dbus-daemon + secretsd
+4. secretsd loads metadata from backend, signals readiness
+5. gh does OAuth flow, calls libsecret CreateItem to store token
+6. secretsd writes token to backend via channel (encrypted/remote)
+7. Next run: gh calls SearchItems + GetSecret, gets token from backend
+```
 
 ## Completed work
 
-The libsecret mode is implemented. See `docs/libsecret-implementation.md`.
+The libsecret mode is implemented. See the architecture notes above and
+`docs/security.md` for the full design and security analysis.
 
 ## Planned work
 

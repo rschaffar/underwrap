@@ -46,11 +46,11 @@ let
         inherit (s) mutable;
       } // lib.optionalAttrs (s.labels != {}) {
         inherit (s) labels;
-      }) inst.secrets
-      # Auto-declare mutable libsecret secrets for wrappers with libsecret enabled.
-      // lib.mapAttrs' (name: w:
-        lib.nameValuePair "${name}/libsecret/_aliases" { mutable = true; }
-      ) (lib.filterAttrs (_: w: w.libsecret) inst.wrappers);
+      }) inst.secrets;
+      # Note: libsecret-enabled wrappers store items via the secretsd channel,
+      # which writes directly to the StorageBackend with a scoped prefix
+      # (<wrapper>/libsecret/*). These keys do not need to be pre-declared
+      # in the secrets map — the channel handler enforces access control.
     };
 
     configFile = pkgs.writeText "underwrap-${instName}-config.yaml"

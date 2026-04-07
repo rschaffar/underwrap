@@ -1149,8 +1149,8 @@ async fn parse_example_config() {
     let text = std::fs::read_to_string(&config_path).unwrap();
     let config: underwrap_protocol::config::DaemonConfig = serde_yaml::from_str(&text).unwrap();
 
-    assert_eq!(config.wrappers.len(), 3);
-    assert_eq!(config.secrets.len(), 3);
+    assert_eq!(config.wrappers.len(), 4);
+    assert_eq!(config.secrets.len(), 4);
     assert!(config.wrappers.contains_key("gh-authorized"));
     assert!(config.wrappers.contains_key("gws"));
     assert!(config.wrappers.contains_key("agent-slack"));

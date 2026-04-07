@@ -6,6 +6,7 @@
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
+use zeroize::Zeroize;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{SecretsdRequest, SecretsdResponse};
@@ -134,9 +135,9 @@ pub fn load_initial_state(channel: &DaemonChannel) -> Result<SecretStore> {
                         underwrap_secretsd_store::Item {
                             // SECRET NOT STORED IN MEMORY — always read from backend.
                             secret: Vec::new(),
-                            content_type: item.content_type,
-                            attributes: item.attributes,
-                            label: item.label,
+                            content_type: item.content_type.clone(),
+                            attributes: item.attributes.clone(),
+                            label: item.label.clone(),
                             created: item.created,
                             modified: item.modified,
                         },
@@ -159,8 +160,11 @@ pub fn read_item_secret(
 ) -> Result<Option<Vec<u8>>> {
     let key = format!("{col_id}/{item_id}");
     if let Some(item_str) = channel.read(&key)? {
-        let item: ItemDataPublic = serde_json::from_str(&item_str).context("parsing item data")?;
-        Ok(Some(item.secret))
+        let mut item: ItemDataPublic =
+            serde_json::from_str(&item_str).context("parsing item data")?;
+        // Take the secret out; item's Drop will zeroize the (now empty) field.
+        let secret = std::mem::take(&mut item.secret);
+        Ok(Some(secret))
     } else {
         Ok(None)
     }
@@ -240,13 +244,19 @@ struct CollectionMeta {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ItemDataPublic {
     #[serde(with = "base64_bytes")]
-    secret: Vec<u8>,
+    pub secret: Vec<u8>,
     #[serde(default = "default_content_type")]
-    content_type: String,
-    attributes: std::collections::HashMap<String, String>,
-    label: String,
-    created: u64,
-    modified: u64,
+    pub content_type: String,
+    pub attributes: std::collections::HashMap<String, String>,
+    pub label: String,
+    pub created: u64,
+    pub modified: u64,
+}
+
+impl Drop for ItemDataPublic {
+    fn drop(&mut self) {
+        self.secret.zeroize();
+    }
 }
 
 fn default_content_type() -> String {

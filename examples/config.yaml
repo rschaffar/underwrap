@@ -47,8 +47,23 @@ wrappers:
       mode: env
       variable: SLACK_TOKEN
 
+  # Libsecret-enabled wrapper: provides org.freedesktop.secrets inside
+  # the PID namespace so gh can store/retrieve tokens via libsecret.
+  # Requires dbus package available on the system.
+  gh-libsecret:
+    target: /usr/bin/gh
+    secret: github/bootstrap  # Initial secret (can be empty placeholder)
+    group: underwrap-gh-libsecret
+    libsecret: true            # Enables private D-Bus + Secret Service
+    injection:
+      mode: env
+      variable: GH_UNUSED      # Not used when libsecret handles credentials
+
 secrets:
   github/token:
+    mutable: false
+
+  github/bootstrap:
     mutable: false
 
   google/workspace-creds:

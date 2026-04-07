@@ -20,4 +20,5 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 libc = { workspace = true }
 base64 = { workspace = true }
+zeroize = { workspace = true }
 zbus = { version = "4", default-features = false, features = ["tokio"] }
