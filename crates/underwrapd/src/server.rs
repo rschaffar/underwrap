@@ -21,6 +21,18 @@ use crate::unlock::UnlockState;
 use ssh_key::public::KeyData;
 use underwrap_store::StorageBackend;
 
+/// Wrapper to make Arc<RemoteBackend> usable as Box<dyn StorageBackend>.
+struct RemoteStorageWrapper(Arc<underwrap_store::RemoteBackend>);
+
+impl StorageBackend for RemoteStorageWrapper {
+    fn read(&self, secret_id: &str) -> anyhow::Result<Option<String>> {
+        self.0.read(secret_id)
+    }
+    fn write(&self, secret_id: &str, material: &str) -> anyhow::Result<()> {
+        self.0.write(secret_id, material)
+    }
+}
+
 /// Maximum concurrent connections per socket.
 const MAX_CONNECTIONS: usize = 128;
 
@@ -28,12 +40,12 @@ const MAX_CONNECTIONS: usize = 128;
 struct State {
     config: DaemonConfig,
     store: Box<dyn StorageBackend>,
+    /// If the store is a RemoteBackend, this holds a reference for derive().
+    /// (We can't downcast Box<dyn StorageBackend> cleanly, so we keep both.)
+    remote: Option<Arc<underwrap_store::RemoteBackend>>,
     unlock: UnlockState,
     token_cache: TokenCache,
-    /// GID → wrapper name lookup for kernel-verified identity.
-    /// Built at startup from wrappers that have `group` set.
     gid_to_wrapper: std::collections::HashMap<u32, String>,
-    /// Per-secret write serialization to prevent immutability TOCTOU.
     write_locks: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
@@ -42,11 +54,26 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     // Validate config at startup: every wrapper.secret must reference a declared secret.
     validate_config(&config)?;
 
-    let store = underwrap_store::open(&config.storage)?;
+    // Open the storage backend. If remote, keep a separate handle for derive().
+    let (store, remote): (
+        Box<dyn StorageBackend>,
+        Option<Arc<underwrap_store::RemoteBackend>>,
+    ) = match &config.storage {
+        underwrap_protocol::config::StorageConfig::Remote { socket } => {
+            let backend = Arc::new(underwrap_store::RemoteBackend::open(socket)?);
+            (
+                Box::new(RemoteStorageWrapper(Arc::clone(&backend))),
+                Some(backend),
+            )
+        }
+        other => (underwrap_store::open(other)?, None),
+    };
+
     let gid_to_wrapper = build_gid_map(&config)?;
     let state = Arc::new(State {
         config: config.clone(),
         store,
+        remote,
         unlock: UnlockState::new(),
         token_cache: TokenCache::new(),
         gid_to_wrapper,
@@ -457,48 +484,85 @@ async fn process_read_for(
 
     let secret_id = &wrapper_def.secret;
 
-    match state.store.read(secret_id) {
-        Ok(Some(material)) => {
-            // Apply derivation (e.g. OAuth refresh → access token).
-            match derive::derive(
-                &wrapper_def.derivation,
-                secret_id,
-                &material,
-                &state.token_cache,
-            )
-            .await
-            {
-                Ok(derived) => {
-                    audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
-                    WrapperResponse::Ok {
-                        material: Some(derived),
-                        message: None,
-                    }
-                }
-                Err(e) => {
-                    error!(wrapper = %wrapper_name, secret = %secret_id, err = %e, "derivation failed");
-                    WrapperResponse::Error {
-                        code: ErrorCode::DerivationFailed,
-                        message: format!("derivation failed: {e}"),
-                    }
+    // For remote backends, use backend-side derivation.
+    // For local backends, do local read + derive.
+    if let Some(ref remote) = state.remote {
+        let derivation_mode = match &wrapper_def.derivation {
+            underwrap_protocol::config::DerivationMode::None => "none",
+            underwrap_protocol::config::DerivationMode::OAuthRefreshToAccessToken => {
+                "oauth_refresh_to_access_token"
+            }
+        };
+
+        match remote.derive(secret_id, derivation_mode) {
+            Ok(Some(material)) => {
+                audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
+                WrapperResponse::Ok {
+                    material: Some(material),
+                    message: None,
                 }
             }
-        }
-        Ok(None) => {
-            let msg = format!("secret '{secret_id}' not found in store");
-            audit::read_denied(wrapper_name, &msg, peer_uid, scope);
-            WrapperResponse::Error {
-                code: ErrorCode::NotFound,
-                message: msg,
+            Ok(None) => {
+                let msg = format!("secret '{secret_id}' not found");
+                audit::read_denied(wrapper_name, &msg, peer_uid, scope);
+                WrapperResponse::Error {
+                    code: ErrorCode::NotFound,
+                    message: msg,
+                }
+            }
+            Err(e) => {
+                error!(wrapper = %wrapper_name, secret = %secret_id, err = %e, "remote backend error");
+                WrapperResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: format!("backend error: {e}"),
+                }
             }
         }
-        Err(e) => {
-            error!(secret = %secret_id, err = %e, "storage read error");
-            WrapperResponse::Error {
-                code: ErrorCode::Internal,
-                message: "internal storage error".to_string(),
+    } else {
+        // Local backend: read + derive locally.
+        match state.store.read(secret_id) {
+            Ok(Some(material)) => {
+                // Apply derivation (e.g. OAuth refresh → access token).
+                match derive::derive(
+                    &wrapper_def.derivation,
+                    secret_id,
+                    &material,
+                    &state.token_cache,
+                )
+                .await
+                {
+                    Ok(derived) => {
+                        audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
+                        WrapperResponse::Ok {
+                            material: Some(derived),
+                            message: None,
+                        }
+                    }
+                    Err(e) => {
+                        error!(wrapper = %wrapper_name, secret = %secret_id, err = %e, "derivation failed");
+                        WrapperResponse::Error {
+                            code: ErrorCode::DerivationFailed,
+                            message: format!("derivation failed: {e}"),
+                        }
+                    }
+                }
             }
-        }
+            Ok(None) => {
+                let msg = format!("secret '{secret_id}' not found in store");
+                audit::read_denied(wrapper_name, &msg, peer_uid, scope);
+                WrapperResponse::Error {
+                    code: ErrorCode::NotFound,
+                    message: msg,
+                }
+            }
+            Err(e) => {
+                error!(secret = %secret_id, err = %e, "storage read error");
+                WrapperResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: "internal storage error".to_string(),
+                }
+            }
+        } // else (local backend)
     }
 }
 
