@@ -30,25 +30,17 @@ drift. Should derive one from the other.
 `build_status()` catches storage read errors and reports them as "not stored",
 which can hide corruption.
 
-### /proc/pid/environ readable by same-UID processes
+### /proc/pid/environ protection
 
-After the wrapper drops privilege and execs the target, the child process is
-dumpable (kernel resets dumpable flag when euid==uid and egid==gid at exec
-time). This means same-UID processes can read `/proc/<pid>/environ` and
-extract the injected secret.
+Resolved: the two-stage wrapper (underwrap-exec → underwrap-ns) runs the
+target in a PID namespace. The target's `/proc` entries are invisible to
+processes in the parent namespace, so same-UID attackers cannot read
+`/proc/<pid>/environ`.
 
-`PR_SET_DUMPABLE=0` in a `pre_exec` hook does not survive exec.
-`suid_dumpable=0` also does not help because we drop credentials before exec.
-
-PID namespace isolation (`CLONE_NEWPID`) would solve this — the child's
-`/proc` entries would be invisible in the parent namespace. However, NixOS
-`security.wrappers` does not allow both `setgid` (needed for GID identity)
-and `capabilities` (needed for `CLONE_NEWPID`) on the same wrapper.
-
-Options for future:
-- Two-stage wrapper: outer with setgid, inner with `cap_sys_admin`
-- stdin/tempfile injection mode (avoids putting secrets in env entirely)
-- Per-wrapper dedicated users with their own UID (no same-UID attacker)
+This requires `cap_sys_admin` on `underwrap-ns`, granted via NixOS
+`security.wrappers`. On non-NixOS systems, the binary needs `setcap
+cap_sys_admin+ep`. If the capability is unavailable, the wrapper falls
+back to direct exec (no namespace isolation).
 
 ### Encrypted backend: key management is weak
 
