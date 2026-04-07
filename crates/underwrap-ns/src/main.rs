@@ -40,8 +40,16 @@ fn run() -> Result<(), String> {
     let target_args = &args[3..];
 
     // Read secret from fd 3.
-    let material =
+    let mut material =
         read_secret_fd().map_err(|e| format!("reading secret from fd {SECRET_FD}: {e}"))?;
+
+    // Make this process non-dumpable immediately. Since the parent process
+    // (this process after fork) never execs, the flag persists for its
+    // entire lifetime. This prevents same-UID processes from reading
+    // the secret out of /proc/<pid>/mem.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0);
+    }
 
     // Create new PID namespace.
     let ret = unsafe { libc::unshare(libc::CLONE_NEWPID) };
@@ -88,6 +96,12 @@ fn run() -> Result<(), String> {
         let err = cmd.exec();
         eprintln!("underwrap-ns: exec failed: {err}");
         std::process::exit(1);
+    }
+
+    // Parent: zeroize the secret — only the child (in the namespace) needs it.
+    {
+        use zeroize::Zeroize;
+        material.zeroize();
     }
 
     // Parent: wait for child, forward exit code.

@@ -1559,6 +1559,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "underwrap-protocol",
+ "zeroize",
 ]
 
 [[package]]
@@ -1566,6 +1567,7 @@ name = "underwrap-ns"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "zeroize",
 ]
 
 [[package]]

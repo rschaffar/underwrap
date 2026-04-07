@@ -32,23 +32,17 @@ fn main() -> Result<()> {
     let wrapper_config = load_wrapper_config(&wrapper_name)?;
 
     // Request secret from daemon (while still setgid — daemon checks egid).
-    let material = request_secret(&wrapper_name, &wrapper_config.read_socket)?;
+    let mut material = request_secret(&wrapper_name, &wrapper_config.read_socket)?;
 
     // Drop all elevated privileges.
     drop_privilege()?;
 
-    // Execute via the two-stage namespace wrapper if available,
-    // otherwise fall back to direct exec.
     let ns_binary = wrapper_config
         .ns_binary
         .as_deref()
         .unwrap_or(DEFAULT_NS_BINARY);
 
-    if std::path::Path::new(ns_binary).exists() {
-        exec_via_ns(ns_binary, &wrapper_config, &args, &material)
-    } else {
-        exec_direct(&wrapper_config, &args, &material)
-    }
+    exec_via_ns(ns_binary, &wrapper_config, &args, &mut material)
 }
 
 /// Fork, pipe the secret to the child, child execs underwrap-ns.
@@ -56,8 +50,15 @@ fn exec_via_ns(
     ns_binary: &str,
     config: &WrapperExecConfig,
     args: &[String],
-    material: &str,
+    material: &mut String,
 ) -> Result<()> {
+    // Make this process non-dumpable. Since we don't exec after this point
+    // (we fork and waitpid), the flag persists. This prevents same-UID
+    // processes from reading the secret out of our /proc/<pid>/mem.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0);
+    }
+
     // Create pipe for secret transfer.
     let mut pipe_fds = [0i32; 2];
     let ret = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
@@ -117,6 +118,10 @@ fn exec_via_ns(
         // pipe_write closed on drop.
     }
 
+    // Zeroize the secret from this process's memory.
+    use zeroize::Zeroize;
+    material.zeroize();
+
     // Wait for child.
     let mut status: libc::c_int = 0;
     let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
@@ -136,16 +141,6 @@ fn exec_via_ns(
         std::process::exit(128 + sig);
     }
     std::process::exit(1);
-}
-
-/// Direct exec fallback (no namespace isolation).
-fn exec_direct(config: &WrapperExecConfig, args: &[String], material: &str) -> Result<()> {
-    use std::os::unix::process::CommandExt;
-    let mut cmd = std::process::Command::new(&config.target);
-    cmd.args(args);
-    cmd.env(&config.env_variable, material);
-    let err = cmd.exec();
-    bail!("exec failed: {err}");
 }
 
 // ---------------------------------------------------------------------------

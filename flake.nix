@@ -466,6 +466,51 @@
                             )
                         machine.log("NOTE: sleep visible, environ readable, but no secret found")
 
+                # ================================================================
+                # WRAPPER PROCESS MEMORY PROTECTION
+                # ================================================================
+
+                # The wrapper chain has processes in the parent namespace:
+                # underwrap-exec parent (waitpid) and underwrap-ns parent (waitpid).
+                # Both hold the secret in memory and are non-dumpable.
+                # A same-UID process should NOT be able to read their memory.
+
+                # Find all wrapper-related processes owned by testuser.
+                wrapper_pids = machine.succeed(
+                    "pgrep -u testuser -f 'test-sleep|underwrap' || echo none"
+                ).strip()
+                machine.log("wrapper chain PIDs: " + wrapper_pids)
+
+                if wrapper_pids != "none":
+                    for pid_str in wrapper_pids.split("\n"):
+                        pid_str = pid_str.strip()
+                        if not pid_str:
+                            continue
+
+                        # /proc/<pid>/mem must not be readable by same-UID.
+                        rc = machine.execute(
+                            f"su testuser -s /bin/sh -c "
+                            f"'dd if=/proc/{pid_str}/mem bs=1 count=1 2>/dev/null'"
+                        )[0]
+                        assert rc != 0, (
+                            f"FAIL: same-UID read /proc/{pid_str}/mem"
+                        )
+
+                        # /proc/<pid>/environ must not be readable by same-UID.
+                        rc = machine.execute(
+                            f"su testuser -s /bin/sh -c "
+                            f"'cat /proc/{pid_str}/environ 2>/dev/null'"
+                        )[0]
+                        assert rc != 0, (
+                            f"FAIL: same-UID read /proc/{pid_str}/environ"
+                        )
+
+                    machine.log(
+                        "PASS: wrapper process mem+environ not readable by same-UID"
+                    )
+                else:
+                    machine.log("NOTE: no wrapper PIDs found")
+
                 # Clean up.
                 machine.succeed("pkill -u testuser -f test-sleep || true")
                 time.sleep(0.5)
