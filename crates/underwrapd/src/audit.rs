@@ -83,3 +83,18 @@ pub fn auth_denied(socket: &str, reason: &str, peer_uid: Option<u32>, peer_gid: 
         peer_gid = peer_gid,
     );
 }
+
+/// Audit event for a secretsd channel read.
+pub fn secretsd_read(wrapper: &str, item: &str) {
+    info!(audit = "secretsd_read", wrapper = wrapper, item = item,);
+}
+
+/// Audit event for a secretsd channel write.
+pub fn secretsd_write(wrapper: &str, item: &str) {
+    info!(audit = "secretsd_write", wrapper = wrapper, item = item,);
+}
+
+/// Audit event for a secretsd channel delete.
+pub fn secretsd_delete(wrapper: &str, item: &str) {
+    info!(audit = "secretsd_delete", wrapper = wrapper, item = item,);
+}

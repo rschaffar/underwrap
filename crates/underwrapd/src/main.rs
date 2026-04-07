@@ -13,6 +13,28 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Harden: non-dumpable + no core dumps. The daemon holds secrets in memory.
+    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
+    if ret != 0 {
+        eprintln!(
+            "underwrapd: prctl(PR_SET_DUMPABLE, 0) failed: {}",
+            std::io::Error::last_os_error()
+        );
+        std::process::exit(1);
+    }
+    let rlim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
+    if ret != 0 {
+        eprintln!(
+            "underwrapd: setrlimit(RLIMIT_CORE, 0) failed: {}",
+            std::io::Error::last_os_error()
+        );
+        std::process::exit(1);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),

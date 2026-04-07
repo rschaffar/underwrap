@@ -2378,6 +2378,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
@@ -2499,6 +2500,7 @@ dependencies = [
  "tracing-subscriber",
  "underwrap-protocol",
  "underwrap-store",
+ "zeroize",
 ]
 
 [[package]]

@@ -446,8 +446,6 @@ fn read_secret_fd() -> Result<String, std::io::Error> {
 
 /// Drop all Linux capabilities.
 fn drop_caps() -> Result<(), String> {
-    // PR_CAP_AMBIENT_CLEAR_ALL removes all ambient caps.
-    // Then set the capability bounding set to empty by dropping each cap.
     unsafe {
         // Clear ambient capabilities.
         let ret = libc::prctl(
@@ -462,7 +460,6 @@ fn drop_caps() -> Result<(), String> {
         }
 
         // Drop all capabilities from the bounding set.
-        // Iterate through capability numbers until we get EINVAL.
         for cap in 0..64 {
             let ret = libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0);
             if ret != 0 {
@@ -474,10 +471,37 @@ fn drop_caps() -> Result<(), String> {
             }
         }
 
-        // Clear all permitted/effective/inheritable capabilities by
-        // setting the securebits to prevent regaining caps.
-        // The simplest approach: the caps will be cleared on the
-        // next exec() of a non-setcap binary (the target).
+        // Clear effective/permitted/inheritable capability sets using capset().
+        // This is the Linux capability v3 (64-bit) format.
+        #[repr(C)]
+        struct CapHeader {
+            version: u32,
+            pid: i32,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct CapData {
+            effective: u32,
+            permitted: u32,
+            inheritable: u32,
+        }
+        // _LINUX_CAPABILITY_VERSION_3 = 0x20080522
+        let header = CapHeader {
+            version: 0x20080522,
+            pid: 0, // current process
+        };
+        // Two data structs for 64-bit capability sets (low + high).
+        let data = [CapData {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2];
+
+        let ret = libc::syscall(libc::SYS_capset, &header as *const CapHeader, data.as_ptr());
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            return Err(format!("capset() failed: {err}"));
+        }
     }
     Ok(())
 }

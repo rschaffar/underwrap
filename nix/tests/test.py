@@ -31,7 +31,7 @@ machine.succeed("id underwrap-tunnel")
 # ============================================================
 
 perms = machine.succeed("stat -c %a /run/underwrap-local").strip()
-assert perms == "775", f"expected 775, got {perms}"
+assert perms == "755", f"expected 755, got {perms}"
 perms = machine.succeed("stat -c %a /run/underwrap-local/read.sock").strip()
 assert perms == "666", f"expected 666, got {perms}"
 perms = machine.succeed("stat -c %a /run/underwrap-local/control.sock").strip()
@@ -416,7 +416,7 @@ machine.succeed(f"chmod 600 {tunnel_home}/.ssh/authorized_keys")
 machine.succeed(f"chown -R underwrap-tunnel-tunnel:underwrap-tunnel {tunnel_home}/.ssh")
 
 # Without tunnel: fail.
-machine.fail("test -S /run/underwrap-tunnel/backend.sock")
+machine.fail("test -S /run/underwrap-tunnel/tunnel/backend.sock")
 machine.fail(su("/run/wrappers/bin/tunnel-remote-echo"))
 machine.log("PASS: wrapper fails without tunnel")
 
@@ -427,13 +427,13 @@ machine.succeed(
     "-o StrictHostKeyChecking=no "
     "-o UserKnownHostsFile=/dev/null "
     "-i ~/.ssh/tunnel_key "
-    "-R /run/underwrap-tunnel/backend.sock:/run/underwrap-backend/backend.sock "
+    "-R /run/underwrap-tunnel/tunnel/backend.sock:/run/underwrap-backend/backend.sock "
     "underwrap-tunnel-tunnel@localhost"
     "'"
 )
 time.sleep(1)
-machine.succeed("test -S /run/underwrap-tunnel/backend.sock")
-machine.succeed("chmod 0660 /run/underwrap-tunnel/backend.sock")
+machine.succeed("test -S /run/underwrap-tunnel/tunnel/backend.sock")
+machine.succeed("chmod 0660 /run/underwrap-tunnel/tunnel/backend.sock")
 machine.log("PASS: tunnel established")
 
 # With tunnel: succeed.
@@ -448,7 +448,7 @@ machine.log("PASS: no secret on local disk")
 # Kill tunnel: fail.
 machine.execute("pkill -f 'ssh.*tunnel_key' || true")
 time.sleep(0.5)
-machine.succeed("rm -f /run/underwrap-tunnel/backend.sock")
+machine.succeed("rm -f /run/underwrap-tunnel/tunnel/backend.sock")
 machine.fail(su("/run/wrappers/bin/tunnel-remote-echo"))
 machine.log("PASS: fails after tunnel killed")
 
@@ -459,12 +459,12 @@ machine.succeed(
     "-o StrictHostKeyChecking=no "
     "-o UserKnownHostsFile=/dev/null "
     "-i ~/.ssh/tunnel_key "
-    "-R /run/underwrap-tunnel/backend.sock:/run/underwrap-backend/backend.sock "
+    "-R /run/underwrap-tunnel/tunnel/backend.sock:/run/underwrap-backend/backend.sock "
     "underwrap-tunnel-tunnel@localhost"
     "'"
 )
 time.sleep(1)
-machine.succeed("chmod 0660 /run/underwrap-tunnel/backend.sock")
+machine.succeed("chmod 0660 /run/underwrap-tunnel/tunnel/backend.sock")
 output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
 assert "REMOTE_TOKEN=secret_via_tunnel" in output
 machine.log("PASS: works after reconnect")

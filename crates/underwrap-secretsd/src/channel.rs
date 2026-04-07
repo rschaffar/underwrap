@@ -6,7 +6,6 @@
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
-use zeroize::Zeroize;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{SecretsdRequest, SecretsdResponse};
@@ -117,29 +116,36 @@ pub fn load_initial_state(channel: &DaemonChannel) -> Result<SecretStore> {
     for col_id in &col_ids {
         let items = channel.list(col_id)?;
         for item_key in items {
-            // Skip _meta files.
-            if item_key.ends_with("/_meta") || item_key == "_aliases" {
+            // Skip non-item files.
+            if item_key.ends_with("/_meta")
+                || item_key.ends_with(".secret")
+                || item_key == "_aliases"
+            {
+                continue;
+            }
+            // Only load .meta files (metadata without secrets).
+            if !item_key.ends_with(".meta") {
                 continue;
             }
             let item_id = item_key
                 .strip_prefix(&format!("{col_id}/"))
+                .and_then(|s| s.strip_suffix(".meta"))
                 .unwrap_or(&item_key);
 
-            if let Some(item_str) = channel.read(&item_key)? {
-                let item: ItemDataPublic =
-                    serde_json::from_str(&item_str).context("parsing item data")?;
+            if let Some(meta_str) = channel.read(&item_key)? {
+                let meta: ItemMeta =
+                    serde_json::from_str(&meta_str).context("parsing item metadata")?;
 
                 if let Some(col) = store.collections.get_mut(col_id) {
                     col.items.insert(
                         item_id.to_string(),
                         underwrap_secretsd_store::Item {
-                            // SECRET NOT STORED IN MEMORY — always read from backend.
                             secret: Vec::new(),
-                            content_type: item.content_type.clone(),
-                            attributes: item.attributes.clone(),
-                            label: item.label.clone(),
-                            created: item.created,
-                            modified: item.modified,
+                            content_type: meta.content_type,
+                            attributes: meta.attributes,
+                            label: meta.label,
+                            created: meta.created,
+                            modified: meta.modified,
                         },
                     );
                 }
@@ -158,13 +164,13 @@ pub fn read_item_secret(
     col_id: &str,
     item_id: &str,
 ) -> Result<Option<Vec<u8>>> {
-    let key = format!("{col_id}/{item_id}");
-    if let Some(item_str) = channel.read(&key)? {
-        let mut item: ItemDataPublic =
-            serde_json::from_str(&item_str).context("parsing item data")?;
-        // Take the secret out; item's Drop will zeroize the (now empty) field.
-        let secret = std::mem::take(&mut item.secret);
-        Ok(Some(secret))
+    let key = format!("{col_id}/{item_id}.secret");
+    if let Some(secret_b64) = channel.read(&key)? {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&secret_b64)
+            .context("decoding item secret base64")?;
+        Ok(Some(bytes))
     } else {
         Ok(None)
     }
@@ -194,8 +200,7 @@ pub fn save_collection_meta(
     Ok(())
 }
 
-/// Save a single item to the daemon. Writes metadata from the in-memory
-/// store plus the provided secret bytes (which are NOT stored in memory).
+/// Save a single item: metadata to .meta key, secret to .secret key.
 pub fn save_item_with_secret(
     channel: &DaemonChannel,
     col_id: &str,
@@ -208,30 +213,48 @@ pub fn save_item_with_secret(
         .get(col_id)
         .and_then(|c| c.items.get(item_id))
     {
-        let item_data = ItemDataPublic {
-            secret: secret.to_vec(),
+        // Write metadata (no secret).
+        let meta = ItemMeta {
             content_type: item.content_type.clone(),
             attributes: item.attributes.clone(),
             label: item.label.clone(),
             created: item.created,
             modified: item.modified,
         };
-        let item_json = serde_json::to_string(&item_data)?;
-        channel.write(&format!("{col_id}/{item_id}"), &item_json)?;
+        let meta_json = serde_json::to_string(&meta)?;
+        channel.write(&format!("{col_id}/{item_id}.meta"), &meta_json)?;
+
+        // Write secret separately (base64-encoded).
+        use base64::Engine;
+        let secret_b64 = base64::engine::general_purpose::STANDARD.encode(secret);
+        channel.write(&format!("{col_id}/{item_id}.secret"), &secret_b64)?;
     }
     Ok(())
 }
 
-/// Save item metadata only (re-reads existing secret from backend).
+/// Save item metadata only (does not touch the .secret key).
 pub fn save_item_metadata(
     channel: &DaemonChannel,
     col_id: &str,
     item_id: &str,
     store: &SecretStore,
 ) -> Result<()> {
-    // Read existing secret from backend.
-    let existing_secret = read_item_secret(channel, col_id, item_id)?.unwrap_or_default();
-    save_item_with_secret(channel, col_id, item_id, store, &existing_secret)
+    if let Some(item) = store
+        .collections
+        .get(col_id)
+        .and_then(|c| c.items.get(item_id))
+    {
+        let meta = ItemMeta {
+            content_type: item.content_type.clone(),
+            attributes: item.attributes.clone(),
+            label: item.label.clone(),
+            created: item.created,
+            modified: item.modified,
+        };
+        let meta_json = serde_json::to_string(&meta)?;
+        channel.write(&format!("{col_id}/{item_id}.meta"), &meta_json)?;
+    }
+    Ok(())
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -241,10 +264,9 @@ struct CollectionMeta {
     modified: u64,
 }
 
+/// Item metadata (no secret). Used for .meta keys.
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct ItemDataPublic {
-    #[serde(with = "base64_bytes")]
-    pub secret: Vec<u8>,
+pub struct ItemMeta {
     #[serde(default = "default_content_type")]
     pub content_type: String,
     pub attributes: std::collections::HashMap<String, String>,
@@ -253,30 +275,6 @@ pub struct ItemDataPublic {
     pub modified: u64,
 }
 
-impl Drop for ItemDataPublic {
-    fn drop(&mut self) {
-        self.secret.zeroize();
-    }
-}
-
 fn default_content_type() -> String {
     "text/plain".to_string()
-}
-
-mod base64_bytes {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-        encoded.serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        use base64::Engine;
-        let encoded = String::deserialize(d)?;
-        base64::engine::general_purpose::STANDARD
-            .decode(&encoded)
-            .map_err(serde::de::Error::custom)
-    }
 }

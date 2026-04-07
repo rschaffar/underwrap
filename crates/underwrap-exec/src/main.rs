@@ -100,23 +100,21 @@ fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
     };
     write_frame_sync(&mut stream, &req)?;
     let resp: WrapperResponse = read_frame_sync(&mut stream)?;
-    drop(stream);
 
     match resp {
         WrapperResponse::Ok { message, .. } => {
             // Unlocked without challenge (no SSH key required).
+            drop(stream);
             eprintln!("unlocked: {}", message.unwrap_or_default());
             drop_privilege()?;
             Ok(())
         }
         WrapperResponse::Challenge { nonce } => {
             // Need to sign the nonce with SSH agent.
-            drop_privilege()?;
+            // Sign BEFORE dropping privilege — SSH agent access is fine.
+            // Send response on the SAME connection — reconnecting would
+            // lose the wrapper's effective GID after drop_privilege().
             let (signature_b64, public_key_str) = sign_with_ssh_agent(&nonce)?;
-
-            // Step 2: Send the signed challenge response.
-            let mut stream2 = UnixStream::connect(&wrapper_config.read_socket)
-                .context("reconnecting to daemon for challenge response")?;
 
             let req2 = WrapperRequest::UnlockResponse {
                 wrapper: wrapper_name.to_string(),
@@ -126,8 +124,12 @@ fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
                 signature: signature_b64,
                 public_key: public_key_str,
             };
-            write_frame_sync(&mut stream2, &req2)?;
-            let resp2: WrapperResponse = read_frame_sync(&mut stream2)?;
+            write_frame_sync(&mut stream, &req2)?;
+            let resp2: WrapperResponse = read_frame_sync(&mut stream)?;
+            drop(stream);
+
+            // Now drop privilege (no longer needed).
+            drop_privilege()?;
 
             match resp2 {
                 WrapperResponse::Ok { message, .. } => {

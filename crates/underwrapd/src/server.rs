@@ -466,6 +466,39 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
 
     write_frame_async(&mut stream, &response).await?;
 
+    // If we sent a Challenge, the client will send the UnlockResponse on
+    // the same connection (it can't reconnect — it would lose the wrapper GID).
+    if matches!(&response, WrapperResponse::Challenge { .. }) {
+        let follow_up: WrapperRequest = read_frame_async(&mut stream).await?;
+        let follow_up_response = match &follow_up {
+            WrapperRequest::UnlockResponse {
+                scope,
+                seconds,
+                challenge,
+                signature,
+                public_key,
+                ..
+            } => {
+                info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response (same connection)");
+                process_wrapper_unlock_response(
+                    &wrapper_name,
+                    scope.as_deref(),
+                    *seconds,
+                    peer_uid,
+                    &state,
+                    challenge,
+                    signature,
+                    public_key,
+                )
+            }
+            _ => WrapperResponse::Error {
+                code: ErrorCode::Internal,
+                message: "expected UnlockResponse after Challenge".to_string(),
+            },
+        };
+        write_frame_async(&mut stream, &follow_up_response).await?;
+    }
+
     // If this is a successful read for a libsecret-enabled wrapper,
     // create a socketpair and send one end via SCM_RIGHTS.
     if matches!(

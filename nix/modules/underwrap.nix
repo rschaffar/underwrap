@@ -12,6 +12,7 @@ let
     tunnelUser = "underwrap-${instName}-tunnel";
     wrapperGroupName = name: "underwrap-${instName}-${name}";
     runDir = "/run/underwrap-${instName}";
+    tunnelDir = "/run/underwrap-${instName}/tunnel";
     stateDir = "/var/lib/underwrap-${instName}";
 
     runtimeConfig = {
@@ -23,7 +24,7 @@ let
       };
       storage = if inst.remote.enable then {
         backend = "remote";
-        socket = "${runDir}/backend.sock";
+        socket = "${tunnelDir}/backend.sock";
       } else if inst.encryption.enable then {
         backend = "encrypted";
         dir = "${stateDir}/secrets";
@@ -120,10 +121,14 @@ let
     ) inst.wrappers;
 
     # Tmpfiles rules.
+    # runDir is 0755 (not group-writable) — protects read.sock and control.sock.
+    # tunnelDir is 0770 group-writable — only for the backend tunnel socket.
     tmpfiles = [
-      "d ${runDir} 0775 ${daemonUser} ${daemonGroup} -"
+      "d ${runDir} 0755 ${daemonUser} ${daemonGroup} -"
       "d ${stateDir} 0700 ${daemonUser} ${daemonGroup} -"
       "d ${stateDir}/secrets 0700 ${daemonUser} ${daemonGroup} -"
+    ] ++ lib.optionals inst.remote.enable [
+      "d ${tunnelDir} 0770 ${daemonUser} ${daemonGroup} -"
     ];
 
     # Systemd service.
@@ -142,6 +147,7 @@ let
         ProtectHome = true;
         PrivateTmp = true;
         NoNewPrivileges = true;
+        LimitCORE = 0;
         ReadWritePaths = [ runDir stateDir ];
       };
     };

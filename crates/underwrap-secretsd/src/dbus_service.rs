@@ -240,11 +240,13 @@ impl CollectionInterface {
     async fn delete(&self) -> fdo::Result<ObjectPath<'_>> {
         let mut store = self.store.write().await;
 
-        // Delete items from backend.
+        // Delete items from backend (both .meta and .secret for each).
         let items = store.list_items(&self.id);
         for item_id in &items {
-            let key = format!("{}/{item_id}", self.id);
-            let _ = self.channel.delete(&key);
+            let _ = self.channel.delete(&format!("{}/{item_id}.meta", self.id));
+            let _ = self
+                .channel
+                .delete(&format!("{}/{item_id}.secret", self.id));
         }
         let _ = self.channel.delete(&format!("{}/_meta", self.id));
 
@@ -408,9 +410,13 @@ impl ItemInterface {
     async fn delete(&self) -> fdo::Result<ObjectPath<'_>> {
         let mut store = self.store.write().await;
 
-        // Delete from backend.
-        let key = format!("{}/{}", self.collection_id, self.id);
-        let _ = self.channel.delete(&key);
+        // Delete from backend (both .meta and .secret).
+        let _ = self
+            .channel
+            .delete(&format!("{}/{}.meta", self.collection_id, self.id));
+        let _ = self
+            .channel
+            .delete(&format!("{}/{}.secret", self.collection_id, self.id));
 
         store.delete_item(&self.collection_id, &self.id);
         // Item already deleted from backend above. Update collection modified time.

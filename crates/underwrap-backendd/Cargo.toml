@@ -10,6 +10,7 @@ name = "underwrap-backendd"
 path = "src/main.rs"
 
 [dependencies]
+libc = { workspace = true }
 underwrap-protocol = { workspace = true }
 underwrap-store = { workspace = true }
 tokio = { workspace = true }

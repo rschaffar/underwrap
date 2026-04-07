@@ -86,6 +86,7 @@ fn process_request(
             match store.read(&full_id) {
                 Ok(material) => {
                     debug!(wrapper = %wrapper_name, id = %full_id, "secretsd read");
+                    crate::audit::secretsd_read(wrapper_name, secret_id);
                     SecretsdResponse::Ok {
                         material,
                         ids: None,
@@ -117,6 +118,7 @@ fn process_request(
             match store.write(&full_id, material) {
                 Ok(()) => {
                     debug!(wrapper = %wrapper_name, id = %full_id, "secretsd write");
+                    crate::audit::secretsd_write(wrapper_name, secret_id);
                     SecretsdResponse::Ok {
                         material: None,
                         ids: None,
@@ -182,6 +184,7 @@ fn process_request(
             match store.delete(&full_id) {
                 Ok(existed) => {
                     debug!(wrapper = %wrapper_name, id = %full_id, existed = existed, "secretsd delete");
+                    crate::audit::secretsd_delete(wrapper_name, secret_id);
                     SecretsdResponse::Ok {
                         material: None,
                         ids: None,

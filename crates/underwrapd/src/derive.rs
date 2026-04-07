@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Instant;
 use tracing::{info, warn};
+use zeroize::Zeroize;
 
 use underwrap_protocol::config::DerivationMode;
 
@@ -14,6 +15,12 @@ use underwrap_protocol::config::DerivationMode;
 struct CachedToken {
     access_token: String,
     expires_at: Instant,
+}
+
+impl Drop for CachedToken {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+    }
 }
 
 /// Token cache: maps secret_id → cached access token.
