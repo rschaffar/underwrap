@@ -172,21 +172,47 @@ credentials before exec. The source binaries are copies (not symlinks) so
 
 After the wrapper drops privilege and execs the target, the target is
 "dumpable" — the kernel resets the dumpable flag when there's no credential
-mismatch at exec time (`euid==uid`, `egid==gid`). Same-UID processes can
-read `/proc/<pid>/environ` and extract the secret.
+mismatch at exec time (`euid==uid`, `egid==gid`). If `suid_dumpable` is 0
+(the default) and the exec involves no credential change, dumpable is set
+to 1 (SUID_DUMP_USER).
 
 ### Why PR_SET_DUMPABLE doesn't work for the target
 
-We set `PR_SET_DUMPABLE=0` in a `pre_exec` hook, but `exec()` resets it
-because there's no credential mismatch (we already dropped privilege).
-The `suid_dumpable` sysctl doesn't help either — the flag is reset based
-on credential state at exec time, not the sysctl value.
+We set `PR_SET_DUMPABLE=0` in the child before exec, but `exec()` of the
+target binary (a normal binary without setuid/setgid/capabilities) resets
+dumpable to 1.
 
-### The solution
+### What actually protects the target
 
-The target runs inside a PID namespace created by `underwrap-ns`. Processes
-in the parent namespace cannot see the target's `/proc` entries. No
-`/proc/<pid>`, no `/proc/<pid>/environ`, no way to read the secret.
+The VM test proves that same-UID host processes **cannot** read
+`/proc/<host-pid>/environ` of the final target, even though:
+- The target has a host-visible PID (root can find it)
+- The target is dumpable (exec reset it to 1)
+- The attacker has the same UID
+
+The protection comes from **Yama LSM** (`kernel.yama.ptrace_scope=1`),
+which is the default on NixOS (and most modern Linux distributions).
+With `ptrace_scope=1`, `/proc/<pid>/environ` access (which requires
+`PTRACE_MODE_READ_FSCREDS`) is restricted to **descendant processes only**.
+A same-UID process that is not a descendant of the target is denied.
+
+The PID namespace provides **defense in depth**:
+- Makes the target harder to discover (different PID space)
+- When combined with a mount namespace (libsecret mode), a fresh `/proc`
+  mount ensures processes inside the namespace can only see namespace-local
+  PIDs
+
+But the primary protection for the target's environment is Yama, not the
+PID namespace.
+
+### Dependency on Yama
+
+If `kernel.yama.ptrace_scope` is set to 0 (disabled), same-UID processes
+**can** read the target's `/proc/<pid>/environ`. NixOS sets `ptrace_scope=1`
+by default. The VM test verifies this protection holds.
+
+Systems that set `ptrace_scope=0` should not be considered safe for
+env-mode secret injection without additional hardening.
 
 ### Why a two-stage wrapper?
 

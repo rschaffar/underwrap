@@ -99,6 +99,8 @@ examples/config.yaml     # Annotated example daemon config
 - Run the VM test for NixOS module changes: `nix build .#checks.x86_64-linux.vm-test`
 - When synchronizing with dbus-daemon, use `--print-address=<fd>` and read from
   the pipe (NOT socket file polling — the file appears before accept is ready)
+- Target process /proc protection depends on Yama LSM (ptrace_scope=1, NixOS
+  default). If ptrace_scope=0, env-mode secrets are exposed. See security.md.
 
 ### Ask first
 
