@@ -226,10 +226,11 @@ last_line = output.split("\n")[-1].strip()
 assert last_line == "my_gh_token_123", f"expected 'my_gh_token_123', got '{last_line}'"
 machine.log("PASS: secret-tool lookup via libsecret wrapper")
 
-# Verify no local JSON files with secret material.
-machine.fail("find /var/lib/underwrap-local/ -name '*.json' -exec grep -l 'my_gh_token_123' {} +")
-machine.fail("find /tmp/ -name '*.json' -exec grep -l 'my_gh_token_123' {} +")
-machine.log("PASS: no local files contain secret material")
+# Verify no local files OUTSIDE the backend contain secret material.
+# The backend directory DOES contain the data (that's correct).
+machine.fail("find /tmp/ -type f -exec grep -l 'my_gh_token_123' {} +")
+machine.fail("find /home/ -type f -exec grep -l 'my_gh_token_123' {} +")
+machine.log("PASS: no files outside backend contain secret material")
 
 # Verify the secret IS in the backend storage (via the daemon).
 backend_files = machine.succeed(
