@@ -111,6 +111,47 @@ pub enum ControlResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Secretsd channel messages (daemon <-> secretsd over authenticated socketpair)
+// ---------------------------------------------------------------------------
+
+/// Request from secretsd to daemon over the authenticated socketpair channel.
+/// All secret_id values are relative — the daemon handler prepends the
+/// wrapper's prefix (e.g., `<wrapper>/libsecret/`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action")]
+pub enum SecretsdRequest {
+    /// Read a secret by relative ID.
+    #[serde(rename = "read")]
+    Read { secret_id: String },
+    /// Write a secret by relative ID.
+    #[serde(rename = "write")]
+    Write { secret_id: String, material: String },
+    /// List secrets under a relative prefix.
+    #[serde(rename = "list")]
+    List { prefix: String },
+    /// Delete a secret by relative ID.
+    #[serde(rename = "delete")]
+    Delete { secret_id: String },
+}
+
+/// Response from daemon to secretsd over the authenticated socketpair channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status")]
+pub enum SecretsdResponse {
+    #[serde(rename = "ok")]
+    Ok {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        material: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ids: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        existed: Option<bool>,
+    },
+    #[serde(rename = "error")]
+    Error { message: String },
+}
+
+// ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
 
