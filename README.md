@@ -28,6 +28,50 @@ $ work-gh-authorized pr list
 #   5. Target runs with secret in env, protected by Yama LSM + PID namespace
 ```
 
+## Primary use case: agent-facing wrappers without handing agents reusable tokens
+
+A major use case is giving an AI agent or automation system access to a CLI
+capability **without** giving it the raw API token.
+
+Typical setup:
+
+- the agent can already read the workspace and invoke approved commands
+- you expose a **narrow wrapper** like `agent-gh-comment` or `agent-slack-post`
+- that wrapper is deployed declaratively by NixOS and points to a fixed target
+  in the Nix store
+- underwrap injects the token just-in-time for that wrapper's target
+
+Example:
+
+```
+$ agent-gh-comment 123 /workspace/review.md
+# The agent can already read /workspace/review.md.
+# What underwrap avoids is handing the agent GH_TOKEN itself.
+```
+
+This is where underwrap fits well:
+
+- the raw token is not in the agent's shell environment, prompt, or config files
+- the configured target path is absolute and comes from a trusted root-owned
+  sidecar config — no PATH lookup for the main target
+- the target starts from a **clean environment**, blocking `LD_PRELOAD`,
+  `LD_LIBRARY_PATH`, and injection of internal `UNDERWRAP_*` variables
+- wrapper identity is kernel-verified via setgid effective GID
+- wrapper processes are non-dumpable and zeroize secret material after handoff
+- core dumps are disabled for the target
+- secrets can stay on your workstation entirely in remote-backend mode
+
+Combined with **specialized wrappers** that limit repo / subcommand / flags /
+remote action surface, this gives a reasonable defense against raw token
+exfiltration and reduces tooling abuse.
+
+It is **not** a full sandbox. If you wrap a broad tool like `gh` directly, you
+are still giving the caller broad `gh` capabilities. underwrap is the hardened
+secret-delivery layer around those wrappers, not a replacement for wrapper
+policy design.
+
+See [Agent-facing wrappers](docs/agents.md) for the recommended pattern.
+
 ## Why it exists
 
 Every local secret management approach has problems:
@@ -68,6 +112,11 @@ for a detailed analysis.
   `prctl(PR_SET_DUMPABLE, 0)` and zeroize the secret after piping it.
   Since they never exec again, the flag persists for their entire lifetime.
 
+- **Clean target environment**: the target starts from `env_clear()` and only
+  receives a safe default whitelist plus trusted per-wrapper additions from the
+  root-owned sidecar config. This blocks `LD_PRELOAD` / `LD_LIBRARY_PATH`
+  injection and user-controlled `UNDERWRAP_*` overrides.
+
 - **Core dump prevention**: `RLIMIT_CORE=0` set before exec of the target.
   A crashing tool cannot write the secret to disk.
 
@@ -99,6 +148,28 @@ for a detailed analysis.
   capability binaries, sidecar configs, systemd services, tmpfiles, and
   SSH tunnel users — all from a declarative Nix configuration.
 
+## When to use underwrap
+
+Use underwrap when you want one or more of these:
+
+- **Agent-facing wrappers**: let an agent use a CLI capability without giving
+  it the reusable token directly
+- **Existing CLI compatibility**: keep using tools like `gh` or other token-
+  driven CLIs instead of rewriting everything into a broker service
+- **Secrets off the target machine**: keep credentials on your workstation and
+  forward them over an SSH-tunneled Unix socket
+- **Mutable credentials**: support OAuth refresh/access token workflows or
+  libsecret-backed tools
+- **NixOS-native deployment**: generate users, groups, setgid wrappers,
+  sidecar configs, and services from one declarative config
+
+You probably do **not** need underwrap if:
+
+- plain environment variables or `op run` / `pass` are already good enough
+- you control the full integration and can build a small broker service instead
+- you need strong behavior restriction more than secret-delivery hardening
+- you only have a handful of static secrets and no wrapper-oriented workflow
+
 ## Quick start
 
 ```bash
@@ -113,6 +184,7 @@ See [Getting started](docs/getting-started.md) for a full NixOS setup walkthroug
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — setup, first wrapper, verification
+- [Agent-facing wrappers](docs/agents.md) — recommended pattern for AI agents and narrow wrappers
 - [Architecture](docs/architecture.md) — components, request flow, protocols
 - [Configuration](docs/configuration.md) — NixOS module, YAML, multi-instance
 - [Security](docs/security.md) — threat model, every mechanism, rejected alternatives

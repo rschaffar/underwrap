@@ -295,11 +295,11 @@ config that redirects the target to a binary that exfiltrates the secret.
 ## Environment sanitization
 
 The target process starts with a **clean environment** (`env_clear()`).
-It does not inherit the user's shell environment. This blocks:
+It does not inherit the user's shell environment wholesale. This blocks:
 
 - `LD_PRELOAD` / `LD_LIBRARY_PATH` injection
-- `PATH` manipulation to substitute target dependencies
-- Arbitrary env vars that could alter target behavior
+- User injection of internal `UNDERWRAP_*` control variables
+- Arbitrary inherited env vars that could alter target behavior
 
 The following are passed through from the user's environment (default
 whitelist):
@@ -316,6 +316,10 @@ whitelist):
 Additional passthrough vars and fixed env vars can be configured per
 wrapper in the NixOS module (`envPassthrough`, `envSet`). These come
 from the root-owned sidecar config, not from the user.
+
+If a wrapper should not rely on `PATH`, it should call downstream tools by
+absolute Nix store path. This is the recommended pattern for agent-facing
+wrappers.
 
 Internal env vars (`UNDERWRAP_LIBSECRET`, `UNDERWRAP_DBUS_DAEMON`,
 `UNDERWRAP_SECRETSD`, `UNDERWRAP_ENV_CONFIG`) are always stripped from

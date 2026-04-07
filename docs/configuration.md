@@ -152,9 +152,16 @@ target: /nix/store/.../bin/gh
 env_variable: GH_TOKEN
 read_socket: /run/underwrap-myproject/read.sock
 ns_binary: /run/wrappers/bin/underwrap-ns
+env_passthrough: []
+env_set: {}
 ```
 
-The NixOS module generates these. The `env_variable` is derived from `injection.variable`.
+The NixOS module generates these. The `env_variable` is derived from
+`injection.variable`.
+
+`target` and `ns_binary` are absolute paths. underwrap does not search `PATH`
+for the configured main target. For agent-facing use, `target` should usually
+point at your own Nix-store wrapper rather than a broad tool directly.
 
 ## Storing secrets
 

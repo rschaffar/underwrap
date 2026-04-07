@@ -108,6 +108,7 @@ sudo underwrapctl --socket /run/underwrap-default/control.sock \
 
 ## Next steps
 
+- [Agent-facing wrappers](agents.md) — recommended pattern for AI agents and narrow wrappers
 - [Configuration](configuration.md) — multi-instance, unlock, OAuth derivation
 - [Remote backend](remote-backend.md) — keep secrets off the target machine entirely
 - [Security](security.md) — understand every protection mechanism
