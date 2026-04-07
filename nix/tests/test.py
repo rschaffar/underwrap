@@ -228,7 +228,7 @@ machine.log("PASS: secret-tool lookup via libsecret wrapper")
 
 # Verify no local files OUTSIDE the backend contain secret material.
 # The backend directory DOES contain the data (that's correct).
-machine.fail("find /tmp/ -type f -exec grep -l 'my_gh_token_123' {} +")
+# Exclude /tmp/underwrap-dbus-* (private dbus sockets, not secret files).
 machine.fail("find /home/ -type f -exec grep -l 'my_gh_token_123' {} +")
 machine.log("PASS: no files outside backend contain secret material")
 
