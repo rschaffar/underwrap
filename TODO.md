@@ -2,16 +2,15 @@
 
 ## Open issues
 
-### Unlock for non-root users
+### Unlock for non-root users (partially resolved)
 
-The control socket is 0600 (underwrap user only), so normal users cannot run
-`underwrapctl unlock`. Unlock grants are also bound to the caller's UID, so a
-root-issued unlock doesn't satisfy a later read from UID 1000.
+Root unlock grants now create admin grants (uid=None) that cover all UIDs.
+A normal user can use a locked wrapper after root runs `underwrapctl unlock`.
 
-Options:
+Remaining: normal users still cannot *initiate* an unlock because the control
+socket is 0600. Options for future:
 - Setgid `underwrapctl` wrapper for unlock operations
 - Make unlock a command on the read socket (authenticated by wrapper GID)
-- Dedicated unlock socket with broader group access
 
 ### Immutability TOCTOU
 
@@ -20,13 +19,6 @@ both succeed. Low practical risk (stores are rare admin operations on the
 restricted control socket) but violates the documented contract.
 
 Fix: per-secret mutex in the store path.
-
-### VM test coverage for non-root users
-
-The VM test runs everything as root. It does not verify that:
-- A normal user can actually use the setgid wrappers
-- Wrapper GID identity resolves correctly for non-root callers
-- Unlock grants work across UID boundaries
 
 ### NixOS module: injection config duplication
 
@@ -37,6 +29,13 @@ drift. Should derive one from the other.
 
 `build_status()` catches storage read errors and reports them as "not stored",
 which can hide corruption.
+
+### PR_SET_DUMPABLE requires suid_dumpable=0
+
+The `pre_exec` hook sets `PR_SET_DUMPABLE=0`, but the kernel resets it after
+exec of a non-setuid target when `suid_dumpable != 0`. NixOS VMs default to
+`suid_dumpable=2`. For full `/proc/pid/environ` protection, the system needs
+`boot.kernel.sysctl."fs.suid_dumpable" = 0` or the NixOS module should set it.
 
 ### Encrypted backend: key management is weak
 
