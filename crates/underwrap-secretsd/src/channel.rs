@@ -75,8 +75,9 @@ impl DaemonChannel {
     }
 }
 
-/// Load the initial Secret Service state from the daemon by reading
-/// existing items from the backend.
+/// Load the initial Secret Service state from the daemon.
+/// Secret values are NOT kept in memory — only metadata (attributes,
+/// labels, timestamps) is loaded for D-Bus object registration and search.
 pub fn load_initial_state(channel: &DaemonChannel) -> Result<SecretStore> {
     // Try to read the aliases file.
     let aliases_json = channel.read("_aliases")?;
@@ -110,7 +111,7 @@ pub fn load_initial_state(channel: &DaemonChannel) -> Result<SecretStore> {
         }
     }
 
-    // For each collection, load its items.
+    // For each collection, load item metadata (NOT secret values).
     let col_ids: Vec<String> = store.collections.keys().cloned().collect();
     for col_id in &col_ids {
         let items = channel.list(col_id)?;
@@ -119,20 +120,20 @@ pub fn load_initial_state(channel: &DaemonChannel) -> Result<SecretStore> {
             if item_key.ends_with("/_meta") || item_key == "_aliases" {
                 continue;
             }
-            // item_key is like "default/item_1"
             let item_id = item_key
                 .strip_prefix(&format!("{col_id}/"))
                 .unwrap_or(&item_key);
 
             if let Some(item_str) = channel.read(&item_key)? {
-                let item: ItemData =
+                let item: ItemDataPublic =
                     serde_json::from_str(&item_str).context("parsing item data")?;
 
                 if let Some(col) = store.collections.get_mut(col_id) {
                     col.items.insert(
                         item_id.to_string(),
                         underwrap_secretsd_store::Item {
-                            secret: item.secret,
+                            // SECRET NOT STORED IN MEMORY — always read from backend.
+                            secret: Vec::new(),
                             content_type: item.content_type,
                             attributes: item.attributes,
                             label: item.label,
@@ -146,6 +147,23 @@ pub fn load_initial_state(channel: &DaemonChannel) -> Result<SecretStore> {
     }
 
     Ok(store)
+}
+
+/// Read an item's secret value directly from the backend.
+/// Secret bytes are never kept in secretsd's memory beyond the
+/// scope of the D-Bus method call that requested them.
+pub fn read_item_secret(
+    channel: &DaemonChannel,
+    col_id: &str,
+    item_id: &str,
+) -> Result<Option<Vec<u8>>> {
+    let key = format!("{col_id}/{item_id}");
+    if let Some(item_str) = channel.read(&key)? {
+        let item: ItemDataPublic = serde_json::from_str(&item_str).context("parsing item data")?;
+        Ok(Some(item.secret))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Save only the aliases to the daemon.
@@ -172,20 +190,22 @@ pub fn save_collection_meta(
     Ok(())
 }
 
-/// Save a single item to the daemon.
-pub fn save_item(
+/// Save a single item to the daemon. Writes metadata from the in-memory
+/// store plus the provided secret bytes (which are NOT stored in memory).
+pub fn save_item_with_secret(
     channel: &DaemonChannel,
     col_id: &str,
     item_id: &str,
     store: &SecretStore,
+    secret: &[u8],
 ) -> Result<()> {
     if let Some(item) = store
         .collections
         .get(col_id)
         .and_then(|c| c.items.get(item_id))
     {
-        let item_data = ItemData {
-            secret: item.secret.clone(),
+        let item_data = ItemDataPublic {
+            secret: secret.to_vec(),
             content_type: item.content_type.clone(),
             attributes: item.attributes.clone(),
             label: item.label.clone(),
@@ -198,6 +218,18 @@ pub fn save_item(
     Ok(())
 }
 
+/// Save item metadata only (re-reads existing secret from backend).
+pub fn save_item_metadata(
+    channel: &DaemonChannel,
+    col_id: &str,
+    item_id: &str,
+    store: &SecretStore,
+) -> Result<()> {
+    // Read existing secret from backend.
+    let existing_secret = read_item_secret(channel, col_id, item_id)?.unwrap_or_default();
+    save_item_with_secret(channel, col_id, item_id, store, &existing_secret)
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CollectionMeta {
     label: String,
@@ -206,7 +238,7 @@ struct CollectionMeta {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct ItemData {
+pub struct ItemDataPublic {
     #[serde(with = "base64_bytes")]
     secret: Vec<u8>,
     #[serde(default = "default_content_type")]

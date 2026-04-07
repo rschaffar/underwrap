@@ -152,21 +152,23 @@ impl SecretService {
         let mut results = HashMap::new();
 
         for item_path in items {
-            if let Some((col_id, item_id)) = parse_item_path(item_path.as_str())
-                && let Some(secret) = store.get_secret(col_id, item_id)
-            {
-                let content_type = store
-                    .get_content_type(col_id, item_id)
-                    .unwrap_or("text/plain");
-                results.insert(
-                    item_path.into(),
-                    Secret {
-                        session: session.to_owned().into(),
-                        parameters: vec![],
-                        value: secret.to_vec(),
-                        content_type: content_type.to_string(),
-                    },
-                );
+            if let Some((col_id, item_id)) = parse_item_path(item_path.as_str()) {
+                // Read secret directly from backend — never from memory.
+                if let Ok(Some(secret)) = channel::read_item_secret(&self.channel, col_id, item_id)
+                {
+                    let content_type = store
+                        .get_content_type(col_id, item_id)
+                        .unwrap_or("text/plain");
+                    results.insert(
+                        item_path.into(),
+                        Secret {
+                            session: session.to_owned().into(),
+                            parameters: vec![],
+                            value: secret,
+                            content_type: content_type.to_string(),
+                        },
+                    );
+                }
             }
         }
 
@@ -283,19 +285,20 @@ impl CollectionInterface {
 
         let (item_id, replaced) = {
             let mut store = self.store.write().await;
+            // Store metadata only — secret bytes go directly to backend, not memory.
             let (id, replaced) = store
                 .create_item(
                     &self.id,
                     &label,
                     &attrs,
-                    &secret.value,
+                    &[], // Empty: secret not stored in memory.
                     &secret.content_type,
                     replace,
                 )
                 .map_err(|e| fdo::Error::Failed(format!("create_item error: {e}")))?;
 
-            // Save the item to backend.
-            channel::save_item(&self.channel, &self.id, &id, &store)
+            // Save item with actual secret to backend.
+            channel::save_item_with_secret(&self.channel, &self.id, &id, &store, &secret.value)
                 .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
             channel::save_collection_meta(&self.channel, &self.id, &store)
                 .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
@@ -411,10 +414,12 @@ impl ItemInterface {
     }
 
     async fn get_secret(&self, session: ObjectPath<'_>) -> fdo::Result<Secret> {
+        // Read secret directly from backend — never from memory.
+        let secret = channel::read_item_secret(&self.channel, &self.collection_id, &self.id)
+            .map_err(|e| fdo::Error::Failed(format!("read error: {e}")))?;
+        let secret = secret.ok_or_else(|| fdo::Error::Failed("item not found".into()))?;
+
         let store = self.store.read().await;
-        let secret = store
-            .get_secret(&self.collection_id, &self.id)
-            .ok_or_else(|| fdo::Error::Failed("item not found".into()))?;
         let content_type = store
             .get_content_type(&self.collection_id, &self.id)
             .unwrap_or("text/plain");
@@ -422,16 +427,22 @@ impl ItemInterface {
         Ok(Secret {
             session: session.to_owned().into(),
             parameters: vec![],
-            value: secret.to_vec(),
+            value: secret,
             content_type: content_type.to_string(),
         })
     }
 
     async fn set_secret(&self, secret: Secret) -> fdo::Result<()> {
-        let mut store = self.store.write().await;
-        store.set_secret(&self.collection_id, &self.id, &secret.value);
-        channel::save_item(&self.channel, &self.collection_id, &self.id, &store)
-            .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
+        let store = self.store.read().await;
+        // Write secret directly to backend — not stored in memory.
+        channel::save_item_with_secret(
+            &self.channel,
+            &self.collection_id,
+            &self.id,
+            &store,
+            &secret.value,
+        )
+        .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
 
@@ -453,7 +464,7 @@ impl ItemInterface {
     async fn set_attributes(&mut self, attributes: HashMap<String, String>) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_attributes(&self.collection_id, &self.id, attributes);
-        channel::save_item(&self.channel, &self.collection_id, &self.id, &store)
+        channel::save_item_metadata(&self.channel, &self.collection_id, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
@@ -471,7 +482,7 @@ impl ItemInterface {
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_label(&self.collection_id, &self.id, &label);
-        channel::save_item(&self.channel, &self.collection_id, &self.id, &store)
+        channel::save_item_metadata(&self.channel, &self.collection_id, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }

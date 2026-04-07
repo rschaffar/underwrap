@@ -147,9 +147,4 @@ The libsecret mode is implemented. See `docs/libsecret-implementation.md`.
 
 ## Planned work
 
-- Per-operation backend calls: currently secretsd loads all state at startup
-  and syncs targeted saves on mutation (write-through cache). Consider making
-  each D-Bus operation a direct backend round-trip for stricter correctness.
-- Redirect secretsd stderr to a log file instead of suppressing it.
-- Mount namespace isolation: add `CLONE_NEWNS` to hide the real session bus
-  socket at `/run/user/<uid>/bus` from the target.
+- None currently. See git log for recent libsecret mode implementation.

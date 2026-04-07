@@ -435,17 +435,17 @@ points to the private bus.
 All libsecret operations go to our secretsd, which routes secret values
 through the daemon via the authenticated socketpair channel.
 
-### Limitation: no mount namespace
+### Mount namespace isolation
 
-The target shares the host filesystem (underwrap only creates a PID namespace,
-not a mount namespace). The real session bus socket at
-`/run/user/<uid>/bus` is still accessible. A program that ignores
-`DBUS_SESSION_BUS_ADDRESS` and connects to the well-known path would reach
-the real session bus.
+When libsecret mode is enabled, `underwrap-ns` creates a mount namespace
+(`CLONE_NEWNS`) in addition to the PID namespace. It bind-mounts `/dev/null`
+over the real session bus socket at `/run/user/<uid>/bus`, ensuring the
+target cannot connect to the real session bus even if it ignores
+`DBUS_SESSION_BUS_ADDRESS`.
 
-In practice, all well-behaved libsecret clients respect
-`DBUS_SESSION_BUS_ADDRESS`. This is documented as a known limitation, not
-a security guarantee.
+This is defense-in-depth: well-behaved libsecret clients respect
+`DBUS_SESSION_BUS_ADDRESS`, but the mount namespace guarantees isolation
+even for misbehaving programs.
 
 ## Rejected approaches
 

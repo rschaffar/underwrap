@@ -60,11 +60,18 @@ fn run() -> Result<(), String> {
         libc::prctl(libc::PR_SET_DUMPABLE, 0);
     }
 
-    // Create new PID namespace.
-    let ret = unsafe { libc::unshare(libc::CLONE_NEWPID) };
+    // Create new PID namespace (and mount namespace for libsecret isolation).
+    let libsecret = std::env::var("UNDERWRAP_LIBSECRET").is_ok();
+    let unshare_flags = if libsecret {
+        // Mount namespace hides the real session bus socket from the target.
+        libc::CLONE_NEWPID | libc::CLONE_NEWNS
+    } else {
+        libc::CLONE_NEWPID
+    };
+    let ret = unsafe { libc::unshare(unshare_flags) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
-        return Err(format!("unshare(CLONE_NEWPID) failed: {err}"));
+        return Err(format!("unshare failed: {err}"));
     }
 
     // Drop all capabilities now that we've done the unshare.
@@ -171,6 +178,29 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     let secretsd =
         std::env::var("UNDERWRAP_SECRETSD").unwrap_or_else(|_| DEFAULT_SECRETSD.to_string());
 
+    // Hide the real session bus socket so the target can't bypass our private bus.
+    // We're in a mount namespace (CLONE_NEWNS), so this only affects this namespace.
+    let uid = unsafe { libc::getuid() };
+    let real_bus = format!("/run/user/{uid}/bus");
+    if std::path::Path::new(&real_bus).exists() {
+        let devnull = std::ffi::CString::new("/dev/null").unwrap();
+        let target = std::ffi::CString::new(real_bus.as_str()).unwrap();
+        let ret = unsafe {
+            libc::mount(
+                devnull.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            )
+        };
+        if ret != 0 {
+            // Non-fatal: the real bus socket might not exist in all environments.
+            let err = std::io::Error::last_os_error();
+            eprintln!("underwrap-ns: warning: could not hide real session bus: {err}");
+        }
+    }
+
     // Create temp directory for the bus socket.
     let bus_dir = format!("/tmp/underwrap-dbus-{}", unsafe { libc::getpid() });
     std::fs::create_dir_all(&bus_dir).map_err(|e| format!("creating bus dir {bus_dir}: {e}"))?;
@@ -223,7 +253,11 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
             .arg("--nofork")
             .arg("--nopidfile")
             .arg(format!("--print-address={dbus_addr_write}"))
-            .stderr(std::process::Stdio::null())
+            .stderr({
+                let log = std::fs::File::create(format!("{bus_dir}/dbus-daemon.log"))
+                    .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
+                std::process::Stdio::from(log)
+            })
             .exec();
         eprintln!("underwrap-ns: exec dbus-daemon failed: {err}");
         std::process::exit(1);
@@ -272,7 +306,11 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
             .arg(CHANNEL_FD.to_string())
             .arg("--ready-fd")
             .arg(ready_write.to_string())
-            .stderr(std::process::Stdio::null())
+            .stderr({
+                let log = std::fs::File::create(format!("{bus_dir}/secretsd.log"))
+                    .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
+                std::process::Stdio::from(log)
+            })
             .exec();
         eprintln!("underwrap-ns: exec secretsd failed: {err}");
         std::process::exit(1);
