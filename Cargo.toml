@@ -4,6 +4,7 @@ members = [
     "crates/underwrap-protocol",
     "crates/underwrap-store",
     "crates/underwrapd",
+    "crates/underwrap-backendd",
     "crates/underwrapctl",
     "crates/underwrap-exec",
     "crates/underwrap-ns",
