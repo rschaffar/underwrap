@@ -1,30 +1,30 @@
 # Example underwrap daemon configuration.
 # Copy to /etc/underwrap/config.yaml or point underwrapd --config at it.
+#
+# On NixOS, the module generates this automatically.
+# On other systems, write this by hand.
 
 sockets:
   read: /run/underwrap/read.sock
   control: /run/underwrap/control.sock
-  read_mode: "0660"    # group-readable
-  control_mode: "0600" # owner-only
-  # Uncomment to restrict socket access by UID/GID:
-  # read_allow_gids: [1000]
-  # control_allow_uids: [0]
+  read_mode: "0660"
+  control_mode: "0600"
+  # Restrict read socket to specific executable (optional):
+  # read_allow_exe: /nix/store/.../bin/underwrap-exec
 
-# Plain storage (default):
 storage:
   backend: plain
   dir: /var/lib/underwrap/secrets
-
-# Or encrypted storage:
-# storage:
-#   backend: encrypted
-#   dir: /var/lib/underwrap/secrets
-#   key_file: /var/lib/underwrap/master.key
+  # Or encrypted:
+  # backend: encrypted
+  # dir: /var/lib/underwrap/secrets
+  # key_file: /var/lib/underwrap/master.key
 
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
     secret: github/token
+    group: underwrap-gh-authorized  # GID-based identity (setgid wrapper)
     injection:
       mode: env
       variable: GH_TOKEN
@@ -32,15 +32,17 @@ wrappers:
   gws-castlabs:
     target: /usr/bin/gws
     secret: google/castlabs
+    group: underwrap-gws-castlabs
     injection:
       mode: env
       variable: GOOGLE_WORKSPACE_CLI_TOKEN
     derivation: oauth_refresh_to_access_token
-    require_unlock: true  # Must run: underwrapctl unlock gws-castlabs --seconds 1800
+    require_unlock: true
 
   agent-slack:
     target: /usr/bin/slack-cli
     secret: slack/xoxp
+    group: underwrap-agent-slack
     injection:
       mode: env
       variable: SLACK_TOKEN
@@ -48,15 +50,9 @@ wrappers:
 secrets:
   github/token:
     mutable: false
-    labels:
-      owner: projektbuero
 
   google/castlabs:
     mutable: true
-    labels:
-      owner: castlabs
 
   slack/xoxp:
     mutable: false
-    labels:
-      owner: projektbuero

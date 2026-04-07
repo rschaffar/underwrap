@@ -1,48 +1,62 @@
 # underwrap — TODO
 
-## Current scope
+## Open issues
 
-Plain file-based local storage only. The daemon owns a directory of secret
-files, reads and writes them directly. An encrypted variant (ChaCha20-Poly1305
-with a master key file) is also available as a built-in backend.
+### Unlock for non-root users
 
-Both backends implement the `StorageBackend` trait in the `underwrap-store` crate.
+The control socket is 0600 (underwrap user only), so normal users cannot run
+`underwrapctl unlock`. Unlock grants are also bound to the caller's UID, so a
+root-issued unlock doesn't satisfy a later read from UID 1000.
 
-## What is explicitly deferred
+Options:
+- Setgid `underwrapctl` wrapper for unlock operations
+- Make unlock a command on the read socket (authenticated by wrapper GID)
+- Dedicated unlock socket with broader group access
 
-The following are **not** in the immediate implementation plan:
+### Immutability TOCTOU
 
-- **Secret Service / libsecret integration** — no built-in optional backend
-- **HashiCorp Vault** — no built-in backend
-- **AWS SSM / Secrets Manager** — no built-in backend
-- **1Password CLI** — no built-in backend
-- **Doppler** — no built-in backend
-- **sops / age import** — no built-in import pipeline
-- **Provider / plugin SPI** — no exec-based or shared-library plugin system yet
-- **Hardware-assisted unseal** (TPM, YubiKey) — not implemented
+Two concurrent stores to a new immutable secret can both observe "absent" and
+both succeed. Low practical risk (stores are rare admin operations on the
+restricted control socket) but violates the documented contract.
 
-## Architecture direction for later
+Fix: per-secret mutex in the store path.
 
-When external sources are needed, the likely approach is:
+### VM test coverage for non-root users
 
-- A **pluggable provider layer** behind the existing `StorageBackend` trait
-- Providers implemented as **external exec-based commands**: the daemon spawns
-  a configured binary, passes the secret ID on argv or stdin, reads material
-  from stdout. This avoids linking against provider-specific libraries.
-- **Built-in backends stay minimal**: plain files and encrypted files are the
-  only in-process implementations. Everything else goes through the exec
-  provider interface.
+The VM test runs everything as root. It does not verify that:
+- A normal user can actually use the setgid wrappers
+- Wrapper GID identity resolves correctly for non-root callers
+- Unlock grants work across UID boundaries
 
-None of this is being built now. The extension point is the trait; the design
-is ready for it when the need arises.
+### NixOS module: injection config duplication
 
-## Near-term work
+`injection.variable` (daemon config) and `envVariable` (sidecar config) can
+drift. Should derive one from the other.
 
-- [ ] Per-wrapper sockets for stronger wrapper identity isolation
-- [ ] SSH-agent challenge auth for unlock
-- [ ] stdin and tempfile injection modes in underwrap-exec
+### Status error suppression
+
+`build_status()` catches storage read errors and reports them as "not stored",
+which can hide corruption.
+
+## Not yet implemented
+
+- [ ] stdin and tempfile injection modes in `underwrap-exec`
 - [ ] `underwrapctl reauth` workflow for OAuth credential refresh
+- [ ] SSH-agent challenge auth for unlock
 - [ ] Secret metadata / versioning
 - [ ] Home Manager helpers (scope setup, completions)
 - [ ] Generic Linux packaging (deb, rpm)
 - [ ] Startup warning when socket auth allowlists are empty
+
+## Deferred scope
+
+The following are explicitly not planned for now:
+
+- **External secret providers**: Secret Service / libsecret, Vault, AWS SSM,
+  1Password, Doppler — none built-in. When needed, likely via exec-based
+  providers behind the `StorageBackend` trait.
+- **Provider plugin SPI**: no exec-based or shared-library plugin system yet.
+  The trait is the extension point.
+- **Hardware-assisted unseal**: TPM, YubiKey for the encrypted backend's
+  master key.
+- **sops / age import pipeline**
