@@ -23,12 +23,6 @@ const SECRET_FD: i32 = 3;
 /// The fd number used for the secretsd channel (from underwrap-exec).
 const CHANNEL_FD: i32 = 4;
 
-/// Default dbus-daemon binary path.
-const DEFAULT_DBUS_DAEMON: &str = "dbus-daemon";
-
-/// Default secretsd binary path.
-const DEFAULT_SECRETSD: &str = "underwrap-secretsd";
-
 fn main() {
     if let Err(e) = run() {
         eprintln!("underwrap-ns: {e}");
@@ -274,10 +268,22 @@ fn setup_mount_namespace() -> Result<(), String> {
 /// The mount namespace (tmpfs, /proc, bus hiding) is already set up by
 /// setup_mount_namespace() which ran before cap drop.
 fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
-    let dbus_daemon =
-        std::env::var("UNDERWRAP_DBUS_DAEMON").unwrap_or_else(|_| DEFAULT_DBUS_DAEMON.to_string());
-    let secretsd =
-        std::env::var("UNDERWRAP_SECRETSD").unwrap_or_else(|_| DEFAULT_SECRETSD.to_string());
+    // Both binary paths MUST be absolute — no bare names, no PATH resolution.
+    // They come from the trusted sidecar config via env vars set by underwrap-exec.
+    let dbus_daemon = std::env::var("UNDERWRAP_DBUS_DAEMON")
+        .map_err(|_| "UNDERWRAP_DBUS_DAEMON not set (required for libsecret mode)".to_string())?;
+    if !dbus_daemon.starts_with('/') {
+        return Err(format!(
+            "UNDERWRAP_DBUS_DAEMON must be an absolute path, got: {dbus_daemon:?}"
+        ));
+    }
+    let secretsd = std::env::var("UNDERWRAP_SECRETSD")
+        .map_err(|_| "UNDERWRAP_SECRETSD not set (required for libsecret mode)".to_string())?;
+    if !secretsd.starts_with('/') {
+        return Err(format!(
+            "UNDERWRAP_SECRETSD must be an absolute path, got: {secretsd:?}"
+        ));
+    }
 
     // The private tmpfs is already mounted by setup_mount_namespace().
     let bus_dir = "/tmp/.underwrap-ns-bus";

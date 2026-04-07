@@ -51,6 +51,9 @@ fn main() -> Result<()> {
         .ns_binary
         .as_deref()
         .unwrap_or(DEFAULT_NS_BINARY);
+    if !ns_binary.starts_with('/') {
+        bail!("ns_binary must be an absolute path, got: {ns_binary:?}");
+    }
 
     exec_via_ns(
         ns_binary,
