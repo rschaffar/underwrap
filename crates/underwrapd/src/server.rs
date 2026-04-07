@@ -504,7 +504,6 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
     if matches!(
         &response,
         WrapperResponse::Ok {
-            wrapper_name: None,
             material: Some(_),
             ..
         }
