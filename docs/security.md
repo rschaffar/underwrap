@@ -438,14 +438,27 @@ through the daemon via the authenticated socketpair channel.
 ### Mount namespace isolation
 
 When libsecret mode is enabled, `underwrap-ns` creates a mount namespace
-(`CLONE_NEWNS`) in addition to the PID namespace. It bind-mounts `/dev/null`
-over the real session bus socket at `/run/user/<uid>/bus`, ensuring the
-target cannot connect to the real session bus even if it ignores
-`DBUS_SESSION_BUS_ADDRESS`.
+(`CLONE_NEWNS`) in addition to the PID namespace. Inside the namespace:
 
-This is defense-in-depth: well-behaved libsecret clients respect
-`DBUS_SESSION_BUS_ADDRESS`, but the mount namespace guarantees isolation
-even for misbehaving programs.
+1. **All mounts made private** (`MS_PRIVATE | MS_REC` on `/`) to prevent
+   bind mounts from propagating back to the parent namespace via shared
+   mount propagation (the default on systemd-based systems).
+
+2. **Fresh `/proc` mounted** so the PID namespace is properly isolated.
+   Without this, the target would see the host's `/proc` with all host
+   PIDs visible. With the fresh mount, only namespace-local processes
+   are visible.
+
+3. **Real session bus socket hidden** by bind-mounting `/dev/null` over
+   `/run/user/<uid>/bus`. The target cannot connect to the real session
+   bus even if it ignores `DBUS_SESSION_BUS_ADDRESS`.
+
+**Limitation**: D-Bus abstract sockets (name starts with `\0` in `sun_path`)
+live in the network namespace, not the filesystem. If something uses an
+abstract socket for the session bus, the bind mount does not help. Modern
+systemd uses the filesystem socket by default, and `DBUS_SESSION_BUS_ADDRESS`
+is always set, so this is a defense-in-depth gap rather than a practical
+bypass.
 
 ## Rejected approaches
 

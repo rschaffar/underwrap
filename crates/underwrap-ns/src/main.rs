@@ -178,8 +178,45 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     let secretsd =
         std::env::var("UNDERWRAP_SECRETSD").unwrap_or_else(|_| DEFAULT_SECRETSD.to_string());
 
+    // Make all mounts private so our bind mounts don't propagate back
+    // to the parent namespace. Without this, shared mount propagation
+    // (the default on systemd-based systems) would leak our bind mounts
+    // to the host, potentially hiding the real session bus for everyone.
+    let root = std::ffi::CString::new("/").unwrap();
+    let ret = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            root.as_ptr(),
+            std::ptr::null(),
+            libc::MS_PRIVATE | libc::MS_REC,
+            std::ptr::null(),
+        )
+    };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(format!("mount(MS_PRIVATE|MS_REC) failed: {err}"));
+    }
+
+    // Mount a fresh /proc so the PID namespace is properly isolated.
+    // Without this, the target sees the host's /proc with all host PIDs.
+    let proc_path = std::ffi::CString::new("/proc").unwrap();
+    let proc_type = std::ffi::CString::new("proc").unwrap();
+    let ret = unsafe {
+        libc::mount(
+            proc_type.as_ptr(),
+            proc_path.as_ptr(),
+            proc_type.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if ret != 0 {
+        // Non-fatal: /proc mount may fail in some environments.
+        let err = std::io::Error::last_os_error();
+        eprintln!("underwrap-ns: warning: could not mount fresh /proc: {err}");
+    }
+
     // Hide the real session bus socket so the target can't bypass our private bus.
-    // We're in a mount namespace (CLONE_NEWNS), so this only affects this namespace.
     let uid = unsafe { libc::getuid() };
     let real_bus = format!("/run/user/{uid}/bus");
     if std::path::Path::new(&real_bus).exists() {
@@ -195,7 +232,6 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
             )
         };
         if ret != 0 {
-            // Non-fatal: the real bus socket might not exist in all environments.
             let err = std::io::Error::last_os_error();
             eprintln!("underwrap-ns: warning: could not hide real session bus: {err}");
         }
