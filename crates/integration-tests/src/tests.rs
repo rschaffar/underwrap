@@ -159,7 +159,10 @@ async fn store_then_read_secret() {
     // Read it back through the read socket.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "ghp_test123"),
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material, "ghp_test123"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -177,7 +180,7 @@ async fn read_before_store_returns_not_found() {
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
-        ReadResponse::Error { code, message } => {
+        WrapperResponse::Error { code, message } => {
             assert!(matches!(code, ErrorCode::NotFound));
             assert!(message.contains("github/token"));
         }
@@ -208,7 +211,10 @@ async fn read_resolves_identity_from_gid_not_client_name() {
     // Send a request with a fake wrapper name — daemon should ignore it.
     let resp = daemon.read_request("totally-fake-name").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => {
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => {
             assert_eq!(material, "real_token");
         }
         other => panic!("expected Ok (GID should resolve to gh-authorized), got {other:?}"),
@@ -262,7 +268,10 @@ async fn overwrite_mutable_secret() {
     daemon.store_secret("mut/tok", "v1").await.unwrap();
     let resp = daemon.read_request("mutable-w").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "v1"),
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material, "v1"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -270,7 +279,10 @@ async fn overwrite_mutable_secret() {
     daemon.store_secret("mut/tok", "v2").await.unwrap();
     let resp = daemon.read_request("mutable-w").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "v2"),
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material, "v2"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -309,7 +321,10 @@ async fn immutable_secret_rejects_overwrite() {
     // Original value preserved.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "initial"),
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material, "initial"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -432,14 +447,14 @@ async fn concurrent_reads() {
         let sock = daemon.read_socket.clone();
         handles.push(tokio::spawn(async move {
             let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
-            let req = ReadRequest {
+            let req = WrapperRequest::Read {
                 wrapper: "gh-authorized".to_string(),
                 scope: None,
             };
             underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
                 .await
                 .unwrap();
-            let resp: ReadResponse = underwrap_protocol::ipc::read_frame_async(&mut stream)
+            let resp: WrapperResponse = underwrap_protocol::ipc::read_frame_async(&mut stream)
                 .await
                 .unwrap();
             resp
@@ -449,7 +464,10 @@ async fn concurrent_reads() {
     for h in handles {
         let resp = h.await.unwrap();
         match resp {
-            ReadResponse::Ok { material } => assert_eq!(material, "ghp_concurrent"),
+            WrapperResponse::Ok {
+                material: Some(material),
+                ..
+            } => assert_eq!(material, "ghp_concurrent"),
             other => panic!("expected Ok, got {other:?}"),
         }
     }
@@ -481,7 +499,10 @@ async fn hierarchical_secret_ids() {
 
     let resp = daemon.read_request("deep-wrapper").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "deep_val"),
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material, "deep_val"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -503,7 +524,10 @@ async fn large_secret_material() {
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material.len(), 32_000),
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material.len(), 32_000),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -524,7 +548,10 @@ async fn secret_with_special_chars() {
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, special),
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material, special),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -538,6 +565,10 @@ async fn secret_with_special_chars() {
 #[tokio::test]
 async fn exec_wrapper_end_to_end() {
     let exec_bin = require_bin!("underwrap-exec");
+    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists() {
+        eprintln!("SKIP: underwrap-ns not available with cap_sys_admin");
+        return;
+    }
 
     // We configure the daemon with "test-wrapper" as a wrapper name, using
     // `env` as the target binary — it prints all env vars to stdout.
@@ -625,7 +656,10 @@ async fn underwrapctl_store_and_status() {
     // Verify via daemon read.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "ghp_from_ctl"),
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material, "ghp_from_ctl"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -692,6 +726,10 @@ async fn underwrapctl_store_undeclared_exits_nonzero() {
 #[tokio::test]
 async fn exec_wrapper_missing_secret_exits_nonzero() {
     let exec_bin = require_bin!("underwrap-exec");
+    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists() {
+        eprintln!("SKIP: underwrap-ns not available with cap_sys_admin");
+        return;
+    }
 
     // Daemon has the wrapper but no secret stored.
     let env_bin = require_env!();
@@ -739,6 +777,10 @@ async fn exec_wrapper_missing_secret_exits_nonzero() {
 #[tokio::test]
 async fn exec_wrapper_passes_args() {
     let exec_bin = require_bin!("underwrap-exec");
+    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists() {
+        eprintln!("SKIP: underwrap-ns not available with cap_sys_admin");
+        return;
+    }
 
     let echo = require_echo!();
     let mut wrappers = HashMap::new();
@@ -782,6 +824,10 @@ async fn exec_wrapper_passes_args() {
 #[tokio::test]
 async fn exec_wrapper_secret_not_in_target_output_unless_echoed() {
     let exec_bin = require_bin!("underwrap-exec");
+    if !std::path::Path::new("/run/wrappers/bin/underwrap-ns").exists() {
+        eprintln!("SKIP: underwrap-ns not available with cap_sys_admin");
+        return;
+    }
 
     let echo = require_echo!();
     let mut wrappers = HashMap::new();
@@ -845,7 +891,10 @@ async fn rapid_store_read_cycles() {
 
         let resp = daemon.read_request("rapid-wrapper").await.unwrap();
         match resp {
-            ReadResponse::Ok { material } => assert_eq!(material, val),
+            WrapperResponse::Ok {
+                material: Some(material),
+                ..
+            } => assert_eq!(material, val),
             other => panic!("iteration {i}: expected Ok, got {other:?}"),
         }
     }
@@ -873,7 +922,7 @@ async fn locked_wrapper_denies_read() {
     // Read should be denied — wrapper is locked.
     let resp = daemon.read_request("locked-w").await.unwrap();
     match resp {
-        ReadResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Locked)),
+        WrapperResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Locked)),
         other => panic!("expected Locked error, got {other:?}"),
     }
 
@@ -914,7 +963,10 @@ async fn unlock_then_read_succeeds() {
     // Now reads succeed.
     let resp = daemon.read_request("locked-w").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "secret_val"),
+        WrapperResponse::Ok {
+            material: Some(material),
+            ..
+        } => assert_eq!(material, "secret_val"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -959,7 +1011,7 @@ async fn lock_after_unlock_denies() {
     let resp = daemon.read_request("locked-w").await.unwrap();
     assert!(matches!(
         resp,
-        ReadResponse::Error {
+        WrapperResponse::Error {
             code: ErrorCode::Locked,
             ..
         }
@@ -1000,7 +1052,7 @@ async fn unlock_time_expiry() {
     let resp = daemon.read_request("locked-w").await.unwrap();
     assert!(matches!(
         resp,
-        ReadResponse::Error {
+        WrapperResponse::Error {
             code: ErrorCode::Locked,
             ..
         }
@@ -1041,7 +1093,7 @@ async fn unlock_scoped() {
         .read_request_with_scope("locked-w", "session-1")
         .await
         .unwrap();
-    assert!(matches!(resp, ReadResponse::Ok { .. }));
+    assert!(matches!(resp, WrapperResponse::Ok { .. }));
 
     // Read with different scope fails.
     let resp = daemon
@@ -1050,7 +1102,7 @@ async fn unlock_scoped() {
         .unwrap();
     assert!(matches!(
         resp,
-        ReadResponse::Error {
+        WrapperResponse::Error {
             code: ErrorCode::Locked,
             ..
         }
@@ -1072,7 +1124,7 @@ async fn no_require_unlock_works_without_unlock() {
 
     // gh-authorized has require_unlock=false, so it works without unlock.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert!(matches!(resp, ReadResponse::Ok { .. }));
+    assert!(matches!(resp, WrapperResponse::Ok { .. }));
 
     daemon.stop().await.unwrap();
 }

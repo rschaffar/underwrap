@@ -29,9 +29,18 @@ impl Grant {
     }
 }
 
+/// Pending challenge for SSH agent unlock.
+#[derive(Debug)]
+struct PendingChallenge {
+    nonce_hex: String,
+    expires_at: Instant,
+}
+
 /// Thread-safe unlock state store.
 pub struct UnlockState {
     grants: Mutex<HashMap<GrantKey, Grant>>,
+    /// Pending SSH agent challenges: (wrapper, scope, uid) → nonce.
+    pending: Mutex<HashMap<GrantKey, PendingChallenge>>,
 }
 
 impl Default for UnlockState {
@@ -44,6 +53,7 @@ impl UnlockState {
     pub fn new() -> Self {
         Self {
             grants: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
         }
     }
 
@@ -155,6 +165,45 @@ impl UnlockState {
             "unlocked": !active.is_empty(),
             "grants": active,
         })
+    }
+
+    /// Store a pending challenge nonce for SSH agent unlock.
+    /// Expires after 60 seconds.
+    pub fn set_pending_challenge(
+        &self,
+        wrapper: &str,
+        scope: Option<&str>,
+        uid: Option<u32>,
+        nonce_hex: &str,
+    ) {
+        let key = (wrapper.to_string(), scope.map(|s| s.to_string()), uid);
+        let mut pending = self.pending.lock().unwrap();
+        // Clean up expired challenges.
+        pending.retain(|_, c| Instant::now() < c.expires_at);
+        pending.insert(
+            key,
+            PendingChallenge {
+                nonce_hex: nonce_hex.to_string(),
+                expires_at: Instant::now() + std::time::Duration::from_secs(60),
+            },
+        );
+    }
+
+    /// Verify and consume a pending challenge nonce.
+    pub fn verify_pending_challenge(
+        &self,
+        wrapper: &str,
+        scope: Option<&str>,
+        uid: Option<u32>,
+        nonce_hex: &str,
+    ) -> bool {
+        let key = (wrapper.to_string(), scope.map(|s| s.to_string()), uid);
+        let mut pending = self.pending.lock().unwrap();
+        if let Some(challenge) = pending.remove(&key) {
+            Instant::now() < challenge.expires_at && challenge.nonce_hex == nonce_hex
+        } else {
+            false
+        }
     }
 }
 

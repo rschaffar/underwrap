@@ -210,8 +210,13 @@ pub struct WrapperDef {
     /// The wrapper binary must be installed setgid to this group
     /// (e.g. via security.wrappers on NixOS).
     pub group: String,
-}
 
+    /// SSH public key (OpenSSH format) required for unlock authentication.
+    /// If set, unlock requests must provide a valid SSH agent signature.
+    /// If unset, unlock is granted without challenge (GID identity only).
+    #[serde(default)]
+    pub unlock_key: Option<String>,
+}
 /// How the secret material is delivered to the child process.
 ///
 /// Currently only `env` is implemented. Additional modes (stdin, tempfile)
@@ -363,6 +368,7 @@ storage:
                         derivation: DerivationMode::None,
                         require_unlock: false,
                         group: "testgroup".to_string(),
+                        unlock_key: None,
                     },
                 );
                 m

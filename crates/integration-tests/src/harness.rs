@@ -80,14 +80,14 @@ impl TestDaemon {
     }
 
     /// Send a read request and return the response.
-    pub async fn read_request(&self, wrapper: &str) -> Result<ReadResponse> {
+    pub async fn read_request(&self, wrapper: &str) -> Result<WrapperResponse> {
         let mut stream = UnixStream::connect(&self.read_socket).await?;
-        let req = ReadRequest {
+        let req = WrapperRequest::Read {
             wrapper: wrapper.to_string(),
             scope: None,
         };
         write_frame_async(&mut stream, &req).await?;
-        let resp: ReadResponse = read_frame_async(&mut stream).await?;
+        let resp: WrapperResponse = read_frame_async(&mut stream).await?;
         Ok(resp)
     }
 
@@ -97,14 +97,14 @@ impl TestDaemon {
         &self,
         wrapper: &str,
         scope: &str,
-    ) -> Result<ReadResponse> {
+    ) -> Result<WrapperResponse> {
         let mut stream = UnixStream::connect(&self.read_socket).await?;
-        let req = ReadRequest {
+        let req = WrapperRequest::Read {
             wrapper: wrapper.to_string(),
             scope: Some(scope.to_string()),
         };
         write_frame_async(&mut stream, &req).await?;
-        let resp: ReadResponse = read_frame_async(&mut stream).await?;
+        let resp: WrapperResponse = read_frame_async(&mut stream).await?;
         Ok(resp)
     }
 
@@ -184,6 +184,7 @@ pub fn wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         derivation: DerivationMode::None,
         require_unlock: false,
         group: current_group_name(),
+        unlock_key: None,
     }
 }
 
@@ -198,6 +199,7 @@ pub fn locked_wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         derivation: DerivationMode::None,
         require_unlock: true,
         group: current_group_name(),
+        unlock_key: None,
     }
 }
 

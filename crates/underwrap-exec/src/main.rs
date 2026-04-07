@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{ReadRequest, ReadResponse};
+use underwrap_protocol::message::{WrapperRequest, WrapperResponse};
 
 /// Fixed config directory used when running with elevated privileges.
 const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
@@ -27,7 +27,12 @@ const DEFAULT_NS_BINARY: &str = "/run/wrappers/bin/underwrap-ns";
 
 fn main() -> Result<()> {
     let wrapper_name = detect_wrapper_name()?;
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let all_args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Check if this is an unlock request.
+    if all_args.first().map(|s| s.as_str()) == Some("--unlock") {
+        return handle_unlock(&wrapper_name, &all_args[1..]);
+    }
 
     let wrapper_config = load_wrapper_config(&wrapper_name)?;
 
@@ -42,7 +47,222 @@ fn main() -> Result<()> {
         .as_deref()
         .unwrap_or(DEFAULT_NS_BINARY);
 
-    exec_via_ns(ns_binary, &wrapper_config, &args, &mut material)
+    exec_via_ns(ns_binary, &wrapper_config, &all_args, &mut material)
+}
+
+/// Handle --unlock: request unlock via the read socket with SSH agent challenge.
+fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
+    let wrapper_config = load_wrapper_config(wrapper_name)?;
+
+    // Parse --seconds N and --scope S from args.
+    let mut seconds: Option<u64> = None;
+    let mut scope: Option<String> = std::env::var("UNDERWRAP_SCOPE").ok();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--seconds" => {
+                i += 1;
+                seconds = Some(
+                    args.get(i)
+                        .context("--seconds requires a value")?
+                        .parse()
+                        .context("--seconds must be a number")?,
+                );
+            }
+            "--scope" => {
+                i += 1;
+                scope = Some(args.get(i).context("--scope requires a value")?.clone());
+            }
+            other => bail!("unknown unlock argument: {other}"),
+        }
+        i += 1;
+    }
+
+    // Step 1: Send unlock request.
+    let mut stream = UnixStream::connect(&wrapper_config.read_socket)
+        .with_context(|| format!("connecting to daemon at {}", wrapper_config.read_socket))?;
+
+    let req = WrapperRequest::Unlock {
+        wrapper: wrapper_name.to_string(),
+        scope: scope.clone(),
+        seconds,
+    };
+    write_frame_sync(&mut stream, &req)?;
+    let resp: WrapperResponse = read_frame_sync(&mut stream)?;
+    drop(stream);
+
+    match resp {
+        WrapperResponse::Ok { message, .. } => {
+            // Unlocked without challenge (no SSH key required).
+            eprintln!("unlocked: {}", message.unwrap_or_default());
+            drop_privilege()?;
+            Ok(())
+        }
+        WrapperResponse::Challenge { nonce } => {
+            // Need to sign the nonce with SSH agent.
+            drop_privilege()?;
+            let (signature_b64, public_key_str) = sign_with_ssh_agent(&nonce)?;
+
+            // Step 2: Send the signed challenge response.
+            let mut stream2 = UnixStream::connect(&wrapper_config.read_socket)
+                .context("reconnecting to daemon for challenge response")?;
+
+            let req2 = WrapperRequest::UnlockResponse {
+                wrapper: wrapper_name.to_string(),
+                scope,
+                seconds,
+                challenge: nonce,
+                signature: signature_b64,
+                public_key: public_key_str,
+            };
+            write_frame_sync(&mut stream2, &req2)?;
+            let resp2: WrapperResponse = read_frame_sync(&mut stream2)?;
+
+            match resp2 {
+                WrapperResponse::Ok { message, .. } => {
+                    eprintln!("unlocked: {}", message.unwrap_or_default());
+                    Ok(())
+                }
+                WrapperResponse::Error { message, .. } => {
+                    bail!("unlock failed: {message}");
+                }
+                _ => bail!("unexpected response"),
+            }
+        }
+        WrapperResponse::Error { message, .. } => {
+            bail!("unlock request failed: {message}");
+        }
+    }
+}
+
+/// Sign a challenge nonce using the SSH agent (SSH_AUTH_SOCK).
+fn sign_with_ssh_agent(nonce_hex: &str) -> Result<(String, String)> {
+    let auth_sock = std::env::var("SSH_AUTH_SOCK").context("SSH_AUTH_SOCK not set")?;
+    let mut agent = UnixStream::connect(&auth_sock)
+        .with_context(|| format!("connecting to SSH agent at {auth_sock}"))?;
+
+    let nonce_bytes = hex::decode(nonce_hex).context("invalid challenge hex")?;
+
+    // Request identities from the agent.
+    let identities = ssh_agent_request_identities(&mut agent)?;
+    if identities.is_empty() {
+        bail!("no keys in SSH agent");
+    }
+
+    // Try signing with the first key.
+    let (key_blob, key_comment) = &identities[0];
+    let signature = ssh_agent_sign(&mut agent, key_blob, &nonce_bytes)?;
+
+    // Encode the public key in OpenSSH format.
+    let public_key_str = format!(
+        "{} {}",
+        ssh_key_type_from_blob(key_blob),
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_blob)
+    );
+
+    let signature_b64 =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &signature);
+
+    eprintln!("signed challenge with key: {key_comment}");
+    Ok((signature_b64, public_key_str))
+}
+
+// ---------------------------------------------------------------------------
+// Minimal SSH agent protocol implementation
+// ---------------------------------------------------------------------------
+
+const SSH_AGENTC_REQUEST_IDENTITIES: u8 = 11;
+const SSH_AGENT_IDENTITIES_ANSWER: u8 = 12;
+const SSH_AGENTC_SIGN_REQUEST: u8 = 13;
+const SSH_AGENT_SIGN_RESPONSE: u8 = 14;
+
+fn ssh_agent_request_identities(agent: &mut UnixStream) -> Result<Vec<(Vec<u8>, String)>> {
+    use std::io::{Read, Write};
+
+    // Send request.
+    let msg = [SSH_AGENTC_REQUEST_IDENTITIES];
+    let len = (msg.len() as u32).to_be_bytes();
+    agent.write_all(&len)?;
+    agent.write_all(&msg)?;
+
+    // Read response.
+    let mut len_buf = [0u8; 4];
+    agent.read_exact(&mut len_buf)?;
+    let resp_len = u32::from_be_bytes(len_buf) as usize;
+    let mut resp = vec![0u8; resp_len];
+    agent.read_exact(&mut resp)?;
+
+    if resp[0] != SSH_AGENT_IDENTITIES_ANSWER {
+        bail!("unexpected agent response type: {}", resp[0]);
+    }
+
+    let nkeys = u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]]) as usize;
+    let mut pos = 5;
+    let mut keys = Vec::new();
+
+    for _ in 0..nkeys {
+        if pos + 4 > resp.len() {
+            break;
+        }
+        let blob_len =
+            u32::from_be_bytes([resp[pos], resp[pos + 1], resp[pos + 2], resp[pos + 3]]) as usize;
+        pos += 4;
+        let blob = resp[pos..pos + blob_len].to_vec();
+        pos += blob_len;
+
+        let comment_len =
+            u32::from_be_bytes([resp[pos], resp[pos + 1], resp[pos + 2], resp[pos + 3]]) as usize;
+        pos += 4;
+        let comment = String::from_utf8_lossy(&resp[pos..pos + comment_len]).to_string();
+        pos += comment_len;
+
+        keys.push((blob, comment));
+    }
+
+    Ok(keys)
+}
+
+fn ssh_agent_sign(agent: &mut UnixStream, key_blob: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+    use std::io::{Read, Write};
+
+    let mut msg = Vec::new();
+    msg.push(SSH_AGENTC_SIGN_REQUEST);
+    msg.extend_from_slice(&(key_blob.len() as u32).to_be_bytes());
+    msg.extend_from_slice(key_blob);
+    msg.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    msg.extend_from_slice(data);
+    msg.extend_from_slice(&0u32.to_be_bytes()); // flags
+
+    let len = (msg.len() as u32).to_be_bytes();
+    agent.write_all(&len)?;
+    agent.write_all(&msg)?;
+
+    let mut len_buf = [0u8; 4];
+    agent.read_exact(&mut len_buf)?;
+    let resp_len = u32::from_be_bytes(len_buf) as usize;
+    let mut resp = vec![0u8; resp_len];
+    agent.read_exact(&mut resp)?;
+
+    if resp[0] != SSH_AGENT_SIGN_RESPONSE {
+        bail!("agent refused to sign (response type: {})", resp[0]);
+    }
+
+    // Parse signature blob.
+    let sig_len = u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]]) as usize;
+    let sig = resp[5..5 + sig_len].to_vec();
+
+    Ok(sig)
+}
+
+fn ssh_key_type_from_blob(blob: &[u8]) -> &str {
+    if blob.len() < 4 {
+        return "ssh-unknown";
+    }
+    let type_len = u32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+    if blob.len() < 4 + type_len {
+        return "ssh-unknown";
+    }
+    std::str::from_utf8(&blob[4..4 + type_len]).unwrap_or("ssh-unknown")
 }
 
 /// Fork, pipe the secret to the child, child execs underwrap-ns.
@@ -52,6 +272,14 @@ fn exec_via_ns(
     args: &[String],
     material: &mut String,
 ) -> Result<()> {
+    // Verify underwrap-ns exists before proceeding.
+    if !std::path::Path::new(ns_binary).exists() {
+        bail!(
+            "underwrap-ns not found at {ns_binary}. \
+             PID namespace isolation requires underwrap-ns with cap_sys_admin."
+        );
+    }
+
     // Make this process non-dumpable. Since we don't exec after this point
     // (we fork and waitpid), the flag persists. This prevents same-UID
     // processes from reading the secret out of our /proc/<pid>/mem.
@@ -218,17 +446,25 @@ fn request_secret(wrapper_name: &str, socket_path: &str) -> Result<String> {
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
     let scope = std::env::var("UNDERWRAP_SCOPE").ok();
-    let req = ReadRequest {
+    let req = WrapperRequest::Read {
         wrapper: wrapper_name.to_string(),
         scope,
     };
     write_frame_sync(&mut stream, &req)?;
 
-    let response: ReadResponse = read_frame_sync(&mut stream)?;
+    let response: WrapperResponse = read_frame_sync(&mut stream)?;
     match response {
-        ReadResponse::Ok { material } => Ok(material),
-        ReadResponse::Error { code, message } => {
+        WrapperResponse::Ok {
+            material: Some(m), ..
+        } => Ok(m),
+        WrapperResponse::Ok { material: None, .. } => {
+            bail!("daemon returned no material");
+        }
+        WrapperResponse::Error { code, message } => {
             bail!("daemon denied request ({code:?}): {message}");
+        }
+        WrapperResponse::Challenge { .. } => {
+            bail!("unexpected challenge response for read request");
         }
     }
 }

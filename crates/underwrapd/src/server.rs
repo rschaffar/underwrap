@@ -18,6 +18,7 @@ use underwrap_protocol::message::*;
 use crate::audit;
 use crate::derive::{self, TokenCache};
 use crate::unlock::UnlockState;
+use ssh_key::public::KeyData;
 use underwrap_store::StorageBackend;
 
 /// Maximum concurrent connections per socket.
@@ -333,7 +334,7 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
             peer.as_ref().map(|p| p.uid),
             peer.as_ref().map(|p| p.gid),
         );
-        let response = ReadResponse::Error {
+        let response = WrapperResponse::Error {
             code: ErrorCode::Unauthorized,
             message: reason,
         };
@@ -352,7 +353,7 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
             peer.as_ref().map(|p| p.uid),
             peer.as_ref().map(|p| p.gid),
         );
-        let response = ReadResponse::Error {
+        let response = WrapperResponse::Error {
             code: ErrorCode::Unauthorized,
             message: reason,
         };
@@ -361,10 +362,9 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
         return Ok(());
     }
 
-    let request: ReadRequest = read_frame_async(&mut stream).await?;
+    let request: WrapperRequest = read_frame_async(&mut stream).await?;
 
     // Resolve wrapper identity strictly from the peer's effective GID.
-    // The client-supplied wrapper name is NOT trusted.
     let wrapper_name = match resolve_wrapper_identity(&peer, &state.gid_to_wrapper) {
         Some(name) => name,
         None => {
@@ -379,7 +379,7 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
                 peer.as_ref().map(|p| p.uid),
                 peer.as_ref().map(|p| p.gid),
             );
-            let response = ReadResponse::Error {
+            let response = WrapperResponse::Error {
                 code: ErrorCode::Unauthorized,
                 message: reason,
             };
@@ -389,15 +389,38 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
         }
     };
 
-    info!(
-        wrapper = %wrapper_name,
-        peer = ?peer,
-        "read request (identity from egid)"
-    );
-
     let peer_uid = peer.as_ref().map(|p| p.uid);
-    let response =
-        process_read_for(&wrapper_name, request.scope.as_deref(), &state, peer_uid).await;
+
+    let response = match request {
+        WrapperRequest::Read { scope, .. } => {
+            info!(wrapper = %wrapper_name, peer = ?peer, "read request");
+            process_read_for(&wrapper_name, scope.as_deref(), &state, peer_uid).await
+        }
+        WrapperRequest::Unlock { scope, seconds, .. } => {
+            info!(wrapper = %wrapper_name, peer = ?peer, "unlock request via read socket");
+            process_wrapper_unlock(&wrapper_name, scope.as_deref(), seconds, peer_uid, &state)
+        }
+        WrapperRequest::UnlockResponse {
+            scope,
+            seconds,
+            challenge,
+            signature,
+            public_key,
+            ..
+        } => {
+            info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response");
+            process_wrapper_unlock_response(
+                &wrapper_name,
+                scope.as_deref(),
+                seconds,
+                peer_uid,
+                &state,
+                &challenge,
+                &signature,
+                &public_key,
+            )
+        }
+    };
 
     write_frame_async(&mut stream, &response).await?;
     stream.shutdown().await?;
@@ -409,12 +432,12 @@ async fn process_read_for(
     scope: Option<&str>,
     state: &State,
     peer_uid: Option<u32>,
-) -> ReadResponse {
+) -> WrapperResponse {
     let wrapper_def = match state.config.wrappers.get(wrapper_name) {
         Some(w) => w,
         None => {
             warn!(wrapper = %wrapper_name, "unknown wrapper");
-            return ReadResponse::Error {
+            return WrapperResponse::Error {
                 code: ErrorCode::NotFound,
                 message: format!("unknown wrapper '{wrapper_name}'"),
             };
@@ -426,7 +449,7 @@ async fn process_read_for(
         && let Err(reason) = state.unlock.check(wrapper_name, scope, peer_uid)
     {
         audit::read_denied(wrapper_name, &reason, peer_uid, scope);
-        return ReadResponse::Error {
+        return WrapperResponse::Error {
             code: ErrorCode::Locked,
             message: reason,
         };
@@ -447,11 +470,14 @@ async fn process_read_for(
             {
                 Ok(derived) => {
                     audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
-                    ReadResponse::Ok { material: derived }
+                    WrapperResponse::Ok {
+                        material: Some(derived),
+                        message: None,
+                    }
                 }
                 Err(e) => {
                     error!(wrapper = %wrapper_name, secret = %secret_id, err = %e, "derivation failed");
-                    ReadResponse::Error {
+                    WrapperResponse::Error {
                         code: ErrorCode::DerivationFailed,
                         message: format!("derivation failed: {e}"),
                     }
@@ -461,18 +487,208 @@ async fn process_read_for(
         Ok(None) => {
             let msg = format!("secret '{secret_id}' not found in store");
             audit::read_denied(wrapper_name, &msg, peer_uid, scope);
-            ReadResponse::Error {
+            WrapperResponse::Error {
                 code: ErrorCode::NotFound,
                 message: msg,
             }
         }
         Err(e) => {
             error!(secret = %secret_id, err = %e, "storage read error");
-            ReadResponse::Error {
+            WrapperResponse::Error {
                 code: ErrorCode::Internal,
                 message: "internal storage error".to_string(),
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Self-service unlock via read socket (with optional SSH agent challenge)
+// ---------------------------------------------------------------------------
+
+/// Handle an unlock request. If the wrapper has an `unlock_key`, send a
+/// challenge nonce that the caller must sign with their SSH agent.
+/// If no key is configured, grant immediately (GID identity is sufficient).
+fn process_wrapper_unlock(
+    wrapper_name: &str,
+    scope: Option<&str>,
+    seconds: Option<u64>,
+    peer_uid: Option<u32>,
+    state: &State,
+) -> WrapperResponse {
+    let wrapper_def = match state.config.wrappers.get(wrapper_name) {
+        Some(w) => w,
+        None => {
+            return WrapperResponse::Error {
+                code: ErrorCode::NotFound,
+                message: format!("unknown wrapper '{wrapper_name}'"),
+            };
+        }
+    };
+
+    if !wrapper_def.require_unlock {
+        return WrapperResponse::Error {
+            code: ErrorCode::Internal,
+            message: format!("wrapper '{wrapper_name}' does not require unlock"),
+        };
+    }
+
+    if wrapper_def.unlock_key.is_some() {
+        // Generate challenge nonce for SSH agent signing.
+        let nonce: [u8; 32] = rand::random();
+        let nonce_hex = hex::encode(nonce);
+
+        // Store pending challenge in unlock state.
+        state
+            .unlock
+            .set_pending_challenge(wrapper_name, scope, peer_uid, &nonce_hex);
+
+        WrapperResponse::Challenge { nonce: nonce_hex }
+    } else {
+        // No SSH key required — grant immediately.
+        state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
+        audit::unlocked(wrapper_name, scope, seconds, peer_uid);
+        WrapperResponse::Ok {
+            material: None,
+            message: Some("unlocked".to_string()),
+        }
+    }
+}
+
+/// Handle the second round of unlock: verify the SSH signature over the challenge.
+#[allow(clippy::too_many_arguments)]
+fn process_wrapper_unlock_response(
+    wrapper_name: &str,
+    scope: Option<&str>,
+    seconds: Option<u64>,
+    peer_uid: Option<u32>,
+    state: &State,
+    challenge_hex: &str,
+    signature_b64: &str,
+    public_key_str: &str,
+) -> WrapperResponse {
+    let wrapper_def = match state.config.wrappers.get(wrapper_name) {
+        Some(w) => w,
+        None => {
+            return WrapperResponse::Error {
+                code: ErrorCode::NotFound,
+                message: format!("unknown wrapper '{wrapper_name}'"),
+            };
+        }
+    };
+
+    // Verify the configured unlock key matches the one the caller used.
+    let expected_key = match &wrapper_def.unlock_key {
+        Some(k) => k,
+        None => {
+            return WrapperResponse::Error {
+                code: ErrorCode::Internal,
+                message: "wrapper has no unlock_key configured".to_string(),
+            };
+        }
+    };
+
+    // Parse and compare public keys.
+    let expected_pk = match ssh_key::PublicKey::from_openssh(expected_key) {
+        Ok(k) => k,
+        Err(e) => {
+            error!(wrapper = %wrapper_name, err = %e, "invalid configured unlock_key");
+            return WrapperResponse::Error {
+                code: ErrorCode::Internal,
+                message: "invalid configured unlock_key".to_string(),
+            };
+        }
+    };
+
+    let caller_pk = match ssh_key::PublicKey::from_openssh(public_key_str) {
+        Ok(k) => k,
+        Err(e) => {
+            warn!(wrapper = %wrapper_name, err = %e, "invalid public key from caller");
+            return WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "invalid public key".to_string(),
+            };
+        }
+    };
+
+    if expected_pk.key_data() != caller_pk.key_data() {
+        audit::auth_denied("unlock", "public key mismatch", peer_uid, None);
+        return WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: "public key does not match configured unlock_key".to_string(),
+        };
+    }
+
+    // Verify the challenge was issued for this wrapper+scope+uid.
+    if !state
+        .unlock
+        .verify_pending_challenge(wrapper_name, scope, peer_uid, challenge_hex)
+    {
+        return WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: "invalid or expired challenge nonce".to_string(),
+        };
+    }
+
+    // Verify the SSH signature over the challenge nonce.
+    let challenge_bytes = match hex::decode(challenge_hex) {
+        Ok(b) => b,
+        Err(_) => {
+            return WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "invalid challenge hex".to_string(),
+            };
+        }
+    };
+
+    let signature =
+        match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, signature_b64) {
+            Ok(s) => s,
+            Err(_) => {
+                return WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: "invalid signature base64".to_string(),
+                };
+            }
+        };
+
+    let ssh_sig = match ssh_key::Signature::try_from(signature.as_slice()) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(err = %e, "failed to parse SSH signature");
+            return WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "invalid SSH signature format".to_string(),
+            };
+        }
+    };
+
+    use signature::Verifier;
+    let valid = match caller_pk.key_data() {
+        KeyData::Ed25519(key) => key.verify(&challenge_bytes, &ssh_sig).is_ok(),
+        KeyData::Rsa(key) => key.verify(&challenge_bytes, &ssh_sig).is_ok(),
+        _ => {
+            return WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "unsupported key type (only ed25519 and rsa supported)".to_string(),
+            };
+        }
+    };
+
+    if !valid {
+        audit::auth_denied("unlock", "signature verification failed", peer_uid, None);
+        return WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: "signature verification failed".to_string(),
+        };
+    }
+
+    // Signature valid — grant the unlock.
+    state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
+    audit::unlocked(wrapper_name, scope, seconds, peer_uid);
+    WrapperResponse::Ok {
+        material: None,
+        message: Some("unlocked".to_string()),
     }
 }
 

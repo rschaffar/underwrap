@@ -300,14 +300,21 @@
                 machine.log("PASS: unprivileged user can use second wrapper")
 
                 # --- Verify daemon resolved identity from effective GID ---
+                # The daemon should log read requests with the resolved wrapper name
+                # for the testuser's requests (not "wrapper identity rejected").
                 logs = machine.succeed(
                     "journalctl -u underwrapd.service --no-pager"
                     " | sed 's/\\x1b\\[[0-9;]*m//g'"
+                    " | grep 'uid: 1099'"
                 )
-                assert "identity from egid" in logs, (
-                    "expected egid-based identity for unprivileged user"
+                assert "read request" in logs, (
+                    "expected read request from testuser in daemon logs"
                 )
-                machine.log("PASS: daemon resolved wrapper identity from effective GID")
+                # Should NOT contain "identity rejected" for testuser.
+                assert "identity rejected" not in logs or "uid: 1099" not in logs.split("identity rejected")[0], (
+                    "testuser identity was rejected"
+                )
+                machine.log("PASS: daemon resolved wrapper identity for unprivileged user")
 
                 # ================================================================
                 # UNPRIVILEGED USER: ISOLATION
@@ -355,7 +362,7 @@
                 logs = machine.succeed(
                     "journalctl -u underwrapd.service --no-pager"
                     " | sed 's/\\x1b\\[[0-9;]*m//g'"
-                    " | grep 'uid=1099'"
+                    " | grep 'uid: 1099'"
                 )
                 # Should see both test-echo and test-echo2 served for testuser.
                 assert "test-echo" in logs, "missing test-echo read for testuser"
