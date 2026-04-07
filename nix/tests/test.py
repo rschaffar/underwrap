@@ -208,16 +208,17 @@ machine.log("PASS: no core dump on crash")
 
 # Store a secret via secret-tool through the libsecret wrapper.
 machine.succeed(
-    su(
-        "echo -n 'my_gh_token_123' | "
-        "/run/wrappers/bin/local-test-libsecret store --label 'GitHub Token' service gh account github.com"
-    )
+    'su testuser -s /bin/sh -c '
+    '"echo -n my_gh_token_123 | '
+    '/run/wrappers/bin/local-test-libsecret store '
+    '--label=TestToken service gh account github.com"'
 )
 machine.log("PASS: secret-tool store via libsecret wrapper")
 
 # Retrieve the secret via secret-tool through the libsecret wrapper.
 output = machine.succeed(
-    su("/run/wrappers/bin/local-test-libsecret lookup service gh account github.com")
+    'su testuser -s /bin/sh -c '
+    '"/run/wrappers/bin/local-test-libsecret lookup service gh account github.com"'
 ).strip()
 assert output == "my_gh_token_123", f"expected 'my_gh_token_123', got '{output}'"
 machine.log("PASS: secret-tool lookup via libsecret wrapper")
