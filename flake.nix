@@ -62,6 +62,7 @@
             underwrap-exec = mkCrate "underwrap-exec";
             underwrap-ns = mkCrate "underwrap-ns";
             underwrap-backendd = mkCrate "underwrap-backendd";
+            underwrap-secretsd = mkCrate "underwrap-secretsd";
           };
 
           checks = {

@@ -38,6 +38,7 @@ let
         injection = w.injection;
         require_unlock = w.requireUnlock;
         group = wrapperGroupName name;
+        libsecret = w.libsecret;
       } // lib.optionalAttrs (w.derivation != null) {
         derivation = w.derivation;
       }) inst.wrappers;
@@ -45,7 +46,11 @@ let
         inherit (s) mutable;
       } // lib.optionalAttrs (s.labels != {}) {
         inherit (s) labels;
-      }) inst.secrets;
+      }) inst.secrets
+      # Auto-declare mutable libsecret secrets for wrappers with libsecret enabled.
+      // lib.mapAttrs' (name: w:
+        lib.nameValuePair "${name}/libsecret/_aliases" { mutable = true; }
+      ) (lib.filterAttrs (_: w: w.libsecret) inst.wrappers);
     };
 
     configFile = pkgs.writeText "underwrap-${instName}-config.yaml"
@@ -54,12 +59,16 @@ let
     nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
 
     wrapperConfigs = lib.mapAttrs (name: w:
-      pkgs.writeText "${instName}-${name}.yaml" (builtins.toJSON {
+      pkgs.writeText "${instName}-${name}.yaml" (builtins.toJSON ({
         target = w.target;
         env_variable = w.injection.variable or "UNDERWRAP_SECRET";
         read_socket = "${runDir}/read.sock";
         ns_binary = nsBinaryPath;
-      })
+      } // lib.optionalAttrs w.libsecret {
+        libsecret = true;
+        dbus_daemon_binary = "${pkgs.dbus}/bin/dbus-daemon";
+        secretsd_binary = "${cfg.package}/bin/underwrap-secretsd";
+      }))
     ) inst.wrappers;
 
     wrapperBinaries = pkgs.runCommand "underwrap-${instName}-wrappers" {} (
@@ -171,6 +180,17 @@ let
         type = lib.types.bool;
         default = false;
         description = "Require explicit unlock before reads.";
+      };
+      libsecret = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Enable libsecret mode: provide a private D-Bus session with a
+          Secret Service provider inside the PID namespace. Enables tools
+          using libsecret (e.g. gh) to store/retrieve credentials via
+          org.freedesktop.secrets, with storage going through the underwrap
+          backend (encrypted/remote).
+        '';
       };
     };
   };
