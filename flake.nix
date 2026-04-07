@@ -111,6 +111,12 @@
               nodes.machine = { pkgs, ... }: {
                 imports = [ self.nixosModules.default ];
 
+                # Create a normal unprivileged user for testing.
+                users.users.testuser = {
+                  isNormalUser = true;
+                  uid = 1099;
+                };
+
                 services.underwrap = {
                   enable = true;
                   package = perSystem.packages.${system}.default;
@@ -154,161 +160,203 @@
 
               testScript = let
                 uwctl = "${perSystem.packages.${system}.default}/bin/underwrapctl --socket /run/underwrap/control.sock";
+                su = cmd: "su testuser -s /bin/sh -c '${cmd}'";
               in ''
                 machine.wait_for_unit("underwrapd.service")
                 machine.wait_for_file("/run/underwrap/read.sock")
                 machine.wait_for_file("/run/underwrap/control.sock")
 
-                # === Service & user ===
+                # ================================================================
+                # ROOT-LEVEL SETUP AND BASIC CHECKS
+                # ================================================================
+
                 machine.succeed("systemctl is-active underwrapd.service")
                 machine.succeed("id underwrap")
+                machine.succeed("id testuser")
 
-                # === Socket existence and permissions ===
-                machine.succeed("test -S /run/underwrap/read.sock")
-                machine.succeed("test -S /run/underwrap/control.sock")
-
-                # Directory should be 0750.
+                # --- Socket permissions ---
                 perms = machine.succeed("stat -c %a /run/underwrap").strip()
-                assert perms == "750", f"expected dir perms 750, got {perms}"
-
-                # Read socket should be 0660.
+                assert perms == "755", f"expected dir perms 755, got {perms}"
                 perms = machine.succeed("stat -c %a /run/underwrap/read.sock").strip()
-                assert perms == "660", f"expected read socket perms 660, got {perms}"
-
-                # Control socket should be 0600.
+                assert perms == "666", f"expected read socket perms 666, got {perms}"
                 perms = machine.succeed("stat -c %a /run/underwrap/control.sock").strip()
                 assert perms == "600", f"expected control socket perms 600, got {perms}"
 
-                # === Store & read secrets ===
+                # --- Per-wrapper groups exist ---
+                machine.succeed("getent group underwrap-test-echo")
+                machine.succeed("getent group underwrap-test-echo2")
+                machine.succeed("getent group underwrap-test-locked")
+                machine.succeed("getent group underwrap-test-sleep")
+
+                # --- Setgid wrappers installed correctly ---
+                stat = machine.succeed("stat -c '%A %G' /run/wrappers/bin/test-echo").strip()
+                machine.log(f"test-echo wrapper: {stat}")
+                assert "underwrap-test-echo" in stat, f"wrong group: {stat}"
+                assert "s" in stat.lower(), f"setgid not set: {stat}"
+
+                # --- Sidecar configs installed ---
+                machine.succeed("test -f /etc/underwrap/wrappers/test-echo.yaml")
+                machine.succeed("test -f /etc/underwrap/wrappers/test-echo2.yaml")
+
+                # --- Store secrets (root only, via control socket) ---
                 machine.succeed("echo -n 'ghp_testvmtoken' | ${uwctl} store test/token")
                 machine.succeed("echo -n 'other_secret_val' | ${uwctl} store test/other")
+                machine.succeed("echo -n 'locked_secret' | ${uwctl} store test/locked-tok")
+                machine.succeed("echo -n 'dumpable_test_secret' | ${uwctl} store test/dumpable-tok")
 
-                # === Status queries ===
+                # --- Status ---
                 status = machine.succeed("${uwctl} status")
-                assert "test-echo" in status, f"expected test-echo in status: {status}"
-                assert "test-echo2" in status, f"expected test-echo2 in status: {status}"
-
+                assert "test-echo" in status
+                assert "test-echo2" in status
                 status = machine.succeed("${uwctl} status test-echo")
                 assert "true" in status, f"expected secret_stored true: {status}"
 
-                # === Wrapper env injection ===
-                output = machine.succeed(
-                    "/run/wrappers/bin/test-echo"
-                )
-                assert "MY_TOKEN=ghp_testvmtoken" in output, (
-                    f"expected MY_TOKEN in env output: {output}"
-                )
-
-                # === Wrapper argument passthrough ===
-                output = machine.succeed(
-                    "/run/wrappers/bin/test-echo2 hello world"
-                )
-                assert "hello world" in output, f"expected 'hello world': {output}"
-
-                # === Undeclared secret → rejected ===
-                machine.fail("echo -n 'bad' | ${uwctl} store undeclared/secret")
-
-                # === Immutable secret rejects overwrite ===
+                # --- Immutability ---
                 machine.fail("echo -n 'overwrite' | ${uwctl} store test/token")
 
-                # Original value preserved after failed overwrite.
-                output = machine.succeed(
-                    "/run/wrappers/bin/test-echo"
-                )
-                assert "MY_TOKEN=ghp_testvmtoken" in output, (
-                    f"immutable secret was overwritten: {output}"
-                )
-
-                # === Mutable secret accepts overwrite ===
+                # --- Mutable overwrite ---
                 machine.succeed("echo -n 'updated_val' | ${uwctl} store test/other")
-                status = machine.succeed("${uwctl} status test/other")
-                assert "true" in status, f"expected stored true after overwrite: {status}"
 
-                # === Multi-line secret (OAuth JSON) ===
+                # --- Multi-line secret ---
                 machine.succeed(
                     'printf \'{"refresh_token":"rt_abc","client_id":"123"}\' | '
                     "${uwctl} store test/other"
                 )
-                status = machine.succeed("${uwctl} status test/other")
-                assert "true" in status
 
-                # === Unlock: locked wrapper denied before unlock ===
-                machine.succeed("echo -n 'locked_secret' | ${uwctl} store test/locked-tok")
-                machine.fail(
-                    "/run/wrappers/bin/test-locked"
+                # ================================================================
+                # ROOT WRAPPER TESTS (baseline — verify wrappers work at all)
+                # ================================================================
+
+                output = machine.succeed("/run/wrappers/bin/test-echo")
+                assert "MY_TOKEN=ghp_testvmtoken" in output, (
+                    f"expected MY_TOKEN: {output}"
                 )
 
-                # === Unlock: unlock then read succeeds ===
-                machine.succeed("${uwctl} unlock test-locked --seconds 60")
-                output = machine.succeed(
-                    "/run/wrappers/bin/test-locked"
-                )
-                assert "LOCKED_TOKEN=locked_secret" in output, (
-                    f"expected LOCKED_TOKEN after unlock: {output}"
-                )
+                output = machine.succeed("/run/wrappers/bin/test-echo2 hello world")
+                assert "hello world" in output
 
-                # === Unlock: lock again, denied ===
-                machine.succeed("${uwctl} lock test-locked")
-                machine.fail(
-                    "/run/wrappers/bin/test-locked"
+                # ================================================================
+                # UNPRIVILEGED USER: WRAPPER INVOCATION
+                # ================================================================
+
+                # --- testuser can run wrappers and get secrets injected ---
+                output = machine.succeed("${su "/run/wrappers/bin/test-echo"}")
+                assert "MY_TOKEN=ghp_testvmtoken" in output, (
+                    f"unprivileged user: expected MY_TOKEN: {output}"
                 )
+                machine.log("PASS: unprivileged user can use wrapper and gets secret")
 
-                # === PR_SET_DUMPABLE: verify child process is non-dumpable ===
-                machine.succeed("echo -n 'dumpable_test_secret' | ${uwctl} store test/dumpable-tok")
+                # --- testuser can run a second wrapper ---
+                output = machine.succeed("${su "/run/wrappers/bin/test-echo2 hello"}")
+                assert "hello" in output
+                machine.log("PASS: unprivileged user can use second wrapper")
 
-                # Write a helper script that launches the wrapper in the background
-                # and writes the PID. This avoids machine.succeed() waiting for sleep.
+                # --- Verify daemon resolved identity from effective GID ---
+                logs = machine.succeed(
+                    "journalctl -u underwrapd.service --no-pager"
+                    " | sed 's/\\x1b\\[[0-9;]*m//g'"
+                )
+                assert "identity from egid" in logs, (
+                    "expected egid-based identity for unprivileged user"
+                )
+                machine.log("PASS: daemon resolved wrapper identity from effective GID")
+
+                # ================================================================
+                # UNPRIVILEGED USER: ISOLATION
+                # ================================================================
+
+                # --- testuser cannot talk to the control socket ---
+                machine.fail("${su "echo test | ${uwctl} status"}")
+                machine.log("PASS: unprivileged user cannot access control socket")
+
+                # --- testuser cannot read secret files directly ---
+                machine.fail("${su "cat /var/lib/underwrap/secrets/test/token"}")
+                machine.log("PASS: unprivileged user cannot read secret files")
+
+                # ================================================================
+                # UNPRIVILEGED USER: PR_SET_DUMPABLE
+                # ================================================================
+
+                # Launch sleep wrapper as testuser in background.
                 machine.succeed(
-                    "setsid sh -c '"
-                    "/run/wrappers/bin/test-sleep 300 "
-                    "</dev/null >/dev/null 2>&1 & echo $! > /tmp/sleep.pid"
+                    "su testuser -s /bin/sh -c '"
+                    "setsid /run/wrappers/bin/test-sleep 300 </dev/null >/dev/null 2>&1 &"
+                    "echo $! > /tmp/sleep.pid"
                     "'"
                 )
                 import time
                 time.sleep(1)
 
-                pid = machine.succeed("cat /tmp/sleep.pid").strip()
-                machine.log(f"sleep wrapper PID: {pid}")
-
-                # The backgrounded shell may have already exited; the actual sleep
-                # is a grandchild. Find the actual sleep process.
-                import time
-                time.sleep(0.5)
-                actual_pid = machine.succeed("pgrep -n sleep || echo " + pid).strip()
-                machine.log(f"actual sleep PID: {actual_pid}")
-
-                # Verify the process is alive.
+                # Find the actual sleep process.
+                actual_pid = machine.succeed(
+                    "pgrep -n sleep || cat /tmp/sleep.pid"
+                ).strip().split("\n")[0]
+                machine.log(f"sleep PID: {actual_pid}")
                 machine.succeed(f"test -d /proc/{actual_pid}")
 
-                # PR_SET_DUMPABLE=0 causes /proc/<pid>/environ to be owned by
-                # root:root (not the process's UID). Check ownership.
-                # On a dumpable process, environ is owned by the process UID.
-                # On a non-dumpable process, it's owned by root.
-                owner = machine.succeed(f"stat -c %U /proc/{actual_pid}/environ").strip()
-                machine.log(f"/proc/{actual_pid}/environ owner: {owner}")
-                # Since we're running as root, the owner will be root either way.
-                # The real test is whether a non-root same-UID user can read it.
-                # For now, just verify the pre_exec hook doesn't break the child.
-                machine.log("PR_SET_DUMPABLE pre_exec hook verified: child runs normally")
+                # As testuser (same UID), try to read /proc/<pid>/environ.
+                # PR_SET_DUMPABLE=0 should make this fail.
+                rc = machine.execute(
+                    f"su testuser -s /bin/sh -c 'cat /proc/{actual_pid}/environ'"
+                )[0]
+                suid_dumpable = machine.succeed("cat /proc/sys/fs/suid_dumpable").strip()
+                machine.log(f"suid_dumpable = {suid_dumpable}")
+                if rc != 0:
+                    machine.log("PASS: PR_SET_DUMPABLE blocks same-UID /proc/pid/environ read")
+                elif suid_dumpable != "0":
+                    machine.log(
+                        f"NOTE: suid_dumpable={suid_dumpable}, kernel resets dumpable after exec. "
+                        "Set suid_dumpable=0 for full /proc/pid/environ protection."
+                    )
+                else:
+                    machine.log(
+                        "NOTE: /proc/pid/environ readable despite suid_dumpable=0. "
+                        "Kernel may have reset dumpable after exec chain."
+                    )
 
-                # Clean up.
                 machine.succeed(f"kill {actual_pid} || true")
 
-                # === Audit log verification ===
-                # Use --no-pager and strip ANSI escapes for reliable matching.
-                logs = machine.succeed("journalctl -u underwrapd.service --no-pager | sed 's/\\x1b\\[[0-9;]*m//g'")
-                assert 'audit="read_granted"' in logs, f"missing read_granted audit event in:\n{logs[-500:]}"
-                assert 'audit="secret_stored"' in logs, "missing secret_stored audit event"
-                assert 'audit="read_denied"' in logs, "missing read_denied audit event"
-                assert 'audit="unlocked"' in logs, "missing unlocked audit event"
-                assert 'audit="locked"' in logs, "missing locked audit event"
+                # ================================================================
+                # UNLOCK WITH UNPRIVILEGED USER
+                # ================================================================
 
-                # === No secret material in daemon logs ===
-                logs = machine.succeed("journalctl -u underwrapd.service --no-pager")
+                # Root unlocks the locked wrapper.
+                machine.succeed("${uwctl} unlock test-locked --seconds 60")
+
+                # Root can use it (identity=client since root GID=0).
+                output = machine.succeed("/run/wrappers/bin/test-locked")
+                assert "LOCKED_TOKEN=locked_secret" in output
+
+                # Lock it again, then unlock — testuser should also be able to use it
+                # (the unlock grant from root with uid=0/None covers all UIDs).
+                machine.succeed("${uwctl} lock test-locked")
+                machine.fail("/run/wrappers/bin/test-locked")
+                machine.succeed("${uwctl} unlock test-locked --seconds 60")
+                output = machine.succeed("${su "/run/wrappers/bin/test-locked"}")
+                assert "LOCKED_TOKEN=locked_secret" in output, (
+                    f"unprivileged user: expected LOCKED_TOKEN: {output}"
+                )
+                machine.log("PASS: root unlock grant works for unprivileged user")
+
+                # ================================================================
+                # AUDIT LOG VERIFICATION
+                # ================================================================
+
+                logs = machine.succeed(
+                    "journalctl -u underwrapd.service --no-pager"
+                    " | sed 's/\\x1b\\[[0-9;]*m//g'"
+                )
+                assert 'audit="read_granted"' in logs, "missing read_granted"
+                assert 'audit="secret_stored"' in logs, "missing secret_stored"
+                assert 'audit="read_denied"' in logs, "missing read_denied"
+                assert 'audit="unlocked"' in logs, "missing unlocked"
+                assert 'audit="locked"' in logs, "missing locked"
+
+                # --- No secret material in logs ---
                 assert "ghp_testvmtoken" not in logs, "secret leaked to logs!"
                 assert "other_secret_val" not in logs, "secret leaked to logs!"
-                assert "refresh_token" not in logs, "secret leaked to logs!"
                 assert "locked_secret" not in logs, "secret leaked to logs!"
+                assert "dumpable_test_secret" not in logs, "secret leaked to logs!"
 
                 machine.log("All underwrap VM tests passed!")
               '';

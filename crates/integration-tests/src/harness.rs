@@ -161,7 +161,19 @@ impl TestDaemon {
 // Builder helpers for common test configs
 // ---------------------------------------------------------------------------
 
-/// Create a simple wrapper def for testing (no unlock required, no GID identity).
+/// Get the current process's primary group name (for test wrappers).
+fn current_group_name() -> String {
+    let gid = unsafe { libc::getegid() };
+    let grp = unsafe { libc::getgrgid(gid) };
+    if grp.is_null() {
+        // Fallback: use numeric GID.
+        return gid.to_string();
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr((*grp).gr_name) };
+    name.to_string_lossy().to_string()
+}
+
+/// Create a simple wrapper def for testing (no unlock required).
 pub fn wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
     WrapperDef {
         target: PathBuf::from(target),
@@ -171,7 +183,7 @@ pub fn wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         },
         derivation: DerivationMode::None,
         require_unlock: false,
-        group: None,
+        group: current_group_name(),
     }
 }
 
@@ -185,7 +197,7 @@ pub fn locked_wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         },
         derivation: DerivationMode::None,
         require_unlock: true,
-        group: None,
+        group: current_group_name(),
     }
 }
 

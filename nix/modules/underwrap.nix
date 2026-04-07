@@ -11,6 +11,10 @@ let
     sockets = {
       read = "/run/underwrap/read.sock";
       control = "/run/underwrap/control.sock";
+      # Read socket is world-connectable; the daemon enforces access via
+      # SO_PEERCRED GID checks, not filesystem permissions.
+      read_mode = "0666";
+      control_mode = "0600";
     };
     storage = if cfg.encryption.enable then {
       backend = "encrypted";
@@ -49,15 +53,16 @@ let
     })
   ) cfg.wrappers;
 
-  # Per-wrapper launcher scripts. Each is a tiny script that execs
-  # underwrap-exec with argv[0] set to the wrapper name so it loads
-  # the correct sidecar config. This is needed because security.wrappers
-  # passes the source binary path as argv[0], not the wrapper name.
-  wrapperScripts = lib.mapAttrs (name: _w:
-    pkgs.writeShellScript "underwrap-${name}" ''
-      exec -a ${name} ${cfg.package}/bin/underwrap-exec "$@"
-    ''
-  ) cfg.wrappers;
+  # Per-wrapper copies of underwrap-exec, named after the wrapper.
+  # security.wrappers needs a regular file as source (not a symlink),
+  # and preserves the source binary's argv[0] behavior — so each copy
+  # is named correctly for detect_wrapper_name() to work.
+  wrapperBinaries = pkgs.runCommand "underwrap-wrapper-binaries" {} (
+    "mkdir -p $out/bin\n" +
+    lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _w:
+      "cp ${cfg.package}/bin/underwrap-exec $out/bin/${name}"
+    ) cfg.wrappers)
+  );
 
   wrapperSubmodule = lib.types.submodule {
     options = {
@@ -154,8 +159,13 @@ in {
     # Each wrapper is the same underwrap-exec binary, installed with
     # a per-wrapper group. The kernel sets egid on exec; the daemon
     # uses SO_PEERCRED.gid to verify wrapper identity.
+    # Install wrappers via security.wrappers (setgid, root-owned).
+    # Each wrapper is a copy of underwrap-exec named after the wrapper.
+    # The NixOS security wrapper C helper preserves argv[0] as the
+    # path to the source binary, which contains the wrapper name.
+    # The setgid bit on the wrapper sets egid to the per-wrapper group.
     security.wrappers = lib.mapAttrs (name: _w: {
-      source = "${wrapperScripts.${name}}";
+      source = "${wrapperBinaries}/bin/${name}";
       owner = "root";
       setgid = true;
       group = wrapperGroup name;
@@ -170,8 +180,12 @@ in {
 
     # Systemd tmpfiles: create runtime directory.
     # /run/underwrap is 0750 so only underwrap user and group can access sockets.
+    # /run/underwrap: world-traversable so any user can reach the read socket.
+    # The read socket is world-connectable; authorization happens inside the
+    # daemon via SO_PEERCRED GID verification, not filesystem permissions.
+    # The control socket stays restricted to the daemon user.
     systemd.tmpfiles.rules = [
-      "d /run/underwrap 0750 underwrap underwrap -"
+      "d /run/underwrap 0755 underwrap underwrap -"
       "d /var/lib/underwrap 0700 underwrap underwrap -"
       "d /var/lib/underwrap/secrets 0700 underwrap underwrap -"
     ];

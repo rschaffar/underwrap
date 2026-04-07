@@ -205,15 +205,11 @@ pub struct WrapperDef {
 
     /// Unix group name for GID-based wrapper identity.
     ///
-    /// When set, the daemon resolves this group to a GID at startup and
-    /// uses SO_PEERCRED.gid to verify the caller's identity. The wrapper
-    /// binary must be installed setgid to this group (e.g. via
-    /// security.wrappers on NixOS).
-    ///
-    /// When unset, the daemon trusts the client-supplied wrapper name
-    /// (less secure, suitable for development).
-    #[serde(default)]
-    pub group: Option<String>,
+    /// The daemon resolves this group to a GID at startup and uses
+    /// SO_PEERCRED effective GID to verify the caller's identity.
+    /// The wrapper binary must be installed setgid to this group
+    /// (e.g. via security.wrappers on NixOS).
+    pub group: String,
 }
 
 /// How the secret material is delivered to the child process.
@@ -288,6 +284,7 @@ wrappers:
   gh-authorized:
     target: /usr/bin/gh
     secret: github/token
+    group: underwrap-gh-authorized
     injection:
       mode: env
       variable: GH_TOKEN
@@ -311,6 +308,7 @@ wrappers:
   w:
     target: /bin/true
     secret: s
+    group: testgroup
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         let w = &config.wrappers["w"];
@@ -364,7 +362,7 @@ storage:
                         },
                         derivation: DerivationMode::None,
                         require_unlock: false,
-                        group: None,
+                        group: "testgroup".to_string(),
                     },
                 );
                 m

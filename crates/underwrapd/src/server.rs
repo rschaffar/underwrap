@@ -78,25 +78,24 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     }
 }
 
-/// Build a GID → wrapper-name lookup table from wrappers that have `group` set.
+/// Build a GID → wrapper-name lookup table.
 /// Resolves group names to GIDs via libc getgrnam at startup.
 fn build_gid_map(config: &DaemonConfig) -> Result<std::collections::HashMap<u32, String>> {
     let mut map = std::collections::HashMap::new();
     for (name, wrapper) in &config.wrappers {
-        if let Some(ref group_name) = wrapper.group {
-            let gid = resolve_group_gid(group_name)
-                .with_context(|| format!("resolving group '{group_name}' for wrapper '{name}'"))?;
-            if let Some(existing) = map.get(&gid) {
-                anyhow::bail!(
-                    "GID {gid} (group '{group_name}') maps to both '{existing}' and '{name}'"
-                );
-            }
-            info!(wrapper = %name, group = %group_name, gid = gid, "resolved wrapper group");
-            map.insert(gid, name.clone());
+        let group_name = &wrapper.group;
+        let gid = resolve_group_gid(group_name)
+            .with_context(|| format!("resolving group '{group_name}' for wrapper '{name}'"))?;
+        if let Some(existing) = map.get(&gid) {
+            warn!(
+                gid = gid,
+                existing = %existing,
+                new = %name,
+                "multiple wrappers share GID — last one wins (wrapper isolation is weakened)"
+            );
         }
-    }
-    if map.is_empty() {
-        warn!("no wrappers have group-based identity; read socket trusts client-supplied names");
+        info!(wrapper = %name, group = %group_name, gid = gid, "resolved wrapper group");
+        map.insert(gid, name.clone());
     }
     Ok(map)
 }
@@ -177,11 +176,15 @@ where
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // pid used via Debug formatting in tracing.
+#[allow(dead_code)] // Fields used via Debug formatting in tracing.
 struct PeerCred {
     pid: u32,
     uid: u32,
     gid: u32,
+    /// Effective GID, read from /proc/<pid>/status.
+    /// This is the one set by setgid wrappers.
+    /// SO_PEERCRED.gid only reports the *real* GID.
+    egid: Option<u32>,
 }
 
 fn get_peer_cred(stream: &UnixStream) -> Option<PeerCred> {
@@ -199,10 +202,12 @@ fn get_peer_cred(stream: &UnixStream) -> Option<PeerCred> {
         )
     };
     if ret == 0 {
+        let egid = read_proc_egid(cred.pid as u32);
         Some(PeerCred {
             pid: cred.pid as u32,
             uid: cred.uid,
             gid: cred.gid,
+            egid,
         })
     } else {
         warn!("failed to get SO_PEERCRED");
@@ -274,25 +279,36 @@ fn check_peer_exe(
     }
 }
 
-/// Determine wrapper identity from the request and peer credentials.
+/// Read the effective GID from /proc/<pid>/status.
+/// Returns None if the file can't be read (e.g. process already exited).
+fn read_proc_egid(pid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in status.lines() {
+        // Format: "Gid:\treal\teffective\tsaved\tfs"
+        if let Some(rest) = line.strip_prefix("Gid:\t") {
+            let fields: Vec<&str> = rest.split('\t').collect();
+            if fields.len() >= 2 {
+                return fields[1].parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Resolve wrapper identity strictly from the peer's effective GID.
 ///
-/// If the peer's effective GID maps to a known wrapper (via the `group` config),
-/// that identity takes precedence over the client-supplied name. This prevents
-/// wrapper spoofing — the identity is kernel-verified via SO_PEERCRED.
+/// The daemon does NOT trust client-supplied wrapper names. Identity comes
+/// from the kernel: the peer's effective GID (set by the setgid wrapper
+/// binary) is looked up in the GID→wrapper map built at startup.
 ///
-/// Returns (wrapper_name, identity_source) for logging.
+/// Returns None if the peer's egid doesn't map to any configured wrapper.
 fn resolve_wrapper_identity(
-    request: &ReadRequest,
     peer: &Option<PeerCred>,
     gid_map: &std::collections::HashMap<u32, String>,
-) -> (String, &'static str) {
-    if let Some(cred) = peer
-        && let Some(name) = gid_map.get(&cred.gid)
-    {
-        return (name.clone(), "gid");
-    }
-    // Fallback: trust client-supplied name (development / no-group mode).
-    (request.wrapper.clone(), "client")
+) -> Option<String> {
+    let cred = peer.as_ref()?;
+    let egid = cred.egid?;
+    gid_map.get(&egid).cloned()
 }
 
 // ---------------------------------------------------------------------------
@@ -344,15 +360,36 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
 
     let request: ReadRequest = read_frame_async(&mut stream).await?;
 
-    // Determine wrapper identity: prefer kernel-verified GID over client-supplied name.
-    let (wrapper_name, identity_source) =
-        resolve_wrapper_identity(&request, &peer, &state.gid_to_wrapper);
+    // Resolve wrapper identity strictly from the peer's effective GID.
+    // The client-supplied wrapper name is NOT trusted.
+    let wrapper_name = match resolve_wrapper_identity(&peer, &state.gid_to_wrapper) {
+        Some(name) => name,
+        None => {
+            let reason = format!(
+                "peer egid {:?} does not map to any configured wrapper",
+                peer.as_ref().and_then(|c| c.egid)
+            );
+            warn!(peer = ?peer, "wrapper identity rejected");
+            audit::auth_denied(
+                "read",
+                &reason,
+                peer.as_ref().map(|p| p.uid),
+                peer.as_ref().map(|p| p.gid),
+            );
+            let response = ReadResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: reason,
+            };
+            write_frame_async(&mut stream, &response).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
 
     info!(
         wrapper = %wrapper_name,
-        identity = %identity_source,
         peer = ?peer,
-        "read request"
+        "read request (identity from egid)"
     );
 
     let peer_uid = peer.as_ref().map(|p| p.uid);
@@ -516,9 +553,11 @@ fn process_control(
                     message: format!("unknown wrapper '{target}'"),
                 };
             }
+            // Root (uid=0) unlock grants cover all UIDs (admin grant).
+            let grant_uid = if peer_uid == Some(0) { None } else { peer_uid };
             state
                 .unlock
-                .unlock(target, scope.as_deref(), *seconds, peer_uid);
+                .unlock(target, scope.as_deref(), *seconds, grant_uid);
             audit::unlocked(target, scope.as_deref(), *seconds, peer_uid);
             ControlResponse::Ok { info: None }
         }

@@ -140,35 +140,6 @@ fn one_wrapper_config() -> (
     (wrappers, secrets)
 }
 
-fn multi_wrapper_config() -> (
-    HashMap<String, underwrap_protocol::config::WrapperDef>,
-    HashMap<String, underwrap_protocol::config::SecretDef>,
-) {
-    let mut wrappers = HashMap::new();
-    wrappers.insert(
-        "gh-authorized".to_string(),
-        wrapper("/usr/bin/gh", "github/token", "GH_TOKEN"),
-    );
-    wrappers.insert(
-        "agent-slack".to_string(),
-        wrapper("/usr/bin/slack-cli", "slack/xoxp", "SLACK_TOKEN"),
-    );
-    wrappers.insert(
-        "gws-castlabs".to_string(),
-        wrapper(
-            "/usr/bin/gws",
-            "google/castlabs",
-            "GOOGLE_WORKSPACE_CLI_TOKEN",
-        ),
-    );
-
-    let mut secrets = HashMap::new();
-    secrets.insert("github/token".to_string(), secret(false));
-    secrets.insert("slack/xoxp".to_string(), secret(false));
-    secrets.insert("google/castlabs".to_string(), secret(true));
-    (wrappers, secrets)
-}
-
 // ===========================================================================
 // Store and read flow
 // ===========================================================================
@@ -221,17 +192,26 @@ async fn read_before_store_returns_not_found() {
 // ===========================================================================
 
 #[tokio::test]
-async fn read_unknown_wrapper() {
+async fn read_resolves_identity_from_gid_not_client_name() {
+    // The daemon ignores the client-supplied wrapper name and resolves
+    // identity from the peer's effective GID. Even if we send a bogus
+    // wrapper name, the daemon should resolve to gh-authorized (the only
+    // wrapper mapped to our GID) and return its secret.
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
-    let resp = daemon.read_request("nonexistent-wrapper").await.unwrap();
+    daemon
+        .store_secret("github/token", "real_token")
+        .await
+        .unwrap();
+
+    // Send a request with a fake wrapper name — daemon should ignore it.
+    let resp = daemon.read_request("totally-fake-name").await.unwrap();
     match resp {
-        ReadResponse::Error { code, message } => {
-            assert!(matches!(code, ErrorCode::NotFound));
-            assert!(message.contains("nonexistent-wrapper"));
+        ReadResponse::Ok { material } => {
+            assert_eq!(material, "real_token");
         }
-        other => panic!("expected Error, got {other:?}"),
+        other => panic!("expected Ok (GID should resolve to gh-authorized), got {other:?}"),
     }
 
     daemon.stop().await.unwrap();
@@ -258,47 +238,10 @@ async fn store_undeclared_secret_rejected() {
     daemon.stop().await.unwrap();
 }
 
-// ===========================================================================
-// Multiple wrappers, isolation
-// ===========================================================================
-
-#[tokio::test]
-async fn multiple_wrappers_isolate_secrets() {
-    let (wrappers, secrets) = multi_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
-
-    // Store different secrets.
-    daemon
-        .store_secret("github/token", "ghp_AAA")
-        .await
-        .unwrap();
-    daemon.store_secret("slack/xoxp", "xoxp-BBB").await.unwrap();
-    daemon
-        .store_secret("google/castlabs", "goog-CCC")
-        .await
-        .unwrap();
-
-    // Each wrapper reads only its own secret.
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "ghp_AAA"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
-
-    let resp = daemon.read_request("agent-slack").await.unwrap();
-    match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "xoxp-BBB"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
-
-    let resp = daemon.read_request("gws-castlabs").await.unwrap();
-    match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "goog-CCC"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
-
-    daemon.stop().await.unwrap();
-}
+// NOTE: Multi-wrapper isolation (each wrapper can only read its own secret)
+// requires real per-wrapper Unix groups and setgid wrappers. This is tested
+// in the NixOS VM test. Unit tests run as a single user with one GID, so
+// all wrappers resolve to the same identity.
 
 // ===========================================================================
 // Overwrite mutable secret
@@ -306,28 +249,28 @@ async fn multiple_wrappers_isolate_secrets() {
 
 #[tokio::test]
 async fn overwrite_mutable_secret() {
-    let (wrappers, secrets) = multi_wrapper_config();
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "mutable-w".to_string(),
+        wrapper("/usr/bin/true", "mut/tok", "TOK"),
+    );
+    let mut secrets = HashMap::new();
+    secrets.insert("mut/tok".to_string(), secret(true));
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     // Store initial value.
-    daemon
-        .store_secret("google/castlabs", "refresh_v1")
-        .await
-        .unwrap();
-    let resp = daemon.read_request("gws-castlabs").await.unwrap();
+    daemon.store_secret("mut/tok", "v1").await.unwrap();
+    let resp = daemon.read_request("mutable-w").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "refresh_v1"),
+        ReadResponse::Ok { material } => assert_eq!(material, "v1"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
     // Overwrite.
-    daemon
-        .store_secret("google/castlabs", "refresh_v2")
-        .await
-        .unwrap();
-    let resp = daemon.read_request("gws-castlabs").await.unwrap();
+    daemon.store_secret("mut/tok", "v2").await.unwrap();
+    let resp = daemon.read_request("mutable-w").await.unwrap();
     match resp {
-        ReadResponse::Ok { material } => assert_eq!(material, "refresh_v2"),
+        ReadResponse::Ok { material } => assert_eq!(material, "v2"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -379,16 +322,16 @@ async fn immutable_secret_rejects_overwrite() {
 
 #[tokio::test]
 async fn status_general() {
-    let (wrappers, secrets) = multi_wrapper_config();
+    let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     let resp = daemon.status(None).await.unwrap();
     match resp {
         ControlResponse::Ok { info: Some(info) } => {
             let wrapper_list = info["wrappers"].as_array().unwrap();
-            assert_eq!(wrapper_list.len(), 3);
+            assert_eq!(wrapper_list.len(), 1);
             let secret_list = info["secrets"].as_array().unwrap();
-            assert_eq!(secret_list.len(), 3);
+            assert_eq!(secret_list.len(), 1);
         }
         other => panic!("expected Ok with info, got {other:?}"),
     }
