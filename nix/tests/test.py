@@ -220,7 +220,10 @@ output = machine.succeed(
     'su testuser -s /bin/sh -c '
     '"/run/wrappers/bin/local-test-libsecret lookup service gh account github.com"'
 ).strip()
-assert output == "my_gh_token_123", f"expected 'my_gh_token_123', got '{output}'"
+# The output may include secretsd log lines on stderr mixed in;
+# the actual secret is the last line.
+last_line = output.split("\n")[-1].strip()
+assert last_line == "my_gh_token_123", f"expected 'my_gh_token_123', got '{last_line}'"
 machine.log("PASS: secret-tool lookup via libsecret wrapper")
 
 # Verify no local JSON files with secret material.
