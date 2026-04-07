@@ -1562,6 +1562,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "underwrap-ns"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "underwrap-protocol"
 version = "0.1.0"
 dependencies = [

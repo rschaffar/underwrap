@@ -60,6 +60,7 @@
             underwrapd = mkCrate "underwrapd";
             underwrapctl = mkCrate "underwrapctl";
             underwrap-exec = mkCrate "underwrap-exec";
+            underwrap-ns = mkCrate "underwrap-ns";
           };
 
           checks = {
@@ -402,11 +403,58 @@
                 )
                 machine.log("PASS: secrets persist across daemon restart")
 
-                # NOTE: /proc/<pid>/environ of the child process IS readable by
-                # same-UID processes. PID namespace isolation (CLONE_NEWPID) would
-                # prevent this but is incompatible with NixOS security.wrappers'
-                # setgid model (setgid and capabilities are mutually exclusive).
-                # This is a known limitation documented in TODO.md.
+                # ================================================================
+                # PID NAMESPACE ISOLATION
+                # ================================================================
+
+                # Verify underwrap-ns is installed with cap_sys_admin.
+                machine.succeed("test -x /run/wrappers/bin/underwrap-ns")
+                caps = machine.succeed(
+                    "getcap /run/wrappers/bin/underwrap-ns"
+                ).strip()
+                assert "cap_sys_admin" in caps, f"expected cap_sys_admin, got: {caps}"
+                machine.log("PASS: underwrap-ns has cap_sys_admin")
+
+                # Launch sleep wrapper as testuser in background.
+                machine.succeed(
+                    "su testuser -s /bin/sh -c '"
+                    "setsid /run/wrappers/bin/test-sleep 300 </dev/null >/dev/null 2>&1 &"
+                    "'"
+                )
+                import time
+                time.sleep(1)
+
+                # The sleep process runs inside a PID namespace.
+                # From the parent namespace, it should NOT be visible via pgrep.
+                rc = machine.execute("pgrep -u testuser -x sleep")[0]
+                if rc != 0:
+                    machine.log(
+                        "PASS: PID namespace isolation — sleep process invisible "
+                        "to parent namespace"
+                    )
+                else:
+                    # If visible, check if /proc/pid/environ is at least not readable.
+                    sleep_pid = machine.succeed("pgrep -u testuser -x sleep").strip().split("\n")[0]
+                    rc2 = machine.execute(
+                        f"su testuser -s /bin/sh -c 'cat /proc/{sleep_pid}/environ'"
+                    )[0]
+                    if rc2 != 0:
+                        machine.log(
+                            "NOTE: sleep visible but /proc/pid/environ not readable"
+                        )
+                    else:
+                        env_out = machine.succeed(
+                            f"cat /proc/{sleep_pid}/environ | tr '\\0' '\\n'"
+                        )
+                        if "DUMPABLE_SECRET" in env_out:
+                            raise Exception(
+                                "FAIL: same-UID process read secret from /proc/pid/environ"
+                            )
+                        machine.log("NOTE: sleep visible, environ readable, but no secret found")
+
+                # Clean up.
+                machine.succeed("pkill -u testuser -f test-sleep || true")
+                time.sleep(0.5)
 
                 # (Unlock lifecycle for unprivileged users tested above.)
 

@@ -43,6 +43,9 @@ let
   configFile = pkgs.writeText "underwrap-config.yaml"
     (builtins.toJSON runtimeConfig);
 
+  # Path where underwrap-ns is installed with cap_sys_admin.
+  nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
+
   # Sidecar YAML configs for underwrap-exec (one per wrapper).
   # Installed to /etc/underwrap/wrappers/<name>.yaml
   wrapperConfigs = lib.mapAttrs (name: w:
@@ -50,6 +53,7 @@ let
       target = w.target;
       env_variable = w.envVariable;
       read_socket = "/run/underwrap/read.sock";
+      ns_binary = nsBinaryPath;
     })
   ) cfg.wrappers;
 
@@ -144,7 +148,7 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    # Create the underwrap system user and group.
+    # System user and groups.
     users.users.underwrap = {
       isSystemUser = true;
       group = "underwrap";
@@ -155,43 +159,40 @@ in {
       lib.nameValuePair (wrapperGroup name) {}
     ) cfg.wrappers;
 
-    # Install wrappers via security.wrappers (setgid, root-owned).
-    # Each wrapper is the same underwrap-exec binary, installed with
-    # a per-wrapper group. The kernel sets egid on exec; the daemon
-    # uses SO_PEERCRED.gid to verify wrapper identity.
-    # Install wrappers via security.wrappers (setgid, root-owned).
-    # Each wrapper is a copy of underwrap-exec named after the wrapper.
-    # The NixOS security wrapper C helper preserves argv[0] as the
-    # path to the source binary, which contains the wrapper name.
-    # The setgid bit on the wrapper sets egid to the per-wrapper group.
-    security.wrappers = lib.mapAttrs (name: _w: {
+    # security.wrappers: per-wrapper setgid binaries + shared underwrap-ns with cap_sys_admin.
+    # Both live on /run/wrappers (mounted without nosuid, supports file caps).
+    security.wrappers = {
+      # underwrap-ns: PID namespace isolation stage.
+      # Has cap_sys_admin for CLONE_NEWPID, no setgid.
+      underwrap-ns = {
+        source = "${cfg.package}/bin/underwrap-ns";
+        owner = "root";
+        group = "root";
+        capabilities = "cap_sys_admin+ep";
+      };
+    } // lib.mapAttrs (name: _w: {
+      # Per-wrapper setgid copies of underwrap-exec.
       source = "${wrapperBinaries}/bin/${name}";
       owner = "root";
       setgid = true;
       group = wrapperGroup name;
-
     }) cfg.wrappers;
 
-    # Sidecar configs in /etc/underwrap/wrappers/ (fixed trusted path).
+    # Sidecar configs in /etc/underwrap/wrappers/.
     environment.etc = lib.mapAttrs' (name: _w:
       lib.nameValuePair "underwrap/wrappers/${name}.yaml" {
         source = wrapperConfigs.${name};
       }
     ) cfg.wrappers;
 
-    # Systemd tmpfiles: create runtime directory.
-    # /run/underwrap is 0750 so only underwrap user and group can access sockets.
-    # /run/underwrap: world-traversable so any user can reach the read socket.
-    # The read socket is world-connectable; authorization happens inside the
-    # daemon via SO_PEERCRED GID verification, not filesystem permissions.
-    # The control socket stays restricted to the daemon user.
+    # Runtime directories.
     systemd.tmpfiles.rules = [
       "d /run/underwrap 0755 underwrap underwrap -"
       "d /var/lib/underwrap 0700 underwrap underwrap -"
       "d /var/lib/underwrap/secrets 0700 underwrap underwrap -"
     ];
 
-    # The daemon service.
+    # Daemon service.
     systemd.services.underwrapd = {
       description = "underwrap secret broker daemon";
       wantedBy = [ "multi-user.target" ];
@@ -205,7 +206,6 @@ in {
         Restart = "on-failure";
         RestartSec = "2s";
 
-        # Hardening.
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateTmp = true;

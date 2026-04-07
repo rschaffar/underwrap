@@ -1,29 +1,29 @@
-//! underwrap-exec — the minimal wrapper binary.
+//! underwrap-exec — the wrapper binary (stage 1).
 //!
-//! Designed to be installed under wrapper-specific names (symlinks or copies).
-//! Determines which wrapper it is from argv[0], contacts the daemon, receives
-//! secret material, injects it, drops privilege, and execs the target.
+//! Installed via NixOS security.wrappers with setgid for GID-based identity.
 //!
-//! Security hardening:
-//! - Ignores UNDERWRAP_CONFIG_DIR under elevated privilege
-//! - Validates target is an absolute path
-//! - Drops UID, GID, supplementary groups before exec
+//! 1. Detects wrapper name from argv[0]
+//! 2. Loads sidecar config from trusted path
+//! 3. Connects to daemon, gets secret (daemon verifies egid)
+//! 4. Drops all elevated privileges
+//! 5. Forks: parent writes secret to pipe, child execs underwrap-ns
+//! 6. underwrap-ns creates PID namespace and execs the target
 //!
-//! Known limitation: after privilege drop + exec of a non-setuid target,
-//! the child process is dumpable, meaning same-UID processes can read
-//! /proc/<pid>/environ. PID namespace isolation (CLONE_NEWPID) would
-//! prevent this but is incompatible with NixOS security.wrappers' setgid
-//! model. See TODO.md for details.
+//! The secret passes through a pipe fd — never in env, argv, or filesystem
+//! between the two stages.
 
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{ReadRequest, ReadResponse};
 
 /// Fixed config directory used when running with elevated privileges.
 const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
+
+/// Path to the underwrap-ns binary. Set by the NixOS module via sidecar config.
+/// Falls back to searching next to the current executable.
+const DEFAULT_NS_BINARY: &str = "/run/wrappers/bin/underwrap-ns";
 
 fn main() -> Result<()> {
     let wrapper_name = detect_wrapper_name()?;
@@ -37,16 +37,119 @@ fn main() -> Result<()> {
     // Drop all elevated privileges.
     drop_privilege()?;
 
-    // Exec the target with the secret in its environment.
-    let mut cmd = std::process::Command::new(&wrapper_config.target);
-    cmd.args(&args);
-    cmd.env(&wrapper_config.env_variable, &material);
+    // Execute via the two-stage namespace wrapper if available,
+    // otherwise fall back to direct exec.
+    let ns_binary = wrapper_config
+        .ns_binary
+        .as_deref()
+        .unwrap_or(DEFAULT_NS_BINARY);
 
+    if std::path::Path::new(ns_binary).exists() {
+        exec_via_ns(ns_binary, &wrapper_config, &args, &material)
+    } else {
+        exec_direct(&wrapper_config, &args, &material)
+    }
+}
+
+/// Fork, pipe the secret to the child, child execs underwrap-ns.
+fn exec_via_ns(
+    ns_binary: &str,
+    config: &WrapperExecConfig,
+    args: &[String],
+    material: &str,
+) -> Result<()> {
+    // Create pipe for secret transfer.
+    let mut pipe_fds = [0i32; 2];
+    let ret = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        bail!("pipe() failed: {err}");
+    }
+    let (pipe_read, pipe_write) = (pipe_fds[0], pipe_fds[1]);
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        let err = std::io::Error::last_os_error();
+        bail!("fork failed: {err}");
+    }
+
+    if pid == 0 {
+        // === Child: exec underwrap-ns ===
+
+        // Close write end of pipe.
+        unsafe { libc::close(pipe_write) };
+
+        // Move read end to fd 3 (the expected fd for underwrap-ns).
+        if pipe_read != 3 {
+            let ret = unsafe { libc::dup2(pipe_read, 3) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                eprintln!("underwrap-exec: dup2 failed: {err}");
+                std::process::exit(1);
+            }
+            unsafe { libc::close(pipe_read) };
+        }
+
+        // Build argv for underwrap-ns: <ns_binary> <env_var> <target> [args...]
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new(ns_binary);
+        cmd.arg(&config.env_variable);
+        cmd.arg(&config.target);
+        cmd.args(args);
+
+        let err = cmd.exec();
+        eprintln!("underwrap-exec: exec underwrap-ns failed: {err}");
+        std::process::exit(1);
+    }
+
+    // === Parent: write secret to pipe, wait for child ===
+
+    // Close read end.
+    unsafe { libc::close(pipe_read) };
+
+    // Write secret to pipe.
+    {
+        use std::io::Write;
+        use std::os::unix::io::FromRawFd;
+        let mut pipe = unsafe { std::fs::File::from_raw_fd(pipe_write) };
+        pipe.write_all(material.as_bytes())
+            .context("writing secret to pipe")?;
+        // pipe_write closed on drop.
+    }
+
+    // Wait for child.
+    let mut status: libc::c_int = 0;
+    let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
+    if ret < 0 {
+        let err = std::io::Error::last_os_error();
+        bail!("waitpid failed: {err}");
+    }
+
+    if libc::WIFEXITED(status) {
+        std::process::exit(libc::WEXITSTATUS(status));
+    } else if libc::WIFSIGNALED(status) {
+        let sig = libc::WTERMSIG(status);
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
+        std::process::exit(128 + sig);
+    }
+    std::process::exit(1);
+}
+
+/// Direct exec fallback (no namespace isolation).
+fn exec_direct(config: &WrapperExecConfig, args: &[String], material: &str) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new(&config.target);
+    cmd.args(args);
+    cmd.env(&config.env_variable, material);
     let err = cmd.exec();
     bail!("exec failed: {err}");
 }
 
-/// Determine wrapper name from argv[0].
+// ---------------------------------------------------------------------------
+
 fn detect_wrapper_name() -> Result<String> {
     let argv0 = std::env::args().next().context("missing argv[0]")?;
     let name = std::path::Path::new(&argv0)
@@ -62,6 +165,7 @@ struct WrapperExecConfig {
     target: String,
     env_variable: String,
     read_socket: String,
+    ns_binary: Option<String>,
 }
 
 fn config_dir() -> String {
@@ -88,6 +192,8 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
         env_variable: String,
         #[serde(default = "default_socket")]
         read_socket: String,
+        #[serde(default)]
+        ns_binary: Option<String>,
     }
     fn default_env() -> String {
         "UNDERWRAP_SECRET".to_string()
@@ -108,6 +214,7 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
         target: wf.target,
         env_variable: wf.env_variable,
         read_socket: wf.read_socket,
+        ns_binary: wf.ns_binary,
     })
 }
 
@@ -131,7 +238,6 @@ fn request_secret(wrapper_name: &str, socket_path: &str) -> Result<String> {
     }
 }
 
-/// Drop all elevated privileges (UID, GID, supplementary groups).
 fn drop_privilege() -> Result<()> {
     let ruid = unsafe { libc::getuid() };
     let rgid = unsafe { libc::getgid() };

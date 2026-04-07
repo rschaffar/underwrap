@@ -6,6 +6,7 @@ members = [
     "crates/underwrapd",
     "crates/underwrapctl",
     "crates/underwrap-exec",
+    "crates/underwrap-ns",
     "crates/integration-tests",
 ]
 
