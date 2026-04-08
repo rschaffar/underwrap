@@ -75,9 +75,9 @@ examples/config.yaml     # Annotated example daemon config
 - Never allow fallback to a less-secure mode (no "degraded" operation)
 - Never put secrets in argv, environment variables between stages, or temp files
   during the wrapper handoff (use pipe fd 3)
-- Never trust argv[0] alone for wrapper identity/config selection — verify it
-  matches the daemon's canonical wrapper name (from GID). Symlinks can decouple
-  argv[0] from the actual binary identity (confused deputy attack).
+- Never trust argv[0] for wrapper identity — derive wrapper name from
+  getegid() → group name → strip prefix. argv[0] is user-controlled
+  (symlinks can set it to anything).
 - Never skip return value checks on privilege-drop syscalls
 - Never store secret material in local files outside the StorageBackend — no JSON
   files, no sidecar databases, no caches. ALL secret values flow through the

@@ -26,7 +26,10 @@ const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
 const DEFAULT_NS_BINARY: &str = "/run/wrappers/bin/underwrap-ns";
 
 fn main() -> Result<()> {
-    let wrapper_name = detect_wrapper_name()?;
+    // Derive wrapper identity from the kernel-assigned effective GID,
+    // NOT from argv[0]. This prevents symlink confused-deputy attacks
+    // where argv[0] could name a different wrapper's sidecar config.
+    let wrapper_name = detect_wrapper_name_from_egid()?;
     let all_args: Vec<String> = std::env::args().skip(1).collect();
 
     // Check if this is an unlock request.
@@ -39,25 +42,11 @@ fn main() -> Result<()> {
     // Request secret from daemon (while still setgid — daemon checks egid).
     // The daemon returns the canonical wrapper name from GID-based identity.
     // If libsecret mode, also receive the secretsd channel fd.
-    let (mut material, canonical_name, channel_fd) = request_secret(
+    let (mut material, channel_fd) = request_secret(
         &wrapper_name,
         &wrapper_config.read_socket,
         wrapper_config.libsecret,
     )?;
-
-    // CRITICAL: verify argv[0]-derived name matches the daemon's canonical name.
-    // This prevents symlink attacks where a user creates a symlink from one
-    // wrapper name to another wrapper's binary, causing the wrong sidecar
-    // config (and thus the wrong target) to be paired with the wrong secret.
-    if wrapper_name != canonical_name {
-        // Zeroize the secret before bailing — don't leave it in memory.
-        use zeroize::Zeroize;
-        material.zeroize();
-        bail!(
-            "wrapper name mismatch: argv[0] says '{wrapper_name}' but daemon \
-             authenticated as '{canonical_name}'. Possible symlink attack."
-        );
-    }
 
     // Drop all elevated privileges.
     drop_privilege()?;
@@ -453,15 +442,43 @@ fn exec_via_ns(
 
 // ---------------------------------------------------------------------------
 
-fn detect_wrapper_name() -> Result<String> {
-    let argv0 = std::env::args().next().context("missing argv[0]")?;
-    let name = std::path::Path::new(&argv0)
-        .file_name()
-        .context("no file name in argv[0]")?
-        .to_str()
-        .context("non-UTF-8 argv[0]")?
+/// The prefix used by the NixOS module for wrapper group names.
+const GROUP_PREFIX: &str = "underwrap-";
+
+/// Derive wrapper name from the kernel-assigned effective GID.
+/// This is the ONLY trusted source of wrapper identity. argv[0] is
+/// user-controlled and could name a different wrapper (symlink attack).
+fn detect_wrapper_name_from_egid() -> Result<String> {
+    let egid = unsafe { libc::getegid() };
+    let group_name = resolve_gid_name(egid)
+        .with_context(|| format!("cannot resolve effective GID {egid} to a group name"))?;
+
+    // Strip the "underwrap-" prefix to get the wrapper name.
+    // The NixOS module creates groups as "underwrap-<instance>-<wrapper>".
+    let wrapper_name = group_name
+        .strip_prefix(GROUP_PREFIX)
+        .with_context(|| {
+            format!(
+                "effective GID group '{group_name}' does not start with '{GROUP_PREFIX}' — \
+                 not an underwrap wrapper group"
+            )
+        })?
         .to_string();
-    Ok(name)
+
+    Ok(wrapper_name)
+}
+
+/// Resolve a GID to a group name via getgrgid.
+fn resolve_gid_name(gid: u32) -> Result<String> {
+    let grp = unsafe { libc::getgrgid(gid) };
+    if grp.is_null() {
+        bail!("getgrgid({gid}) returned null");
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr((*grp).gr_name) };
+    Ok(name
+        .to_str()
+        .context("group name is not valid UTF-8")?
+        .to_string())
 }
 
 struct WrapperExecConfig {
@@ -544,12 +561,12 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
 
 /// Request the secret from the daemon. If `libsecret` is true, also
 /// receive the secretsd channel fd via SCM_RIGHTS.
-/// Returns (secret_material, canonical_wrapper_name, optional_channel_fd).
+/// Returns (secret_material, optional_channel_fd).
 fn request_secret(
     wrapper_name: &str,
     socket_path: &str,
     libsecret: bool,
-) -> Result<(String, String, Option<i32>)> {
+) -> Result<(String, Option<i32>)> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
@@ -561,20 +578,10 @@ fn request_secret(
     write_frame_sync(&mut stream, &req)?;
 
     let response: WrapperResponse = read_frame_sync(&mut stream)?;
-    let (material, canonical_name) = match response {
+    let material = match response {
         WrapperResponse::Ok {
-            material: Some(m),
-            wrapper_name: Some(name),
-            ..
-        } => (m, name),
-        WrapperResponse::Ok {
-            material: Some(_),
-            wrapper_name: None,
-            ..
-        } => {
-            // Daemon didn't return canonical name — fail closed.
-            bail!("daemon response missing wrapper_name (protocol version mismatch?)");
-        }
+            material: Some(m), ..
+        } => m,
         WrapperResponse::Ok { material: None, .. } => {
             bail!("daemon returned no material");
         }
@@ -600,7 +607,7 @@ fn request_secret(
         None
     };
 
-    Ok((material, canonical_name, channel_fd))
+    Ok((material, channel_fd))
 }
 
 fn drop_privilege() -> Result<()> {

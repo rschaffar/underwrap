@@ -164,15 +164,26 @@ second field).
 
 `security.wrappers` handles setgid binary installation correctly: it mounts
 `/run/wrappers` without `nosuid` and creates a small C helper that sets
-credentials before exec. The source binaries are copies (not symlinks) so
-`argv[0]` contains the wrapper name for loading the sidecar config.
+credentials before exec.
 
-However, `argv[0]` alone is not trusted for identity — a user could create
-a symlink from one wrapper name to another wrapper's binary (confused deputy).
-To prevent this, the daemon includes the canonical wrapper name (from
-GID-based identity) in every response, and `underwrap-exec` verifies that
-`argv[0]` matches the daemon's canonical name. A mismatch aborts immediately
-with the secret zeroized.
+### Wrapper identity from effective GID, not argv[0]
+
+`underwrap-exec` derives the wrapper name from its own effective GID
+(`getegid()` → `getgrgid()` → strip `underwrap-` prefix), NOT from
+`argv[0]`. This prevents symlink confused-deputy attacks where a user
+creates a symlink from one wrapper name to another wrapper's binary:
+
+```
+~/bin/wrapper-B -> /run/wrappers/bin/wrapper-A
+# Kernel: GID = A's group
+# argv[0] = "wrapper-B" (user-controlled, not trusted)
+# getegid() = A's GID → group "underwrap-A" → wrapper name "A"
+# Sidecar config loaded: A's config (correct, not B's)
+```
+
+The effective GID is set by the kernel from the setgid binary and cannot
+be influenced by the caller. This binds identity and policy to the same
+trusted source.
 
 ## PID namespace isolation
 
@@ -580,7 +591,7 @@ Last checked: 2026-04-07.
 | Approach | Why rejected |
 |----------|-------------|
 | Trust client-supplied wrapper names | Trivially spoofable |
-| Trust `argv[0]` alone for config selection | Symlink confused deputy: user pairs wrong secret with wrong target |
+| Trust `argv[0]` for wrapper identity | Symlink confused deputy: user pairs wrong secret with wrong target. Use egid instead. |
 | `/proc/<pid>/exe` identity check | All wrappers are the same binary |
 | `PR_SET_DUMPABLE` on target | Kernel resets after exec without credential mismatch |
 | `suid_dumpable=0` sysctl | Same exec-time reset issue |

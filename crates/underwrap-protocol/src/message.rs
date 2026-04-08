@@ -53,10 +53,6 @@ pub enum WrapperResponse {
         /// Message (for unlock confirmations).
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
-        /// Canonical wrapper name (from GID-based identity resolution).
-        /// Used by underwrap-exec to select the correct sidecar config.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        wrapper_name: Option<String>,
     },
     /// SSH challenge: caller must sign this with their SSH agent.
     #[serde(rename = "challenge")]
@@ -249,7 +245,6 @@ mod tests {
     #[test]
     fn wrapper_response_ok() {
         let resp = WrapperResponse::Ok {
-            wrapper_name: None,
             material: Some("secret123".to_string()),
             message: None,
         };
