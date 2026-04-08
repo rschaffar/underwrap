@@ -91,6 +91,8 @@ examples/config.yaml     # Annotated example daemon config
 - Secret material is NEVER logged — audit events log secret IDs, not values
 - All `unsafe` is for well-understood libc FFI only (setgid, setuid, prctl, etc.)
 - Return values from privilege-drop syscalls are always checked
+- Permanent privilege drops should clear saved IDs as well, so elevated
+  wrapper identity cannot be regained later via saved credentials
 - No fallback modes — if a security mechanism fails, the wrapper aborts
 
 ## Security-critical rules

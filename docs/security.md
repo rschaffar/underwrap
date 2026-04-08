@@ -267,6 +267,10 @@ The key steps are:
 Using the `setres*` calls makes the permanent drop explicit for the real,
 effective, and saved IDs.
 
+That matters because underwrap wants a **one-way** drop here, not a temporary
+one. Clearing the saved IDs as part of the drop means the wrapper cannot later
+regain the elevated setgid-derived identity through saved credentials.
+
 Each return value is checked. A failed privilege drop is a hard failure.
 
 This follows the project's general rule that silently continuing in a weaker or riskier state is worse than aborting.

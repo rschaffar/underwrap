@@ -635,14 +635,16 @@ fn drop_privilege() -> Result<()> {
         }
     }
 
-    // Permanently drop any elevated group identity, including the saved set-GID.
+    // Permanently drop any elevated group identity, including the saved set-GID,
+    // so the wrapper cannot later regain the setgid-derived identity.
     let ret = unsafe { libc::setresgid(rgid, rgid, rgid) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
         bail!("setresgid({rgid}, {rgid}, {rgid}) failed: {err}");
     }
 
-    // Permanently drop any elevated user identity, including the saved set-UID.
+    // Permanently drop any elevated user identity, including the saved set-UID,
+    // so there is no regain path through saved credentials.
     let ret = unsafe { libc::setresuid(ruid, ruid, ruid) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
