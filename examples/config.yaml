@@ -5,12 +5,8 @@
 # On other systems, write this by hand.
 
 sockets:
-  read: /run/underwrap/read.sock
   control: /run/underwrap/control.sock
-  read_mode: "0660"
   control_mode: "0600"
-  # Restrict read socket to specific executable (optional):
-  # read_allow_exe: /nix/store/.../bin/underwrap-exec
 
 storage:
   backend: plain
@@ -24,6 +20,7 @@ wrappers:
   gh-authorized:
     target: /usr/bin/gh
     secret: github/token
+    socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized  # GID-based identity (setgid wrapper)
     injection:
       mode: env
@@ -35,6 +32,7 @@ wrappers:
   agent-gh-comment:
     target: /nix/store/...-agent-gh-comment/bin/agent-gh-comment
     secret: github/agent-comment
+    socket: /run/underwrap/agent-gh-comment.sock
     group: underwrap-agent-gh-comment
     injection:
       mode: env
@@ -43,6 +41,7 @@ wrappers:
   gws:
     target: /usr/bin/gws
     secret: google/workspace-creds
+    socket: /run/underwrap/gws.sock
     group: underwrap-gws
     injection:
       mode: env
@@ -53,6 +52,7 @@ wrappers:
   agent-slack:
     target: /usr/bin/slack-cli
     secret: slack/xoxp
+    socket: /run/underwrap/agent-slack.sock
     group: underwrap-agent-slack
     injection:
       mode: env
@@ -64,6 +64,7 @@ wrappers:
   gh-libsecret:
     target: /usr/bin/gh
     secret: github/bootstrap  # Initial secret (can be empty placeholder)
+    socket: /run/underwrap/gh-libsecret.sock
     group: underwrap-gh-libsecret
     libsecret: true            # Enables private D-Bus + Secret Service
     injection:

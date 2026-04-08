@@ -10,6 +10,33 @@ PID namespaces for process isolation. Rust workspace + Nix flake.
 user/group management, and file capabilities. The only non-NixOS component
 is `underwrap-backendd` (the remote backend daemon).
 
+## Release posture
+
+This project is still **greenfield**. It is being shaped for a strong **first
+release**, not maintained as a compatibility surface for existing users.
+
+When you work on this codebase, optimize for:
+
+- a clean architecture
+- a good-looking first release
+- stronger security boundaries
+- removing awkward early design choices when a better design is clear
+
+Do **not** preserve backward compatibility just because something already
+exists in the tree. It is acceptable to change:
+
+- IPC protocol details
+- generated socket layout
+- NixOS module structure
+- config schema
+- naming and terminology
+
+as long as the change improves the design and does **not weaken security**.
+
+Talk to the user explicitly in these terms: this is a greenfield project, the
+current goal is a polished first release, and backwards compatibility is not a
+constraint unless the user asks for it.
+
 ## Commands
 
 ```bash
@@ -110,9 +137,12 @@ examples/config.yaml     # Annotated example daemon config
 ### Ask first
 
 - Before adding new dependencies (especially native/C libraries)
-- Before changing the IPC protocol (affects all components)
-- Before modifying the NixOS module's user/group/socket structure
 - Before changing the wrapper binary chain (underwrap-exec → underwrap-ns)
+- Before making a change that could weaken security even if it simplifies the design
+
+Protocol, config, naming, and NixOS module structure changes are acceptable in
+this greenfield phase when they improve the first-release design. Do not block
+on backward compatibility concerns.
 
 ## Testing
 

@@ -3,4 +3,4 @@
 
 target: /usr/bin/gh
 env_variable: GH_TOKEN
-read_socket: /run/underwrap/read.sock
+wrapper_socket: /run/underwrap/gh-authorized.sock

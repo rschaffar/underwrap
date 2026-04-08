@@ -32,8 +32,10 @@ machine.succeed("id underwrap-tunnel")
 
 perms = machine.succeed("stat -c %a /run/underwrap-local").strip()
 assert perms == "755", f"expected 755, got {perms}"
-perms = machine.succeed("stat -c %a /run/underwrap-local/read.sock").strip()
-assert perms == "666", f"expected 666, got {perms}"
+perms = machine.succeed("stat -c %a /run/underwrap-local/wrapper-test-echo.sock").strip()
+assert perms == "660", f"expected 660, got {perms}"
+perms = machine.succeed("stat -c %G /run/underwrap-local/wrapper-test-echo.sock").strip()
+assert perms == "underwrap-local-test-echo", f"expected wrapper group, got {perms}"
 perms = machine.succeed("stat -c %a /run/underwrap-local/control.sock").strip()
 assert perms == "600", f"expected 600, got {perms}"
 
@@ -141,7 +143,7 @@ machine.log("PASS: wrapper output contains only its own secret")
 # ============================================================
 
 machine.succeed(su(f"{PYTHON3} {SPOOF_SCRIPT}"))
-machine.log("PASS: raw socket spoofing rejected")
+machine.log("PASS: wrapper socket spoofing blocked by permissions")
 
 # ============================================================
 # LOCAL INSTANCE: lock/unlock lifecycle
@@ -163,7 +165,7 @@ machine.log("PASS: lock/unlock lifecycle works")
 # ============================================================
 
 machine.succeed("systemctl restart underwrapd-local.service")
-machine.wait_for_file("/run/underwrap-local/read.sock")
+machine.wait_for_file("/run/underwrap-local/wrapper-test-echo.sock")
 time.sleep(0.5)
 output = machine.succeed("/run/wrappers/bin/local-test-echo")
 assert "MY_TOKEN=ghp_testvmtoken" in output

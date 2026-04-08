@@ -1,14 +1,14 @@
 //! Unix socket server for underwrapd.
 //!
-//! Runs two listeners concurrently:
-//! - read socket: wrappers request secret material
-//! - control socket: underwrapctl stores secrets, queries status
+//! Runs wrapper socket listeners plus the control socket listener.
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Notify, Semaphore};
+use tokio::task::JoinSet;
+use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
 use underwrap_protocol::config::DaemonConfig;
@@ -42,6 +42,12 @@ impl StorageBackend for RemoteStorageWrapper {
 /// Maximum concurrent connections per socket.
 const MAX_CONNECTIONS: usize = 128;
 
+/// Timeout for the first frame on a wrapper socket.
+const WRAPPER_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Timeout for the unlock challenge follow-up frame on the same connection.
+const WRAPPER_UNLOCK_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Shared daemon state passed to connection handlers.
 struct State {
     config: DaemonConfig,
@@ -51,7 +57,6 @@ struct State {
     remote: Option<Arc<underwrap_store::RemoteBackend>>,
     unlock: UnlockState,
     token_cache: TokenCache,
-    gid_to_wrapper: std::collections::HashMap<u32, String>,
     write_locks: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
@@ -86,62 +91,91 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         }
     };
 
-    let gid_to_wrapper = build_gid_map(&config)?;
+    let wrapper_to_gid = build_wrapper_gid_map(&config)?;
     let state = Arc::new(State {
         config: config.clone(),
         store,
         remote,
         unlock: UnlockState::new(),
         token_cache: TokenCache::new(),
-        gid_to_wrapper,
         write_locks: std::sync::Mutex::new(std::collections::HashSet::new()),
     });
 
-    let read_listener = bind_socket(&config.sockets.read, config.sockets.read_mode, "read")?;
     let control_listener = bind_socket(
         &config.sockets.control,
         config.sockets.control_mode,
         "control",
+        None,
     )?;
+
+    let mut tasks = JoinSet::new();
+    tasks.spawn(accept_loop(
+        control_listener,
+        Arc::clone(&state),
+        handle_control,
+    ));
+
+    for (name, wrapper) in &config.wrappers {
+        let gid = *wrapper_to_gid
+            .get(name)
+            .expect("wrapper gid must exist after startup validation");
+        let listener = bind_socket(
+            &wrapper.socket,
+            0o660,
+            &format!("wrapper '{name}'"),
+            Some(gid),
+        )?;
+        tasks.spawn(accept_wrapper_loop(
+            listener,
+            Arc::clone(&state),
+            name.clone(),
+            gid,
+        ));
+    }
 
     info!("daemon ready");
 
     match shutdown {
         Some(notify) => {
             tokio::select! {
-                r = accept_loop(read_listener, Arc::clone(&state), handle_read) => r,
-                r = accept_loop(control_listener, state, handle_control) => r,
+                r = next_listener_result(&mut tasks) => r,
                 _ = notify.notified() => {
                     info!("shutdown signal received");
+                    tasks.abort_all();
+                    while tasks.join_next().await.is_some() {}
                     Ok(())
                 }
             }
         }
-        None => {
-            tokio::select! {
-                r = accept_loop(read_listener, Arc::clone(&state), handle_read) => r,
-                r = accept_loop(control_listener, state, handle_control) => r,
-            }
-        }
+        None => next_listener_result(&mut tasks).await,
     }
 }
 
-/// Build a GID → wrapper-name lookup table.
+async fn next_listener_result(tasks: &mut JoinSet<Result<()>>) -> Result<()> {
+    match tasks.join_next().await {
+        Some(r) => r.context("listener task panicked")?,
+        None => Ok(()),
+    }
+}
+
+/// Build a wrapper-name → GID lookup table.
 /// Resolves group names to GIDs via libc getgrnam at startup.
-fn build_gid_map(config: &DaemonConfig) -> Result<std::collections::HashMap<u32, String>> {
+fn build_wrapper_gid_map(config: &DaemonConfig) -> Result<std::collections::HashMap<String, u32>> {
+    let mut gids = std::collections::HashSet::new();
     let mut map = std::collections::HashMap::new();
     for (name, wrapper) in &config.wrappers {
         let group_name = &wrapper.group;
         let gid = resolve_group_gid(group_name)
             .with_context(|| format!("resolving group '{group_name}' for wrapper '{name}'"))?;
-        if let Some(existing) = map.get(&gid) {
-            anyhow::bail!(
-                "wrappers '{existing}' and '{name}' resolve to the same GID {gid} \
-                 (group '{group_name}'). Wrapper identity requires unique GIDs."
-            );
-        }
+        anyhow::ensure!(
+            gids.insert(gid),
+            "wrapper '{}' resolves to duplicate GID {} (group '{}'). Wrapper identity requires unique GIDs.",
+            name,
+            gid,
+            group_name,
+        );
         info!(wrapper = %name, group = %group_name, gid = gid, "resolved wrapper group");
-        map.insert(gid, name.clone());
+        map.insert(name.clone(), gid);
     }
     Ok(map)
 }
@@ -159,6 +193,7 @@ fn resolve_group_gid(name: &str) -> Result<u32> {
 
 /// Validate configuration at load time.
 fn validate_config(config: &DaemonConfig) -> Result<()> {
+    let mut sockets = std::collections::HashSet::new();
     for (name, wrapper) in &config.wrappers {
         if !config.secrets.contains_key(&wrapper.secret) {
             anyhow::bail!(
@@ -167,11 +202,28 @@ fn validate_config(config: &DaemonConfig) -> Result<()> {
                 wrapper.secret
             );
         }
+        anyhow::ensure!(
+            wrapper.socket.is_absolute(),
+            "wrapper '{}' socket must be an absolute path, got '{}'",
+            name,
+            wrapper.socket.display(),
+        );
+        anyhow::ensure!(
+            sockets.insert(wrapper.socket.clone()),
+            "wrapper '{}' reuses socket path '{}'",
+            name,
+            wrapper.socket.display(),
+        );
     }
     Ok(())
 }
 
-fn bind_socket(path: &std::path::Path, mode: u32, label: &str) -> Result<UnixListener> {
+fn bind_socket(
+    path: &std::path::Path,
+    mode: u32,
+    label: &str,
+    group_gid: Option<u32>,
+) -> Result<UnixListener> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {label} socket dir {}", parent.display()))?;
@@ -180,10 +232,21 @@ fn bind_socket(path: &std::path::Path, mode: u32, label: &str) -> Result<UnixLis
     let listener = UnixListener::bind(path)
         .with_context(|| format!("binding {label} socket {}", path.display()))?;
 
-    // Explicitly set socket permissions.
     #[cfg(unix)]
     {
+        use std::os::unix::ffi::OsStrExt;
         use std::os::unix::fs::PermissionsExt;
+
+        if let Some(gid) = group_gid {
+            let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+                .with_context(|| format!("converting {label} socket path for chown"))?;
+            let ret = unsafe { libc::chown(c_path.as_ptr(), u32::MAX, gid) };
+            if ret != 0 {
+                let err = std::io::Error::last_os_error();
+                anyhow::bail!("setting {label} socket group to {gid} failed: {err}");
+            }
+        }
+
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
             .with_context(|| format!("setting {label} socket permissions to {mode:#o}"))?;
     }
@@ -211,6 +274,33 @@ where
         tokio::spawn(async move {
             if let Err(e) = handler(stream, state).await {
                 error!("connection error: {e:#}");
+            }
+            drop(permit);
+        });
+    }
+}
+
+async fn accept_wrapper_loop(
+    listener: UnixListener,
+    state: Arc<State>,
+    wrapper_name: String,
+    expected_gid: u32,
+) -> Result<()> {
+    let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+
+    loop {
+        let (stream, _addr) = listener.accept().await?;
+        let state = Arc::clone(&state);
+        let wrapper_name = wrapper_name.clone();
+        let permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore closed");
+
+        tokio::spawn(async move {
+            if let Err(e) = handle_wrapper(stream, state, &wrapper_name, expected_gid).await {
+                error!(wrapper = %wrapper_name, "connection error: {e:#}");
             }
             drop(permit);
         });
@@ -297,34 +387,6 @@ fn check_peer_auth(
     ))
 }
 
-/// Verify that the peer process is running the expected executable.
-/// Reads /proc/<pid>/exe to get the real binary path.
-fn check_peer_exe(
-    peer: &Option<PeerCred>,
-    allowed_exe: &std::path::Path,
-) -> std::result::Result<(), String> {
-    let cred = match peer {
-        Some(c) => c,
-        None => return Err("could not determine peer credentials for exe check".to_string()),
-    };
-
-    let exe_link = format!("/proc/{}/exe", cred.pid);
-    match std::fs::read_link(&exe_link) {
-        Ok(exe_path) => {
-            if exe_path == allowed_exe {
-                Ok(())
-            } else {
-                Err(format!(
-                    "peer exe {} does not match allowed {}",
-                    exe_path.display(),
-                    allowed_exe.display()
-                ))
-            }
-        }
-        Err(e) => Err(format!("cannot read {exe_link}: {e}")),
-    }
-}
-
 /// Read the effective GID from /proc/<pid>/status.
 /// Returns None if the file can't be read (e.g. process already exited).
 fn read_proc_egid(pid: u32) -> Option<u32> {
@@ -341,37 +403,29 @@ fn read_proc_egid(pid: u32) -> Option<u32> {
     None
 }
 
-/// Resolve wrapper identity strictly from the peer's effective GID.
-///
-/// The daemon does NOT trust client-supplied wrapper names. Identity comes
-/// from the kernel: the peer's effective GID (set by the setgid wrapper
-/// binary) is looked up in the GID→wrapper map built at startup.
-///
-/// Returns None if the peer's egid doesn't map to any configured wrapper.
-fn resolve_wrapper_identity(
-    peer: &Option<PeerCred>,
-    gid_map: &std::collections::HashMap<u32, String>,
-) -> Option<String> {
-    let cred = peer.as_ref()?;
-    let egid = cred.egid?;
-    gid_map.get(&egid).cloned()
-}
-
 // ---------------------------------------------------------------------------
-// Read socket handler
+// Wrapper socket handler
 // ---------------------------------------------------------------------------
 
-async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
+async fn handle_wrapper(
+    mut stream: UnixStream,
+    state: Arc<State>,
+    wrapper_name: &str,
+    expected_gid: u32,
+) -> Result<()> {
     let peer = get_peer_cred(&stream);
+    let peer_uid = peer.as_ref().map(|p| p.uid);
 
-    // Auth check for read socket.
-    if let Err(reason) = check_peer_auth(
-        &peer,
-        &state.config.sockets.read_allow_uids,
-        &state.config.sockets.read_allow_gids,
-    ) {
+    if peer.as_ref().and_then(|p| p.egid) != Some(expected_gid) {
+        let reason = format!(
+            "peer egid {:?} does not match wrapper '{}' gid {}",
+            peer.as_ref().and_then(|p| p.egid),
+            wrapper_name,
+            expected_gid,
+        );
+        warn!(wrapper = %wrapper_name, peer = ?peer, "wrapper identity rejected");
         audit::auth_denied(
-            "read",
+            "wrapper",
             &reason,
             peer.as_ref().map(|p| p.uid),
             peer.as_ref().map(|p| p.gid),
@@ -385,62 +439,30 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
         return Ok(());
     }
 
-    // Verify peer executable if configured.
-    if let Some(ref allowed_exe) = state.config.sockets.read_allow_exe
-        && let Err(reason) = check_peer_exe(&peer, allowed_exe)
-    {
-        audit::auth_denied(
-            "read",
-            &reason,
-            peer.as_ref().map(|p| p.uid),
-            peer.as_ref().map(|p| p.gid),
-        );
-        let response = WrapperResponse::Error {
-            code: ErrorCode::Unauthorized,
-            message: reason,
-        };
-        write_frame_async(&mut stream, &response).await?;
-        stream.shutdown().await?;
-        return Ok(());
-    }
-
-    let request: WrapperRequest = read_frame_async(&mut stream).await?;
-
-    // Resolve wrapper identity strictly from the peer's effective GID.
-    let wrapper_name = match resolve_wrapper_identity(&peer, &state.gid_to_wrapper) {
-        Some(name) => name,
-        None => {
-            let reason = format!(
-                "peer egid {:?} does not map to any configured wrapper",
-                peer.as_ref().and_then(|c| c.egid)
-            );
-            warn!(peer = ?peer, "wrapper identity rejected");
+    let request = match timeout(WRAPPER_FIRST_FRAME_TIMEOUT, read_frame_async(&mut stream)).await {
+        Ok(Ok(request)) => request,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            warn!(wrapper = %wrapper_name, peer = ?peer, "wrapper socket first-frame timeout");
             audit::auth_denied(
-                "read",
-                &reason,
+                "wrapper",
+                "timed out waiting for first wrapper request frame",
                 peer.as_ref().map(|p| p.uid),
                 peer.as_ref().map(|p| p.gid),
             );
-            let response = WrapperResponse::Error {
-                code: ErrorCode::Unauthorized,
-                message: reason,
-            };
-            write_frame_async(&mut stream, &response).await?;
             stream.shutdown().await?;
             return Ok(());
         }
     };
 
-    let peer_uid = peer.as_ref().map(|p| p.uid);
-
     let response = match &request {
-        WrapperRequest::Read { scope, .. } => {
-            info!(wrapper = %wrapper_name, peer = ?peer, "read request");
-            process_read_for(&wrapper_name, scope.as_deref(), &state, peer_uid).await
+        WrapperRequest::Read { scope } => {
+            info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
+            process_read_for(wrapper_name, scope.as_deref(), &state, peer_uid).await
         }
-        WrapperRequest::Unlock { scope, seconds, .. } => {
-            info!(wrapper = %wrapper_name, peer = ?peer, "unlock request via read socket");
-            process_wrapper_unlock(&wrapper_name, scope.as_deref(), *seconds, peer_uid, &state)
+        WrapperRequest::Unlock { scope, seconds } => {
+            info!(wrapper = %wrapper_name, peer = ?peer, "unlock request via wrapper socket");
+            process_wrapper_unlock(wrapper_name, scope.as_deref(), *seconds, peer_uid, &state)
         }
         WrapperRequest::UnlockResponse {
             scope,
@@ -448,11 +470,10 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
             challenge,
             signature,
             public_key,
-            ..
         } => {
             info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response");
             process_wrapper_unlock_response(
-                &wrapper_name,
+                wrapper_name,
                 scope.as_deref(),
                 *seconds,
                 peer_uid,
@@ -469,7 +490,20 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
     // If we sent a Challenge, the client will send the UnlockResponse on
     // the same connection (it can't reconnect — it would lose the wrapper GID).
     if matches!(&response, WrapperResponse::Challenge { .. }) {
-        let follow_up: WrapperRequest = read_frame_async(&mut stream).await?;
+        let follow_up = match timeout(
+            WRAPPER_UNLOCK_RESPONSE_TIMEOUT,
+            read_frame_async(&mut stream),
+        )
+        .await
+        {
+            Ok(Ok(request)) => request,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                warn!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge follow-up timeout");
+                stream.shutdown().await?;
+                return Ok(());
+            }
+        };
         let follow_up_response = match &follow_up {
             WrapperRequest::UnlockResponse {
                 scope,
@@ -477,11 +511,10 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
                 challenge,
                 signature,
                 public_key,
-                ..
             } => {
                 info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response (same connection)");
                 process_wrapper_unlock_response(
-                    &wrapper_name,
+                    wrapper_name,
                     scope.as_deref(),
                     *seconds,
                     peer_uid,
@@ -508,10 +541,10 @@ async fn handle_read(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
             ..
         }
     ) && matches!(&request, WrapperRequest::Read { .. })
-        && let Some(wrapper_def) = state.config.wrappers.get(&wrapper_name)
+        && let Some(wrapper_def) = state.config.wrappers.get(wrapper_name)
         && wrapper_def.libsecret
     {
-        match setup_secretsd_channel(&stream, &wrapper_name, &state).await {
+        match setup_secretsd_channel(&stream, wrapper_name, &state).await {
             Ok(()) => {
                 info!(wrapper = %wrapper_name, "secretsd channel established");
             }
@@ -613,7 +646,6 @@ async fn process_read_for(
             Ok(Some(material)) => {
                 audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
                 WrapperResponse::Ok {
-                    wrapper_name: Some(wrapper_name.to_string()),
                     material: Some(material),
                     message: None,
                 }
@@ -650,7 +682,6 @@ async fn process_read_for(
                     Ok(derived) => {
                         audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
                         WrapperResponse::Ok {
-                            wrapper_name: Some(wrapper_name.to_string()),
                             material: Some(derived),
                             message: None,
                         }
@@ -684,7 +715,7 @@ async fn process_read_for(
 }
 
 // ---------------------------------------------------------------------------
-// Self-service unlock via read socket (with optional SSH agent challenge)
+// Self-service unlock via wrapper socket (with optional SSH agent challenge)
 // ---------------------------------------------------------------------------
 
 /// Handle an unlock request. If the wrapper has an `unlock_key`, send a
@@ -730,7 +761,6 @@ fn process_wrapper_unlock(
         state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
         audit::unlocked(wrapper_name, scope, seconds, peer_uid);
         WrapperResponse::Ok {
-            wrapper_name: None,
             material: None,
             message: Some("unlocked".to_string()),
         }
@@ -869,7 +899,6 @@ fn process_wrapper_unlock_response(
     state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
     audit::unlocked(wrapper_name, scope, seconds, peer_uid);
     WrapperResponse::Ok {
-        wrapper_name: None,
         material: None,
         message: Some("unlocked".to_string()),
     }

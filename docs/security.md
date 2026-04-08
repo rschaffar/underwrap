@@ -1,643 +1,738 @@
 # Security
 
-This document explains every security mechanism in underwrap, why it exists,
-what alternatives were considered, and what limitations remain.
+This document explains the security goals behind underwrap, the mechanisms currently used to pursue them, the assumptions those mechanisms rely on, and the main limitations that still matter.
 
-## Threat model
+It is intentionally technical and more detailed than the rest of the documentation.
 
-underwrap protects against:
+## Security posture and review status
 
-1. **Same-user secret theft**: another process running as the same user
-   reading the secret from the target's environment, memory, or `/proc`.
-2. **Wrapper impersonation**: a process pretending to be a different wrapper
-   to read a secret it shouldn't have access to.
-3. **Secret persistence**: secrets remaining on disk, in logs, in core dumps,
-   or in process memory longer than necessary.
-4. **Privilege escalation**: the wrapper binary having more privilege than
-   needed when executing the target.
-5. **Cross-instance leakage**: one underwrap instance accessing another
-   instance's secrets or tunnel.
+underwrap is aiming at an awkward problem space: running ordinary local CLIs with secrets, while trying to avoid the usual "just export the token and hope for the best" failure modes.
 
-underwrap does NOT protect against:
+The project makes strong design choices in pursuit of that goal, but it is still early.
 
-- **Root compromise**: root can always read process memory, files, and sockets.
-- **Target process misbehavior**: once the target has the secret in its
-  environment, it could leak it by spawning children or printing env.
-- **Kernel compromise**: the security model depends on kernel namespaces,
-  credentials, and capabilities.
+Important framing:
+
+- underwrap already appears useful for reducing **accidental** or **casual** secret exposure in many local and agent-facing workflows
+- it is also intentionally designed with a more adversarial caller model in mind
+- however, deeper review is still welcome and still needed
+
+So the right way to read this document is:
+
+- these are the current security goals
+- these are the current mechanisms
+- these are the reasons those mechanisms were chosen
+- these are the assumptions and limits you should keep in mind
+
+not:
+
+- this project has been formally verified or independently audited end to end
+
+## What underwrap is trying to protect against
+
+underwrap is primarily trying to reduce or block these classes of problems:
+
+1. **Ambient secret exposure**
+   - secrets living in the caller's shell environment
+   - secrets leaking into dotfiles, helper scripts, or ad-hoc wrappers
+   - secrets becoming easy for unrelated child processes to inherit
+
+2. **Same-user secret theft from nearby processes**
+   - another process under the same UID inspecting `/proc`
+   - ptrace-style access to short-lived wrapper processes
+   - easy reads of wrapper or target state from the host namespace
+
+3. **Wrapper impersonation**
+   - a process pretending to be a different wrapper in order to read a secret it should not have
+
+4. **Secret persistence outside the intended backend**
+   - temp files
+   - sidecar files with secret values
+   - local caches that silently bypass the backend model
+
+5. **Cross-instance confusion or leakage**
+   - one configured instance reaching another instance's resources
+
+6. **Operational drift toward weaker fallbacks**
+   - a security mechanism failing and the system quietly switching to a less safe mode
+
+## What underwrap does not protect against
+
+underwrap does **not** solve these problems:
+
+- **root compromise** — `root` can read memory, files, sockets, and process state
+- **kernel compromise** — the design depends on Linux kernel behavior
+- **malicious or overpowered target tools** — if the target program itself can reveal the secret, underwrap cannot prevent that
+- **bad wrapper policy design** — if you wrap a broad CLI, you are still giving the caller broad CLI power
+- **all possible agent abuse** — underwrap helps with secret delivery; it does not turn arbitrary local execution into a safe sandbox
+
+This is why the recommended pattern for agent-facing use is still to wrap **your own narrow helper**, not a full general-purpose CLI.
+
+## Threat model summary
+
+A reasonable short summary is:
+
+> underwrap is trying to make "use the secret through this intended command" easier than "obtain the raw secret value" for local CLI workflows, especially on NixOS and especially in agent-facing setups.
+
+That is a meaningful security improvement even when it is not absolute.
+
+---
 
 ## Design invariants
 
-These rules are absolute. No feature, optimization, or future extension may
-violate them. They exist because past design iterations made wrong assumptions
-that would have silently degraded the security model.
+These invariants are the backbone of the current design. New features should not quietly violate them.
 
-### All secret material flows through StorageBackend
+### 1. All secret material flows through `StorageBackend`
 
-**Every byte of secret material** — whether injected via environment variable,
-stored via libsecret, or derived via OAuth — must be read from and written to
-the daemon's `StorageBackend`. No exceptions.
+Every byte of secret material — whether it is:
 
-This means:
-- No local JSON files containing secret values.
-- No sidecar files, temp files, or caches containing secret values.
-- No in-process databases (redb, sqlite) containing secret values.
-- Metadata (attributes, labels, timestamps) is stored in `.meta` keys,
-  secret values in separate `.secret` keys. Both go through
-  `StorageBackend::write()` and `StorageBackend::read()`. Startup only
-  reads `.meta` keys — secret bytes are never loaded until requested.
+- a plain injected token
+- mutable credential state
+- libsecret-managed data
+- OAuth refresh-token material
+- derived access-token source material
 
-**Rationale**: The `StorageBackend` is the single enforcement point for
-encryption at rest (encrypted backend), remote storage (remote backend),
-and audit logging (daemon layer above the backend). Any secret that bypasses
-it loses all three properties silently. A plain JSON file on disk is an
-unencrypted, unaudited, local copy of secret material — exactly what the
-remote backend is designed to prevent.
+must be read from or written to the daemon's `StorageBackend` path.
 
-### Running a wrapper does not expose the raw secret
+That means:
 
-A user who executes a wrapper binary can *use* the secret through the fixed
-target binary (e.g., `work-gh-authorized pr list` uses the GitHub token via
-`gh`). But the user **cannot read the raw secret value** through underwrap's
-mechanisms:
+- no ad-hoc JSON files containing secret values
+- no temp files holding secret values
+- no sidecar caches holding secret values
+- no alternate persistence path that bypasses backend policy
 
-- The secret passes from daemon → `underwrap-exec` → pipe fd 3 →
-  `underwrap-ns` → target env. The user never holds it.
-- The wrapper processes that briefly hold the secret set
-  `PR_SET_DUMPABLE=0` and never `exec()` again, so the flag persists.
-  This blocks `/proc/<pid>/mem`, `/proc/<pid>/environ`, and `ptrace`
-  from same-UID processes (requires `CAP_SYS_PTRACE` to bypass;
-  see `ptrace(2)` access mode algorithm step 4).
-- The target binary path is locked in a root-owned sidecar config
-  (`/etc/underwrap/wrappers/`). The user cannot substitute a binary
-  that exfiltrates the secret.
+Why this matters:
 
-Whether the target binary *itself* offers a way to print the secret (e.g.,
-`gh auth token`) is outside underwrap's control — the choice of target
-binary is part of the trust model, made by the administrator in the NixOS
-configuration.
+- the backend is where encryption-at-rest decisions live
+- the backend is where remote-storage behavior lives
+- the backend is where the storage model stays auditable and conceptually centralized
 
-### Authenticated channels only
+A feature that bypasses `StorageBackend` is not a convenience shortcut; it changes the security model.
 
-Any communication channel that carries secret material must be authenticated
-at creation time. Authentication means: the daemon verified the peer's
-identity via kernel-provided credentials (SO_PEERCRED effective GID) before
-the channel was established. No tokens, no passwords, no environment
-variables.
+### 2. Wrapper identity must come from the kernel, not the caller
 
-Channels that carry secrets:
-- **Read socket connection**: authenticated by SO_PEERCRED effective GID.
-- **Pipe fd 3** (underwrap-exec → underwrap-ns): inherited through fork,
-  no filesystem path, no way for outside processes to access it.
-- **Secretsd channel fd** (libsecret mode): `socketpair()` created during
-  the GID-authenticated read request, one end kept by the daemon, the other
-  inherited through the fork chain. Anonymous — no filesystem path.
+underwrap does not trust caller-supplied wrapper names for authorization.
 
-### File descriptors carrying secrets must not leak
+Identity must come from a kernel-backed source tied to the installed wrapper binary. In the current design, that source is the wrapper's **effective GID**.
 
-Any fd that carries secret material or provides an authenticated channel to
-the daemon must be closed before exec'ing untrusted processes. Specifically:
+### 3. Channels carrying secrets must be authenticated at creation time
 
-- Pipe fd 3 is consumed (read + closed) by `underwrap-ns` before exec'ing
-  the target.
-- The secretsd channel fd must be closed before exec'ing the target. Only
-  `underwrap-secretsd` (forked before the target) should hold it.
+Any channel that carries secret material or long-lived authenticated capability must be born from an already authenticated context.
 
-### Processes holding secrets must be non-dumpable
+In practice this means:
 
-Any process that holds secret material in memory must call
-`prctl(PR_SET_DUMPABLE, 0)`. This blocks `/proc/<pid>/mem`,
-`/proc/<pid>/environ`, `/proc/<pid>/fd/`, and `ptrace` access from
-same-UID processes without `CAP_SYS_PTRACE`.
+- the wrapper-socket request is authenticated by wrapper identity
+- the exec→namespace handoff uses an inherited anonymous pipe
+- the libsecret channel is created during an authenticated wrapper request and then inherited forward
 
-Critical detail: `exec()` of a normal binary (no setuid/setgid/capabilities)
-**resets dumpable to 1** (`prctl(2)` man page: "Normally, the dumpable
-attribute is set to 1"; it is only reset to `suid_dumpable` when credentials
-change). Therefore:
+No user-controlled token or environment-variable based side channel is trusted as the primary authorization mechanism.
 
-- Wrapper parent processes (`underwrap-exec`, `underwrap-ns`) set
-  `PR_SET_DUMPABLE=0` and **never exec again** — the flag persists.
-- `underwrap-secretsd` is exec'd, so it starts dumpable. It **must** call
-  `PR_SET_DUMPABLE=0` as its first action, before reading any secrets from
-  the channel. Between exec and that `prctl` call there is a brief window,
-  but no secrets have been read yet, and no other processes in the namespace
-  have started.
-- The target process is exec'd and becomes dumpable. It is protected by
-  the PID namespace (defense in depth, not sole protection — see
-  limitations below).
+### 4. File descriptors carrying secret material must not leak across trust boundaries
+
+The current design relies heavily on anonymous, inherited file descriptors. That is good for avoiding filesystem-visible artifacts, but it only works if those fds are closed before the wrong process can inherit them.
+
+In particular:
+
+- the fd 3 pipe is consumed before the target is exec'd
+- the libsecret channel fd must not be inherited by the final target process
+
+### 5. Processes that hold secret material should be non-dumpable whenever possible
+
+If a process is holding secret material in memory and does not need to exec a normal target binary afterward, it should call:
+
+```text
+prctl(PR_SET_DUMPABLE, 0)
+```
+
+This is central to protecting the wrapper processes themselves.
+
+### 6. No silent fallback to a weaker mode
+
+If a security mechanism fails, the wrapper should abort rather than continue in a degraded mode.
+
+This principle matters most in:
+
+- namespace setup
+- mount isolation for libsecret mode
+- privilege dropping
+- descriptor handling
+
+---
 
 ## Wrapper identity: setgid + effective GID
 
 ### The problem
 
-Any process that can connect to the daemon's read socket could claim to be
-any wrapper and read its secret. The wrapper name in the protocol message is
-caller-controlled and trivially spoofable.
+A caller-controlled wrapper name is not trustworthy. The daemon must be very strict about **who** it believes it is serving.
 
-### The solution
+### The current design
 
-Each wrapper binary is installed `setgid` to a dedicated Unix group (e.g.
-`underwrap-myinstance-gh-authorized`). When the wrapper connects to the daemon,
-the kernel records the effective GID. The daemon reads it from
-`/proc/<pid>/status` and maps it to a wrapper name.
+Each wrapper binary is installed setgid to a dedicated Unix group such as:
 
-The client-supplied wrapper name in the request is ignored entirely. Identity
-comes from the kernel.
-
-### Why not these alternatives?
-
-| Approach | Problem |
-|----------|---------|
-| Trust client-supplied wrapper name | Any connected process could claim any name |
-| Check `/proc/<pid>/exe` | All wrappers are copies of the same binary |
-| Per-wrapper sockets | More complex, equally secure |
-| Environment variable for identity | Caller-controlled, trivially spoofable |
-
-### Why effective GID, not real GID?
-
-`SO_PEERCRED.gid` returns the *real* GID, not the effective GID. After
-`setgid`, the effective GID changes but the real GID stays the same. The
-daemon reads the effective GID from `/proc/<pid>/status` (the `Gid:` line,
-second field).
-
-### Why NixOS security.wrappers?
-
-`security.wrappers` handles setgid binary installation correctly: it mounts
-`/run/wrappers` without `nosuid` and creates a small C helper that sets
-credentials before exec.
-
-### Wrapper identity from effective GID, not argv[0]
-
-`underwrap-exec` derives the wrapper name from its own effective GID
-(`getegid()` → `getgrgid()` → strip `underwrap-` prefix), NOT from
-`argv[0]`. This prevents symlink confused-deputy attacks where a user
-creates a symlink from one wrapper name to another wrapper's binary:
-
-```
-~/bin/wrapper-B -> /run/wrappers/bin/wrapper-A
-# Kernel: GID = A's group
-# argv[0] = "wrapper-B" (user-controlled, not trusted)
-# getegid() = A's GID → group "underwrap-A" → wrapper name "A"
-# Sidecar config loaded: A's config (correct, not B's)
+```text
+underwrap-work-jira
 ```
 
-The effective GID is set by the kernel from the setgid binary and cannot
-be influenced by the caller. This binds identity and policy to the same
-trusted source.
+When the wrapper connects to the daemon:
 
-## PID namespace isolation
+- it connects to that wrapper's dedicated wrapper socket
+- the daemon obtains the peer credentials from the Unix socket
+- it reads the peer's effective GID from `/proc/<pid>/status`
+- it verifies that GID matches the wrapper expected for that socket
 
-### The problem
+The protocol-level wrapper name is not the authority. The wrapper socket plus the kernel-visible effective GID are.
 
-After the wrapper drops privilege and execs the target, the target is
-"dumpable" — the kernel resets the dumpable flag when there's no credential
-mismatch at exec time (`euid==uid`, `egid==gid`). If `suid_dumpable` is 0
-(the default) and the exec involves no credential change, dumpable is set
-to 1 (SUID_DUMP_USER).
+### Why effective GID instead of real GID?
 
-### Why PR_SET_DUMPABLE doesn't work for the target
+`SO_PEERCRED` gives you the real GID, not the effective GID. After a setgid transition, those are not the same thing.
 
-We set `PR_SET_DUMPABLE=0` in the child before exec, but `exec()` of the
-target binary (a normal binary without setuid/setgid/capabilities) resets
-dumpable to 1.
+So the daemon uses the peer PID from `SO_PEERCRED` and then reads the effective GID from the `Gid:` line in `/proc/<pid>/status`.
 
-### What actually protects the target
+### Why not trust `argv[0]`?
 
-The VM test proves that same-UID host processes **cannot** read
-`/proc/<host-pid>/environ` of the final target, even though:
-- The target has a host-visible PID (root can find it)
-- The target is dumpable (exec reset it to 1)
-- The attacker has the same UID
+Because `argv[0]` is caller-controlled.
 
-Two independent mechanisms provide protection:
+A user can make a symlink with a misleading name and invoke the same underlying wrapper binary through that name. The kernel-assigned effective GID remains authoritative; `argv[0]` does not.
 
-**1. Yama LSM** (`kernel.yama.ptrace_scope=1`, the NixOS default).
-With `ptrace_scope=1`, `/proc/<pid>/environ` access (which requires
-`PTRACE_MODE_READ_FSCREDS`) is restricted to **descendant processes only**.
-A same-UID process that is not a descendant of the target is denied.
+### Why per-wrapper sockets?
 
-**2. Credential transitions block ancestor tracing.** Even a direct
-ancestor (the process that spawned the wrapper) is denied. The wrapper
-chain involves exec of a setgid binary (`underwrap-exec`) and exec of
-a binary with file capabilities (`underwrap-ns`). These credential
-transitions cause the kernel to disallow ptrace from the original
-ancestor, because the tracee underwent a privilege-changing exec.
-This is enforced regardless of Yama settings (see `ptrace(2)`,
-`PTRACE_MODE_ATTACH` checks after credential-changing exec).
+Per-wrapper sockets tighten the local trust boundary in a useful way.
 
-The VM test proves **both** scenarios:
-- Non-descendant same-UID process: DENIED (Yama)
-- Ancestor process that spawned the wrapper: DENIED (credential transition)
+They let the filesystem permission model reject unrelated local processes before the daemon spends work on them, while still keeping wrapper identity anchored in the wrapper's effective GID.
 
-The PID namespace provides **defense in depth**:
-- Makes the target harder to discover (different PID space)
-- When combined with a mount namespace (libsecret mode), a fresh `/proc`
-  mount ensures processes inside the namespace can only see namespace-local
-  PIDs
+### Why this is NixOS-shaped
 
-But the primary protection for the target's environment is Yama, not the
-PID namespace.
+The design leans on `security.wrappers` to install setgid wrapper entry points correctly and consistently. That is one major reason the project is explicitly NixOS-first.
 
-### Dependency on Yama and credential transitions
+---
 
-The target is protected by two independent mechanisms:
+## Two-stage wrapper design
 
-1. **Yama LSM** (`ptrace_scope=1`): blocks non-descendant same-UID access.
-   NixOS sets this by default. Systems with `ptrace_scope=0` lose this layer.
+### Why split the wrapper?
 
-2. **Credential transitions**: the setgid exec (`underwrap-exec`) and
-   capability-bearing exec (`underwrap-ns`) in the wrapper chain cause the
-   kernel to block ptrace from the original ancestor. This protection is
-   independent of Yama and works even with `ptrace_scope=0`.
+underwrap needs two things from its wrapper chain:
 
-Both are verified by VM tests (non-descendant and ancestor attack scenarios).
+1. a setgid identity hop
+2. the ability to create a PID namespace
 
-### Why a two-stage wrapper?
+On NixOS, those concerns are easier to express as two stages:
 
-NixOS `security.wrappers` doesn't allow both `setgid` and `capabilities`
-on the same binary — they're mutually exclusive. So the wrapper is split:
+- **`underwrap-exec`**: setgid entry wrapper
+- **`underwrap-ns`**: capability-bearing namespace helper
 
-- **underwrap-exec** (stage 1, setgid): gets secret from daemon, drops
-  privilege, pipes secret to stage 2 via fd 3.
-- **underwrap-ns** (stage 2, `cap_sys_admin`): creates PID namespace,
-  drops capabilities, execs target.
+### Stage 1: `underwrap-exec`
 
-The secret passes between stages via a pipe on file descriptor 3 — never in
-environment variables (visible in `/proc/pid/environ`), command-line arguments
-(visible in `/proc/pid/cmdline` and `ps`), or the filesystem (visible to any
-process with directory access). fd 3 was chosen because fd 0/1/2 are
-stdin/stdout/stderr which must flow through to the target untouched.
+Responsibilities:
 
-### Why not user namespaces (CLONE_NEWUSER)?
+- determine wrapper identity from effective GID
+- load the matching sidecar config
+- connect to the daemon
+- receive secret material
+- drop elevated privilege
+- hand the secret to stage 2 over fd 3
 
-Unprivileged user namespaces (`CLONE_NEWUSER | CLONE_NEWPID`) would avoid
-needing `cap_sys_admin`. But after a setgid credential change, writing
-`/proc/self/uid_map` fails with EPERM. The setgid identity mechanism is
-incompatible with user namespace creation.
+### Stage 2: `underwrap-ns`
 
-## Wrapper process memory protection
+Responsibilities:
 
-### The problem
+- read the secret from fd 3
+- create the namespace environment
+- set up the target process environment
+- apply final process hardening steps
+- exec the target
 
-The two wrapper parent processes briefly hold the secret in memory while
-piping it. They're in the parent namespace and visible to same-UID processes.
+### Why fd 3?
 
-### The solution
+The secret is passed through an anonymous pipe on file descriptor 3.
 
-Both `underwrap-exec` and `underwrap-ns` call `prctl(PR_SET_DUMPABLE, 0)`
-immediately after receiving the secret. Since neither process execs again
-(they fork and waitpid), the dumpable flag persists for their entire
-lifetime. This blocks:
+This is intentionally not:
 
-- `/proc/<pid>/mem` reads by same-UID processes
-- `/proc/<pid>/environ` reads by same-UID processes
-- `ptrace` attach from same-UID processes
+- an environment variable between wrapper stages
+- a command-line argument
+- a temp file
 
-Both processes also zeroize the secret `String` from memory after piping it.
+Using fd 3 keeps stdin/stdout/stderr untouched and avoids a filesystem-visible or process-list-visible handoff path.
 
-## Core dump prevention
-
-`underwrap-ns` sets `RLIMIT_CORE=0` in the child before exec. If the target
-crashes, no core dump is written — regardless of system-wide settings.
-
-The VM test verifies this: core dumps are enabled globally, the target
-receives SIGSEGV, and no core file appears.
+---
 
 ## Privilege drop
 
-`underwrap-exec` drops all elevated privileges before any secret touches
-the target process:
+`underwrap-exec` drops elevated privilege before the target is reached.
 
-1. `setgroups(0, NULL)` — drops supplementary groups
-2. `setgid(real_gid)` — drops effective GID
-3. `setuid(real_uid)` — drops effective UID
+The key steps are:
 
-All return values are checked. Failure aborts the wrapper — executing the
-target with elevated privilege is worse than not executing at all.
+1. `setgroups(0, NULL)`
+2. `setgid(real_gid)`
+3. `setuid(real_uid)`
 
-## Config directory trust
+Each return value is checked. A failed privilege drop is a hard failure.
 
-`underwrap-exec` always uses the hardcoded path `/etc/underwrap/wrappers/`
-for sidecar configs. There is no environment variable or command-line
-override — this prevents config redirection attacks where an attacker
-could point the wrapper at a malicious config with an attacker-controlled
-target binary.
+This follows the project's general rule that silently continuing in a weaker or riskier state is worse than aborting.
 
-The target path in the sidecar config must be absolute — relative paths
-are rejected.
+---
 
-This prevents an attacker from pointing the wrapper at an attacker-controlled
-config that redirects the target to a binary that exfiltrates the secret.
+## Protecting the wrapper processes themselves
+
+The wrapper parent processes are among the most sensitive moments in the whole flow. They briefly hold raw secret material in memory before the target is launched.
+
+### The current mechanism
+
+Both `underwrap-exec` and `underwrap-ns` call:
+
+```text
+prctl(PR_SET_DUMPABLE, 0)
+```
+
+once they hold secret material.
+
+Because those parent processes do not exec another normal target afterward, the dumpable flag remains in effect for the rest of their lifetime.
+
+### Why this matters
+
+For same-UID processes without `CAP_SYS_PTRACE`, setting a process non-dumpable blocks important inspection paths such as:
+
+- `/proc/<pid>/mem`
+- `/proc/<pid>/environ`
+- ptrace attach
+- related `/proc` access checks that rely on `ptrace_may_access()`
+
+### Zeroization
+
+The wrapper processes also zeroize secret buffers after handoff where practical.
+
+That does not make memory disclosure impossible in every imaginable scenario, but it reduces the lifetime of secret material in process memory.
+
+---
+
+## Protecting the final target process
+
+This is the part most likely to be misunderstood.
+
+### The awkward fact
+
+A normal target binary does **not** stay non-dumpable just because the parent set `PR_SET_DUMPABLE=0` before exec.
+
+For an ordinary exec without a continuing credential mismatch, Linux resets the dumpable state.
+
+So the final target process needs protection from a different combination of mechanisms.
+
+### What currently helps protect the target
+
+Two mechanisms are important here.
+
+#### 1. Yama LSM (`ptrace_scope=1`)
+
+On NixOS, the default Yama setting blocks same-UID access to sensitive `/proc` state unless the caller is an allowed descendant.
+
+This matters for reads like:
+
+- `/proc/<pid>/environ`
+- `/proc/<pid>/mem`
+
+So a same-UID process that is merely "nearby" on the host is not automatically allowed to inspect the target.
+
+#### 2. Credential transitions in the wrapper chain
+
+The target descended from a process tree that included:
+
+- an exec of a setgid binary (`underwrap-exec`)
+- an exec of a capability-bearing binary (`underwrap-ns`)
+
+Those privilege-affecting exec transitions matter for ptrace eligibility and help prevent straightforward tracing from the original ancestor process.
+
+### What the PID namespace contributes
+
+The PID namespace is still useful, but it is better described as **defense in depth** than as the sole protection for target secrecy.
+
+It helps by:
+
+- giving the target a separate PID space
+- making process discovery less direct
+- combining well with a fresh `/proc` mount in libsecret mode
+
+### Important caveat
+
+This means underwrap's target protection depends partly on kernel policy and system defaults, not just on one explicit setting inside the wrapper.
+
+Systems that disable or weaken the relevant Yama behavior lose one important layer.
+
+That dependence is real and should not be hidden.
+
+---
+
+## Why not user namespaces?
+
+A natural question is: why not use unprivileged user namespaces and avoid `cap_sys_admin`?
+
+The main issue is that the current identity model depends on a setgid transition, and that does not compose cleanly with the required `uid_map` writes for this design.
+
+In other words, the setgid-based identity mechanism and the most obvious user-namespace approach pull in different directions.
+
+---
+
+## Core dump prevention
+
+Before the final target execs, underwrap sets:
+
+```text
+RLIMIT_CORE = 0
+```
+
+This is meant to prevent a crashing target from leaving secret-bearing core files behind.
+
+This is a simple mechanism, but it matters. Secret-handling systems should be opinionated about core dumps.
+
+---
+
+## Configuration trust and fixed target paths
+
+`underwrap-exec` does not let the caller choose an arbitrary config location.
+
+It reads sidecar configs from the fixed directory:
+
+```text
+/etc/underwrap/wrappers/
+```
+
+and the main target path inside that config must be absolute.
+
+This is important because it prevents a caller from trivially redirecting the wrapper to a malicious alternate target binary through environment or path tricks.
+
+The fixed target path is especially important for agent-facing setups, where the distinction between:
+
+- "run this approved helper"
+- and
+- "run a caller-chosen binary with my secret"
+
+is the entire point.
+
+---
 
 ## Environment sanitization
 
-The target process starts with a **clean environment** (`env_clear()`).
-It does not inherit the user's shell environment wholesale. This blocks:
+underwrap starts the target from a cleared environment and then reconstructs only a limited, trusted set of environment variables.
 
-- `LD_PRELOAD` / `LD_LIBRARY_PATH` injection
-- User injection of internal `UNDERWRAP_*` control variables
-- Arbitrary inherited env vars that could alter target behavior
+### Why this matters
 
-The following are passed through from the user's environment (default
-whitelist):
+A full inherited caller environment is too powerful.
 
-- Identity: `HOME`, `USER`, `LOGNAME`, `SHELL`
-- Terminal: `TERM`, `COLORTERM`
-- Locale: `LANG`, `LC_*`, `TZ`
-- XDG: `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
-  `XDG_CACHE_HOME`, `XDG_STATE_HOME`
-- System: `PATH`, `TMPDIR`, `SSH_AUTH_SOCK`
-- Display: `DISPLAY`, `WAYLAND_DISPLAY`
-- Proxy: `http_proxy`, `https_proxy`, `no_proxy` (and uppercase)
+It enables or complicates things like:
 
-Additional passthrough vars and fixed env vars can be configured per
-wrapper in the NixOS module (`envPassthrough`, `envSet`). These come
-from the root-owned sidecar config, not from the user.
+- `LD_PRELOAD`
+- `LD_LIBRARY_PATH`
+- user-supplied `UNDERWRAP_*` control variables
+- arbitrary ambient behavior changes in the target
 
-If a wrapper should not rely on `PATH`, it should call downstream tools by
-absolute Nix store path. This is the recommended pattern for agent-facing
-wrappers.
+### The model
 
-Internal env vars (`UNDERWRAP_LIBSECRET`, `UNDERWRAP_DBUS_DAEMON`,
-`UNDERWRAP_SECRETSD`, `UNDERWRAP_ENV_CONFIG`) are always stripped from
-the user's environment before being set from the trusted sidecar config.
-A malicious user cannot inject these to force libsecret mode or substitute
-binary paths.
+- a safe default whitelist is retained
+- extra passthrough variables may be allowed per wrapper
+- fixed variables may be set per wrapper from trusted configuration
 
-## Socket permissions
+This is one of the least glamorous but most important parts of the design. A lot of real-world abuse happens through ambient environment control.
 
-- **Read socket** (0666): world-connectable. Authorization happens inside
-  the daemon via effective GID verification. A process without a wrapper GID
-  is rejected. The daemon never falls back to trusting the client name.
-- **Control socket** (0600): daemon user only.
-- **Runtime directory** (0775): group-writable so the tunnel user can create
-  the forwarded backend socket.
+---
+
+## Socket permissions and local boundaries
+
+The generated sockets intentionally have different roles.
+
+### Wrapper sockets
+
+Each wrapper gets its own wrapper socket in the instance runtime directory.
+
+These sockets are not world-connectable. They are mode `0660` and grouped to the wrapper's dedicated Unix group.
+
+That means local code must first get into the correct wrapper group context before it can even connect. The daemon then performs a second check by verifying the peer's effective GID for that wrapper socket before reading the first frame.
+
+This is a deliberate choice:
+
+- kernel-level permission gating before connection
+- strict daemon-side authorization after connection
+
+### Control socket
+
+The control socket is restricted to the daemon user context and is intended for administrative operations such as store, status, unlock, and lock.
+
+### Remote tunnel socket directory
+
+When remote mode is enabled, the tunnel directory is group-writable so the SSH forward can create the backend socket where `underwrapd` expects it.
+
+---
 
 ## Immutability enforcement
 
-Secrets declared `mutable: false` cannot be overwritten after initial storage.
-A per-secret write lock (HashSet mutex) prevents TOCTOU races where two
-concurrent writers both observe "absent" and both succeed.
+Secrets marked `mutable: false` should behave like write-once values.
 
-## OAuth hardening
+To avoid trivial time-of-check/time-of-use races during first write, underwrap serializes writes per secret so two concurrent writers cannot both observe "absent" and both win.
 
-The token exchange always uses a hardcoded Google endpoint. The stored
-`token_uri` field is ignored, preventing SSRF / credential exfiltration via
-tampered secret material. The HTTP client has no-redirect policy. Error
-response bodies are truncated to 200 characters.
+This is not the most glamorous security feature either, but it matters when immutability is being used as part of an operational trust model.
+
+---
 
 ## Audit trail
 
-Every security-relevant operation is logged:
+The daemon emits structured audit events for security-relevant operations such as:
 
-| Event | Level | Fields |
-|-------|-------|--------|
-| `read_granted` | info | wrapper, secret, peer_uid, scope |
-| `read_denied` | warn | wrapper, reason, peer_uid, scope |
-| `secret_stored` | info | secret, peer_uid |
-| `store_denied` | warn | secret, reason, peer_uid |
-| `unlocked` | info | wrapper, scope, seconds, peer_uid |
-| `locked` | info | target, scope, peer_uid |
-| `auth_denied` | warn | socket, reason, peer_uid, peer_gid |
+- granted and denied reads
+- stores
+- unlock and lock actions
+- authentication denials
+- libsecret channel operations
 
-Secret material is never logged. The VM test verifies this by grepping
-journald for known secret values.
+The design goal is:
 
-## Unlock model
+- log the action and relevant identity context
+- never log secret material
 
-Wrappers with `requireUnlock = true` deny reads until explicitly unlocked.
+Logging does not make a system secure, but in systems that are trying to be security-aware, absence of usable audit events is a real weakness.
 
-- **Time-based**: unlock for N seconds, auto-lock on expiry.
-- **UID-bound**: grants keyed by `(wrapper, scope, uid)` — one user's
-  unlock can't be reused by another.
-- **Root admin grants**: root creates grants with `uid=None` covering all UIDs.
-- **Self-service SSH challenge**: users unlock via the read socket. The
-  daemon issues a nonce, the wrapper signs it with the SSH agent, the daemon
-  verifies against the configured public key.
+---
 
-## Remote backend isolation
+## OAuth derivation hardening
 
-In remote mode, secrets never exist on the target machine. A backend daemon
-runs on the operator's workstation. An SSH tunnel forwards its socket to the
-target. When the tunnel disconnects, the socket disappears and all reads fail.
+For the current Google OAuth derivation flow, underwrap does not trust a secret-supplied token endpoint.
 
-The tunnel user (`underwrap-<instance>-tunnel`) has no shell and is restricted
-to socket forwarding via `authorized_keys`.
+Instead, the implementation uses a hardcoded Google token endpoint and a no-redirect HTTP client.
+
+Why this matters:
+
+- a tampered stored OAuth blob should not be able to redirect token exchange to an attacker-controlled server
+- error handling should not accidentally overexpose upstream response content
+
+This is an example of a useful principle in underwrap: when stored secret material contains instructions, treat those instructions skeptically.
+
+---
+
+## Remote backend security model
+
+Remote mode changes **where** secrets live, but not the basic wrapper flow on the target host.
+
+### What remote mode is trying to buy you
+
+- the target host does not need to store the secrets locally
+- high-value material such as refresh tokens can stay on a more trusted workstation
+- tunnel availability becomes an operational access boundary
+
+### What it does not buy you
+
+- the target process still receives the credential material it needs for the invocation
+- `root` on the target or backend host is still `root`
+- a compromised backend workstation is still a compromised backend workstation
 
 ### Backend daemon trust model
 
-The backend daemon (`underwrap-backendd`) has **no protocol-level
-authentication**. Any process that can connect to the backend socket has
-full read/write/list/delete/derive access to all secrets.
+`underwrap-backendd` is intentionally simple. It does not implement a second, elaborate per-client authentication system of its own.
 
-This is by design: the backend runs on the operator's trusted workstation
-where the operator already has direct access to the secret storage directory.
-Adding SO_PEERCRED checks would only verify "is the caller me?" — which
-provides no meaningful security when the attacker is already the same user.
+The intended trust boundary is:
 
-The access control boundary is the socket file permissions (`0600`, owned
-by the operator's user). If the workstation is compromised at the user level,
-the attacker already has access to everything the operator has.
+- the backend socket is local to the trusted backend machine
+- it is protected by normal filesystem permissions
+- remote access happens only through an SSH forward you deliberately create
 
-**Deployment requirement**: the backend socket must remain `0600` and must
-not be exposed to untrusted users or networks. The SSH tunnel is the only
-authorized remote access path.
+This is a pragmatic trust model, not a zero-trust one.
+
+---
 
 ## Instance isolation
 
-Each named instance gets fully isolated resources: separate daemon user,
-daemon group, tunnel user, per-wrapper groups, runtime directory, state
-directory, and systemd service. No group membership overlap between instances.
+Each named instance gets isolated:
 
-## Master key zeroization
+- daemon user and group
+- wrapper groups
+- runtime directory
+- state directory
+- service instance
+- optional tunnel user
 
-The encrypted backend's master key is wrapped in `ZeroizeOnDrop`. Raw key
-file bytes are zeroized after copying into the key struct.
+The goal is to make separate instances structurally separate by default rather than relying only on policy checks inside one giant shared namespace.
 
-## Secretsd channel (libsecret mode)
+---
 
-### The problem
+## Encrypted backend key handling
 
-In libsecret mode, `underwrap-secretsd` runs inside the PID namespace and
-needs to read/write secrets through the daemon for the lifetime of the
-target process. But secretsd runs as the regular user — it doesn't have the
-wrapper's setgid GID, so it can't authenticate to the daemon's read socket.
-It needs a pre-authenticated, persistent, bidirectional channel.
+For the encrypted backend, the master key is handled with zeroization in mind.
 
-### The solution: socketpair() created during GID-authenticated request
+This does not magically solve every memory-disclosure scenario, but it reflects the same general design principle used elsewhere in underwrap: sensitive material should not live in memory longer than necessary.
 
-When a libsecret-enabled wrapper connects to the daemon, the daemon:
+---
 
-1. Verifies the wrapper's identity via SO_PEERCRED effective GID (standard
-   read-socket authentication).
-2. Creates a `socketpair(AF_UNIX, SOCK_STREAM, 0)`.
-3. Sends one end back to `underwrap-exec` via `SCM_RIGHTS` fd passing,
-   alongside the normal secret response.
-4. Keeps the other end and spawns a scoped handler task that only permits
-   read/write of that wrapper's libsecret secret.
+## Libsecret mode: the hard part
 
-The socketpair fd is then inherited through the fork/exec chain:
-
-```
-underwrap-exec (receives fd via SCM_RIGHTS during GID-authenticated request)
-  └─ fork → child inherits fd
-       └─ exec underwrap-ns (fd survives exec, no FD_CLOEXEC)
-            ├─ fork → secretsd (inherits fd, uses it for daemon I/O)
-            ├─ close fd  ← CRITICAL: must happen before target exec
-            └─ exec target (does NOT have the fd)
-```
-
-### Why this is secure
-
-**Anonymous socket — no discovery path.** `socketpair()` creates connected
-sockets with no filesystem path and no abstract name (`unix(7)`: "Sockets
-created by socketpair(2) are anonymous"). The only way to obtain the fd is
-to inherit it through `fork()` or receive it via `SCM_RIGHTS`.
-
-**Authenticated by construction.** The daemon creates the socketpair during
-a GID-verified request. The channel is born authenticated — there are no
-credentials to steal, replay, or forge. The daemon handler on its end knows
-which wrapper this channel belongs to and scopes all operations to that
-wrapper's libsecret secret.
-
-**Lifetime-bound.** When the PID namespace's init process exits, the kernel
-sends `SIGKILL` to all remaining processes in the namespace
-(`pid_namespaces(7)`). Secretsd dies, its fd closes, the daemon detects EOF
-and tears down the handler. No cleanup race, no leaked channels.
-
-**secretsd is non-dumpable.** After exec, secretsd calls
-`prctl(PR_SET_DUMPABLE, 0)` before reading secrets from the channel. This
-blocks `/proc/<pid>/fd/` access from same-UID processes: reading symlinks
-in `/proc/<pid>/fd/` requires passing `ptrace_may_access()` with
-`PTRACE_MODE_READ_FSCREDS`, which checks dumpable at step 4 and denies
-access without `CAP_SYS_PTRACE` (`ptrace(2)`).
-
-**Target cannot access the fd.** The secretsd channel fd is closed before
-the target is exec'd. Even if the target could discover secretsd's PID,
-`/proc/<secretsd-pid>/fd/` access is blocked by `PR_SET_DUMPABLE=0`. The
-target interacts with secrets only through the D-Bus Secret Service API on
-the private bus.
-
-### Daemon-side handler scoping
-
-The daemon handler for a secretsd channel:
-
-- Allows read/write of exactly one secret: `<wrapper-name>/libsecret`.
-- Rejects all other secret IDs.
-- Terminates when the socketpair is closed (EOF).
-
-This scoping is structural, not policy-based — the handler is created with
-the wrapper name baked in. A compromised secretsd can only access the secret
-it was authorized for.
-
-### Concurrent invocations
-
-Two simultaneous invocations of the same wrapper each get their own
-socketpair and daemon handler, both scoped to the same secret ID. The
-`StorageBackend` provides atomic writes via `tempfile::persist()`, so
-the last write wins. This is a consistency concern for rare edge cases,
-not a security issue.
-
-## Libsecret mode: private D-Bus bus
+Libsecret mode is where underwrap's design gets most intricate.
 
 ### The problem
 
-Tools like `gh` use libsecret to store/retrieve credentials via the system's
-`org.freedesktop.secrets` D-Bus service. If the target connects to the real
-session bus, it would bypass underwrap's isolation entirely — reading from
-and writing to the system keyring.
+A tool such as `gh` may expect a working Secret Service provider reachable through D-Bus.
 
-### The solution
+If it talks to the host's real session bus and real keyring, secret state escapes underwrap's storage model.
 
-`underwrap-ns` launches a private `dbus-daemon` on a Unix socket inside
-a namespace-private tmpfs mount. `underwrap-secretsd` connects to this
-private bus and claims `org.freedesktop.secrets`. The target's
-`DBUS_SESSION_BUS_ADDRESS` points to the private bus.
+So underwrap needs to provide:
 
-All libsecret operations go to our secretsd, which routes secret values
-through the daemon via the authenticated socketpair channel.
+- a private bus
+- a private Secret Service implementation
+- a way for that implementation to reach the backend without authenticating as a normal wrapper again
 
-### Mount namespace isolation
+### The current solution in one sentence
 
-When libsecret mode is enabled, `underwrap-ns` creates a mount namespace
-(`CLONE_NEWNS`) in addition to the PID namespace. Inside the namespace:
+During the authenticated wrapper request, the daemon creates a scoped socketpair and passes one end into the wrapper namespace for `underwrap-secretsd`.
 
-1. **All mounts made private** (`MS_PRIVATE | MS_REC` on `/`) to prevent
-   bind mounts from propagating back to the parent namespace via shared
-   mount propagation (the default on systemd-based systems).
+That channel then becomes the long-lived authenticated path between `underwrap-secretsd` and the daemon.
 
-2. **Fresh `/proc` mounted** after fork (in the child that is PID 1 in the
-   new PID namespace). This is critical: `unshare(CLONE_NEWPID)` only
-   affects future children, so mounting `/proc` before fork would mount
-   the parent namespace's procfs. After fork, the child IS in the new
-   PID namespace, so the `/proc` mount correctly reflects only
-   namespace-local PIDs. **Failure is fatal.**
+### Why create the channel during the wrapper request?
 
-3. **Private tmpfs for the bus socket.** The dbus-daemon socket is created
-   on a tmpfs mounted inside the namespace at `/tmp/.underwrap-ns-bus/`.
-   This path does not exist in the parent namespace — the socket is
-   completely unreachable from outside. **Failure is fatal.**
+Because `underwrap-secretsd` itself runs as the ordinary user inside the namespace. It does not have the wrapper's special setgid identity and should not pretend to.
 
-4. **Real session bus socket hidden** by bind-mounting `/dev/null` over
-   `/run/user/<uid>/bus`. **Failure is fatal** if the socket exists.
+So the right time to authenticate is **before** entering that phase, while the original wrapper request is still authenticated.
 
-All mount operations are hard failures (abort, not warn). This follows
-the project's no-fallback rule: if a security mechanism fails, the
-wrapper does not execute.
+### Why this is reasonably strong
 
-**Limitation**: D-Bus abstract sockets (name starts with `\0` in `sun_path`)
-live in the network namespace, not the filesystem. They have no file path,
-so bind mounts cannot hide them. If the real session bus uses an abstract
-socket (e.g., `unix:abstract=/tmp/dbus-XXXXX`), a target that ignores
-`DBUS_SESSION_BUS_ADDRESS` could potentially connect to it. Blocking
-abstract sockets would require a network namespace (`CLONE_NEWNET`), which
-would also cut off the target's network access entirely.
+The channel is:
 
-Modern systemd creates the session bus at `unix:path=/run/user/<uid>/bus`
-(a filesystem socket, which we hide). `DBUS_SESSION_BUS_ADDRESS` is always
-set, so all well-behaved libsecret clients use our private bus. This is a
-defense-in-depth gap (theoretical, not practical) that is inherent to the
-Linux socket model.
+- **anonymous** — created by `socketpair()`, not by a discoverable filesystem socket path
+- **scoped** — the daemon side binds it to one wrapper's libsecret namespace
+- **lifetime-bound** — when the namespace dies, the channel dies
 
-## Dependency advisories
+### Daemon-side scoping
 
-**RUSTSEC-2023-0071** (rsa 0.9.10, medium severity): Marvin Attack timing
-side-channel in RSA decryption. Pulled in via `ssh-key` → `underwrapd`.
+The daemon handler for this channel only allows operations inside the wrapper's own libsecret prefix.
 
-**Not exploitable in this project.** We use the `rsa` crate only for RSA SSH
-signature **verification** during the unlock challenge-response flow. The
-Marvin Attack targets RSA **decryption** (PKCS#1 v1.5 unpadding), which
-requires the private key. Our daemon never holds RSA private keys and never
-performs RSA decryption. No fixed version is available upstream.
+That means a compromised `underwrap-secretsd` for one wrapper should not be able to ask the daemon for arbitrary unrelated secrets.
 
-**Why no fix exists (as of 2026-04):** The RustCrypto `rsa` crate's fix
-(tracked in [RustCrypto/RSA#390](https://github.com/RustCrypto/RSA/issues/390))
-depends on `crypto-bigint` implementing constant-time modular exponentiation.
-That work is in progress but has no release date. The crate is still pre-1.0.
-There is no alternative pure-Rust RSA implementation to switch to — the
-`ssh-key` crate (the standard Rust SSH key parser) depends on `rsa` for RSA
-key support.
+### Descriptor hygiene
 
-**Why we keep RSA support:** Users with legacy RSA SSH keys need to be able
-to use the unlock challenge-response flow. Dropping RSA would be a
-functionality regression. Since the vulnerable code path (decryption) is
-never invoked, the advisory is a dependency-tree artifact, not a real risk.
+A critical rule here is that the final target process must **not** inherit this channel fd.
 
-Audit performed with `cargo-audit` 0.22.0 against the RustSec advisory DB.
-Last checked: 2026-04-07.
+Only `underwrap-secretsd` should keep it.
+
+If that descriptor leaked to the target, the target would gain a much more direct authenticated path back to the daemon than intended.
+
+---
+
+## Libsecret mode: private D-Bus and mount isolation
+
+A private Secret Service implementation only helps if the target actually talks to that private service.
+
+### The approach
+
+In libsecret mode, `underwrap-ns` launches:
+
+- a private `dbus-daemon`
+- `underwrap-secretsd`
+- the target process with `DBUS_SESSION_BUS_ADDRESS` pointing at that private bus
+
+### Why mount isolation matters
+
+The setup also uses a mount namespace so that the private bus socket and proc view live in a namespace-private filesystem context.
+
+Important steps include:
+
+1. making mounts private
+2. mounting a fresh `/proc` inside the PID namespace
+3. mounting a private tmpfs for the D-Bus socket
+4. hiding `/run/user/<uid>/bus` if it exists
+
+These steps are not decorative. They are part of keeping the host's normal session bus from becoming the path of least resistance.
+
+### A real limitation: abstract D-Bus sockets
+
+Filesystem hiding works for filesystem socket paths. It does not block abstract Unix sockets, which live in a different namespace model.
+
+That means there is still a theoretical defense-in-depth gap if some real host session bus were reachable through an abstract socket and a client deliberately ignored the provided `DBUS_SESSION_BUS_ADDRESS`.
+
+In practice, the normal modern session-bus setup on NixOS is path-based and the intended clients are expected to use the provided address. Still, the limitation is worth naming explicitly.
+
+---
+
+## Unlock model
+
+underwrap supports locked wrappers that require an explicit unlock before reads.
+
+Conceptually, unlock grants are keyed by wrapper, optional scope, and UID.
+
+This is meant to support:
+
+- time-limited grants
+- per-user grants
+- scoped grants
+- administrative grants that cover broader use
+
+The protocol also supports SSH-agent-backed challenge-response unlocks when an `unlock_key` is configured at the daemon-config level.
+
+The current NixOS module focuses on the main deployment knobs first; lower-level protocol features may be exposed more directly in manual or future configuration paths.
+
+---
+
+## Dependency advisory note
+
+The project currently carries `RUSTSEC-2023-0071` through the `rsa` crate used by `ssh-key`.
+
+The relevant context is:
+
+- the advisory concerns RSA decryption timing behavior
+- underwrap uses the dependency chain for SSH signature verification during unlock flows
+- the daemon does not hold RSA private keys and does not perform RSA decryption
+
+So this is currently understood as a dependency-tree advisory rather than an exploitable path in the intended underwrap code path.
+
+That said, dependency advisories should not be waved away casually; they should be tracked and revisited.
+
+---
+
+## Operational assumptions you should keep in mind
+
+The current design assumes, among other things:
+
+- NixOS-style wrapper installation and service management
+- Linux kernel behavior matching the documented mechanisms relied on here
+- Yama protections present at the expected setting for the strongest host-side same-UID protection story
+- trusted root-owned wrapper configuration on the target host
+- sane filesystem permissions on the backend socket in remote mode
+
+If those assumptions change, some of the security conclusions change with them.
+
+---
 
 ## Rejected approaches
 
+These ideas were considered and rejected for the current design.
+
 | Approach | Why rejected |
-|----------|-------------|
+|---|---|
 | Trust client-supplied wrapper names | Trivially spoofable |
-| Trust `argv[0]` for wrapper identity | Symlink confused deputy: user pairs wrong secret with wrong target. Use egid instead. |
-| `/proc/<pid>/exe` identity check | All wrappers are the same binary |
-| `PR_SET_DUMPABLE` on target | Kernel resets after exec without credential mismatch |
-| `suid_dumpable=0` sysctl | Same exec-time reset issue |
-| User namespaces | EPERM after setgid credential change |
-| Combined setgid + capabilities | NixOS security.wrappers rejects this combination |
-| Fallback to direct exec | Silent security degradation |
-| Per-wrapper dedicated UIDs | Target can't access user's files |
-| `memfd_create` injection | Unnecessary given PID namespace isolation |
-| stdin/tempfile injection | Unnecessary given PID namespace isolation |
+| Trust `argv[0]` for wrapper identity | User-controlled and vulnerable to symlink confusion |
+| Identify wrappers by `/proc/<pid>/exe` | All wrapper entry points are fundamentally the same binary shape |
+| Put secrets in argv or env between wrapper stages | Too visible in process state |
+| Use temp files for handoff | Unnecessary persistence and filesystem exposure |
+| Combine setgid and namespace capability in one wrapper stage | Poor fit for the NixOS wrapper model used here |
+| Rely on `PR_SET_DUMPABLE=0` alone for the final target | Exec resets the relevant state for ordinary targets |
+| Fall back to weaker execution when isolation fails | Silent security degradation |
+| Per-wrapper dedicated UIDs for target execution | Breaks ordinary access to the invoking user's working context |
+| User-namespace-based redesign | In tension with the current setgid-based identity model |
+
+---
+
+## Final perspective
+
+underwrap is trying to be honest about a difficult reality:
+
+- local CLI execution is messy
+- process state is observable in many places
+- "just use an env var" is often more ambient than people realize
+- agent-facing workflows make that problem more urgent
+
+The current design goes quite far to reduce those problems on NixOS. That is the point of the project.
+
+But the right security attitude is still:
+
+- appreciate the mechanisms
+- understand the assumptions
+- design narrow wrappers carefully
+- invite review instead of assuming the problem is solved forever
+
+## Related docs
+
+- [Architecture](architecture.md)
+- [Agent-facing wrappers](agents.md)
+- [Remote backend](remote-backend.md)
+- [GitHub via libsecret](gh-libsecret.md)
+- [Google Workspace via OAuth derivation](gws-oauth.md)

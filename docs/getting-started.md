@@ -1,162 +1,223 @@
 # Getting started
 
-This guide walks you through setting up underwrap on NixOS, creating your
-first wrapper, and verifying it works.
+This guide walks through the simplest useful underwrap setup:
+
+- one NixOS instance
+- one wrapper
+- one static secret
+- one familiar CLI: [`jira-cli`](https://github.com/ankitpokhrel/jira-cli)
+
+The goal is not to show every feature. The goal is to get your **first successful wrapper** running with as little conceptual overhead as possible.
+
+After this, move on to:
+
+- [Agent-facing wrappers](agents.md)
+- [GitHub via libsecret](gh-libsecret.md)
+- [Google Workspace via OAuth derivation](gws-oauth.md)
+- [Remote backend](remote-backend.md)
+
+## What you will build
+
+A wrapper called:
+
+```bash
+work-jira
+```
+
+When a user runs it, underwrap will inject `JIRA_API_TOKEN` just for that invocation and then execute `jira`.
 
 ## Prerequisites
 
-- **NixOS** — underwrap targets NixOS exclusively (see [comparison](comparison.md)
-  for why)
-- The underwrap flake added to your system configuration
+- **NixOS**
+- a flake-based system configuration
+- the underwrap flake added as an input
 
-## Adding underwrap to your system
-
-In your flake.nix inputs:
+Add underwrap to your `flake.nix`:
 
 ```nix
-inputs.underwrap.url = "github:your-org/underwrap  # replace with your actual repo";
+inputs.underwrap.url = "github:rschaffar/underwrap";
 ```
+
+## 1. Enable underwrap and define one wrapper
 
 In your NixOS configuration:
 
 ```nix
-{ underwrap, pkgs, ... }:
+{ pkgs, underwrap, ... }:
 
 {
   imports = [ underwrap.nixosModules.default ];
 
   services.underwrap = {
     enable = true;
-    package = underwrap.packages.x86_64-linux.default;
+    package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
-    instances.default = {
-      wrappers.gh-authorized = {
-        target = "${pkgs.gh}/bin/gh";
-        secret = "github/token";
-        injection = { mode = "env"; variable = "GH_TOKEN"; };
+    instances.work = {
+      wrappers.jira = {
+        target = "${pkgs.jira-cli-go}/bin/jira";
+        secret = "jira/api-token";
+        injection = {
+          mode = "env";
+          variable = "JIRA_API_TOKEN";
+        };
       };
 
-      secrets."github/token" = {};
+      secrets."jira/api-token" = {
+        mutable = false;
+      };
     };
   };
 }
 ```
 
-Rebuild your system: `sudo nixos-rebuild switch`
-
-## What the module creates
-
-After rebuild, you'll have:
-
-- **System user** `underwrap-default` running the daemon
-- **Wrapper group** `underwrap-default-gh-authorized`
-- **Setgid wrapper** at `/run/wrappers/bin/default-gh-authorized`
-- **PID namespace helper** at `/run/wrappers/bin/underwrap-ns`
-- **Daemon service** `underwrapd-default.service`
-- **Sidecar config** at `/etc/underwrap/wrappers/default-gh-authorized.yaml`
-- **Runtime directory** at `/run/underwrap-default/`
-
-## Storing a secret
-
-Store the GitHub token (as root, since the control socket is restricted):
+Rebuild your system:
 
 ```bash
-echo -n 'ghp_your_actual_token_here' | \
-  sudo underwrapctl --socket /run/underwrap-default/control.sock \
-  store github/token
+sudo nixos-rebuild switch
 ```
 
-The secret is stored in `/var/lib/underwrap-default/secrets/github/token`.
+## 2. What the module creates
 
-## Using the wrapper
+For this example, the NixOS module will create:
 
-Now any user can run:
+- daemon user and group: `underwrap-work`
+- wrapper group: `underwrap-work-jira`
+- daemon service: `underwrapd-work.service`
+- wrapper socket: `/run/underwrap-work/wrapper-jira.sock`
+- control socket: `/run/underwrap-work/control.sock`
+- setgid wrapper: `/run/wrappers/bin/work-jira`
+- wrapper sidecar config: `/etc/underwrap/wrappers/work-jira.yaml`
+
+You do not create those pieces manually. The module wires them up for you.
+
+## 3. Store the Jira API token
+
+Store the token through the control socket.
 
 ```bash
-default-gh-authorized pr list
+sudo underwrapctl --socket /run/underwrap-work/control.sock store jira/api-token
 ```
 
-This is equivalent to `GH_TOKEN=ghp_... gh pr list`, except:
+`underwrapctl` reads from standard input. Paste the token, then press `Ctrl-D`.
 
-- The token never appears in your shell environment
-- The `gh` process runs inside a PID namespace, its `/proc` entries protected by Yama LSM
-- The wrapper's memory is non-dumpable (same-UID processes can't read it)
-- Core dumps are disabled for the target process
+> [!TIP]
+> Do not put real secrets directly on the shell command line. Pasting into standard input is safer than `echo token | ...`.
 
-## Verifying it works
+## 4. Make sure `jira-cli` itself is initialized
 
-Check the daemon is running:
+underwrap only delivers the secret. `jira-cli` still needs its normal client-side configuration.
+
+Run this once as the user who will use the wrapper:
 
 ```bash
-systemctl status underwrapd-default.service
+jira init
 ```
 
-Check the wrapper exists and has the right permissions:
+For the simple cloud-token case, `jira-cli` will use `JIRA_API_TOKEN` when it is present. underwrap will provide that variable only while `work-jira` is running.
+
+> [!NOTE]
+> If you use an on-premise Jira PAT workflow that also requires `JIRA_AUTH_TYPE=bearer`, you can set that via `envSet` in the wrapper configuration. Keep the getting-started example simple first.
+
+## 5. Run the wrapper
+
+Now run:
 
 ```bash
-ls -la /run/wrappers/bin/default-gh-authorized
-# Should show setgid bit (s) and the wrapper group
+work-jira issue list
 ```
 
-Check the secret is stored:
+That should feel like running `jira issue list`, except the token came from underwrap instead of from your shell environment.
+
+## 6. Verify the setup
+
+Check that the daemon is running:
 
 ```bash
-sudo underwrapctl --socket /run/underwrap-default/control.sock \
-  status gh-authorized
-# Should show "secret_stored": true
+systemctl status underwrapd-work.service
 ```
 
-## Next steps
+Check that the wrapper exists and is setgid:
 
-- [Agent-facing wrappers](agents.md) — recommended pattern for AI agents and narrow wrappers
-- [Configuration](configuration.md) — multi-instance, unlock, OAuth derivation
-- [Remote backend](remote-backend.md) — keep secrets off the target machine entirely
-- [Security](security.md) — understand every protection mechanism
+```bash
+ls -l /run/wrappers/bin/work-jira
+```
+
+You should see the wrapper owned by `root`, group `underwrap-work-jira`, with the setgid bit set.
+
+Check underwrap's view of the wrapper:
+
+```bash
+sudo underwrapctl --socket /run/underwrap-work/control.sock status work-jira
+```
+
+That should show the configured target, secret ID, and whether the secret is stored.
+
+## What you achieved
+
+You now have a working underwrap deployment with:
+
+- kernel-backed wrapper identity via the wrapper's group
+- secret delivery at invocation time instead of shell-export time
+- a fixed target binary from root-owned configuration
+- a clean base to build more opinionated wrappers on top of
+
+## Common next steps
+
+### Move from broad CLI wrapping to narrow wrappers
+
+If an agent or automation system will call the wrapper, you will usually want a narrow helper in front of the full CLI.
+
+Read: [Agent-facing wrappers](agents.md)
+
+### Use `gh` with login flows instead of a plain env var
+
+If you want `gh auth login` and stored credentials to work cleanly, use libsecret mode.
+
+Read: [GitHub via libsecret](gh-libsecret.md)
+
+### Derive short-lived access tokens from refresh-token material
+
+If the real credential is mutable and should stay in backend storage, use OAuth derivation.
+
+Read: [Google Workspace via OAuth derivation](gws-oauth.md)
 
 ## Troubleshooting
 
-### "peer egid does not map to any configured wrapper"
+### `peer egid does not map to any configured wrapper`
 
-The daemon couldn't match the connecting process's effective GID to a wrapper.
-This means the process didn't go through a setgid wrapper binary. Check:
-- Is the wrapper installed? `ls -la /run/wrappers/bin/<instance>-<wrapper>`
-- Does it have the setgid bit? Look for `s` in the group permissions.
-- Is the group correct? The group name should be `underwrap-<instance>-<wrapper>`.
+The process did not reach the daemon through a valid setgid wrapper.
 
-### "underwrap-ns not found"
+Check:
 
-The PID namespace binary isn't at the expected path. Check:
-- `ls -la /run/wrappers/bin/underwrap-ns`
-- It should have `cap_sys_admin`: `getcap /run/wrappers/bin/underwrap-ns`
+- `/run/wrappers/bin/work-jira` exists
+- it has the setgid bit
+- its group is `underwrap-work-jira`
 
-### "unshare(CLONE_NEWPID) failed: Operation not permitted"
+### `connecting to /run/underwrap-work/wrapper-jira.sock` fails
 
-`underwrap-ns` doesn't have `cap_sys_admin`. This can happen if:
-- `/run/wrappers` is mounted with `nosuid` (shouldn't happen on NixOS)
-- The binary was copied without capabilities (rebuild should fix this)
+The daemon is not running or the runtime directory was not created correctly.
 
-### Wrapper just hangs
+Check:
 
-The daemon might not be running. Check:
-`systemctl status underwrapd-<instance>.service`
+```bash
+systemctl status underwrapd-work.service
+ls -l /run/underwrap-work/
+```
 
-### "connecting to daemon" error
+### The wrapper runs but Jira still fails to authenticate
 
-The read socket doesn't exist or isn't accessible. Check:
-- `ls -la /run/underwrap-<instance>/read.sock`
-- The socket should be mode 0666.
+underwrap may be working, but `jira-cli` may still be uninitialized or pointed at the wrong Jira instance.
 
-### Naming convention
+Check:
 
-Binary names and daemon wrapper names differ:
-- **Binary name** (what you type): `/run/wrappers/bin/<instance>-<wrapper>`
-- **Daemon wrapper name** (in config, status, unlock): `<wrapper>` (without instance prefix)
-- **Group name**: `underwrap-<instance>-<wrapper>`
-- **Service name**: `underwrapd-<instance>.service`
-- **Control socket**: `/run/underwrap-<instance>/control.sock`
+```bash
+jira init
+```
 
-Example for instance `work`, wrapper `gh-authorized`:
-- Binary: `/run/wrappers/bin/work-gh-authorized`
-- Daemon name: `gh-authorized`
-- Group: `underwrap-work-gh-authorized`
-- Unlock: `underwrapctl --socket /run/underwrap-work/control.sock unlock gh-authorized`
+Then try the wrapper again.
+
+## Keep reading
+
+- [Documentation overview](index.md)
+- [Configuration reference](configuration.md)
+- [Security](security.md)

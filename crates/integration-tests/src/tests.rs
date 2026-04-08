@@ -150,7 +150,7 @@ async fn store_then_read_secret() {
         .unwrap();
     assert!(matches!(resp, ControlResponse::Ok { .. }));
 
-    // Read it back through the read socket.
+    // Read it back through the wrapper socket.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
         WrapperResponse::Ok {
@@ -189,11 +189,9 @@ async fn read_before_store_returns_not_found() {
 // ===========================================================================
 
 #[tokio::test]
-async fn read_resolves_identity_from_gid_not_client_name() {
-    // The daemon ignores the client-supplied wrapper name and resolves
-    // identity from the peer's effective GID. Even if we send a bogus
-    // wrapper name, the daemon should resolve to gh-authorized (the only
-    // wrapper mapped to our GID) and return its secret.
+async fn read_uses_wrapper_socket_without_client_supplied_name() {
+    // Wrapper identity is anchored in the wrapper socket plus the peer's
+    // effective GID. The request itself carries no wrapper name.
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
@@ -202,8 +200,7 @@ async fn read_resolves_identity_from_gid_not_client_name() {
         .await
         .unwrap();
 
-    // Send a request with a fake wrapper name — daemon should ignore it.
-    let resp = daemon.read_request("totally-fake-name").await.unwrap();
+    let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
         WrapperResponse::Ok {
             material: Some(material),
@@ -211,7 +208,7 @@ async fn read_resolves_identity_from_gid_not_client_name() {
         } => {
             assert_eq!(material, "real_token");
         }
-        other => panic!("expected Ok (GID should resolve to gh-authorized), got {other:?}"),
+        other => panic!("expected Ok, got {other:?}"),
     }
 
     daemon.stop().await.unwrap();
@@ -438,13 +435,10 @@ async fn concurrent_reads() {
     // Spawn 20 concurrent read requests.
     let mut handles = Vec::new();
     for _ in 0..20 {
-        let sock = daemon.read_socket.clone();
+        let sock = daemon.wrapper_sockets["gh-authorized"].clone();
         handles.push(tokio::spawn(async move {
             let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
-            let req = WrapperRequest::Read {
-                wrapper: "gh-authorized".to_string(),
-                scope: None,
-            };
+            let req = WrapperRequest::Read { scope: None };
             underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
                 .await
                 .unwrap();
@@ -936,9 +930,8 @@ async fn unlock_key_challenge_response_same_connection() {
         .unwrap();
 
     // Send Unlock on a single connection — should get Challenge back.
-    let mut stream = daemon.connect_read().await.unwrap();
+    let mut stream = daemon.connect_wrapper("key-locked-w").await.unwrap();
     let req = WrapperRequest::Unlock {
-        wrapper: "key-locked-w".to_string(),
         scope: None,
         seconds: None,
     };
@@ -970,7 +963,6 @@ async fn unlock_key_challenge_response_same_connection() {
 
     // Send UnlockResponse on the SAME connection.
     let req2 = WrapperRequest::UnlockResponse {
-        wrapper: "key-locked-w".to_string(),
         scope: None,
         seconds: None,
         challenge: nonce,
@@ -1028,6 +1020,7 @@ wrappers:
   gh-authorized:
     target: /usr/bin/gh
     secret: github/token
+    socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
     injection:
       mode: env
@@ -1035,6 +1028,7 @@ wrappers:
   gws:
     target: /usr/bin/gws
     secret: google/workspace-creds
+    socket: /run/underwrap/gws.sock
     group: underwrap-gws
     injection:
       mode: env
@@ -1044,6 +1038,7 @@ wrappers:
   agent-slack:
     target: /usr/bin/slack-cli
     secret: slack/xoxp
+    socket: /run/underwrap/agent-slack.sock
     group: underwrap-agent-slack
     injection:
       mode: env
@@ -1051,6 +1046,7 @@ wrappers:
   gh-libsecret:
     target: /usr/bin/gh
     secret: github/bootstrap
+    socket: /run/underwrap/gh-libsecret.sock
     group: underwrap-gh-libsecret
     libsecret: true
     injection:
@@ -1086,18 +1082,26 @@ secrets:
 
 #[tokio::test]
 async fn underwrapd_binary_start_and_status() {
+    // Ensure the standalone binary is freshly built. `cargo test` may compile
+    // the crate without updating `target/debug/underwrapd`, and this test wants
+    // to exercise the real binary entry point.
+    let build_status = std::process::Command::new("cargo")
+        .args(["build", "-p", "underwrapd"])
+        .status()
+        .unwrap();
+    assert!(build_status.success(), "cargo build -p underwrapd failed");
+
     let daemon_bin = require_bin!("underwrapd");
 
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
 
-    let read_sock = base.join("read.sock");
+    let wrapper_sock = base.join("wrapper-w.sock");
     let control_sock = base.join("control.sock");
     let storage_dir = base.join("secrets");
 
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
         sockets: underwrap_protocol::config::SocketConfig {
-            read: read_sock.clone(),
             control: control_sock.clone(),
             ..Default::default()
         },
@@ -1107,7 +1111,9 @@ async fn underwrapd_binary_start_and_status() {
         wrappers: {
             let mut m = HashMap::new();
             let echo = which_echo().unwrap_or_else(|| "/bin/true".to_string());
-            m.insert("w".to_string(), wrapper(&echo, "s/t", "T"));
+            let mut w = wrapper(&echo, "s/t", "T");
+            w.socket = wrapper_sock.clone();
+            m.insert("w".to_string(), w);
             m
         },
         secrets: {
@@ -1131,12 +1137,13 @@ async fn underwrapd_binary_start_and_status() {
 
     // Wait for sockets.
     for _ in 0..100 {
-        if control_sock.exists() {
+        if control_sock.exists() && wrapper_sock.exists() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(control_sock.exists(), "control socket never appeared");
+    assert!(wrapper_sock.exists(), "wrapper socket never appeared");
 
     // Send a status request directly.
     let mut stream = tokio::net::UnixStream::connect(&control_sock)

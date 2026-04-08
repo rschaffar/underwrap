@@ -26,18 +26,9 @@ pub struct DaemonConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocketConfig {
-    /// Path for the read socket.
-    #[serde(default = "default_read_socket")]
-    pub read: PathBuf,
-
     /// Path for the control socket.
     #[serde(default = "default_control_socket")]
     pub control: PathBuf,
-
-    /// Unix permission mode for the read socket.
-    /// Accepts integer (432) or octal string ("0660").
-    #[serde(default = "default_read_mode", deserialize_with = "deserialize_mode")]
-    pub read_mode: u32,
 
     /// Unix permission mode for the control socket.
     /// Accepts integer (384) or octal string ("0600").
@@ -47,14 +38,6 @@ pub struct SocketConfig {
     )]
     pub control_mode: u32,
 
-    /// Allowed UIDs for the read socket. Empty = allow all.
-    #[serde(default)]
-    pub read_allow_uids: Vec<u32>,
-
-    /// Allowed GIDs for the read socket. Empty = allow all.
-    #[serde(default)]
-    pub read_allow_gids: Vec<u32>,
-
     /// Allowed UIDs for the control socket. Empty = allow all.
     #[serde(default)]
     pub control_allow_uids: Vec<u32>,
@@ -62,32 +45,17 @@ pub struct SocketConfig {
     /// Allowed GIDs for the control socket. Empty = allow all.
     #[serde(default)]
     pub control_allow_gids: Vec<u32>,
-
-    /// Expected executable path for wrapper processes on the read socket.
-    /// If set, the daemon verifies /proc/<pid>/exe of each read-socket peer
-    /// matches this path. Blocks non-wrapper processes from requesting secrets.
-    #[serde(default)]
-    pub read_allow_exe: Option<PathBuf>,
 }
 
 impl Default for SocketConfig {
     fn default() -> Self {
         Self {
-            read: default_read_socket(),
             control: default_control_socket(),
-            read_mode: default_read_mode(),
             control_mode: default_control_mode(),
-            read_allow_uids: Vec::new(),
-            read_allow_gids: Vec::new(),
             control_allow_uids: Vec::new(),
             control_allow_gids: Vec::new(),
-            read_allow_exe: None,
         }
     }
-}
-
-fn default_read_mode() -> u32 {
-    0o660
 }
 
 fn default_control_mode() -> u32 {
@@ -129,10 +97,6 @@ where
     }
 
     deserializer.deserialize_any(ModeVisitor)
-}
-
-fn default_read_socket() -> PathBuf {
-    PathBuf::from(crate::READ_SOCKET_PATH)
 }
 
 fn default_control_socket() -> PathBuf {
@@ -210,6 +174,13 @@ pub struct WrapperDef {
     /// If true, reads are denied unless an active unlock grant exists.
     #[serde(default)]
     pub require_unlock: bool,
+
+    /// Unix socket path for this wrapper's authenticated daemon channel.
+    ///
+    /// Each wrapper gets its own socket. The daemon binds this path at
+    /// startup, assigns it to the wrapper's group, and accepts only peers
+    /// whose effective GID matches the configured wrapper group.
+    pub socket: PathBuf,
 
     /// Unix group name for GID-based wrapper identity.
     ///
@@ -303,6 +274,7 @@ wrappers:
   gh-authorized:
     target: /usr/bin/gh
     secret: github/token
+    socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
     injection:
       mode: env
@@ -327,6 +299,7 @@ wrappers:
   w:
     target: /bin/true
     secret: s
+    socket: /run/underwrap/w.sock
     group: testgroup
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
@@ -381,6 +354,7 @@ storage:
                         },
                         derivation: DerivationMode::None,
                         require_unlock: false,
+                        socket: PathBuf::from("/run/underwrap/test.sock"),
                         group: "testgroup".to_string(),
                         unlock_key: None,
                         libsecret: false,

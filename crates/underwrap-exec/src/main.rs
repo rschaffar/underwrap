@@ -4,7 +4,7 @@
 //!
 //! 1. Derives wrapper name from effective GID (not argv[0])
 //! 2. Loads sidecar config from trusted path
-//! 3. Connects to daemon, gets secret (daemon verifies egid)
+//! 3. Connects to the wrapper socket, gets secret (daemon verifies egid)
 //! 4. Drops all elevated privileges
 //! 5. Forks: parent writes secret to pipe, child execs underwrap-ns
 //! 6. underwrap-ns creates PID namespace and execs the target
@@ -40,27 +40,9 @@ fn main() -> Result<()> {
     let wrapper_config = load_wrapper_config(&wrapper_name)?;
 
     // Request secret from daemon (while still setgid — daemon checks egid).
-    // The daemon returns the canonical wrapper name from GID-based identity.
     // If libsecret mode, also receive the secretsd channel fd.
-    let (mut material, canonical_name, channel_fd) = request_secret(
-        &wrapper_name,
-        &wrapper_config.read_socket,
-        wrapper_config.libsecret,
-    )?;
-
-    // CRITICAL: verify argv[0]-derived name matches the daemon's canonical name.
-    // This prevents symlink attacks where a user creates a symlink from one
-    // wrapper name to another wrapper's binary, causing the wrong sidecar
-    // config (and thus the wrong target) to be paired with the wrong secret.
-    if wrapper_name != canonical_name {
-        // Zeroize the secret before bailing — don't leave it in memory.
-        use zeroize::Zeroize;
-        material.zeroize();
-        bail!(
-            "wrapper name mismatch: argv[0] says '{wrapper_name}' but daemon \
-             authenticated as '{canonical_name}'. Possible symlink attack."
-        );
-    }
+    let (mut material, channel_fd) =
+        request_secret(&wrapper_config.wrapper_socket, wrapper_config.libsecret)?;
 
     // Drop all elevated privileges.
     drop_privilege()?;
@@ -82,7 +64,7 @@ fn main() -> Result<()> {
     )
 }
 
-/// Handle --unlock: request unlock via the read socket with SSH agent challenge.
+/// Handle --unlock: request unlock via the wrapper socket with SSH agent challenge.
 fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
     let wrapper_config = load_wrapper_config(wrapper_name)?;
 
@@ -111,11 +93,10 @@ fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
     }
 
     // Step 1: Send unlock request.
-    let mut stream = UnixStream::connect(&wrapper_config.read_socket)
-        .with_context(|| format!("connecting to daemon at {}", wrapper_config.read_socket))?;
+    let mut stream = UnixStream::connect(&wrapper_config.wrapper_socket)
+        .with_context(|| format!("connecting to daemon at {}", wrapper_config.wrapper_socket))?;
 
     let req = WrapperRequest::Unlock {
-        wrapper: wrapper_name.to_string(),
         scope: scope.clone(),
         seconds,
     };
@@ -138,7 +119,6 @@ fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
             let (signature_b64, public_key_str) = sign_with_ssh_agent(&nonce)?;
 
             let req2 = WrapperRequest::UnlockResponse {
-                wrapper: wrapper_name.to_string(),
                 scope,
                 seconds,
                 challenge: nonce,
@@ -498,7 +478,7 @@ fn resolve_gid_name(gid: u32) -> Result<String> {
 struct WrapperExecConfig {
     target: String,
     env_variable: String,
-    read_socket: String,
+    wrapper_socket: String,
     ns_binary: Option<String>,
     /// Whether libsecret mode is enabled for this wrapper.
     libsecret: bool,
@@ -530,8 +510,7 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
         target: String,
         #[serde(default = "default_env")]
         env_variable: String,
-        #[serde(default = "default_socket")]
-        read_socket: String,
+        wrapper_socket: String,
         #[serde(default)]
         ns_binary: Option<String>,
         #[serde(default)]
@@ -548,9 +527,6 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
     fn default_env() -> String {
         "UNDERWRAP_SECRET".to_string()
     }
-    fn default_socket() -> String {
-        underwrap_protocol::READ_SOCKET_PATH.to_string()
-    }
 
     let wf: WrapperFile = serde_yaml::from_str(&text)?;
     if !wf.target.starts_with('/') {
@@ -563,7 +539,7 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
     Ok(WrapperExecConfig {
         target: wf.target,
         env_variable: wf.env_variable,
-        read_socket: wf.read_socket,
+        wrapper_socket: wf.wrapper_socket,
         ns_binary: wf.ns_binary,
         libsecret: wf.libsecret,
         dbus_daemon_binary: wf.dbus_daemon_binary,
@@ -575,37 +551,20 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
 
 /// Request the secret from the daemon. If `libsecret` is true, also
 /// receive the secretsd channel fd via SCM_RIGHTS.
-/// Returns (secret_material, canonical_wrapper_name, optional_channel_fd).
-fn request_secret(
-    wrapper_name: &str,
-    socket_path: &str,
-    libsecret: bool,
-) -> Result<(String, String, Option<i32>)> {
+/// Returns (secret_material, optional_channel_fd).
+fn request_secret(socket_path: &str, libsecret: bool) -> Result<(String, Option<i32>)> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
     let scope = std::env::var("UNDERWRAP_SCOPE").ok();
-    let req = WrapperRequest::Read {
-        wrapper: wrapper_name.to_string(),
-        scope,
-    };
+    let req = WrapperRequest::Read { scope };
     write_frame_sync(&mut stream, &req)?;
 
     let response: WrapperResponse = read_frame_sync(&mut stream)?;
-    let (material, canonical_name) = match response {
+    let material = match response {
         WrapperResponse::Ok {
-            material: Some(m),
-            wrapper_name: Some(name),
-            ..
-        } => (m, name),
-        WrapperResponse::Ok {
-            material: Some(_),
-            wrapper_name: None,
-            ..
-        } => {
-            // Daemon didn't return canonical name — fail closed.
-            bail!("daemon response missing wrapper_name (protocol version mismatch?)");
-        }
+            material: Some(m), ..
+        } => m,
         WrapperResponse::Ok { material: None, .. } => {
             bail!("daemon returned no material");
         }
@@ -631,7 +590,7 @@ fn request_secret(
         None
     };
 
-    Ok((material, canonical_name, channel_fd))
+    Ok((material, channel_fd))
 }
 
 fn drop_privilege() -> Result<()> {

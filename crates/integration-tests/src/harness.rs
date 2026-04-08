@@ -1,7 +1,7 @@
 //! Test harness: spins up an underwrapd instance with temp directories
 //! and provides helpers for IPC.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use underwrap_protocol::message::*;
 /// A running test daemon with temp dirs and sockets.
 #[allow(dead_code)]
 pub struct TestDaemon {
-    pub read_socket: PathBuf,
+    pub wrapper_sockets: HashMap<String, PathBuf>,
     pub control_socket: PathBuf,
     pub storage_dir: PathBuf,
     shutdown: Arc<Notify>,
@@ -26,19 +26,24 @@ pub struct TestDaemon {
 impl TestDaemon {
     /// Start a daemon with the given wrapper and secret definitions.
     pub async fn start(
-        wrappers: HashMap<String, WrapperDef>,
+        mut wrappers: HashMap<String, WrapperDef>,
         secrets: HashMap<String, SecretDef>,
     ) -> Result<Self> {
         let tempdir = tempfile::TempDir::new()?;
         let base = tempdir.path();
 
-        let read_socket = base.join("read.sock");
         let control_socket = base.join("control.sock");
         let storage_dir = base.join("secrets");
+        let mut wrapper_sockets = HashMap::new();
+
+        for name in wrappers.keys().cloned().collect::<Vec<_>>() {
+            let socket = base.join(format!("wrapper-{name}.sock"));
+            wrappers.get_mut(&name).expect("wrapper must exist").socket = socket.clone();
+            wrapper_sockets.insert(name, socket);
+        }
 
         let config = DaemonConfig {
             sockets: SocketConfig {
-                read: read_socket.clone(),
                 control: control_socket.clone(),
                 ..Default::default()
             },
@@ -59,14 +64,14 @@ impl TestDaemon {
 
         // Wait for sockets to appear.
         for _ in 0..100 {
-            if read_socket.exists() && control_socket.exists() {
+            if control_socket.exists() && wrapper_sockets.values().all(|p| p.exists()) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
         Ok(Self {
-            read_socket,
+            wrapper_sockets,
             control_socket,
             storage_dir,
             shutdown,
@@ -75,21 +80,24 @@ impl TestDaemon {
         })
     }
 
+    fn wrapper_socket(&self, wrapper: &str) -> Result<&PathBuf> {
+        self.wrapper_sockets
+            .get(wrapper)
+            .with_context(|| format!("unknown wrapper socket for '{wrapper}'"))
+    }
+
     /// Send a read request and return the response.
     pub async fn read_request(&self, wrapper: &str) -> Result<WrapperResponse> {
-        let mut stream = UnixStream::connect(&self.read_socket).await?;
-        let req = WrapperRequest::Read {
-            wrapper: wrapper.to_string(),
-            scope: None,
-        };
+        let mut stream = UnixStream::connect(self.wrapper_socket(wrapper)?).await?;
+        let req = WrapperRequest::Read { scope: None };
         write_frame_async(&mut stream, &req).await?;
         let resp: WrapperResponse = read_frame_async(&mut stream).await?;
         Ok(resp)
     }
 
-    /// Get a raw connection to the read socket for multi-message tests.
-    pub async fn connect_read(&self) -> Result<UnixStream> {
-        Ok(UnixStream::connect(&self.read_socket).await?)
+    /// Get a raw connection to a wrapper socket for multi-message tests.
+    pub async fn connect_wrapper(&self, wrapper: &str) -> Result<UnixStream> {
+        Ok(UnixStream::connect(self.wrapper_socket(wrapper)?).await?)
     }
 
     /// Send a read request with a scope.
@@ -99,9 +107,8 @@ impl TestDaemon {
         wrapper: &str,
         scope: &str,
     ) -> Result<WrapperResponse> {
-        let mut stream = UnixStream::connect(&self.read_socket).await?;
+        let mut stream = UnixStream::connect(self.wrapper_socket(wrapper)?).await?;
         let req = WrapperRequest::Read {
-            wrapper: wrapper.to_string(),
             scope: Some(scope.to_string()),
         };
         write_frame_async(&mut stream, &req).await?;
@@ -168,6 +175,7 @@ pub fn wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         },
         derivation: DerivationMode::None,
         require_unlock: false,
+        socket: PathBuf::new(),
         group: current_group_name(),
         unlock_key: None,
         libsecret: false,
@@ -184,6 +192,7 @@ pub fn locked_wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         },
         derivation: DerivationMode::None,
         require_unlock: true,
+        socket: PathBuf::new(),
         group: current_group_name(),
         unlock_key: None,
         libsecret: false,

@@ -6,30 +6,25 @@
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
-// Read-path messages (wrapper -> daemon over read.sock)
+// Wrapper-socket messages (wrapper -> daemon over wrapper socket)
 // ---------------------------------------------------------------------------
 
-/// Request sent by a wrapper over the read socket.
+/// Request sent by a wrapper over its wrapper socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum WrapperRequest {
     /// Request secret material.
     #[serde(rename = "read")]
-    Read {
-        wrapper: String,
-        scope: Option<String>,
-    },
+    Read { scope: Option<String> },
     /// Request unlock — initiates SSH agent challenge-response.
     #[serde(rename = "unlock")]
     Unlock {
-        wrapper: String,
         scope: Option<String>,
         seconds: Option<u64>,
     },
     /// Complete unlock by providing the signed challenge.
     #[serde(rename = "unlock_response")]
     UnlockResponse {
-        wrapper: String,
         scope: Option<String>,
         seconds: Option<u64>,
         /// The challenge nonce (hex-encoded, echoed back).
@@ -41,7 +36,7 @@ pub enum WrapperRequest {
     },
 }
 
-/// Daemon response on the read socket.
+/// Daemon response on the wrapper socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status")]
 pub enum WrapperResponse {
@@ -53,10 +48,6 @@ pub enum WrapperResponse {
         /// Message (for unlock confirmations).
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
-        /// Canonical wrapper name (from GID-based identity resolution).
-        /// Used by underwrap-exec to select the correct sidecar config.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        wrapper_name: Option<String>,
     },
     /// SSH challenge: caller must sign this with their SSH agent.
     #[serde(rename = "challenge")]
@@ -232,14 +223,12 @@ mod tests {
     #[test]
     fn wrapper_read_request_roundtrip() {
         let req = WrapperRequest::Read {
-            wrapper: "gh-authorized".to_string(),
             scope: Some("session-42".to_string()),
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: WrapperRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            WrapperRequest::Read { wrapper, scope } => {
-                assert_eq!(wrapper, "gh-authorized");
+            WrapperRequest::Read { scope } => {
                 assert_eq!(scope.as_deref(), Some("session-42"));
             }
             other => panic!("expected Read, got {other:?}"),
@@ -249,7 +238,6 @@ mod tests {
     #[test]
     fn wrapper_response_ok() {
         let resp = WrapperResponse::Ok {
-            wrapper_name: None,
             material: Some("secret123".to_string()),
             message: None,
         };

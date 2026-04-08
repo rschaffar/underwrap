@@ -1,192 +1,316 @@
-# Configuration
+# Configuration reference
 
-## NixOS module
+This document describes the supported NixOS configuration model and the generated runtime layout.
 
-### Single instance
+The NixOS module is the primary way to deploy underwrap. If you are just getting started, read [Getting started](getting-started.md) first.
 
-```nix
-services.underwrap = {
-  enable = true;
-  package = underwrap.packages.x86_64-linux.default;
-
-  instances.myproject = {
-    wrappers = {
-      gws = {
-        target = "${pkgs.gws}/bin/gws";
-        secret = "google/workspace-creds";
-        injection = { mode = "env"; variable = "GOOGLE_WORKSPACE_CLI_TOKEN"; };
-        derivation = "oauth_refresh_to_access_token";
-        requireUnlock = true;
-      };
-      gh-authorized = {
-        target = "${pkgs.gh}/bin/gh";
-        secret = "github/token";
-        injection = { mode = "env"; variable = "GH_TOKEN"; };
-      };
-    };
-
-    secrets = {
-      "google/workspace-creds" = { mutable = true; };
-      "github/token" = {};
-    };
-  };
-};
-```
-
-### Multiple instances
-
-Each instance is fully isolated — separate users, groups, sockets, directories.
+## Top-level module shape
 
 ```nix
 services.underwrap = {
   enable = true;
-  package = underwrap.packages.x86_64-linux.default;
+  package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
-  instances = {
-    work = {
-      remote.enable = true;  # secrets via SSH tunnel
-      wrappers.gws = { ... };
-      secrets."google/workspace-creds" = { mutable = true; };
-    };
-    personal = {
-      wrappers.gh-authorized = { ... };
-      secrets."github/token" = {};
-    };
+  instances.<name> = {
+    wrappers = { ... };
+    secrets = { ... };
+    encryption = { ... };
+    remote = { ... };
   };
 };
 ```
 
-Instance `work` gets:
-- User `underwrap-work`, group `underwrap-work`
-- Tunnel user `underwrap-work-tunnel`
-- Wrapper group `underwrap-work-gws`
-- Service `underwrapd-work.service`
-- Runtime dir `/run/underwrap-work/`
-- Wrapper binary `/run/wrappers/bin/work-gws`
+## Instances
 
-Instance `personal` gets the same pattern with `personal-` prefix.
-No group membership overlaps between instances.
+An **instance** is an isolated deployment unit.
 
-### Remote backend
+Each instance gets its own:
+
+- daemon user and group
+- runtime directory
+- state directory
+- systemd service
+- wrapper groups
+- optional tunnel user
+
+Example:
 
 ```nix
-instances.myproject = {
-  remote.enable = true;
-  # Wrappers and secrets as usual — the daemon connects to the
-  # tunneled backend socket at /run/underwrap-myproject/backend.sock
+services.underwrap.instances.work = {
+  wrappers = { ... };
+  secrets = { ... };
 };
 ```
 
-See [remote-backend.md](remote-backend.md) for the full tunnel setup.
+### Generated names
+
+For an instance named `work`, the module creates names following this pattern:
+
+| Item | Example |
+|---|---|
+| daemon user | `underwrap-work` |
+| daemon group | `underwrap-work` |
+| daemon service | `underwrapd-work.service` |
+| runtime directory | `/run/underwrap-work/` |
+| state directory | `/var/lib/underwrap-work/` |
+| tunnel directory | `/run/underwrap-work/tunnel/` |
+| optional tunnel user | `underwrap-work-tunnel` |
+
+## Wrappers
+
+Each wrapper defines one secret-delivery entry point.
+
+Example:
+
+```nix
+wrappers.jira = {
+  target = "${pkgs.jira-cli-go}/bin/jira";
+  secret = "jira/api-token";
+  injection = {
+    mode = "env";
+    variable = "JIRA_API_TOKEN";
+  };
+};
+```
 
 ### Wrapper options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
+| Option | Type | Default | Meaning |
+|---|---|---|---|
 | `target` | string | required | Absolute path to the target binary |
-| `secret` | string | required | Secret ID (e.g. `"github/token"`) |
-| `injection` | attrs | `{ mode = "env"; variable = "UNDERWRAP_SECRET"; }` | How the secret is delivered |
-| `derivation` | string or null | `null` | Derivation mode (e.g. `"oauth_refresh_to_access_token"`) |
+| `secret` | string | required | Secret ID to read |
+| `injection` | attrset | `{ mode = "env"; variable = "UNDERWRAP_SECRET"; }` | How the secret is injected |
+| `derivation` | string or `null` | `null` | Derivation mode, for example `"oauth_refresh_to_access_token"` |
 | `requireUnlock` | bool | `false` | Require explicit unlock before reads |
-| `libsecret` | bool | `false` | Enable private D-Bus Secret Service in the PID namespace |
-| `envPassthrough` | list of strings | `[]` | Additional env vars to pass from user's env to target |
-| `envSet` | attrs | `{}` | Fixed env vars to set on the target |
+| `libsecret` | bool | `false` | Start a private Secret Service inside the namespace |
+| `envPassthrough` | list of strings | `[]` | Additional environment variables to pass through from the caller |
+| `envSet` | attrset | `{}` | Fixed environment variables to set for the target |
+
+### Wrapper naming
+
+If your instance is `work` and your wrapper key is `jira`, then:
+
+- the wrapper binary is `/run/wrappers/bin/work-jira`
+- the wrapper group is `underwrap-work-jira`
+- the wrapper socket is `/run/underwrap-work/wrapper-jira.sock`
+- the generated sidecar config is `/etc/underwrap/wrappers/work-jira.yaml`
+- the runtime config key seen by the daemon is `work-jira`
+
+That last point matters for commands such as:
+
+```bash
+sudo underwrapctl --socket /run/underwrap-work/control.sock status work-jira
+```
+
+## Secrets
+
+The `secrets` section defines metadata and mutability for secret IDs.
+
+Example:
+
+```nix
+secrets."jira/api-token" = {
+  mutable = false;
+};
+```
 
 ### Secret options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `mutable` | bool | `false` | Whether the secret can be overwritten |
-| `labels` | attrs | `{}` | Metadata labels |
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `mutable` | bool | `false` | Whether the secret may be overwritten |
+| `labels` | attrset of strings | `{}` | Optional metadata labels |
 
-### Instance options
+## A realistic multi-wrapper instance
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `wrappers` | attrsOf wrapper | `{}` | Wrapper definitions |
-| `secrets` | attrsOf secret | `{}` | Secret definitions |
-| `encryption.enable` | bool | `false` | Use encrypted storage |
-| `encryption.keyFile` | path | | Master key file path |
-| `remote.enable` | bool | `false` | Use remote backend via SSH tunnel |
+```nix
+services.underwrap.instances.work = {
+  wrappers = {
+    jira = {
+      target = "${pkgs.jira-cli-go}/bin/jira";
+      secret = "jira/api-token";
+      injection = {
+        mode = "env";
+        variable = "JIRA_API_TOKEN";
+      };
+    };
 
-## YAML configuration (daemon)
+    gh = {
+      target = "${pkgs.gh}/bin/gh";
+      secret = "github/bootstrap";
+      libsecret = true;
+      injection = {
+        mode = "env";
+        variable = "GH_UNUSED";
+      };
+    };
 
-The NixOS module generates this automatically. For reference:
+    gws = {
+      target = "${pkgs.gws}/bin/gws";
+      secret = "google/workspace-creds";
+      injection = {
+        mode = "env";
+        variable = "GOOGLE_WORKSPACE_CLI_TOKEN";
+      };
+      derivation = "oauth_refresh_to_access_token";
+      requireUnlock = true;
+    };
+  };
 
-```yaml
-sockets:
-  read: /run/underwrap-myproject/read.sock
-  control: /run/underwrap-myproject/control.sock
-  read_mode: "0666"
-  control_mode: "0600"
-
-storage:
-  backend: plain
-  dir: /var/lib/underwrap-myproject/secrets
-  # Or: backend: remote
-  #     socket: /run/underwrap-myproject/backend.sock
-  # Or: backend: encrypted
-  #     dir: /var/lib/underwrap-myproject/secrets
-  #     key_file: /path/to/master.key
-
-wrappers:
-  gh-authorized:
-    target: /nix/store/.../bin/gh
-    secret: github/token
-    group: underwrap-myproject-gh-authorized
-    injection:
-      mode: env
-      variable: GH_TOKEN
-
-secrets:
-  github/token:
-    mutable: false
+  secrets = {
+    "jira/api-token" = { mutable = false; };
+    "github/bootstrap" = { mutable = false; };
+    "google/workspace-creds" = { mutable = true; };
+  };
+};
 ```
+
+## Multiple instances
+
+You can run multiple isolated instances on the same machine.
+
+```nix
+services.underwrap.instances = {
+  work = {
+    wrappers = { ... };
+    secrets = { ... };
+  };
+
+  personal = {
+    wrappers = { ... };
+    secrets = { ... };
+  };
+};
+```
+
+This is useful when you want hard separation between projects, users, or trust boundaries.
+
+## Encrypted local storage
+
+To enable encrypted local storage:
+
+```nix
+instances.work = {
+  encryption.enable = true;
+  encryption.keyFile = /var/lib/underwrap-work/master.key;
+
+  wrappers = { ... };
+  secrets = { ... };
+};
+```
+
+When encryption is enabled, the generated daemon config uses the encrypted backend instead of the plain backend.
+
+## Remote backend mode
+
+To use the remote backend:
+
+```nix
+instances.work = {
+  remote.enable = true;
+
+  wrappers = { ... };
+  secrets = { ... };
+};
+```
+
+In this mode, the frontend daemon expects the forwarded backend socket at:
+
+```text
+/run/underwrap-work/tunnel/backend.sock
+```
+
+The wrapper configuration itself stays the same; only the backend changes.
+
+See [Remote backend](remote-backend.md).
+
+## Environment handling
+
+underwrap starts the target from a cleaned environment.
+
+You can then add controlled environment entries in two ways.
+
+### `envPassthrough`
+
+Pass selected variables from the caller's environment through to the target.
+
+```nix
+envPassthrough = [ "EDITOR" "VISUAL" ];
+```
+
+### `envSet`
+
+Set fixed variables from trusted configuration.
+
+```nix
+envSet = {
+  GH_NO_UPDATE_NOTIFIER = "1";
+};
+```
+
+This is often useful for agent-facing wrappers where you want a predictable target environment.
 
 ## Wrapper sidecar config
 
-Each wrapper has a sidecar YAML in `/etc/underwrap/wrappers/<instance>-<wrapper>.yaml`:
+The module generates one sidecar config per wrapper under:
 
-```yaml
-target: /nix/store/.../bin/gh
-env_variable: GH_TOKEN
-read_socket: /run/underwrap-myproject/read.sock
-ns_binary: /run/wrappers/bin/underwrap-ns
-env_passthrough: []
-env_set: {}
+```text
+/etc/underwrap/wrappers/<instance>-<wrapper>.yaml
 ```
 
-The NixOS module generates these. The `env_variable` is derived from
-`injection.variable`.
+Those files contain the information `underwrap-exec` needs at runtime, such as:
 
-`target` and `ns_binary` are absolute paths. underwrap does not search `PATH`
-for the configured main target. For agent-facing use, `target` should usually
-point at your own Nix-store wrapper rather than a broad tool directly.
+- the target binary path
+- the env variable name
+- the wrapper socket path
+- the shared `underwrap-ns` path
+- optional libsecret helper paths
+
+These files are generated from the NixOS configuration and should normally not be edited manually.
 
 ## Storing secrets
 
-```bash
-# Store a static token.
-echo -n 'ghp_...' | sudo underwrapctl \
-  --socket /run/underwrap-myproject/control.sock \
-  store github/token
-
-# Store OAuth credentials (multi-line JSON).
-sudo underwrapctl --socket /run/underwrap-myproject/control.sock \
-  store google/workspace-creds < ~/credentials.json
-```
-
-## Unlock management
+Store a secret through the control socket:
 
 ```bash
-# Unlock for 30 minutes (root).
-sudo underwrapctl --socket /run/underwrap-myproject/control.sock \
-  unlock myproject-gws --seconds 1800
-
-# Self-service unlock via wrapper (SSH agent challenge).
-/run/wrappers/bin/myproject-gws --unlock --seconds 1800
-
-# Lock.
-sudo underwrapctl --socket /run/underwrap-myproject/control.sock \
-  lock myproject-gws
+sudo underwrapctl --socket /run/underwrap-work/control.sock store jira/api-token
 ```
+
+`underwrapctl` reads from standard input until EOF.
+
+## Status, unlock, and lock
+
+Examples:
+
+```bash
+sudo underwrapctl --socket /run/underwrap-work/control.sock status
+sudo underwrapctl --socket /run/underwrap-work/control.sock status work-jira
+sudo underwrapctl --socket /run/underwrap-work/control.sock unlock work-gws --seconds 1800
+sudo underwrapctl --socket /run/underwrap-work/control.sock lock work-gws
+```
+
+## Manual YAML configuration
+
+The NixOS module generates the daemon config automatically. That is the normal deployment path.
+
+If you run components manually, the lower-level daemon configuration supports the same overall ideas: sockets, storage backend, wrappers, and secrets.
+
+The repository includes:
+
+- [`examples/config.yaml`](../examples/config.yaml)
+- [`examples/wrappers/gh-authorized.yaml`](../examples/wrappers/gh-authorized.yaml)
+
+These are useful as reference material, especially when looking at how the generated pieces fit together.
+
+## One important limitation
+
+The current NixOS module surfaces the main deployment-oriented options. Lower-level daemon capabilities may exist in the protocol or manual config before they are exposed cleanly through the module.
+
+When in doubt, treat the NixOS module as the authoritative user-facing interface.
+
+## Related docs
+
+- [Getting started](getting-started.md)
+- [Architecture](architecture.md)
+- [Remote backend](remote-backend.md)
+- [Security](security.md)

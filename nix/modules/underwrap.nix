@@ -11,15 +11,14 @@ let
     daemonGroup = "underwrap-${instName}";
     tunnelUser = "underwrap-${instName}-tunnel";
     wrapperGroupName = name: "underwrap-${instName}-${name}";
+    wrapperSocketPath = name: "${runDir}/wrapper-${name}.sock";
     runDir = "/run/underwrap-${instName}";
     tunnelDir = "/run/underwrap-${instName}/tunnel";
     stateDir = "/var/lib/underwrap-${instName}";
 
     runtimeConfig = {
       sockets = {
-        read = "${runDir}/read.sock";
         control = "${runDir}/control.sock";
-        read_mode = "0666";
         control_mode = "0600";
       };
       storage = if inst.remote.enable then {
@@ -39,6 +38,7 @@ let
           secret = w.secret;
           injection = w.injection;
           require_unlock = w.requireUnlock;
+          socket = wrapperSocketPath name;
           group = wrapperGroupName name;
           libsecret = w.libsecret;
         } // lib.optionalAttrs (w.derivation != null) {
@@ -65,7 +65,7 @@ let
       pkgs.writeText "${instName}-${name}.yaml" (builtins.toJSON ({
         target = w.target;
         env_variable = w.injection.variable or "UNDERWRAP_SECRET";
-        read_socket = "${runDir}/read.sock";
+        wrapper_socket = wrapperSocketPath name;
         ns_binary = nsBinaryPath;
         env_passthrough = w.envPassthrough;
         env_set = w.envSet;
@@ -89,6 +89,7 @@ let
       "${daemonUser}" = {
         isSystemUser = true;
         group = daemonGroup;
+        extraGroups = lib.mapAttrsToList (name: _w: wrapperGroupName name) inst.wrappers;
         home = stateDir;
         description = "underwrap daemon (${instName})";
       };
@@ -125,7 +126,7 @@ let
     ) inst.wrappers;
 
     # Tmpfiles rules.
-    # runDir is 0755 (not group-writable) — protects read.sock and control.sock.
+    # runDir is 0755 (not group-writable) — protects wrapper-*.sock and control.sock.
     # tunnelDir is 0770 group-writable — only for the backend tunnel socket.
     tmpfiles = [
       "d ${runDir} 0755 ${daemonUser} ${daemonGroup} -"
