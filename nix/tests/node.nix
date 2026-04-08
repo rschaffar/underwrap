@@ -9,6 +9,13 @@ let
   capsScript = pkgs.writeShellScript "caps-target" ''
     grep '^Cap' /proc/self/status
   '';
+  # List all PIDs visible in /proc (for PID namespace isolation test).
+  listPidsScript = pkgs.writeShellScript "list-pids-target" ''
+    ls -d /proc/[0-9]* 2>/dev/null | while read d; do
+      pid=$(basename "$d")
+      echo "$pid"
+    done
+  '';
 in {
   imports = [ nixosModule ];
 
@@ -103,6 +110,12 @@ in {
             injection = { mode = "env"; variable = "LIBSECRET_UNUSED"; };
             libsecret = true;
           };
+          test-ns-pids = {
+            target = "${listPidsScript}";
+            secret = "test/ns-pids-tok";
+            injection = { mode = "env"; variable = "NS_UNUSED"; };
+            libsecret = true;  # libsecret mode creates mount namespace with fresh /proc
+          };
           test-caps = {
             target = "${capsScript}";
             secret = "test/caps-tok";
@@ -118,6 +131,7 @@ in {
           "test/crash-tok" = { mutable = false; };
           "test/libsecret-tok" = { mutable = false; };
           "test/caps-tok" = { mutable = false; };
+          "test/ns-pids-tok" = { mutable = false; };
         };
       };
 

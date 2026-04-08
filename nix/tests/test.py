@@ -64,6 +64,7 @@ machine.succeed(f"echo -n 'dumpable_test_secret' | {UWCTL_LOCAL} store test/dump
 machine.succeed(f"echo -n 'crash_secret_value' | {UWCTL_LOCAL} store test/crash-tok")
 machine.succeed(f"echo -n 'libsecret_base' | {UWCTL_LOCAL} store test/libsecret-tok")
 machine.succeed(f"echo -n 'caps_test_val' | {UWCTL_LOCAL} store test/caps-tok")
+machine.succeed(f"echo -n 'ns_pids_val' | {UWCTL_LOCAL} store test/ns-pids-tok")
 
 # Status.
 status = machine.succeed(f"{UWCTL_LOCAL} status")
@@ -334,6 +335,30 @@ assert "OTHER_SECRET" not in output, \
     f"FAIL: symlink wrapper loaded the wrong config: {output}"
 machine.succeed("rm -f /tmp/local-test-echo2")
 machine.log("PASS: symlink confused-deputy attack prevented (egid-based identity)")
+
+# ============================================================
+# LOCAL INSTANCE: /proc isolation in libsecret (mount namespace) mode
+# ============================================================
+# In libsecret mode, /proc is remounted inside the new PID namespace.
+# The target should only see namespace-local PIDs, not host PIDs.
+
+ns_pids_output = machine.succeed(
+    su("/run/wrappers/bin/local-test-ns-pids")
+).strip()
+# Extract just the numeric PIDs (ignore log lines from secretsd).
+visible_pids = [line.strip() for line in ns_pids_output.split("\n")
+                if line.strip().isdigit()]
+machine.log(f"PIDs visible inside namespace: {visible_pids}")
+
+# In a proper PID namespace with fresh /proc, we should see only a few
+# PIDs (PID 1 = target, plus dbus-daemon, secretsd, maybe a few more).
+# Definitely NOT hundreds of host PIDs.
+assert len(visible_pids) < 20, \
+    f"FAIL: too many PIDs visible ({len(visible_pids)}) — /proc may show host PIDs: {visible_pids}"
+# PID 1 must be visible (it's the target or the namespace init).
+assert "1" in visible_pids, \
+    f"FAIL: PID 1 not visible in namespace — /proc mount may be wrong: {visible_pids}"
+machine.log("PASS: /proc in libsecret mode shows only namespace-local PIDs")
 
 # ============================================================
 # LOCAL INSTANCE: libsecret mode (Secret Service via D-Bus)

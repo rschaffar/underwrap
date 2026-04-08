@@ -528,10 +528,12 @@ When libsecret mode is enabled, `underwrap-ns` creates a mount namespace
    bind mounts from propagating back to the parent namespace via shared
    mount propagation (the default on systemd-based systems).
 
-2. **Fresh `/proc` mounted** so the PID namespace is properly isolated.
-   Without this, the target would see the host's `/proc` with all host
-   PIDs visible. With the fresh mount, only namespace-local processes
-   are visible. **Failure is fatal.**
+2. **Fresh `/proc` mounted** after fork (in the child that is PID 1 in the
+   new PID namespace). This is critical: `unshare(CLONE_NEWPID)` only
+   affects future children, so mounting `/proc` before fork would mount
+   the parent namespace's procfs. After fork, the child IS in the new
+   PID namespace, so the `/proc` mount correctly reflects only
+   namespace-local PIDs. **Failure is fatal.**
 
 3. **Private tmpfs for the bus socket.** The dbus-daemon socket is created
    on a tmpfs mounted inside the namespace at `/tmp/.underwrap-ns-bus/`.

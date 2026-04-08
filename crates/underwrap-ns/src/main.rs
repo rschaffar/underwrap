@@ -72,14 +72,12 @@ fn run() -> Result<(), String> {
         return Err(format!("unshare failed: {err}"));
     }
 
-    // If libsecret mode, set up the mount namespace BEFORE dropping caps.
-    // We need cap_sys_admin for mount operations.
-    if libsecret {
-        setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
-    }
+    // Do NOT mount /proc or set up mounts here — we're still in the parent
+    // PID namespace. unshare(CLONE_NEWPID) only affects the next fork's child.
+    // Mounting /proc here would mount the PARENT namespace's procfs.
 
-    // Drop all capabilities now that we've done the unshare and mounts.
-    drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
+    // Do NOT drop caps here — the child needs cap_sys_admin for mount ops.
+    // Caps will be dropped in the child after mount setup.
 
     // Fork. Child gets PID 1 in the new namespace.
     let pid = unsafe { libc::fork() };
@@ -89,7 +87,19 @@ fn run() -> Result<(), String> {
     }
 
     if pid == 0 {
-        // Child: harden and exec the target with the secret in env.
+        // Child: we are now PID 1 in the new PID namespace.
+
+        // If libsecret mode, set up the mount namespace NOW (after fork,
+        // so /proc mount reflects the new PID namespace). We still have
+        // cap_sys_admin from the file capability on underwrap-ns.
+        if libsecret {
+            setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
+        }
+
+        // Drop all capabilities now that mount setup is done.
+        drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
+
+        // Harden and exec the target with the secret in env.
 
         // Disable core dumps so a crashing target can't write the secret to disk.
         let rlim = libc::rlimit {
@@ -217,6 +227,9 @@ fn run() -> Result<(), String> {
         eprintln!("underwrap-ns: exec failed: {err}");
         std::process::exit(1);
     }
+
+    // Parent: drop caps (parent doesn't need them after fork).
+    drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
 
     // Parent: zeroize the secret — only the child (in the namespace) needs it.
     {
