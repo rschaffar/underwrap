@@ -12,7 +12,9 @@ use tracing::{error, info};
 
 use underwrap_protocol::config::StorageConfig;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::message::{BackendRequest, BackendResponse, SecretString};
+use underwrap_protocol::message::{
+    BackendErrorCode, BackendRequest, BackendResponse, SecretString,
+};
 use underwrap_store::StorageBackend;
 
 use crate::derive;
@@ -90,9 +92,11 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 }
             }
             Ok(None) => BackendResponse::Error {
+                code: BackendErrorCode::NotFound,
                 message: format!("secret '{secret_id}' not found"),
             },
             Err(e) => BackendResponse::Error {
+                code: BackendErrorCode::Internal,
                 message: format!("storage error: {e}"),
             },
         },
@@ -103,11 +107,13 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 Ok(Some(m)) => SecretString::from(m),
                 Ok(None) => {
                     return BackendResponse::Error {
+                        code: BackendErrorCode::NotFound,
                         message: format!("secret '{secret_id}' not found"),
                     };
                 }
                 Err(e) => {
                     return BackendResponse::Error {
+                        code: BackendErrorCode::Internal,
                         message: format!("storage error: {e}"),
                     };
                 }
@@ -122,6 +128,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                     }
                 }
                 Err(e) => BackendResponse::Error {
+                    code: BackendErrorCode::DerivationFailed,
                     message: format!("derivation failed: {e}"),
                 },
             }
@@ -139,6 +146,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 }
             }
             Err(e) => BackendResponse::Error {
+                code: BackendErrorCode::Internal,
                 message: format!("storage error: {e}"),
             },
         },
@@ -152,6 +160,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 }
             }
             Err(e) => BackendResponse::Error {
+                code: BackendErrorCode::Internal,
                 message: format!("storage error: {e}"),
             },
         },
@@ -165,6 +174,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 }
             }
             Err(e) => BackendResponse::Error {
+                code: BackendErrorCode::Internal,
                 message: format!("storage error: {e}"),
             },
         },

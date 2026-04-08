@@ -216,14 +216,24 @@ pub enum SecretsdResponse {
         existed: Option<bool>,
     },
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        code: SecretsdErrorCode,
+        message: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SecretsdErrorCode {
+    NotFound,
+    InvalidRequest,
+    Internal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ErrorCode {
     /// Caller is not authorized for this operation.
     Unauthorized,
@@ -289,7 +299,17 @@ pub enum BackendResponse {
         info: Option<serde_json::Value>,
     },
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        code: BackendErrorCode,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BackendErrorCode {
+    NotFound,
+    DerivationFailed,
+    Internal,
 }
 
 #[cfg(test)]
@@ -469,9 +489,11 @@ mod tests {
     #[test]
     fn backend_response_error() {
         let resp = BackendResponse::Error {
+            code: BackendErrorCode::NotFound,
             message: "not found".to_string(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"status\":\"error\""));
+        assert!(json.contains("\"code\":\"NotFound\""));
     }
 }

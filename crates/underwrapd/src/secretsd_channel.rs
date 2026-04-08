@@ -12,7 +12,7 @@ use tokio::net::UnixStream;
 use tracing::{debug, error, info, warn};
 
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::message::{SecretsdRequest, SecretsdResponse};
+use underwrap_protocol::message::{SecretsdErrorCode, SecretsdRequest, SecretsdResponse};
 use underwrap_store::StorageBackend;
 
 /// Run the secretsd channel handler loop on the daemon's end of the socketpair.
@@ -78,6 +78,7 @@ fn process_request(
             if full_id.is_none() {
                 warn!(wrapper = %wrapper_name, id = %secret_id, "rejected invalid secretsd read");
                 return SecretsdResponse::Error {
+                    code: SecretsdErrorCode::InvalidRequest,
                     message: "invalid secret id".to_string(),
                 };
             }
@@ -96,6 +97,7 @@ fn process_request(
                 Err(e) => {
                     error!(wrapper = %wrapper_name, id = %full_id, err = %e, "secretsd read error");
                     SecretsdResponse::Error {
+                        code: SecretsdErrorCode::Internal,
                         message: format!("storage error: {e}"),
                     }
                 }
@@ -110,6 +112,7 @@ fn process_request(
             if full_id.is_none() {
                 warn!(wrapper = %wrapper_name, id = %secret_id, "rejected invalid secretsd write");
                 return SecretsdResponse::Error {
+                    code: SecretsdErrorCode::InvalidRequest,
                     message: "invalid secret id".to_string(),
                 };
             }
@@ -128,6 +131,7 @@ fn process_request(
                 Err(e) => {
                     error!(wrapper = %wrapper_name, id = %full_id, err = %e, "secretsd write error");
                     SecretsdResponse::Error {
+                        code: SecretsdErrorCode::Internal,
                         message: format!("storage error: {e}"),
                     }
                 }
@@ -142,6 +146,7 @@ fn process_request(
                 if has_traversal(rel_prefix) {
                     warn!(wrapper = %wrapper_name, prefix = %rel_prefix, "rejected invalid secretsd list prefix");
                     return SecretsdResponse::Error {
+                        code: SecretsdErrorCode::InvalidRequest,
                         message: "invalid prefix".to_string(),
                     };
                 }
@@ -165,6 +170,7 @@ fn process_request(
                 Err(e) => {
                     error!(wrapper = %wrapper_name, prefix = %full_prefix, err = %e, "secretsd list error");
                     SecretsdResponse::Error {
+                        code: SecretsdErrorCode::Internal,
                         message: format!("storage error: {e}"),
                     }
                 }
@@ -176,6 +182,7 @@ fn process_request(
             if full_id.is_none() {
                 warn!(wrapper = %wrapper_name, id = %secret_id, "rejected invalid secretsd delete");
                 return SecretsdResponse::Error {
+                    code: SecretsdErrorCode::InvalidRequest,
                     message: "invalid secret id".to_string(),
                 };
             }
@@ -194,6 +201,7 @@ fn process_request(
                 Err(e) => {
                     error!(wrapper = %wrapper_name, id = %full_id, err = %e, "secretsd delete error");
                     SecretsdResponse::Error {
+                        code: SecretsdErrorCode::Internal,
                         message: format!("storage error: {e}"),
                     }
                 }

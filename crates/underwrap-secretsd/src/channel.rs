@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{SecretsdRequest, SecretsdResponse};
+use underwrap_protocol::message::{SecretsdErrorCode, SecretsdRequest, SecretsdResponse};
 use underwrap_secretsd_store::SecretStore;
 
 pub trait ChannelOps: Send + Sync {
@@ -45,7 +45,10 @@ impl ChannelOps for DaemonChannel {
         let resp = self.send(&req)?;
         match resp {
             SecretsdResponse::Ok { material, .. } => Ok(material.map(Into::into)),
-            SecretsdResponse::Error { message } => bail!("daemon read error: {message}"),
+            SecretsdResponse::Error { code, message } => match code {
+                SecretsdErrorCode::NotFound => Ok(None),
+                _ => bail!("daemon read error ({code:?}): {message}"),
+            },
         }
     }
 
@@ -57,7 +60,9 @@ impl ChannelOps for DaemonChannel {
         let resp = self.send(&req)?;
         match resp {
             SecretsdResponse::Ok { .. } => Ok(()),
-            SecretsdResponse::Error { message } => bail!("daemon write error: {message}"),
+            SecretsdResponse::Error { code, message } => {
+                bail!("daemon write error ({code:?}): {message}")
+            }
         }
     }
 
@@ -68,7 +73,9 @@ impl ChannelOps for DaemonChannel {
         let resp = self.send(&req)?;
         match resp {
             SecretsdResponse::Ok { ids, .. } => Ok(ids.unwrap_or_default()),
-            SecretsdResponse::Error { message } => bail!("daemon list error: {message}"),
+            SecretsdResponse::Error { code, message } => {
+                bail!("daemon list error ({code:?}): {message}")
+            }
         }
     }
 
@@ -79,7 +86,9 @@ impl ChannelOps for DaemonChannel {
         let resp = self.send(&req)?;
         match resp {
             SecretsdResponse::Ok { existed, .. } => Ok(existed.unwrap_or(false)),
-            SecretsdResponse::Error { message } => bail!("daemon delete error: {message}"),
+            SecretsdResponse::Error { code, message } => {
+                bail!("daemon delete error ({code:?}): {message}")
+            }
         }
     }
 }

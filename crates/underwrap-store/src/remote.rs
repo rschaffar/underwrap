@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{BackendRequest, BackendResponse};
+use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse};
 
 use crate::StorageBackend;
 
@@ -68,13 +68,10 @@ impl StorageBackend for RemoteBackend {
 
         match resp {
             BackendResponse::Ok { material, .. } => Ok(material.map(Into::into)),
-            BackendResponse::Error { message } => {
-                if message.contains("not found") {
-                    Ok(None)
-                } else {
-                    bail!("backend error: {message}")
-                }
-            }
+            BackendResponse::Error { code, message } => match code {
+                BackendErrorCode::NotFound => Ok(None),
+                _ => bail!("backend error ({code:?}): {message}"),
+            },
         }
     }
 
@@ -86,7 +83,9 @@ impl StorageBackend for RemoteBackend {
 
         match resp {
             BackendResponse::Ok { .. } => Ok(()),
-            BackendResponse::Error { message } => bail!("backend error: {message}"),
+            BackendResponse::Error { code, message } => {
+                bail!("backend error ({code:?}): {message}")
+            }
         }
     }
 
@@ -104,7 +103,9 @@ impl StorageBackend for RemoteBackend {
                 Ok(ids)
             }
             BackendResponse::Ok { info: None, .. } => Ok(Vec::new()),
-            BackendResponse::Error { message } => bail!("backend list error: {message}"),
+            BackendResponse::Error { code, message } => {
+                bail!("backend list error ({code:?}): {message}")
+            }
         }
     }
 
@@ -118,7 +119,9 @@ impl StorageBackend for RemoteBackend {
                 info: Some(info), ..
             } => Ok(info.as_bool().unwrap_or(false)),
             BackendResponse::Ok { info: None, .. } => Ok(true),
-            BackendResponse::Error { message } => bail!("backend delete error: {message}"),
+            BackendResponse::Error { code, message } => {
+                bail!("backend delete error ({code:?}): {message}")
+            }
         }
     }
 }
@@ -133,13 +136,11 @@ impl RemoteBackend {
 
         match resp {
             BackendResponse::Ok { material, .. } => Ok(material.map(Into::into)),
-            BackendResponse::Error { message } => {
-                if message.contains("not found") {
-                    Ok(None)
-                } else {
-                    bail!("backend derive error: {message}")
-                }
-            }
+            BackendResponse::Error { code, message } => match code {
+                BackendErrorCode::NotFound => Ok(None),
+                BackendErrorCode::DerivationFailed => bail!("backend derive failed: {message}"),
+                _ => bail!("backend derive error ({code:?}): {message}"),
+            },
         }
     }
 
