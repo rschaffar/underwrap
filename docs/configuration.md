@@ -324,6 +324,7 @@ When in doubt, treat the NixOS module as the authoritative user-facing interface
 ## Related docs
 
 - [Getting started](getting-started.md)
+- [Wrapper author checklist](wrapper-author-checklist.md)
 - [Architecture](architecture.md)
 - [Remote backend](remote-backend.md)
 - [Security](security.md)

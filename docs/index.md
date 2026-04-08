@@ -7,6 +7,7 @@ underwrap's docs are organized by question:
 - **Should I use this?** → [Choosing underwrap](comparison.md)
 - **How do I get one wrapper working?** → [Getting started](getting-started.md)
 - **How should I design agent-facing wrappers?** → [Agent-facing wrappers](agents.md)
+- **What should I check before I call a wrapper design done?** → [Wrapper author checklist](wrapper-author-checklist.md)
 - **How do the advanced workflows work?**
   - [GitHub via libsecret](gh-libsecret.md)
   - [Google Workspace via OAuth derivation](gws-oauth.md)
@@ -29,8 +30,9 @@ underwrap's docs are organized by question:
 
 1. [README](../README.md)
 2. [Agent-facing wrappers](agents.md)
-3. [Getting started](getting-started.md)
-4. [Security](security.md)
+3. [Wrapper author checklist](wrapper-author-checklist.md)
+4. [Getting started](getting-started.md)
+5. [Security](security.md)
 
 ### If you want to deploy it seriously
 

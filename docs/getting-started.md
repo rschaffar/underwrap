@@ -169,6 +169,8 @@ If an agent or automation system will call the wrapper, you will usually want a 
 
 Read: [Agent-facing wrappers](agents.md)
 
+Before you call a wrapper design “done”, also read: [Wrapper author checklist](wrapper-author-checklist.md)
+
 ### Use `gh` with login flows instead of a plain env var
 
 If you want `gh auth login` and stored credentials to work cleanly, use libsecret mode.
@@ -220,4 +222,5 @@ Then try the wrapper again.
 
 - [Documentation overview](index.md)
 - [Configuration reference](configuration.md)
+- [Wrapper author checklist](wrapper-author-checklist.md)
 - [Security](security.md)

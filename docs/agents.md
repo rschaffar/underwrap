@@ -179,15 +179,17 @@ Even if you do not treat the agent as fully adversarial, it is wise to assume it
 A practical adoption sequence is:
 
 1. get a simple wrapper working with [Getting started](getting-started.md)
-2. wrap one narrow helper for a single agent action
-3. review the helper as if it were an API surface
-4. only then consider broader or more stateful workflows
+2. read the [Wrapper author checklist](wrapper-author-checklist.md)
+3. wrap one narrow helper for a single agent action
+4. review the helper as if it were an API surface
+5. only then consider broader or more stateful workflows
 
 ## Security notes
 
 If you want the deep design rationale behind the wrapper chain and identity model, read:
 
 - [Architecture](architecture.md)
+- [Wrapper author checklist](wrapper-author-checklist.md)
 - [Security](security.md)
 
 The short version is that underwrap is trying to make direct token extraction less convenient and less ambient than plain environment-variable workflows. That is valuable, but it is only part of the overall agent-safety story.
