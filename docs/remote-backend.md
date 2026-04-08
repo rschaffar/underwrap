@@ -1,44 +1,75 @@
 # Remote backend
 
-In remote mode, secrets never exist on the target machine. A backend daemon
-runs on your workstation (or any trusted machine) and serves secrets over
-an SSH-tunneled Unix socket.
+Remote backend mode lets you keep secrets on a trusted machine — typically your workstation — while still running wrappers on a different NixOS machine.
 
-The backend daemon (`underwrap-backendd`) is the one component that can run
-on any Linux system, not just NixOS. It has no setgid requirements, no
-capability requirements, no complex user management — just a binary that
-listens on a socket and serves secrets from a directory.
+The important property is simple:
 
-## Architecture
+> the target machine runs the wrappers, but it does not need to store the secrets locally
 
+## When remote mode is useful
+
+Use it when:
+
+- the target machine is ephemeral or lightly trusted
+- the wrapper host is an agent VM or automation box
+- you want a clean "connect = available, disconnect = unavailable" model
+- you want refresh-token material or other high-value secrets to stay on your workstation
+
+## The model
+
+In remote mode, there are two daemons:
+
+- **`underwrapd`** on the target machine
+- **`underwrap-backendd`** on the trusted backend machine
+
+An SSH remote forward exposes the backend socket to the target machine.
+
+```text
+target machine                             trusted workstation
+--------------                             -------------------
+wrapper
+  -> underwrapd
+       -> /run/underwrap-<instance>/tunnel/backend.sock
+             -> SSH remote forward
+                  -> underwrap-backendd
+                       -> local secret storage
 ```
-Your workstation                          Target machine (NixOS)
-─────────────────                         ──────────────────────
-underwrap-backendd                        underwrapd (frontend)
-  ├── PlainBackend (secrets on disk)        ├── wrapper identity (setgid GID)
-  ├── OAuth derivation                      ├── PID namespace isolation
-  ├── listens on backend.sock               ├── non-dumpable wrappers
-  │                                         ├── connects to backend.sock
-  │                                         │
-  └── SSH -R ─────────────────────────────► └── /run/underwrap-<inst>/backend.sock
-      (you establish this consciously)           (0660, instance group)
+
+From the user's point of view, the wrapper command still looks normal.
+
+## What changes in configuration
+
+On the target machine, you enable remote mode for the instance:
+
+```nix
+services.underwrap.instances.work = {
+  remote.enable = true;
+
+  wrappers = {
+    gh = {
+      target = "${pkgs.gh}/bin/gh";
+      secret = "github/bootstrap";
+      libsecret = true;
+      injection = {
+        mode = "env";
+        variable = "GH_UNUSED";
+      };
+    };
+  };
+
+  secrets = {
+    "github/bootstrap" = { mutable = false; };
+  };
+};
 ```
 
-## How it works
+The wrapper definitions look the same. The difference is where `underwrapd` reads from.
 
-1. You start `underwrap-backendd` on your workstation with your secrets
-2. You SSH into the target machine, forwarding the backend socket
-3. The frontend daemon on the target connects to the forwarded socket
-4. Wrappers on the target read secrets through the frontend → backend chain
-5. You disconnect SSH → socket disappears → wrappers fail → locked
+## Backend daemon setup
 
-**Connecting the tunnel IS the unlock. Disconnecting IS the lock.**
+On the trusted machine, run `underwrap-backendd` with a backend config.
 
-## Setup
-
-### Backend (your workstation)
-
-Create a config file:
+A minimal example:
 
 ```yaml
 socket: /run/underwrap-backend/backend.sock
@@ -47,124 +78,124 @@ storage:
   dir: /home/you/.underwrap/secrets
 ```
 
-Run the backend:
+Then start:
 
 ```bash
 underwrap-backendd --config ~/.underwrap/backend.yaml
 ```
 
-Store secrets:
+## Establishing the tunnel
 
-```bash
-mkdir -p ~/.underwrap/secrets/github
-echo -n 'ghp_...' > ~/.underwrap/secrets/github/token
+The NixOS module creates a per-instance tunnel user such as:
 
-mkdir -p ~/.underwrap/secrets/google
-cat ~/oauth-credentials.json > ~/.underwrap/secrets/google/workspace-creds
+```text
+underwrap-work-tunnel
 ```
 
-### Frontend (NixOS target machine)
-
-```nix
-services.underwrap.instances.work = {
-  remote.enable = true;
-
-  wrappers = {
-    gh-authorized = {
-      target = "${pkgs.gh}/bin/gh";
-      secret = "github/token";
-      injection = { mode = "env"; variable = "GH_TOKEN"; };
-    };
-    gws = {
-      target = "${pkgs.gws}/bin/gws";
-      secret = "google/workspace-creds";
-      injection = { mode = "env"; variable = "GWS_TOKEN"; };
-      derivation = "oauth_refresh_to_access_token";
-    };
-  };
-
-  secrets = {
-    "github/token" = {};
-    "google/workspace-creds" = { mutable = true; };
-  };
-};
-```
-
-### Establishing the tunnel
-
-From your workstation, forward the backend socket to the target:
+From the trusted machine, create the remote forward:
 
 ```bash
 ssh -N \
-  -R /run/underwrap-work/backend.sock:/run/underwrap-backend/backend.sock \
+  -R /run/underwrap-work/tunnel/backend.sock:/run/underwrap-backend/backend.sock \
   underwrap-work-tunnel@target-machine
 ```
 
-The `underwrap-work-tunnel` user is created by the NixOS module. It has
-no shell and exists only to receive the socket forward.
+That is the key path for the generated module layout:
 
-### Using wrappers
+```text
+/run/underwrap-work/tunnel/backend.sock
+```
 
-Once the tunnel is up:
+## Availability model
+
+Remote mode has a nice operational property:
+
+- tunnel up -> wrappers can read secrets
+- tunnel down -> wrappers fail to read secrets
+
+In practice, that means:
+
+- **connecting the tunnel makes secrets available**
+- **disconnecting the tunnel removes backend access**
+
+That is not a complete authorization model on its own, but it is a very useful operational boundary.
+
+## Security boundaries
+
+### What remote mode improves
+
+- secrets do not need to be stored on the target machine
+- refresh-token material can stay on the trusted workstation
+- the target still benefits from underwrap's normal wrapper chain and identity checks
+
+### What remote mode does not change
+
+- the target process still receives the credential material it needs for the invocation
+- `root` on the target machine is still `root`
+- trust shifts to the backend machine and the SSH tunnel setup
+
+### Backend daemon trust model
+
+`underwrap-backendd` does not implement its own complex multi-tenant authentication layer.
+
+The intended trust boundary is:
+
+- the backend socket is local to the trusted machine
+- it stays protected by filesystem permissions
+- the only remote exposure path is the SSH forward you explicitly create
+
+In other words: remote mode assumes you trust the workstation that holds the backend daemon.
+
+## Tunnel user notes
+
+The NixOS module creates the tunnel user without a normal shell and places it in the daemon group so the forwarded socket can be created where `underwrapd` expects it.
+
+For production-style deployments, the SSH key used for that tunnel should be restricted.
+
+A typical `authorized_keys` restriction looks like:
+
+```text
+restrict,streamlocal-forward=/run/underwrap-work/tunnel/backend.sock ssh-ed25519 AAAA...
+```
+
+## A good pairing: remote backend + OAuth derivation
+
+Remote mode pairs especially well with OAuth derivation.
+
+Example:
+
+- store Google refresh-token material on your workstation
+- expose it to the target only through `underwrap-backendd`
+- let the target wrapper receive only the derived access token
+
+See [Google Workspace via OAuth derivation](gws-oauth.md).
+
+## Troubleshooting
+
+### Wrapper fails with backend connection errors
+
+Check whether the SSH tunnel is up and whether the forwarded socket exists:
 
 ```bash
-work-gh-authorized pr list          # works
-work-gws gmail list         # works, OAuth token derived on your workstation
+ls -l /run/underwrap-work/tunnel/
 ```
 
-Disconnect the SSH session:
+### Tunnel user cannot create the socket
 
-```bash
-# Wrappers immediately fail:
-work-gh-authorized pr list
-# Error: connecting to backend...
-```
+Make sure:
 
-Reconnect:
+- remote mode is enabled for the instance
+- the runtime tunnel directory exists
+- OpenSSH is configured to allow stream-local forwarding
 
-```bash
-ssh -N -R ... underwrap-work-tunnel@target-machine
-# Wrappers work again.
-```
+The module sets the needed OpenSSH server setting for remote-enabled instances.
 
-## Security properties
+### Secrets seem to be local anyway
 
-- Secrets never touch the target machine's disk
-- The backend socket is only accessible to the daemon user (instance group)
-- The tunnel user cannot read secrets — it can only forward the socket
-- The frontend daemon applies all the same protections: GID identity,
-  PID namespace, non-dumpable wrappers, core dump prevention
-- OAuth derivation happens on your workstation — the refresh token never
-  leaves your machine
+Check your instance configuration. If `remote.enable = true` is not set, the instance will use local storage instead.
 
-## Tunnel user restrictions
+## Related docs
 
-The NixOS module creates `underwrap-<instance>-tunnel` with:
-- No shell
-- Home directory only for `.ssh/authorized_keys`
-- Member of the instance's daemon group (so the forwarded socket is
-  accessible to the daemon)
-
-For production use, restrict the SSH key in `authorized_keys`:
-
-```
-restrict,streamlocal-forward=/run/underwrap-work/backend.sock ssh-ed25519 AAAA...
-```
-
-This prevents the tunnel key from doing anything except forwarding that
-one specific socket.
-
-## Multiple targets
-
-Run separate tunnel sessions to different machines:
-
-```bash
-# Terminal 1: tunnel to dev VM
-ssh -N -R /run/underwrap-work/backend.sock:... underwrap-work-tunnel@dev-vm
-
-# Terminal 2: tunnel to staging VM
-ssh -N -R /run/underwrap-work/backend.sock:... underwrap-work-tunnel@staging-vm
-```
-
-Each target machine has its own underwrap instance with its own tunnel user.
-Your single backend serves all of them through separate SSH sessions.
+- [Configuration reference](configuration.md)
+- [Google Workspace via OAuth derivation](gws-oauth.md)
+- [Security](security.md)

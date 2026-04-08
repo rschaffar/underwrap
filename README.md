@@ -1,174 +1,152 @@
 # underwrap
 
-Wrap command execution with just-in-time secret injection and privilege drop.
+Run local CLI tools with secrets injected just in time — without handing those reusable secrets directly to the caller.
 
-**NixOS only.** underwrap targets NixOS exclusively. The security model
-depends on `security.wrappers` (setgid binaries), declarative user/group
-management, file capabilities, systemd service hardening, and tmpfiles —
-all orchestrated by a NixOS module. Reproducing this correctly on other
-distributions would require extensive manual configuration that is
-difficult to get right and harder to maintain. The only component designed
-to run on non-NixOS systems is the backend daemon (`underwrap-backendd`),
-which may run on any Linux machine holding your secrets.
+> [!WARNING]
+> **Early project / security review status:** underwrap is still young. Large parts of the current implementation were built quickly with heavy agent assistance (yes, "vibe coded"), and a deeper security review is still pending.
+>
+> The project already aims to make accidental secret extraction and casual same-user snooping much harder, especially in agent-facing workflows. It also **strives** to hold up under a more adversarial agent threat model, and many design choices are driven by that goal. But that stronger claim should still be treated as an aspiration under active scrutiny, not as a finished security certification.
+>
+> If you spot a weakness, questionable assumption, or misleading claim, feedback is very welcome.
 
-## What it is
+**NixOS only.** underwrap relies on NixOS features such as `security.wrappers`, declarative users and groups, file capabilities, and a NixOS module that generates the wrapper chain and daemon configuration. The one exception is `underwrap-backendd`, the optional remote backend daemon, which can run on other Linux machines.
 
-underwrap is a secret brokerage system for local CLI tool execution.
-A daemon holds secrets and serves them to wrapper binaries over Unix sockets.
-The wrappers inject secrets into the target tool's environment, then exec it
-inside a PID namespace with Yama LSM protection against same-UID `/proc` inspection.
+## Why this exists
 
-```
-$ work-gh-authorized pr list
-# ↑ This just works. Behind the scenes:
-#   1. Setgid wrapper connects to daemon
-#   2. Daemon verifies identity from kernel-provided GID
-#   3. Daemon fetches secret (local or via SSH tunnel from your workstation)
-#   4. Wrapper drops privilege, creates PID namespace
-#   5. Target runs with secret in env, protected by Yama LSM + PID namespace
-```
+underwrap is for a specific problem:
 
-## Primary use case: agent-facing wrappers without handing agents reusable tokens
+- you want to run an existing CLI such as `gh`, `jira`, or `gws`
+- that CLI needs a token or credential
+- you do **not** want that secret sitting in the caller's shell environment, config files, or long-lived dotfiles
+- ideally, you also want to keep secrets off the target machine entirely
 
-A major use case is giving an AI agent or automation system access to a CLI
-capability **without** giving it the raw API token.
+The most opinionated use case is:
 
-Typical setup:
+> **agent-facing wrappers without handing out reusable tokens**
 
-- the agent can already read the workspace and invoke approved commands
-- you expose a **narrow wrapper** like `agent-gh-comment` or `agent-slack-post`
-- that wrapper is deployed declaratively by NixOS and points to a fixed target
-  in the Nix store
-- underwrap injects the token just-in-time for that wrapper's target
+For example, instead of giving an agent `GH_TOKEN`, you expose a narrow command such as:
 
-Example:
-
-```
-$ agent-gh-comment 123 /workspace/review.md
-# The agent can already read /workspace/review.md.
-# What underwrap avoids is handing the agent GH_TOKEN itself.
+```text
+agent-gh-comment <pr-number> <body-file>
 ```
 
-This is where underwrap fits well:
+underwrap can inject the token only for that wrapper invocation, while the target runs through a hardened wrapper chain instead of from the agent's ambient shell environment.
 
-- the raw token is not in the agent's shell environment, prompt, or config files
-- the configured target path is absolute and comes from a trusted root-owned
-  sidecar config — no PATH lookup for the main target
-- the target starts from a **clean environment**, blocking `LD_PRELOAD`,
-  `LD_LIBRARY_PATH`, and injection of internal `UNDERWRAP_*` variables
-- wrapper identity is kernel-verified via setgid effective GID
-- wrapper processes are non-dumpable and zeroize secret material after handoff
-- core dumps are disabled for the target
-- secrets can stay on your workstation entirely in remote-backend mode
+## What underwrap does
 
-Combined with **specialized wrappers** that limit repo / subcommand / flags /
-remote action surface, this gives a reasonable defense against raw token
-exfiltration and reduces tooling abuse.
+At a high level:
 
-It is **not** a full sandbox. If you wrap a broad tool like `gh` directly, you
-are still giving the caller broad `gh` capabilities. underwrap is the hardened
-secret-delivery layer around those wrappers, not a replacement for wrapper
-policy design.
+1. a setgid wrapper connects to the daemon
+2. the daemon identifies the wrapper from the kernel-visible effective GID
+3. the daemon fetches or derives the secret
+4. the wrapper drops privilege
+5. the target runs with the secret injected just for that invocation
 
-See [Agent-facing wrappers](docs/agents.md) for the recommended pattern.
+Depending on how you configure it, underwrap can also:
 
-## Why it exists
+- keep secrets in local storage managed by the daemon
+- keep secrets on a remote workstation via an SSH-tunneled backend
+- derive short-lived access tokens from stored refresh-token material
+- provide a private Secret Service (`libsecret`) environment for tools such as `gh`
 
-Every local secret management approach has problems:
+## What makes it interesting
 
-- **Environment variables** leak into shell history, `/proc/pid/environ`,
-  child processes, agent configs, and service files.
-- **Plaintext files** work until you need mutable credentials (OAuth refresh
-  tokens) — then you're re-encrypting files, rebuilding systems, or manually
-  copying secrets around.
-- **Desktop keyrings** are GUI-centric, not designed for headless CLI wrappers.
-- **Remote secret managers** (Vault, AWS SSM) add latency, availability
-  dependencies, and authentication complexity for local tool invocations.
-- **Dotenv / direnv** put secrets in shell scope where any process can read them.
+underwrap is trying to combine a few things that are rarely available together:
 
-underwrap solves this differently. See [How underwrap compares](docs/comparison.md)
-for a detailed analysis.
+- **wrapper-first UX** — users run a command like `work-jira issue list`
+- **kernel-backed wrapper identity** — access is tied to setgid wrapper groups, not caller-supplied names
+- **clean target environments** — the target does not inherit the caller's full shell environment
+- **process-isolated delivery** — the wrapper chain is designed to reduce easy same-user inspection
+- **mutable credential workflows** — useful for OAuth and libsecret-backed tools
+- **remote secrets** — secrets can stay on your workstation instead of on the target host
 
-## Key features
+For the design details and limitations, see [Security](docs/security.md).
 
-- **Wrapper-first UX**: `work-gh-authorized pr list` feels like running `gh` directly.
-  No environment setup, no secret prefixing, no source files.
+## What it does not do
 
-- **Kernel-verified identity**: each wrapper runs `setgid` to a dedicated group.
-  The daemon verifies the effective GID via `SO_PEERCRED` — not a client-supplied
-  string. A process can only read the secret mapped to its kernel-assigned GID.
+underwrap is **not** a full sandbox and it is **not** a policy engine for broad CLIs.
 
-- **PID namespace + Yama protection**: the target runs inside its own PID namespace.
-  Same-UID processes cannot read its `/proc/<pid>/environ` or ptrace it,
-  enforced by Yama LSM (`ptrace_scope=1`, the NixOS default). The PID
-  namespace provides defense-in-depth (different PID space, harder discovery).
+Important boundaries:
 
-- **Two-stage wrapper**: stage 1 (setgid) handles identity and secret retrieval.
-  Stage 2 (`cap_sys_admin`) creates the PID namespace. Splitting these avoids
-  the NixOS `security.wrappers` limitation that setgid and capabilities are
-  mutually exclusive.
+- If you wrap a broad tool directly, you are still giving the caller broad access to that tool.
+- If the target program itself can reveal the secret, underwrap cannot magically prevent that.
+- If the machine is compromised as `root`, the game is over.
+- The current design leans on Linux and NixOS behavior, especially Yama and the wrapper/capability setup.
 
-- **Non-dumpable wrapper processes**: both wrapper parents call
-  `prctl(PR_SET_DUMPABLE, 0)` and zeroize the secret after piping it.
-  Since they never exec again, the flag persists for their entire lifetime.
+That is why the recommended pattern for agent-facing use is usually:
 
-- **Clean target environment**: the target starts from `env_clear()` and only
-  receives a safe default whitelist plus trusted per-wrapper additions from the
-  root-owned sidecar config. This blocks `LD_PRELOAD` / `LD_LIBRARY_PATH`
-  injection and user-controlled `UNDERWRAP_*` overrides.
+```text
+underwrap wrapper -> your narrow helper -> real CLI
+```
 
-- **Core dump prevention**: `RLIMIT_CORE=0` set before exec of the target.
-  A crashing tool cannot write the secret to disk.
+not:
 
-- **Remote backend**: secrets can live on your workstation, served to the
-  target machine over an SSH-tunneled Unix socket. Connecting the tunnel
-  makes secrets available. Disconnecting locks them. No secrets on disk on
-  the target machine, ever.
+```text
+underwrap wrapper -> unrestricted general-purpose CLI
+```
 
-- **Multi-instance**: multiple fully isolated instances on one machine.
-  Separate users, groups, sockets, directories. No overlap. A compromised
-  instance cannot reach another.
+See [Agent-facing wrappers](docs/agents.md).
 
-- **OAuth derivation**: the daemon (or backend) exchanges OAuth refresh
-  tokens for short-lived access tokens. The wrapper only sees the access
-  token. The refresh token never leaves the backend.
+## A quick example
 
-- **Self-service unlock**: users can unlock wrappers via SSH agent
-  challenge-response, without needing root access.
+Imagine a NixOS machine where you want a Jira wrapper that injects `JIRA_API_TOKEN` only when `jira` runs.
 
-- **Structured audit trail**: every read, write, unlock, lock, and denial
-  is logged with wrapper name, secret ID, peer UID, and scope. Secret
-  material is never logged.
+After configuration, the user experience looks like this:
 
-- **Immutable secrets**: secrets declared `mutable: false` cannot be
-  overwritten. The daemon enforces this with per-secret write serialization
-  to prevent TOCTOU races.
+```bash
+$ work-jira issue list
+```
 
-- **NixOS-native**: the module generates users, groups, setgid wrappers,
-  capability binaries, sidecar configs, systemd services, tmpfiles, and
-  SSH tunnel users — all from a declarative Nix configuration.
+Instead of this:
 
-## When to use underwrap
+```bash
+$ export JIRA_API_TOKEN=...
+$ jira issue list
+```
 
-Use underwrap when you want one or more of these:
+That means the token does not need to live in the shell session. underwrap fetches it when the wrapper runs, injects it for the target process, and then the wrapper exits.
 
-- **Agent-facing wrappers**: let an agent use a CLI capability without giving
-  it the reusable token directly
-- **Existing CLI compatibility**: keep using tools like `gh` or other token-
-  driven CLIs instead of rewriting everything into a broker service
-- **Secrets off the target machine**: keep credentials on your workstation and
-  forward them over an SSH-tunneled Unix socket
-- **Mutable credentials**: support OAuth refresh/access token workflows or
-  libsecret-backed tools
-- **NixOS-native deployment**: generate users, groups, setgid wrappers,
-  sidecar configs, and services from one declarative config
+The full first-setup walkthrough is in [Getting started](docs/getting-started.md).
 
-You probably do **not** need underwrap if:
+## Typical workflows
 
-- plain environment variables or `op run` / `pass` are already good enough
-- you control the full integration and can build a small broker service instead
-- you need strong behavior restriction more than secret-delivery hardening
-- you only have a handful of static secrets and no wrapper-oriented workflow
+underwrap is most useful when you want one of these patterns:
+
+- **A simple token-backed wrapper**
+  - Example: `jira-cli` using `JIRA_API_TOKEN`
+  - Good first setup and easiest mental model
+
+- **A narrow agent-facing command**
+  - Example: `agent-gh-comment`
+  - The caller can perform one approved action without receiving the reusable token
+
+- **A libsecret-backed CLI inside a private session**
+  - Example: `gh auth login` storing credentials through underwrap's private Secret Service
+
+- **An OAuth refresh-token workflow**
+  - Example: `gws` where the backend derives short-lived access tokens on demand
+
+- **A remote-backend deployment**
+  - Secrets live on your workstation; target machines only see them through an SSH tunnel
+
+## Should you use underwrap?
+
+underwrap is a good fit when:
+
+- you are on NixOS
+- you want to keep using existing CLIs instead of writing a broker service
+- you care about not spraying secrets into shell environments and dotfiles
+- you want a strong story for agent-facing wrappers
+- you need mutable credentials, libsecret support, or remote secret storage
+
+It is probably **not** the right tool when:
+
+- plain environment variables are already good enough
+- a static secret file is acceptable
+- you mostly need behavior restriction, not hardened secret delivery
+- you are not on NixOS
+
+For a short decision guide, see [Choosing underwrap](docs/comparison.md).
 
 ## Quick start
 
@@ -179,19 +157,33 @@ cargo test --workspace
 nix build .#checks.x86_64-linux.vm-test
 ```
 
-See [Getting started](docs/getting-started.md) for a full NixOS setup walkthrough.
+Then start with [Getting started](docs/getting-started.md).
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md) — setup, first wrapper, verification
-- [Agent-facing wrappers](docs/agents.md) — recommended pattern for AI agents and narrow wrappers
-- [Architecture](docs/architecture.md) — components, request flow, protocols
-- [Configuration](docs/configuration.md) — NixOS module, YAML, multi-instance
-- [Security](docs/security.md) — threat model, every mechanism, rejected alternatives
-- [Remote backend](docs/remote-backend.md) — SSH tunnel setup, lifecycle
-- [Comparison](docs/comparison.md) — how underwrap differs from other solutions
-- [Testing](docs/testing.md) — cargo tests, VM test assertions
-- [TODO](TODO.md) — remaining work
+- [Documentation overview](docs/index.md)
+- [Getting started](docs/getting-started.md)
+- [Agent-facing wrappers](docs/agents.md)
+- [GitHub via libsecret](docs/gh-libsecret.md)
+- [Google Workspace via OAuth derivation](docs/gws-oauth.md)
+- [Configuration reference](docs/configuration.md)
+- [Architecture](docs/architecture.md)
+- [Remote backend](docs/remote-backend.md)
+- [Security](docs/security.md)
+- [Testing](docs/testing.md)
+- [Choosing underwrap](docs/comparison.md)
+- [TODO](TODO.md)
+
+## Status
+
+The implementation already covers the core wrapper chain, multi-instance NixOS deployment, remote backend mode, OAuth derivation, and libsecret mode.
+
+What it still needs most is:
+
+- wider real-world usage
+- simplification and polish
+- deeper security review
+- continued pressure-testing of the agent-facing threat model
 
 ## License
 

@@ -1,185 +1,189 @@
 # Agent-facing wrappers
 
-This guide describes the main underwrap use case: letting an AI agent or other
-automation invoke a CLI capability **without** handing it the reusable API
-token directly.
+underwrap is especially interesting when the caller is an AI agent or other automation that should be able to **use** a capability without being handed the reusable secret behind it.
 
-## The problem
+This document explains the pattern underwrap is designed for, and just as importantly, where its limits are.
 
-A common agent setup already allows the agent to:
+## The core idea
 
-- read the workspace
-- write temporary files
-- invoke a small set of approved commands
+Instead of giving an agent a raw token such as `GH_TOKEN`, you give it a command.
 
-In that setup, the main remaining problem is often **credential exposure**:
+Prefer this:
 
-- you do not want `GH_TOKEN`, `SLACK_TOKEN`, or similar secrets in the agent's
-  shell environment
-- you do not want tokens written to local files on the target machine
-- you do not want the agent to be able to trivially print or reuse the raw
-  token outside the intended tool flow
+```text
+agent-gh-comment <pr-number> <body-file>
+```
 
-underwrap is designed to be the hardened secret-delivery layer for that case.
+Over this:
 
-## Recommended pattern
+```text
+gh <anything>
+```
 
-The strongest pattern is:
+underwrap then injects the token only for that wrapper invocation.
+
+## The recommended shape
+
+The strongest pattern is usually:
 
 ```text
 agent
-  -> /run/wrappers/bin/agent-gh-comment     (setgid underwrap entry wrapper)
-  -> /nix/store/.../bin/agent-gh-comment    (your narrow wrapper)
-  -> /nix/store/.../bin/gh                  (or another fixed tool)
+  -> /run/wrappers/bin/agent-gh-comment     # setgid underwrap entry wrapper
+  -> /nix/store/.../bin/agent-gh-comment    # your narrow helper
+  -> /nix/store/.../bin/gh                  # real CLI
 ```
 
-That is:
+This separates responsibilities:
 
-1. The agent invokes a wrapper command that NixOS deployed declaratively.
-2. underwrap authenticates the wrapper by its kernel-visible effective GID.
-3. underwrap injects the secret just-in-time.
-4. underwrap executes your **fixed target** from a root-owned sidecar config.
-5. Your target should itself be a **narrow wrapper** that limits what the agent
-   can do.
-6. That wrapper may call `gh`, `slack-cli`, or another tool via **store-pinned
-   absolute paths**.
+- **underwrap** handles secret delivery and the wrapper chain
+- **your helper** defines the allowed action surface
+- **the real CLI** does the actual API call
 
-Example narrow commands:
+## Why narrow wrappers matter
 
-- `agent-gh-comment <pr> <body-file>`
-- `agent-gh-list-open-prs`
-- `agent-slack-post <channel> <body-file>`
-- `agent-gws-read-doc <doc-id>`
+underwrap is not a behavior sandbox.
 
-This is much safer than exposing a broad tool like `gh <anything>` directly.
+If you wrap the full `gh` CLI directly, then whoever can run that wrapper can still do whatever the token permits through `gh`.
 
-## What underwrap gives you here
+That may still be acceptable for some human-operated workflows. It is usually the wrong trade-off for agents.
 
-When used this way, underwrap provides several useful hardening properties.
+A narrow helper is where you decide:
 
-### The agent does not need the raw token
+- which repository is fixed
+- which subcommand is fixed
+- which flags are allowed
+- which arguments are validated
+- whether file paths are allowed and how they are interpreted
 
-The wrapper can use the secret-backed capability without the raw token being:
+## A concrete example
 
-- exported in the agent shell
-- written to a config file
-- stored on target disk in remote-backend mode
-- exposed as a normal argument
+The repository includes an example Nix expression at:
 
-This is the main value for agent-facing use.
+- [`examples/agent-github-comment.nix`](../examples/agent-github-comment.nix)
 
-### The configured target is fixed
+That example builds a wrapper that only allows:
 
-The target binary path comes from a trusted root-owned sidecar config in
-`/etc/underwrap/wrappers/`.
+```text
+gh pr comment --repo myorg/myrepo <pr> --body-file <file>
+```
 
-- The target path must be **absolute**.
-- underwrap does **not** search `PATH` for the configured main target.
-- A caller cannot redirect the wrapper to some attacker-chosen binary.
+The caller can choose the PR number and comment body file, but not:
 
-For agent-facing wrappers, this is what lets you point underwrap at a Nix-store
-helper you wrote yourself.
+- an arbitrary repository
+- an arbitrary `gh` subcommand
+- arbitrary extra flags
 
-### The target starts from a clean environment
+That is the right general pattern.
 
-underwrap starts the target with `env_clear()` and then restores only:
+## What underwrap contributes in this setup
 
-- a safe default whitelist (`HOME`, `USER`, `PATH`, locale, XDG vars, etc.)
-- trusted per-wrapper additions from the sidecar config (`envPassthrough`,
-  `envSet` in the NixOS module)
+When used this way, underwrap is trying to reduce several common failure modes.
 
-This blocks:
+### 1. The token does not need to live in the agent's shell environment
 
-- `LD_PRELOAD` / `LD_LIBRARY_PATH` injection
-- user injection of internal `UNDERWRAP_*` control variables
-- arbitrary inherited environment affecting the target
+That means less risk of accidental leakage through:
 
-If your wrapper should not rely on `PATH`, call downstream tools by absolute
-Nix store path.
+- shell startup files
+- process supervisors
+- prompts and debugging output
+- framework-level environment capture
 
-### Wrapper identity is kernel-verified
+### 2. The main target path is fixed by trusted configuration
 
-The daemon does not trust a client-supplied wrapper name. It derives wrapper
-identity from the wrapper's effective GID.
+underwrap reads the configured target from a root-owned sidecar config in `/etc/underwrap/wrappers/`.
 
-That means one wrapper cannot simply claim to be another wrapper and read its
-secret.
+That means the caller does not get to swap in an attacker-chosen target binary for the main wrapper hop.
 
-### Wrapper parent processes are hardened
+### 3. The target starts from a clean base environment
 
-The wrapper processes that briefly hold secret material:
+underwrap uses a cleared environment and then restores only a safe default whitelist plus trusted per-wrapper additions.
 
-- set `PR_SET_DUMPABLE=0`
-- zeroize secret buffers after handoff
-- avoid argv/temp-file secret passing
-- disable core dumps for the target process
+That helps reduce:
 
-### Secrets can stay off the target machine
+- `LD_PRELOAD` / `LD_LIBRARY_PATH` tricks
+- malicious `UNDERWRAP_*` variables
+- general ambient-environment weirdness
 
-With the remote backend, the target NixOS machine receives secrets over an
-SSH-tunneled Unix socket from your workstation. This is especially useful for
-agent VMs or ephemeral hosts.
+### 4. Wrapper identity is kernel-backed
 
-## What underwrap does NOT do
+The daemon does not trust a caller-supplied wrapper name. It derives identity from the wrapper's effective GID.
 
-underwrap is not a full behavior sandbox.
+That is important when multiple wrappers exist with different secrets and different intended targets.
 
-It does **not** by itself guarantee that the target tool is narrowly scoped.
-If you wrap a broad tool directly, you are still giving the caller broad tool
-capabilities.
+### 5. Secrets can stay off the target host
 
-Examples:
+With the remote backend, you can keep the real secrets on your workstation and expose them to the target machine only through an SSH-tunneled backend socket.
 
-- Wrapping full `gh` still gives the caller full `gh` powers.
-- Wrapping full `slack-cli` still gives the caller whatever that CLI can do.
-- If the target tool itself can reveal the token, underwrap cannot stop that.
+## What underwrap does **not** solve for you
 
-So the recommended design is:
+This is the most important section.
 
-- use **narrow wrappers** for agent-facing commands
-- use **scoped tokens** where possible
-- pin downstream tools to **absolute Nix store paths**
-- keep the wrapper interface as small and auditable as possible
+underwrap does **not** by itself answer these questions:
 
-## When this is a good fit
+- Is the wrapped action too broad?
+- Can the target CLI itself reveal the secret?
+- Can the agent abuse a legitimate command in a harmful way?
+- Is the downstream token scope too powerful?
+- Does your helper validate arguments well enough?
 
-Use this pattern when:
+Those are wrapper design and token-scope questions.
 
-- the agent already has workspace read access
-- the problem is protecting the **reusable credential**, not hiding the local
-  files from the agent
-- you want to keep existing CLIs in the loop instead of building a custom API
-  broker for everything
-- you want the wrapper commands deployed declaratively by NixOS
+underwrap helps with **secret delivery and process handling**. It does not replace careful wrapper design.
 
-If you control the whole integration and can avoid exposing a general CLI at
-all, a narrow broker service may still be simpler. underwrap is most useful
-when you want hardened secret delivery around real local CLI execution.
+## Design guidelines for agent-facing wrappers
 
-## NixOS example
+### Prefer commands over shells
 
-See [`examples/agent-github-comment.nix`](../examples/agent-github-comment.nix)
-for a complete example.
+Good:
 
-That example shows this pattern:
+```text
+agent-gh-comment <pr> <body-file>
+```
 
-- create a small Nix-store wrapper `agent-gh-comment`
-- hardcode the allowed GitHub action (`gh pr comment`)
-- point underwrap at that wrapper as the target
-- inject `GH_TOKEN` only for that wrapper invocation
+Less good:
 
-## Practical guidance
+```text
+agent-gh --comment <pr> --body-file <file>
+```
 
-For agent-facing wrappers, prefer:
+The narrower and more explicit the interface, the easier it is to audit.
 
-- `agent-gh-comment`
-- `agent-gh-list-open-prs`
-- `agent-slack-post`
+### Pin downstream tools by absolute path
 
-Over:
+If your helper runs `gh`, `jq`, `curl`, or anything similar, prefer absolute Nix store paths over `PATH` lookups.
 
-- `agent-gh <anything>`
-- `agent-slack <anything>`
+### Validate every free-form argument
 
-The narrower the wrapper, the more meaningful underwrap's secret-delivery
-hardening becomes.
+Typical examples:
+
+- numeric PR numbers
+- existing readable file paths
+- fixed repo names
+- bounded message sizes
+- known-safe flag subsets
+
+### Use the narrowest token possible
+
+underwrap reduces the risk of casually exposing the raw token. It does not make an overpowered token safe.
+
+### Assume the caller is creative
+
+Even if you do not treat the agent as fully adversarial, it is wise to assume it will eventually try weird argument combinations, unexpected files, or inconvenient edge cases.
+
+## Suggested rollout path
+
+A practical adoption sequence is:
+
+1. get a simple wrapper working with [Getting started](getting-started.md)
+2. wrap one narrow helper for a single agent action
+3. review the helper as if it were an API surface
+4. only then consider broader or more stateful workflows
+
+## Security notes
+
+If you want the deep design rationale behind the wrapper chain and identity model, read:
+
+- [Architecture](architecture.md)
+- [Security](security.md)
+
+The short version is that underwrap is trying to make direct token extraction less convenient and less ambient than plain environment-variable workflows. That is valuable, but it is only part of the overall agent-safety story.

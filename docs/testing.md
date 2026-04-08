@@ -1,86 +1,111 @@
 # Testing
 
-## Cargo tests (122+)
+underwrap has two main layers of automated validation:
 
-Run with `cargo test --workspace`.
+- regular Rust tests across the workspace
+- a NixOS VM test that exercises the real deployment model
 
-Includes:
-- Protocol serialization roundtrips
-- Storage backend CRUD (plain, encrypted) + list/delete
-- Daemon read/write/unlock/lock lifecycle
-- Secretsd channel scoping and traversal rejection
-- Secret Service store operations (collections, items, search)
-- unlock_key SSH challenge-response on same connection
-- SCM_RIGHTS fd passing roundtrip
+For a project like this, both matter. Unit and integration tests catch protocol and logic regressions; the VM test gives confidence that the NixOS wrapper chain actually behaves the way the design expects.
 
-Run with `cargo test --workspace`. Covers:
+## Recommended commands
 
-| Crate | Tests | What |
-|-------|-------|------|
-| `underwrap-protocol` | 20 | Message serialization, config parsing, IPC framing, backend protocol |
-| `underwrap-store` | 19 | Plain + encrypted backends, path traversal rejection, atomic writes, wrong-key detection |
-| `underwrapd` | 17 | Unlock state (time expiry, scopes, UID binding, admin grants), OAuth derivation, token cache |
-| `integration-tests` | 26 | Full daemon lifecycle, store/read flow, immutability, concurrent access, unlock_key challenge-response |
+Before trusting a meaningful change, run:
 
-All cargo tests must pass in a standard `cargo test` environment. No tests
-skip — missing prerequisites are hard failures.
+```bash
+cargo test --workspace
+cargo fmt -- --check
+cargo clippy --all-targets --workspace -- -D warnings
+nix build .#checks.x86_64-linux.vm-test
+```
 
-## NixOS VM test (27+ assertions)
+## What the Rust tests cover
 
-Run with `nix build .#checks.x86_64-linux.vm-test`.
+The workspace tests cover things such as:
 
-A single VM boots with both a local-storage instance and a remote-backend
-instance, plus the backend daemon and SSH server. An unprivileged user
-(`testuser`, UID 1099) exercises the full wrapper chain.
+- config parsing and protocol serialization
+- IPC framing
+- storage backends
+- daemon read/write behavior
+- unlock and lock state handling
+- derivation logic
+- fd passing and scoped libsecret channel behavior
+- Secret Service data model behavior
 
-### Test structure
+These tests are fast and good at catching mistakes in individual components.
 
-The VM configuration is in `nix/tests/node.nix`. The test script is
-`nix/tests/test.py`. A spoofing helper is `nix/tests/spoof.py`.
+## What the VM test covers
 
-### Local instance assertions
+The VM test is where the deployment story gets exercised end to end.
 
-| # | Assertion | Security property |
-|---|-----------|-------------------|
-| 1 | Socket permissions correct | 775 dir, 666 read, 600 control |
-| 2 | Setgid wrapper installed with correct group | Wrapper identity mechanism works |
-| 3 | `underwrap-ns` has `cap_sys_admin` | PID namespace creation possible |
-| 4 | Unprivileged user runs wrapper, gets secret | End-to-end setgid flow |
-| 5 | Second wrapper works | Not a single-wrapper fluke |
-| 6 | Daemon resolved identity from GID | Kernel-verified, not client-supplied |
-| 7 | Control socket blocked for normal user | Can't store/unlock directly |
-| 8 | Secret files blocked for normal user | Filesystem permissions hold |
-| 9 | Wrapper output contains only its own secret | Cross-wrapper isolation |
-| 10 | Raw socket spoofing rejected | Python script sends forged request, daemon rejects |
-| 11 | Locked wrapper blocks unprivileged user | Unlock required |
-| 12 | Lock/unlock lifecycle | Unlock → use → lock → denied |
-| 13 | Secrets persist across daemon restart | Storage durability |
-| 14 | Target `/proc/<host_pid>/environ` not readable by same-UID | Yama LSM (ptrace_scope=1) blocks non-descendant access |
-| 15 | Target `/proc/<host_pid>/mem` not readable by same-UID | Same Yama mechanism |
-| 16 | Wrapper `/proc/pid/environ` not readable by same-UID | `PR_SET_DUMPABLE=0` persists (wrapper never execs) |
-| 17 | No core dump on SIGSEGV | `RLIMIT_CORE=0` works |
-| 18 | Target capabilities (CapEff/CapPrm/CapInh/CapAmb) are zero | `capset()` clears all capability sets |
-| 19 | Symlink confused-deputy attack prevented | Wrapper uses egid-based identity, not argv[0] |
-| 20 | `secret-tool store` via libsecret wrapper | D-Bus Secret Service works end-to-end |
-| 21 | `secret-tool lookup` retrieves stored secret | Persistence through backend |
-| 22 | Private bus socket not visible from host | Namespace-private tmpfs isolation |
-| 23 | No secret material leaked outside backend dir | Storage goes through StorageBackend only |
+It boots a NixOS VM with real underwrap services and then checks properties such as:
 
-### Remote instance assertions
+- wrapper installation and permissions
+- daemon/socket layout
+- setgid-based wrapper identity
+- successful secret delivery through the wrapper chain
+- spoofing resistance
+- lock and unlock behavior
+- target process isolation properties
+- core dump prevention
+- libsecret mode end to end
+- remote backend tunnel lifecycle
+- absence of secret values in logs
 
-| # | Assertion | Security property |
-|---|-----------|-------------------|
-| 24 | Wrapper fails without tunnel | No backend socket = no secrets |
-| 25 | SSH tunnel established, wrapper succeeds | Full tunnel flow works |
-| 26 | No secret on local disk | Truly remote storage |
-| 27 | Wrapper fails after tunnel killed | Disconnect = lock |
-| + | Wrapper works after tunnel reconnect | Reconnect = unlock |
+That is much closer to the actual security story underwrap is trying to tell.
 
-### Cross-cutting assertions
+## What the tests do **not** prove
 
-| Assertion | What it proves |
-|-----------|----------------|
-| Local wrapper doesn't leak remote secrets | Instance isolation |
-| Audit events present in journald | Structured logging works |
-| No secret values in journald | Material never logged |
-| Libsecret secret not in daemon logs | Channel ops don't leak material |
+Even a strong automated test suite does not equal a security proof.
+
+The tests do not replace:
+
+- careful code review
+- threat-model review
+- scrutiny of assumptions about Linux kernel behavior
+- real-world deployment feedback
+
+This is especially important for a project that makes ambitious claims about local secret handling.
+
+## A useful way to think about confidence
+
+The tests can give you confidence that:
+
+- the intended mechanisms are present
+- known regressions are caught
+- important deployment details are exercised regularly
+
+They cannot give you absolute confidence that:
+
+- every claim is perfectly worded
+- every kernel edge case has been explored
+- there are no design mistakes left
+
+That is why the [Security](security.md) document is detailed and why deeper review is still welcome.
+
+## If you change the NixOS module
+
+If your change touches any of these, the VM test should be considered mandatory:
+
+- users / groups / wrapper generation
+- socket locations or permissions
+- systemd services
+- remote tunnel layout
+- anything related to the wrapper chain
+
+## If you change security-sensitive wrapper behavior
+
+In addition to the VM test, pay close attention to:
+
+- privilege drops
+- environment handling
+- fd inheritance and closure
+- logging
+- libsecret channel scoping
+- namespace setup
+
+Those are the areas where small mistakes can undermine the intended model.
+
+## Related docs
+
+- [Architecture](architecture.md)
+- [Security](security.md)
