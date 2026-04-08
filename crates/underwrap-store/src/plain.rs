@@ -7,6 +7,7 @@ use crate::StorageBackend;
 use crate::path::{
     atomic_write, cleanup_empty_parents, list_files_recursive, prepare_dir, validated_path,
 };
+use underwrap_protocol::message::SecretBytes;
 
 /// Plaintext files in a directory, owned by the daemon user.
 pub struct PlainBackend {
@@ -22,18 +23,18 @@ impl PlainBackend {
 }
 
 impl StorageBackend for PlainBackend {
-    fn read(&self, secret_id: &str) -> Result<Option<String>> {
+    fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>> {
         let path = validated_path(&self.dir, secret_id)?;
-        match std::fs::read_to_string(&path) {
-            Ok(data) => Ok(Some(data)),
+        match std::fs::read(&path) {
+            Ok(data) => Ok(Some(data.into())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| format!("reading secret {secret_id}")),
         }
     }
 
-    fn write(&self, secret_id: &str, material: &str) -> Result<()> {
+    fn write(&self, secret_id: &str, material: &[u8]) -> Result<()> {
         let path = validated_path(&self.dir, secret_id)?;
-        atomic_write(&path, &self.dir, secret_id, material.as_bytes())
+        atomic_write(&path, &self.dir, secret_id, material)
     }
 
     fn list(&self, prefix: &str) -> Result<Vec<String>> {
@@ -73,73 +74,73 @@ mod tests {
     #[test]
     fn write_then_read() {
         let (_dir, b) = test_backend();
-        b.write("my/secret", "hello").unwrap();
-        assert_eq!(b.read("my/secret").unwrap().unwrap(), "hello");
+        b.write("my/secret", b"hello").unwrap();
+        assert_eq!(b.read("my/secret").unwrap().unwrap(), b"hello");
     }
 
     #[test]
     fn overwrite() {
         let (_dir, b) = test_backend();
-        b.write("tok", "v1").unwrap();
-        b.write("tok", "v2").unwrap();
-        assert_eq!(b.read("tok").unwrap().unwrap(), "v2");
+        b.write("tok", b"v1").unwrap();
+        b.write("tok", b"v2").unwrap();
+        assert_eq!(b.read("tok").unwrap().unwrap(), b"v2");
     }
 
     #[test]
     fn deep_hierarchy() {
         let (_dir, b) = test_backend();
-        b.write("a/b/c/d/e", "deep").unwrap();
-        assert_eq!(b.read("a/b/c/d/e").unwrap().unwrap(), "deep");
+        b.write("a/b/c/d/e", b"deep").unwrap();
+        assert_eq!(b.read("a/b/c/d/e").unwrap().unwrap(), b"deep");
     }
 
     #[test]
     fn rejects_dotdot() {
         let (_dir, b) = test_backend();
-        assert!(b.write("../etc/passwd", "pwned").is_err());
+        assert!(b.write("../etc/passwd", b"pwned").is_err());
         assert!(b.read("../etc/passwd").is_err());
     }
 
     #[test]
     fn rejects_absolute_path() {
         let (_dir, b) = test_backend();
-        assert!(b.write("/etc/shadow", "pwned").is_err());
+        assert!(b.write("/etc/shadow", b"pwned").is_err());
     }
 
     #[test]
     fn rejects_dot_component() {
         let (_dir, b) = test_backend();
-        assert!(b.write("./secret", "data").is_err());
+        assert!(b.write("./secret", b"data").is_err());
     }
 
     #[test]
     fn rejects_empty_segments() {
         let (_dir, b) = test_backend();
-        assert!(b.write("a//b", "data").is_err());
+        assert!(b.write("a//b", b"data").is_err());
     }
 
     #[test]
     fn rejects_empty_id() {
         let (_dir, b) = test_backend();
-        assert!(b.write("", "data").is_err());
+        assert!(b.write("", b"data").is_err());
     }
 
     #[test]
     fn rejects_null_bytes() {
         let (_dir, b) = test_backend();
-        assert!(b.write("secret\0id", "data").is_err());
+        assert!(b.write("secret\0id", b"data").is_err());
     }
 
     #[test]
     fn empty_material() {
         let (_dir, b) = test_backend();
-        b.write("empty", "").unwrap();
-        assert_eq!(b.read("empty").unwrap().unwrap(), "");
+        b.write("empty", b"").unwrap();
+        assert_eq!(b.read("empty").unwrap().unwrap(), b"");
     }
 
     #[test]
     fn atomic_write_leaves_no_temp_files() {
         let (dir, b) = test_backend();
-        b.write("tok", "val").unwrap();
+        b.write("tok", b"val").unwrap();
         for entry in std::fs::read_dir(dir.path()).unwrap() {
             let name = entry.unwrap().file_name().to_string_lossy().to_string();
             assert!(!name.starts_with(".tmp."), "temp file left behind: {name}");
@@ -156,10 +157,10 @@ mod tests {
     #[test]
     fn list_with_prefix() {
         let (_dir, b) = test_backend();
-        b.write("a/b/item1", "v1").unwrap();
-        b.write("a/b/item2", "v2").unwrap();
-        b.write("a/c/item3", "v3").unwrap();
-        b.write("d/item4", "v4").unwrap();
+        b.write("a/b/item1", b"v1").unwrap();
+        b.write("a/b/item2", b"v2").unwrap();
+        b.write("a/c/item3", b"v3").unwrap();
+        b.write("d/item4", b"v4").unwrap();
 
         let mut ids = b.list("a/b").unwrap();
         ids.sort();
@@ -184,7 +185,7 @@ mod tests {
     #[test]
     fn delete_existing() {
         let (_dir, b) = test_backend();
-        b.write("tok", "val").unwrap();
+        b.write("tok", b"val").unwrap();
         assert!(b.delete("tok").unwrap());
         assert!(b.read("tok").unwrap().is_none());
     }
@@ -198,7 +199,7 @@ mod tests {
     #[test]
     fn delete_cleans_empty_parents() {
         let (dir, b) = test_backend();
-        b.write("a/b/c/tok", "val").unwrap();
+        b.write("a/b/c/tok", b"val").unwrap();
         assert!(b.delete("a/b/c/tok").unwrap());
         // Empty parent dirs should be cleaned up.
         assert!(!dir.path().join("a/b/c").exists());
@@ -209,11 +210,11 @@ mod tests {
     #[test]
     fn delete_preserves_sibling_entries() {
         let (_dir, b) = test_backend();
-        b.write("a/b/item1", "v1").unwrap();
-        b.write("a/b/item2", "v2").unwrap();
+        b.write("a/b/item1", b"v1").unwrap();
+        b.write("a/b/item2", b"v2").unwrap();
         assert!(b.delete("a/b/item1").unwrap());
         // item2 should still be there.
-        assert_eq!(b.read("a/b/item2").unwrap().unwrap(), "v2");
+        assert_eq!(b.read("a/b/item2").unwrap().unwrap(), b"v2");
         // And listable.
         let ids = b.list("a/b").unwrap();
         assert_eq!(ids, vec!["a/b/item2"]);

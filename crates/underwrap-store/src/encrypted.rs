@@ -8,6 +8,7 @@ use crate::StorageBackend;
 use crate::path::{
     atomic_write, cleanup_empty_parents, list_files_recursive, prepare_dir, validated_path,
 };
+use underwrap_protocol::message::SecretBytes;
 
 /// Master key — zeroed from memory on drop.
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -48,7 +49,7 @@ impl EncryptedBackend {
 }
 
 impl StorageBackend for EncryptedBackend {
-    fn read(&self, secret_id: &str) -> Result<Option<String>> {
+    fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>> {
         let path = validated_path(&self.dir, secret_id)?;
         let raw = match std::fs::read(&path) {
             Ok(data) => data,
@@ -57,14 +58,12 @@ impl StorageBackend for EncryptedBackend {
         };
         let plaintext =
             decrypt(&self.key.0, &raw).with_context(|| format!("decrypting secret {secret_id}"))?;
-        String::from_utf8(plaintext)
-            .map(Some)
-            .with_context(|| format!("secret {secret_id} is not valid UTF-8"))
+        Ok(Some(plaintext.into()))
     }
 
-    fn write(&self, secret_id: &str, material: &str) -> Result<()> {
+    fn write(&self, secret_id: &str, material: &[u8]) -> Result<()> {
         let path = validated_path(&self.dir, secret_id)?;
-        let data = encrypt(&self.key.0, material.as_bytes())?;
+        let data = encrypt(&self.key.0, material)?;
         atomic_write(&path, &self.dir, secret_id, &data)
     }
 
@@ -178,14 +177,14 @@ mod tests {
     #[test]
     fn write_then_read() {
         let (_dir, b) = test_backend();
-        b.write("secret/tok", "encrypted_value").unwrap();
-        assert_eq!(b.read("secret/tok").unwrap().unwrap(), "encrypted_value");
+        b.write("secret/tok", b"encrypted_value").unwrap();
+        assert_eq!(b.read("secret/tok").unwrap().unwrap(), b"encrypted_value");
     }
 
     #[test]
     fn file_is_not_plaintext() {
         let (dir, b) = test_backend();
-        b.write("tok", "my_secret_data").unwrap();
+        b.write("tok", b"my_secret_data").unwrap();
         let raw = std::fs::read(dir.path().join("secrets/tok")).unwrap();
         let raw_str = String::from_utf8_lossy(&raw);
         assert!(
@@ -198,22 +197,22 @@ mod tests {
     #[test]
     fn overwrite() {
         let (_dir, b) = test_backend();
-        b.write("tok", "v1").unwrap();
-        b.write("tok", "v2").unwrap();
-        assert_eq!(b.read("tok").unwrap().unwrap(), "v2");
+        b.write("tok", b"v1").unwrap();
+        b.write("tok", b"v2").unwrap();
+        assert_eq!(b.read("tok").unwrap().unwrap(), b"v2");
     }
 
     #[test]
     fn empty_material() {
         let (_dir, b) = test_backend();
-        b.write("empty", "").unwrap();
-        assert_eq!(b.read("empty").unwrap().unwrap(), "");
+        b.write("empty", b"").unwrap();
+        assert_eq!(b.read("empty").unwrap().unwrap(), b"");
     }
 
     #[test]
     fn wrong_key_fails() {
         let (dir, b) = test_backend();
-        b.write("tok", "secret").unwrap();
+        b.write("tok", b"secret").unwrap();
 
         let key_path = dir.path().join("other.key");
         let key: [u8; 32] = rand::random();
@@ -240,24 +239,24 @@ mod tests {
             std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         let b = EncryptedBackend::open(&dir.path().join("secrets"), &key_path).unwrap();
-        b.write("tok", "hex_key_test").unwrap();
-        assert_eq!(b.read("tok").unwrap().unwrap(), "hex_key_test");
+        b.write("tok", b"hex_key_test").unwrap();
+        assert_eq!(b.read("tok").unwrap().unwrap(), b"hex_key_test");
     }
 
     #[test]
     fn large_secret() {
         let (_dir, b) = test_backend();
         let big = "x".repeat(32_000);
-        b.write("big", &big).unwrap();
+        b.write("big", big.as_bytes()).unwrap();
         assert_eq!(b.read("big").unwrap().unwrap(), big);
     }
 
     #[test]
     fn list_and_delete() {
         let (_dir, b) = test_backend();
-        b.write("a/item1", "v1").unwrap();
-        b.write("a/item2", "v2").unwrap();
-        b.write("b/item3", "v3").unwrap();
+        b.write("a/item1", b"v1").unwrap();
+        b.write("a/item2", b"v2").unwrap();
+        b.write("b/item3", b"v3").unwrap();
 
         let mut ids = b.list("a").unwrap();
         ids.sort();

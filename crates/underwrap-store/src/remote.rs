@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse};
+use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse, SecretBytes};
 
 use crate::StorageBackend;
 
@@ -61,13 +61,15 @@ impl RemoteBackend {
 }
 
 impl StorageBackend for RemoteBackend {
-    fn read(&self, secret_id: &str) -> Result<Option<String>> {
+    fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>> {
         let resp = self.send_request(&BackendRequest::Read {
             secret_id: secret_id.to_string(),
         })?;
 
         match resp {
-            BackendResponse::Ok { material, .. } => Ok(material.map(Into::into)),
+            BackendResponse::Ok { material, .. } => {
+                Ok(material.map(|m| Vec::from(String::from(m)).into()))
+            }
             BackendResponse::Error { code, message } => match code {
                 BackendErrorCode::NotFound => Ok(None),
                 _ => bail!("backend error ({code:?}): {message}"),
@@ -75,7 +77,9 @@ impl StorageBackend for RemoteBackend {
         }
     }
 
-    fn write(&self, secret_id: &str, material: &str) -> Result<()> {
+    fn write(&self, secret_id: &str, material: &[u8]) -> Result<()> {
+        let material =
+            std::str::from_utf8(material).context("remote backend write requires UTF-8")?;
         let resp = self.send_request(&BackendRequest::Write {
             secret_id: secret_id.to_string(),
             material: material.to_string().into(),
@@ -128,14 +132,16 @@ impl StorageBackend for RemoteBackend {
 
 impl RemoteBackend {
     /// Read with derivation (e.g. OAuth refresh → access token).
-    pub fn derive(&self, secret_id: &str, mode: &str) -> Result<Option<String>> {
+    pub fn derive(&self, secret_id: &str, mode: &str) -> Result<Option<SecretBytes>> {
         let resp = self.send_request(&BackendRequest::Derive {
             secret_id: secret_id.to_string(),
             mode: mode.to_string(),
         })?;
 
         match resp {
-            BackendResponse::Ok { material, .. } => Ok(material.map(Into::into)),
+            BackendResponse::Ok { material, .. } => {
+                Ok(material.map(|m| Vec::from(String::from(m)).into()))
+            }
             BackendResponse::Error { code, message } => match code {
                 BackendErrorCode::NotFound => Ok(None),
                 BackendErrorCode::DerivationFailed => bail!("backend derive failed: {message}"),

@@ -19,6 +19,7 @@ pub use remote::RemoteBackend;
 
 use anyhow::Result;
 use underwrap_protocol::config::StorageConfig;
+use underwrap_protocol::message::SecretBytes;
 
 /// The storage backend trait.
 ///
@@ -27,11 +28,11 @@ use underwrap_protocol::config::StorageConfig;
 pub trait StorageBackend: Send + Sync {
     /// Read secret material by id. Returns `Ok(None)` if the secret
     /// does not exist yet.
-    fn read(&self, secret_id: &str) -> Result<Option<String>>;
+    fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>>;
 
     /// Write (create or replace) secret material. Implementations should
     /// write atomically where possible.
-    fn write(&self, secret_id: &str, material: &str) -> Result<()>;
+    fn write(&self, secret_id: &str, material: &[u8]) -> Result<()>;
 
     /// List secret IDs under a prefix. Returns IDs relative to the
     /// storage root (not relative to the prefix). Only returns leaf

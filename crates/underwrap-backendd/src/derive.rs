@@ -8,12 +8,14 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 /// Apply a derivation to stored secret material.
-pub async fn derive(mode: &str, secret_id: &str, material: &str) -> Result<String> {
+pub async fn derive(mode: &str, secret_id: &str, material: &[u8]) -> Result<String> {
     match mode {
-        "none" => Ok(material.to_string()),
+        "none" => Ok(std::str::from_utf8(material)
+            .context("stored secret is not valid UTF-8")?
+            .to_string()),
         "oauth_refresh_to_access_token" => {
             let creds: AuthorizedUserCredentials =
-                serde_json::from_str(material).context("parsing OAuth credentials JSON")?;
+                serde_json::from_slice(material).context("parsing OAuth credentials JSON")?;
             let token_response = exchange_refresh_token(&creds).await?;
             info!(secret = %secret_id, expires_in = token_response.expires_in, "derived access token");
             Ok(token_response.access_token)

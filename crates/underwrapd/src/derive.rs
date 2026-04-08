@@ -78,11 +78,13 @@ impl Default for TokenCache {
 pub async fn derive(
     mode: &DerivationMode,
     secret_id: &str,
-    material: &str,
+    material: &[u8],
     cache: &TokenCache,
 ) -> Result<String> {
     match mode {
-        DerivationMode::None => Ok(material.to_string()),
+        DerivationMode::None => Ok(std::str::from_utf8(material)
+            .context("stored secret is not valid UTF-8")?
+            .to_string()),
         DerivationMode::OAuthRefreshToAccessToken => {
             // Check cache first.
             if let Some(cached) = cache.get(secret_id) {
@@ -92,7 +94,7 @@ pub async fn derive(
 
             // Parse the stored authorized-user JSON.
             let creds: AuthorizedUserCredentials =
-                serde_json::from_str(material).context("parsing OAuth credentials JSON")?;
+                serde_json::from_slice(material).context("parsing OAuth credentials JSON")?;
 
             // Exchange refresh token for access token.
             let token_response = exchange_refresh_token(&creds).await?;
@@ -223,7 +225,7 @@ mod tests {
     #[tokio::test]
     async fn derive_none_passthrough() {
         let cache = TokenCache::new();
-        let result = derive(&DerivationMode::None, "test", "raw_material", &cache)
+        let result = derive(&DerivationMode::None, "test", b"raw_material", &cache)
             .await
             .unwrap();
         assert_eq!(result, "raw_material");

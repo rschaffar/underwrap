@@ -88,8 +88,20 @@ fn process_request(
                 Ok(material) => {
                     debug!(wrapper = %wrapper_name, id = %full_id, "secretsd read");
                     crate::audit::secretsd_read(wrapper_name, secret_id);
+                    let material = match material {
+                        Some(material) => match material.into_utf8_string() {
+                            Ok(s) => Some(s.into()),
+                            Err(e) => {
+                                return SecretsdResponse::Error {
+                                    code: SecretsdErrorCode::Internal,
+                                    message: format!("stored secret is not valid UTF-8: {e}"),
+                                };
+                            }
+                        },
+                        None => None,
+                    };
                     SecretsdResponse::Ok {
-                        material: material.map(Into::into),
+                        material,
                         ids: None,
                         existed: None,
                     }
@@ -118,7 +130,7 @@ fn process_request(
             }
             let full_id = full_id.unwrap();
 
-            match store.write(&full_id, material.as_ref()) {
+            match store.write(&full_id, material.as_bytes()) {
                 Ok(()) => {
                     debug!(wrapper = %wrapper_name, id = %full_id, "secretsd write");
                     crate::audit::secretsd_write(wrapper_name, secret_id);
@@ -246,15 +258,24 @@ mod tests {
     }
 
     impl StorageBackend for MemStore {
-        fn read(&self, secret_id: &str) -> anyhow::Result<Option<String>> {
-            Ok(self.data.lock().unwrap().get(secret_id).cloned())
-        }
-
-        fn write(&self, secret_id: &str, material: &str) -> anyhow::Result<()> {
-            self.data
+        fn read(
+            &self,
+            secret_id: &str,
+        ) -> anyhow::Result<Option<underwrap_protocol::message::SecretBytes>> {
+            Ok(self
+                .data
                 .lock()
                 .unwrap()
-                .insert(secret_id.to_string(), material.to_string());
+                .get(secret_id)
+                .cloned()
+                .map(Into::into))
+        }
+
+        fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
+            self.data.lock().unwrap().insert(
+                secret_id.to_string(),
+                String::from_utf8(material.to_vec()).unwrap(),
+            );
             Ok(())
         }
 
@@ -296,7 +317,7 @@ mod tests {
         // Verify it's stored with full prefix.
         assert_eq!(
             store.read("test-wrapper/libsecret/default/item_1").unwrap(),
-            Some("secret_value".to_string())
+            Some("secret_value".into())
         );
 
         // Read via channel handler.
@@ -320,17 +341,17 @@ mod tests {
     fn scoped_list_returns_relative_ids() {
         let store = MemStore::new();
         store
-            .write("test-wrapper/libsecret/default/item_1", "v1")
+            .write("test-wrapper/libsecret/default/item_1", b"v1")
             .unwrap();
         store
-            .write("test-wrapper/libsecret/default/item_2", "v2")
+            .write("test-wrapper/libsecret/default/item_2", b"v2")
             .unwrap();
         store
-            .write("test-wrapper/libsecret/other/item_3", "v3")
+            .write("test-wrapper/libsecret/other/item_3", b"v3")
             .unwrap();
         // Different wrapper — should not appear.
         store
-            .write("other-wrapper/libsecret/default/item_x", "vx")
+            .write("other-wrapper/libsecret/default/item_x", b"vx")
             .unwrap();
 
         // List all.
@@ -373,7 +394,7 @@ mod tests {
     fn scoped_delete() {
         let store = MemStore::new();
         store
-            .write("test-wrapper/libsecret/default/item_1", "v1")
+            .write("test-wrapper/libsecret/default/item_1", b"v1")
             .unwrap();
 
         let resp = process_request(
@@ -466,7 +487,7 @@ mod tests {
     fn cannot_access_other_wrapper_secrets() {
         let store = MemStore::new();
         store
-            .write("other-wrapper/libsecret/default/token", "stolen")
+            .write("other-wrapper/libsecret/default/token", b"stolen")
             .unwrap();
 
         // Try to read another wrapper's secret — the prefix scoping prevents it.

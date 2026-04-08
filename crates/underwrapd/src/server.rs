@@ -25,10 +25,13 @@ use underwrap_store::StorageBackend;
 struct RemoteStorageWrapper(Arc<underwrap_store::RemoteBackend>);
 
 impl StorageBackend for RemoteStorageWrapper {
-    fn read(&self, secret_id: &str) -> anyhow::Result<Option<String>> {
+    fn read(
+        &self,
+        secret_id: &str,
+    ) -> anyhow::Result<Option<underwrap_protocol::message::SecretBytes>> {
         self.0.read(secret_id)
     }
-    fn write(&self, secret_id: &str, material: &str) -> anyhow::Result<()> {
+    fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
         self.0.write(secret_id, material)
     }
     fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
@@ -644,10 +647,24 @@ async fn process_read_for(
 
         match remote.derive(secret_id, derivation_mode) {
             Ok(Some(material)) => {
-                audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
-                WrapperResponse::Ok {
-                    material: Some(material.into()),
-                    message: None,
+                let material = material
+                    .into_utf8_string()
+                    .map_err(|e| anyhow::anyhow!("derived secret is not valid UTF-8: {e}"));
+                match material {
+                    Ok(material) => {
+                        audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
+                        WrapperResponse::Ok {
+                            material: Some(material.into()),
+                            message: None,
+                        }
+                    }
+                    Err(e) => {
+                        error!(wrapper = %wrapper_name, secret = %secret_id, err = %e, "invalid UTF-8 from remote derive");
+                        WrapperResponse::Error {
+                            code: ErrorCode::Internal,
+                            message: "backend returned non-UTF-8 secret material".to_string(),
+                        }
+                    }
                 }
             }
             Ok(None) => {
@@ -670,12 +687,11 @@ async fn process_read_for(
         // Local backend: read + derive locally.
         match state.store.read(secret_id) {
             Ok(Some(material)) => {
-                let material = underwrap_protocol::message::SecretString::from(material);
                 // Apply derivation (e.g. OAuth refresh → access token).
                 match derive::derive(
                     &wrapper_def.derivation,
                     secret_id,
-                    material.as_str(),
+                    material.as_ref(),
                     &state.token_cache,
                 )
                 .await
@@ -1038,7 +1054,7 @@ fn process_control(
                     };
                 }
 
-                match state.store.write(secret_id, material.as_ref()) {
+                match state.store.write(secret_id, material.as_bytes()) {
                     Ok(()) => {
                         state.token_cache.invalidate(secret_id);
                         audit::secret_stored(secret_id, peer_uid);
