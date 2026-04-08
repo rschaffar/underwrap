@@ -244,6 +244,11 @@ Use this sparingly. These values remain caller-controlled.
 > `PATH` is not inherited by default. If a wrapper needs helper lookup by bare
 > name, prefer absolute paths in the target/helper. If you must provide a
 > `PATH`, set it explicitly from trusted config with `envSet.PATH`.
+>
+> The same caution applies to helper-selection variables such as `EDITOR`,
+> `VISUAL`, `PAGER`, and `BROWSER`. Passing them through gives the caller a way
+> to influence which helper program the target will execute. Prefer trusted
+> fixed values via `envSet` when a wrapper needs those variables at all.
 
 ### `envSet`
 
@@ -256,7 +261,7 @@ envSet = {
 };
 ```
 
-This is often useful for agent-facing wrappers where you want a predictable target environment.
+This is often useful for agent-facing wrappers where you want a predictable target environment. It is the preferred place to set helper-selection variables such as `PATH`, `EDITOR`, `VISUAL`, `PAGER`, and `BROWSER`.
 
 ## Wrapper sidecar config
 

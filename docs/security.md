@@ -434,6 +434,7 @@ It enables or complicates things like:
 - a safe default whitelist is retained
 - `PATH` is intentionally **not** inherited from the caller
 - if a wrapper needs `PATH`, it must be set explicitly from trusted configuration
+- helper-selection variables such as `EDITOR`, `VISUAL`, `PAGER`, and `BROWSER` should also be treated as risky and preferably set from trusted configuration rather than caller passthrough
 - extra passthrough variables may be allowed per wrapper
 - fixed variables may be set per wrapper from trusted configuration
 

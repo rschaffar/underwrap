@@ -102,6 +102,8 @@ That helps reduce:
 
 - `LD_PRELOAD` / `LD_LIBRARY_PATH` tricks
 - malicious `UNDERWRAP_*` variables
+- helper substitution through caller-controlled `PATH`
+- helper substitution through caller-controlled variables such as `EDITOR`, `VISUAL`, `PAGER`, and `BROWSER`
 - general ambient-environment weirdness
 
 ### 4. Wrapper identity is kernel-backed
@@ -151,6 +153,8 @@ The narrower and more explicit the interface, the easier it is to audit.
 ### Pin downstream tools by absolute path
 
 If your helper runs `gh`, `jq`, `curl`, or anything similar, prefer absolute Nix store paths over `PATH` lookups.
+
+The same applies to helper-selection environment variables such as `EDITOR`, `VISUAL`, `PAGER`, and `BROWSER`. If the target needs them, prefer trusted fixed values from root-owned configuration over caller passthrough.
 
 ### Validate every free-form argument
 
