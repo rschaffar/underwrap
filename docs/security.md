@@ -405,6 +405,25 @@ target. When the tunnel disconnects, the socket disappears and all reads fail.
 The tunnel user (`underwrap-<instance>-tunnel`) has no shell and is restricted
 to socket forwarding via `authorized_keys`.
 
+### Backend daemon trust model
+
+The backend daemon (`underwrap-backendd`) has **no protocol-level
+authentication**. Any process that can connect to the backend socket has
+full read/write/list/delete/derive access to all secrets.
+
+This is by design: the backend runs on the operator's trusted workstation
+where the operator already has direct access to the secret storage directory.
+Adding SO_PEERCRED checks would only verify "is the caller me?" — which
+provides no meaningful security when the attacker is already the same user.
+
+The access control boundary is the socket file permissions (`0600`, owned
+by the operator's user). If the workstation is compromised at the user level,
+the attacker already has access to everything the operator has.
+
+**Deployment requirement**: the backend socket must remain `0600` and must
+not be exposed to untrusted users or networks. The SSH tunnel is the only
+authorized remote access path.
+
 ## Instance isolation
 
 Each named instance gets fully isolated resources: separate daemon user,
