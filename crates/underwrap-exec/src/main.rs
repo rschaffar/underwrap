@@ -189,9 +189,69 @@ const SSH_AGENTC_REQUEST_IDENTITIES: u8 = 11;
 const SSH_AGENT_IDENTITIES_ANSWER: u8 = 12;
 const SSH_AGENTC_SIGN_REQUEST: u8 = 13;
 const SSH_AGENT_SIGN_RESPONSE: u8 = 14;
+const MAX_SSH_AGENT_MESSAGE_SIZE: usize = underwrap_protocol::ipc::MAX_FRAME_SIZE;
+
+fn read_ssh_agent_message(stream: &mut impl std::io::Read) -> Result<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf)?;
+    let resp_len = u32::from_be_bytes(len_buf) as usize;
+    anyhow::ensure!(
+        resp_len <= MAX_SSH_AGENT_MESSAGE_SIZE,
+        "SSH agent response too large: {resp_len} bytes"
+    );
+    let mut resp = vec![0u8; resp_len];
+    stream.read_exact(&mut resp)?;
+    Ok(resp)
+}
+
+fn take_ssh_string<'a>(buf: &'a [u8], pos: &mut usize, label: &str) -> Result<&'a [u8]> {
+    anyhow::ensure!(
+        *pos + 4 <= buf.len(),
+        "truncated SSH agent {label} length field"
+    );
+    let len = u32::from_be_bytes([buf[*pos], buf[*pos + 1], buf[*pos + 2], buf[*pos + 3]]) as usize;
+    *pos += 4;
+    anyhow::ensure!(
+        *pos + len <= buf.len(),
+        "truncated SSH agent {label} payload"
+    );
+    let out = &buf[*pos..*pos + len];
+    *pos += len;
+    Ok(out)
+}
+
+fn parse_ssh_agent_identities_response(resp: &[u8]) -> Result<Vec<(Vec<u8>, String)>> {
+    anyhow::ensure!(!resp.is_empty(), "empty SSH agent identities response");
+    anyhow::ensure!(
+        resp[0] == SSH_AGENT_IDENTITIES_ANSWER,
+        "unexpected agent response type: {}",
+        resp[0]
+    );
+    anyhow::ensure!(
+        resp.len() >= 5,
+        "truncated SSH agent identities response header"
+    );
+
+    let nkeys = u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]]) as usize;
+    let mut pos = 5;
+    let mut keys = Vec::with_capacity(nkeys.min(32));
+
+    for _ in 0..nkeys {
+        let blob = take_ssh_string(resp, &mut pos, "key blob")?.to_vec();
+        let comment_bytes = take_ssh_string(resp, &mut pos, "key comment")?;
+        let comment = String::from_utf8_lossy(comment_bytes).to_string();
+        keys.push((blob, comment));
+    }
+
+    anyhow::ensure!(
+        pos == resp.len(),
+        "trailing bytes in SSH agent identities response"
+    );
+    Ok(keys)
+}
 
 fn ssh_agent_request_identities(agent: &mut UnixStream) -> Result<Vec<(Vec<u8>, String)>> {
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     // Send request.
     let msg = [SSH_AGENTC_REQUEST_IDENTITIES];
@@ -199,45 +259,28 @@ fn ssh_agent_request_identities(agent: &mut UnixStream) -> Result<Vec<(Vec<u8>, 
     agent.write_all(&len)?;
     agent.write_all(&msg)?;
 
-    // Read response.
-    let mut len_buf = [0u8; 4];
-    agent.read_exact(&mut len_buf)?;
-    let resp_len = u32::from_be_bytes(len_buf) as usize;
-    let mut resp = vec![0u8; resp_len];
-    agent.read_exact(&mut resp)?;
+    let resp = read_ssh_agent_message(agent)?;
+    parse_ssh_agent_identities_response(&resp)
+}
 
-    if resp[0] != SSH_AGENT_IDENTITIES_ANSWER {
-        bail!("unexpected agent response type: {}", resp[0]);
-    }
-
-    let nkeys = u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]]) as usize;
-    let mut pos = 5;
-    let mut keys = Vec::new();
-
-    for _ in 0..nkeys {
-        if pos + 4 > resp.len() {
-            break;
-        }
-        let blob_len =
-            u32::from_be_bytes([resp[pos], resp[pos + 1], resp[pos + 2], resp[pos + 3]]) as usize;
-        pos += 4;
-        let blob = resp[pos..pos + blob_len].to_vec();
-        pos += blob_len;
-
-        let comment_len =
-            u32::from_be_bytes([resp[pos], resp[pos + 1], resp[pos + 2], resp[pos + 3]]) as usize;
-        pos += 4;
-        let comment = String::from_utf8_lossy(&resp[pos..pos + comment_len]).to_string();
-        pos += comment_len;
-
-        keys.push((blob, comment));
-    }
-
-    Ok(keys)
+fn parse_ssh_agent_sign_response(resp: &[u8]) -> Result<Vec<u8>> {
+    anyhow::ensure!(!resp.is_empty(), "empty SSH agent sign response");
+    anyhow::ensure!(
+        resp[0] == SSH_AGENT_SIGN_RESPONSE,
+        "agent refused to sign (response type: {})",
+        resp[0]
+    );
+    let mut pos = 1;
+    let sig = take_ssh_string(resp, &mut pos, "signature blob")?.to_vec();
+    anyhow::ensure!(
+        pos == resp.len(),
+        "trailing bytes in SSH agent sign response"
+    );
+    Ok(sig)
 }
 
 fn ssh_agent_sign(agent: &mut UnixStream, key_blob: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     let mut msg = Vec::new();
     msg.push(SSH_AGENTC_SIGN_REQUEST);
@@ -251,21 +294,8 @@ fn ssh_agent_sign(agent: &mut UnixStream, key_blob: &[u8], data: &[u8]) -> Resul
     agent.write_all(&len)?;
     agent.write_all(&msg)?;
 
-    let mut len_buf = [0u8; 4];
-    agent.read_exact(&mut len_buf)?;
-    let resp_len = u32::from_be_bytes(len_buf) as usize;
-    let mut resp = vec![0u8; resp_len];
-    agent.read_exact(&mut resp)?;
-
-    if resp[0] != SSH_AGENT_SIGN_RESPONSE {
-        bail!("agent refused to sign (response type: {})", resp[0]);
-    }
-
-    // Parse signature blob.
-    let sig_len = u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]]) as usize;
-    let sig = resp[5..5 + sig_len].to_vec();
-
-    Ok(sig)
+    let resp = read_ssh_agent_message(agent)?;
+    parse_ssh_agent_sign_response(&resp)
 }
 
 fn ssh_key_type_from_blob(blob: &[u8]) -> &str {
@@ -622,4 +652,66 @@ fn drop_privilege() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn read_ssh_agent_message_rejects_oversized_response() {
+        let oversized = (MAX_SSH_AGENT_MESSAGE_SIZE as u32 + 1).to_be_bytes();
+        let mut cursor = Cursor::new(oversized.to_vec());
+        let err = read_ssh_agent_message(&mut cursor).unwrap_err();
+        assert!(err.to_string().contains("response too large"));
+    }
+
+    #[test]
+    fn parse_ssh_agent_identities_response_rejects_truncated_blob() {
+        let resp = vec![
+            SSH_AGENT_IDENTITIES_ANSWER,
+            0,
+            0,
+            0,
+            1, // one key
+            0,
+            0,
+            0,
+            4, // blob len says 4 bytes
+            1,
+            2, // only 2 bytes present
+        ];
+        let err = parse_ssh_agent_identities_response(&resp).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("truncated SSH agent key blob payload")
+        );
+    }
+
+    #[test]
+    fn parse_ssh_agent_sign_response_rejects_truncated_signature() {
+        let resp = vec![
+            SSH_AGENT_SIGN_RESPONSE,
+            0,
+            0,
+            0,
+            10, // signature length says 10 bytes
+            1,
+            2,
+            3,
+        ];
+        let err = parse_ssh_agent_sign_response(&resp).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("truncated SSH agent signature blob payload")
+        );
+    }
+
+    #[test]
+    fn parse_ssh_agent_sign_response_accepts_valid_signature_blob() {
+        let resp = vec![SSH_AGENT_SIGN_RESPONSE, 0, 0, 0, 3, 9, 8, 7];
+        let sig = parse_ssh_agent_sign_response(&resp).unwrap();
+        assert_eq!(sig, vec![9, 8, 7]);
+    }
 }
