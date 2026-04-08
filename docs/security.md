@@ -261,8 +261,11 @@ Using fd 3 keeps stdin/stdout/stderr untouched and avoids a filesystem-visible o
 The key steps are:
 
 1. `setgroups(0, NULL)`
-2. `setgid(real_gid)`
-3. `setuid(real_uid)`
+2. `setresgid(real_gid, real_gid, real_gid)`
+3. `setresuid(real_uid, real_uid, real_uid)`
+
+Using the `setres*` calls makes the permanent drop explicit for the real,
+effective, and saved IDs.
 
 Each return value is checked. A failed privilege drop is a hard failure.
 

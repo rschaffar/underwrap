@@ -635,20 +635,18 @@ fn drop_privilege() -> Result<()> {
         }
     }
 
-    if unsafe { libc::getegid() } != rgid {
-        let ret = unsafe { libc::setgid(rgid) };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            bail!("setgid({rgid}) failed: {err}");
-        }
+    // Permanently drop any elevated group identity, including the saved set-GID.
+    let ret = unsafe { libc::setresgid(rgid, rgid, rgid) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        bail!("setresgid({rgid}, {rgid}, {rgid}) failed: {err}");
     }
 
-    if unsafe { libc::geteuid() } != ruid {
-        let ret = unsafe { libc::setuid(ruid) };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            bail!("setuid({ruid}) failed: {err}");
-        }
+    // Permanently drop any elevated user identity, including the saved set-UID.
+    let ret = unsafe { libc::setresuid(ruid, ruid, ruid) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        bail!("setresuid({ruid}, {ruid}, {ruid}) failed: {err}");
     }
 
     Ok(())
