@@ -425,6 +425,8 @@ It enables or complicates things like:
 ### The model
 
 - a safe default whitelist is retained
+- `PATH` is intentionally **not** inherited from the caller
+- if a wrapper needs `PATH`, it must be set explicitly from trusted configuration
 - extra passthrough variables may be allowed per wrapper
 - fixed variables may be set per wrapper from trusted configuration
 

@@ -209,7 +209,8 @@ let
         description = ''
           Additional environment variables to pass through from the user's
           environment to the target process. These are added to the default
-          safe whitelist (HOME, USER, PATH, TERM, LANG, etc.).
+          safe whitelist (HOME, USER, TERM, LANG, etc.). PATH is intentionally
+          not inherited; set envSet.PATH explicitly if needed.
         '';
         example = [ "GITHUB_TOKEN" "EDITOR" ];
       };

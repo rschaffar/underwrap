@@ -142,12 +142,13 @@ fn run() -> Result<(), String> {
         cmd.env_clear();
 
         // Default safe whitelist — vars the target typically needs.
+        // PATH is intentionally NOT inherited. If a wrapper needs helper
+        // lookup by bare name, set PATH explicitly via trusted sidecar config.
         const DEFAULT_PASSTHROUGH: &[&str] = &[
             "HOME",
             "USER",
             "LOGNAME",
             "SHELL",
-            "PATH",
             "TERM",
             "COLORTERM",
             "LANG",

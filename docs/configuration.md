@@ -238,6 +238,13 @@ Pass selected variables from the caller's environment through to the target.
 envPassthrough = [ "EDITOR" "VISUAL" ];
 ```
 
+Use this sparingly. These values remain caller-controlled.
+
+> [!IMPORTANT]
+> `PATH` is not inherited by default. If a wrapper needs helper lookup by bare
+> name, prefer absolute paths in the target/helper. If you must provide a
+> `PATH`, set it explicitly from trusted config with `envSet.PATH`.
+
 ### `envSet`
 
 Set fixed variables from trusted configuration.
@@ -245,6 +252,7 @@ Set fixed variables from trusted configuration.
 ```nix
 envSet = {
   GH_NO_UPDATE_NOTIFIER = "1";
+  PATH = lib.makeBinPath [ pkgs.git pkgs.openssh pkgs.less ];
 };
 ```
 
