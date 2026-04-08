@@ -209,11 +209,25 @@ The VM test proves that same-UID host processes **cannot** read
 - The target is dumpable (exec reset it to 1)
 - The attacker has the same UID
 
-The protection comes from **Yama LSM** (`kernel.yama.ptrace_scope=1`),
-which is the default on NixOS (and most modern Linux distributions).
+Two independent mechanisms provide protection:
+
+**1. Yama LSM** (`kernel.yama.ptrace_scope=1`, the NixOS default).
 With `ptrace_scope=1`, `/proc/<pid>/environ` access (which requires
 `PTRACE_MODE_READ_FSCREDS`) is restricted to **descendant processes only**.
 A same-UID process that is not a descendant of the target is denied.
+
+**2. Credential transitions block ancestor tracing.** Even a direct
+ancestor (the process that spawned the wrapper) is denied. The wrapper
+chain involves exec of a setgid binary (`underwrap-exec`) and exec of
+a binary with file capabilities (`underwrap-ns`). These credential
+transitions cause the kernel to disallow ptrace from the original
+ancestor, because the tracee underwent a privilege-changing exec.
+This is enforced regardless of Yama settings (see `ptrace(2)`,
+`PTRACE_MODE_ATTACH` checks after credential-changing exec).
+
+The VM test proves **both** scenarios:
+- Non-descendant same-UID process: DENIED (Yama)
+- Ancestor process that spawned the wrapper: DENIED (credential transition)
 
 The PID namespace provides **defense in depth**:
 - Makes the target harder to discover (different PID space)
@@ -224,14 +238,19 @@ The PID namespace provides **defense in depth**:
 But the primary protection for the target's environment is Yama, not the
 PID namespace.
 
-### Dependency on Yama
+### Dependency on Yama and credential transitions
 
-If `kernel.yama.ptrace_scope` is set to 0 (disabled), same-UID processes
-**can** read the target's `/proc/<pid>/environ`. NixOS sets `ptrace_scope=1`
-by default. The VM test verifies this protection holds.
+The target is protected by two independent mechanisms:
 
-Systems that set `ptrace_scope=0` should not be considered safe for
-env-mode secret injection without additional hardening.
+1. **Yama LSM** (`ptrace_scope=1`): blocks non-descendant same-UID access.
+   NixOS sets this by default. Systems with `ptrace_scope=0` lose this layer.
+
+2. **Credential transitions**: the setgid exec (`underwrap-exec`) and
+   capability-bearing exec (`underwrap-ns`) in the wrapper chain cause the
+   kernel to block ptrace from the original ancestor. This protection is
+   independent of Yama and works even with `ptrace_scope=0`.
+
+Both are verified by VM tests (non-descendant and ancestor attack scenarios).
 
 ### Why a two-stage wrapper?
 
