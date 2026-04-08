@@ -2,7 +2,7 @@
 //!
 //! Installed via NixOS security.wrappers with setgid for GID-based identity.
 //!
-//! 1. Detects wrapper name from argv[0]
+//! 1. Derives wrapper name from effective GID (not argv[0])
 //! 2. Loads sidecar config from trusted path
 //! 3. Connects to daemon, gets secret (daemon verifies egid)
 //! 4. Drops all elevated privileges

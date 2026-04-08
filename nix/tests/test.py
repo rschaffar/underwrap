@@ -314,6 +314,28 @@ assert core_files == "", f"FAIL: core dump produced: {core_files}"
 machine.log("PASS: no core dump on crash")
 
 # ============================================================
+# LOCAL INSTANCE: symlink confused-deputy attack must fail
+# ============================================================
+# Create a symlink from one wrapper name to another wrapper's binary.
+# The wrapper must still use the correct config (from its egid), not
+# the symlink name. If it used argv[0], this would pair the wrong
+# secret with the wrong target.
+
+machine.succeed(
+    "ln -sf /run/wrappers/bin/local-test-echo /tmp/local-test-echo2"
+)
+# Run via the symlink — argv[0] = local-test-echo2, but egid = test-echo's group.
+# The wrapper should load test-echo's config and return test-echo's secret.
+output = machine.succeed(su("/tmp/local-test-echo2")).strip()
+assert "MY_TOKEN=ghp_testvmtoken" in output, \
+    f"FAIL: symlink wrapper did not get the correct (test-echo) secret: {output}"
+# It must NOT have loaded test-echo2's config (which would show OTHER_SECRET).
+assert "OTHER_SECRET" not in output, \
+    f"FAIL: symlink wrapper loaded the wrong config: {output}"
+machine.succeed("rm -f /tmp/local-test-echo2")
+machine.log("PASS: symlink confused-deputy attack prevented (egid-based identity)")
+
+# ============================================================
 # LOCAL INSTANCE: libsecret mode (Secret Service via D-Bus)
 # ============================================================
 

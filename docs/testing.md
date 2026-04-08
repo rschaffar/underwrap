@@ -25,7 +25,7 @@ Run with `cargo test --workspace`. Covers:
 All cargo tests must pass in a standard `cargo test` environment. No tests
 skip — missing prerequisites are hard failures.
 
-## NixOS VM test (26+ assertions)
+## NixOS VM test (27+ assertions)
 
 Run with `nix build .#checks.x86_64-linux.vm-test`.
 
@@ -60,19 +60,20 @@ The VM configuration is in `nix/tests/node.nix`. The test script is
 | 16 | Wrapper `/proc/pid/environ` not readable by same-UID | `PR_SET_DUMPABLE=0` persists (wrapper never execs) |
 | 17 | No core dump on SIGSEGV | `RLIMIT_CORE=0` works |
 | 18 | Target capabilities (CapEff/CapPrm/CapInh/CapAmb) are zero | `capset()` clears all capability sets |
-| 19 | `secret-tool store` via libsecret wrapper | D-Bus Secret Service works end-to-end |
-| 20 | `secret-tool lookup` retrieves stored secret | Persistence through backend |
-| 21 | Private bus socket not visible from host | Namespace-private tmpfs isolation |
-| 22 | No secret material leaked outside backend dir | Storage goes through StorageBackend only |
+| 19 | Symlink confused-deputy attack prevented | Wrapper uses egid-based identity, not argv[0] |
+| 20 | `secret-tool store` via libsecret wrapper | D-Bus Secret Service works end-to-end |
+| 21 | `secret-tool lookup` retrieves stored secret | Persistence through backend |
+| 22 | Private bus socket not visible from host | Namespace-private tmpfs isolation |
+| 23 | No secret material leaked outside backend dir | Storage goes through StorageBackend only |
 
 ### Remote instance assertions
 
 | # | Assertion | Security property |
 |---|-----------|-------------------|
-| 23 | Wrapper fails without tunnel | No backend socket = no secrets |
-| 24 | SSH tunnel established, wrapper succeeds | Full tunnel flow works |
-| 25 | No secret on local disk | Truly remote storage |
-| 26 | Wrapper fails after tunnel killed | Disconnect = lock |
+| 24 | Wrapper fails without tunnel | No backend socket = no secrets |
+| 25 | SSH tunnel established, wrapper succeeds | Full tunnel flow works |
+| 26 | No secret on local disk | Truly remote storage |
+| 27 | Wrapper fails after tunnel killed | Disconnect = lock |
 | + | Wrapper works after tunnel reconnect | Reconnect = unlock |
 
 ### Cross-cutting assertions
