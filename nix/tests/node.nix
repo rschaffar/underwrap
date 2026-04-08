@@ -55,6 +55,25 @@ in {
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
       Restart = "on-failure";
+      UMask = "0077";
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectControlGroups = true;
+      ProtectKernelModules = true;
+      ProtectKernelTunables = true;
+      ProtectClock = true;
+      ProtectHostname = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      RestrictSUIDSGID = true;
+      RestrictRealtime = true;
+      SystemCallArchitectures = "native";
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+      NoNewPrivileges = true;
+      LimitCORE = 0;
+      ReadWritePaths = [ "/run/underwrap-backend" "/var/lib/underwrap-backend" ];
     };
   };
 
@@ -114,12 +133,14 @@ in {
             target = "${listPidsScript}";
             secret = "test/ns-pids-tok";
             injection = { mode = "env"; variable = "NS_UNUSED"; };
+            envSet.PATH = pkgs.lib.makeBinPath [ pkgs.coreutils ];
             libsecret = true;  # libsecret mode creates mount namespace with fresh /proc
           };
           test-caps = {
             target = "${capsScript}";
             secret = "test/caps-tok";
             injection = { mode = "env"; variable = "CAPS_SECRET"; };
+            envSet.PATH = pkgs.lib.makeBinPath [ pkgs.gnugrep ];
           };
         };
 
