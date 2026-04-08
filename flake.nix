@@ -109,6 +109,9 @@
           spoofScript = pkgs.writeScript "spoof.py"
             (builtins.readFile ./nix/tests/spoof.py);
 
+          ancestorAttackScript = pkgs.writeScript "ancestor-attack.py"
+            (builtins.readFile ./nix/tests/ancestor-attack.py);
+
           testScript = builtins.readFile ./nix/tests/test.py;
 
         in {
@@ -125,6 +128,7 @@
               testScript = ''
                 import os
                 os.environ["SPOOF_SCRIPT"] = "${spoofScript}"
+                os.environ["ANCESTOR_ATTACK_SCRIPT"] = "${ancestorAttackScript}"
                 os.environ["PYTHON3"] = "${pkgs.python3}/bin/python3"
                 os.environ["UWCTL_LOCAL"] = "${perSystem.packages.${system}.default}/bin/underwrapctl --socket /run/underwrap-local/control.sock"
                 ${testScript}

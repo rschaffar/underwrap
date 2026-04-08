@@ -19,7 +19,7 @@ let
 in {
   imports = [ nixosModule ];
 
-  environment.systemPackages = [ pkgs.openssh pkgs.libsecret ];
+  environment.systemPackages = [ pkgs.openssh pkgs.libsecret pkgs.python3 ];
 
   # Normal user who runs wrappers.
   users.users.testuser = {

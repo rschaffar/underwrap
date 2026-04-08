@@ -302,6 +302,67 @@ machine.execute("pkill -u testuser -f local-test-sleep || true")
 time.sleep(0.5)
 
 # ============================================================
+# LOCAL INSTANCE: adversarial ancestor attack (CRITICAL TEST)
+# ============================================================
+# This tests whether a PARENT process that spawns the wrapper can
+# inspect its descendant target and recover the secret. Under Yama
+# ptrace_scope=1, ancestor→descendant tracing is normally allowed.
+# This test determines whether the underwrap architecture actually
+# protects against a malicious invoker.
+
+ANCESTOR_SCRIPT = os.environ.get("ANCESTOR_ATTACK_SCRIPT", "/dev/null")
+attack_output = machine.succeed(
+    f"su testuser -s /bin/sh -c '{PYTHON3} {ANCESTOR_SCRIPT}'"
+).strip()
+machine.log(f"Ancestor attack results: {attack_output}")
+
+# Parse results.
+result_lines = [l for l in attack_output.split("\n") if l.startswith("RESULT:")]
+results = {}
+for line in result_lines:
+    key_val = line.split(":", 1)[1]
+    if "=" in key_val:
+        k, v = key_val.split("=", 1)
+        results[k] = v
+    else:
+        results[key_val] = "true"
+
+machine.log(f"Parsed attack results: {results}")
+
+# The ancestor MUST NOT be able to read the secret.
+if "SECRET_LEAKED" in results:
+    assert False, \
+        "CRITICAL: ancestor process CAN read descendant target's secret via /proc/environ!"
+
+if "ENVIRON_READABLE_NO_SECRET" in results:
+    machine.log("WARNING: ancestor can read /proc/environ but secret not found in output")
+    machine.log("This may indicate a partial leak or timing issue")
+
+if "PTRACE_ALLOWED" in results:
+    machine.log("WARNING: ancestor can ptrace-attach to descendant target")
+
+if "MEM_READABLE" in results:
+    machine.log("WARNING: ancestor can read /proc/mem of descendant target")
+
+# Log the definitive outcome.
+if "ENVIRON_DENIED" in results:
+    machine.log("PASS: ancestor /proc/environ access DENIED")
+elif "TARGET_NOT_FOUND" in results:
+    machine.log("PASS: ancestor cannot find descendant target in /proc")
+elif "PROC_NOT_FOUND" in results:
+    machine.log("PASS: descendant target /proc entry not found by ancestor")
+else:
+    machine.log(f"INFO: ancestor attack outcome: {results}")
+
+# Hard assertion: the secret must not leak.
+assert "SECRET_LEAKED" not in results, \
+    "CRITICAL: adversarial ancestor recovered secret from descendant target"
+machine.log("PASS: adversarial ancestor attack did not recover secret")
+
+machine.execute("pkill -u testuser -f local-test-sleep || true")
+time.sleep(0.5)
+
+# ============================================================
 # LOCAL INSTANCE: core dump protection
 # ============================================================
 
