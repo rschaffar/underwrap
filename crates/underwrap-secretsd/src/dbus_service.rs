@@ -16,7 +16,7 @@ use zeroize::Zeroize;
 use underwrap_secretsd_store::SecretStore;
 
 use crate::BASE_PATH;
-use crate::channel::{self, DaemonChannel};
+use crate::channel::{self, ChannelOps};
 
 /// Secret type for the D-Bus protocol.
 #[derive(Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
@@ -48,11 +48,11 @@ impl SessionInterface {
 
 pub struct SecretService {
     store: Arc<RwLock<SecretStore>>,
-    channel: Arc<DaemonChannel>,
+    channel: Arc<dyn ChannelOps>,
 }
 
 impl SecretService {
-    pub fn new(store: Arc<RwLock<SecretStore>>, channel: Arc<DaemonChannel>) -> Self {
+    pub fn new(store: Arc<RwLock<SecretStore>>, channel: Arc<dyn ChannelOps>) -> Self {
         Self { store, channel }
     }
 }
@@ -96,9 +96,9 @@ impl SecretService {
         let col_id = {
             let mut store = self.store.write().await;
             let id = store.create_collection(label.as_deref(), alias);
-            channel::save_aliases(&self.channel, &store)
+            channel::save_aliases(&*self.channel, &store)
                 .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
-            channel::save_collection_meta(&self.channel, &id, &store)
+            channel::save_collection_meta(&*self.channel, &id, &store)
                 .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
             id
         };
@@ -161,7 +161,7 @@ impl SecretService {
         for item_path in items {
             if let Some((col_id, item_id)) = parse_item_path(item_path.as_str()) {
                 // Read secret directly from backend — never from memory.
-                if let Ok(Some(secret)) = channel::read_item_secret(&self.channel, col_id, item_id)
+                if let Ok(Some(secret)) = channel::read_item_secret(&*self.channel, col_id, item_id)
                 {
                     let content_type = store
                         .get_content_type(col_id, item_id)
@@ -205,7 +205,7 @@ impl SecretService {
 
         let mut store = self.store.write().await;
         store.set_alias(name, col_id.as_deref());
-        channel::save_aliases(&self.channel, &store)
+        channel::save_aliases(&*self.channel, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
@@ -226,11 +226,11 @@ impl SecretService {
 pub struct CollectionInterface {
     id: String,
     store: Arc<RwLock<SecretStore>>,
-    channel: Arc<DaemonChannel>,
+    channel: Arc<dyn ChannelOps>,
 }
 
 impl CollectionInterface {
-    pub fn new(id: String, store: Arc<RwLock<SecretStore>>, channel: Arc<DaemonChannel>) -> Self {
+    pub fn new(id: String, store: Arc<RwLock<SecretStore>>, channel: Arc<dyn ChannelOps>) -> Self {
         Self { id, store, channel }
     }
 }
@@ -243,15 +243,36 @@ impl CollectionInterface {
         // Delete items from backend (both .meta and .secret for each).
         let items = store.list_items(&self.id);
         for item_id in &items {
-            let _ = self.channel.delete(&format!("{}/{item_id}.meta", self.id));
-            let _ = self
+            let meta_key = format!("{}/{item_id}.meta", self.id);
+            let secret_key = format!("{}/{item_id}.secret", self.id);
+            let meta_deleted = self
                 .channel
-                .delete(&format!("{}/{item_id}.secret", self.id));
+                .delete(&meta_key)
+                .map_err(|e| fdo::Error::Failed(format!("delete error for {meta_key}: {e}")))?;
+            let secret_deleted = self
+                .channel
+                .delete(&secret_key)
+                .map_err(|e| fdo::Error::Failed(format!("delete error for {secret_key}: {e}")))?;
+            if !meta_deleted || !secret_deleted {
+                return Err(fdo::Error::Failed(format!(
+                    "partial delete for item '{item_id}' in collection '{}': meta_deleted={meta_deleted}, secret_deleted={secret_deleted}",
+                    self.id,
+                )));
+            }
         }
-        let _ = self.channel.delete(&format!("{}/_meta", self.id));
+        let collection_meta_key = format!("{}/_meta", self.id);
+        let collection_meta_deleted = self.channel.delete(&collection_meta_key).map_err(|e| {
+            fdo::Error::Failed(format!("delete error for {collection_meta_key}: {e}"))
+        })?;
+        if !collection_meta_deleted {
+            return Err(fdo::Error::Failed(format!(
+                "collection metadata delete reported not found for '{}'",
+                self.id,
+            )));
+        }
 
         store.delete_collection(&self.id);
-        channel::save_aliases(&self.channel, &store)
+        channel::save_aliases(&*self.channel, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
 
         Ok(ObjectPath::try_from("/").unwrap())
@@ -307,9 +328,9 @@ impl CollectionInterface {
                 .map_err(|e| fdo::Error::Failed(format!("create_item error: {e}")))?;
 
             // Save item with actual secret to backend.
-            channel::save_item_with_secret(&self.channel, &self.id, &id, &store, &secret.value)
+            channel::save_item_with_secret(&*self.channel, &self.id, &id, &store, &secret.value)
                 .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
-            channel::save_collection_meta(&self.channel, &self.id, &store)
+            channel::save_collection_meta(&*self.channel, &self.id, &store)
                 .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
             (id, replaced)
         };
@@ -357,7 +378,7 @@ impl CollectionInterface {
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_collection_label(&self.id, &label);
-        channel::save_collection_meta(&self.channel, &self.id, &store)
+        channel::save_collection_meta(&*self.channel, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
@@ -386,7 +407,7 @@ pub struct ItemInterface {
     id: String,
     collection_id: String,
     store: Arc<RwLock<SecretStore>>,
-    channel: Arc<DaemonChannel>,
+    channel: Arc<dyn ChannelOps>,
 }
 
 impl ItemInterface {
@@ -394,7 +415,7 @@ impl ItemInterface {
         id: String,
         collection_id: String,
         store: Arc<RwLock<SecretStore>>,
-        channel: Arc<DaemonChannel>,
+        channel: Arc<dyn ChannelOps>,
     ) -> Self {
         Self {
             id,
@@ -411,16 +432,26 @@ impl ItemInterface {
         let mut store = self.store.write().await;
 
         // Delete from backend (both .meta and .secret).
-        let _ = self
+        let meta_key = format!("{}/{}.meta", self.collection_id, self.id);
+        let secret_key = format!("{}/{}.secret", self.collection_id, self.id);
+        let meta_deleted = self
             .channel
-            .delete(&format!("{}/{}.meta", self.collection_id, self.id));
-        let _ = self
+            .delete(&meta_key)
+            .map_err(|e| fdo::Error::Failed(format!("delete error for {meta_key}: {e}")))?;
+        let secret_deleted = self
             .channel
-            .delete(&format!("{}/{}.secret", self.collection_id, self.id));
+            .delete(&secret_key)
+            .map_err(|e| fdo::Error::Failed(format!("delete error for {secret_key}: {e}")))?;
+        if !meta_deleted || !secret_deleted {
+            return Err(fdo::Error::Failed(format!(
+                "partial delete for item '{}' in collection '{}': meta_deleted={meta_deleted}, secret_deleted={secret_deleted}",
+                self.id, self.collection_id,
+            )));
+        }
 
         store.delete_item(&self.collection_id, &self.id);
         // Item already deleted from backend above. Update collection modified time.
-        channel::save_collection_meta(&self.channel, &self.collection_id, &store)
+        channel::save_collection_meta(&*self.channel, &self.collection_id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
 
         Ok(ObjectPath::try_from("/").unwrap())
@@ -428,7 +459,7 @@ impl ItemInterface {
 
     async fn get_secret(&self, session: ObjectPath<'_>) -> fdo::Result<Secret> {
         // Read secret directly from backend — never from memory.
-        let secret = channel::read_item_secret(&self.channel, &self.collection_id, &self.id)
+        let secret = channel::read_item_secret(&*self.channel, &self.collection_id, &self.id)
             .map_err(|e| fdo::Error::Failed(format!("read error: {e}")))?;
         let secret = secret.ok_or_else(|| fdo::Error::Failed("item not found".into()))?;
 
@@ -449,7 +480,7 @@ impl ItemInterface {
         let store = self.store.read().await;
         // Write secret directly to backend — not stored in memory.
         channel::save_item_with_secret(
-            &self.channel,
+            &*self.channel,
             &self.collection_id,
             &self.id,
             &store,
@@ -477,7 +508,7 @@ impl ItemInterface {
     async fn set_attributes(&mut self, attributes: HashMap<String, String>) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_attributes(&self.collection_id, &self.id, attributes);
-        channel::save_item_metadata(&self.channel, &self.collection_id, &self.id, &store)
+        channel::save_item_metadata(&*self.channel, &self.collection_id, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
@@ -495,7 +526,7 @@ impl ItemInterface {
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_label(&self.collection_id, &self.id, &label);
-        channel::save_item_metadata(&self.channel, &self.collection_id, &self.id, &store)
+        channel::save_item_metadata(&*self.channel, &self.collection_id, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())
     }
@@ -528,5 +559,147 @@ fn parse_item_path(path: &str) -> Option<(&str, &str)> {
         None
     } else {
         Some((col, item))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channel::{ChannelOps, ItemMeta};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Mutex as StdMutex;
+
+    struct FakeChannel {
+        data: StdMutex<HashMap<String, String>>,
+        fail_delete: HashSet<String>,
+    }
+
+    impl FakeChannel {
+        fn new(data: HashMap<String, String>) -> Self {
+            Self {
+                data: StdMutex::new(data),
+                fail_delete: HashSet::new(),
+            }
+        }
+
+        fn with_failing_delete(mut self, key: &str) -> Self {
+            self.fail_delete.insert(key.to_string());
+            self
+        }
+    }
+
+    impl ChannelOps for FakeChannel {
+        fn read(&self, secret_id: &str) -> anyhow::Result<Option<String>> {
+            Ok(self.data.lock().unwrap().get(secret_id).cloned())
+        }
+
+        fn write(&self, secret_id: &str, material: &str) -> anyhow::Result<()> {
+            self.data
+                .lock()
+                .unwrap()
+                .insert(secret_id.to_string(), material.to_string());
+            Ok(())
+        }
+
+        fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
+            let prefix = format!("{prefix}/");
+            Ok(self
+                .data
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|k| k.starts_with(&prefix))
+                .cloned()
+                .collect())
+        }
+
+        fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
+            if self.fail_delete.contains(secret_id) {
+                anyhow::bail!("forced delete failure for {secret_id}");
+            }
+            Ok(self.data.lock().unwrap().remove(secret_id).is_some())
+        }
+    }
+
+    fn item_meta_json() -> String {
+        serde_json::to_string(&ItemMeta {
+            content_type: "text/plain".to_string(),
+            attributes: HashMap::new(),
+            label: "Item".to_string(),
+            created: 1,
+            modified: 1,
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn item_delete_propagates_backend_error_and_keeps_state() {
+        let mut store = SecretStore::new_default();
+        let item_id = store
+            .create_item(
+                "default",
+                "Item",
+                &HashMap::new(),
+                b"secret",
+                "text/plain",
+                false,
+            )
+            .unwrap()
+            .0;
+        let channel: Arc<dyn ChannelOps> = Arc::new(
+            FakeChannel::new(HashMap::from([
+                (format!("default/{item_id}.meta"), item_meta_json()),
+                (format!("default/{item_id}.secret"), "c2VjcmV0".to_string()),
+            ]))
+            .with_failing_delete(&format!("default/{item_id}.secret")),
+        );
+        let store = Arc::new(RwLock::new(store));
+        let item = ItemInterface::new(
+            item_id.clone(),
+            "default".to_string(),
+            store.clone(),
+            channel,
+        );
+
+        let err = item.delete().await.unwrap_err();
+        assert!(matches!(err, fdo::Error::Failed(_)));
+        assert!(
+            store
+                .read()
+                .await
+                .list_items("default")
+                .contains(&item_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn collection_delete_propagates_backend_error_and_keeps_state() {
+        let mut store = SecretStore::new_default();
+        let col_id = store.create_collection(Some("Test"), None);
+        let item_id = store
+            .create_item(
+                &col_id,
+                "Item",
+                &HashMap::new(),
+                b"secret",
+                "text/plain",
+                false,
+            )
+            .unwrap()
+            .0;
+        let channel: Arc<dyn ChannelOps> = Arc::new(
+            FakeChannel::new(HashMap::from([
+                (format!("{col_id}/{item_id}.meta"), item_meta_json()),
+                (format!("{col_id}/{item_id}.secret"), "c2VjcmV0".to_string()),
+                (format!("{col_id}/_meta"), "{}".to_string()),
+            ]))
+            .with_failing_delete(&format!("{col_id}/{item_id}.secret")),
+        );
+        let store = Arc::new(RwLock::new(store));
+        let col = CollectionInterface::new(col_id.clone(), store.clone(), channel);
+
+        let err = col.delete().await.unwrap_err();
+        assert!(matches!(err, fdo::Error::Failed(_)));
+        assert!(store.read().await.collections.contains_key(&col_id));
     }
 }

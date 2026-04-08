@@ -93,11 +93,12 @@ async fn main() -> Result<()> {
 
     // Open the channel to the daemon.
     let channel_stream = unsafe { StdUnixStream::from_raw_fd(args.channel_fd) };
-    let channel = Arc::new(channel::DaemonChannel::new(channel_stream));
+    let channel: Arc<dyn channel::ChannelOps> =
+        Arc::new(channel::DaemonChannel::new(channel_stream));
 
     // Load initial state from the daemon (read _aliases and collections).
     let store = Arc::new(RwLock::new(
-        channel::load_initial_state(&channel).context("loading initial state from daemon")?,
+        channel::load_initial_state(&*channel).context("loading initial state from daemon")?,
     ));
 
     // Connect to the private D-Bus session bus.
