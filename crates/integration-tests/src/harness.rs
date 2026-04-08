@@ -128,7 +128,7 @@ impl TestDaemon {
     pub async fn store_secret(&self, secret_id: &str, material: &str) -> Result<ControlResponse> {
         self.control_request(&ControlRequest::Store {
             secret_id: secret_id.to_string(),
-            material: material.to_string(),
+            material: material.to_string().into(),
         })
         .await
     }

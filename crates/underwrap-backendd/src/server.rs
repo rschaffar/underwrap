@@ -12,7 +12,7 @@ use tracing::{error, info};
 
 use underwrap_protocol::config::StorageConfig;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::message::{BackendRequest, BackendResponse};
+use underwrap_protocol::message::{BackendRequest, BackendResponse, SecretString};
 use underwrap_store::StorageBackend;
 
 use crate::derive;
@@ -85,7 +85,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
             Ok(Some(material)) => {
                 info!(secret = %secret_id, "backend read");
                 BackendResponse::Ok {
-                    material: Some(material),
+                    material: Some(material.into()),
                     info: None,
                 }
             }
@@ -100,7 +100,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
         BackendRequest::Derive { secret_id, mode } => {
             // Read the raw material, then apply derivation.
             let material = match state.store.read(secret_id) {
-                Ok(Some(m)) => m,
+                Ok(Some(m)) => SecretString::from(m),
                 Ok(None) => {
                     return BackendResponse::Error {
                         message: format!("secret '{secret_id}' not found"),
@@ -113,11 +113,11 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 }
             };
 
-            match derive::derive(mode, secret_id, &material).await {
+            match derive::derive(mode, secret_id, material.as_str()).await {
                 Ok(derived) => {
                     info!(secret = %secret_id, mode = %mode, "backend derive");
                     BackendResponse::Ok {
-                        material: Some(derived),
+                        material: Some(derived.into()),
                         info: None,
                     }
                 }
@@ -130,7 +130,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
         BackendRequest::Write {
             secret_id,
             material,
-        } => match state.store.write(secret_id, material) {
+        } => match state.store.write(secret_id, material.as_ref()) {
             Ok(()) => {
                 info!(secret = %secret_id, "backend write");
                 BackendResponse::Ok {

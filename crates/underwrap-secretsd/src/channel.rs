@@ -44,7 +44,7 @@ impl ChannelOps for DaemonChannel {
         };
         let resp = self.send(&req)?;
         match resp {
-            SecretsdResponse::Ok { material, .. } => Ok(material),
+            SecretsdResponse::Ok { material, .. } => Ok(material.map(Into::into)),
             SecretsdResponse::Error { message } => bail!("daemon read error: {message}"),
         }
     }
@@ -52,7 +52,7 @@ impl ChannelOps for DaemonChannel {
     fn write(&self, secret_id: &str, material: &str) -> Result<()> {
         let req = SecretsdRequest::Write {
             secret_id: secret_id.to_string(),
-            material: material.to_string(),
+            material: material.to_string().into(),
         };
         let resp = self.send(&req)?;
         match resp {

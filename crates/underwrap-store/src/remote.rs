@@ -67,7 +67,7 @@ impl StorageBackend for RemoteBackend {
         })?;
 
         match resp {
-            BackendResponse::Ok { material, .. } => Ok(material),
+            BackendResponse::Ok { material, .. } => Ok(material.map(Into::into)),
             BackendResponse::Error { message } => {
                 if message.contains("not found") {
                     Ok(None)
@@ -81,7 +81,7 @@ impl StorageBackend for RemoteBackend {
     fn write(&self, secret_id: &str, material: &str) -> Result<()> {
         let resp = self.send_request(&BackendRequest::Write {
             secret_id: secret_id.to_string(),
-            material: material.to_string(),
+            material: material.to_string().into(),
         })?;
 
         match resp {
@@ -132,7 +132,7 @@ impl RemoteBackend {
         })?;
 
         match resp {
-            BackendResponse::Ok { material, .. } => Ok(material),
+            BackendResponse::Ok { material, .. } => Ok(material.map(Into::into)),
             BackendResponse::Error { message } => {
                 if message.contains("not found") {
                     Ok(None)

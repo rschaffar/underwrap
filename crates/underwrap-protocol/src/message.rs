@@ -4,6 +4,73 @@
 //!   [4 bytes big-endian length][JSON payload]
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+#[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct SecretString(String);
+
+impl SecretString {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for SecretString {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for SecretString {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for SecretString {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for SecretString {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<SecretString> for String {
+    fn from(mut value: SecretString) -> Self {
+        std::mem::take(&mut value.0)
+    }
+}
+
+impl PartialEq<&str> for SecretString {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<SecretString> for &str {
+    fn eq(&self, other: &SecretString) -> bool {
+        *self == other.0
+    }
+}
+
+impl PartialEq<String> for SecretString {
+    fn eq(&self, other: &String) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<SecretString> for String {
+    fn eq(&self, other: &SecretString) -> bool {
+        *self == other.0
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Wrapper-socket messages (wrapper -> daemon over wrapper socket)
@@ -44,7 +111,7 @@ pub enum WrapperResponse {
     Ok {
         /// Secret material (for read requests).
         #[serde(skip_serializing_if = "Option::is_none")]
-        material: Option<String>,
+        material: Option<SecretString>,
         /// Message (for unlock confirmations).
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
@@ -72,7 +139,10 @@ pub enum ControlRequest {
         target: Option<String>,
     },
     #[serde(rename = "store")]
-    Store { secret_id: String, material: String },
+    Store {
+        secret_id: String,
+        material: SecretString,
+    },
     /// Unlock a wrapper for a duration.
     #[serde(rename = "unlock")]
     Unlock {
@@ -120,7 +190,10 @@ pub enum SecretsdRequest {
     Read { secret_id: String },
     /// Write a secret by relative ID.
     #[serde(rename = "write")]
-    Write { secret_id: String, material: String },
+    Write {
+        secret_id: String,
+        material: SecretString,
+    },
     /// List secrets under a relative prefix.
     #[serde(rename = "list")]
     List { prefix: String },
@@ -136,7 +209,7 @@ pub enum SecretsdResponse {
     #[serde(rename = "ok")]
     Ok {
         #[serde(skip_serializing_if = "Option::is_none")]
-        material: Option<String>,
+        material: Option<SecretString>,
         #[serde(skip_serializing_if = "Option::is_none")]
         ids: Option<Vec<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,7 +259,10 @@ pub enum BackendRequest {
 
     /// Write/update secret material.
     #[serde(rename = "write")]
-    Write { secret_id: String, material: String },
+    Write {
+        secret_id: String,
+        material: SecretString,
+    },
 
     /// List secret IDs under a prefix.
     #[serde(rename = "list")]
@@ -208,7 +284,7 @@ pub enum BackendResponse {
     #[serde(rename = "ok")]
     Ok {
         #[serde(skip_serializing_if = "Option::is_none")]
-        material: Option<String>,
+        material: Option<SecretString>,
         #[serde(skip_serializing_if = "Option::is_none")]
         info: Option<serde_json::Value>,
     },
@@ -238,7 +314,7 @@ mod tests {
     #[test]
     fn wrapper_response_ok() {
         let resp = WrapperResponse::Ok {
-            material: Some("secret123".to_string()),
+            material: Some(SecretString::from("secret123")),
             message: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
@@ -272,7 +348,7 @@ mod tests {
     fn control_request_store_roundtrip() {
         let req = ControlRequest::Store {
             secret_id: "a/b".to_string(),
-            material: "val".to_string(),
+            material: SecretString::from("val"),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"command\":\"store\""));
@@ -283,7 +359,7 @@ mod tests {
                 material,
             } => {
                 assert_eq!(secret_id, "a/b");
-                assert_eq!(material, "val");
+                assert_eq!(material.as_str(), "val");
             }
             other => panic!("expected Store, got {other:?}"),
         }
@@ -341,7 +417,7 @@ mod tests {
     fn backend_write_roundtrip() {
         let req = BackendRequest::Write {
             secret_id: "tok".to_string(),
-            material: "secret_value".to_string(),
+            material: SecretString::from("secret_value"),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"action\":\"write\""));
@@ -382,7 +458,7 @@ mod tests {
     #[test]
     fn backend_response_ok_with_material() {
         let resp = BackendResponse::Ok {
-            material: Some("derived_token".to_string()),
+            material: Some(SecretString::from("derived_token")),
             info: None,
         };
         let json = serde_json::to_string(&resp).unwrap();

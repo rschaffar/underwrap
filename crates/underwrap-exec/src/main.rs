@@ -594,7 +594,7 @@ fn request_secret(socket_path: &str, libsecret: bool) -> Result<(String, Option<
     let material = match response {
         WrapperResponse::Ok {
             material: Some(m), ..
-        } => m,
+        } => m.into(),
         WrapperResponse::Ok { material: None, .. } => {
             bail!("daemon returned no material");
         }

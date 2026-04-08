@@ -646,7 +646,7 @@ async fn process_read_for(
             Ok(Some(material)) => {
                 audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
                 WrapperResponse::Ok {
-                    material: Some(material),
+                    material: Some(material.into()),
                     message: None,
                 }
             }
@@ -670,11 +670,12 @@ async fn process_read_for(
         // Local backend: read + derive locally.
         match state.store.read(secret_id) {
             Ok(Some(material)) => {
+                let material = underwrap_protocol::message::SecretString::from(material);
                 // Apply derivation (e.g. OAuth refresh → access token).
                 match derive::derive(
                     &wrapper_def.derivation,
                     secret_id,
-                    &material,
+                    material.as_str(),
                     &state.token_cache,
                 )
                 .await
@@ -682,7 +683,7 @@ async fn process_read_for(
                     Ok(derived) => {
                         audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
                         WrapperResponse::Ok {
-                            material: Some(derived),
+                            material: Some(derived.into()),
                             message: None,
                         }
                     }
@@ -1037,7 +1038,7 @@ fn process_control(
                     };
                 }
 
-                match state.store.write(secret_id, material) {
+                match state.store.write(secret_id, material.as_ref()) {
                     Ok(()) => {
                         state.token_cache.invalidate(secret_id);
                         audit::secret_stored(secret_id, peer_uid);

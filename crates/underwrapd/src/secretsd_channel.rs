@@ -88,7 +88,7 @@ fn process_request(
                     debug!(wrapper = %wrapper_name, id = %full_id, "secretsd read");
                     crate::audit::secretsd_read(wrapper_name, secret_id);
                     SecretsdResponse::Ok {
-                        material,
+                        material: material.map(Into::into),
                         ids: None,
                         existed: None,
                     }
@@ -115,7 +115,7 @@ fn process_request(
             }
             let full_id = full_id.unwrap();
 
-            match store.write(&full_id, material) {
+            match store.write(&full_id, material.as_ref()) {
                 Ok(()) => {
                     debug!(wrapper = %wrapper_name, id = %full_id, "secretsd write");
                     crate::audit::secretsd_write(wrapper_name, secret_id);
@@ -277,7 +277,7 @@ mod tests {
         let resp = process_request(
             &SecretsdRequest::Write {
                 secret_id: "default/item_1".to_string(),
-                material: "secret_value".to_string(),
+                material: "secret_value".to_string().into(),
             },
             &store,
             PREFIX,
@@ -302,7 +302,7 @@ mod tests {
         );
         match resp {
             SecretsdResponse::Ok { material, .. } => {
-                assert_eq!(material, Some("secret_value".to_string()));
+                assert_eq!(material.as_deref(), Some("secret_value"));
             }
             other => panic!("expected Ok, got {other:?}"),
         }
@@ -401,7 +401,7 @@ mod tests {
         let resp = process_request(
             &SecretsdRequest::Write {
                 secret_id: "../other-wrapper/secret".to_string(),
-                material: "hacked".to_string(),
+                material: "hacked".to_string().into(),
             },
             &store,
             PREFIX,

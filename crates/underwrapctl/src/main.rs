@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
             let material = read_stdin().await?;
             ControlRequest::Store {
                 secret_id: secret_id.clone(),
-                material,
+                material: material.into(),
             }
         }
         Commands::Unlock {
