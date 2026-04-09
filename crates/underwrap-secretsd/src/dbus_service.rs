@@ -641,6 +641,93 @@ mod tests {
         .unwrap()
     }
 
+    fn service_with_channel(
+        store: SecretStore,
+        channel: Arc<dyn ChannelOps>,
+    ) -> (SecretService, Arc<RwLock<SecretStore>>) {
+        let store = Arc::new(RwLock::new(store));
+        let service = SecretService::new(store.clone(), channel);
+        (service, store)
+    }
+
+    #[test]
+    fn parse_item_path_accepts_valid_secret_service_paths() {
+        assert_eq!(
+            parse_item_path(&format!("{BASE_PATH}/collection/default/item_1")),
+            Some(("default", "item_1"))
+        );
+        assert_eq!(parse_item_path("/invalid"), None);
+        assert_eq!(parse_item_path(&format!("{BASE_PATH}/collection/default")), None);
+    }
+
+    #[tokio::test]
+    async fn read_and_set_alias_roundtrip() {
+        let mut store = SecretStore::new_default();
+        let work_id = store.create_collection(Some("Work"), None);
+        let channel_impl = Arc::new(FakeChannel::new(HashMap::new()));
+        let channel: Arc<dyn ChannelOps> = channel_impl.clone();
+        let (service, store) = service_with_channel(store, channel);
+
+        let path = service.read_alias("default").await.unwrap();
+        assert_eq!(path.as_str(), format!("{BASE_PATH}/collection/default"));
+
+        let work_path = ObjectPath::try_from(format!("{BASE_PATH}/collection/{work_id}")).unwrap();
+        service.set_alias("work", work_path).await.unwrap();
+
+        let alias_path = service.read_alias("work").await.unwrap();
+        assert_eq!(alias_path.as_str(), format!("{BASE_PATH}/collection/{work_id}"));
+        assert_eq!(store.read().await.get_alias("work"), Some(work_id.as_str()));
+
+        let raw_aliases = channel_impl
+            .data
+            .lock()
+            .unwrap()
+            .get("_aliases")
+            .cloned()
+            .unwrap();
+        let aliases: HashMap<String, String> = serde_json::from_slice(&raw_aliases).unwrap();
+        assert_eq!(aliases.get("work"), Some(&work_id));
+    }
+
+    #[tokio::test]
+    async fn search_items_and_get_secrets_use_store_metadata_and_channel_values() {
+        let mut store = SecretStore::new_default();
+        let attributes = HashMap::from([("service".to_string(), "github".to_string())]);
+        let (item_id, _) = store
+            .create_item(
+                "default",
+                "GitHub",
+                &attributes,
+                b"ignored-by-service",
+                "text/plain",
+                false,
+            )
+            .unwrap();
+
+        let channel: Arc<dyn ChannelOps> = Arc::new(FakeChannel::new(HashMap::from([(
+            format!("default/{item_id}.secret"),
+            b"backend-secret".to_vec(),
+        )])));
+        let (service, _) = service_with_channel(store, channel);
+
+        let (unlocked, locked) = service.search_items(attributes).await.unwrap();
+        assert!(locked.is_empty());
+        assert_eq!(unlocked.len(), 1);
+        let item_path = unlocked[0].as_str().to_string();
+        assert_eq!(item_path, format!("{BASE_PATH}/collection/default/{item_id}"));
+
+        let session = ObjectPath::try_from(format!("{BASE_PATH}/session/s0")).unwrap();
+        let secrets = service
+            .get_secrets(vec![ObjectPath::try_from(item_path.as_str()).unwrap()], session)
+            .await
+            .unwrap();
+        let secret = secrets
+            .get(&OwnedObjectPath::try_from(item_path.clone()).unwrap())
+            .unwrap();
+        assert_eq!(secret.value, b"backend-secret");
+        assert_eq!(secret.content_type, "text/plain");
+    }
+
     #[tokio::test]
     async fn item_delete_propagates_backend_error_and_keeps_state() {
         let mut store = SecretStore::new_default();
