@@ -156,7 +156,7 @@ That should show the configured target, secret ID, and whether the secret is sto
 
 You now have a working underwrap deployment with:
 
-- kernel-backed wrapper identity via the wrapper's group
+- kernel-backed wrapper identity via the wrapper socket plus the wrapper's group
 - secret delivery at invocation time instead of shell-export time
 - a fixed target binary from root-owned configuration
 - a clean base to build more opinionated wrappers on top of

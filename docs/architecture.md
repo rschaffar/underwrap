@@ -60,9 +60,10 @@ Instead:
 
 - each wrapper binary is installed setgid to a dedicated group
 - each wrapper gets its own wrapper socket
+- the wrapper socket determines the expected wrapper
 - the daemon obtains the peer process credentials from the kernel
 - it reads the peer's effective GID from `/proc/<pid>/status`
-- the wrapper socket and effective GID must agree on the same configured wrapper
+- the peer effective GID must match the wrapper selected by that socket
 
 This is one of the central design choices in underwrap.
 

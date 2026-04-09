@@ -36,11 +36,12 @@ underwrap can inject the token only for that wrapper invocation, while the targe
 
 At a high level:
 
-1. a setgid wrapper connects to the daemon
-2. the daemon identifies the wrapper from the kernel-visible effective GID
-3. the daemon fetches or derives the secret
-4. the wrapper drops privilege
-5. the target runs with the secret injected just for that invocation
+1. a setgid wrapper connects to its dedicated wrapper socket
+2. the daemon selects the expected wrapper from that socket
+3. the daemon confirms the peer's effective GID matches that wrapper
+4. the daemon fetches or derives the secret
+5. the wrapper drops privilege
+6. the target runs with the secret injected just for that invocation
 
 Depending on how you configure it, underwrap can also:
 
@@ -54,7 +55,7 @@ Depending on how you configure it, underwrap can also:
 underwrap is trying to combine a few things that are rarely available together:
 
 - **wrapper-first UX** — users run a command like `work-jira issue list`
-- **kernel-backed wrapper identity** — access is tied to setgid wrapper groups, not caller-supplied names
+- **kernel-backed wrapper identity** — wrapper socket selection sets the expected wrapper, and the peer's setgid-derived effective GID must confirm it
 - **clean target environments** — the target does not inherit the caller's full shell environment
 - **process-isolated delivery** — the wrapper chain is designed to reduce easy same-user inspection
 - **mutable credential workflows** — useful for OAuth and libsecret-backed tools

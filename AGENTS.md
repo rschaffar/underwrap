@@ -122,7 +122,7 @@ examples/config.yaml     # Annotated example daemon config
 
 ### Always do
 
-- Verify wrapper identity from `SO_PEERCRED` effective GID (read from `/proc/pid/status`)
+- Verify wrapper identity from the wrapper socket that accepted the connection plus `SO_PEERCRED` effective GID (read from `/proc/pid/status`)
 - Zeroize secret material after use (`zeroize` crate)
 - Set `PR_SET_DUMPABLE=0` on wrapper processes that hold secrets
 - Set `PR_SET_DUMPABLE=0` in secretsd as first action before reading secrets
@@ -159,7 +159,7 @@ on backward compatibility concerns.
 **Two-stage wrapper chain:**
 `underwrap-exec` (setgid) → pipe fd 3 → `underwrap-ns` (cap_sys_admin) → target in PID namespace
 
-**Identity model:** setgid group → `SO_PEERCRED` effective GID → daemon GID→wrapper map
+**Identity model:** wrapper socket selects expected wrapper + setgid group → `SO_PEERCRED` effective GID → daemon confirms the match
 
 **Remote backend:** frontend daemon connects to `underwrap-backendd` via SSH-tunneled Unix socket.
 Tunnel connect = unlock. Tunnel disconnect = lock.

@@ -115,7 +115,10 @@ A feature that bypasses `StorageBackend` is not a convenience shortcut; it chang
 
 underwrap does not trust caller-supplied wrapper names for authorization.
 
-Identity must come from a kernel-backed source tied to the installed wrapper binary. In the current design, that source is the wrapper's **effective GID**.
+Identity must come from kernel-backed sources tied to the installed wrapper binary. In the current design, those sources are:
+
+- the wrapper socket that selected the expected wrapper
+- the wrapper's **effective GID**, which must match that socket's configured wrapper
 
 ### 3. Channels carrying secrets must be authenticated at creation time
 
@@ -182,7 +185,7 @@ When the wrapper connects to the daemon:
 - it reads the peer's effective GID from `/proc/<pid>/status`
 - it verifies that GID matches the wrapper expected for that socket
 
-The protocol-level wrapper name is not the authority. The wrapper socket plus the kernel-visible effective GID are.
+The protocol-level wrapper name is not the authority. The wrapper socket selects the expected wrapper, and the kernel-visible effective GID must confirm it.
 
 ### Why effective GID instead of real GID?
 
@@ -200,7 +203,7 @@ A user can make a symlink with a misleading name and invoke the same underlying 
 
 Per-wrapper sockets tighten the local trust boundary in a useful way.
 
-They let the filesystem permission model reject unrelated local processes before the daemon spends work on them, while still keeping wrapper identity anchored in the wrapper's effective GID.
+They let the filesystem permission model reject unrelated local processes before the daemon spends work on them, while still keeping wrapper identity anchored in the combination of wrapper-socket selection and the wrapper's effective GID.
 
 ### Why this is NixOS-shaped
 

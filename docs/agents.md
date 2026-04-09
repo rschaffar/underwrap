@@ -108,7 +108,7 @@ That helps reduce:
 
 ### 4. Wrapper identity is kernel-backed
 
-The daemon does not trust a caller-supplied wrapper name. It derives identity from the wrapper's effective GID.
+The daemon does not trust a caller-supplied wrapper name. Instead, the wrapper socket selects the expected wrapper and the peer's effective GID must match it.
 
 That is important when multiple wrappers exist with different secrets and different intended targets.
 
