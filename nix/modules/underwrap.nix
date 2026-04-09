@@ -3,6 +3,23 @@
 let
   cfg = config.services.underwrap;
 
+  isCleanRelativePath = path:
+    path != null
+    && path != ""
+    && !(lib.hasPrefix "/" path)
+    && lib.all (segment: segment != "" && segment != "." && segment != "..")
+      (lib.splitString "/" path);
+
+  pathsOverlap = left: right:
+    left == right
+    || lib.hasPrefix (left + "/") right
+    || lib.hasPrefix (right + "/") left;
+
+  wrapperDirectoryPaths = inst: wrapper:
+    map (ref: inst.credentials.${ref}.path)
+      (lib.filter (ref: inst.credentials.${ref}.mode == "directory")
+        (builtins.attrNames wrapper.use));
+
   # Per-instance helper functions. All names are prefixed with the instance name
   # to ensure full isolation between instances.
   mkInstance = instName: inst: let
@@ -315,10 +332,23 @@ in {
 
   config = lib.mkIf cfg.enable {
     assertions = lib.flatten (lib.mapAttrsToList (instName: inst:
-      lib.mapAttrsToList (ref: c: {
-        assertion = if c.mode == "env" then c.variable != null && c.path == null else if c.mode == "directory" then c.path != null && c.variable == null else c.variable == null && c.path == null;
-        message = if c.mode == "env" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": env credentials require variable and must not set path" else if c.mode == "directory" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": directory credentials require path and must not set variable" else "services.underwrap.instances.${instName}.credentials.\"${ref}\": libsecret credentials must not set variable or path";
-      }) inst.credentials
+      (lib.mapAttrsToList (ref: c: {
+        assertion = if c.mode == "env" then c.variable != null && c.path == null else if c.mode == "directory" then c.path != null && c.variable == null && isCleanRelativePath c.path else c.variable == null && c.path == null;
+        message = if c.mode == "env" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": env credentials require variable and must not set path" else if c.mode == "directory" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": directory credentials require a clean relative path and must not set variable" else "services.underwrap.instances.${instName}.credentials.\"${ref}\": libsecret credentials must not set variable or path";
+      }) inst.credentials)
+      ++ (lib.mapAttrsToList (wrapperName: wrapper:
+        let
+          paths = wrapperDirectoryPaths inst wrapper;
+          pairs = lib.concatMap (left:
+            map (right: { inherit left right; })
+              (lib.filter (right: right != left) paths)
+          ) paths;
+        in {
+          assertion = lib.length paths == lib.length (lib.unique paths)
+            && lib.all (pair: !pathsOverlap pair.left pair.right) pairs;
+          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: directory credential target paths must not overlap";
+        }
+      ) inst.wrappers)
     ) cfg.instances);
 
     # Merge all instance users.

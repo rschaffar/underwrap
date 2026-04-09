@@ -49,8 +49,8 @@ It boots a NixOS VM with real underwrap services and then checks properties such
 - core dump prevention
 - libsecret mode end to end
 - directory credential staging and sync
-- same-UID host-namespace invisibility of mounted directory credential files
-- same-UID host-namespace invisibility of private libsecret runtime sockets
+- same-UID host-namespace inability to list mounted directory credential paths or read files from them
+- same-UID host-namespace inability to list private libsecret runtime mountpoints or reach private sockets
 - remote backend tunnel lifecycle
 - absence of secret values in logs
 

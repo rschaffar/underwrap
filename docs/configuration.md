@@ -109,7 +109,11 @@ credentials."gws/state" = {
 
 underwrap materializes that directory inside the wrapper namespace just before exec. For `read-write` bindings it syncs resulting file changes back to the backend after the target exits. For `read-only` bindings it mounts the directory read-only.
 
+The staging area is a private tmpfs owned by the wrapper namespace. underwrap mounts that staging tmpfs with `noswap` for directory credentials, so this feature assumes a kernel that supports that tmpfs mount option.
+
 The path must be relative and clean. Absolute paths and traversal components such as `..` are rejected.
+
+In v1, directory credentials persist files only. Empty directories are reconstructed as needed and are not stored in the backend. Symlinks inside managed directory trees are rejected.
 
 ## Wrappers
 

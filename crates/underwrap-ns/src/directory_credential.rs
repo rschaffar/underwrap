@@ -302,8 +302,9 @@ fn ensure_mount_target(
     validate_relative_path(relative_path)?;
     let mut current = target_home.to_path_buf();
     let mut created = Vec::new();
+    let components: Vec<&str> = relative_path.split('/').collect();
 
-    for component in relative_path.split('/') {
+    for (index, component) in components.iter().enumerate() {
         let next = current.join(component);
         match std::fs::symlink_metadata(&next) {
             Ok(metadata) => {
@@ -323,7 +324,8 @@ fn ensure_mount_target(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 std::fs::create_dir(&next)
                     .map_err(|err| format!("creating mountpoint {}: {err}", next.display()))?;
-                set_mode(&next, 0o700)?;
+                let is_final = index + 1 == components.len();
+                set_mode(&next, if is_final { 0o000 } else { 0o700 })?;
                 created.push(next.clone());
             }
             Err(e) => {

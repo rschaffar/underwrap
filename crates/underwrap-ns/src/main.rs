@@ -16,6 +16,7 @@
 
 mod directory_credential;
 
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 
@@ -325,6 +326,11 @@ fn setup_directory_mount_namespace_base(mount_directory_staging: bool) -> Result
         std::fs::create_dir_all(DIRECTORY_STAGING_ROOT).map_err(|e| {
             format!("creating directory staging mount point {DIRECTORY_STAGING_ROOT}: {e}")
         })?;
+        std::fs::set_permissions(
+            DIRECTORY_STAGING_ROOT,
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .map_err(|e| format!("setting mountpoint permissions on {DIRECTORY_STAGING_ROOT}: {e}"))?;
         let staging_root = std::ffi::CString::new(DIRECTORY_STAGING_ROOT).unwrap();
         let tmpfs = std::ffi::CString::new("tmpfs").unwrap();
         let ret = unsafe {
@@ -333,11 +339,14 @@ fn setup_directory_mount_namespace_base(mount_directory_staging: bool) -> Result
                 staging_root.as_ptr(),
                 tmpfs.as_ptr(),
                 0,
-                c"size=8m,mode=0700".as_ptr() as *const libc::c_void,
+                c"size=8m,mode=0700,noswap".as_ptr() as *const libc::c_void,
             )
         };
         if ret != 0 {
             let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINVAL) {
+                return Err("mount tmpfs for directory staging failed: kernel does not support tmpfs noswap".to_string());
+            }
             return Err(format!("mount tmpfs for directory staging failed: {err}"));
         }
     }
@@ -368,6 +377,8 @@ fn setup_mount_namespace() -> Result<(), String> {
     let bus_dir = "/tmp/.underwrap-ns-bus";
     std::fs::create_dir_all(bus_dir)
         .map_err(|e| format!("creating bus mount point {bus_dir}: {e}"))?;
+    std::fs::set_permissions(bus_dir, std::fs::Permissions::from_mode(0o000))
+        .map_err(|e| format!("setting mountpoint permissions on {bus_dir}: {e}"))?;
     let bus_dir_c = std::ffi::CString::new(bus_dir).unwrap();
     let tmpfs_c = std::ffi::CString::new("tmpfs").unwrap();
     let ret = unsafe {

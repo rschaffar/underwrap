@@ -632,11 +632,16 @@ Important steps include:
 1. making mounts private
 2. mounting a fresh `/proc` inside the PID namespace for libsecret mode
 3. mounting private tmpfs roots for namespace-private runtime state such as the D-Bus socket and staged directory credentials
-4. hiding `/run/user/<uid>/bus` if it exists
+4. using a `noswap` tmpfs for staged directory credentials so those staged files do not page out to swap when the kernel supports the mount option
+5. hiding `/run/user/<uid>/bus` if it exists
 
 These steps are not decorative. They are part of keeping the host's normal session bus — and the host's normal home-directory view — from becoming the path of least resistance.
 
 For directory credentials, the same mount-namespace isolation is what keeps backend-managed files out of the host's ordinary home-directory view. Another same-UID host process should not be able to read those mounted files directly from the host namespace while the wrapper runs.
+
+The implementation also treats managed directory trees strictly: it persists only regular files, reconstructs empty directories as needed, and rejects symlinks created inside managed trees during sync.
+
+Like the rest of underwrap's security story, this still depends on kernel behavior. If a deployment kernel does not support the tmpfs options underwrap relies on for directory staging, wrapper execution aborts rather than silently falling back to a weaker mode.
 
 ### A real limitation: abstract D-Bus sockets
 

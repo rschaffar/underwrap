@@ -560,11 +560,24 @@ host_view = machine.execute(
 )[0]
 assert host_view != 0, "FAIL: same-UID host process can read second directory credential file"
 
+host_ls = machine.execute(
+    "su testuser -s /bin/sh -c 'ls $HOME/.config/underwrap-dir-a >/dev/null 2>&1'"
+)[0]
+assert host_ls != 0, "FAIL: same-UID host process can list first mounted directory"
+host_ls = machine.execute(
+    "su testuser -s /bin/sh -c 'ls $HOME/.local/share/underwrap-dir-b >/dev/null 2>&1'"
+)[0]
+assert host_ls != 0, "FAIL: same-UID host process can list second mounted directory"
+
 host_find = machine.succeed(
     "su testuser -s /bin/sh -c 'find $HOME/.config/underwrap-dir-a -maxdepth 2 -type f 2>/dev/null || true'"
 ).strip()
 assert host_find == "", f"FAIL: host view exposes mounted directory files: {host_find}"
-machine.log("PASS: same-UID host processes cannot access mounted directory credential files")
+host_find = machine.succeed(
+    "su testuser -s /bin/sh -c 'find $HOME/.local/share/underwrap-dir-b -maxdepth 2 -type f 2>/dev/null || true'"
+).strip()
+assert host_find == "", f"FAIL: host view exposes second mounted directory files: {host_find}"
+machine.log("PASS: same-UID host processes cannot list mounted directories or access files in them")
 
 machine.execute("pkill -u testuser -f local-test-dir-sleep || true")
 time.sleep(0.5)
@@ -596,7 +609,11 @@ libsecret_host_view = machine.succeed(
     "su testuser -s /bin/sh -c 'find /tmp/.underwrap-ns-bus -type s 2>/dev/null || true'"
 ).strip()
 assert libsecret_host_view == "", f"FAIL: same-UID host process sees private bus socket: {libsecret_host_view}"
-machine.log("PASS: same-UID host process cannot see private libsecret bus socket")
+libsecret_ls = machine.execute(
+    "su testuser -s /bin/sh -c 'ls /tmp/.underwrap-ns-bus >/dev/null 2>&1'"
+)[0]
+assert libsecret_ls != 0, "FAIL: same-UID host process can list private libsecret bus mountpoint"
+machine.log("PASS: same-UID host process cannot list private libsecret runtime directories or see the bus socket")
 machine.execute("pkill -u testuser -f local-test-libsecret || true")
 time.sleep(0.5)
 
