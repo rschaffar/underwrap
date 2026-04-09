@@ -26,6 +26,12 @@ underwrap is probably the wrong tool when:
 - you are not on NixOS
 - you would be better served by a small purpose-built broker service
 
+A particularly important case is this:
+
+- if your main problem is that an untrusted caller must be behaviorally confined regardless of what downstream tools do, underwrap is not the whole answer
+
+underwrap tightens secret delivery and process boundaries. It does not turn a broad CLI into a narrow policy surface by itself.
+
 ## Compared with common alternatives
 
 ### Plain environment variables

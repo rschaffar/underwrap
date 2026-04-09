@@ -62,8 +62,11 @@ underwrap does **not** solve these problems:
 - **root compromise** — `root` can read memory, files, sockets, and process state
 - **kernel compromise** — the design depends on Linux kernel behavior
 - **malicious or overpowered target tools** — if the target program itself can reveal the secret, underwrap cannot prevent that
+- **unreviewed descendant behavior** — if the target or its helpers execute broad or surprising follow-on behavior, underwrap does not sandbox that for you
 - **bad wrapper policy design** — if you wrap a broad CLI, you are still giving the caller broad CLI power
 - **all possible agent abuse** — underwrap helps with secret delivery; it does not turn arbitrary local execution into a safe sandbox
+
+That distinction matters. underwrap is a secret-delivery and boundary-tightening system, not a general behavioral sandbox.
 
 This is why the recommended pattern for agent-facing use is still to wrap **your own narrow helper**, not a full general-purpose CLI.
 

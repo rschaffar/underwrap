@@ -124,13 +124,14 @@ underwrap does **not** by itself answer these questions:
 
 - Is the wrapped action too broad?
 - Can the target CLI itself reveal the secret?
+- Can the target or one of its descendants execute helper behavior you did not review?
 - Can the agent abuse a legitimate command in a harmful way?
 - Is the downstream token scope too powerful?
 - Does your helper validate arguments well enough?
 
 Those are wrapper design and token-scope questions.
 
-underwrap helps with **secret delivery and process handling**. It does not replace careful wrapper design.
+underwrap helps with **secret delivery and process handling**. It does not replace careful wrapper design, and it does not act as a general sandbox for descendant process behavior.
 
 ## Design guidelines for agent-facing wrappers
 

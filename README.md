@@ -70,8 +70,15 @@ Important boundaries:
 
 - If you wrap a broad tool directly, you are still giving the caller broad access to that tool.
 - If the target program itself can reveal the secret, underwrap cannot magically prevent that.
+- If the target resolves broad helper behavior that you did not review, underwrap does not sandbox that descendant behavior for you.
 - If the machine is compromised as `root`, the game is over.
 - The current design leans on Linux and NixOS behavior, especially Yama and the wrapper/capability setup.
+
+A good short way to think about underwrap is:
+
+> it tries to make "use the secret through this intended command" easier than "extract the raw secret value"
+
+That is valuable, but it is not the same thing as making arbitrary local execution safe.
 
 That is why the recommended pattern for agent-facing use is usually:
 
