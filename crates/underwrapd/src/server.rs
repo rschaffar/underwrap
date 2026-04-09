@@ -546,7 +546,7 @@ async fn handle_wrapper(
             seconds,
             challenge,
             signature,
-            public_key,
+            public_key_blob,
         } => {
             info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response");
             process_wrapper_unlock_response(
@@ -557,7 +557,7 @@ async fn handle_wrapper(
                 &state,
                 challenge,
                 signature,
-                public_key,
+                public_key_blob,
             )
         }
     };
@@ -587,7 +587,7 @@ async fn handle_wrapper(
                 seconds,
                 challenge,
                 signature,
-                public_key,
+                public_key_blob,
             } => {
                 info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response (same connection)");
                 process_wrapper_unlock_response(
@@ -598,7 +598,7 @@ async fn handle_wrapper(
                     &state,
                     challenge,
                     signature,
-                    public_key,
+                    public_key_blob,
                 )
             }
             _ => WrapperResponse::Error {
@@ -831,7 +831,7 @@ fn process_wrapper_unlock_response(
     state: &State,
     challenge: &[u8],
     signature: &[u8],
-    public_key_str: &str,
+    public_key_blob: &[u8],
 ) -> WrapperResponse {
     let wrapper_def = match state.config.wrappers.get(wrapper_name) {
         Some(w) => w,
@@ -866,7 +866,7 @@ fn process_wrapper_unlock_response(
         }
     };
 
-    let caller_pk = match ssh_key::PublicKey::from_openssh(public_key_str) {
+    let caller_pk = match ssh_key::PublicKey::from_bytes(public_key_blob) {
         Ok(k) => k,
         Err(e) => {
             warn!(wrapper = %wrapper_name, err = %e, "invalid public key from caller");

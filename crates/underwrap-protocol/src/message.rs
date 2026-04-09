@@ -338,7 +338,7 @@ pub enum WrapperRequest {
         seconds: Option<u64>,
         challenge: Vec<u8>,
         signature: Vec<u8>,
-        public_key: String,
+        public_key_blob: Vec<u8>,
     },
 }
 
@@ -359,14 +359,14 @@ impl WireEncode for WrapperRequest {
                 seconds,
                 challenge,
                 signature,
-                public_key,
+                public_key_blob,
             } => {
                 2u8.encode(out)?;
                 scope.encode(out)?;
                 seconds.encode(out)?;
                 challenge.encode(out)?;
                 signature.encode(out)?;
-                public_key.encode(out)
+                public_key_blob.encode(out)
             }
         }
     }
@@ -387,7 +387,7 @@ impl WireDecode for WrapperRequest {
                 seconds: Option::<u64>::decode(reader)?,
                 challenge: Vec::<u8>::decode(reader)?,
                 signature: Vec::<u8>::decode(reader)?,
-                public_key: String::decode(reader)?,
+                public_key_blob: Vec::<u8>::decode(reader)?,
             }),
             other => Err(anyhow!("invalid wrapper request discriminant: {other}")),
         }
@@ -892,7 +892,6 @@ impl WireDecode for BackendResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SecretsdErrorCode {
-    NotFound,
     InvalidRequest,
     Unauthorized,
     Internal,
@@ -901,10 +900,9 @@ pub enum SecretsdErrorCode {
 impl WireEncode for SecretsdErrorCode {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {
-            Self::NotFound => 0u8.encode(out),
-            Self::InvalidRequest => 1u8.encode(out),
-            Self::Unauthorized => 2u8.encode(out),
-            Self::Internal => 3u8.encode(out),
+            Self::InvalidRequest => 0u8.encode(out),
+            Self::Unauthorized => 1u8.encode(out),
+            Self::Internal => 2u8.encode(out),
         }
     }
 }
@@ -912,10 +910,9 @@ impl WireEncode for SecretsdErrorCode {
 impl WireDecode for SecretsdErrorCode {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         match u8::decode(reader)? {
-            0 => Ok(Self::NotFound),
-            1 => Ok(Self::InvalidRequest),
-            2 => Ok(Self::Unauthorized),
-            3 => Ok(Self::Internal),
+            0 => Ok(Self::InvalidRequest),
+            1 => Ok(Self::Unauthorized),
+            2 => Ok(Self::Internal),
             other => Err(anyhow!("invalid secretsd error code discriminant: {other}")),
         }
     }
@@ -954,15 +951,13 @@ impl WireDecode for ErrorCode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BackendErrorCode {
-    NotFound,
     Internal,
 }
 
 impl WireEncode for BackendErrorCode {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {
-            Self::NotFound => 0u8.encode(out),
-            Self::Internal => 1u8.encode(out),
+            Self::Internal => 0u8.encode(out),
         }
     }
 }
@@ -970,8 +965,7 @@ impl WireEncode for BackendErrorCode {
 impl WireDecode for BackendErrorCode {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         match u8::decode(reader)? {
-            0 => Ok(Self::NotFound),
-            1 => Ok(Self::Internal),
+            0 => Ok(Self::Internal),
             other => Err(anyhow!("invalid backend error code discriminant: {other}")),
         }
     }

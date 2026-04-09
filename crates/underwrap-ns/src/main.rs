@@ -17,7 +17,6 @@
 use std::os::unix::process::CommandExt;
 
 use underwrap_protocol::exec::ExecBundle;
-use underwrap_protocol::message::SecretBytes;
 
 /// The fd number used to pass the secret from underwrap-exec.
 const SECRET_FD: i32 = 3;
@@ -43,9 +42,9 @@ fn run() -> Result<(), String> {
     let target = &args[1];
     let target_args = &args[2..];
 
-    // Read env secret bindings from fd 3.
-    let env_secrets =
-        read_secret_fd().map_err(|e| format!("reading env bindings from fd {SECRET_FD}: {e}"))?;
+    // Read the execution bundle from fd 3.
+    let exec_bundle =
+        read_secret_fd().map_err(|e| format!("reading exec bundle from fd {SECRET_FD}: {e}"))?;
 
     // Make this process non-dumpable immediately. Since the parent process
     // (this process after fork) never execs, the flag persists for its
@@ -185,32 +184,21 @@ fn run() -> Result<(), String> {
             }
         }
 
-        // Parse env config from the trusted sidecar (set by underwrap-exec).
-        if let Ok(env_json) = std::env::var("UNDERWRAP_ENV_CONFIG") {
-            #[derive(serde::Deserialize)]
-            struct EnvConfig {
-                #[serde(default)]
-                passthrough: Vec<String>,
-                #[serde(default)]
-                set: std::collections::HashMap<String, String>,
+        // Additional passthrough from trusted stage-1 config.
+        for var in &exec_bundle.env_passthrough {
+            if let Ok(val) = std::env::var(var) {
+                cmd.env(var, val);
             }
-            if let Ok(cfg) = serde_json::from_str::<EnvConfig>(&env_json) {
-                // Additional passthrough from sidecar config.
-                for var in &cfg.passthrough {
-                    if let Ok(val) = std::env::var(var) {
-                        cmd.env(var, val);
-                    }
-                }
-                // Fixed vars from sidecar config.
-                for (key, val) in &cfg.set {
-                    cmd.env(key, val);
-                }
-            }
+        }
+
+        // Fixed vars from trusted stage-1 config.
+        for (key, val) in &exec_bundle.env_set {
+            cmd.env(key, val);
         }
 
         // Inject env secret bindings. Decode to UTF-8 only at the final
         // target boundary where environment variables must be strings.
-        for (key, value) in &env_secrets {
+        for (key, value) in &exec_bundle.env {
             let value = value.as_utf8().map_err(|e| {
                 format!("env binding '{key}' is not valid UTF-8 and cannot be exported: {e}")
             })?;
@@ -521,15 +509,13 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     Ok(())
 }
 
-/// Read environment secret bindings from the pipe on fd 3 and close the fd.
-fn read_secret_fd() -> Result<std::collections::HashMap<String, SecretBytes>, std::io::Error> {
+/// Read the execution bundle from the pipe on fd 3 and close the fd.
+fn read_secret_fd() -> Result<ExecBundle, std::io::Error> {
     use std::os::unix::io::FromRawFd;
 
     // SAFETY: fd 3 is expected to be a valid pipe read-end passed by underwrap-exec.
     let mut file = unsafe { std::fs::File::from_raw_fd(SECRET_FD) };
-    let bundle: ExecBundle =
-        underwrap_protocol::ipc::read_frame_sync(&mut file).map_err(std::io::Error::other)?;
-    Ok(bundle.env)
+    underwrap_protocol::ipc::read_frame_sync(&mut file).map_err(std::io::Error::other)
 }
 
 /// Drop all Linux capabilities.

@@ -2405,11 +2405,8 @@ name = "underwrap-exec"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64",
- "hex",
  "libc",
  "serde",
- "serde_json",
  "serde_yaml",
  "underwrap-protocol",
  "zeroize",
@@ -2420,10 +2417,7 @@ name = "underwrap-ns"
 version = "0.1.0"
 dependencies = [
  "libc",
- "serde",
- "serde_json",
  "underwrap-protocol",
- "zeroize",
 ]
 
 [[package]]
@@ -2433,7 +2427,6 @@ dependencies = [
  "anyhow",
  "libc",
  "serde",
- "serde_json",
  "serde_yaml",
  "thiserror",
  "tokio",
@@ -2475,7 +2468,6 @@ dependencies = [
  "anyhow",
  "chacha20poly1305",
  "rand 0.8.5",
- "serde_json",
  "tempfile",
  "underwrap-protocol",
  "zeroize",
@@ -2498,9 +2490,7 @@ name = "underwrapd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64",
  "clap",
- "hex",
  "libc",
  "rand 0.8.5",
  "reqwest",

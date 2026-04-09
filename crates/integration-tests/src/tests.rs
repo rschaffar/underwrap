@@ -872,7 +872,9 @@ async fn unlock_key_challenge_response_same_connection() {
     // Generate a test ed25519 key pair.
     let keypair = Ed25519Keypair::random(&mut rand::thread_rng());
     let private_key = PrivateKey::new(KeypairData::Ed25519(keypair.clone()), "test-key").unwrap();
-    let public_key_openssh = private_key.public_key().to_openssh().unwrap();
+    let public_key = private_key.public_key();
+    let public_key_openssh = public_key.to_openssh().unwrap();
+    let public_key_blob = public_key.to_bytes().unwrap();
 
     let mut wrappers = HashMap::new();
     let mut w = locked_wrapper("/usr/bin/true", "key-locked/tok", "TOK");
@@ -922,7 +924,7 @@ async fn unlock_key_challenge_response_same_connection() {
         seconds: None,
         challenge: nonce,
         signature: wire_sig,
-        public_key: public_key_openssh,
+        public_key_blob,
     };
     write_frame_async(&mut stream, &req2).await.unwrap();
     let resp2: WrapperResponse = read_frame_async(&mut stream).await.unwrap();

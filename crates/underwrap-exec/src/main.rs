@@ -112,14 +112,14 @@ fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
             Ok(())
         }
         WrapperResponse::Challenge { nonce } => {
-            let (signature, public_key_str) = sign_with_ssh_agent(&nonce)?;
+            let (signature, public_key_blob) = sign_with_ssh_agent(&nonce)?;
 
             let req2 = WrapperRequest::UnlockResponse {
                 scope,
                 seconds,
                 challenge: nonce,
                 signature,
-                public_key: public_key_str,
+                public_key_blob,
             };
             write_frame_sync(&mut stream, &req2)?;
             let resp2: WrapperResponse = read_frame_sync(&mut stream)?;
@@ -146,7 +146,7 @@ fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
 }
 
 /// Sign a challenge nonce using the SSH agent (SSH_AUTH_SOCK).
-fn sign_with_ssh_agent(nonce: &[u8]) -> Result<(Vec<u8>, String)> {
+fn sign_with_ssh_agent(nonce: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let auth_sock = std::env::var("SSH_AUTH_SOCK").context("SSH_AUTH_SOCK not set")?;
     let mut agent = UnixStream::connect(&auth_sock)
         .with_context(|| format!("connecting to SSH agent at {auth_sock}"))?;
@@ -159,14 +159,8 @@ fn sign_with_ssh_agent(nonce: &[u8]) -> Result<(Vec<u8>, String)> {
     let (key_blob, key_comment) = &identities[0];
     let signature = ssh_agent_sign(&mut agent, key_blob, nonce)?;
 
-    let public_key_str = format!(
-        "{} {}",
-        ssh_key_type_from_blob(key_blob),
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_blob)
-    );
-
     eprintln!("signed challenge with key: {key_comment}");
-    Ok((signature, public_key_str))
+    Ok((signature, key_blob.clone()))
 }
 
 // ---------------------------------------------------------------------------
@@ -286,17 +280,6 @@ fn ssh_agent_sign(agent: &mut UnixStream, key_blob: &[u8], data: &[u8]) -> Resul
     parse_ssh_agent_sign_response(&resp)
 }
 
-fn ssh_key_type_from_blob(blob: &[u8]) -> &str {
-    if blob.len() < 4 {
-        return "ssh-unknown";
-    }
-    let type_len = u32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
-    if blob.len() < 4 + type_len {
-        return "ssh-unknown";
-    }
-    std::str::from_utf8(&blob[4..4 + type_len]).unwrap_or("ssh-unknown")
-}
-
 /// Fork, pipe env secret bindings to the child, child execs underwrap-ns.
 fn exec_via_ns(
     ns_binary: &str,
@@ -379,7 +362,6 @@ fn exec_via_ns(
         cmd.env_remove("UNDERWRAP_LIBSECRET");
         cmd.env_remove("UNDERWRAP_DBUS_DAEMON");
         cmd.env_remove("UNDERWRAP_SECRETSD");
-        cmd.env_remove("UNDERWRAP_ENV_CONFIG");
         if config.libsecret {
             // channel_fd is guaranteed Some here — we bail above if recv_fd fails.
             cmd.env("UNDERWRAP_LIBSECRET", "1");
@@ -390,14 +372,6 @@ fn exec_via_ns(
                 cmd.env("UNDERWRAP_SECRETSD", bin);
             }
         }
-
-        // Pass env sanitization config from the trusted sidecar to underwrap-ns.
-        // This is a JSON blob containing passthrough list and fixed vars.
-        let env_config = serde_json::json!({
-            "passthrough": config.env_passthrough,
-            "set": config.env_set,
-        });
-        cmd.env("UNDERWRAP_ENV_CONFIG", env_config.to_string());
 
         cmd.args(args);
 
@@ -420,7 +394,11 @@ fn exec_via_ns(
     {
         use std::os::unix::io::FromRawFd;
         let mut pipe = unsafe { std::fs::File::from_raw_fd(pipe_write) };
-        let payload = ExecBundle { env: env_bindings };
+        let payload = ExecBundle {
+            env: env_bindings,
+            env_passthrough: config.env_passthrough.clone(),
+            env_set: config.env_set.clone(),
+        };
         write_frame_sync(&mut pipe, &payload).context("writing env bindings to pipe")?;
         // pipe_write closed on drop.
     }

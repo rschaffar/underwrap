@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse, SecretBytes};
+use underwrap_protocol::message::{BackendRequest, BackendResponse, SecretBytes};
 
 use crate::StorageBackend;
 
@@ -65,10 +65,9 @@ impl StorageBackend for RemoteBackend {
 
         match resp {
             BackendResponse::ReadOk { material } => Ok(material),
-            BackendResponse::Error { code, message } => match code {
-                BackendErrorCode::NotFound => Ok(None),
-                _ => bail!("backend error ({code:?}): {message}"),
-            },
+            BackendResponse::Error { code, message } => {
+                bail!("backend error ({code:?}): {message}")
+            }
             other => bail!("unexpected backend response to read: {other:?}"),
         }
     }
