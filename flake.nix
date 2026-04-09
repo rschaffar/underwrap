@@ -94,6 +94,8 @@
             # Formatting.
             workspace-fmt = craneLib.cargoFmt {
               inherit src;
+              pname = "underwrap";
+              version = "0.1.0";
             };
 
             # RustSec advisory database checks.
@@ -112,6 +114,8 @@
             # advisories separately and license policy can be added later via deny.toml.
             workspace-deny = craneLib.cargoDeny {
               inherit src;
+              pname = "underwrap";
+              version = "0.1.0";
               cargoDenyChecks = "bans sources";
             };
 
