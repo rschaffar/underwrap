@@ -246,6 +246,10 @@ pub enum ControlRequest {
         scope: Option<String>,
         /// Seconds until auto-lock. None = indefinite (until explicit lock).
         seconds: Option<u64>,
+        /// Root/admin only: grant unlock to a specific allowed username.
+        grant_user: Option<String>,
+        /// Root/admin only: grant unlock to all allowed users of the instance.
+        grant_all: bool,
     },
     /// Explicitly lock a wrapper.
     #[serde(rename = "lock")]

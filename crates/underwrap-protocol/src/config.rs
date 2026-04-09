@@ -15,6 +15,11 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub storage: StorageConfig,
 
+    /// Usernames allowed to execute wrappers in this instance.
+    /// Empty = allow all local users.
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+
     /// Reusable credentials, keyed by credential reference.
     #[serde(default)]
     pub credentials: HashMap<String, CredentialDef>,
@@ -317,6 +322,7 @@ storage:
         let config = DaemonConfig {
             sockets: SocketConfig::default(),
             storage: StorageConfig::default(),
+            allowed_users: vec!["alice".to_string()],
             credentials: {
                 let mut m = HashMap::new();
                 m.insert(

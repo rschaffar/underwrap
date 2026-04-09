@@ -738,6 +738,8 @@ async fn unlock_then_read_succeeds() {
             target: "locked-w".to_string(),
             scope: None,
             seconds: None,
+            grant_user: None,
+            grant_all: false,
         })
         .await
         .unwrap();
@@ -779,6 +781,8 @@ async fn lock_after_unlock_denies() {
             target: "locked-w".to_string(),
             scope: None,
             seconds: None,
+            grant_user: None,
+            grant_all: false,
         })
         .await
         .unwrap();
@@ -826,6 +830,8 @@ async fn unlock_time_expiry() {
             target: "locked-w".to_string(),
             scope: None,
             seconds: Some(0),
+            grant_user: None,
+            grant_all: false,
         })
         .await
         .unwrap();
@@ -867,6 +873,8 @@ async fn unlock_scoped() {
             target: "locked-w".to_string(),
             scope: Some("session-1".to_string()),
             seconds: None,
+            grant_user: None,
+            grant_all: false,
         })
         .await
         .unwrap();
@@ -1090,6 +1098,7 @@ async fn underwrapd_binary_start_and_status() {
         storage: underwrap_protocol::config::StorageConfig::Plain {
             dir: storage_dir.clone(),
         },
+        allowed_users: Vec::new(),
         credentials: {
             let mut m = HashMap::new();
             m.insert("s/t".to_string(), secret(false));

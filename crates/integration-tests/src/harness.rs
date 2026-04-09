@@ -50,6 +50,7 @@ impl TestDaemon {
             storage: StorageConfig::Plain {
                 dir: storage_dir.clone(),
             },
+            allowed_users: Vec::new(),
             credentials,
             wrappers,
         };

@@ -21,6 +21,7 @@ let
         control = "${runDir}/control.sock";
         control_mode = "0600";
       };
+      allowed_users = inst.allowedUsers;
       storage = if inst.remote.enable then {
         backend = "remote";
         socket = "${tunnelDir}/backend.sock";
@@ -262,6 +263,11 @@ let
 
   instanceSubmodule = lib.types.submodule {
     options = {
+      allowedUsers = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Usernames allowed to execute wrappers in this instance. Empty = allow all.";
+      };
       credentials = lib.mkOption {
         type = lib.types.attrsOf credentialSubmodule;
         default = {};

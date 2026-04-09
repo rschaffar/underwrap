@@ -35,6 +35,7 @@ const WRAPPER_UNLOCK_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 struct State {
     config: DaemonConfig,
     store: Arc<dyn StorageBackend>,
+    allowed_user_uids: std::collections::HashSet<u32>,
     unlock: UnlockState,
 }
 
@@ -63,9 +64,11 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     };
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
+    let allowed_user_uids = build_allowed_user_uids(&config)?;
     let state = Arc::new(State {
         config: config.clone(),
         store,
+        allowed_user_uids,
         unlock: UnlockState::new(),
     });
 
@@ -157,6 +160,26 @@ fn resolve_group_gid(name: &str) -> Result<u32> {
         anyhow::bail!("group '{name}' not found");
     }
     Ok(unsafe { (*grp).gr_gid })
+}
+
+fn resolve_user_uid(name: &str) -> Result<u32> {
+    let c_name = std::ffi::CString::new(name)
+        .with_context(|| format!("user name '{name}' contains null byte"))?;
+    let pwd = unsafe { libc::getpwnam(c_name.as_ptr()) };
+    if pwd.is_null() {
+        anyhow::bail!("user '{name}' not found");
+    }
+    Ok(unsafe { (*pwd).pw_uid })
+}
+
+fn build_allowed_user_uids(config: &DaemonConfig) -> Result<std::collections::HashSet<u32>> {
+    let mut set = std::collections::HashSet::new();
+    for user in &config.allowed_users {
+        let uid =
+            resolve_user_uid(user).with_context(|| format!("resolving allowed user '{user}'"))?;
+        set.insert(uid);
+    }
+    Ok(set)
 }
 
 /// Validate configuration at load time.
@@ -440,7 +463,35 @@ async fn handle_wrapper(
     expected_gid: u32,
 ) -> Result<()> {
     let peer = get_peer_cred(&stream);
-    let peer_uid = peer.as_ref().map(|p| p.uid);
+    let peer_uid = match peer.as_ref().map(|p| p.uid) {
+        Some(uid) => uid,
+        None => {
+            let response = WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "could not determine peer uid".to_string(),
+            };
+            write_frame_async(&mut stream, &response).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
+
+    if !state.allowed_user_uids.is_empty() && !state.allowed_user_uids.contains(&peer_uid) {
+        let reason = format!("peer uid {peer_uid} is not allowed for this instance");
+        audit::auth_denied(
+            "wrapper",
+            &reason,
+            Some(peer_uid),
+            peer.as_ref().map(|p| p.gid),
+        );
+        let response = WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: reason,
+        };
+        write_frame_async(&mut stream, &response).await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
 
     if peer.as_ref().and_then(|p| p.egid) != Some(expected_gid) {
         let reason = format!(
@@ -453,7 +504,7 @@ async fn handle_wrapper(
         audit::auth_denied(
             "wrapper",
             &reason,
-            peer.as_ref().map(|p| p.uid),
+            Some(peer_uid),
             peer.as_ref().map(|p| p.gid),
         );
         let response = WrapperResponse::Error {
@@ -473,7 +524,7 @@ async fn handle_wrapper(
             audit::auth_denied(
                 "wrapper",
                 "timed out waiting for first wrapper request frame",
-                peer.as_ref().map(|p| p.uid),
+                Some(peer_uid),
                 peer.as_ref().map(|p| p.gid),
             );
             stream.shutdown().await?;
@@ -657,7 +708,7 @@ async fn process_read_for(
     wrapper_name: &str,
     scope: Option<&str>,
     state: &State,
-    peer_uid: Option<u32>,
+    peer_uid: u32,
 ) -> WrapperResponse {
     let wrapper_def = match state.config.wrappers.get(wrapper_name) {
         Some(w) => w,
@@ -674,7 +725,7 @@ async fn process_read_for(
     if wrapper_def.unlock.mode != UnlockMode::AlwaysUnlocked
         && let Err(reason) = state.unlock.check(wrapper_name, scope, peer_uid)
     {
-        audit::read_denied(wrapper_name, &reason, peer_uid, scope);
+        audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
         return WrapperResponse::Error {
             code: ErrorCode::Locked,
             message: reason,
@@ -695,12 +746,12 @@ async fn process_read_for(
                         };
                     }
                 };
-                audit::read_granted(wrapper_name, cred_ref, peer_uid, scope);
+                audit::read_granted(wrapper_name, cred_ref, Some(peer_uid), scope);
                 env.insert(variable.to_string(), material.into());
             }
             Ok(None) => {
                 let msg = format!("credential '{cred_ref}' not found in store");
-                audit::read_denied(wrapper_name, &msg, peer_uid, scope);
+                audit::read_denied(wrapper_name, &msg, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::NotFound,
                     message: msg,
@@ -738,7 +789,7 @@ fn process_wrapper_unlock(
     wrapper_name: &str,
     scope: Option<&str>,
     seconds: Option<u64>,
-    peer_uid: Option<u32>,
+    peer_uid: u32,
     state: &State,
 ) -> WrapperResponse {
     let wrapper_def = match state.config.wrappers.get(wrapper_name) {
@@ -785,7 +836,7 @@ fn process_wrapper_unlock(
                 WrapperResponse::Challenge { nonce: nonce_hex }
             } else {
                 state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
-                audit::unlocked(wrapper_name, scope, seconds, peer_uid);
+                audit::unlocked(wrapper_name, scope, seconds, Some(peer_uid));
                 WrapperResponse::Ok {
                     env: None,
                     material: None,
@@ -802,7 +853,7 @@ fn process_wrapper_unlock_response(
     wrapper_name: &str,
     scope: Option<&str>,
     seconds: Option<u64>,
-    peer_uid: Option<u32>,
+    peer_uid: u32,
     state: &State,
     challenge_hex: &str,
     signature_b64: &str,
@@ -853,7 +904,7 @@ fn process_wrapper_unlock_response(
     };
 
     if expected_pk.key_data() != caller_pk.key_data() {
-        audit::auth_denied("unlock", "public key mismatch", peer_uid, None);
+        audit::auth_denied("unlock", "public key mismatch", Some(peer_uid), None);
         return WrapperResponse::Error {
             code: ErrorCode::Unauthorized,
             message: "public key does not match configured unlock_key".to_string(),
@@ -917,7 +968,12 @@ fn process_wrapper_unlock_response(
     };
 
     if !valid {
-        audit::auth_denied("unlock", "signature verification failed", peer_uid, None);
+        audit::auth_denied(
+            "unlock",
+            "signature verification failed",
+            Some(peer_uid),
+            None,
+        );
         return WrapperResponse::Error {
             code: ErrorCode::Unauthorized,
             message: "signature verification failed".to_string(),
@@ -926,7 +982,7 @@ fn process_wrapper_unlock_response(
 
     // Signature valid — grant the unlock.
     state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
-    audit::unlocked(wrapper_name, scope, seconds, peer_uid);
+    audit::unlocked(wrapper_name, scope, seconds, Some(peer_uid));
     WrapperResponse::Ok {
         env: None,
         material: None,
@@ -1007,6 +1063,8 @@ fn process_control(
             target,
             scope,
             seconds,
+            grant_user,
+            grant_all,
         } => {
             let wrapper = match state.config.wrappers.get(target) {
                 Some(w) => w,
@@ -1028,12 +1086,60 @@ fn process_control(
                     ),
                 };
             }
-            // Root (uid=0) unlock grants cover all UIDs (admin grant).
-            let grant_uid = if peer_uid == Some(0) { None } else { peer_uid };
-            state
-                .unlock
-                .unlock(target, scope.as_deref(), *seconds, grant_uid);
-            audit::unlocked(target, scope.as_deref(), *seconds, peer_uid);
+
+            let caller_uid = match peer_uid {
+                Some(uid) => uid,
+                None => {
+                    return ControlResponse::Error {
+                        code: ErrorCode::Unauthorized,
+                        message: "could not determine caller uid".to_string(),
+                    };
+                }
+            };
+
+            let mut grant_uids = Vec::new();
+            if caller_uid == 0 {
+                if *grant_all {
+                    grant_uids.extend(state.allowed_user_uids.iter().copied());
+                } else if let Some(user) = grant_user {
+                    let uid = match resolve_user_uid(user) {
+                        Ok(uid) => uid,
+                        Err(e) => {
+                            return ControlResponse::Error {
+                                code: ErrorCode::NotFound,
+                                message: format!("unknown user '{user}': {e}"),
+                            };
+                        }
+                    };
+                    if !state.allowed_user_uids.is_empty()
+                        && !state.allowed_user_uids.contains(&uid)
+                    {
+                        return ControlResponse::Error {
+                            code: ErrorCode::Unauthorized,
+                            message: format!("user '{user}' is not allowed for this instance"),
+                        };
+                    }
+                    grant_uids.push(uid);
+                } else {
+                    return ControlResponse::Error {
+                        code: ErrorCode::Unauthorized,
+                        message: "root must specify --for-user or --for-all".to_string(),
+                    };
+                }
+            } else {
+                if grant_user.is_some() || *grant_all {
+                    return ControlResponse::Error {
+                        code: ErrorCode::Unauthorized,
+                        message: "only root may use --for-user or --for-all".to_string(),
+                    };
+                }
+                grant_uids.push(caller_uid);
+            }
+
+            for uid in grant_uids {
+                state.unlock.unlock(target, scope.as_deref(), *seconds, uid);
+            }
+            audit::unlocked(target, scope.as_deref(), *seconds, Some(caller_uid));
             ControlResponse::Ok { info: None }
         }
         ControlRequest::Lock { target, scope } => {

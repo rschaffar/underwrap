@@ -96,6 +96,7 @@ in {
     instances = {
       # Local instance: plain storage on disk.
       local = {
+        allowedUsers = [ "testuser" ];
         credentials = {
           "test/token" = { mode = "env"; variable = "MY_TOKEN"; };
           "test/other" = { mode = "env"; variable = "OTHER_SECRET"; };
@@ -148,6 +149,7 @@ in {
 
       # Remote instance: secrets served over SSH tunnel.
       tunnel = {
+        allowedUsers = [ "testuser" ];
         remote.enable = true;
 
         credentials."remote/token" = {

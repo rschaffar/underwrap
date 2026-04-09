@@ -148,7 +148,7 @@ machine.log("PASS: wrapper socket spoofing blocked by permissions")
 machine.fail(su("/run/wrappers/bin/local-test-locked"))
 machine.log("PASS: locked wrapper blocks unprivileged user")
 
-machine.succeed(f"{UWCTL_LOCAL} unlock local-test-locked --seconds 60")
+machine.succeed(f"{UWCTL_LOCAL} unlock local-test-locked --seconds 60 --for-user testuser")
 output = machine.succeed(su("/run/wrappers/bin/local-test-locked"))
 assert "LOCKED_TOKEN=locked_secret" in output
 
@@ -163,7 +163,7 @@ machine.log("PASS: lock/unlock lifecycle works")
 machine.succeed("systemctl restart underwrapd-local.service")
 machine.wait_for_file("/run/underwrap-local/wrapper-test-echo.sock")
 time.sleep(0.5)
-output = machine.succeed("/run/wrappers/bin/local-test-echo")
+output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
 assert "MY_TOKEN=overwrite" in output
 machine.log("PASS: secrets persist across restart")
 

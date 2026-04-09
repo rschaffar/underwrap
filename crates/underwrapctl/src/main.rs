@@ -38,6 +38,12 @@ enum Commands {
         /// Scope identifier (e.g. shell session).
         #[arg(long)]
         scope: Option<String>,
+        /// Root/admin only: grant unlock to a specific allowed username.
+        #[arg(long = "for-user")]
+        grant_user: Option<String>,
+        /// Root/admin only: grant unlock to all allowed users of the instance.
+        #[arg(long = "for-all")]
+        grant_all: bool,
     },
     /// Lock a wrapper (or everything).
     Lock {
@@ -68,10 +74,14 @@ async fn main() -> Result<()> {
             target,
             seconds,
             scope,
+            grant_user,
+            grant_all,
         } => ControlRequest::Unlock {
             target: target.clone(),
             scope: scope.clone(),
             seconds: *seconds,
+            grant_user: grant_user.clone(),
+            grant_all: *grant_all,
         },
         Commands::Lock { target, scope } => ControlRequest::Lock {
             target: target.clone(),
