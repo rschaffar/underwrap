@@ -55,24 +55,20 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    let request = match &cli.command {
+fn build_request(command: &Commands, store_material: Option<String>) -> Result<ControlRequest> {
+    Ok(match command {
         Commands::Status { target } => match target {
             Some(target) => ControlRequest::StatusTarget {
                 target: target.clone(),
             },
             None => ControlRequest::StatusAll,
         },
-        Commands::Store { secret_id } => {
-            let material = read_stdin().await?;
-            ControlRequest::Store {
-                secret_id: secret_id.clone(),
-                material: material.into(),
-            }
-        }
+        Commands::Store { secret_id } => ControlRequest::Store {
+            secret_id: secret_id.clone(),
+            material: store_material
+                .context("store material missing")?
+                .into(),
+        },
         Commands::Unlock {
             target,
             seconds,
@@ -90,7 +86,18 @@ async fn main() -> Result<()> {
             target: target.clone(),
             scope: scope.clone(),
         },
+    })
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    let store_material = match &cli.command {
+        Commands::Store { .. } => Some(read_stdin().await?),
+        _ => None,
     };
+    let request = build_request(&cli.command, store_material)?;
 
     let response: ControlResponse = send_control(&cli.socket, &request).await?;
 
@@ -140,16 +147,125 @@ async fn send_control(socket_path: &PathBuf, request: &ControlRequest) -> Result
     Ok(response)
 }
 
-async fn read_stdin() -> Result<String> {
-    use tokio::io::AsyncReadExt;
-    let mut stdin = tokio::io::stdin();
-    let mut buf = String::new();
-    stdin.read_to_string(&mut buf).await?;
+fn trim_stdin_trailing_newline(buf: &mut String) {
     if buf.ends_with('\n') {
         buf.pop();
         if buf.ends_with('\r') {
             buf.pop();
         }
     }
+}
+
+async fn read_stdin() -> Result<String> {
+    use tokio::io::AsyncReadExt;
+    let mut stdin = tokio::io::stdin();
+    let mut buf = String::new();
+    stdin.read_to_string(&mut buf).await?;
+    trim_stdin_trailing_newline(&mut buf);
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_request_status_variants() {
+        assert_eq!(
+            build_request(&Commands::Status { target: None }, None).unwrap(),
+            ControlRequest::StatusAll
+        );
+        assert_eq!(
+            build_request(
+                &Commands::Status {
+                    target: Some("gh-authorized".to_string())
+                },
+                None,
+            )
+            .unwrap(),
+            ControlRequest::StatusTarget {
+                target: "gh-authorized".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn build_request_store_requires_material() {
+        let err = build_request(
+            &Commands::Store {
+                secret_id: "github/token".to_string(),
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("store material missing"));
+
+        assert_eq!(
+            build_request(
+                &Commands::Store {
+                    secret_id: "github/token".to_string(),
+                },
+                Some("ghp_test".to_string()),
+            )
+            .unwrap(),
+            ControlRequest::Store {
+                secret_id: "github/token".to_string(),
+                material: "ghp_test".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn build_request_unlock_and_lock() {
+        assert_eq!(
+            build_request(
+                &Commands::Unlock {
+                    target: "locked-w".to_string(),
+                    seconds: Some(60),
+                    scope: Some("session-1".to_string()),
+                    grant_user: Some("alice".to_string()),
+                    grant_all: false,
+                },
+                None,
+            )
+            .unwrap(),
+            ControlRequest::Unlock {
+                target: "locked-w".to_string(),
+                scope: Some("session-1".to_string()),
+                seconds: Some(60),
+                grant_user: Some("alice".to_string()),
+                grant_all: false,
+            }
+        );
+
+        assert_eq!(
+            build_request(
+                &Commands::Lock {
+                    target: Some("locked-w".to_string()),
+                    scope: Some("session-1".to_string()),
+                },
+                None,
+            )
+            .unwrap(),
+            ControlRequest::Lock {
+                target: Some("locked-w".to_string()),
+                scope: Some("session-1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn trim_stdin_trailing_newline_removes_single_line_ending_only() {
+        let mut unix = "secret\n".to_string();
+        trim_stdin_trailing_newline(&mut unix);
+        assert_eq!(unix, "secret");
+
+        let mut windows = "secret\r\n".to_string();
+        trim_stdin_trailing_newline(&mut windows);
+        assert_eq!(windows, "secret");
+
+        let mut untouched = "secret\nnext".to_string();
+        trim_stdin_trailing_newline(&mut untouched);
+        assert_eq!(untouched, "secret\nnext");
+    }
 }
