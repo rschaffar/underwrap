@@ -14,8 +14,10 @@
 //! Usage: underwrap-ns <target> [args...]
 //! Environment secret bindings are read from fd 3 (not stdin, not argv).
 
-use std::io::Read;
 use std::os::unix::process::CommandExt;
+
+use underwrap_protocol::exec::ExecBundle;
+use underwrap_protocol::message::SecretBytes;
 
 /// The fd number used to pass the secret from underwrap-exec.
 const SECRET_FD: i32 = 3;
@@ -206,8 +208,12 @@ fn run() -> Result<(), String> {
             }
         }
 
-        // Inject env secret bindings.
+        // Inject env secret bindings. Decode to UTF-8 only at the final
+        // target boundary where environment variables must be strings.
         for (key, value) in &env_secrets {
+            let value = value.as_utf8().map_err(|e| {
+                format!("env binding '{key}' is not valid UTF-8 and cannot be exported: {e}")
+            })?;
             cmd.env(key, value);
         }
 
@@ -516,21 +522,13 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
 }
 
 /// Read environment secret bindings from the pipe on fd 3 and close the fd.
-fn read_secret_fd() -> Result<std::collections::HashMap<String, String>, std::io::Error> {
+fn read_secret_fd() -> Result<std::collections::HashMap<String, SecretBytes>, std::io::Error> {
     use std::os::unix::io::FromRawFd;
-
-    #[derive(serde::Deserialize)]
-    struct SecretBundle {
-        #[serde(default)]
-        env: std::collections::HashMap<String, String>,
-    }
 
     // SAFETY: fd 3 is expected to be a valid pipe read-end passed by underwrap-exec.
     let mut file = unsafe { std::fs::File::from_raw_fd(SECRET_FD) };
-    let mut buf = String::new();
-    file.read_to_string(&mut buf)?;
-    let bundle: SecretBundle = serde_json::from_str(&buf).map_err(std::io::Error::other)?;
-    // File is closed on drop.
+    let bundle: ExecBundle =
+        underwrap_protocol::ipc::read_frame_sync(&mut file).map_err(std::io::Error::other)?;
     Ok(bundle.env)
 }
 

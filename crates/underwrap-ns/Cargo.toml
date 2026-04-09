@@ -10,6 +10,7 @@ name = "underwrap-ns"
 path = "src/main.rs"
 
 [dependencies]
+underwrap-protocol = { workspace = true }
 libc = { workspace = true }
 zeroize = { workspace = true }
 serde = { workspace = true }

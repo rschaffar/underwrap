@@ -570,12 +570,12 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     struct FakeChannel {
-        data: StdMutex<HashMap<String, String>>,
+        data: StdMutex<HashMap<String, Vec<u8>>>,
         fail_delete: HashSet<String>,
     }
 
     impl FakeChannel {
-        fn new(data: HashMap<String, String>) -> Self {
+        fn new(data: HashMap<String, Vec<u8>>) -> Self {
             Self {
                 data: StdMutex::new(data),
                 fail_delete: HashSet::new(),
@@ -589,15 +589,24 @@ mod tests {
     }
 
     impl ChannelOps for FakeChannel {
-        fn read(&self, secret_id: &str) -> anyhow::Result<Option<String>> {
-            Ok(self.data.lock().unwrap().get(secret_id).cloned())
+        fn read(
+            &self,
+            secret_id: &str,
+        ) -> anyhow::Result<Option<underwrap_protocol::message::SecretBytes>> {
+            Ok(self
+                .data
+                .lock()
+                .unwrap()
+                .get(secret_id)
+                .cloned()
+                .map(Into::into))
         }
 
-        fn write(&self, secret_id: &str, material: &str) -> anyhow::Result<()> {
+        fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
             self.data
                 .lock()
                 .unwrap()
-                .insert(secret_id.to_string(), material.to_string());
+                .insert(secret_id.to_string(), material.to_vec());
             Ok(())
         }
 
@@ -621,8 +630,8 @@ mod tests {
         }
     }
 
-    fn item_meta_json() -> String {
-        serde_json::to_string(&ItemMeta {
+    fn item_meta_json() -> Vec<u8> {
+        serde_json::to_vec(&ItemMeta {
             content_type: "text/plain".to_string(),
             attributes: HashMap::new(),
             label: "Item".to_string(),
@@ -649,7 +658,7 @@ mod tests {
         let channel: Arc<dyn ChannelOps> = Arc::new(
             FakeChannel::new(HashMap::from([
                 (format!("default/{item_id}.meta"), item_meta_json()),
-                (format!("default/{item_id}.secret"), "c2VjcmV0".to_string()),
+                (format!("default/{item_id}.secret"), b"secret".to_vec()),
             ]))
             .with_failing_delete(&format!("default/{item_id}.secret")),
         );
@@ -690,8 +699,8 @@ mod tests {
         let channel: Arc<dyn ChannelOps> = Arc::new(
             FakeChannel::new(HashMap::from([
                 (format!("{col_id}/{item_id}.meta"), item_meta_json()),
-                (format!("{col_id}/{item_id}.secret"), "c2VjcmV0".to_string()),
-                (format!("{col_id}/_meta"), "{}".to_string()),
+                (format!("{col_id}/{item_id}.secret"), b"secret".to_vec()),
+                (format!("{col_id}/_meta"), b"{}".to_vec()),
             ]))
             .with_failing_delete(&format!("{col_id}/{item_id}.secret")),
         );

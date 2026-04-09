@@ -1,26 +1,259 @@
-//! Length-prefixed JSON framing for IPC over Unix domain sockets.
+//! Length-prefixed binary framing for IPC over Unix domain sockets.
 //!
-//! Wire format: `[4 bytes big-endian length][JSON payload]`
+//! Wire format: `[4 bytes big-endian length][binary payload]`
 //!
-//! Provides both sync (std) and async (tokio) variants so that
-//! underwrap-exec can stay synchronous while the daemon uses tokio.
+//! Message payloads use a small custom binary codec implemented via the
+//! [`WireEncode`] and [`WireDecode`] traits. The framing stays intentionally
+//! simple so synchronous wrapper code and async daemon code can share the same
+//! protocol.
 
-use serde::{Serialize, de::DeserializeOwned};
+use anyhow::{Context, Result, anyhow, ensure};
+use std::collections::HashMap;
 
 /// Maximum allowed frame size (64 KiB). Prevents allocation bombs.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024;
+
+pub trait WireEncode {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()>;
+}
+
+pub trait WireDecode: Sized {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self>;
+}
+
+pub struct WireReader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> WireReader<'a> {
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    pub fn finish(&self) -> Result<()> {
+        ensure!(self.pos == self.buf.len(), "trailing bytes in payload");
+        Ok(())
+    }
+
+    pub fn read_exact(&mut self, len: usize) -> Result<&'a [u8]> {
+        ensure!(
+            self.pos + len <= self.buf.len(),
+            "truncated payload: need {} bytes, have {} remaining",
+            len,
+            self.buf.len().saturating_sub(self.pos)
+        );
+        let out = &self.buf[self.pos..self.pos + len];
+        self.pos += len;
+        Ok(out)
+    }
+
+    pub fn read_u8(&mut self) -> Result<u8> {
+        Ok(self.read_exact(1)?[0])
+    }
+
+    pub fn read_bool(&mut self) -> Result<bool> {
+        match self.read_u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            other => Err(anyhow!("invalid bool discriminant: {other}")),
+        }
+    }
+
+    pub fn read_u32(&mut self) -> Result<u32> {
+        let bytes = self.read_exact(4)?;
+        Ok(u32::from_be_bytes(
+            bytes.try_into().expect("length checked"),
+        ))
+    }
+
+    pub fn read_u64(&mut self) -> Result<u64> {
+        let bytes = self.read_exact(8)?;
+        Ok(u64::from_be_bytes(
+            bytes.try_into().expect("length checked"),
+        ))
+    }
+
+    pub fn read_bytes(&mut self) -> Result<Vec<u8>> {
+        let len = self.read_u32()? as usize;
+        Ok(self.read_exact(len)?.to_vec())
+    }
+
+    pub fn read_string(&mut self) -> Result<String> {
+        let bytes = self.read_bytes()?;
+        String::from_utf8(bytes).context("invalid UTF-8 string in payload")
+    }
+}
+
+pub fn encode_to_vec<T: WireEncode>(value: &T) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    value.encode(&mut out)?;
+    Ok(out)
+}
+
+pub fn decode_from_slice<T: WireDecode>(buf: &[u8]) -> Result<T> {
+    let mut reader = WireReader::new(buf);
+    let value = T::decode(&mut reader)?;
+    reader.finish()?;
+    Ok(value)
+}
+
+impl WireEncode for u8 {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        out.push(*self);
+        Ok(())
+    }
+}
+
+impl WireDecode for u8 {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        reader.read_u8()
+    }
+}
+
+impl WireEncode for bool {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        out.push(u8::from(*self));
+        Ok(())
+    }
+}
+
+impl WireDecode for bool {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        reader.read_bool()
+    }
+}
+
+impl WireEncode for u32 {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        out.extend_from_slice(&self.to_be_bytes());
+        Ok(())
+    }
+}
+
+impl WireDecode for u32 {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        reader.read_u32()
+    }
+}
+
+impl WireEncode for u64 {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        out.extend_from_slice(&self.to_be_bytes());
+        Ok(())
+    }
+}
+
+impl WireDecode for u64 {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        reader.read_u64()
+    }
+}
+
+impl WireEncode for String {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        let bytes = self.as_bytes();
+        ensure!(bytes.len() <= u32::MAX as usize, "string too large");
+        (bytes.len() as u32).encode(out)?;
+        out.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+impl WireEncode for &str {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.to_string().encode(out)
+    }
+}
+
+impl WireDecode for String {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        reader.read_string()
+    }
+}
+
+impl<T: WireEncode> WireEncode for Option<T> {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Some(value) => {
+                true.encode(out)?;
+                value.encode(out)
+            }
+            None => false.encode(out),
+        }
+    }
+}
+
+impl<T: WireDecode> WireDecode for Option<T> {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        if bool::decode(reader)? {
+            Ok(Some(T::decode(reader)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl<T: WireEncode> WireEncode for Vec<T> {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        ensure!(self.len() <= u32::MAX as usize, "vector too large");
+        (self.len() as u32).encode(out)?;
+        for item in self {
+            item.encode(out)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: WireDecode> WireDecode for Vec<T> {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        let len = reader.read_u32()? as usize;
+        let mut out = Vec::with_capacity(len);
+        for _ in 0..len {
+            out.push(T::decode(reader)?);
+        }
+        Ok(out)
+    }
+}
+
+impl<T: WireEncode> WireEncode for HashMap<String, T> {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        ensure!(self.len() <= u32::MAX as usize, "map too large");
+        (self.len() as u32).encode(out)?;
+        let mut entries: Vec<_> = self.iter().collect();
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        for (key, value) in entries {
+            key.encode(out)?;
+            value.encode(out)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: WireDecode> WireDecode for HashMap<String, T> {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        let len = reader.read_u32()? as usize;
+        let mut out = HashMap::with_capacity(len);
+        for _ in 0..len {
+            let key = String::decode(reader)?;
+            let value = T::decode(reader)?;
+            ensure!(
+                out.insert(key, value).is_none(),
+                "duplicate map key in payload"
+            );
+        }
+        Ok(out)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Synchronous (std::os::unix::net)
 // ---------------------------------------------------------------------------
 
-/// Write a length-prefixed JSON frame to a std stream.
-pub fn write_frame_sync(
-    stream: &mut impl std::io::Write,
-    msg: &impl Serialize,
-) -> anyhow::Result<()> {
-    let payload = serde_json::to_vec(msg)?;
-    anyhow::ensure!(
+/// Write a length-prefixed binary frame to a std stream.
+pub fn write_frame_sync(stream: &mut impl std::io::Write, msg: &impl WireEncode) -> Result<()> {
+    let payload = encode_to_vec(msg)?;
+    ensure!(
         payload.len() <= MAX_FRAME_SIZE,
         "frame too large: {} bytes",
         payload.len()
@@ -31,29 +264,28 @@ pub fn write_frame_sync(
     Ok(())
 }
 
-/// Read a length-prefixed JSON frame from a std stream.
-pub fn read_frame_sync<T: DeserializeOwned>(stream: &mut impl std::io::Read) -> anyhow::Result<T> {
+/// Read a length-prefixed binary frame from a std stream.
+pub fn read_frame_sync<T: WireDecode>(stream: &mut impl std::io::Read) -> Result<T> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    anyhow::ensure!(len <= MAX_FRAME_SIZE, "frame too large: {len} bytes");
+    ensure!(len <= MAX_FRAME_SIZE, "frame too large: {len} bytes");
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf)?;
-    let msg: T = serde_json::from_slice(&buf)?;
-    Ok(msg)
+    decode_from_slice(&buf)
 }
 
 // ---------------------------------------------------------------------------
 // Async (tokio)
 // ---------------------------------------------------------------------------
 
-/// Write a length-prefixed JSON frame to a tokio async stream.
+/// Write a length-prefixed binary frame to a tokio async stream.
 pub async fn write_frame_async(
     stream: &mut (impl tokio::io::AsyncWriteExt + Unpin),
-    msg: &impl Serialize,
-) -> anyhow::Result<()> {
-    let payload = serde_json::to_vec(msg)?;
-    anyhow::ensure!(
+    msg: &impl WireEncode,
+) -> Result<()> {
+    let payload = encode_to_vec(msg)?;
+    ensure!(
         payload.len() <= MAX_FRAME_SIZE,
         "frame too large: {} bytes",
         payload.len()
@@ -66,18 +298,17 @@ pub async fn write_frame_async(
     Ok(())
 }
 
-/// Read a length-prefixed JSON frame from a tokio async stream.
-pub async fn read_frame_async<T: DeserializeOwned>(
+/// Read a length-prefixed binary frame from a tokio async stream.
+pub async fn read_frame_async<T: WireDecode>(
     stream: &mut (impl tokio::io::AsyncReadExt + Unpin),
-) -> anyhow::Result<T> {
+) -> Result<T> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    anyhow::ensure!(len <= MAX_FRAME_SIZE, "frame too large: {len} bytes");
+    ensure!(len <= MAX_FRAME_SIZE, "frame too large: {len} bytes");
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
-    let msg: T = serde_json::from_slice(&buf)?;
-    Ok(msg)
+    decode_from_slice(&buf)
 }
 
 #[cfg(test)]
@@ -85,25 +316,82 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct TestPayload {
+        flag: bool,
+        name: String,
+        bytes: Vec<u8>,
+        count: u64,
+        maybe: Option<String>,
+    }
+
+    impl WireEncode for TestPayload {
+        fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+            self.flag.encode(out)?;
+            self.name.encode(out)?;
+            self.bytes.encode(out)?;
+            self.count.encode(out)?;
+            self.maybe.encode(out)
+        }
+    }
+
+    impl WireDecode for TestPayload {
+        fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+            Ok(Self {
+                flag: bool::decode(reader)?,
+                name: String::decode(reader)?,
+                bytes: Vec::<u8>::decode(reader)?,
+                count: u64::decode(reader)?,
+                maybe: Option::<String>::decode(reader)?,
+            })
+        }
+    }
+
     #[test]
     fn roundtrip_sync() {
-        let msg = serde_json::json!({"hello": "world", "n": 42});
+        let msg = TestPayload {
+            flag: true,
+            name: "world".to_string(),
+            bytes: vec![1, 2, 3, 4],
+            count: 42,
+            maybe: Some("hello".to_string()),
+        };
         let mut buf = Vec::new();
         write_frame_sync(&mut buf, &msg).unwrap();
 
         let mut cursor = Cursor::new(&buf);
-        let decoded: serde_json::Value = read_frame_sync(&mut cursor).unwrap();
+        let decoded: TestPayload = read_frame_sync(&mut cursor).unwrap();
         assert_eq!(msg, decoded);
     }
 
     #[tokio::test]
     async fn roundtrip_async() {
-        let msg = serde_json::json!({"async": true});
+        let msg = TestPayload {
+            flag: false,
+            name: "async".to_string(),
+            bytes: vec![9, 8, 7],
+            count: 99,
+            maybe: None,
+        };
         let mut buf = Vec::new();
         write_frame_async(&mut buf, &msg).await.unwrap();
 
         let mut cursor = tokio::io::BufReader::new(&buf[..]);
-        let decoded: serde_json::Value = read_frame_async(&mut cursor).await.unwrap();
+        let decoded: TestPayload = read_frame_async(&mut cursor).await.unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn decode_rejects_trailing_bytes() {
+        let mut payload = encode_to_vec(&true).unwrap();
+        payload.push(0xAA);
+        let err = decode_from_slice::<bool>(&payload).unwrap_err();
+        assert!(err.to_string().contains("trailing bytes"));
+    }
+
+    #[test]
+    fn decode_rejects_invalid_bool() {
+        let err = decode_from_slice::<bool>(&[2]).unwrap_err();
+        assert!(err.to_string().contains("invalid bool discriminant"));
     }
 }

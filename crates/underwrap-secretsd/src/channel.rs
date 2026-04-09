@@ -8,12 +8,12 @@ use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{SecretsdErrorCode, SecretsdRequest, SecretsdResponse};
+use underwrap_protocol::message::{SecretBytes, SecretsdRequest, SecretsdResponse};
 use underwrap_secretsd_store::SecretStore;
 
 pub trait ChannelOps: Send + Sync {
-    fn read(&self, secret_id: &str) -> Result<Option<String>>;
-    fn write(&self, secret_id: &str, material: &str) -> Result<()>;
+    fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>>;
+    fn write(&self, secret_id: &str, material: &[u8]) -> Result<()>;
     fn list(&self, prefix: &str) -> Result<Vec<String>>;
     fn delete(&self, secret_id: &str) -> Result<bool>;
 }
@@ -38,31 +38,32 @@ impl DaemonChannel {
 }
 
 impl ChannelOps for DaemonChannel {
-    fn read(&self, secret_id: &str) -> Result<Option<String>> {
+    fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>> {
         let req = SecretsdRequest::Read {
             secret_id: secret_id.to_string(),
         };
         let resp = self.send(&req)?;
         match resp {
-            SecretsdResponse::Ok { material, .. } => Ok(material.map(Into::into)),
-            SecretsdResponse::Error { code, message } => match code {
-                SecretsdErrorCode::NotFound => Ok(None),
-                _ => bail!("daemon read error ({code:?}): {message}"),
-            },
+            SecretsdResponse::ReadOk { material } => Ok(material),
+            SecretsdResponse::Error { code, message } => {
+                bail!("daemon read error ({code:?}): {message}")
+            }
+            other => bail!("unexpected daemon response to read: {other:?}"),
         }
     }
 
-    fn write(&self, secret_id: &str, material: &str) -> Result<()> {
+    fn write(&self, secret_id: &str, material: &[u8]) -> Result<()> {
         let req = SecretsdRequest::Write {
             secret_id: secret_id.to_string(),
-            material: material.to_string().into(),
+            material: material.into(),
         };
         let resp = self.send(&req)?;
         match resp {
-            SecretsdResponse::Ok { .. } => Ok(()),
+            SecretsdResponse::WriteOk => Ok(()),
             SecretsdResponse::Error { code, message } => {
                 bail!("daemon write error ({code:?}): {message}")
             }
+            other => bail!("unexpected daemon response to write: {other:?}"),
         }
     }
 
@@ -72,10 +73,11 @@ impl ChannelOps for DaemonChannel {
         };
         let resp = self.send(&req)?;
         match resp {
-            SecretsdResponse::Ok { ids, .. } => Ok(ids.unwrap_or_default()),
+            SecretsdResponse::ListOk { ids } => Ok(ids),
             SecretsdResponse::Error { code, message } => {
                 bail!("daemon list error ({code:?}): {message}")
             }
+            other => bail!("unexpected daemon response to list: {other:?}"),
         }
     }
 
@@ -85,31 +87,40 @@ impl ChannelOps for DaemonChannel {
         };
         let resp = self.send(&req)?;
         match resp {
-            SecretsdResponse::Ok { existed, .. } => Ok(existed.unwrap_or(false)),
+            SecretsdResponse::DeleteOk { existed } => Ok(existed),
             SecretsdResponse::Error { code, message } => {
                 bail!("daemon delete error ({code:?}): {message}")
             }
+            other => bail!("unexpected daemon response to delete: {other:?}"),
         }
     }
+}
+
+fn read_utf8(channel: &(impl ChannelOps + ?Sized), secret_id: &str) -> Result<Option<String>> {
+    match channel.read(secret_id)? {
+        Some(bytes) => Ok(Some(bytes.into_utf8_string()?)),
+        None => Ok(None),
+    }
+}
+
+fn write_utf8(channel: &(impl ChannelOps + ?Sized), secret_id: &str, material: &str) -> Result<()> {
+    channel.write(secret_id, material.as_bytes())
 }
 
 /// Load the initial Secret Service state from the daemon.
 /// Secret values are NOT kept in memory — only metadata (attributes,
 /// labels, timestamps) is loaded for D-Bus object registration and search.
 pub fn load_initial_state(channel: &(impl ChannelOps + ?Sized)) -> Result<SecretStore> {
-    // Try to read the aliases file.
-    let aliases_json = channel.read("_aliases")?;
+    let aliases_json = read_utf8(channel, "_aliases")?;
     let mut store = SecretStore::new_default();
 
     if let Some(aliases_str) = aliases_json {
-        // Parse aliases.
         let aliases: std::collections::HashMap<String, String> =
             serde_json::from_str(&aliases_str).context("parsing _aliases")?;
 
         for (alias, col_id) in &aliases {
-            // Load collection metadata.
             let meta_key = format!("{col_id}/_meta");
-            if let Some(meta_str) = channel.read(&meta_key)? {
+            if let Some(meta_str) = read_utf8(channel, &meta_key)? {
                 let meta: CollectionMeta =
                     serde_json::from_str(&meta_str).context("parsing collection meta")?;
 
@@ -129,7 +140,6 @@ pub fn load_initial_state(channel: &(impl ChannelOps + ?Sized)) -> Result<Secret
         }
     }
 
-    // For each collection, load item metadata (NOT secret values).
     let col_ids: Vec<String> = store.collections.keys().cloned().collect();
     for col_id in &col_ids {
         let items = channel.list(col_id)?;
@@ -167,7 +177,7 @@ pub fn load_initial_state(channel: &(impl ChannelOps + ?Sized)) -> Result<Secret
 
         for item_id in &meta_ids {
             let item_key = format!("{col_id}/{item_id}.meta");
-            if let Some(meta_str) = channel.read(&item_key)? {
+            if let Some(meta_str) = read_utf8(channel, &item_key)? {
                 let meta: ItemMeta =
                     serde_json::from_str(&meta_str).context("parsing item metadata")?;
 
@@ -200,21 +210,13 @@ pub fn read_item_secret(
     item_id: &str,
 ) -> Result<Option<Vec<u8>>> {
     let key = format!("{col_id}/{item_id}.secret");
-    if let Some(secret_b64) = channel.read(&key)? {
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&secret_b64)
-            .context("decoding item secret base64")?;
-        Ok(Some(bytes))
-    } else {
-        Ok(None)
-    }
+    Ok(channel.read(&key)?.map(Into::into))
 }
 
 /// Save only the aliases to the daemon.
 pub fn save_aliases(channel: &(impl ChannelOps + ?Sized), store: &SecretStore) -> Result<()> {
     let aliases_json = serde_json::to_string(&store.aliases)?;
-    channel.write("_aliases", &aliases_json)
+    write_utf8(channel, "_aliases", &aliases_json)
 }
 
 /// Save a single collection's metadata to the daemon.
@@ -230,7 +232,7 @@ pub fn save_collection_meta(
             modified: col.modified,
         };
         let meta_json = serde_json::to_string(&meta)?;
-        channel.write(&format!("{col_id}/_meta"), &meta_json)?;
+        write_utf8(channel, &format!("{col_id}/_meta"), &meta_json)?;
     }
     Ok(())
 }
@@ -248,7 +250,6 @@ pub fn save_item_with_secret(
         .get(col_id)
         .and_then(|c| c.items.get(item_id))
     {
-        // Write metadata (no secret).
         let meta = ItemMeta {
             content_type: item.content_type.clone(),
             attributes: item.attributes.clone(),
@@ -257,12 +258,8 @@ pub fn save_item_with_secret(
             modified: item.modified,
         };
         let meta_json = serde_json::to_string(&meta)?;
-        channel.write(&format!("{col_id}/{item_id}.meta"), &meta_json)?;
-
-        // Write secret separately (base64-encoded).
-        use base64::Engine;
-        let secret_b64 = base64::engine::general_purpose::STANDARD.encode(secret);
-        channel.write(&format!("{col_id}/{item_id}.secret"), &secret_b64)?;
+        write_utf8(channel, &format!("{col_id}/{item_id}.meta"), &meta_json)?;
+        channel.write(&format!("{col_id}/{item_id}.secret"), secret)?;
     }
     Ok(())
 }
@@ -287,7 +284,7 @@ pub fn save_item_metadata(
             modified: item.modified,
         };
         let meta_json = serde_json::to_string(&meta)?;
-        channel.write(&format!("{col_id}/{item_id}.meta"), &meta_json)?;
+        write_utf8(channel, &format!("{col_id}/{item_id}.meta"), &meta_json)?;
     }
     Ok(())
 }
@@ -320,13 +317,13 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     struct FakeChannel {
-        data: Mutex<HashMap<String, String>>,
+        data: Mutex<HashMap<String, Vec<u8>>>,
         fail_delete: HashSet<String>,
         deleted: Mutex<Vec<String>>,
     }
 
     impl FakeChannel {
-        fn new(data: HashMap<String, String>) -> Self {
+        fn new(data: HashMap<String, Vec<u8>>) -> Self {
             Self {
                 data: Mutex::new(data),
                 fail_delete: HashSet::new(),
@@ -341,15 +338,21 @@ mod tests {
     }
 
     impl ChannelOps for FakeChannel {
-        fn read(&self, secret_id: &str) -> Result<Option<String>> {
-            Ok(self.data.lock().unwrap().get(secret_id).cloned())
+        fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>> {
+            Ok(self
+                .data
+                .lock()
+                .unwrap()
+                .get(secret_id)
+                .cloned()
+                .map(Into::into))
         }
 
-        fn write(&self, secret_id: &str, material: &str) -> Result<()> {
+        fn write(&self, secret_id: &str, material: &[u8]) -> Result<()> {
             self.data
                 .lock()
                 .unwrap()
-                .insert(secret_id.to_string(), material.to_string());
+                .insert(secret_id.to_string(), material.to_vec());
             Ok(())
         }
 
@@ -374,8 +377,8 @@ mod tests {
         }
     }
 
-    fn item_meta_json() -> String {
-        serde_json::to_string(&ItemMeta {
+    fn item_meta_json() -> Vec<u8> {
+        serde_json::to_vec(&ItemMeta {
             content_type: "text/plain".to_string(),
             attributes: HashMap::new(),
             label: "Item".to_string(),
@@ -388,7 +391,7 @@ mod tests {
     #[test]
     fn load_initial_state_scrubs_orphan_secret() {
         let mut data = HashMap::new();
-        data.insert("default/item_1.secret".to_string(), "c2VjcmV0".to_string());
+        data.insert("default/item_1.secret".to_string(), b"secret".to_vec());
         let channel = FakeChannel::new(data);
 
         let store = load_initial_state(&channel).unwrap();
@@ -412,7 +415,7 @@ mod tests {
     #[test]
     fn load_initial_state_fails_if_orphan_secret_scrub_fails() {
         let mut data = HashMap::new();
-        data.insert("default/item_1.secret".to_string(), "c2VjcmV0".to_string());
+        data.insert("default/item_1.secret".to_string(), b"secret".to_vec());
         let channel = FakeChannel::new(data).with_failing_delete("default/item_1.secret");
 
         let err = load_initial_state(&channel).unwrap_err();

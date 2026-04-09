@@ -43,7 +43,6 @@ pub async fn run(config: BackendConfig) -> Result<()> {
     let listener = UnixListener::bind(&config.socket)
         .with_context(|| format!("binding backend socket {}", config.socket.display()))?;
 
-    // Set socket permissions to 0600 — only the daemon user should access it.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -64,11 +63,10 @@ pub async fn run(config: BackendConfig) -> Result<()> {
 }
 
 async fn handle_connection(mut stream: UnixStream, state: &State) -> Result<()> {
-    // Backend connections are persistent — handle multiple requests per connection.
     loop {
         let request: BackendRequest = match read_frame_async(&mut stream).await {
             Ok(req) => req,
-            Err(_) => break, // Connection closed.
+            Err(_) => break,
         };
 
         let response = process_request(&request, state).await;
@@ -80,23 +78,10 @@ async fn handle_connection(mut stream: UnixStream, state: &State) -> Result<()> 
 async fn process_request(request: &BackendRequest, state: &State) -> BackendResponse {
     match request {
         BackendRequest::Read { secret_id } => match state.store.read(secret_id) {
-            Ok(Some(material)) => match material.into_utf8_string() {
-                Ok(material) => {
-                    info!(secret = %secret_id, "backend read");
-                    BackendResponse::Ok {
-                        material: Some(material.into()),
-                        info: None,
-                    }
-                }
-                Err(e) => BackendResponse::Error {
-                    code: BackendErrorCode::Internal,
-                    message: format!("stored secret is not valid UTF-8: {e}"),
-                },
-            },
-            Ok(None) => BackendResponse::Error {
-                code: BackendErrorCode::NotFound,
-                message: format!("secret '{secret_id}' not found"),
-            },
+            Ok(material) => {
+                info!(secret = %secret_id, present = material.is_some(), "backend read");
+                BackendResponse::ReadOk { material }
+            }
             Err(e) => BackendResponse::Error {
                 code: BackendErrorCode::Internal,
                 message: format!("storage error: {e}"),
@@ -106,13 +91,10 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
         BackendRequest::Write {
             secret_id,
             material,
-        } => match state.store.write(secret_id, material.as_bytes()) {
+        } => match state.store.write(secret_id, material.as_ref()) {
             Ok(()) => {
                 info!(secret = %secret_id, "backend write");
-                BackendResponse::Ok {
-                    material: None,
-                    info: None,
-                }
+                BackendResponse::WriteOk
             }
             Err(e) => BackendResponse::Error {
                 code: BackendErrorCode::Internal,
@@ -123,10 +105,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
         BackendRequest::List { prefix } => match state.store.list(prefix) {
             Ok(ids) => {
                 info!(prefix = %prefix, count = ids.len(), "backend list");
-                BackendResponse::Ok {
-                    material: None,
-                    info: Some(serde_json::json!(ids)),
-                }
+                BackendResponse::ListOk { ids }
             }
             Err(e) => BackendResponse::Error {
                 code: BackendErrorCode::Internal,
@@ -137,10 +116,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
         BackendRequest::Delete { secret_id } => match state.store.delete(secret_id) {
             Ok(existed) => {
                 info!(secret = %secret_id, existed = existed, "backend delete");
-                BackendResponse::Ok {
-                    material: None,
-                    info: Some(serde_json::json!(existed)),
-                }
+                BackendResponse::DeleteOk { existed }
             }
             Err(e) => BackendResponse::Error {
                 code: BackendErrorCode::Internal,
@@ -150,10 +126,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
 
         BackendRequest::Status => {
             info!("backend status");
-            BackendResponse::Ok {
-                material: None,
-                info: Some(serde_json::json!({"status": "ok"})),
-            }
+            BackendResponse::StatusOk
         }
     }
 }

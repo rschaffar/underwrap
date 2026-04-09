@@ -136,10 +136,13 @@ impl TestDaemon {
 
     /// Query status via the control socket.
     pub async fn status(&self, target: Option<&str>) -> Result<ControlResponse> {
-        self.control_request(&ControlRequest::Status {
-            target: target.map(|s| s.to_string()),
-        })
-        .await
+        let request = match target {
+            Some(target) => ControlRequest::StatusTarget {
+                target: target.to_string(),
+            },
+            None => ControlRequest::StatusAll,
+        };
+        self.control_request(&request).await
     }
 
     /// Shut down the daemon.

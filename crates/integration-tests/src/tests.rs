@@ -134,6 +134,45 @@ fn one_wrapper_config() -> (
     (wrappers, secrets)
 }
 
+fn expect_single_env_bytes(resp: WrapperResponse) -> Vec<u8> {
+    match resp {
+        WrapperResponse::ReadOk { env } => {
+            assert_eq!(env.len(), 1, "expected exactly one env binding");
+            let (_key, value) = env.into_iter().next().unwrap();
+            Vec::from(value)
+        }
+        other => panic!("expected ReadOk, got {other:?}"),
+    }
+}
+
+fn expect_single_env_string(resp: WrapperResponse) -> String {
+    String::from_utf8(expect_single_env_bytes(resp)).unwrap()
+}
+
+fn expect_status_all(resp: ControlResponse) -> (Vec<String>, Vec<String>) {
+    match resp {
+        ControlResponse::StatusAllOk {
+            wrappers,
+            credentials,
+        } => (wrappers, credentials),
+        other => panic!("expected StatusAllOk, got {other:?}"),
+    }
+}
+
+fn expect_wrapper_status(resp: ControlResponse) -> WrapperStatus {
+    match resp {
+        ControlResponse::StatusWrapperOk { status } => status,
+        other => panic!("expected StatusWrapperOk, got {other:?}"),
+    }
+}
+
+fn expect_credential_status(resp: ControlResponse) -> CredentialStatus {
+    match resp {
+        ControlResponse::StatusCredentialOk { status } => status,
+        other => panic!("expected StatusCredentialOk, got {other:?}"),
+    }
+}
+
 // ===========================================================================
 // Store and read flow
 // ===========================================================================
@@ -148,17 +187,11 @@ async fn store_then_read_secret() {
         .store_secret("github/token", "ghp_test123")
         .await
         .unwrap();
-    assert!(matches!(resp, ControlResponse::Ok { .. }));
+    assert!(matches!(resp, ControlResponse::StoreOk));
 
     // Read it back through the wrapper socket.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material, "ghp_test123"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "ghp_test123");
 
     daemon.stop().await.unwrap();
 }
@@ -201,15 +234,7 @@ async fn read_uses_wrapper_socket_without_client_supplied_name() {
         .unwrap();
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => {
-            assert_eq!(material, "real_token");
-        }
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "real_token");
 
     daemon.stop().await.unwrap();
 }
@@ -258,24 +283,12 @@ async fn overwrite_mutable_secret() {
     // Store initial value.
     daemon.store_secret("mut/tok", "v1").await.unwrap();
     let resp = daemon.read_request("mutable-w").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material, "v1"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "v1");
 
     // Overwrite.
     daemon.store_secret("mut/tok", "v2").await.unwrap();
     let resp = daemon.read_request("mutable-w").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material, "v2"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "v2");
 
     daemon.stop().await.unwrap();
 }
@@ -294,24 +307,18 @@ async fn immutable_secret_rejects_overwrite() {
         .store_secret("github/token", "initial")
         .await
         .unwrap();
-    assert!(matches!(resp, ControlResponse::Ok { .. }));
+    assert!(matches!(resp, ControlResponse::StoreOk));
 
     // Second store also succeeds — credentials are operator-managed and may be overwritten.
     let resp = daemon
         .store_secret("github/token", "overwrite_attempt")
         .await
         .unwrap();
-    assert!(matches!(resp, ControlResponse::Ok { .. }));
+    assert!(matches!(resp, ControlResponse::StoreOk));
 
     // Updated value preserved.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material, "overwrite_attempt"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "overwrite_attempt");
 
     daemon.stop().await.unwrap();
 }
@@ -326,15 +333,9 @@ async fn status_general() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     let resp = daemon.status(None).await.unwrap();
-    match resp {
-        ControlResponse::Ok { info: Some(info) } => {
-            let wrapper_list = info["wrappers"].as_array().unwrap();
-            assert_eq!(wrapper_list.len(), 1);
-            let credential_list = info["credentials"].as_array().unwrap();
-            assert_eq!(credential_list.len(), 1);
-        }
-        other => panic!("expected Ok with info, got {other:?}"),
-    }
+    let (wrappers, credentials) = expect_status_all(resp);
+    assert_eq!(wrappers.len(), 1);
+    assert_eq!(credentials.len(), 1);
 
     daemon.stop().await.unwrap();
 }
@@ -350,24 +351,16 @@ async fn status_specific_wrapper() {
 
     // Before storing: usage[0].stored = false.
     let resp = daemon.status(Some("gh-authorized")).await.unwrap();
-    match resp {
-        ControlResponse::Ok { info: Some(info) } => {
-            assert_eq!(info["wrapper"], "gh-authorized");
-            assert_eq!(info["use"][0]["credential"], "github/token");
-            assert_eq!(info["use"][0]["stored"], false);
-        }
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    let status = expect_wrapper_status(resp);
+    assert_eq!(status.wrapper, "gh-authorized");
+    assert_eq!(status.usage[0].credential, "github/token");
+    assert_eq!(status.usage[0].stored, Some(false));
 
     // After storing: usage[0].stored = true.
     daemon.store_secret("github/token", "tok").await.unwrap();
     let resp = daemon.status(Some("gh-authorized")).await.unwrap();
-    match resp {
-        ControlResponse::Ok { info: Some(info) } => {
-            assert_eq!(info["use"][0]["stored"], true);
-        }
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    let status = expect_wrapper_status(resp);
+    assert_eq!(status.usage[0].stored, Some(true));
 
     daemon.stop().await.unwrap();
 }
@@ -382,13 +375,9 @@ async fn status_specific_secret() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     let resp = daemon.status(Some("github/token")).await.unwrap();
-    match resp {
-        ControlResponse::Ok { info: Some(info) } => {
-            assert_eq!(info["credential"], "github/token");
-            assert_eq!(info["stored"], false);
-        }
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    let status = expect_credential_status(resp);
+    assert_eq!(status.credential, "github/token");
+    assert!(!status.stored);
 
     daemon.stop().await.unwrap();
 }
@@ -404,10 +393,11 @@ async fn status_unknown_target() {
 
     let resp = daemon.status(Some("nope")).await.unwrap();
     match resp {
-        ControlResponse::Ok { info: Some(info) } => {
-            assert!(info["error"].as_str().unwrap().contains("nope"));
+        ControlResponse::Error { code, message } => {
+            assert!(matches!(code, ErrorCode::NotFound));
+            assert!(message.contains("nope"));
         }
-        other => panic!("expected Ok, got {other:?}"),
+        other => panic!("expected Error, got {other:?}"),
     }
 
     daemon.stop().await.unwrap();
@@ -446,13 +436,7 @@ async fn concurrent_reads() {
 
     for h in handles {
         let resp = h.await.unwrap();
-        match resp {
-            WrapperResponse::Ok {
-                material: Some(material),
-                ..
-            } => assert_eq!(material, "ghp_concurrent"),
-            other => panic!("expected Ok, got {other:?}"),
-        }
+        assert_eq!(expect_single_env_string(resp), "ghp_concurrent");
     }
 
     daemon.stop().await.unwrap();
@@ -481,13 +465,7 @@ async fn hierarchical_secret_ids() {
         .unwrap();
 
     let resp = daemon.read_request("deep-wrapper").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material, "deep_val"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "deep_val");
 
     daemon.stop().await.unwrap();
 }
@@ -506,13 +484,7 @@ async fn large_secret_material() {
     daemon.store_secret("github/token", &big).await.unwrap();
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material.len(), 32_000),
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_bytes(resp).len(), 32_000);
 
     daemon.stop().await.unwrap();
 }
@@ -530,13 +502,7 @@ async fn secret_with_special_chars() {
     daemon.store_secret("github/token", special).await.unwrap();
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material, special),
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_bytes(resp), special.as_bytes());
 
     daemon.stop().await.unwrap();
 }
@@ -550,6 +516,11 @@ async fn secret_with_special_chars() {
 
 #[tokio::test]
 async fn underwrapctl_store_and_status() {
+    let build_status = std::process::Command::new("cargo")
+        .args(["build", "-p", "underwrapctl"])
+        .status()
+        .unwrap();
+    assert!(build_status.success(), "cargo build -p underwrapctl failed");
     let ctl_bin = require_bin!("underwrapctl");
 
     let (wrappers, secrets) = one_wrapper_config();
@@ -581,13 +552,7 @@ async fn underwrapctl_store_and_status() {
 
     // Verify via daemon read.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material, "ghp_from_ctl"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "ghp_from_ctl");
 
     // Query status via underwrapctl.
     let output = tokio::process::Command::new(&ctl_bin)
@@ -610,6 +575,11 @@ async fn underwrapctl_store_and_status() {
 
 #[tokio::test]
 async fn underwrapctl_store_undeclared_exits_nonzero() {
+    let build_status = std::process::Command::new("cargo")
+        .args(["build", "-p", "underwrapctl"])
+        .status()
+        .unwrap();
+    assert!(build_status.success(), "cargo build -p underwrapctl failed");
     let ctl_bin = require_bin!("underwrapctl");
 
     let (wrappers, secrets) = one_wrapper_config();
@@ -673,13 +643,7 @@ async fn rapid_store_read_cycles() {
         daemon.store_secret("rapid/tok", &val).await.unwrap();
 
         let resp = daemon.read_request("rapid-wrapper").await.unwrap();
-        match resp {
-            WrapperResponse::Ok {
-                material: Some(material),
-                ..
-            } => assert_eq!(material, val),
-            other => panic!("iteration {i}: expected Ok, got {other:?}"),
-        }
+        assert_eq!(expect_single_env_string(resp), val, "iteration {i}");
     }
 
     daemon.stop().await.unwrap();
@@ -743,17 +707,11 @@ async fn unlock_then_read_succeeds() {
         })
         .await
         .unwrap();
-    assert!(matches!(resp, ControlResponse::Ok { .. }));
+    assert!(matches!(resp, ControlResponse::UnlockOk));
 
     // Now reads succeed.
     let resp = daemon.read_request("locked-w").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material, "secret_val"),
-        other => panic!("expected Ok, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "secret_val");
 
     daemon.stop().await.unwrap();
 }
@@ -884,7 +842,7 @@ async fn unlock_scoped() {
         .read_request_with_scope("locked-w", "session-1")
         .await
         .unwrap();
-    assert!(matches!(resp, WrapperResponse::Ok { .. }));
+    assert!(matches!(resp, WrapperResponse::ReadOk { .. }));
 
     // Read with different scope fails.
     let resp = daemon
@@ -944,10 +902,9 @@ async fn unlock_key_challenge_response_same_connection() {
     };
 
     // Sign the nonce with our private key.
-    let nonce_bytes = hex::decode(&nonce).unwrap();
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&keypair.private.to_bytes());
     use ed25519_dalek::Signer;
-    let raw_sig = signing_key.sign(&nonce_bytes);
+    let raw_sig = signing_key.sign(&nonce);
 
     // Build the SSH wire format signature:
     // [4-byte algo-name-len][algo-name][4-byte sig-len][sig-bytes]
@@ -959,35 +916,22 @@ async fn unlock_key_challenge_response_same_connection() {
     wire_sig.extend_from_slice(&(sig_bytes.len() as u32).to_be_bytes());
     wire_sig.extend_from_slice(&sig_bytes);
 
-    let sig_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wire_sig);
-
     // Send UnlockResponse on the SAME connection.
     let req2 = WrapperRequest::UnlockResponse {
         scope: None,
         seconds: None,
         challenge: nonce,
-        signature: sig_b64,
+        signature: wire_sig,
         public_key: public_key_openssh,
     };
     write_frame_async(&mut stream, &req2).await.unwrap();
     let resp2: WrapperResponse = read_frame_async(&mut stream).await.unwrap();
 
-    match resp2 {
-        WrapperResponse::Ok { message, .. } => {
-            assert!(message.unwrap_or_default().contains("unlocked"));
-        }
-        other => panic!("expected Ok (unlocked), got {other:?}"),
-    }
+    assert!(matches!(resp2, WrapperResponse::UnlockOk));
 
     // Now reads should succeed.
     let resp = daemon.read_request("key-locked-w").await.unwrap();
-    match resp {
-        WrapperResponse::Ok {
-            material: Some(material),
-            ..
-        } => assert_eq!(material, "key_secret"),
-        other => panic!("expected Ok with material, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "key_secret");
 
     daemon.stop().await.unwrap();
 }
@@ -1002,7 +946,7 @@ async fn no_require_unlock_works_without_unlock() {
 
     // gh-authorized has require_unlock=false, so it works without unlock.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert!(matches!(resp, WrapperResponse::Ok { .. }));
+    assert!(matches!(resp, WrapperResponse::ReadOk { .. }));
 
     daemon.stop().await.unwrap();
 }
@@ -1140,7 +1084,7 @@ async fn underwrapd_binary_start_and_status() {
     let mut stream = tokio::net::UnixStream::connect(&control_sock)
         .await
         .unwrap();
-    let req = ControlRequest::Status { target: None };
+    let req = ControlRequest::StatusAll;
     underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
         .await
         .unwrap();
@@ -1149,10 +1093,10 @@ async fn underwrapd_binary_start_and_status() {
         .unwrap();
 
     match resp {
-        ControlResponse::Ok { info: Some(info) } => {
-            assert_eq!(info["wrappers"].as_array().unwrap().len(), 1);
+        ControlResponse::StatusAllOk { wrappers, .. } => {
+            assert_eq!(wrappers.len(), 1);
         }
-        other => panic!("expected Ok, got {other:?}"),
+        other => panic!("expected StatusAllOk, got {other:?}"),
     }
 
     // Kill the daemon.

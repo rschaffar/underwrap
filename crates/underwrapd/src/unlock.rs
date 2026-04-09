@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use underwrap_protocol::message::{UnlockGrantStatus, UnlockStatus};
+
 /// Key for an unlock grant: (wrapper_name, scope, uid).
 /// scope=None means "all scopes" for this wrapper+uid.
 type GrantKey = (String, Option<String>, u32);
@@ -31,7 +33,7 @@ impl Grant {
 /// Pending challenge for SSH agent unlock.
 #[derive(Debug)]
 struct PendingChallenge {
-    nonce_hex: String,
+    nonce: Vec<u8>,
     expires_at: Instant,
 }
 
@@ -113,32 +115,31 @@ impl UnlockState {
     }
 
     /// Get status info for a wrapper.
-    pub fn status(&self, wrapper: &str) -> serde_json::Value {
+    pub fn status(&self, wrapper: &str) -> UnlockStatus {
         let grants = self.grants.lock().unwrap();
-        let mut active: Vec<serde_json::Value> = Vec::new();
+        let mut active = Vec::new();
 
         for ((w, scope, uid), grant) in grants.iter() {
             if w == wrapper && grant.is_valid() {
-                let mut entry = serde_json::json!({
-                    "scope": scope,
-                    "uid": uid,
-                });
-                if let Some(expires_at) = grant.expires_at {
-                    let remaining = expires_at
+                let remaining_seconds = grant.expires_at.map(|expires_at| {
+                    expires_at
                         .checked_duration_since(Instant::now())
                         .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    entry["remaining_seconds"] = serde_json::json!(remaining);
-                }
-                active.push(entry);
+                        .unwrap_or(0)
+                });
+                active.push(UnlockGrantStatus {
+                    scope: scope.clone(),
+                    uid: *uid,
+                    remaining_seconds,
+                });
             }
         }
 
-        serde_json::json!({
-            "wrapper": wrapper,
-            "unlocked": !active.is_empty(),
-            "grants": active,
-        })
+        UnlockStatus {
+            wrapper: wrapper.to_string(),
+            unlocked: !active.is_empty(),
+            grants: active,
+        }
     }
 
     /// Store a pending challenge nonce for SSH agent unlock.
@@ -148,7 +149,7 @@ impl UnlockState {
         wrapper: &str,
         scope: Option<&str>,
         uid: u32,
-        nonce_hex: &str,
+        nonce: &[u8],
     ) {
         let key = (wrapper.to_string(), scope.map(|s| s.to_string()), uid);
         let mut pending = self.pending.lock().unwrap();
@@ -156,7 +157,7 @@ impl UnlockState {
         pending.insert(
             key,
             PendingChallenge {
-                nonce_hex: nonce_hex.to_string(),
+                nonce: nonce.to_vec(),
                 expires_at: Instant::now() + std::time::Duration::from_secs(60),
             },
         );
@@ -168,12 +169,12 @@ impl UnlockState {
         wrapper: &str,
         scope: Option<&str>,
         uid: u32,
-        nonce_hex: &str,
+        nonce: &[u8],
     ) -> bool {
         let key = (wrapper.to_string(), scope.map(|s| s.to_string()), uid);
         let mut pending = self.pending.lock().unwrap();
         if let Some(challenge) = pending.remove(&key) {
-            Instant::now() < challenge.expires_at && challenge.nonce_hex == nonce_hex
+            Instant::now() < challenge.expires_at && challenge.nonce == nonce
         } else {
             false
         }
@@ -269,12 +270,12 @@ mod tests {
     fn status_shows_grants() {
         let state = UnlockState::new();
         let s = state.status("w");
-        assert_eq!(s["unlocked"], false);
+        assert!(!s.unlocked);
 
         state.unlock("w", None, Some(3600), 1000);
         let s = state.status("w");
-        assert_eq!(s["unlocked"], true);
-        assert!(s["grants"][0]["remaining_seconds"].as_u64().unwrap() > 0);
+        assert!(s.unlocked);
+        assert!(s.grants[0].remaining_seconds.unwrap() > 0);
     }
 
     #[test]

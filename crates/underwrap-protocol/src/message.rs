@@ -1,9 +1,12 @@
 //! IPC message types exchanged over Unix domain sockets.
 //!
-//! All messages are length-prefixed JSON frames:
-//!   [4 bytes big-endian length][JSON payload]
+//! All messages use the binary framing/codec defined in [`crate::ipc`].
 
+use crate::config::{AccessMode, UnlockMode};
+use crate::ipc::{WireDecode, WireEncode, WireReader};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Debug, Clone, Zeroize, ZeroizeOnDrop, PartialEq, Eq)]
@@ -55,6 +58,12 @@ impl From<&str> for SecretBytes {
     }
 }
 
+impl From<&[u8]> for SecretBytes {
+    fn from(value: &[u8]) -> Self {
+        Self(value.to_vec())
+    }
+}
+
 impl From<SecretBytes> for Vec<u8> {
     fn from(mut value: SecretBytes) -> Self {
         std::mem::take(&mut value.0)
@@ -97,231 +106,788 @@ impl<const N: usize> PartialEq<SecretBytes> for &[u8; N] {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct SecretString(String);
-
-impl SecretString {
-    pub fn as_str(&self) -> &str {
-        &self.0
+impl WireEncode for SecretBytes {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.0.encode(out)
     }
 }
 
-impl std::ops::Deref for SecretString {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl WireDecode for SecretBytes {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        Ok(Self(Vec::<u8>::decode(reader)?))
     }
 }
 
-impl AsRef<str> for SecretString {
-    fn as_ref(&self) -> &str {
-        &self.0
+impl WireEncode for AccessMode {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::ReadOnly => 0u8.encode(out),
+            Self::ReadWrite => 1u8.encode(out),
+        }
     }
 }
 
-impl From<String> for SecretString {
-    fn from(value: String) -> Self {
-        Self(value)
+impl WireDecode for AccessMode {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::ReadOnly),
+            1 => Ok(Self::ReadWrite),
+            other => Err(anyhow!("invalid access mode discriminant: {other}")),
+        }
     }
 }
 
-impl From<&str> for SecretString {
-    fn from(value: &str) -> Self {
-        Self(value.to_string())
+impl WireEncode for UnlockMode {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::AlwaysUnlocked => 0u8.encode(out),
+            Self::Always => 1u8.encode(out),
+            Self::Optional => 2u8.encode(out),
+        }
     }
 }
 
-impl From<SecretString> for String {
-    fn from(mut value: SecretString) -> Self {
-        std::mem::take(&mut value.0)
-    }
-}
-
-impl PartialEq<&str> for SecretString {
-    fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
-    }
-}
-
-impl PartialEq<SecretString> for &str {
-    fn eq(&self, other: &SecretString) -> bool {
-        *self == other.0
-    }
-}
-
-impl PartialEq<String> for SecretString {
-    fn eq(&self, other: &String) -> bool {
-        self.0 == *other
-    }
-}
-
-impl PartialEq<SecretString> for String {
-    fn eq(&self, other: &SecretString) -> bool {
-        *self == other.0
+impl WireDecode for UnlockMode {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::AlwaysUnlocked),
+            1 => Ok(Self::Always),
+            2 => Ok(Self::Optional),
+            other => Err(anyhow!("invalid unlock mode discriminant: {other}")),
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Wrapper-socket messages (wrapper -> daemon over wrapper socket)
+// Typed status payloads
 // ---------------------------------------------------------------------------
 
-/// Request sent by a wrapper over its wrapper socket.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnlockGrantStatus {
+    pub scope: Option<String>,
+    pub uid: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining_seconds: Option<u64>,
+}
+
+impl WireEncode for UnlockGrantStatus {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.scope.encode(out)?;
+        self.uid.encode(out)?;
+        self.remaining_seconds.encode(out)
+    }
+}
+
+impl WireDecode for UnlockGrantStatus {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        Ok(Self {
+            scope: Option::<String>::decode(reader)?,
+            uid: u32::decode(reader)?,
+            remaining_seconds: Option::<u64>::decode(reader)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnlockStatus {
+    pub wrapper: String,
+    pub unlocked: bool,
+    pub grants: Vec<UnlockGrantStatus>,
+}
+
+impl WireEncode for UnlockStatus {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.wrapper.encode(out)?;
+        self.unlocked.encode(out)?;
+        self.grants.encode(out)
+    }
+}
+
+impl WireDecode for UnlockStatus {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        Ok(Self {
+            wrapper: String::decode(reader)?,
+            unlocked: bool::decode(reader)?,
+            grants: Vec::<UnlockGrantStatus>::decode(reader)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialUsageStatus {
+    pub credential: String,
+    pub access: AccessMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stored: Option<bool>,
+}
+
+impl WireEncode for CredentialUsageStatus {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.credential.encode(out)?;
+        self.access.encode(out)?;
+        self.stored.encode(out)
+    }
+}
+
+impl WireDecode for CredentialUsageStatus {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        Ok(Self {
+            credential: String::decode(reader)?,
+            access: AccessMode::decode(reader)?,
+            stored: Option::<bool>::decode(reader)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WrapperUnlockStatus {
+    pub mode: UnlockMode,
+    #[serde(rename = "maxSeconds")]
+    pub max_seconds: Option<u64>,
+    pub status: UnlockStatus,
+}
+
+impl WireEncode for WrapperUnlockStatus {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.mode.encode(out)?;
+        self.max_seconds.encode(out)?;
+        self.status.encode(out)
+    }
+}
+
+impl WireDecode for WrapperUnlockStatus {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        Ok(Self {
+            mode: UnlockMode::decode(reader)?,
+            max_seconds: Option::<u64>::decode(reader)?,
+            status: UnlockStatus::decode(reader)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WrapperStatus {
+    pub wrapper: String,
+    pub target: String,
+    #[serde(rename = "use")]
+    pub usage: Vec<CredentialUsageStatus>,
+    pub unlock: WrapperUnlockStatus,
+}
+
+impl WireEncode for WrapperStatus {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.wrapper.encode(out)?;
+        self.target.encode(out)?;
+        self.usage.encode(out)?;
+        self.unlock.encode(out)
+    }
+}
+
+impl WireDecode for WrapperStatus {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        Ok(Self {
+            wrapper: String::decode(reader)?,
+            target: String::decode(reader)?,
+            usage: Vec::<CredentialUsageStatus>::decode(reader)?,
+            unlock: WrapperUnlockStatus::decode(reader)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialStatus {
+    pub credential: String,
+    pub stored: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_error: Option<String>,
+}
+
+impl WireEncode for CredentialStatus {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.credential.encode(out)?;
+        self.stored.encode(out)?;
+        self.storage_error.encode(out)
+    }
+}
+
+impl WireDecode for CredentialStatus {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        Ok(Self {
+            credential: String::decode(reader)?,
+            stored: bool::decode(reader)?,
+            storage_error: Option::<String>::decode(reader)?,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wrapper-socket messages
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperRequest {
-    /// Request secret material.
-    #[serde(rename = "read")]
-    Read { scope: Option<String> },
-    /// Request unlock — initiates SSH agent challenge-response.
-    #[serde(rename = "unlock")]
+    Read {
+        scope: Option<String>,
+    },
     Unlock {
         scope: Option<String>,
         seconds: Option<u64>,
     },
-    /// Complete unlock by providing the signed challenge.
-    #[serde(rename = "unlock_response")]
     UnlockResponse {
         scope: Option<String>,
         seconds: Option<u64>,
-        /// The challenge nonce (hex-encoded, echoed back).
-        challenge: String,
-        /// The SSH signature over the challenge (base64-encoded).
-        signature: String,
-        /// The SSH public key that signed (OpenSSH format).
+        challenge: Vec<u8>,
+        signature: Vec<u8>,
         public_key: String,
     },
 }
 
-/// Daemon response on the wrapper socket.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "status")]
+impl WireEncode for WrapperRequest {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::Read { scope } => {
+                0u8.encode(out)?;
+                scope.encode(out)
+            }
+            Self::Unlock { scope, seconds } => {
+                1u8.encode(out)?;
+                scope.encode(out)?;
+                seconds.encode(out)
+            }
+            Self::UnlockResponse {
+                scope,
+                seconds,
+                challenge,
+                signature,
+                public_key,
+            } => {
+                2u8.encode(out)?;
+                scope.encode(out)?;
+                seconds.encode(out)?;
+                challenge.encode(out)?;
+                signature.encode(out)?;
+                public_key.encode(out)
+            }
+        }
+    }
+}
+
+impl WireDecode for WrapperRequest {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::Read {
+                scope: Option::<String>::decode(reader)?,
+            }),
+            1 => Ok(Self::Unlock {
+                scope: Option::<String>::decode(reader)?,
+                seconds: Option::<u64>::decode(reader)?,
+            }),
+            2 => Ok(Self::UnlockResponse {
+                scope: Option::<String>::decode(reader)?,
+                seconds: Option::<u64>::decode(reader)?,
+                challenge: Vec::<u8>::decode(reader)?,
+                signature: Vec::<u8>::decode(reader)?,
+                public_key: String::decode(reader)?,
+            }),
+            other => Err(anyhow!("invalid wrapper request discriminant: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperResponse {
-    #[serde(rename = "ok")]
-    Ok {
-        /// Environment variable bindings for read requests.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        env: Option<std::collections::HashMap<String, SecretString>>,
-        /// Backward-compat/testing convenience for single env binding cases.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        material: Option<SecretString>,
-        /// Message (for unlock confirmations).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        message: Option<String>,
-    },
-    /// SSH challenge: caller must sign this with their SSH agent.
-    #[serde(rename = "challenge")]
-    Challenge {
-        /// Random nonce (hex-encoded) to be signed.
-        nonce: String,
-    },
-    #[serde(rename = "error")]
+    ReadOk { env: HashMap<String, SecretBytes> },
+    UnlockOk,
+    Challenge { nonce: Vec<u8> },
     Error { code: ErrorCode, message: String },
 }
 
+impl WireEncode for WrapperResponse {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::ReadOk { env } => {
+                0u8.encode(out)?;
+                env.encode(out)
+            }
+            Self::UnlockOk => 1u8.encode(out),
+            Self::Challenge { nonce } => {
+                2u8.encode(out)?;
+                nonce.encode(out)
+            }
+            Self::Error { code, message } => {
+                3u8.encode(out)?;
+                code.encode(out)?;
+                message.encode(out)
+            }
+        }
+    }
+}
+
+impl WireDecode for WrapperResponse {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::ReadOk {
+                env: HashMap::<String, SecretBytes>::decode(reader)?,
+            }),
+            1 => Ok(Self::UnlockOk),
+            2 => Ok(Self::Challenge {
+                nonce: Vec::<u8>::decode(reader)?,
+            }),
+            3 => Ok(Self::Error {
+                code: ErrorCode::decode(reader)?,
+                message: String::decode(reader)?,
+            }),
+            other => Err(anyhow!("invalid wrapper response discriminant: {other}")),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Control-path messages (underwrapctl -> daemon over control.sock)
+// Control-path messages
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "command")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlRequest {
-    #[serde(rename = "status")]
-    Status {
-        /// Optional: query status for a specific wrapper or secret.
-        target: Option<String>,
+    StatusAll,
+    StatusTarget {
+        target: String,
     },
-    #[serde(rename = "store")]
     Store {
         secret_id: String,
-        material: SecretString,
+        material: SecretBytes,
     },
-    /// Unlock a wrapper for a duration.
-    #[serde(rename = "unlock")]
     Unlock {
-        /// Wrapper name to unlock.
         target: String,
-        /// Optional scope (e.g. shell session id).
         scope: Option<String>,
-        /// Seconds until auto-lock. None = indefinite (until explicit lock).
         seconds: Option<u64>,
-        /// Root/admin only: grant unlock to a specific allowed username.
         grant_user: Option<String>,
-        /// Root/admin only: grant unlock to all allowed users of the instance.
         grant_all: bool,
     },
-    /// Explicitly lock a wrapper.
-    #[serde(rename = "lock")]
     Lock {
-        /// Wrapper name to lock. None = lock everything.
         target: Option<String>,
-        /// Optional scope. None = all scopes.
         scope: Option<String>,
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "status")]
+impl WireEncode for ControlRequest {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::StatusAll => 0u8.encode(out),
+            Self::StatusTarget { target } => {
+                1u8.encode(out)?;
+                target.encode(out)
+            }
+            Self::Store {
+                secret_id,
+                material,
+            } => {
+                2u8.encode(out)?;
+                secret_id.encode(out)?;
+                material.encode(out)
+            }
+            Self::Unlock {
+                target,
+                scope,
+                seconds,
+                grant_user,
+                grant_all,
+            } => {
+                3u8.encode(out)?;
+                target.encode(out)?;
+                scope.encode(out)?;
+                seconds.encode(out)?;
+                grant_user.encode(out)?;
+                grant_all.encode(out)
+            }
+            Self::Lock { target, scope } => {
+                4u8.encode(out)?;
+                target.encode(out)?;
+                scope.encode(out)
+            }
+        }
+    }
+}
+
+impl WireDecode for ControlRequest {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::StatusAll),
+            1 => Ok(Self::StatusTarget {
+                target: String::decode(reader)?,
+            }),
+            2 => Ok(Self::Store {
+                secret_id: String::decode(reader)?,
+                material: SecretBytes::decode(reader)?,
+            }),
+            3 => Ok(Self::Unlock {
+                target: String::decode(reader)?,
+                scope: Option::<String>::decode(reader)?,
+                seconds: Option::<u64>::decode(reader)?,
+                grant_user: Option::<String>::decode(reader)?,
+                grant_all: bool::decode(reader)?,
+            }),
+            4 => Ok(Self::Lock {
+                target: Option::<String>::decode(reader)?,
+                scope: Option::<String>::decode(reader)?,
+            }),
+            other => Err(anyhow!("invalid control request discriminant: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlResponse {
-    #[serde(rename = "ok")]
-    Ok {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        info: Option<serde_json::Value>,
+    StatusAllOk {
+        wrappers: Vec<String>,
+        credentials: Vec<String>,
     },
-    #[serde(rename = "error")]
-    Error { code: ErrorCode, message: String },
+    StatusWrapperOk {
+        status: WrapperStatus,
+    },
+    StatusCredentialOk {
+        status: CredentialStatus,
+    },
+    StoreOk,
+    UnlockOk,
+    LockOk,
+    Error {
+        code: ErrorCode,
+        message: String,
+    },
+}
+
+impl WireEncode for ControlResponse {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::StatusAllOk {
+                wrappers,
+                credentials,
+            } => {
+                0u8.encode(out)?;
+                wrappers.encode(out)?;
+                credentials.encode(out)
+            }
+            Self::StatusWrapperOk { status } => {
+                1u8.encode(out)?;
+                status.encode(out)
+            }
+            Self::StatusCredentialOk { status } => {
+                2u8.encode(out)?;
+                status.encode(out)
+            }
+            Self::StoreOk => 3u8.encode(out),
+            Self::UnlockOk => 4u8.encode(out),
+            Self::LockOk => 5u8.encode(out),
+            Self::Error { code, message } => {
+                6u8.encode(out)?;
+                code.encode(out)?;
+                message.encode(out)
+            }
+        }
+    }
+}
+
+impl WireDecode for ControlResponse {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::StatusAllOk {
+                wrappers: Vec::<String>::decode(reader)?,
+                credentials: Vec::<String>::decode(reader)?,
+            }),
+            1 => Ok(Self::StatusWrapperOk {
+                status: WrapperStatus::decode(reader)?,
+            }),
+            2 => Ok(Self::StatusCredentialOk {
+                status: CredentialStatus::decode(reader)?,
+            }),
+            3 => Ok(Self::StoreOk),
+            4 => Ok(Self::UnlockOk),
+            5 => Ok(Self::LockOk),
+            6 => Ok(Self::Error {
+                code: ErrorCode::decode(reader)?,
+                message: String::decode(reader)?,
+            }),
+            other => Err(anyhow!("invalid control response discriminant: {other}")),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Secretsd channel messages (daemon <-> secretsd over authenticated socketpair)
+// Secretsd channel messages
 // ---------------------------------------------------------------------------
 
-/// Request from secretsd to daemon over the authenticated socketpair channel.
-/// All secret_id values are relative — the daemon handler prepends the
-/// wrapper's prefix (e.g., `<wrapper>/libsecret/`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretsdRequest {
-    /// Read a secret by relative ID.
-    #[serde(rename = "read")]
-    Read { secret_id: String },
-    /// Write a secret by relative ID.
-    #[serde(rename = "write")]
+    Read {
+        secret_id: String,
+    },
     Write {
         secret_id: String,
-        material: SecretString,
+        material: SecretBytes,
     },
-    /// List secrets under a relative prefix.
-    #[serde(rename = "list")]
-    List { prefix: String },
-    /// Delete a secret by relative ID.
-    #[serde(rename = "delete")]
-    Delete { secret_id: String },
+    List {
+        prefix: String,
+    },
+    Delete {
+        secret_id: String,
+    },
 }
 
-/// Response from daemon to secretsd over the authenticated socketpair channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "status")]
+impl WireEncode for SecretsdRequest {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::Read { secret_id } => {
+                0u8.encode(out)?;
+                secret_id.encode(out)
+            }
+            Self::Write {
+                secret_id,
+                material,
+            } => {
+                1u8.encode(out)?;
+                secret_id.encode(out)?;
+                material.encode(out)
+            }
+            Self::List { prefix } => {
+                2u8.encode(out)?;
+                prefix.encode(out)
+            }
+            Self::Delete { secret_id } => {
+                3u8.encode(out)?;
+                secret_id.encode(out)
+            }
+        }
+    }
+}
+
+impl WireDecode for SecretsdRequest {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::Read {
+                secret_id: String::decode(reader)?,
+            }),
+            1 => Ok(Self::Write {
+                secret_id: String::decode(reader)?,
+                material: SecretBytes::decode(reader)?,
+            }),
+            2 => Ok(Self::List {
+                prefix: String::decode(reader)?,
+            }),
+            3 => Ok(Self::Delete {
+                secret_id: String::decode(reader)?,
+            }),
+            other => Err(anyhow!("invalid secretsd request discriminant: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretsdResponse {
-    #[serde(rename = "ok")]
-    Ok {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        material: Option<SecretString>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        ids: Option<Vec<String>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        existed: Option<bool>,
+    ReadOk {
+        material: Option<SecretBytes>,
     },
-    #[serde(rename = "error")]
+    WriteOk,
+    ListOk {
+        ids: Vec<String>,
+    },
+    DeleteOk {
+        existed: bool,
+    },
     Error {
         code: SecretsdErrorCode,
         message: String,
     },
 }
 
+impl WireEncode for SecretsdResponse {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::ReadOk { material } => {
+                0u8.encode(out)?;
+                material.encode(out)
+            }
+            Self::WriteOk => 1u8.encode(out),
+            Self::ListOk { ids } => {
+                2u8.encode(out)?;
+                ids.encode(out)
+            }
+            Self::DeleteOk { existed } => {
+                3u8.encode(out)?;
+                existed.encode(out)
+            }
+            Self::Error { code, message } => {
+                4u8.encode(out)?;
+                code.encode(out)?;
+                message.encode(out)
+            }
+        }
+    }
+}
+
+impl WireDecode for SecretsdResponse {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::ReadOk {
+                material: Option::<SecretBytes>::decode(reader)?,
+            }),
+            1 => Ok(Self::WriteOk),
+            2 => Ok(Self::ListOk {
+                ids: Vec::<String>::decode(reader)?,
+            }),
+            3 => Ok(Self::DeleteOk {
+                existed: bool::decode(reader)?,
+            }),
+            4 => Ok(Self::Error {
+                code: SecretsdErrorCode::decode(reader)?,
+                message: String::decode(reader)?,
+            }),
+            other => Err(anyhow!("invalid secretsd response discriminant: {other}")),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Shared
+// Backend protocol
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendRequest {
+    Read {
+        secret_id: String,
+    },
+    Write {
+        secret_id: String,
+        material: SecretBytes,
+    },
+    List {
+        prefix: String,
+    },
+    Delete {
+        secret_id: String,
+    },
+    Status,
+}
+
+impl WireEncode for BackendRequest {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::Read { secret_id } => {
+                0u8.encode(out)?;
+                secret_id.encode(out)
+            }
+            Self::Write {
+                secret_id,
+                material,
+            } => {
+                1u8.encode(out)?;
+                secret_id.encode(out)?;
+                material.encode(out)
+            }
+            Self::List { prefix } => {
+                2u8.encode(out)?;
+                prefix.encode(out)
+            }
+            Self::Delete { secret_id } => {
+                3u8.encode(out)?;
+                secret_id.encode(out)
+            }
+            Self::Status => 4u8.encode(out),
+        }
+    }
+}
+
+impl WireDecode for BackendRequest {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::Read {
+                secret_id: String::decode(reader)?,
+            }),
+            1 => Ok(Self::Write {
+                secret_id: String::decode(reader)?,
+                material: SecretBytes::decode(reader)?,
+            }),
+            2 => Ok(Self::List {
+                prefix: String::decode(reader)?,
+            }),
+            3 => Ok(Self::Delete {
+                secret_id: String::decode(reader)?,
+            }),
+            4 => Ok(Self::Status),
+            other => Err(anyhow!("invalid backend request discriminant: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendResponse {
+    ReadOk {
+        material: Option<SecretBytes>,
+    },
+    WriteOk,
+    ListOk {
+        ids: Vec<String>,
+    },
+    DeleteOk {
+        existed: bool,
+    },
+    StatusOk,
+    Error {
+        code: BackendErrorCode,
+        message: String,
+    },
+}
+
+impl WireEncode for BackendResponse {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::ReadOk { material } => {
+                0u8.encode(out)?;
+                material.encode(out)
+            }
+            Self::WriteOk => 1u8.encode(out),
+            Self::ListOk { ids } => {
+                2u8.encode(out)?;
+                ids.encode(out)
+            }
+            Self::DeleteOk { existed } => {
+                3u8.encode(out)?;
+                existed.encode(out)
+            }
+            Self::StatusOk => 4u8.encode(out),
+            Self::Error { code, message } => {
+                5u8.encode(out)?;
+                code.encode(out)?;
+                message.encode(out)
+            }
+        }
+    }
+}
+
+impl WireDecode for BackendResponse {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::ReadOk {
+                material: Option::<SecretBytes>::decode(reader)?,
+            }),
+            1 => Ok(Self::WriteOk),
+            2 => Ok(Self::ListOk {
+                ids: Vec::<String>::decode(reader)?,
+            }),
+            3 => Ok(Self::DeleteOk {
+                existed: bool::decode(reader)?,
+            }),
+            4 => Ok(Self::StatusOk),
+            5 => Ok(Self::Error {
+                code: BackendErrorCode::decode(reader)?,
+                message: String::decode(reader)?,
+            }),
+            other => Err(anyhow!("invalid backend response discriminant: {other}")),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared error codes
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -332,66 +898,58 @@ pub enum SecretsdErrorCode {
     Internal,
 }
 
+impl WireEncode for SecretsdErrorCode {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::NotFound => 0u8.encode(out),
+            Self::InvalidRequest => 1u8.encode(out),
+            Self::Unauthorized => 2u8.encode(out),
+            Self::Internal => 3u8.encode(out),
+        }
+    }
+}
+
+impl WireDecode for SecretsdErrorCode {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::NotFound),
+            1 => Ok(Self::InvalidRequest),
+            2 => Ok(Self::Unauthorized),
+            3 => Ok(Self::Internal),
+            other => Err(anyhow!("invalid secretsd error code discriminant: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ErrorCode {
-    /// Caller is not authorized for this operation.
     Unauthorized,
-    /// The requested wrapper or secret does not exist.
     NotFound,
-    /// The wrapper/secret is locked and requires unlock first.
     Locked,
-    /// Internal daemon error.
     Internal,
 }
 
-// ---------------------------------------------------------------------------
-// Backend protocol (frontend daemon <-> backend daemon over tunnel socket)
-// ---------------------------------------------------------------------------
-
-/// Request from the frontend daemon to the remote backend.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action")]
-pub enum BackendRequest {
-    /// Read secret material.
-    #[serde(rename = "read")]
-    Read { secret_id: String },
-
-    /// Write/update secret material.
-    #[serde(rename = "write")]
-    Write {
-        secret_id: String,
-        material: SecretString,
-    },
-
-    /// List secret IDs under a prefix.
-    #[serde(rename = "list")]
-    List { prefix: String },
-
-    /// Delete a secret.
-    #[serde(rename = "delete")]
-    Delete { secret_id: String },
-
-    /// Check backend health / list available secrets.
-    #[serde(rename = "status")]
-    Status,
+impl WireEncode for ErrorCode {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::Unauthorized => 0u8.encode(out),
+            Self::NotFound => 1u8.encode(out),
+            Self::Locked => 2u8.encode(out),
+            Self::Internal => 3u8.encode(out),
+        }
+    }
 }
 
-/// Response from the remote backend to the frontend daemon.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "status")]
-pub enum BackendResponse {
-    #[serde(rename = "ok")]
-    Ok {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        material: Option<SecretString>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        info: Option<serde_json::Value>,
-    },
-    #[serde(rename = "error")]
-    Error {
-        code: BackendErrorCode,
-        message: String,
-    },
+impl WireDecode for ErrorCode {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::Unauthorized),
+            1 => Ok(Self::NotFound),
+            2 => Ok(Self::Locked),
+            3 => Ok(Self::Internal),
+            other => Err(anyhow!("invalid error code discriminant: {other}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -400,174 +958,82 @@ pub enum BackendErrorCode {
     Internal,
 }
 
+impl WireEncode for BackendErrorCode {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::NotFound => 0u8.encode(out),
+            Self::Internal => 1u8.encode(out),
+        }
+    }
+}
+
+impl WireDecode for BackendErrorCode {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::NotFound),
+            1 => Ok(Self::Internal),
+            other => Err(anyhow!("invalid backend error code discriminant: {other}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::{decode_from_slice, encode_to_vec};
 
     #[test]
-    fn wrapper_read_request_roundtrip() {
+    fn wrapper_request_roundtrip() {
         let req = WrapperRequest::Read {
             scope: Some("session-42".to_string()),
         };
-        let json = serde_json::to_string(&req).unwrap();
-        let parsed: WrapperRequest = serde_json::from_str(&json).unwrap();
-        match parsed {
-            WrapperRequest::Read { scope } => {
-                assert_eq!(scope.as_deref(), Some("session-42"));
-            }
-            other => panic!("expected Read, got {other:?}"),
-        }
+        let encoded = encode_to_vec(&req).unwrap();
+        let parsed: WrapperRequest = decode_from_slice(&encoded).unwrap();
+        assert_eq!(parsed, req);
     }
 
     #[test]
-    fn wrapper_response_ok() {
-        let resp = WrapperResponse::Ok {
-            env: Some(std::collections::HashMap::from([(
-                "TOKEN".to_string(),
-                SecretString::from("secret123"),
-            )])),
-            material: Some(SecretString::from("secret123")),
-            message: None,
+    fn wrapper_response_roundtrip() {
+        let resp = WrapperResponse::ReadOk {
+            env: HashMap::from([("TOKEN".to_string(), SecretBytes::from("secret123"))]),
         };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"status\":\"ok\""));
-        assert!(json.contains("\"TOKEN\":\"secret123\""));
+        let encoded = encode_to_vec(&resp).unwrap();
+        let parsed: WrapperResponse = decode_from_slice(&encoded).unwrap();
+        assert_eq!(parsed, resp);
     }
 
     #[test]
-    fn wrapper_response_error() {
-        let resp = WrapperResponse::Error {
-            code: ErrorCode::NotFound,
-            message: "nope".to_string(),
+    fn control_status_roundtrip() {
+        let resp = ControlResponse::StatusCredentialOk {
+            status: CredentialStatus {
+                credential: "a/b".to_string(),
+                stored: true,
+                storage_error: None,
+            },
         };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"status\":\"error\""));
-        let parsed: WrapperResponse = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, WrapperResponse::Error { .. }));
-    }
-
-    #[test]
-    fn wrapper_response_challenge() {
-        let resp = WrapperResponse::Challenge {
-            nonce: "abc123".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"status\":\"challenge\""));
-        assert!(json.contains("\"nonce\":\"abc123\""));
-    }
-
-    #[test]
-    fn control_request_store_roundtrip() {
-        let req = ControlRequest::Store {
-            secret_id: "a/b".to_string(),
-            material: SecretString::from("val"),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"command\":\"store\""));
-        let parsed: ControlRequest = serde_json::from_str(&json).unwrap();
-        match parsed {
-            ControlRequest::Store {
-                secret_id,
-                material,
-            } => {
-                assert_eq!(secret_id, "a/b");
-                assert_eq!(material.as_str(), "val");
-            }
-            other => panic!("expected Store, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn control_response_ok_with_info() {
-        let resp = ControlResponse::Ok {
-            info: Some(serde_json::json!({"key": "val"})),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"key\":\"val\""));
-    }
-
-    #[test]
-    fn control_response_ok_without_info() {
-        let resp = ControlResponse::Ok { info: None };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(!json.contains("\"info\""));
-    }
-
-    #[test]
-    fn backend_read_roundtrip() {
-        let req = BackendRequest::Read {
-            secret_id: "github/token".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"action\":\"read\""));
-        let parsed: BackendRequest = serde_json::from_str(&json).unwrap();
-        match parsed {
-            BackendRequest::Read { secret_id } => assert_eq!(secret_id, "github/token"),
-            other => panic!("expected Read, got {other:?}"),
-        }
+        let encoded = encode_to_vec(&resp).unwrap();
+        let parsed: ControlResponse = decode_from_slice(&encoded).unwrap();
+        assert_eq!(parsed, resp);
     }
 
     #[test]
     fn backend_write_roundtrip() {
         let req = BackendRequest::Write {
             secret_id: "tok".to_string(),
-            material: SecretString::from("secret_value"),
+            material: vec![0, 1, 2, 255].into(),
         };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"action\":\"write\""));
-        // Material should be present in JSON (backend protocol, not user-facing logs).
-        assert!(json.contains("\"material\":\"secret_value\""));
+        let encoded = encode_to_vec(&req).unwrap();
+        let parsed: BackendRequest = decode_from_slice(&encoded).unwrap();
+        assert_eq!(parsed, req);
     }
 
     #[test]
-    fn backend_list_roundtrip() {
-        let req = BackendRequest::List {
-            prefix: "gh-authorized/libsecret".to_string(),
+    fn secretsd_response_roundtrip() {
+        let resp = SecretsdResponse::ReadOk {
+            material: Some(vec![7, 8, 9].into()),
         };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"action\":\"list\""));
-        let parsed: BackendRequest = serde_json::from_str(&json).unwrap();
-        match parsed {
-            BackendRequest::List { prefix } => assert_eq!(prefix, "gh-authorized/libsecret"),
-            other => panic!("expected List, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn backend_delete_roundtrip() {
-        let req = BackendRequest::Delete {
-            secret_id: "gh-authorized/libsecret/default/item_1".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"action\":\"delete\""));
-        let parsed: BackendRequest = serde_json::from_str(&json).unwrap();
-        match parsed {
-            BackendRequest::Delete { secret_id } => {
-                assert_eq!(secret_id, "gh-authorized/libsecret/default/item_1")
-            }
-            other => panic!("expected Delete, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn backend_response_ok_with_material() {
-        let resp = BackendResponse::Ok {
-            material: Some(SecretString::from("derived_token")),
-            info: None,
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"material\":\"derived_token\""));
-        assert!(!json.contains("\"info\""));
-    }
-
-    #[test]
-    fn backend_response_error() {
-        let resp = BackendResponse::Error {
-            code: BackendErrorCode::NotFound,
-            message: "not found".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"status\":\"error\""));
-        assert!(json.contains("\"code\":\"NotFound\""));
+        let encoded = encode_to_vec(&resp).unwrap();
+        let parsed: SecretsdResponse = decode_from_slice(&encoded).unwrap();
+        assert_eq!(parsed, resp);
     }
 }

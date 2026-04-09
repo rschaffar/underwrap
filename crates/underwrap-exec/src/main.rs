@@ -15,8 +15,9 @@
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 
+use underwrap_protocol::exec::ExecBundle;
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{WrapperRequest, WrapperResponse};
+use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
 
 /// Fixed config directory used when running with elevated privileges.
 const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
@@ -104,37 +105,31 @@ fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
     let resp: WrapperResponse = read_frame_sync(&mut stream)?;
 
     match resp {
-        WrapperResponse::Ok { message, .. } => {
-            // Unlocked without challenge (no SSH key required).
+        WrapperResponse::UnlockOk => {
             drop(stream);
-            eprintln!("unlocked: {}", message.unwrap_or_default());
+            eprintln!("unlocked");
             drop_privilege()?;
             Ok(())
         }
         WrapperResponse::Challenge { nonce } => {
-            // Need to sign the nonce with SSH agent.
-            // Sign BEFORE dropping privilege — SSH agent access is fine.
-            // Send response on the SAME connection — reconnecting would
-            // lose the wrapper's effective GID after drop_privilege().
-            let (signature_b64, public_key_str) = sign_with_ssh_agent(&nonce)?;
+            let (signature, public_key_str) = sign_with_ssh_agent(&nonce)?;
 
             let req2 = WrapperRequest::UnlockResponse {
                 scope,
                 seconds,
                 challenge: nonce,
-                signature: signature_b64,
+                signature,
                 public_key: public_key_str,
             };
             write_frame_sync(&mut stream, &req2)?;
             let resp2: WrapperResponse = read_frame_sync(&mut stream)?;
             drop(stream);
 
-            // Now drop privilege (no longer needed).
             drop_privilege()?;
 
             match resp2 {
-                WrapperResponse::Ok { message, .. } => {
-                    eprintln!("unlocked: {}", message.unwrap_or_default());
+                WrapperResponse::UnlockOk => {
+                    eprintln!("unlocked");
                     Ok(())
                 }
                 WrapperResponse::Error { message, .. } => {
@@ -146,39 +141,32 @@ fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
         WrapperResponse::Error { message, .. } => {
             bail!("unlock request failed: {message}");
         }
+        _ => bail!("unexpected response"),
     }
 }
 
 /// Sign a challenge nonce using the SSH agent (SSH_AUTH_SOCK).
-fn sign_with_ssh_agent(nonce_hex: &str) -> Result<(String, String)> {
+fn sign_with_ssh_agent(nonce: &[u8]) -> Result<(Vec<u8>, String)> {
     let auth_sock = std::env::var("SSH_AUTH_SOCK").context("SSH_AUTH_SOCK not set")?;
     let mut agent = UnixStream::connect(&auth_sock)
         .with_context(|| format!("connecting to SSH agent at {auth_sock}"))?;
 
-    let nonce_bytes = hex::decode(nonce_hex).context("invalid challenge hex")?;
-
-    // Request identities from the agent.
     let identities = ssh_agent_request_identities(&mut agent)?;
     if identities.is_empty() {
         bail!("no keys in SSH agent");
     }
 
-    // Try signing with the first key.
     let (key_blob, key_comment) = &identities[0];
-    let signature = ssh_agent_sign(&mut agent, key_blob, &nonce_bytes)?;
+    let signature = ssh_agent_sign(&mut agent, key_blob, nonce)?;
 
-    // Encode the public key in OpenSSH format.
     let public_key_str = format!(
         "{} {}",
         ssh_key_type_from_blob(key_blob),
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_blob)
     );
 
-    let signature_b64 =
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &signature);
-
     eprintln!("signed challenge with key: {key_comment}");
-    Ok((signature_b64, public_key_str))
+    Ok((signature, public_key_str))
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +302,7 @@ fn exec_via_ns(
     ns_binary: &str,
     config: &WrapperExecConfig,
     args: &[String],
-    env_bindings: std::collections::HashMap<String, String>,
+    env_bindings: std::collections::HashMap<String, SecretBytes>,
     channel_fd: Option<i32>,
 ) -> Result<()> {
     // Verify underwrap-ns exists before proceeding.
@@ -430,12 +418,10 @@ fn exec_via_ns(
 
     // Write env bindings to pipe.
     {
-        use std::io::Write;
         use std::os::unix::io::FromRawFd;
         let mut pipe = unsafe { std::fs::File::from_raw_fd(pipe_write) };
-        let payload = serde_json::to_vec(&serde_json::json!({ "env": env_bindings }))?;
-        pipe.write_all(&payload)
-            .context("writing env bindings to pipe")?;
+        let payload = ExecBundle { env: env_bindings };
+        write_frame_sync(&mut pipe, &payload).context("writing env bindings to pipe")?;
         // pipe_write closed on drop.
     }
 
@@ -574,7 +560,7 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
 fn request_secret(
     socket_path: &str,
     libsecret: bool,
-) -> Result<(std::collections::HashMap<String, String>, Option<i32>)> {
+) -> Result<(std::collections::HashMap<String, SecretBytes>, Option<i32>)> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
@@ -584,15 +570,12 @@ fn request_secret(
 
     let response: WrapperResponse = read_frame_sync(&mut stream)?;
     let env_bindings = match response {
-        WrapperResponse::Ok { env: Some(env), .. } => {
-            env.into_iter().map(|(k, v)| (k, String::from(v))).collect()
-        }
-        WrapperResponse::Ok { env: None, .. } => std::collections::HashMap::new(),
+        WrapperResponse::ReadOk { env } => env,
         WrapperResponse::Error { code, message } => {
             bail!("daemon denied request ({code:?}): {message}");
         }
-        WrapperResponse::Challenge { .. } => {
-            bail!("unexpected challenge response for read request");
+        WrapperResponse::Challenge { .. } | WrapperResponse::UnlockOk => {
+            bail!("unexpected response for read request");
         }
     };
 

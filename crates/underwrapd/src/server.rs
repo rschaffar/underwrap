@@ -611,7 +611,7 @@ async fn handle_wrapper(
 
     // If this is a successful read for a libsecret-enabled wrapper,
     // create a socketpair and send one end via SCM_RIGHTS.
-    if matches!(&response, WrapperResponse::Ok { .. })
+    if matches!(&response, WrapperResponse::ReadOk { .. })
         && matches!(&request, WrapperRequest::Read { .. })
         && let Some(wrapper_def) = state.config.wrappers.get(wrapper_name)
         && let Some((credential_ref, access)) =
@@ -736,18 +736,8 @@ async fn process_read_for(
     for (cred_ref, variable) in wrapper_env_credentials(wrapper_def, &state.config.credentials) {
         match state.store.read(cred_ref) {
             Ok(Some(material)) => {
-                let material = match material.into_utf8_string() {
-                    Ok(material) => material,
-                    Err(e) => {
-                        error!(wrapper = %wrapper_name, credential = %cred_ref, err = %e, "stored credential is not valid UTF-8");
-                        return WrapperResponse::Error {
-                            code: ErrorCode::Internal,
-                            message: "stored credential is not valid UTF-8".to_string(),
-                        };
-                    }
-                };
                 audit::read_granted(wrapper_name, cred_ref, Some(peer_uid), scope);
-                env.insert(variable.to_string(), material.into());
+                env.insert(variable.to_string(), material);
             }
             Ok(None) => {
                 let msg = format!("credential '{cred_ref}' not found in store");
@@ -767,17 +757,7 @@ async fn process_read_for(
         }
     }
 
-    let material = if env.len() == 1 {
-        env.values().next().cloned()
-    } else {
-        None
-    };
-
-    WrapperResponse::Ok {
-        env: Some(env),
-        material,
-        message: None,
-    }
+    WrapperResponse::ReadOk { env }
 }
 
 // ---------------------------------------------------------------------------
@@ -824,24 +804,18 @@ fn process_wrapper_unlock(
             }
 
             if wrapper_def.unlock_key.is_some() {
-                // Generate challenge nonce for SSH agent signing.
                 let nonce: [u8; 32] = rand::random();
-                let nonce_hex = hex::encode(nonce);
-
-                // Store pending challenge in unlock state.
                 state
                     .unlock
-                    .set_pending_challenge(wrapper_name, scope, peer_uid, &nonce_hex);
+                    .set_pending_challenge(wrapper_name, scope, peer_uid, &nonce);
 
-                WrapperResponse::Challenge { nonce: nonce_hex }
+                WrapperResponse::Challenge {
+                    nonce: nonce.to_vec(),
+                }
             } else {
                 state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
                 audit::unlocked(wrapper_name, scope, seconds, Some(peer_uid));
-                WrapperResponse::Ok {
-                    env: None,
-                    material: None,
-                    message: Some("unlocked".to_string()),
-                }
+                WrapperResponse::UnlockOk
             }
         }
     }
@@ -855,8 +829,8 @@ fn process_wrapper_unlock_response(
     seconds: Option<u64>,
     peer_uid: u32,
     state: &State,
-    challenge_hex: &str,
-    signature_b64: &str,
+    challenge: &[u8],
+    signature: &[u8],
     public_key_str: &str,
 ) -> WrapperResponse {
     let wrapper_def = match state.config.wrappers.get(wrapper_name) {
@@ -914,7 +888,7 @@ fn process_wrapper_unlock_response(
     // Verify the challenge was issued for this wrapper+scope+uid.
     if !state
         .unlock
-        .verify_pending_challenge(wrapper_name, scope, peer_uid, challenge_hex)
+        .verify_pending_challenge(wrapper_name, scope, peer_uid, challenge)
     {
         return WrapperResponse::Error {
             code: ErrorCode::Unauthorized,
@@ -923,28 +897,7 @@ fn process_wrapper_unlock_response(
     }
 
     // Verify the SSH signature over the challenge nonce.
-    let challenge_bytes = match hex::decode(challenge_hex) {
-        Ok(b) => b,
-        Err(_) => {
-            return WrapperResponse::Error {
-                code: ErrorCode::Unauthorized,
-                message: "invalid challenge hex".to_string(),
-            };
-        }
-    };
-
-    let signature =
-        match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, signature_b64) {
-            Ok(s) => s,
-            Err(_) => {
-                return WrapperResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: "invalid signature base64".to_string(),
-                };
-            }
-        };
-
-    let ssh_sig = match ssh_key::Signature::try_from(signature.as_slice()) {
+    let ssh_sig = match ssh_key::Signature::try_from(signature) {
         Ok(s) => s,
         Err(e) => {
             warn!(err = %e, "failed to parse SSH signature");
@@ -957,8 +910,8 @@ fn process_wrapper_unlock_response(
 
     use signature::Verifier;
     let valid = match caller_pk.key_data() {
-        KeyData::Ed25519(key) => key.verify(&challenge_bytes, &ssh_sig).is_ok(),
-        KeyData::Rsa(key) => key.verify(&challenge_bytes, &ssh_sig).is_ok(),
+        KeyData::Ed25519(key) => key.verify(challenge, &ssh_sig).is_ok(),
+        KeyData::Rsa(key) => key.verify(challenge, &ssh_sig).is_ok(),
         _ => {
             return WrapperResponse::Error {
                 code: ErrorCode::Unauthorized,
@@ -983,11 +936,7 @@ fn process_wrapper_unlock_response(
     // Signature valid — grant the unlock.
     state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
     audit::unlocked(wrapper_name, scope, seconds, Some(peer_uid));
-    WrapperResponse::Ok {
-        env: None,
-        material: None,
-        message: Some("unlocked".to_string()),
-    }
+    WrapperResponse::UnlockOk
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,8 +971,11 @@ async fn handle_control(mut stream: UnixStream, state: Arc<State>) -> Result<()>
 
     // Log the command type but NEVER the secret material.
     match &request {
-        ControlRequest::Status { target } => {
-            info!(command = "status", target = ?target, peer = ?peer, "control request");
+        ControlRequest::StatusAll => {
+            info!(command = "status_all", peer = ?peer, "control request");
+        }
+        ControlRequest::StatusTarget { target } => {
+            info!(command = "status_target", target = %target, peer = ?peer, "control request");
         }
         ControlRequest::Store { secret_id, .. } => {
             info!(command = "store", secret_id = %secret_id, peer = ?peer, "control request");
@@ -1055,9 +1007,27 @@ fn process_control(
     peer_uid: Option<u32>,
 ) -> ControlResponse {
     match request {
-        ControlRequest::Status { target } => {
-            let info = build_status(target, state);
-            ControlResponse::Ok { info: Some(info) }
+        ControlRequest::StatusAll => {
+            let mut wrappers: Vec<String> = state.config.wrappers.keys().cloned().collect();
+            wrappers.sort();
+            let mut credentials: Vec<String> = state.config.credentials.keys().cloned().collect();
+            credentials.sort();
+            ControlResponse::StatusAllOk {
+                wrappers,
+                credentials,
+            }
+        }
+        ControlRequest::StatusTarget { target } => {
+            if let Some(status) = build_wrapper_status(target, state) {
+                ControlResponse::StatusWrapperOk { status }
+            } else if let Some(status) = build_credential_status(target, state) {
+                ControlResponse::StatusCredentialOk { status }
+            } else {
+                ControlResponse::Error {
+                    code: ErrorCode::NotFound,
+                    message: format!("unknown target '{target}'"),
+                }
+            }
         }
         ControlRequest::Unlock {
             target,
@@ -1140,12 +1110,12 @@ fn process_control(
                 state.unlock.unlock(target, scope.as_deref(), *seconds, uid);
             }
             audit::unlocked(target, scope.as_deref(), *seconds, Some(caller_uid));
-            ControlResponse::Ok { info: None }
+            ControlResponse::UnlockOk
         }
         ControlRequest::Lock { target, scope } => {
             state.unlock.lock(target.as_deref(), scope.as_deref());
             audit::locked(target.as_deref(), scope.as_deref(), peer_uid);
-            ControlResponse::Ok { info: None }
+            ControlResponse::LockOk
         }
         ControlRequest::Store {
             secret_id,
@@ -1158,10 +1128,10 @@ fn process_control(
                 };
             }
 
-            match state.store.write(secret_id, material.as_bytes()) {
+            match state.store.write(secret_id, material.as_ref()) {
                 Ok(()) => {
                     audit::secret_stored(secret_id, peer_uid);
-                    ControlResponse::Ok { info: None }
+                    ControlResponse::StoreOk
                 }
                 Err(e) => {
                     error!(secret = %secret_id, err = %e, "storage write error");
@@ -1175,66 +1145,49 @@ fn process_control(
     }
 }
 
-fn build_status(target: &Option<String>, state: &State) -> serde_json::Value {
-    match target {
-        None => {
-            let mut wrappers: Vec<&String> = state.config.wrappers.keys().collect();
-            wrappers.sort();
-            let mut credentials: Vec<&String> = state.config.credentials.keys().collect();
-            credentials.sort();
-            serde_json::json!({
-                "wrappers": wrappers,
-                "credentials": credentials,
-            })
-        }
-        Some(name) => {
-            if let Some(w) = state.config.wrappers.get(name) {
-                let unlock_status = state.unlock.status(name);
-                let usage: Vec<serde_json::Value> = w
-                    .use_map
-                    .iter()
-                    .map(|(cred_ref, binding)| {
-                        let stored = match state.store.read(cred_ref) {
-                            Ok(Some(_)) => Some(true),
-                            Ok(None) => Some(false),
-                            Err(_) => None,
-                        };
-                        serde_json::json!({
-                            "credential": cred_ref,
-                            "access": binding.access,
-                            "stored": stored,
-                        })
-                    })
-                    .collect();
-                serde_json::json!({
-                    "wrapper": name,
-                    "target": w.target,
-                    "use": usage,
-                    "unlock": {
-                        "mode": w.unlock.mode,
-                        "maxSeconds": w.unlock.max_seconds,
-                        "status": unlock_status,
-                    },
-                })
-            } else if state.config.credentials.contains_key(name) {
-                let (stored, storage_error) = match state.store.read(name) {
-                    Ok(Some(_)) => (true, None),
-                    Ok(None) => (false, None),
-                    Err(e) => (false, Some(format!("{e}"))),
-                };
-                let mut status = serde_json::json!({
-                    "credential": name,
-                    "stored": stored,
-                });
-                if let Some(err) = storage_error {
-                    status["storage_error"] = serde_json::json!(err);
-                }
-                status
-            } else {
-                serde_json::json!({
-                    "error": format!("unknown target '{name}'"),
-                })
-            }
-        }
+fn build_wrapper_status(name: &str, state: &State) -> Option<WrapperStatus> {
+    let wrapper = state.config.wrappers.get(name)?;
+    let mut usage = Vec::new();
+    for (cred_ref, binding) in &wrapper.use_map {
+        let stored = match state.store.read(cred_ref) {
+            Ok(Some(_)) => Some(true),
+            Ok(None) => Some(false),
+            Err(_) => None,
+        };
+        usage.push(CredentialUsageStatus {
+            credential: cred_ref.clone(),
+            access: binding.access,
+            stored,
+        });
     }
+    usage.sort_by(|a, b| a.credential.cmp(&b.credential));
+
+    Some(WrapperStatus {
+        wrapper: name.to_string(),
+        target: wrapper.target.display().to_string(),
+        usage,
+        unlock: WrapperUnlockStatus {
+            mode: wrapper.unlock.mode,
+            max_seconds: wrapper.unlock.max_seconds,
+            status: state.unlock.status(name),
+        },
+    })
+}
+
+fn build_credential_status(name: &str, state: &State) -> Option<CredentialStatus> {
+    if !state.config.credentials.contains_key(name) {
+        return None;
+    }
+
+    let (stored, storage_error) = match state.store.read(name) {
+        Ok(Some(_)) => (true, None),
+        Ok(None) => (false, None),
+        Err(e) => (false, Some(format!("{e}"))),
+    };
+
+    Some(CredentialStatus {
+        credential: name.to_string(),
+        stored,
+        storage_error,
+    })
 }

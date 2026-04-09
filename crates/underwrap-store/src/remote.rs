@@ -29,18 +29,15 @@ impl RemoteBackend {
     fn send_request(&self, request: &BackendRequest) -> Result<BackendResponse> {
         let mut conn_guard = self.conn.lock().unwrap();
 
-        // Try existing connection first, reconnect on failure.
         if let Some(ref mut stream) = *conn_guard {
             match self.try_request(stream, request) {
                 Ok(resp) => return Ok(resp),
                 Err(_) => {
-                    // Connection dead, will reconnect below.
                     *conn_guard = None;
                 }
             }
         }
 
-        // Connect (or reconnect).
         let mut stream = UnixStream::connect(&self.socket_path)
             .with_context(|| format!("connecting to backend at {}", self.socket_path.display()))?;
 
@@ -67,29 +64,27 @@ impl StorageBackend for RemoteBackend {
         })?;
 
         match resp {
-            BackendResponse::Ok { material, .. } => {
-                Ok(material.map(|m| Vec::from(String::from(m)).into()))
-            }
+            BackendResponse::ReadOk { material } => Ok(material),
             BackendResponse::Error { code, message } => match code {
                 BackendErrorCode::NotFound => Ok(None),
                 _ => bail!("backend error ({code:?}): {message}"),
             },
+            other => bail!("unexpected backend response to read: {other:?}"),
         }
     }
 
     fn write(&self, secret_id: &str, material: &[u8]) -> Result<()> {
-        let material =
-            std::str::from_utf8(material).context("remote backend write requires UTF-8")?;
         let resp = self.send_request(&BackendRequest::Write {
             secret_id: secret_id.to_string(),
-            material: material.to_string().into(),
+            material: material.into(),
         })?;
 
         match resp {
-            BackendResponse::Ok { .. } => Ok(()),
+            BackendResponse::WriteOk => Ok(()),
             BackendResponse::Error { code, message } => {
                 bail!("backend error ({code:?}): {message}")
             }
+            other => bail!("unexpected backend response to write: {other:?}"),
         }
     }
 
@@ -99,17 +94,11 @@ impl StorageBackend for RemoteBackend {
         })?;
 
         match resp {
-            BackendResponse::Ok {
-                info: Some(info), ..
-            } => {
-                let ids: Vec<String> =
-                    serde_json::from_value(info).context("parsing list response")?;
-                Ok(ids)
-            }
-            BackendResponse::Ok { info: None, .. } => Ok(Vec::new()),
+            BackendResponse::ListOk { ids } => Ok(ids),
             BackendResponse::Error { code, message } => {
                 bail!("backend list error ({code:?}): {message}")
             }
+            other => bail!("unexpected backend response to list: {other:?}"),
         }
     }
 
@@ -119,13 +108,11 @@ impl StorageBackend for RemoteBackend {
         })?;
 
         match resp {
-            BackendResponse::Ok {
-                info: Some(info), ..
-            } => Ok(info.as_bool().unwrap_or(false)),
-            BackendResponse::Ok { info: None, .. } => Ok(true),
+            BackendResponse::DeleteOk { existed } => Ok(existed),
             BackendResponse::Error { code, message } => {
                 bail!("backend delete error ({code:?}): {message}")
             }
+            other => bail!("unexpected backend response to delete: {other:?}"),
         }
     }
 }
@@ -133,6 +120,9 @@ impl StorageBackend for RemoteBackend {
 impl RemoteBackend {
     /// Check if the backend is reachable.
     pub fn is_available(&self) -> bool {
-        self.send_request(&BackendRequest::Status).is_ok()
+        matches!(
+            self.send_request(&BackendRequest::Status),
+            Ok(BackendResponse::StatusOk)
+        )
     }
 }

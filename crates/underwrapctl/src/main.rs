@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tokio::net::UnixStream;
@@ -23,7 +23,7 @@ enum Commands {
         /// Optional wrapper or secret name.
         target: Option<String>,
     },
-    /// Store a secret (reads material from stdin).
+    /// Store a secret (reads material from stdin as UTF-8 text).
     Store {
         /// Secret id, e.g. "github/token".
         secret_id: String,
@@ -60,8 +60,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let request = match &cli.command {
-        Commands::Status { target } => ControlRequest::Status {
-            target: target.clone(),
+        Commands::Status { target } => match target {
+            Some(target) => ControlRequest::StatusTarget {
+                target: target.clone(),
+            },
+            None => ControlRequest::StatusAll,
         },
         Commands::Store { secret_id } => {
             let material = read_stdin().await?;
@@ -92,12 +95,26 @@ async fn main() -> Result<()> {
     let response: ControlResponse = send_control(&cli.socket, &request).await?;
 
     match response {
-        ControlResponse::Ok { info } => {
-            if let Some(info) = info {
-                println!("{}", serde_json::to_string_pretty(&info)?);
-            } else {
-                println!("ok");
-            }
+        ControlResponse::StatusAllOk {
+            wrappers,
+            credentials,
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "wrappers": wrappers,
+                    "credentials": credentials,
+                }))?
+            );
+        }
+        ControlResponse::StatusWrapperOk { status } => {
+            print_json(&status)?;
+        }
+        ControlResponse::StatusCredentialOk { status } => {
+            print_json(&status)?;
+        }
+        ControlResponse::StoreOk | ControlResponse::UnlockOk | ControlResponse::LockOk => {
+            println!("ok");
         }
         ControlResponse::Error { code, message } => {
             eprintln!("error ({code:?}): {message}");
@@ -105,6 +122,11 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
 
@@ -123,13 +145,14 @@ async fn read_stdin() -> Result<String> {
     let mut stdin = tokio::io::stdin();
     let mut buf = String::new();
     stdin.read_to_string(&mut buf).await?;
-    // Trim a single trailing newline (common from echo/heredoc), but
-    // preserve all other content including embedded newlines.
     if buf.ends_with('\n') {
         buf.pop();
         if buf.ends_with('\r') {
             buf.pop();
         }
+    }
+    if !buf.is_char_boundary(buf.len()) {
+        bail!("stdin did not contain valid UTF-8 text");
     }
     Ok(buf)
 }
