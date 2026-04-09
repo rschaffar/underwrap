@@ -123,6 +123,10 @@ fn run() -> Result<(), String> {
             setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
         }
 
+        // Prevent the target and its descendants from gaining privilege via
+        // setuid/setgid or file capabilities on later execs.
+        set_no_new_privs().map_err(|e| format!("setting no_new_privs: {e}"))?;
+
         // Drop all capabilities now that mount setup is done.
         drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
 
@@ -631,10 +635,19 @@ fn read_secret_fd() -> Result<ExecBundle, std::io::Error> {
     underwrap_protocol::ipc::read_frame_sync(&mut file).map_err(std::io::Error::other)
 }
 
+fn set_no_new_privs() -> Result<(), String> {
+    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
 /// Drop all Linux capabilities.
 fn drop_caps() -> Result<(), String> {
     unsafe {
-        // Clear ambient capabilities.
+        // Clear ambient capabilities. EINVAL means the kernel does not support
+        // ambient capabilities, which is harmless because there is nothing to clear.
         let ret = libc::prctl(
             libc::PR_CAP_AMBIENT,
             libc::PR_CAP_AMBIENT_CLEAR_ALL,
@@ -643,18 +656,26 @@ fn drop_caps() -> Result<(), String> {
             0,
         );
         if ret != 0 {
-            // Not fatal — may not have ambient caps.
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::EINVAL) {
+                return Err(format!("prctl(PR_CAP_AMBIENT_CLEAR_ALL) failed: {err}"));
+            }
         }
 
-        // Drop all capabilities from the bounding set.
+        // Drop all capabilities from the bounding set. EINVAL means we ran
+        // past the highest valid capability number for this kernel. EPERM can
+        // occur if the kernel refuses bounding-set mutation even though the
+        // process already carries the capabilities it needs for setup; in that
+        // case PR_SET_NO_NEW_PRIVS still blocks later privilege gain on exec.
         for cap in 0..64 {
             let ret = libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0);
             if ret != 0 {
                 let err = std::io::Error::last_os_error();
-                if err.raw_os_error() == Some(libc::EINVAL) {
-                    break; // No more valid capability numbers.
+                match err.raw_os_error() {
+                    Some(libc::EINVAL) => break,
+                    Some(libc::EPERM) => break,
+                    _ => return Err(format!("prctl(PR_CAPBSET_DROP, {cap}) failed: {err}")),
                 }
-                // EPERM means we don't have this cap — that's fine.
             }
         }
 

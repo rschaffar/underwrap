@@ -361,7 +361,7 @@ in {
         source = "${cfg.package}/bin/underwrap-ns";
         owner = "root";
         group = "root";
-        capabilities = "cap_sys_admin+ep";
+        capabilities = "cap_sys_admin,cap_setpcap+ep";
       };
     }] ++ lib.mapAttrsToList (_: i: i.securityWrappers) instances);
 

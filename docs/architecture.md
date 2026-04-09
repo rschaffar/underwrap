@@ -31,8 +31,9 @@ underwrap splits wrapper execution into two binaries:
    - talks to the daemon and receives secret material
 
 2. **`underwrap-ns`**
-   - installed with `cap_sys_admin`
+   - installed with `cap_sys_admin` and `cap_setpcap`
    - used to create the PID namespace and related isolation
+   - sets `PR_SET_NO_NEW_PRIVS` before exec of the final target and attempts to prune the capability bounding set where the kernel permits it
 
 The split exists because NixOS `security.wrappers` does not let one wrapper binary carry both the setgid identity mechanism and the capability-based namespace setup cleanly.
 

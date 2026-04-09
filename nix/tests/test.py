@@ -51,9 +51,11 @@ assert "s" in stat.lower(), f"setgid not set: {stat}"
 # Sidecar configs.
 machine.succeed("test -f /etc/underwrap/wrappers/local-test-echo.yaml")
 
-# underwrap-ns has cap_sys_admin.
+# underwrap-ns has the capabilities it needs for namespace setup and
+# attempts bounding-set cleanup where the kernel permits it.
 caps = machine.succeed("getcap /run/wrappers/bin/underwrap-ns").strip()
 assert "cap_sys_admin" in caps, f"expected cap_sys_admin: {caps}"
+assert "cap_setpcap" in caps, f"expected cap_setpcap: {caps}"
 
 # ============================================================
 # LOCAL INSTANCE: store secrets + basic operations
@@ -103,9 +105,10 @@ machine.log("PASS: daemon resolved identity for unprivileged user")
 
 caps_output = machine.succeed(su("/run/wrappers/bin/local-test-caps")).strip()
 machine.log(f"Target capabilities: {caps_output}")
-# All effective and permitted capability lines should show 0 (no caps).
-# CapBnd (bounding set) may be non-zero — it limits what can be gained
-# through exec of setcap binaries, not what the process currently has.
+# Effective/permitted/inheritable/ambient caps must all be zero after
+# underwrap-ns drops privilege before exec. The bounding set may remain
+# non-zero on kernels that reject bounding-set pruning, but PR_SET_NO_NEW_PRIVS
+# prevents later privilege gain via exec.
 for line in caps_output.split("\n"):
     line = line.strip()
     if line.startswith("Cap") and ":" in line:

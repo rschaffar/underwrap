@@ -354,6 +354,8 @@ The target descended from a process tree that included:
 
 Those privilege-affecting exec transitions matter for ptrace eligibility and help prevent straightforward tracing from the original ancestor process.
 
+`underwrap-ns` also carries `cap_setpcap` and attempts to prune the capability bounding set before the target execs. More importantly, it sets `PR_SET_NO_NEW_PRIVS=1` before the final target exec so the target and its descendants cannot gain privilege later through setuid/setgid binaries or file capabilities. The target should therefore run with zero effective, permitted, inheritable, and ambient capabilities, and it should not be able to acquire new ones on later execs even if the kernel refuses bounding-set pruning.
+
 ### What the PID namespace contributes
 
 The PID namespace is still useful, but it is better described as **defense in depth** than as the sole protection for target secrecy.
