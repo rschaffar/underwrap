@@ -880,6 +880,100 @@ async fn underwrapctl_store_undeclared_exits_nonzero() {
 }
 
 // ===========================================================================
+// underwrapctl unlock/lock lifecycle
+// ===========================================================================
+
+#[tokio::test]
+async fn underwrapctl_unlock_and_lock() {
+    let build_status = std::process::Command::new("cargo")
+        .args(["build", "-p", "underwrapctl"])
+        .status()
+        .unwrap();
+    assert!(build_status.success(), "cargo build -p underwrapctl failed");
+    let ctl_bin = require_bin!("underwrapctl");
+
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "locked-w".to_string(),
+        locked_wrapper("/usr/bin/true", "locked/tok", "LOCKED_TOKEN"),
+    );
+    let mut secrets = HashMap::new();
+    secrets.insert("locked/tok".to_string(), secret(false));
+
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    daemon.store_secret("locked/tok", "val").await.unwrap();
+
+    let resp = daemon.read_request("locked-w").await.unwrap();
+    match resp {
+        WrapperResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Locked)),
+        other => panic!("expected Locked error, got {other:?}"),
+    }
+
+    let output = tokio::process::Command::new(&ctl_bin)
+        .args(["--socket", daemon.control_socket.to_str().unwrap()])
+        .args(["unlock", "locked-w", "--seconds", "60"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "underwrapctl unlock failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+
+    let resp = daemon.read_request("locked-w").await.unwrap();
+    assert_eq!(expect_single_env_string(resp), "val");
+
+    let output = tokio::process::Command::new(&ctl_bin)
+        .args(["--socket", daemon.control_socket.to_str().unwrap()])
+        .args(["lock", "locked-w"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "underwrapctl lock failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+
+    let resp = daemon.read_request("locked-w").await.unwrap();
+    match resp {
+        WrapperResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Locked)),
+        other => panic!("expected Locked error, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn underwrapctl_unlock_unknown_wrapper_exits_nonzero() {
+    let build_status = std::process::Command::new("cargo")
+        .args(["build", "-p", "underwrapctl"])
+        .status()
+        .unwrap();
+    assert!(build_status.success(), "cargo build -p underwrapctl failed");
+    let ctl_bin = require_bin!("underwrapctl");
+
+    let (wrappers, secrets) = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+
+    let output = tokio::process::Command::new(&ctl_bin)
+        .args(["--socket", daemon.control_socket.to_str().unwrap()])
+        .args(["unlock", "no-such-wrapper", "--seconds", "60"])
+        .output()
+        .await
+        .unwrap();
+
+    assert!(!output.status.success(), "expected unlock to fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no-such-wrapper"), "stderr: {stderr}");
+
+    daemon.stop().await.unwrap();
+}
+
+// ===========================================================================
 // exec wrapper with missing secret → error exit
 
 // ===========================================================================
