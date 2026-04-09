@@ -233,7 +233,7 @@ fn validate_config(config: &DaemonConfig) -> Result<()> {
                         variable,
                     );
                 }
-                CredentialMode::Libsecret => {
+                CredentialMode::Libsecret {} => {
                     libsecret_count += 1;
                 }
                 CredentialMode::Directory { path } => {
@@ -779,7 +779,7 @@ fn wrapper_libsecret_binding<'a>(
 ) -> Option<(&'a str, AccessMode)> {
     wrapper.use_map.iter().find_map(|(cred_ref, usage)| {
         match credentials.get(cred_ref).map(|c| &c.mode) {
-            Some(CredentialMode::Libsecret) => Some((cred_ref.as_str(), usage.access)),
+            Some(CredentialMode::Libsecret {}) => Some((cred_ref.as_str(), usage.access)),
             _ => None,
         }
     })
@@ -1331,7 +1331,7 @@ fn credential_stored(
 ) -> Result<bool> {
     match &credential.mode {
         CredentialMode::Env { .. } => Ok(store.read(cred_ref)?.is_some()),
-        CredentialMode::Libsecret => Ok(!store.list(cred_ref)?.is_empty()),
+        CredentialMode::Libsecret {} => Ok(!store.list(cred_ref)?.is_empty()),
         CredentialMode::Directory { .. } => {
             Ok(!store.list(&format!("{cred_ref}/files"))?.is_empty())
         }

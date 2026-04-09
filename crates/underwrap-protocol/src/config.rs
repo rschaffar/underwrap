@@ -167,14 +167,14 @@ pub struct CredentialDef {
 
 /// How a credential is exposed to the wrapped target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode")]
+#[serde(tag = "mode", deny_unknown_fields)]
 pub enum CredentialMode {
     /// Inject as an environment variable.
     #[serde(rename = "env")]
     Env { variable: String },
     /// Expose as a private Secret Service namespace.
     #[serde(rename = "libsecret")]
-    Libsecret,
+    Libsecret {},
     /// Expose as a private directory mounted into the target home view.
     #[serde(rename = "directory")]
     Directory { path: String },
@@ -333,6 +333,55 @@ credentials:
             CredentialMode::Directory { path } => assert_eq!(path, ".config/gws"),
             other => panic!("expected directory credential, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn directory_credential_requires_path() {
+        let yaml = r#"
+credentials:
+  gws/state:
+    mode: directory
+"#;
+        let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+        assert!(err.to_string().contains("missing field `path`"));
+    }
+
+    #[test]
+    fn env_credential_rejects_path_field() {
+        let yaml = r#"
+credentials:
+  jira/api-token:
+    mode: env
+    variable: JIRA_API_TOKEN
+    path: .config/jira
+"#;
+        let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field `path`"));
+    }
+
+    #[test]
+    fn directory_credential_rejects_variable_field() {
+        let yaml = r#"
+credentials:
+  gws/state:
+    mode: directory
+    path: .config/gws
+    variable: SHOULD_NOT_EXIST
+"#;
+        let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field `variable`"));
+    }
+
+    #[test]
+    fn libsecret_credential_rejects_path_field() {
+        let yaml = r#"
+credentials:
+  github/gh:
+    mode: libsecret
+    path: .config/gh
+"#;
+        let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field `path`"));
     }
 
     #[test]
