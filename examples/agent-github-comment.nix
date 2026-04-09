@@ -55,25 +55,21 @@ in
     package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     instances.agent = {
+      credentials."github/agent-comment" = {
+        mode = "env";
+        variable = "GH_TOKEN";
+      };
+
       wrappers.gh-comment = {
         # IMPORTANT: point underwrap at your own narrow wrapper, not directly at
         # the full gh CLI, when the command is meant for an agent.
         target = "${agentGhComment}/bin/agent-gh-comment";
-        secret = "github/agent-comment";
-        injection = {
-          mode = "env";
-          variable = "GH_TOKEN";
-        };
+        use."github/agent-comment".access = "read-only";
 
         # Optional: set fixed env vars for the target from trusted config.
         envSet = {
           GH_NO_UPDATE_NOTIFIER = "1";
         };
-      };
-
-      secrets."github/agent-comment" = {
-        # Prefer the narrowest token you can issue for this workflow.
-        mutable = false;
       };
     };
   };

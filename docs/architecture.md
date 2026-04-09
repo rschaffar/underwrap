@@ -18,7 +18,7 @@ The short version:
 | `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/<instance>-<wrapper>` |
 | `underwrap-ns` | Stage 2 wrapper: create namespace, exec target | `/run/wrappers/bin/underwrap-ns` |
 | `underwrapctl` | Administrative CLI for store/status/unlock/lock | target host |
-| `underwrap-backendd` | Optional backend daemon for remote storage / derivation | trusted workstation or backend host |
+| `underwrap-backendd` | Optional backend daemon for remote storage | trusted workstation or backend host |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
 
 ## Why the wrapper chain has two stages

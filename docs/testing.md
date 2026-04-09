@@ -27,7 +27,6 @@ The workspace tests cover things such as:
 - storage backends
 - daemon read/write behavior
 - unlock and lock state handling
-- derivation logic
 - fd passing and scoped libsecret channel behavior
 - Secret Service data model behavior
 

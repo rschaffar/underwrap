@@ -12,8 +12,8 @@ services.underwrap = {
   package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
   instances.<name> = {
+    credentials = { ... };
     wrappers = { ... };
-    secrets = { ... };
     encryption = { ... };
     remote = { ... };
   };
@@ -37,8 +37,8 @@ Example:
 
 ```nix
 services.underwrap.instances.work = {
+  credentials = { ... };
   wrappers = { ... };
-  secrets = { ... };
 };
 ```
 
@@ -56,20 +56,49 @@ For an instance named `work`, the module creates names following this pattern:
 | tunnel directory | `/run/underwrap-work/tunnel/` |
 | optional tunnel user | `underwrap-work-tunnel` |
 
+## Credentials
+
+A **credential** is a reusable resource inside an instance.
+
+A credential defines how it is exposed to targets. Today there are two credential modes:
+
+- `env` — inject as an environment variable
+- `libsecret` — expose as a private Secret Service namespace
+
+Example:
+
+```nix
+credentials."jira/api-token" = {
+  mode = "env";
+  variable = "JIRA_API_TOKEN";
+};
+
+credentials."github/gh" = {
+  mode = "libsecret";
+};
+```
+
+### Credential options
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `mode` | `"env"` or `"libsecret"` | required | How the credential is exposed |
+| `variable` | string or `null` | `null` | Environment variable name for `mode = "env"` |
+
+A credential reference is implicitly scoped by the instance behind the scenes, so the same reference string may be reused safely across different instances.
+
 ## Wrappers
 
-Each wrapper defines one secret-delivery entry point.
+Each wrapper defines one underwrap-facing command.
+
+A wrapper binds one or more declared credentials using the `use` map.
 
 Example:
 
 ```nix
 wrappers.jira = {
   target = "${pkgs.jira-cli-go}/bin/jira";
-  secret = "jira/api-token";
-  injection = {
-    mode = "env";
-    variable = "JIRA_API_TOKEN";
-  };
+  use."jira/api-token".access = "read-only";
 };
 ```
 
@@ -78,12 +107,47 @@ wrappers.jira = {
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `target` | string | required | Absolute path to the target binary |
-| `secret` | string | required | Secret ID to read |
-| `injection` | attrset | `{ mode = "env"; variable = "UNDERWRAP_SECRET"; }` | How the secret is injected |
-| `requireUnlock` | bool | `false` | Require explicit unlock before reads |
-| `libsecret` | bool | `false` | Start a private Secret Service inside the namespace |
+| `use` | attrset | `{}` | Credential usage bindings for this wrapper |
+| `unlock.mode` | `"always-unlocked"`, `"always"`, or `"optional"` | `"always-unlocked"` | Wrapper unlock policy |
+| `unlock.maxSeconds` | int or `null` | `null` | Maximum unlock duration for `always` / `optional` |
+| `unlockKey` | string or `null` | `null` | SSH public key used for optional unlock challenge flow |
 | `envPassthrough` | list of strings | `[]` | Additional environment variables to pass through from the caller |
 | `envSet` | attrset | `{}` | Fixed environment variables to set for the target |
+
+### Wrapper credential bindings
+
+Each `use."<ref>"` binding says how this wrapper may use that credential.
+
+```nix
+use."jira/api-token" = {
+  access = "read-only";
+};
+```
+
+For shared mutable state such as a libsecret namespace:
+
+```nix
+use."github/gh" = {
+  access = "read-write";
+};
+```
+
+### Unlock policy
+
+Unlock is defined per wrapper, not per credential.
+
+```nix
+unlock = {
+  mode = "always";
+  maxSeconds = 1800;
+};
+```
+
+Modes:
+
+- `always-unlocked` — wrapper may be used freely
+- `always` — wrapper requires an active unlock grant
+- `optional` — wrapper may use a timed unlock grant, or fall back to one-shot SSH-agent challenge flow when configured with `unlockKey`
 
 ### Wrapper naming
 
@@ -101,54 +165,45 @@ That last point matters for commands such as:
 sudo underwrapctl --socket /run/underwrap-work/control.sock status work-jira
 ```
 
-## Secrets
-
-The `secrets` section defines metadata and mutability for secret IDs.
-
-Example:
-
-```nix
-secrets."jira/api-token" = {
-  mutable = false;
-};
-```
-
-### Secret options
-
-| Option | Type | Default | Meaning |
-|---|---|---|---|
-| `mutable` | bool | `false` | Whether the secret may be overwritten |
-| `labels` | attrset of strings | `{}` | Optional metadata labels |
-
 ## A realistic multi-wrapper instance
 
 ```nix
 services.underwrap.instances.work = {
+  credentials = {
+    "jira/api-token" = {
+      mode = "env";
+      variable = "JIRA_API_TOKEN";
+    };
+
+    "github/gh" = {
+      mode = "libsecret";
+    };
+  };
+
   wrappers = {
     jira = {
       target = "${pkgs.jira-cli-go}/bin/jira";
-      secret = "jira/api-token";
-      injection = {
-        mode = "env";
-        variable = "JIRA_API_TOKEN";
-      };
+      use."jira/api-token".access = "read-only";
     };
 
-    gh = {
+    gh-auth = {
       target = "${pkgs.gh}/bin/gh";
-      secret = "github/bootstrap";
-      libsecret = true;
-      injection = {
-        mode = "env";
-        variable = "GH_UNUSED";
+      use."github/gh".access = "read-write";
+      unlock = {
+        mode = "optional";
+        maxSeconds = 1800;
       };
+      unlockKey = "ssh-ed25519 AAAA...";
     };
 
-  };
-
-  secrets = {
-    "jira/api-token" = { mutable = false; };
-    "github/bootstrap" = { mutable = false; };
+    gh-pr = {
+      target = "/nix/store/...-gh-pr-helper/bin/gh-pr-helper";
+      use."github/gh".access = "read-only";
+      unlock = {
+        mode = "always";
+        maxSeconds = 1800;
+      };
+    };
   };
 };
 ```
@@ -160,18 +215,16 @@ You can run multiple isolated instances on the same machine.
 ```nix
 services.underwrap.instances = {
   work = {
+    credentials = { ... };
     wrappers = { ... };
-    secrets = { ... };
   };
 
   personal = {
+    credentials = { ... };
     wrappers = { ... };
-    secrets = { ... };
   };
 };
 ```
-
-This is useful when you want hard separation between projects, users, or trust boundaries.
 
 ## Encrypted local storage
 
@@ -182,12 +235,10 @@ instances.work = {
   encryption.enable = true;
   encryption.keyFile = /var/lib/underwrap-work/master.key;
 
+  credentials = { ... };
   wrappers = { ... };
-  secrets = { ... };
 };
 ```
-
-When encryption is enabled, the generated daemon config uses the encrypted backend instead of the plain backend.
 
 ## Remote backend mode
 
@@ -197,8 +248,8 @@ To use the remote backend:
 instances.work = {
   remote.enable = true;
 
+  credentials = { ... };
   wrappers = { ... };
-  secrets = { ... };
 };
 ```
 
@@ -207,10 +258,6 @@ In this mode, the frontend daemon expects the forwarded backend socket at:
 ```text
 /run/underwrap-work/tunnel/backend.sock
 ```
-
-The wrapper configuration itself stays the same; only the backend changes.
-
-See [Remote backend](remote-backend.md).
 
 ## Environment handling
 
@@ -262,52 +309,19 @@ The module generates one sidecar config per wrapper under:
 Those files contain the information `underwrap-exec` needs at runtime, such as:
 
 - the target binary path
-- the env variable name
 - the wrapper socket path
 - the shared `underwrap-ns` path
 - optional libsecret helper paths
 
-These files are generated from the NixOS configuration and should normally not be edited manually.
+## Storing credentials
 
-## Storing secrets
-
-Store a secret through the control socket:
+Store a declared credential through the control socket:
 
 ```bash
 sudo underwrapctl --socket /run/underwrap-work/control.sock store jira/api-token
 ```
 
 `underwrapctl` reads from standard input until EOF.
-
-## Status, unlock, and lock
-
-Examples:
-
-```bash
-sudo underwrapctl --socket /run/underwrap-work/control.sock status
-sudo underwrapctl --socket /run/underwrap-work/control.sock status work-jira
-sudo underwrapctl --socket /run/underwrap-work/control.sock unlock work-gws --seconds 1800
-sudo underwrapctl --socket /run/underwrap-work/control.sock lock work-gws
-```
-
-## Manual YAML configuration
-
-The NixOS module generates the daemon config automatically. That is the normal deployment path.
-
-If you run components manually, the lower-level daemon configuration supports the same overall ideas: sockets, storage backend, wrappers, and secrets.
-
-The repository includes:
-
-- [`examples/config.yaml`](../examples/config.yaml)
-- [`examples/wrappers/gh-authorized.yaml`](../examples/wrappers/gh-authorized.yaml)
-
-These are useful as reference material, especially when looking at how the generated pieces fit together.
-
-## One important limitation
-
-The current NixOS module surfaces the main deployment-oriented options. Lower-level daemon capabilities may exist in the protocol or manual config before they are exposed cleanly through the module.
-
-When in doubt, treat the NixOS module as the authoritative user-facing interface.
 
 ## Related docs
 

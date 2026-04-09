@@ -45,20 +45,13 @@ On the target machine, you enable remote mode for the instance:
 services.underwrap.instances.work = {
   remote.enable = true;
 
-  wrappers = {
-    gh = {
-      target = "${pkgs.gh}/bin/gh";
-      secret = "github/bootstrap";
-      libsecret = true;
-      injection = {
-        mode = "env";
-        variable = "GH_UNUSED";
-      };
-    };
+  credentials."github/gh" = {
+    mode = "libsecret";
   };
 
-  secrets = {
-    "github/bootstrap" = { mutable = false; };
+  wrappers.gh-auth = {
+    target = "${pkgs.gh}/bin/gh";
+    use."github/gh".access = "read-write";
   };
 };
 ```

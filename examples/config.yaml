@@ -16,6 +16,20 @@ storage:
   # dir: /var/lib/underwrap/secrets
   # key_file: /var/lib/underwrap/master.key
 
+credentials:
+  # A reusable env-injected token.
+  github/token:
+    mode: env
+    variable: GH_TOKEN
+
+  # A reusable libsecret namespace.
+  github/gh:
+    mode: libsecret
+
+  slack/xoxp:
+    mode: env
+    variable: SLACK_TOKEN
+
 wrappers:
   # Each wrapper entry defines one underwrap-facing command.
   # The socket and group together form the authenticated wrapper identity:
@@ -23,61 +37,51 @@ wrappers:
   # must match the configured group for that socket.
   gh-authorized:
     target: /usr/bin/gh
-    secret: github/token
     socket: /run/underwrap/gh-authorized.sock
-    group: underwrap-gh-authorized  # GID-based identity (setgid wrapper)
-    injection:
-      mode: env
-      variable: GH_TOKEN
+    group: underwrap-gh-authorized
+    use:
+      github/token:
+        access: read-only
 
   # Agent-facing pattern: point underwrap at your own narrow wrapper in the
   # Nix store, not directly at the full gh CLI. That wrapper can hardcode the
   # repo and allowed subcommand, then call a store-pinned gh internally.
   agent-gh-comment:
     target: /nix/store/...-agent-gh-comment/bin/agent-gh-comment
-    secret: github/agent-comment
     socket: /run/underwrap/agent-gh-comment.sock
     group: underwrap-agent-gh-comment
-    injection:
-      mode: env
-      variable: GH_TOKEN
+    use:
+      github/token:
+        access: read-only
 
   agent-slack:
     target: /usr/bin/slack-cli
-    secret: slack/xoxp
     socket: /run/underwrap/agent-slack.sock
     group: underwrap-agent-slack
-    injection:
-      mode: env
-      variable: SLACK_TOKEN
+    use:
+      slack/xoxp:
+        access: read-only
 
-  # Libsecret-enabled wrapper: provides org.freedesktop.secrets inside
-  # the PID namespace so gh can store/retrieve tokens via libsecret.
-  # Requires dbus package available on the system.
-  gh-libsecret:
+  # Libsecret-backed gh wrappers can share one credential namespace while
+  # receiving different permissions.
+  gh-auth:
     target: /usr/bin/gh
-    secret: github/bootstrap  # Initial secret (can be empty placeholder)
-    socket: /run/underwrap/gh-libsecret.sock
-    group: underwrap-gh-libsecret
-    libsecret: true            # Enables private D-Bus + Secret Service
-    injection:
-      mode: env
-      variable: GH_UNUSED      # Not used when libsecret handles credentials
-    # Environment sanitization: target gets a clean env (no LD_PRELOAD etc).
-    # In the NixOS module, use envPassthrough / envSet to add trusted
-    # per-wrapper environment entries from root-owned sidecar config.
+    socket: /run/underwrap/gh-auth.sock
+    group: underwrap-gh-auth
+    use:
+      github/gh:
+        access: read-write
+    unlock:
+      mode: optional
+      maxSeconds: 1800
 
-secrets:
-  # Secret entries define metadata and mutability only.
-  # Secret values themselves are written later through the control socket.
-  github/token:
-    mutable: false
-
-  github/agent-comment:
-    mutable: false
-
-  github/bootstrap:
-    mutable: false
-
-  slack/xoxp:
-    mutable: false
+  gh-pr:
+    target: /nix/store/...-gh-pr-helper/bin/gh-pr-helper
+    socket: /run/underwrap/gh-pr.sock
+    group: underwrap-gh-pr
+    use:
+      github/gh:
+        access: read-only
+    unlock:
+      mode: always
+      maxSeconds: 1800

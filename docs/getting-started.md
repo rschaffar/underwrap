@@ -37,7 +37,7 @@ Add underwrap to your `flake.nix`:
 inputs.underwrap.url = "github:rschaffar/underwrap";
 ```
 
-## 1. Enable underwrap and define one wrapper
+## 1. Enable underwrap and define one credential + one wrapper
 
 In your NixOS configuration:
 
@@ -57,21 +57,18 @@ In your NixOS configuration:
     # - wrapper binary: /run/wrappers/bin/work-jira
     # - runtime dir: /run/underwrap-work/
     instances.work = {
+      # Declare a reusable credential inside the instance.
+      credentials."jira/api-token" = {
+        mode = "env";
+        variable = "JIRA_API_TOKEN";
+      };
+
       # Define one wrapper inside the "work" instance.
       wrappers.jira = {
         target = "${pkgs.jira-cli-go}/bin/jira";
-        secret = "jira/api-token";
-        injection = {
-          mode = "env";
-          variable = "JIRA_API_TOKEN";
-        };
-      };
 
-      # Define metadata for the secret ID used by that wrapper.
-      # This does NOT store the secret value itself; you store that later
-      # through underwrapctl.
-      secrets."jira/api-token" = {
-        mutable = false;
+        # Bind the declared credential into this wrapper.
+        use."jira/api-token".access = "read-only";
       };
     };
   };

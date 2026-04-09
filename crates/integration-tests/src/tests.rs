@@ -599,10 +599,7 @@ async fn underwrapctl_store_and_status() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("\"stored\": true"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("\"stored\": true"), "stdout: {stdout}");
 
     daemon.stop().await.unwrap();
 }
