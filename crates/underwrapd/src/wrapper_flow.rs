@@ -10,7 +10,7 @@ use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::{ErrorCode, WrapperRequest, WrapperResponse};
 
 use crate::audit;
-use crate::peer_auth::get_peer_cred;
+use crate::peer_auth::{PeerCred, get_peer_cred};
 use crate::server::State;
 use crate::unlock_flow::{process_wrapper_unlock, process_wrapper_unlock_response};
 use crate::wrapper_bindings::{
@@ -26,17 +26,63 @@ pub(crate) async fn handle_wrapper(
     wrapper_name: &str,
     expected_gid: u32,
 ) -> Result<()> {
-    let peer = get_peer_cred(&stream);
+    let (peer, peer_uid) =
+        match authorize_wrapper_peer(&mut stream, &state, wrapper_name, expected_gid).await? {
+            Some(auth) => auth,
+            None => return Ok(()),
+        };
+
+    let request =
+        match read_initial_wrapper_request(&mut stream, wrapper_name, peer.as_ref(), peer_uid)
+            .await?
+        {
+            Some(request) => request,
+            None => return Ok(()),
+        };
+
+    let response =
+        dispatch_wrapper_request(&request, wrapper_name, peer.as_ref(), peer_uid, &state).await;
+    write_frame_async(&mut stream, &response).await?;
+
+    if let Some(follow_up_response) = handle_unlock_follow_up(
+        &mut stream,
+        &response,
+        wrapper_name,
+        peer.as_ref(),
+        peer_uid,
+        &state,
+    )
+    .await?
+    {
+        write_frame_async(&mut stream, &follow_up_response).await?;
+    }
+
+    establish_scoped_channels(&stream, &request, &response, wrapper_name, &state).await;
+
+    stream.shutdown().await?;
+    Ok(())
+}
+
+async fn authorize_wrapper_peer(
+    stream: &mut UnixStream,
+    state: &State,
+    wrapper_name: &str,
+    expected_gid: u32,
+) -> Result<Option<(Option<PeerCred>, u32)>> {
+    let peer = get_peer_cred(stream);
     let peer_uid = match peer.as_ref().map(|p| p.uid) {
         Some(uid) => uid,
         None => {
-            let response = WrapperResponse::Error {
-                code: ErrorCode::Unauthorized,
-                message: "could not determine peer uid".to_string(),
-            };
-            write_frame_async(&mut stream, &response).await?;
+            write_frame_async(
+                stream,
+                &WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: "could not determine peer uid".to_string(),
+                },
+            )
+            .await?;
             stream.shutdown().await?;
-            return Ok(());
+            return Ok(None);
         }
     };
 
@@ -48,13 +94,16 @@ pub(crate) async fn handle_wrapper(
             Some(peer_uid),
             peer.as_ref().map(|p| p.gid),
         );
-        let response = WrapperResponse::Error {
-            code: ErrorCode::Unauthorized,
-            message: reason,
-        };
-        write_frame_async(&mut stream, &response).await?;
+        write_frame_async(
+            stream,
+            &WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: reason,
+            },
+        )
+        .await?;
         stream.shutdown().await?;
-        return Ok(());
+        return Ok(None);
     }
 
     if peer.as_ref().and_then(|p| p.egid) != Some(expected_gid) {
@@ -71,39 +120,59 @@ pub(crate) async fn handle_wrapper(
             Some(peer_uid),
             peer.as_ref().map(|p| p.gid),
         );
-        let response = WrapperResponse::Error {
-            code: ErrorCode::Unauthorized,
-            message: reason,
-        };
-        write_frame_async(&mut stream, &response).await?;
+        write_frame_async(
+            stream,
+            &WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: reason,
+            },
+        )
+        .await?;
         stream.shutdown().await?;
-        return Ok(());
+        return Ok(None);
     }
 
-    let request = match timeout(WRAPPER_FIRST_FRAME_TIMEOUT, read_frame_async(&mut stream)).await {
-        Ok(Ok(request)) => request,
-        Ok(Err(e)) => return Err(e),
+    Ok(Some((peer, peer_uid)))
+}
+
+async fn read_initial_wrapper_request(
+    stream: &mut UnixStream,
+    wrapper_name: &str,
+    peer: Option<&PeerCred>,
+    peer_uid: u32,
+) -> Result<Option<WrapperRequest>> {
+    match timeout(WRAPPER_FIRST_FRAME_TIMEOUT, read_frame_async(stream)).await {
+        Ok(Ok(request)) => Ok(Some(request)),
+        Ok(Err(e)) => Err(e),
         Err(_) => {
             warn!(wrapper = %wrapper_name, peer = ?peer, "wrapper socket first-frame timeout");
             audit::auth_denied(
                 "wrapper",
                 "timed out waiting for first wrapper request frame",
                 Some(peer_uid),
-                peer.as_ref().map(|p| p.gid),
+                peer.map(|p| p.gid),
             );
             stream.shutdown().await?;
-            return Ok(());
+            Ok(None)
         }
-    };
+    }
+}
 
-    let response = match &request {
+async fn dispatch_wrapper_request(
+    request: &WrapperRequest,
+    wrapper_name: &str,
+    peer: Option<&PeerCred>,
+    peer_uid: u32,
+    state: &State,
+) -> WrapperResponse {
+    match request {
         WrapperRequest::Read { scope } => {
             info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
-            process_read_for(wrapper_name, scope.as_deref(), &state, peer_uid).await
+            process_read_for(wrapper_name, scope.as_deref(), state, peer_uid).await
         }
         WrapperRequest::Unlock { scope, seconds } => {
             info!(wrapper = %wrapper_name, peer = ?peer, "unlock request via wrapper socket");
-            process_wrapper_unlock(wrapper_name, scope.as_deref(), *seconds, peer_uid, &state)
+            process_wrapper_unlock(wrapper_name, scope.as_deref(), *seconds, peer_uid, state)
         }
         WrapperRequest::UnlockResponse {
             scope,
@@ -118,92 +187,107 @@ pub(crate) async fn handle_wrapper(
                 scope.as_deref(),
                 *seconds,
                 peer_uid,
-                &state,
+                state,
                 challenge,
                 signature,
                 public_key_blob,
             )
         }
+    }
+}
+
+async fn handle_unlock_follow_up(
+    stream: &mut UnixStream,
+    response: &WrapperResponse,
+    wrapper_name: &str,
+    peer: Option<&PeerCred>,
+    peer_uid: u32,
+    state: &State,
+) -> Result<Option<WrapperResponse>> {
+    if !matches!(response, WrapperResponse::Challenge { .. }) {
+        return Ok(None);
+    }
+
+    let follow_up = match timeout(WRAPPER_UNLOCK_RESPONSE_TIMEOUT, read_frame_async(stream)).await {
+        Ok(Ok(request)) => request,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            warn!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge follow-up timeout");
+            stream.shutdown().await?;
+            return Ok(None);
+        }
     };
 
-    write_frame_async(&mut stream, &response).await?;
-
-    if matches!(&response, WrapperResponse::Challenge { .. }) {
-        let follow_up = match timeout(
-            WRAPPER_UNLOCK_RESPONSE_TIMEOUT,
-            read_frame_async(&mut stream),
-        )
-        .await
-        {
-            Ok(Ok(request)) => request,
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                warn!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge follow-up timeout");
-                stream.shutdown().await?;
-                return Ok(());
-            }
-        };
-        let follow_up_response = match &follow_up {
-            WrapperRequest::UnlockResponse {
-                scope,
-                seconds,
+    let follow_up_response = match &follow_up {
+        WrapperRequest::UnlockResponse {
+            scope,
+            seconds,
+            challenge,
+            signature,
+            public_key_blob,
+        } => {
+            info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response (same connection)");
+            process_wrapper_unlock_response(
+                wrapper_name,
+                scope.as_deref(),
+                *seconds,
+                peer_uid,
+                state,
                 challenge,
                 signature,
                 public_key_blob,
-            } => {
-                info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response (same connection)");
-                process_wrapper_unlock_response(
-                    wrapper_name,
-                    scope.as_deref(),
-                    *seconds,
-                    peer_uid,
-                    &state,
-                    challenge,
-                    signature,
-                    public_key_blob,
-                )
-            }
-            _ => WrapperResponse::Error {
-                code: ErrorCode::Internal,
-                message: "expected UnlockResponse after Challenge".to_string(),
-            },
-        };
-        write_frame_async(&mut stream, &follow_up_response).await?;
-    }
+            )
+        }
+        _ => WrapperResponse::Error {
+            code: ErrorCode::Internal,
+            message: "expected UnlockResponse after Challenge".to_string(),
+        },
+    };
 
-    if matches!(&response, WrapperResponse::ReadOk { .. })
-        && matches!(&request, WrapperRequest::Read { .. })
-        && let Some(wrapper_def) = state.config.wrappers.get(wrapper_name)
+    Ok(Some(follow_up_response))
+}
+
+async fn establish_scoped_channels(
+    stream: &UnixStream,
+    request: &WrapperRequest,
+    response: &WrapperResponse,
+    wrapper_name: &str,
+    state: &State,
+) {
+    if !matches!(response, WrapperResponse::ReadOk { .. })
+        || !matches!(request, WrapperRequest::Read { .. })
     {
-        if let Some((credential_ref, access)) =
-            wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
-        {
-            match setup_secretsd_channel(&stream, credential_ref, access, &state).await {
-                Ok(()) => {
-                    info!(wrapper = %wrapper_name, credential = %credential_ref, "secretsd channel established");
-                }
-                Err(e) => {
-                    error!(wrapper = %wrapper_name, credential = %credential_ref, err = %e, "failed to setup secretsd channel");
-                }
-            }
-        }
+        return;
+    }
 
-        for binding in wrapper_directory_bindings(wrapper_def, &state.config.credentials) {
-            match setup_directory_channel(&stream, &binding.credential_ref, binding.access, &state)
-                .await
-            {
-                Ok(()) => {
-                    info!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, "directory channel established");
-                }
-                Err(e) => {
-                    error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, err = %e, "failed to setup directory channel");
-                }
+    let Some(wrapper_def) = state.config.wrappers.get(wrapper_name) else {
+        return;
+    };
+
+    if let Some((credential_ref, access)) =
+        wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
+    {
+        match setup_secretsd_channel(stream, credential_ref, access, state).await {
+            Ok(()) => {
+                info!(wrapper = %wrapper_name, credential = %credential_ref, "secretsd channel established");
+            }
+            Err(e) => {
+                error!(wrapper = %wrapper_name, credential = %credential_ref, err = %e, "failed to setup secretsd channel");
             }
         }
     }
 
-    stream.shutdown().await?;
-    Ok(())
+    for binding in wrapper_directory_bindings(wrapper_def, &state.config.credentials) {
+        match setup_directory_channel(stream, &binding.credential_ref, binding.access, state).await
+        {
+            Ok(()) => {
+                info!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, "directory channel established");
+            }
+            Err(e) => {
+                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, err = %e, "failed to setup directory channel");
+            }
+        }
+    }
 }
 
 async fn setup_scoped_channel(

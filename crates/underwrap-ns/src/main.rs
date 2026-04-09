@@ -50,28 +50,46 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let args: Vec<String> = std::env::args().collect();
+    let (target, target_args) = parse_target_invocation(std::env::args().collect())?;
+    let exec_bundle =
+        read_secret_fd().map_err(|e| format!("reading exec bundle from fd {SECRET_FD}: {e}"))?;
+
+    let has_directory_credentials = !exec_bundle.directories.is_empty();
+    let libsecret_enabled = std::env::var("UNDERWRAP_LIBSECRET").is_ok();
+    let target_home =
+        resolve_target_home().map_err(|e| format!("resolving target home directory: {e}"))?;
+
+    make_process_non_dumpable()?;
+    prepare_namespace(libsecret_enabled, has_directory_credentials)?;
+
+    let mounted_directories =
+        prepare_mounted_directories(&exec_bundle, has_directory_credentials, &target_home)?;
+
+    let pid = fork_into_namespace()?;
+    if pid == 0 {
+        run_child(
+            target,
+            target_args,
+            &exec_bundle,
+            &mounted_directories,
+            libsecret_enabled,
+        )
+    } else {
+        run_parent(pid, &mounted_directories, has_directory_credentials)
+    }
+}
+
+fn parse_target_invocation(args: Vec<String>) -> Result<(String, Vec<String>), String> {
     if args.len() < 2 {
         return Err(format!(
             "usage: {} <target> [args...]",
             args.first().map(|s| s.as_str()).unwrap_or("underwrap-ns")
         ));
     }
-    let target = &args[1];
-    let target_args = &args[2..];
+    Ok((args[1].clone(), args[2..].to_vec()))
+}
 
-    // Read the execution bundle from fd 3.
-    let exec_bundle =
-        read_secret_fd().map_err(|e| format!("reading exec bundle from fd {SECRET_FD}: {e}"))?;
-
-    let has_directory_credentials = !exec_bundle.directories.is_empty();
-    let target_home =
-        resolve_target_home().map_err(|e| format!("resolving target home directory: {e}"))?;
-
-    // Make this process non-dumpable immediately. Since the parent process
-    // (this process after fork) never execs, the flag persists for its
-    // entire lifetime. This prevents same-UID processes from reading
-    // the secret out of /proc/<pid>/mem.
+fn make_process_non_dumpable() -> Result<(), String> {
     let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
     if ret != 0 {
         return Err(format!(
@@ -79,10 +97,14 @@ fn run() -> Result<(), String> {
             std::io::Error::last_os_error()
         ));
     }
+    Ok(())
+}
 
-    // Create new PID namespace and, when needed, a private mount namespace.
-    let libsecret = std::env::var("UNDERWRAP_LIBSECRET").is_ok();
-    let unshare_flags = if libsecret || has_directory_credentials {
+fn prepare_namespace(
+    libsecret_enabled: bool,
+    has_directory_credentials: bool,
+) -> Result<(), String> {
+    let unshare_flags = if libsecret_enabled || has_directory_credentials {
         libc::CLONE_NEWPID | libc::CLONE_NEWNS
     } else {
         libc::CLONE_NEWPID
@@ -93,142 +115,128 @@ fn run() -> Result<(), String> {
         return Err(format!("unshare failed: {err}"));
     }
 
-    if libsecret || has_directory_credentials {
+    if libsecret_enabled || has_directory_credentials {
         setup_directory_mount_namespace_base(DIRECTORY_STAGING_ROOT, has_directory_credentials)
             .map_err(|e| format!("mount namespace setup failed: {e}"))?;
     }
 
-    let mounted_directories = if has_directory_credentials {
+    Ok(())
+}
+
+fn prepare_mounted_directories(
+    exec_bundle: &ExecBundle,
+    has_directory_credentials: bool,
+    target_home: &PathBuf,
+) -> Result<Vec<directory_credential::MountedDirectory>, String> {
+    if has_directory_credentials {
         prepare_directory_mounts(
             &exec_bundle.directories,
-            &target_home,
+            target_home,
             &PathBuf::from(DIRECTORY_STAGING_ROOT),
         )
-        .map_err(|e| format!("preparing directory credentials: {e}"))?
+        .map_err(|e| format!("preparing directory credentials: {e}"))
     } else {
-        Vec::new()
-    };
+        Ok(Vec::new())
+    }
+}
 
-    // Do NOT mount /proc here — we're still in the parent PID namespace.
-    // unshare(CLONE_NEWPID) only affects the next fork's child.
-
-    // Do NOT drop caps here — the child still needs cap_sys_admin for
-    // libsecret-specific mount operations.
-
-    // Fork. Child gets PID 1 in the new namespace.
+fn fork_into_namespace() -> Result<libc::pid_t, String> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         let err = std::io::Error::last_os_error();
         return Err(format!("fork failed: {err}"));
     }
+    Ok(pid)
+}
 
-    if pid == 0 {
-        // Child: we are now PID 1 in the new PID namespace.
-
-        // If libsecret mode, set up the mount namespace NOW (after fork,
-        // so /proc mount reflects the new PID namespace). We still have
-        // cap_sys_admin from the file capability on underwrap-ns.
-        if libsecret {
-            setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
-        }
-
-        // Prevent the target and its descendants from gaining privilege via
-        // setuid/setgid or file capabilities on later execs.
-        set_no_new_privs().map_err(|e| format!("setting no_new_privs: {e}"))?;
-
-        // Drop all capabilities now that mount setup is done.
-        drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
-
-        // Harden and exec the target with the secret in env.
-
-        // Disable core dumps so a crashing target can't write the secret to disk.
-        let rlim = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
-        if ret != 0 {
-            eprintln!(
-                "underwrap-ns: setrlimit(RLIMIT_CORE, 0) failed: {}",
-                std::io::Error::last_os_error()
-            );
-            std::process::exit(1);
-        }
-
-        // Set non-dumpable. Inside the PID namespace this flag persists
-        // because there's no further credential change before exec.
-        // This is defense-in-depth: the PID namespace already hides the
-        // process, but if someone obtains the PID through other means,
-        // non-dumpable blocks /proc/<pid>/mem and ptrace.
-        let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
-        if ret != 0 {
-            eprintln!(
-                "underwrap-ns: prctl(PR_SET_DUMPABLE, 0) failed: {}",
-                std::io::Error::last_os_error()
-            );
-            std::process::exit(1);
-        }
-
-        // Check if libsecret mode is enabled.
-        let libsecret = std::env::var("UNDERWRAP_LIBSECRET").is_ok();
-
-        let mut cmd = std::process::Command::new(target);
-        cmd.args(target_args);
-
-        // === ENVIRONMENT SANITIZATION ===
-        // Start with a clean environment. Only pass through vars from a
-        // trusted whitelist + sidecar config. This prevents LD_PRELOAD,
-        // LD_LIBRARY_PATH, and other injection vectors.
-        cmd.env_clear();
-
-        // Default safe whitelist — vars the target typically needs.
-        // PATH is intentionally NOT inherited. If a wrapper needs helper
-        // lookup by bare name, set PATH explicitly via trusted sidecar config.
-        let host_env: std::collections::HashMap<String, String> = std::env::vars().collect();
-        let target_env = build_target_env(&host_env, &exec_bundle)?;
-        for (key, value) in target_env {
-            cmd.env(key, value);
-        }
-
-        if libsecret {
-            // Launch private D-Bus session bus + secretsd inside the namespace.
-            match setup_libsecret(&mut cmd, SECRET_FD, CHANNEL_FD) {
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!("underwrap-ns: libsecret setup failed: {e}");
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            // No libsecret — close fd 4 if it happens to be open.
-            unsafe { libc::close(CHANNEL_FD) };
-        }
-
-        // Directory channels are only for wrapper-controlled staging/sync.
-        // The final target must not inherit them.
-        close_directory_channel_fds_for_exec(&mounted_directories);
-
-        let err = cmd.exec();
-        eprintln!("underwrap-ns: exec failed: {err}");
-        std::process::exit(1);
+fn run_child(
+    target: String,
+    target_args: Vec<String>,
+    exec_bundle: &ExecBundle,
+    mounted_directories: &[directory_credential::MountedDirectory],
+    libsecret_enabled: bool,
+) -> Result<(), String> {
+    if libsecret_enabled {
+        setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
     }
 
-    // Parent: if there are no directory credentials, it no longer needs
-    // cap_sys_admin after the fork. Directory cleanup requires it later.
+    set_no_new_privs().map_err(|e| format!("setting no_new_privs: {e}"))?;
+    drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
+    disable_core_dumps()?;
+    make_process_non_dumpable()?;
+
+    let mut cmd = std::process::Command::new(&target);
+    cmd.args(&target_args);
+    cmd.env_clear();
+
+    let host_env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let target_env = build_target_env(&host_env, exec_bundle)?;
+    for (key, value) in target_env {
+        cmd.env(key, value);
+    }
+
+    if libsecret_enabled {
+        setup_libsecret(&mut cmd, SECRET_FD, CHANNEL_FD)?;
+    } else {
+        unsafe { libc::close(CHANNEL_FD) };
+    }
+
+    close_directory_channel_fds_for_exec(mounted_directories);
+
+    let err = cmd.exec();
+    Err(format!("exec failed: {err}"))
+}
+
+fn disable_core_dumps() -> Result<(), String> {
+    let rlim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
+    if ret != 0 {
+        return Err(format!(
+            "setrlimit(RLIMIT_CORE, 0) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn run_parent(
+    pid: libc::pid_t,
+    mounted_directories: &[directory_credential::MountedDirectory],
+    has_directory_credentials: bool,
+) -> Result<(), String> {
     if !has_directory_credentials {
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
     }
 
-    // Parent: wait for child, then sync and clean up directory mounts.
+    let status = wait_for_child(pid)?;
+    sync_and_cleanup_directories(mounted_directories, has_directory_credentials)?;
+
+    if has_directory_credentials {
+        drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
+    }
+
+    propagate_exit_status(status)
+}
+
+fn wait_for_child(pid: libc::pid_t) -> Result<libc::c_int, String> {
     let mut status: libc::c_int = 0;
     let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         return Err(format!("waitpid failed: {err}"));
     }
+    Ok(status)
+}
 
-    let sync_result = sync_directory_mounts(&mounted_directories);
-    let cleanup_result = cleanup_directory_mounts(&mounted_directories);
+fn sync_and_cleanup_directories(
+    mounted_directories: &[directory_credential::MountedDirectory],
+    has_directory_credentials: bool,
+) -> Result<(), String> {
+    let sync_result = sync_directory_mounts(mounted_directories);
+    let cleanup_result = cleanup_directory_mounts(mounted_directories);
     let staging_cleanup_result = if has_directory_credentials {
         cleanup_directory_staging_root(DIRECTORY_STAGING_ROOT)
     } else {
@@ -245,13 +253,14 @@ fn run() -> Result<(), String> {
         return Err(format!("directory sync failed: {e}"));
     }
 
-    if has_directory_credentials {
-        drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
-    }
+    Ok(())
+}
 
+fn propagate_exit_status(status: libc::c_int) -> Result<(), String> {
     if libc::WIFEXITED(status) {
         std::process::exit(libc::WEXITSTATUS(status));
-    } else if libc::WIFSIGNALED(status) {
+    }
+    if libc::WIFSIGNALED(status) {
         let sig = libc::WTERMSIG(status);
         unsafe {
             libc::signal(sig, libc::SIG_DFL);

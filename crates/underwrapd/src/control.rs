@@ -80,115 +80,23 @@ pub(crate) fn process_control(
     peer_uid: Option<u32>,
 ) -> ControlResponse {
     match request {
-        ControlRequest::StatusAll => {
-            let mut wrappers: Vec<String> = state.config.wrappers.keys().cloned().collect();
-            wrappers.sort();
-            let mut credentials: Vec<String> = state.config.credentials.keys().cloned().collect();
-            credentials.sort();
-            ControlResponse::StatusAllOk {
-                wrappers,
-                credentials,
-            }
-        }
-        ControlRequest::StatusTarget { target } => {
-            if let Some(status) =
-                build_wrapper_status(target, &state.config, &state.unlock, &*state.store)
-            {
-                ControlResponse::StatusWrapperOk { status }
-            } else if let Some(status) =
-                build_credential_status(target, &state.config, &*state.store)
-            {
-                ControlResponse::StatusCredentialOk { status }
-            } else {
-                ControlResponse::Error {
-                    code: ErrorCode::NotFound,
-                    message: format!("unknown target '{target}'"),
-                }
-            }
-        }
+        ControlRequest::StatusAll => build_status_all_response(state),
+        ControlRequest::StatusTarget { target } => build_status_target_response(target, state),
         ControlRequest::Unlock {
             target,
             scope,
             seconds,
             grant_user,
             grant_all,
-        } => {
-            let wrapper = match state.config.wrappers.get(target) {
-                Some(w) => w,
-                None => {
-                    return ControlResponse::Error {
-                        code: ErrorCode::NotFound,
-                        message: format!("unknown wrapper '{target}'"),
-                    };
-                }
-            };
-            if let Some(requested) = seconds
-                && let Some(max) = wrapper.unlock.max_seconds
-                && *requested > max
-            {
-                return ControlResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: format!(
-                        "requested unlock duration {requested}s exceeds maxSeconds {max}s"
-                    ),
-                };
-            }
-
-            let caller_uid = match peer_uid {
-                Some(uid) => uid,
-                None => {
-                    return ControlResponse::Error {
-                        code: ErrorCode::Unauthorized,
-                        message: "could not determine caller uid".to_string(),
-                    };
-                }
-            };
-
-            let mut grant_uids = Vec::new();
-            if caller_uid == 0 {
-                if *grant_all {
-                    grant_uids.extend(state.allowed_user_uids.iter().copied());
-                } else if let Some(user) = grant_user {
-                    let uid = match resolve_user_uid(user) {
-                        Ok(uid) => uid,
-                        Err(e) => {
-                            return ControlResponse::Error {
-                                code: ErrorCode::NotFound,
-                                message: format!("unknown user '{user}': {e}"),
-                            };
-                        }
-                    };
-                    if !state.allowed_user_uids.is_empty()
-                        && !state.allowed_user_uids.contains(&uid)
-                    {
-                        return ControlResponse::Error {
-                            code: ErrorCode::Unauthorized,
-                            message: format!("user '{user}' is not allowed for this instance"),
-                        };
-                    }
-                    grant_uids.push(uid);
-                } else {
-                    return ControlResponse::Error {
-                        code: ErrorCode::Unauthorized,
-                        message: "root must specify --for-user or --for-all".to_string(),
-                    };
-                }
-            } else {
-                if grant_user.is_some() || *grant_all {
-                    return ControlResponse::Error {
-                        code: ErrorCode::Unauthorized,
-                        message: "only root may use --for-user or --for-all".to_string(),
-                    };
-                }
-                grant_uids.push(caller_uid);
-            }
-
-            for uid in grant_uids {
-                state.unlock.unlock(target, scope.as_deref(), *seconds, uid);
-            }
-            audit::unlocked(target, scope.as_deref(), *seconds, Some(caller_uid));
-            ControlResponse::UnlockOk
-        }
+        } => process_unlock_request(
+            target,
+            scope.as_deref(),
+            *seconds,
+            grant_user,
+            *grant_all,
+            state,
+            peer_uid,
+        ),
         ControlRequest::Lock { target, scope } => {
             state.unlock.lock(target.as_deref(), scope.as_deref());
             audit::locked(target.as_deref(), scope.as_deref(), peer_uid);
@@ -197,34 +105,163 @@ pub(crate) fn process_control(
         ControlRequest::Store {
             secret_id,
             material,
-        } => {
-            let Some(credential) = state.config.credentials.get(secret_id) else {
-                return ControlResponse::Error {
-                    code: ErrorCode::NotFound,
-                    message: format!("credential '{secret_id}' not declared in configuration"),
-                };
-            };
-            if !matches!(credential.mode, CredentialMode::Env { .. }) {
-                return ControlResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: format!(
-                        "credential '{secret_id}' is not an env credential; use the wrapped tool or a mode-specific import path instead"
-                    ),
-                };
-            }
+        } => process_store_request(secret_id, material.as_ref(), state, peer_uid),
+    }
+}
 
-            match state.store.write(secret_id, material.as_ref()) {
-                Ok(()) => {
-                    audit::secret_stored(secret_id, peer_uid);
-                    ControlResponse::StoreOk
-                }
+fn build_status_all_response(state: &State) -> ControlResponse {
+    let mut wrappers: Vec<String> = state.config.wrappers.keys().cloned().collect();
+    wrappers.sort();
+    let mut credentials: Vec<String> = state.config.credentials.keys().cloned().collect();
+    credentials.sort();
+    ControlResponse::StatusAllOk {
+        wrappers,
+        credentials,
+    }
+}
+
+fn build_status_target_response(target: &str, state: &State) -> ControlResponse {
+    if let Some(status) = build_wrapper_status(target, &state.config, &state.unlock, &*state.store)
+    {
+        ControlResponse::StatusWrapperOk { status }
+    } else if let Some(status) = build_credential_status(target, &state.config, &*state.store) {
+        ControlResponse::StatusCredentialOk { status }
+    } else {
+        ControlResponse::Error {
+            code: ErrorCode::NotFound,
+            message: format!("unknown target '{target}'"),
+        }
+    }
+}
+
+fn process_unlock_request(
+    target: &str,
+    scope: Option<&str>,
+    seconds: Option<u64>,
+    grant_user: &Option<String>,
+    grant_all: bool,
+    state: &State,
+    peer_uid: Option<u32>,
+) -> ControlResponse {
+    let wrapper = match state.config.wrappers.get(target) {
+        Some(w) => w,
+        None => {
+            return ControlResponse::Error {
+                code: ErrorCode::NotFound,
+                message: format!("unknown wrapper '{target}'"),
+            };
+        }
+    };
+
+    if let Some(requested) = seconds
+        && let Some(max) = wrapper.unlock.max_seconds
+        && requested > max
+    {
+        return ControlResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: format!("requested unlock duration {requested}s exceeds maxSeconds {max}s"),
+        };
+    }
+
+    let caller_uid = match peer_uid {
+        Some(uid) => uid,
+        None => {
+            return ControlResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "could not determine caller uid".to_string(),
+            };
+        }
+    };
+
+    let grant_uids = match resolve_unlock_grantees(caller_uid, grant_user, grant_all, state) {
+        Ok(uids) => uids,
+        Err(response) => return response,
+    };
+
+    for uid in grant_uids {
+        state.unlock.unlock(target, scope, seconds, uid);
+    }
+    audit::unlocked(target, scope, seconds, Some(caller_uid));
+    ControlResponse::UnlockOk
+}
+
+fn resolve_unlock_grantees(
+    caller_uid: u32,
+    grant_user: &Option<String>,
+    grant_all: bool,
+    state: &State,
+) -> std::result::Result<Vec<u32>, ControlResponse> {
+    if caller_uid == 0 {
+        if grant_all {
+            return Ok(state.allowed_user_uids.iter().copied().collect());
+        }
+
+        if let Some(user) = grant_user {
+            let uid = match resolve_user_uid(user) {
+                Ok(uid) => uid,
                 Err(e) => {
-                    error!(secret = %secret_id, err = %e, "storage write error");
-                    ControlResponse::Error {
-                        code: ErrorCode::Internal,
-                        message: "internal storage error".to_string(),
-                    }
+                    return Err(ControlResponse::Error {
+                        code: ErrorCode::NotFound,
+                        message: format!("unknown user '{user}': {e}"),
+                    });
                 }
+            };
+            if !state.allowed_user_uids.is_empty() && !state.allowed_user_uids.contains(&uid) {
+                return Err(ControlResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: format!("user '{user}' is not allowed for this instance"),
+                });
+            }
+            return Ok(vec![uid]);
+        }
+
+        return Err(ControlResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: "root must specify --for-user or --for-all".to_string(),
+        });
+    }
+
+    if grant_user.is_some() || grant_all {
+        return Err(ControlResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: "only root may use --for-user or --for-all".to_string(),
+        });
+    }
+
+    Ok(vec![caller_uid])
+}
+
+fn process_store_request(
+    secret_id: &str,
+    material: &[u8],
+    state: &State,
+    peer_uid: Option<u32>,
+) -> ControlResponse {
+    let Some(credential) = state.config.credentials.get(secret_id) else {
+        return ControlResponse::Error {
+            code: ErrorCode::NotFound,
+            message: format!("credential '{secret_id}' not declared in configuration"),
+        };
+    };
+    if !matches!(credential.mode, CredentialMode::Env { .. }) {
+        return ControlResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: format!(
+                "credential '{secret_id}' is not an env credential; use the wrapped tool or a mode-specific import path instead"
+            ),
+        };
+    }
+
+    match state.store.write(secret_id, material) {
+        Ok(()) => {
+            audit::secret_stored(secret_id, peer_uid);
+            ControlResponse::StoreOk
+        }
+        Err(e) => {
+            error!(secret = %secret_id, err = %e, "storage write error");
+            ControlResponse::Error {
+                code: ErrorCode::Internal,
+                message: "internal storage error".to_string(),
             }
         }
     }
