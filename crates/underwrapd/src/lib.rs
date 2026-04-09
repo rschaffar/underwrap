@@ -1,9 +1,12 @@
 pub mod audit;
 pub mod directory_channel;
+pub(crate) mod peer_auth;
 pub mod secretsd_channel;
 pub mod server;
+pub(crate) mod status;
 pub mod storage;
 pub mod unlock;
+pub(crate) mod wrapper_bindings;
 
 #[cfg(test)]
 mod tests {

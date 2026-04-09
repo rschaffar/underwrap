@@ -11,14 +11,23 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
-use underwrap_protocol::config::{
-    AccessMode, CredentialMode, DaemonConfig, UnlockMode, WrapperDef,
-};
+#[cfg(test)]
+use underwrap_protocol::config::WrapperDef;
+use underwrap_protocol::config::{AccessMode, CredentialMode, DaemonConfig, UnlockMode};
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 
 use crate::audit;
+#[cfg(test)]
+use crate::peer_auth::PeerCred;
+use crate::peer_auth::{check_peer_auth, get_peer_cred};
+#[cfg(test)]
+use crate::status::credential_stored;
+use crate::status::{build_credential_status, build_wrapper_status};
 use crate::unlock::UnlockState;
+use crate::wrapper_bindings::{
+    wrapper_directory_bindings, wrapper_env_credentials, wrapper_libsecret_binding,
+};
 use ssh_key::public::KeyData;
 use underwrap_store::StorageBackend;
 
@@ -406,102 +415,6 @@ async fn accept_wrapper_loop(
 }
 
 // ---------------------------------------------------------------------------
-// Peer credentials (SO_PEERCRED)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // Fields used via Debug formatting in tracing.
-struct PeerCred {
-    pid: u32,
-    uid: u32,
-    gid: u32,
-    /// Effective GID, read from /proc/<pid>/status.
-    /// This is the one set by setgid wrappers.
-    /// SO_PEERCRED.gid only reports the *real* GID.
-    egid: Option<u32>,
-}
-
-fn get_peer_cred(stream: &UnixStream) -> Option<PeerCred> {
-    use std::os::unix::io::AsRawFd;
-    let std_fd = stream.as_raw_fd();
-    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let ret = unsafe {
-        libc::getsockopt(
-            std_fd,
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            &mut cred as *mut _ as *mut libc::c_void,
-            &mut len,
-        )
-    };
-    if ret == 0 {
-        let egid = read_proc_egid(cred.pid as u32);
-        Some(PeerCred {
-            pid: cred.pid as u32,
-            uid: cred.uid,
-            gid: cred.gid,
-            egid,
-        })
-    } else {
-        warn!("failed to get SO_PEERCRED");
-        None
-    }
-}
-
-/// Check whether a peer is authorized based on UID/GID allowlists.
-/// If both lists are empty, all peers are allowed (backwards compat / dev mode).
-fn check_peer_auth(
-    peer: &Option<PeerCred>,
-    allow_uids: &[u32],
-    allow_gids: &[u32],
-) -> std::result::Result<(), String> {
-    // If no restrictions configured, allow all.
-    if allow_uids.is_empty() && allow_gids.is_empty() {
-        return Ok(());
-    }
-
-    let cred = match peer {
-        Some(c) => c,
-        None => return Err("could not determine peer credentials".to_string()),
-    };
-
-    // UID 0 (root) always allowed.
-    if cred.uid == 0 {
-        return Ok(());
-    }
-
-    if !allow_uids.is_empty() && allow_uids.contains(&cred.uid) {
-        return Ok(());
-    }
-
-    if !allow_gids.is_empty() && allow_gids.contains(&cred.gid) {
-        return Ok(());
-    }
-
-    Err(format!(
-        "peer uid={} gid={} not in allowlist",
-        cred.uid, cred.gid
-    ))
-}
-
-/// Read the effective GID from /proc/<pid>/status.
-/// Returns None if the file can't be read (e.g. process already exited).
-fn read_proc_egid(pid: u32) -> Option<u32> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    for line in status.lines() {
-        // Format: "Gid:\treal\teffective\tsaved\tfs"
-        if let Some(rest) = line.strip_prefix("Gid:\t") {
-            let fields: Vec<&str> = rest.split('\t').collect();
-            if fields.len() >= 2 {
-                return fields[1].parse().ok();
-            }
-        }
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
 // Wrapper socket handler
 // ---------------------------------------------------------------------------
 
@@ -771,59 +684,6 @@ async fn setup_directory_channel(
     });
 
     Ok(())
-}
-
-fn wrapper_libsecret_binding<'a>(
-    wrapper: &'a WrapperDef,
-    credentials: &'a std::collections::HashMap<String, underwrap_protocol::config::CredentialDef>,
-) -> Option<(&'a str, AccessMode)> {
-    wrapper.use_map.iter().find_map(|(cred_ref, usage)| {
-        match credentials.get(cred_ref).map(|c| &c.mode) {
-            Some(CredentialMode::Libsecret {}) => Some((cred_ref.as_str(), usage.access)),
-            _ => None,
-        }
-    })
-}
-
-fn wrapper_env_credentials<'a>(
-    wrapper: &'a WrapperDef,
-    credentials: &'a std::collections::HashMap<String, underwrap_protocol::config::CredentialDef>,
-) -> Vec<(&'a str, &'a str)> {
-    let mut out = Vec::new();
-    for cred_ref in wrapper.use_map.keys() {
-        if let Some(underwrap_protocol::config::CredentialDef {
-            mode: CredentialMode::Env { variable },
-        }) = credentials.get(cred_ref)
-        {
-            out.push((cred_ref.as_str(), variable.as_str()));
-        }
-    }
-    out
-}
-
-fn wrapper_directory_bindings(
-    wrapper: &WrapperDef,
-    credentials: &std::collections::HashMap<String, underwrap_protocol::config::CredentialDef>,
-) -> Vec<ReadDirectoryBinding> {
-    let mut out = Vec::new();
-    for (cred_ref, usage) in &wrapper.use_map {
-        if let Some(underwrap_protocol::config::CredentialDef {
-            mode: CredentialMode::Directory { path },
-        }) = credentials.get(cred_ref)
-        {
-            out.push(ReadDirectoryBinding {
-                credential_ref: cred_ref.clone(),
-                target_path: path.clone(),
-                access: usage.access,
-            });
-        }
-    }
-    out.sort_by(|a, b| {
-        a.target_path
-            .cmp(&b.target_path)
-            .then(a.credential_ref.cmp(&b.credential_ref))
-    });
-    out
 }
 
 async fn process_read_for(
@@ -1145,9 +1005,13 @@ fn process_control(
             }
         }
         ControlRequest::StatusTarget { target } => {
-            if let Some(status) = build_wrapper_status(target, state) {
+            if let Some(status) =
+                build_wrapper_status(target, &state.config, &state.unlock, &*state.store)
+            {
                 ControlResponse::StatusWrapperOk { status }
-            } else if let Some(status) = build_credential_status(target, state) {
+            } else if let Some(status) =
+                build_credential_status(target, &state.config, &*state.store)
+            {
                 ControlResponse::StatusCredentialOk { status }
             } else {
                 ControlResponse::Error {
@@ -1276,64 +1140,6 @@ fn process_control(
                     }
                 }
             }
-        }
-    }
-}
-
-fn build_wrapper_status(name: &str, state: &State) -> Option<WrapperStatus> {
-    let wrapper = state.config.wrappers.get(name)?;
-    let mut usage = Vec::new();
-    for (cred_ref, binding) in &wrapper.use_map {
-        let stored = state
-            .config
-            .credentials
-            .get(cred_ref)
-            .and_then(|credential| credential_stored(cred_ref, credential, &*state.store).ok());
-        usage.push(CredentialUsageStatus {
-            credential: cred_ref.clone(),
-            access: binding.access,
-            stored,
-        });
-    }
-    usage.sort_by(|a, b| a.credential.cmp(&b.credential));
-
-    Some(WrapperStatus {
-        wrapper: name.to_string(),
-        target: wrapper.target.display().to_string(),
-        usage,
-        unlock: WrapperUnlockStatus {
-            mode: wrapper.unlock.mode,
-            max_seconds: wrapper.unlock.max_seconds,
-            status: state.unlock.status(name),
-        },
-    })
-}
-
-fn build_credential_status(name: &str, state: &State) -> Option<CredentialStatus> {
-    let credential = state.config.credentials.get(name)?;
-
-    let (stored, storage_error) = match credential_stored(name, credential, &*state.store) {
-        Ok(stored) => (stored, None),
-        Err(e) => (false, Some(format!("{e}"))),
-    };
-
-    Some(CredentialStatus {
-        credential: name.to_string(),
-        stored,
-        storage_error,
-    })
-}
-
-fn credential_stored(
-    cred_ref: &str,
-    credential: &underwrap_protocol::config::CredentialDef,
-    store: &dyn StorageBackend,
-) -> Result<bool> {
-    match &credential.mode {
-        CredentialMode::Env { .. } => Ok(store.read(cred_ref)?.is_some()),
-        CredentialMode::Libsecret {} => Ok(!store.list(cred_ref)?.is_empty()),
-        CredentialMode::Directory { .. } => {
-            Ok(!store.list(&format!("{cred_ref}/files"))?.is_empty())
         }
     }
 }
