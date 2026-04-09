@@ -22,13 +22,19 @@
           };
 
           rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-            extensions = [ "rust-src" "rust-analyzer" ];
+            extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
           };
 
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
           # Common source filtering — only include Rust/Cargo files.
           src = craneLib.cleanCargoSource ./.;
+
+          # RustSec advisory database for cargo-audit.
+          advisoryDb = pkgs.fetchzip {
+            url = "https://github.com/RustSec/advisory-db/archive/refs/heads/main.tar.gz";
+            hash = "sha256-ehYI2+TnkdX86YRk+38K8ulZTDyifBbUTFub7IQ9vSk=";
+          };
 
           # Common build inputs.
           commonArgs = {
@@ -71,15 +77,48 @@
             workspace-test = craneLib.cargoTest (commonArgs // {
               inherit cargoArtifacts;
             });
+
+            # Faster, better test runner for local/CI use.
+            workspace-nextest = craneLib.cargoNextest (commonArgs // {
+              inherit cargoArtifacts;
+              partitions = 1;
+              partitionType = "count";
+            });
+
             # Clippy.
             workspace-clippy = craneLib.cargoClippy (commonArgs // {
               inherit cargoArtifacts;
               cargoClippyExtraArgs = "--all-targets -- --deny warnings";
             });
+
             # Formatting.
             workspace-fmt = craneLib.cargoFmt {
               inherit src;
             };
+
+            # RustSec advisory database checks.
+            workspace-audit = craneLib.cargoAudit {
+              inherit src;
+              advisory-db = advisoryDb;
+              # RUSTSEC-2023-0071 affects RSA decryption timing. underwrap uses
+              # ssh-key for unlock-key signature verification with public keys,
+              # not RSA private-key decryption. Keep the audit gate enabled but
+              # suppress this specific advisory until the dependency graph moves.
+              cargoAuditExtraArgs = "--ignore yanked --ignore RUSTSEC-2023-0071";
+            };
+
+            # Supply-chain policy checks.
+            # Keep this lightweight and policy-free for now; audit handles
+            # advisories separately and license policy can be added later via deny.toml.
+            workspace-deny = craneLib.cargoDeny {
+              inherit src;
+              cargoDenyChecks = "bans sources";
+            };
+
+            # Coverage summary / report generation.
+            workspace-llvm-cov = craneLib.cargoLlvmCov (commonArgs // {
+              inherit cargoArtifacts;
+            });
           };
 
           devShells.default = craneLib.devShell {
@@ -89,6 +128,12 @@
               cargo-watch
               cargo-edit
               cargo-expand
+              cargo-nextest
+              cargo-llvm-cov
+              cargo-audit
+              cargo-deny
+              cargo-udeps
+              cargo-mutants
             ];
           };
         }

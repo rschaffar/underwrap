@@ -657,7 +657,10 @@ mod tests {
             Some(("default", "item_1"))
         );
         assert_eq!(parse_item_path("/invalid"), None);
-        assert_eq!(parse_item_path(&format!("{BASE_PATH}/collection/default")), None);
+        assert_eq!(
+            parse_item_path(&format!("{BASE_PATH}/collection/default")),
+            None
+        );
     }
 
     #[tokio::test]
@@ -675,7 +678,10 @@ mod tests {
         service.set_alias("work", work_path).await.unwrap();
 
         let alias_path = service.read_alias("work").await.unwrap();
-        assert_eq!(alias_path.as_str(), format!("{BASE_PATH}/collection/{work_id}"));
+        assert_eq!(
+            alias_path.as_str(),
+            format!("{BASE_PATH}/collection/{work_id}")
+        );
         assert_eq!(store.read().await.get_alias("work"), Some(work_id.as_str()));
 
         let raw_aliases = channel_impl
@@ -714,11 +720,17 @@ mod tests {
         assert!(locked.is_empty());
         assert_eq!(unlocked.len(), 1);
         let item_path = unlocked[0].as_str().to_string();
-        assert_eq!(item_path, format!("{BASE_PATH}/collection/default/{item_id}"));
+        assert_eq!(
+            item_path,
+            format!("{BASE_PATH}/collection/default/{item_id}")
+        );
 
         let session = ObjectPath::try_from(format!("{BASE_PATH}/session/s0")).unwrap();
         let secrets = service
-            .get_secrets(vec![ObjectPath::try_from(item_path.as_str()).unwrap()], session)
+            .get_secrets(
+                vec![ObjectPath::try_from(item_path.as_str()).unwrap()],
+                session,
+            )
             .await
             .unwrap();
         let secret = secrets

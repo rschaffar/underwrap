@@ -1420,9 +1420,7 @@ mod tests {
         }
     }
 
-    fn wrapper_with_uses(
-        uses: &[(&str, underwrap_protocol::config::CredentialUse)],
-    ) -> WrapperDef {
+    fn wrapper_with_uses(uses: &[(&str, underwrap_protocol::config::CredentialUse)]) -> WrapperDef {
         WrapperDef {
             target: "/usr/bin/true".into(),
             use_map: uses
@@ -1577,13 +1575,21 @@ mod tests {
 
         assert!(credential_stored("github/token", &env_credential("GH_TOKEN"), &store).unwrap());
         assert!(credential_stored("libsecret/default", &libsecret_credential(), &store).unwrap());
-        assert!(credential_stored("gws/state", &directory_credential(".config/gcloud"), &store)
-            .unwrap());
+        assert!(
+            credential_stored("gws/state", &directory_credential(".config/gcloud"), &store)
+                .unwrap()
+        );
 
         assert!(!credential_stored("missing/env", &env_credential("MISSING"), &store).unwrap());
         assert!(!credential_stored("missing/libsecret", &libsecret_credential(), &store).unwrap());
-        assert!(!credential_stored("missing/dir", &directory_credential(".config/missing"), &store)
-            .unwrap());
+        assert!(
+            !credential_stored(
+                "missing/dir",
+                &directory_credential(".config/missing"),
+                &store
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -1597,10 +1603,7 @@ mod tests {
                 },
             )]),
         )]);
-        let credentials = HashMap::from([(
-            "github/token".to_string(),
-            env_credential("GH_TOKEN"),
-        )]);
+        let credentials = HashMap::from([("github/token".to_string(), env_credential("GH_TOKEN"))]);
         let state = state_with_config_and_store(
             wrappers,
             credentials,
@@ -1651,9 +1654,6 @@ mod tests {
 
     #[test]
     fn process_control_unlock_enforces_authorization_rules() {
-        let current_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
-        let current_uid = resolve_user_uid(&current_user).unwrap();
-
         let mut wrapper = wrapper_with_uses(&[(
             "github/token",
             underwrap_protocol::config::CredentialUse {
@@ -1665,9 +1665,13 @@ mod tests {
             max_seconds: Some(30),
         };
 
+        let base_wrappers = HashMap::from([("locked-w".to_string(), wrapper)]);
+        let base_credentials =
+            HashMap::from([("github/token".to_string(), env_credential("GH_TOKEN"))]);
+
         let state = state_with_config_and_store(
-            HashMap::from([("locked-w".to_string(), wrapper)]),
-            HashMap::from([("github/token".to_string(), env_credential("GH_TOKEN"))]),
+            base_wrappers.clone(),
+            base_credentials.clone(),
             std::collections::HashSet::from([0]),
             MemStore::with_entries(&[]),
         );
@@ -1696,7 +1700,7 @@ mod tests {
                 target: "locked-w".to_string(),
                 scope: None,
                 seconds: Some(10),
-                grant_user: Some(current_user.clone()),
+                grant_user: Some("root".to_string()),
                 grant_all: false,
             },
             &state,
@@ -1729,15 +1733,21 @@ mod tests {
             other => panic!("expected Error, got {other:?}"),
         }
 
+        let not_allowed_state = state_with_config_and_store(
+            base_wrappers,
+            base_credentials,
+            std::collections::HashSet::from([123456]),
+            MemStore::with_entries(&[]),
+        );
         let resp = process_control(
             &ControlRequest::Unlock {
                 target: "locked-w".to_string(),
                 scope: None,
                 seconds: Some(10),
-                grant_user: Some(current_user),
+                grant_user: Some("root".to_string()),
                 grant_all: false,
             },
-            &state,
+            &not_allowed_state,
             Some(0),
         );
         match resp {
@@ -1748,6 +1758,24 @@ mod tests {
             other => panic!("expected Error, got {other:?}"),
         }
 
+        let grant_all_state = state_with_config_and_store(
+            HashMap::from([("locked-w".to_string(), {
+                let mut wrapper = wrapper_with_uses(&[(
+                    "github/token",
+                    underwrap_protocol::config::CredentialUse {
+                        access: AccessMode::ReadOnly,
+                    },
+                )]);
+                wrapper.unlock = underwrap_protocol::config::UnlockPolicy {
+                    mode: UnlockMode::Always,
+                    max_seconds: Some(30),
+                };
+                wrapper
+            })]),
+            HashMap::from([("github/token".to_string(), env_credential("GH_TOKEN"))]),
+            std::collections::HashSet::from([0]),
+            MemStore::with_entries(&[]),
+        );
         let resp = process_control(
             &ControlRequest::Unlock {
                 target: "locked-w".to_string(),
@@ -1756,12 +1784,22 @@ mod tests {
                 grant_user: None,
                 grant_all: true,
             },
-            &state,
+            &grant_all_state,
             Some(0),
         );
         assert_eq!(resp, ControlResponse::UnlockOk);
-        assert!(state.unlock.check("locked-w", Some("session-1"), 0).is_ok());
-        assert!(state.unlock.check("locked-w", Some("session-1"), current_uid).is_err());
+        assert!(
+            grant_all_state
+                .unlock
+                .check("locked-w", Some("session-1"), 0)
+                .is_ok()
+        );
+        assert!(
+            grant_all_state
+                .unlock
+                .check("locked-w", Some("session-1"), 1000)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1802,7 +1840,12 @@ mod tests {
             Some(1000),
         );
         assert_eq!(resp, ControlResponse::UnlockOk);
-        assert!(state.unlock.check("locked-w", Some("session-1"), 1000).is_ok());
+        assert!(
+            state
+                .unlock
+                .check("locked-w", Some("session-1"), 1000)
+                .is_ok()
+        );
 
         let resp = process_control(
             &ControlRequest::Lock {
@@ -1813,7 +1856,12 @@ mod tests {
             Some(1000),
         );
         assert_eq!(resp, ControlResponse::LockOk);
-        assert!(state.unlock.check("locked-w", Some("session-1"), 1000).is_err());
+        assert!(
+            state
+                .unlock
+                .check("locked-w", Some("session-1"), 1000)
+                .is_err()
+        );
 
         let resp = process_control(
             &ControlRequest::Store {

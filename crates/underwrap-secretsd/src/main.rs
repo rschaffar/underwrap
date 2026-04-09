@@ -235,11 +235,8 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("--channel-fd must be a number"));
 
-        let err = parse_args_from(&[
-            "underwrap-secretsd".to_string(),
-            "--bogus".to_string(),
-        ])
-        .unwrap_err();
+        let err = parse_args_from(&["underwrap-secretsd".to_string(), "--bogus".to_string()])
+            .unwrap_err();
         assert!(err.to_string().contains("unknown argument"));
     }
 }
