@@ -16,6 +16,7 @@
 
 mod directory_credential;
 
+use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -32,6 +33,39 @@ const SECRET_FD: i32 = 3;
 /// The fd number used for the secretsd channel (from underwrap-exec).
 const CHANNEL_FD: i32 = 4;
 const DIRECTORY_STAGING_ROOT: &str = "/tmp/.underwrap-ns-directories";
+
+const DEFAULT_PASSTHROUGH: &[&str] = &[
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "COLORTERM",
+    "LANG",
+    "LC_ALL",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "TZ",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "TMPDIR",
+    "SSH_AUTH_SOCK",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+];
 
 fn main() {
     if let Err(e) = run() {
@@ -175,64 +209,9 @@ fn run() -> Result<(), String> {
         // Default safe whitelist — vars the target typically needs.
         // PATH is intentionally NOT inherited. If a wrapper needs helper
         // lookup by bare name, set PATH explicitly via trusted sidecar config.
-        const DEFAULT_PASSTHROUGH: &[&str] = &[
-            "HOME",
-            "USER",
-            "LOGNAME",
-            "SHELL",
-            "TERM",
-            "COLORTERM",
-            "LANG",
-            "LC_ALL",
-            "LC_COLLATE",
-            "LC_CTYPE",
-            "LC_MESSAGES",
-            "LC_MONETARY",
-            "LC_NUMERIC",
-            "LC_TIME",
-            "TZ",
-            "XDG_RUNTIME_DIR",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "XDG_CACHE_HOME",
-            "XDG_STATE_HOME",
-            "TMPDIR",
-            "SSH_AUTH_SOCK",
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "http_proxy",
-            "https_proxy",
-            "no_proxy",
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "NO_PROXY",
-        ];
-
-        // Pass through default whitelist.
-        for var in DEFAULT_PASSTHROUGH {
-            if let Ok(val) = std::env::var(var) {
-                cmd.env(var, val);
-            }
-        }
-
-        // Additional passthrough from trusted stage-1 config.
-        for var in &exec_bundle.env_passthrough {
-            if let Ok(val) = std::env::var(var) {
-                cmd.env(var, val);
-            }
-        }
-
-        // Fixed vars from trusted stage-1 config.
-        for (key, val) in &exec_bundle.env_set {
-            cmd.env(key, val);
-        }
-
-        // Inject env secret bindings. Decode to UTF-8 only at the final
-        // target boundary where environment variables must be strings.
-        for (key, value) in &exec_bundle.env {
-            let value = value.as_utf8().map_err(|e| {
-                format!("env binding '{key}' is not valid UTF-8 and cannot be exported: {e}")
-            })?;
+        let host_env: HashMap<String, String> = std::env::vars().collect();
+        let target_env = build_target_env(&host_env, &exec_bundle)?;
+        for (key, value) in target_env {
             cmd.env(key, value);
         }
 
@@ -427,23 +406,52 @@ fn setup_mount_namespace() -> Result<(), String> {
 /// Set up libsecret mode: launch dbus-daemon and secretsd inside the PID namespace.
 /// The mount namespace (tmpfs, /proc, bus hiding) is already set up by
 /// setup_mount_namespace() which ran before cap drop.
+fn require_absolute_env_path(var_name: &str) -> Result<String, String> {
+    let value = std::env::var(var_name)
+        .map_err(|_| format!("{var_name} not set (required for libsecret mode)"))?;
+    if !value.starts_with('/') {
+        return Err(format!("{var_name} must be an absolute path, got: {value:?}"));
+    }
+    Ok(value)
+}
+
+fn build_target_env(
+    host_env: &HashMap<String, String>,
+    exec_bundle: &ExecBundle,
+) -> Result<HashMap<String, String>, String> {
+    let mut target_env = HashMap::new();
+
+    for var in DEFAULT_PASSTHROUGH {
+        if let Some(value) = host_env.get(*var) {
+            target_env.insert((*var).to_string(), value.clone());
+        }
+    }
+
+    for var in &exec_bundle.env_passthrough {
+        if let Some(value) = host_env.get(var) {
+            target_env.insert(var.clone(), value.clone());
+        }
+    }
+
+    for (key, value) in &exec_bundle.env_set {
+        target_env.insert(key.clone(), value.clone());
+    }
+
+    for (key, value) in &exec_bundle.env {
+        let value = value.as_utf8().map_err(|e| {
+            format!("env binding '{key}' is not valid UTF-8 and cannot be exported: {e}")
+        })?;
+        target_env.insert(key.clone(), value.to_string());
+    }
+
+    Ok(target_env)
+}
+
 fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     // Both binary paths MUST be absolute — no bare names, no PATH resolution.
     // They come from the trusted sidecar config via env vars set by underwrap-exec.
-    let dbus_daemon = std::env::var("UNDERWRAP_DBUS_DAEMON")
-        .map_err(|_| "UNDERWRAP_DBUS_DAEMON not set (required for libsecret mode)".to_string())?;
-    if !dbus_daemon.starts_with('/') {
-        return Err(format!(
-            "UNDERWRAP_DBUS_DAEMON must be an absolute path, got: {dbus_daemon:?}"
-        ));
-    }
-    let secretsd = std::env::var("UNDERWRAP_SECRETSD")
-        .map_err(|_| "UNDERWRAP_SECRETSD not set (required for libsecret mode)".to_string())?;
-    if !secretsd.starts_with('/') {
-        return Err(format!(
-            "UNDERWRAP_SECRETSD must be an absolute path, got: {secretsd:?}"
-        ));
-    }
+    let dbus_daemon = require_absolute_env_path("UNDERWRAP_DBUS_DAEMON")?;
+    let secretsd = require_absolute_env_path("UNDERWRAP_SECRETSD")?;
 
     // The private tmpfs is already mounted by setup_mount_namespace().
     let bus_dir = "/tmp/.underwrap-ns-bus";
@@ -712,4 +720,93 @@ fn drop_caps() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn sample_exec_bundle() -> ExecBundle {
+        ExecBundle {
+            env: HashMap::from([("GH_TOKEN".to_string(), "ghp_test".into())]),
+            env_passthrough: vec!["CUSTOM_PASSTHROUGH".to_string()],
+            env_set: HashMap::from([("PATH".to_string(), "/trusted/bin".to_string())]),
+            directories: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn build_target_env_applies_whitelist_passthrough_env_set_and_secrets() {
+        let host_env = HashMap::from([
+            ("HOME".to_string(), "/home/alice".to_string()),
+            ("LANG".to_string(), "en_US.UTF-8".to_string()),
+            ("PATH".to_string(), "/untrusted/bin".to_string()),
+            ("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string()),
+            ("CUSTOM_PASSTHROUGH".to_string(), "allowed".to_string()),
+        ]);
+
+        let target_env = build_target_env(&host_env, &sample_exec_bundle()).unwrap();
+        assert_eq!(target_env.get("HOME"), Some(&"/home/alice".to_string()));
+        assert_eq!(target_env.get("LANG"), Some(&"en_US.UTF-8".to_string()));
+        assert_eq!(target_env.get("CUSTOM_PASSTHROUGH"), Some(&"allowed".to_string()));
+        assert_eq!(target_env.get("PATH"), Some(&"/trusted/bin".to_string()));
+        assert_eq!(target_env.get("GH_TOKEN"), Some(&"ghp_test".to_string()));
+        assert!(!target_env.contains_key("LD_PRELOAD"));
+    }
+
+    #[test]
+    fn build_target_env_rejects_non_utf8_secret_values() {
+        let host_env = HashMap::new();
+        let bundle = ExecBundle {
+            env: HashMap::from([("BAD".to_string(), vec![0xff, 0xfe].into())]),
+            env_passthrough: Vec::new(),
+            env_set: HashMap::new(),
+            directories: Vec::new(),
+        };
+
+        let err = build_target_env(&host_env, &bundle).unwrap_err();
+        assert!(err.contains("not valid UTF-8"));
+        assert!(err.contains("BAD"));
+    }
+
+    #[test]
+    fn require_absolute_env_path_accepts_absolute_paths() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::set_var("UNDERWRAP_TEST_BIN", "/run/current-system/sw/bin/test-bin");
+        }
+
+        let path = require_absolute_env_path("UNDERWRAP_TEST_BIN").unwrap();
+        assert_eq!(path, "/run/current-system/sw/bin/test-bin");
+
+        unsafe {
+            std::env::remove_var("UNDERWRAP_TEST_BIN");
+        }
+    }
+
+    #[test]
+    fn require_absolute_env_path_rejects_missing_and_relative_paths() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("UNDERWRAP_TEST_BIN");
+        }
+        let err = require_absolute_env_path("UNDERWRAP_TEST_BIN").unwrap_err();
+        assert!(err.contains("not set"));
+
+        unsafe {
+            std::env::set_var("UNDERWRAP_TEST_BIN", "relative-bin");
+        }
+        let err = require_absolute_env_path("UNDERWRAP_TEST_BIN").unwrap_err();
+        assert!(err.contains("must be an absolute path"));
+
+        unsafe {
+            std::env::remove_var("UNDERWRAP_TEST_BIN");
+        }
+    }
 }
