@@ -17,6 +17,10 @@ storage:
   # key_file: /var/lib/underwrap/master.key
 
 wrappers:
+  # Each wrapper entry defines one underwrap-facing command.
+  # The socket and group together form the authenticated wrapper identity:
+  # the socket selects the expected wrapper, and the peer's effective GID
+  # must match the configured group for that socket.
   gh-authorized:
     target: /usr/bin/gh
     secret: github/token
@@ -75,6 +79,8 @@ wrappers:
     # per-wrapper environment entries from root-owned sidecar config.
 
 secrets:
+  # Secret entries define metadata and mutability only.
+  # Secret values themselves are written later through the control socket.
   github/token:
     mutable: false
 

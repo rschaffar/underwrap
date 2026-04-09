@@ -52,7 +52,13 @@ In your NixOS configuration:
     enable = true;
     package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
+    # Define one underwrap instance named "work".
+    # The instance name becomes part of generated resources such as:
+    # - systemd service: underwrapd-work.service
+    # - wrapper binary: /run/wrappers/bin/work-jira
+    # - runtime dir: /run/underwrap-work/
     instances.work = {
+      # Define one wrapper inside the "work" instance.
       wrappers.jira = {
         target = "${pkgs.jira-cli-go}/bin/jira";
         secret = "jira/api-token";
@@ -62,6 +68,9 @@ In your NixOS configuration:
         };
       };
 
+      # Define metadata for the secret ID used by that wrapper.
+      # This does NOT store the secret value itself; you store that later
+      # through underwrapctl.
       secrets."jira/api-token" = {
         mutable = false;
       };
