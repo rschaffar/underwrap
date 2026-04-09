@@ -8,7 +8,9 @@ pub(crate) mod startup;
 pub(crate) mod status;
 pub mod storage;
 pub mod unlock;
+pub(crate) mod unlock_flow;
 pub(crate) mod wrapper_bindings;
+pub(crate) mod wrapper_flow;
 
 #[cfg(test)]
 mod tests {
