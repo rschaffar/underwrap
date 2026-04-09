@@ -91,7 +91,6 @@ Every byte of secret material — whether it is:
 - a plain injected token
 - mutable credential state
 - libsecret-managed data
-- OAuth refresh-token material
 - derived access-token source material
 
 must be read from or written to the daemon's `StorageBackend` path.
@@ -504,21 +503,6 @@ Logging does not make a system secure, but in systems that are trying to be secu
 
 ---
 
-## OAuth derivation hardening
-
-For the current Google OAuth derivation flow, underwrap does not trust a secret-supplied token endpoint.
-
-Instead, the implementation uses a hardcoded Google token endpoint and a no-redirect HTTP client.
-
-Why this matters:
-
-- a tampered stored OAuth blob should not be able to redirect token exchange to an attacker-controlled server
-- error handling should not accidentally overexpose upstream response content
-
-This is an example of a useful principle in underwrap: when stored secret material contains instructions, treat those instructions skeptically.
-
----
-
 ## Remote backend security model
 
 Remote mode changes **where** secrets live, but not the basic wrapper flow on the target host.
@@ -526,7 +510,7 @@ Remote mode changes **where** secrets live, but not the basic wrapper flow on th
 ### What remote mode is trying to buy you
 
 - the target host does not need to store the secrets locally
-- high-value material such as refresh tokens can stay on a more trusted workstation
+- high-value secret material can stay on a more trusted workstation
 - tunnel availability becomes an operational access boundary
 
 ### What it does not buy you
@@ -751,4 +735,3 @@ But the right security attitude is still:
 - [Agent-facing wrappers](agents.md)
 - [Remote backend](remote-backend.md)
 - [GitHub via libsecret](gh-libsecret.md)
-- [Google Workspace via OAuth derivation](gws-oauth.md)

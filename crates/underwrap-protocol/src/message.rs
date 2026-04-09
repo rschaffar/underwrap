@@ -332,8 +332,6 @@ pub enum ErrorCode {
     NotFound,
     /// The wrapper/secret is locked and requires unlock first.
     Locked,
-    /// The derivation (e.g. OAuth refresh) failed.
-    DerivationFailed,
     /// Internal daemon error.
     Internal,
 }
@@ -346,17 +344,9 @@ pub enum ErrorCode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum BackendRequest {
-    /// Read secret material (raw or derived).
+    /// Read secret material.
     #[serde(rename = "read")]
     Read { secret_id: String },
-
-    /// Read and derive (e.g. OAuth refresh → access token).
-    #[serde(rename = "derive")]
-    Derive {
-        secret_id: String,
-        /// Derivation mode name (e.g. "oauth_refresh_to_access_token").
-        mode: String,
-    },
 
     /// Write/update secret material.
     #[serde(rename = "write")]
@@ -399,7 +389,6 @@ pub enum BackendResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BackendErrorCode {
     NotFound,
-    DerivationFailed,
     Internal,
 }
 
@@ -503,24 +492,6 @@ mod tests {
         match parsed {
             BackendRequest::Read { secret_id } => assert_eq!(secret_id, "github/token"),
             other => panic!("expected Read, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn backend_derive_roundtrip() {
-        let req = BackendRequest::Derive {
-            secret_id: "google/creds".to_string(),
-            mode: "oauth_refresh_to_access_token".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"action\":\"derive\""));
-        let parsed: BackendRequest = serde_json::from_str(&json).unwrap();
-        match parsed {
-            BackendRequest::Derive { secret_id, mode } => {
-                assert_eq!(secret_id, "google/creds");
-                assert_eq!(mode, "oauth_refresh_to_access_token");
-            }
-            other => panic!("expected Derive, got {other:?}"),
         }
     }
 

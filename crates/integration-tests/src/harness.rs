@@ -173,7 +173,6 @@ pub fn wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         injection: InjectionMode::Env {
             variable: env_var.to_string(),
         },
-        derivation: DerivationMode::None,
         require_unlock: false,
         socket: PathBuf::new(),
         group: current_group_name(),
@@ -190,7 +189,6 @@ pub fn locked_wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
         injection: InjectionMode::Env {
             variable: env_var.to_string(),
         },
-        derivation: DerivationMode::None,
         require_unlock: true,
         socket: PathBuf::new(),
         group: current_group_name(),

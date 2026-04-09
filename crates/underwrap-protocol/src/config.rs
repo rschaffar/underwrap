@@ -166,10 +166,6 @@ pub struct WrapperDef {
     #[serde(default)]
     pub injection: InjectionMode,
 
-    /// Optional: the derivation to perform on the stored secret before injection.
-    #[serde(default)]
-    pub derivation: DerivationMode,
-
     /// Whether this wrapper requires an explicit unlock before reads.
     /// If true, reads are denied unless an active unlock grant exists.
     #[serde(default)]
@@ -227,20 +223,6 @@ impl Default for InjectionMode {
 
 fn default_env_var() -> String {
     "UNDERWRAP_SECRET".to_string()
-}
-
-/// Derivation applied to stored secret before injection.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub enum DerivationMode {
-    /// Return the stored secret as-is.
-    #[default]
-    #[serde(rename = "none")]
-    None,
-    /// Exchange an OAuth refresh token (stored as Google authorized-user JSON)
-    /// for a short-lived access token. The daemon performs the token exchange
-    /// and returns only the access token.
-    #[serde(rename = "oauth_refresh_to_access_token")]
-    OAuthRefreshToAccessToken,
 }
 
 /// A secret entry definition.
@@ -312,13 +294,13 @@ wrappers:
     fn mutable_secret() {
         let yaml = r#"
 secrets:
-  google/workspace-creds:
+  test/mutable-secret:
     mutable: true
     labels:
       owner: example-org
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        let s = &config.secrets["google/workspace-creds"];
+        let s = &config.secrets["test/mutable-secret"];
         assert!(s.mutable);
         assert_eq!(s.labels["owner"], "example-org");
     }
@@ -352,7 +334,6 @@ storage:
                         injection: InjectionMode::Env {
                             variable: "MY_VAR".to_string(),
                         },
-                        derivation: DerivationMode::None,
                         require_unlock: false,
                         socket: PathBuf::from("/run/underwrap/test.sock"),
                         group: "testgroup".to_string(),

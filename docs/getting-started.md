@@ -13,7 +13,6 @@ After this, move on to:
 
 - [Agent-facing wrappers](agents.md)
 - [GitHub via libsecret](gh-libsecret.md)
-- [Google Workspace via OAuth derivation](gws-oauth.md)
 - [Remote backend](remote-backend.md)
 
 ## What you will build
@@ -186,11 +185,6 @@ If you want `gh auth login` and stored credentials to work cleanly, use libsecre
 
 Read: [GitHub via libsecret](gh-libsecret.md)
 
-### Derive short-lived access tokens from refresh-token material
-
-If the real credential is mutable and should stay in backend storage, use OAuth derivation.
-
-Read: [Google Workspace via OAuth derivation](gws-oauth.md)
 
 ## Troubleshooting
 

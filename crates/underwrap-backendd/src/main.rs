@@ -3,7 +3,6 @@ use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
 
-mod derive;
 mod server;
 
 #[derive(Parser, Debug)]

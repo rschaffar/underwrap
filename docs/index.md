@@ -10,7 +10,6 @@ underwrap's docs are organized by question:
 - **What should I check before I call a wrapper design done?** → [Wrapper author checklist](wrapper-author-checklist.md)
 - **How do the advanced workflows work?**
   - [GitHub via libsecret](gh-libsecret.md)
-  - [Google Workspace via OAuth derivation](gws-oauth.md)
   - [Remote backend](remote-backend.md)
 - **How do I configure it in NixOS?** → [Configuration reference](configuration.md)
 - **How does the system fit together?** → [Architecture](architecture.md)
@@ -72,13 +71,12 @@ Example:
 
 This is where underwrap is most compelling.
 
-### 3. Stateful or derived credential workflows
+### 3. Stateful credential workflows
 
 This is where underwrap moves beyond simple env-var injection.
 
 Examples:
 - `gh` storing credentials via a private Secret Service in libsecret mode
-- `gws` using stored refresh-token material to derive short-lived access tokens
 - remote backend mode where secrets remain on your workstation
 
 ## A note on the security docs

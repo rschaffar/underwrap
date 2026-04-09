@@ -15,8 +15,6 @@ use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse};
 use underwrap_store::StorageBackend;
 
-use crate::derive;
-
 /// Backend daemon configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
@@ -104,39 +102,6 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 message: format!("storage error: {e}"),
             },
         },
-
-        BackendRequest::Derive { secret_id, mode } => {
-            // Read the raw material, then apply derivation.
-            let material = match state.store.read(secret_id) {
-                Ok(Some(m)) => m,
-                Ok(None) => {
-                    return BackendResponse::Error {
-                        code: BackendErrorCode::NotFound,
-                        message: format!("secret '{secret_id}' not found"),
-                    };
-                }
-                Err(e) => {
-                    return BackendResponse::Error {
-                        code: BackendErrorCode::Internal,
-                        message: format!("storage error: {e}"),
-                    };
-                }
-            };
-
-            match derive::derive(mode, secret_id, material.as_ref()).await {
-                Ok(derived) => {
-                    info!(secret = %secret_id, mode = %mode, "backend derive");
-                    BackendResponse::Ok {
-                        material: Some(derived.into()),
-                        info: None,
-                    }
-                }
-                Err(e) => BackendResponse::Error {
-                    code: BackendErrorCode::DerivationFailed,
-                    message: format!("derivation failed: {e}"),
-                },
-            }
-        }
 
         BackendRequest::Write {
             secret_id,

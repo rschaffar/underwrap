@@ -47,7 +47,6 @@ Depending on how you configure it, underwrap can also:
 
 - keep secrets in local storage managed by the daemon
 - keep secrets on a remote workstation via an SSH-tunneled backend
-- derive short-lived access tokens from stored refresh-token material
 - provide a private Secret Service (`libsecret`) environment for tools such as `gh`
 
 ## What makes it interesting
@@ -58,7 +57,7 @@ underwrap is trying to combine a few things that are rarely available together:
 - **kernel-backed wrapper identity** — wrapper socket selection sets the expected wrapper, and the peer's setgid-derived effective GID must confirm it
 - **clean target environments** — the target does not inherit the caller's full shell environment
 - **process-isolated delivery** — the wrapper chain is designed to reduce easy same-user inspection
-- **mutable credential workflows** — useful for OAuth and libsecret-backed tools
+- **mutable credential workflows** — useful for libsecret-backed tools and app-managed state
 - **remote secrets** — secrets can stay on your workstation instead of on the target host
 
 For the design details and limitations, see [Security](docs/security.md).
@@ -131,9 +130,6 @@ underwrap is most useful when you want one of these patterns:
 - **A libsecret-backed CLI inside a private session**
   - Example: `gh auth login` storing credentials through underwrap's private Secret Service
 
-- **An OAuth refresh-token workflow**
-  - Example: `gws` where the backend derives short-lived access tokens on demand
-
 - **A remote-backend deployment**
   - Secrets live on your workstation; target machines only see them through an SSH tunnel
 
@@ -173,7 +169,6 @@ Then start with [Getting started](docs/getting-started.md).
 - [Getting started](docs/getting-started.md)
 - [Agent-facing wrappers](docs/agents.md)
 - [GitHub via libsecret](docs/gh-libsecret.md)
-- [Google Workspace via OAuth derivation](docs/gws-oauth.md)
 - [Configuration reference](docs/configuration.md)
 - [Architecture](docs/architecture.md)
 - [Remote backend](docs/remote-backend.md)
@@ -184,7 +179,7 @@ Then start with [Getting started](docs/getting-started.md).
 
 ## Status
 
-The implementation already covers the core wrapper chain, multi-instance NixOS deployment, remote backend mode, OAuth derivation, and libsecret mode.
+The implementation already covers the core wrapper chain, multi-instance NixOS deployment, remote backend mode, and libsecret mode.
 
 What it still needs most is:
 

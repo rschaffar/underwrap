@@ -80,7 +80,6 @@ wrappers.jira = {
 | `target` | string | required | Absolute path to the target binary |
 | `secret` | string | required | Secret ID to read |
 | `injection` | attrset | `{ mode = "env"; variable = "UNDERWRAP_SECRET"; }` | How the secret is injected |
-| `derivation` | string or `null` | `null` | Derivation mode, for example `"oauth_refresh_to_access_token"` |
 | `requireUnlock` | bool | `false` | Require explicit unlock before reads |
 | `libsecret` | bool | `false` | Start a private Secret Service inside the namespace |
 | `envPassthrough` | list of strings | `[]` | Additional environment variables to pass through from the caller |
@@ -145,22 +144,11 @@ services.underwrap.instances.work = {
       };
     };
 
-    gws = {
-      target = "${pkgs.gws}/bin/gws";
-      secret = "google/workspace-creds";
-      injection = {
-        mode = "env";
-        variable = "GOOGLE_WORKSPACE_CLI_TOKEN";
-      };
-      derivation = "oauth_refresh_to_access_token";
-      requireUnlock = true;
-    };
   };
 
   secrets = {
     "jira/api-token" = { mutable = false; };
     "github/bootstrap" = { mutable = false; };
-    "google/workspace-creds" = { mutable = true; };
   };
 };
 ```

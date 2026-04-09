@@ -158,7 +158,7 @@ Ask:
 
 - is the downstream token the narrowest one available?
 - can it be limited to one repo / one service / one action class?
-- is a mutable refresh-token-style secret more appropriate than a long-lived access token?
+- is a mutable app-managed credential state more appropriate than a long-lived static token?
 
 A good wrapper with a bad token scope is still a bad overall design.
 

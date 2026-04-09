@@ -42,17 +42,6 @@ wrappers:
       mode: env
       variable: GH_TOKEN
 
-  gws:
-    target: /usr/bin/gws
-    secret: google/workspace-creds
-    socket: /run/underwrap/gws.sock
-    group: underwrap-gws
-    injection:
-      mode: env
-      variable: GOOGLE_WORKSPACE_CLI_TOKEN
-    derivation: oauth_refresh_to_access_token
-    require_unlock: true
-
   agent-slack:
     target: /usr/bin/slack-cli
     secret: slack/xoxp
@@ -89,9 +78,6 @@ secrets:
 
   github/bootstrap:
     mutable: false
-
-  google/workspace-creds:
-    mutable: true
 
   slack/xoxp:
     mutable: false

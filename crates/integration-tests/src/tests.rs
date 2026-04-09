@@ -506,7 +506,7 @@ async fn large_secret_material() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
-    // ~32KB of data (simulating an OAuth JSON blob).
+    // ~32KB of data (simulating a larger credential blob).
     let big = "x".repeat(32_000);
     daemon.store_secret("github/token", &big).await.unwrap();
 
@@ -1025,16 +1025,6 @@ wrappers:
     injection:
       mode: env
       variable: GH_TOKEN
-  gws:
-    target: /usr/bin/gws
-    secret: google/workspace-creds
-    socket: /run/underwrap/gws.sock
-    group: underwrap-gws
-    injection:
-      mode: env
-      variable: GOOGLE_WORKSPACE_CLI_TOKEN
-    derivation: oauth_refresh_to_access_token
-    require_unlock: true
   agent-slack:
     target: /usr/bin/slack-cli
     secret: slack/xoxp
@@ -1057,18 +1047,16 @@ secrets:
     mutable: false
   github/bootstrap:
     mutable: false
-  google/workspace-creds:
-    mutable: true
   slack/xoxp:
     mutable: false
 "#;
     let config: underwrap_protocol::config::DaemonConfig = serde_yaml::from_str(text).unwrap();
 
-    assert_eq!(config.wrappers.len(), 4);
-    assert_eq!(config.secrets.len(), 4);
+    assert_eq!(config.wrappers.len(), 3);
+    assert_eq!(config.secrets.len(), 3);
     assert!(config.wrappers.contains_key("gh-authorized"));
-    assert!(config.wrappers.contains_key("gws"));
     assert!(config.wrappers.contains_key("agent-slack"));
+    assert!(config.wrappers.contains_key("gh-libsecret"));
 
     let gh = &config.wrappers["gh-authorized"];
     assert_eq!(gh.secret, "github/token");

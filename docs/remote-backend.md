@@ -13,7 +13,7 @@ Use it when:
 - the target machine is ephemeral or lightly trusted
 - the wrapper host is an agent VM or automation box
 - you want a clean "connect = available, disconnect = unavailable" model
-- you want refresh-token material or other high-value secrets to stay on your workstation
+- you want high-value secret material to stay on your workstation
 
 ## The model
 
@@ -125,7 +125,7 @@ That is not a complete authorization model on its own, but it is a very useful o
 ### What remote mode improves
 
 - secrets do not need to be stored on the target machine
-- refresh-token material can stay on the trusted workstation
+- high-value secret material can stay on the trusted workstation
 - the target still benefits from underwrap's normal wrapper chain and identity checks
 
 ### What remote mode does not change
@@ -158,17 +158,6 @@ A typical `authorized_keys` restriction looks like:
 restrict,streamlocal-forward=/run/underwrap-work/tunnel/backend.sock ssh-ed25519 AAAA...
 ```
 
-## A good pairing: remote backend + OAuth derivation
-
-Remote mode pairs especially well with OAuth derivation.
-
-Example:
-
-- store Google refresh-token material on your workstation
-- expose it to the target only through `underwrap-backendd`
-- let the target wrapper receive only the derived access token
-
-See [Google Workspace via OAuth derivation](gws-oauth.md).
 
 ## Troubleshooting
 
@@ -197,5 +186,4 @@ Check your instance configuration. If `remote.enable = true` is not set, the ins
 ## Related docs
 
 - [Configuration reference](configuration.md)
-- [Google Workspace via OAuth derivation](gws-oauth.md)
 - [Security](security.md)

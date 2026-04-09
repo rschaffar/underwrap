@@ -131,25 +131,6 @@ impl StorageBackend for RemoteBackend {
 }
 
 impl RemoteBackend {
-    /// Read with derivation (e.g. OAuth refresh → access token).
-    pub fn derive(&self, secret_id: &str, mode: &str) -> Result<Option<SecretBytes>> {
-        let resp = self.send_request(&BackendRequest::Derive {
-            secret_id: secret_id.to_string(),
-            mode: mode.to_string(),
-        })?;
-
-        match resp {
-            BackendResponse::Ok { material, .. } => {
-                Ok(material.map(|m| Vec::from(String::from(m)).into()))
-            }
-            BackendResponse::Error { code, message } => match code {
-                BackendErrorCode::NotFound => Ok(None),
-                BackendErrorCode::DerivationFailed => bail!("backend derive failed: {message}"),
-                _ => bail!("backend derive error ({code:?}): {message}"),
-            },
-        }
-    }
-
     /// Check if the backend is reachable.
     pub fn is_available(&self) -> bool {
         self.send_request(&BackendRequest::Status).is_ok()

@@ -33,7 +33,7 @@ let
         dir = "${stateDir}/secrets";
       };
       wrappers = lib.mapAttrs' (name: w:
-        lib.nameValuePair "${instName}-${name}" ({
+        lib.nameValuePair "${instName}-${name}" {
           target = w.target;
           secret = w.secret;
           injection = w.injection;
@@ -41,9 +41,7 @@ let
           socket = wrapperSocketPath name;
           group = wrapperGroupName name;
           libsecret = w.libsecret;
-        } // lib.optionalAttrs (w.derivation != null) {
-          derivation = w.derivation;
-        })
+        }
       ) inst.wrappers;
       secrets = lib.mapAttrs (_name: s: {
         inherit (s) mutable;
@@ -194,11 +192,6 @@ let
         type = lib.types.attrs;
         default = { mode = "env"; variable = "UNDERWRAP_SECRET"; };
         description = "Injection mode configuration.";
-      };
-      derivation = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Derivation mode.";
       };
       requireUnlock = lib.mkOption {
         type = lib.types.bool;
