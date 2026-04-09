@@ -217,3 +217,40 @@ pub fn secret(_mutable: bool) -> CredentialDef {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrapper_builder_creates_read_only_usage() {
+        let wrapper = wrapper("/usr/bin/gh", "github/token", "GH_TOKEN");
+        assert_eq!(wrapper.target, PathBuf::from("/usr/bin/gh"));
+        assert_eq!(wrapper.use_map.len(), 1);
+        assert_eq!(
+            wrapper.use_map.get("github/token").unwrap().access,
+            AccessMode::ReadOnly
+        );
+        assert_eq!(wrapper.unlock.mode, UnlockMode::AlwaysUnlocked);
+    }
+
+    #[test]
+    fn locked_wrapper_builder_sets_unlock_policy() {
+        let wrapper = locked_wrapper("/usr/bin/gh", "github/token", "GH_TOKEN");
+        assert_eq!(wrapper.unlock.mode, UnlockMode::Always);
+        assert_eq!(wrapper.unlock.max_seconds, Some(3600));
+        assert_eq!(
+            wrapper.use_map.get("github/token").unwrap().access,
+            AccessMode::ReadOnly
+        );
+    }
+
+    #[test]
+    fn secret_builder_creates_env_credential() {
+        let credential = secret(false);
+        match credential.mode {
+            CredentialMode::Env { variable } => assert_eq!(variable, "UNDERWRAP_SECRET"),
+            other => panic!("expected env credential, got {other:?}"),
+        }
+    }
+}

@@ -55,3 +55,46 @@ pub fn open(config: &StorageConfig) -> Result<Box<dyn StorageBackend>> {
         StorageConfig::Remote { socket } => Ok(Box::new(RemoteBackend::open(socket)?)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn open_dispatches_to_plain_backend() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let backend = open(&StorageConfig::Plain {
+            dir: dir.path().join("plain"),
+        })
+        .unwrap();
+        backend.write("github/token", b"ghp_test").unwrap();
+        assert_eq!(backend.read("github/token").unwrap().unwrap(), b"ghp_test");
+    }
+
+    #[test]
+    fn open_dispatches_to_encrypted_backend() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let key_path = dir.path().join("key");
+        std::fs::write(&key_path, [7u8; 32]).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let backend = open(&StorageConfig::Encrypted {
+            dir: dir.path().join("encrypted"),
+            key_file: key_path,
+        })
+        .unwrap();
+        backend.write("github/token", b"ghp_test").unwrap();
+        assert_eq!(backend.read("github/token").unwrap().unwrap(), b"ghp_test");
+    }
+
+    #[test]
+    fn open_dispatches_to_remote_backend() {
+        let backend = open(&StorageConfig::Remote {
+            socket: "/tmp/nonexistent-underwrap-backend.sock".into(),
+        })
+        .unwrap();
+        let err = backend.read("github/token").unwrap_err();
+        assert!(err.to_string().contains("connecting to backend at"));
+    }
+}
