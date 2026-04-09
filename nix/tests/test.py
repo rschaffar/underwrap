@@ -507,6 +507,100 @@ assert leak_files == "NONE", f"SECRET LEAKED to files outside backend: {leak_fil
 machine.log("PASS: no secret material leaked outside backend")
 
 # ============================================================
+# LOCAL INSTANCE: directory credentials
+# ============================================================
+
+# Seed two directory credentials through a read-write wrapper.
+machine.succeed(su("/run/wrappers/bin/local-test-dir-write seed"))
+machine.log("PASS: directory credential seed wrapper succeeded")
+
+# Read both mounted directories through a read-only wrapper.
+dir_output = machine.succeed(su("/run/wrappers/bin/local-test-dir-read")).strip().split("\n")
+assert dir_output[0].strip() == "token-seed", f"expected token-seed, got {dir_output}"
+assert dir_output[1].strip() == "meta-seed", f"expected meta-seed, got {dir_output}"
+machine.log("PASS: directory credential read-only wrapper can read both mounted directories")
+
+# Read-only mounts must reject writes.
+machine.fail(su("/run/wrappers/bin/local-test-dir-readonly-write update"))
+machine.log("PASS: directory read-only mounts reject mutation")
+
+# Update content and delete one file through the read-write wrapper.
+machine.succeed(su("/run/wrappers/bin/local-test-dir-write update"))
+dir_output = machine.succeed(su("/run/wrappers/bin/local-test-dir-read")).strip().split("\n")
+assert dir_output[0].strip() == "token-updated", f"expected token-updated, got {dir_output}"
+assert dir_output[1].strip() == "meta-updated", f"expected meta-updated, got {dir_output}"
+machine.log("PASS: directory read-write wrapper updates backend-managed files")
+
+# Verify one backend entry per file and deletion propagation.
+dir_a_backend_files = machine.succeed(
+    "find /var/lib/underwrap-local/secrets/test/dir-a/files -type f -printf '%P\\n' | sort"
+).strip().split("\n")
+assert dir_a_backend_files == ["sub/nested", "token"], f"unexpected dir-a backend files: {dir_a_backend_files}"
+dir_b_backend_files = machine.succeed(
+    "find /var/lib/underwrap-local/secrets/test/dir-b/files -type f -printf '%P\\n' | sort || true"
+).strip().split("\n")
+assert dir_b_backend_files == ["meta"], f"unexpected dir-b backend files: {dir_b_backend_files}"
+machine.log("PASS: directory backend stores one entry per file and propagates deletions")
+
+# While a wrapped target is running, a separate same-UID host process must not
+# be able to access the mounted secret files from the host namespace view.
+machine.succeed(
+    "su testuser -s /bin/sh -c '"
+    "setsid /run/wrappers/bin/local-test-dir-sleep 300 </dev/null >/dev/null 2>&1 &'"
+)
+time.sleep(1)
+
+host_view = machine.execute(
+    "su testuser -s /bin/sh -c 'cat $HOME/.config/underwrap-dir-a/token 2>/dev/null'"
+)[0]
+assert host_view != 0, "FAIL: same-UID host process can read directory credential file"
+
+host_view = machine.execute(
+    "su testuser -s /bin/sh -c 'cat $HOME/.local/share/underwrap-dir-b/meta 2>/dev/null'"
+)[0]
+assert host_view != 0, "FAIL: same-UID host process can read second directory credential file"
+
+host_find = machine.succeed(
+    "su testuser -s /bin/sh -c 'find $HOME/.config/underwrap-dir-a -maxdepth 2 -type f 2>/dev/null || true'"
+).strip()
+assert host_find == "", f"FAIL: host view exposes mounted directory files: {host_find}"
+machine.log("PASS: same-UID host processes cannot access mounted directory credential files")
+
+machine.execute("pkill -u testuser -f local-test-dir-sleep || true")
+time.sleep(0.5)
+
+# The mounted directories must disappear from normal host view after the wrapper exits.
+post_exit = machine.execute(
+    "su testuser -s /bin/sh -c 'test -e $HOME/.config/underwrap-dir-a/token'"
+)[0]
+assert post_exit != 0, "FAIL: directory credential file remained visible after wrapper exit"
+post_exit = machine.execute(
+    "su testuser -s /bin/sh -c 'test -e $HOME/.local/share/underwrap-dir-b/meta'"
+)[0]
+assert post_exit != 0, "FAIL: second directory credential file remained visible after wrapper exit"
+machine.log("PASS: directory credentials leave no host-visible files after wrapper exit")
+
+# Symlink creation inside a managed tree must be rejected.
+machine.fail(su("/run/wrappers/bin/local-test-dir-symlink"))
+machine.log("PASS: directory sync rejects symlinks in managed trees")
+
+# While a libsecret wrapper is running, the private bus must also remain
+# inaccessible to a same-UID host process.
+machine.succeed(
+    'su testuser -s /bin/sh -c "'
+    'setsid /run/wrappers/bin/local-test-libsecret lookup service gh account github.com '
+    '</dev/null >/dev/null 2>&1 &"'
+)
+time.sleep(1)
+libsecret_host_view = machine.succeed(
+    "su testuser -s /bin/sh -c 'find /tmp/.underwrap-ns-bus -type s 2>/dev/null || true'"
+).strip()
+assert libsecret_host_view == "", f"FAIL: same-UID host process sees private bus socket: {libsecret_host_view}"
+machine.log("PASS: same-UID host process cannot see private libsecret bus socket")
+machine.execute("pkill -u testuser -f local-test-libsecret || true")
+time.sleep(0.5)
+
+# ============================================================
 # REMOTE INSTANCE: tunnel lifecycle
 # ============================================================
 

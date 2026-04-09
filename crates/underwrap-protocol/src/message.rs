@@ -395,19 +395,53 @@ impl WireDecode for WrapperRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadDirectoryBinding {
+    pub credential_ref: String,
+    pub target_path: String,
+    pub access: AccessMode,
+}
+
+impl WireEncode for ReadDirectoryBinding {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        self.credential_ref.encode(out)?;
+        self.target_path.encode(out)?;
+        self.access.encode(out)
+    }
+}
+
+impl WireDecode for ReadDirectoryBinding {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        Ok(Self {
+            credential_ref: String::decode(reader)?,
+            target_path: String::decode(reader)?,
+            access: AccessMode::decode(reader)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperResponse {
-    ReadOk { env: HashMap<String, SecretBytes> },
+    ReadOk {
+        env: HashMap<String, SecretBytes>,
+        directories: Vec<ReadDirectoryBinding>,
+    },
     UnlockOk,
-    Challenge { nonce: Vec<u8> },
-    Error { code: ErrorCode, message: String },
+    Challenge {
+        nonce: Vec<u8>,
+    },
+    Error {
+        code: ErrorCode,
+        message: String,
+    },
 }
 
 impl WireEncode for WrapperResponse {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {
-            Self::ReadOk { env } => {
+            Self::ReadOk { env, directories } => {
                 0u8.encode(out)?;
-                env.encode(out)
+                env.encode(out)?;
+                directories.encode(out)
             }
             Self::UnlockOk => 1u8.encode(out),
             Self::Challenge { nonce } => {
@@ -428,6 +462,7 @@ impl WireDecode for WrapperResponse {
         match u8::decode(reader)? {
             0 => Ok(Self::ReadOk {
                 env: HashMap::<String, SecretBytes>::decode(reader)?,
+                directories: Vec::<ReadDirectoryBinding>::decode(reader)?,
             }),
             1 => Ok(Self::UnlockOk),
             2 => Ok(Self::Challenge {
@@ -747,6 +782,123 @@ impl WireDecode for SecretsdResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Directory channel protocol (daemon <-> underwrap-ns over scoped socketpair)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectoryRequest {
+    ListFiles,
+    ReadFile { path: String },
+    WriteFile { path: String, content: SecretBytes },
+    DeleteFile { path: String },
+}
+
+impl WireEncode for DirectoryRequest {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::ListFiles => 0u8.encode(out),
+            Self::ReadFile { path } => {
+                1u8.encode(out)?;
+                path.encode(out)
+            }
+            Self::WriteFile { path, content } => {
+                2u8.encode(out)?;
+                path.encode(out)?;
+                content.encode(out)
+            }
+            Self::DeleteFile { path } => {
+                3u8.encode(out)?;
+                path.encode(out)
+            }
+        }
+    }
+}
+
+impl WireDecode for DirectoryRequest {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::ListFiles),
+            1 => Ok(Self::ReadFile {
+                path: String::decode(reader)?,
+            }),
+            2 => Ok(Self::WriteFile {
+                path: String::decode(reader)?,
+                content: SecretBytes::decode(reader)?,
+            }),
+            3 => Ok(Self::DeleteFile {
+                path: String::decode(reader)?,
+            }),
+            other => Err(anyhow!("invalid directory request discriminant: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectoryResponse {
+    ListFilesOk {
+        paths: Vec<String>,
+    },
+    ReadFileOk {
+        content: Option<SecretBytes>,
+    },
+    WriteFileOk,
+    DeleteFileOk {
+        existed: bool,
+    },
+    Error {
+        code: DirectoryErrorCode,
+        message: String,
+    },
+}
+
+impl WireEncode for DirectoryResponse {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::ListFilesOk { paths } => {
+                0u8.encode(out)?;
+                paths.encode(out)
+            }
+            Self::ReadFileOk { content } => {
+                1u8.encode(out)?;
+                content.encode(out)
+            }
+            Self::WriteFileOk => 2u8.encode(out),
+            Self::DeleteFileOk { existed } => {
+                3u8.encode(out)?;
+                existed.encode(out)
+            }
+            Self::Error { code, message } => {
+                4u8.encode(out)?;
+                code.encode(out)?;
+                message.encode(out)
+            }
+        }
+    }
+}
+
+impl WireDecode for DirectoryResponse {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::ListFilesOk {
+                paths: Vec::<String>::decode(reader)?,
+            }),
+            1 => Ok(Self::ReadFileOk {
+                content: Option::<SecretBytes>::decode(reader)?,
+            }),
+            2 => Ok(Self::WriteFileOk),
+            3 => Ok(Self::DeleteFileOk {
+                existed: bool::decode(reader)?,
+            }),
+            4 => Ok(Self::Error {
+                code: DirectoryErrorCode::decode(reader)?,
+                message: String::decode(reader)?,
+            }),
+            other => Err(anyhow!("invalid directory response discriminant: {other}")),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Backend protocol
 // ---------------------------------------------------------------------------
 
@@ -950,6 +1102,36 @@ impl WireDecode for ErrorCode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DirectoryErrorCode {
+    InvalidRequest,
+    Unauthorized,
+    Internal,
+}
+
+impl WireEncode for DirectoryErrorCode {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::InvalidRequest => 0u8.encode(out),
+            Self::Unauthorized => 1u8.encode(out),
+            Self::Internal => 2u8.encode(out),
+        }
+    }
+}
+
+impl WireDecode for DirectoryErrorCode {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        match u8::decode(reader)? {
+            0 => Ok(Self::InvalidRequest),
+            1 => Ok(Self::Unauthorized),
+            2 => Ok(Self::Internal),
+            other => Err(anyhow!(
+                "invalid directory error code discriminant: {other}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BackendErrorCode {
     Internal,
 }
@@ -990,6 +1172,11 @@ mod tests {
     fn wrapper_response_roundtrip() {
         let resp = WrapperResponse::ReadOk {
             env: HashMap::from([("TOKEN".to_string(), SecretBytes::from("secret123"))]),
+            directories: vec![ReadDirectoryBinding {
+                credential_ref: "gws/state".to_string(),
+                target_path: ".config/gws".to_string(),
+                access: AccessMode::ReadOnly,
+            }],
         };
         let encoded = encode_to_vec(&resp).unwrap();
         let parsed: WrapperResponse = decode_from_slice(&encoded).unwrap();

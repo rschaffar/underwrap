@@ -136,7 +136,7 @@ fn one_wrapper_config() -> (
 
 fn expect_single_env_bytes(resp: WrapperResponse) -> Vec<u8> {
     match resp {
-        WrapperResponse::ReadOk { env } => {
+        WrapperResponse::ReadOk { env, .. } => {
             assert_eq!(env.len(), 1, "expected exactly one env binding");
             let (_key, value) = env.into_iter().next().unwrap();
             Vec::from(value)
@@ -170,6 +170,14 @@ fn expect_credential_status(resp: ControlResponse) -> CredentialStatus {
     match resp {
         ControlResponse::StatusCredentialOk { status } => status,
         other => panic!("expected StatusCredentialOk, got {other:?}"),
+    }
+}
+
+fn directory_credential(path: &str) -> underwrap_protocol::config::CredentialDef {
+    underwrap_protocol::config::CredentialDef {
+        mode: underwrap_protocol::config::CredentialMode::Directory {
+            path: path.to_string(),
+        },
     }
 }
 
@@ -222,6 +230,57 @@ async fn read_before_store_returns_not_found() {
 // ===========================================================================
 
 #[tokio::test]
+async fn overlapping_directory_paths_rejected_at_startup() {
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let base = tempdir.path();
+    let control_socket = base.join("control.sock");
+    let wrapper_socket = base.join("wrapper.sock");
+    let storage_dir = base.join("secrets");
+
+    let mut credentials = HashMap::new();
+    credentials.insert("gws/state".to_string(), directory_credential(".config/gws"));
+    credentials.insert(
+        "gws/state-nested".to_string(),
+        directory_credential(".config/gws/session"),
+    );
+
+    let mut use_map = HashMap::new();
+    use_map.insert(
+        "gws/state".to_string(),
+        underwrap_protocol::config::CredentialUse {
+            access: underwrap_protocol::config::AccessMode::ReadWrite,
+        },
+    );
+    use_map.insert(
+        "gws/state-nested".to_string(),
+        underwrap_protocol::config::CredentialUse {
+            access: underwrap_protocol::config::AccessMode::ReadWrite,
+        },
+    );
+
+    let mut wrapper_def = wrapper("/usr/bin/true", "gws/state", "IGNORED");
+    wrapper_def.use_map = use_map;
+    wrapper_def.socket = wrapper_socket;
+
+    let config = underwrap_protocol::config::DaemonConfig {
+        sockets: underwrap_protocol::config::SocketConfig {
+            control: control_socket,
+            ..Default::default()
+        },
+        storage: underwrap_protocol::config::StorageConfig::Plain { dir: storage_dir },
+        allowed_users: Vec::new(),
+        credentials,
+        wrappers: HashMap::from([("dir-wrapper".to_string(), wrapper_def)]),
+    };
+
+    let err = underwrapd::server::run(config, None).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("overlapping directory credential paths")
+    );
+}
+
+#[tokio::test]
 async fn read_uses_wrapper_socket_without_client_supplied_name() {
     // Wrapper identity is anchored in the wrapper socket plus the peer's
     // effective GID. The request itself carries no wrapper name.
@@ -253,6 +312,29 @@ async fn store_undeclared_secret_rejected() {
         ControlResponse::Error { code, message } => {
             assert!(matches!(code, ErrorCode::NotFound));
             assert!(message.contains("unknown/secret"));
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn store_directory_credential_rejected() {
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "dir-w".to_string(),
+        wrapper("/usr/bin/true", "gws/state", "IGNORED"),
+    );
+    let mut credentials = HashMap::new();
+    credentials.insert("gws/state".to_string(), directory_credential(".config/gws"));
+    let daemon = TestDaemon::start(wrappers, credentials).await.unwrap();
+
+    let resp = daemon.store_secret("gws/state", "data").await.unwrap();
+    match resp {
+        ControlResponse::Error { code, message } => {
+            assert!(matches!(code, ErrorCode::Unauthorized));
+            assert!(message.contains("not an env credential"));
         }
         other => panic!("expected Error, got {other:?}"),
     }

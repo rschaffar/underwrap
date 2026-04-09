@@ -91,6 +91,7 @@ Every byte of secret material — whether it is:
 - a plain injected token
 - mutable credential state
 - libsecret-managed data
+- directory-credential file contents
 - derived access-token source material
 
 must be read from or written to the daemon's `StorageBackend` path.
@@ -128,6 +129,7 @@ In practice this means:
 - the wrapper-socket request is authenticated by wrapper identity
 - the exec→namespace handoff uses an inherited anonymous pipe
 - the libsecret channel is created during an authenticated wrapper request and then inherited forward
+- directory credential channels are created during an authenticated wrapper request and then inherited forward
 
 No user-controlled token or environment-variable based side channel is trusted as the primary authorization mechanism.
 
@@ -139,6 +141,7 @@ In particular:
 
 - the fd 3 pipe is consumed before the target is exec'd
 - the libsecret channel fd must not be inherited by the final target process
+- directory credential channel fds must not be inherited by the final target process
 
 ### 5. Processes that hold secret material should be non-dumpable whenever possible
 
@@ -622,16 +625,18 @@ In libsecret mode, `underwrap-ns` launches:
 
 ### Why mount isolation matters
 
-The setup also uses a mount namespace so that the private bus socket and proc view live in a namespace-private filesystem context.
+The setup also uses a mount namespace so that the private bus socket, proc view, and any namespace-private staged filesystem credentials live in a namespace-private filesystem context.
 
 Important steps include:
 
 1. making mounts private
-2. mounting a fresh `/proc` inside the PID namespace
-3. mounting a private tmpfs for the D-Bus socket
+2. mounting a fresh `/proc` inside the PID namespace for libsecret mode
+3. mounting private tmpfs roots for namespace-private runtime state such as the D-Bus socket and staged directory credentials
 4. hiding `/run/user/<uid>/bus` if it exists
 
-These steps are not decorative. They are part of keeping the host's normal session bus from becoming the path of least resistance.
+These steps are not decorative. They are part of keeping the host's normal session bus — and the host's normal home-directory view — from becoming the path of least resistance.
+
+For directory credentials, the same mount-namespace isolation is what keeps backend-managed files out of the host's ordinary home-directory view. Another same-UID host process should not be able to read those mounted files directly from the host namespace while the wrapper runs.
 
 ### A real limitation: abstract D-Bus sockets
 

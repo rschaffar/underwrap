@@ -28,6 +28,7 @@ The workspace tests cover things such as:
 - daemon read/write behavior
 - unlock and lock state handling
 - fd passing and scoped libsecret channel behavior
+- scoped directory channel behavior
 - Secret Service data model behavior
 
 These tests are fast and good at catching mistakes in individual components.
@@ -47,6 +48,9 @@ It boots a NixOS VM with real underwrap services and then checks properties such
 - target process isolation properties
 - core dump prevention
 - libsecret mode end to end
+- directory credential staging and sync
+- same-UID host-namespace invisibility of mounted directory credential files
+- same-UID host-namespace invisibility of private libsecret runtime sockets
 - remote backend tunnel lifecycle
 - absence of secret values in logs
 

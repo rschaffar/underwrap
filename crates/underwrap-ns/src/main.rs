@@ -14,8 +14,15 @@
 //! Usage: underwrap-ns <target> [args...]
 //! Environment secret bindings are read from fd 3 (not stdin, not argv).
 
-use std::os::unix::process::CommandExt;
+mod directory_credential;
 
+use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
+
+use directory_credential::{
+    cleanup_directory_mounts, close_directory_channel_fds_for_exec, prepare_directory_mounts,
+    sync_directory_mounts,
+};
 use underwrap_protocol::exec::ExecBundle;
 
 /// The fd number used to pass the secret from underwrap-exec.
@@ -23,6 +30,7 @@ const SECRET_FD: i32 = 3;
 
 /// The fd number used for the secretsd channel (from underwrap-exec).
 const CHANNEL_FD: i32 = 4;
+const DIRECTORY_STAGING_ROOT: &str = "/tmp/.underwrap-ns-directories";
 
 fn main() {
     if let Err(e) = run() {
@@ -46,6 +54,10 @@ fn run() -> Result<(), String> {
     let exec_bundle =
         read_secret_fd().map_err(|e| format!("reading exec bundle from fd {SECRET_FD}: {e}"))?;
 
+    let has_directory_credentials = !exec_bundle.directories.is_empty();
+    let target_home =
+        resolve_target_home().map_err(|e| format!("resolving target home directory: {e}"))?;
+
     // Make this process non-dumpable immediately. Since the parent process
     // (this process after fork) never execs, the flag persists for its
     // entire lifetime. This prevents same-UID processes from reading
@@ -58,10 +70,9 @@ fn run() -> Result<(), String> {
         ));
     }
 
-    // Create new PID namespace (and mount namespace for libsecret isolation).
+    // Create new PID namespace and, when needed, a private mount namespace.
     let libsecret = std::env::var("UNDERWRAP_LIBSECRET").is_ok();
-    let unshare_flags = if libsecret {
-        // Mount namespace hides the real session bus socket from the target.
+    let unshare_flags = if libsecret || has_directory_credentials {
         libc::CLONE_NEWPID | libc::CLONE_NEWNS
     } else {
         libc::CLONE_NEWPID
@@ -72,12 +83,27 @@ fn run() -> Result<(), String> {
         return Err(format!("unshare failed: {err}"));
     }
 
-    // Do NOT mount /proc or set up mounts here — we're still in the parent
-    // PID namespace. unshare(CLONE_NEWPID) only affects the next fork's child.
-    // Mounting /proc here would mount the PARENT namespace's procfs.
+    if libsecret || has_directory_credentials {
+        setup_directory_mount_namespace_base(has_directory_credentials)
+            .map_err(|e| format!("mount namespace setup failed: {e}"))?;
+    }
 
-    // Do NOT drop caps here — the child needs cap_sys_admin for mount ops.
-    // Caps will be dropped in the child after mount setup.
+    let mounted_directories = if has_directory_credentials {
+        prepare_directory_mounts(
+            &exec_bundle.directories,
+            &target_home,
+            &PathBuf::from(DIRECTORY_STAGING_ROOT),
+        )
+        .map_err(|e| format!("preparing directory credentials: {e}"))?
+    } else {
+        Vec::new()
+    };
+
+    // Do NOT mount /proc here — we're still in the parent PID namespace.
+    // unshare(CLONE_NEWPID) only affects the next fork's child.
+
+    // Do NOT drop caps here — the child still needs cap_sys_admin for
+    // libsecret-specific mount operations.
 
     // Fork. Child gets PID 1 in the new namespace.
     let pid = unsafe { libc::fork() };
@@ -219,20 +245,49 @@ fn run() -> Result<(), String> {
             unsafe { libc::close(CHANNEL_FD) };
         }
 
+        // Directory channels are only for wrapper-controlled staging/sync.
+        // The final target must not inherit them.
+        close_directory_channel_fds_for_exec(&mounted_directories);
+
         let err = cmd.exec();
         eprintln!("underwrap-ns: exec failed: {err}");
         std::process::exit(1);
     }
 
-    // Parent: drop caps (parent doesn't need them after fork).
-    drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
+    // Parent: if there are no directory credentials, it no longer needs
+    // cap_sys_admin after the fork. Directory cleanup requires it later.
+    if !has_directory_credentials {
+        drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
+    }
 
-    // Parent: wait for child, forward exit code.
+    // Parent: wait for child, then sync and clean up directory mounts.
     let mut status: libc::c_int = 0;
     let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         return Err(format!("waitpid failed: {err}"));
+    }
+
+    let sync_result = sync_directory_mounts(&mounted_directories);
+    let cleanup_result = cleanup_directory_mounts(&mounted_directories);
+    let staging_cleanup_result = if has_directory_credentials {
+        cleanup_directory_staging_root()
+    } else {
+        Ok(())
+    };
+
+    if let Err(e) = cleanup_result {
+        return Err(format!("directory cleanup failed: {e}"));
+    }
+    if let Err(e) = staging_cleanup_result {
+        return Err(format!("directory staging cleanup failed: {e}"));
+    }
+    if let Err(e) = sync_result {
+        return Err(format!("directory sync failed: {e}"));
+    }
+
+    if has_directory_credentials {
+        drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
     }
 
     if libc::WIFEXITED(status) {
@@ -248,12 +303,9 @@ fn run() -> Result<(), String> {
     std::process::exit(1);
 }
 
-/// Set up the mount namespace for libsecret isolation.
-/// MUST be called after unshare(CLONE_NEWNS) but BEFORE drop_caps(),
-/// because mount operations require cap_sys_admin.
-fn setup_mount_namespace() -> Result<(), String> {
-    // Make all mounts private so our bind mounts don't propagate back
-    // to the parent namespace.
+/// Set up the shared mount namespace state used by directory credentials.
+/// MUST be called after unshare(CLONE_NEWNS) and before any bind mounts.
+fn setup_directory_mount_namespace_base(mount_directory_staging: bool) -> Result<(), String> {
     let root = std::ffi::CString::new("/").unwrap();
     let ret = unsafe {
         libc::mount(
@@ -269,7 +321,34 @@ fn setup_mount_namespace() -> Result<(), String> {
         return Err(format!("mount(MS_PRIVATE|MS_REC) failed: {err}"));
     }
 
-    // Mount a fresh /proc so the PID namespace is properly isolated.
+    if mount_directory_staging {
+        std::fs::create_dir_all(DIRECTORY_STAGING_ROOT).map_err(|e| {
+            format!("creating directory staging mount point {DIRECTORY_STAGING_ROOT}: {e}")
+        })?;
+        let staging_root = std::ffi::CString::new(DIRECTORY_STAGING_ROOT).unwrap();
+        let tmpfs = std::ffi::CString::new("tmpfs").unwrap();
+        let ret = unsafe {
+            libc::mount(
+                tmpfs.as_ptr(),
+                staging_root.as_ptr(),
+                tmpfs.as_ptr(),
+                0,
+                c"size=8m,mode=0700".as_ptr() as *const libc::c_void,
+            )
+        };
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            return Err(format!("mount tmpfs for directory staging failed: {err}"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Set up the additional mount namespace pieces needed for libsecret.
+/// MUST be called in the PID-namespace child before cap drop so the
+/// fresh /proc reflects the child PID namespace.
+fn setup_mount_namespace() -> Result<(), String> {
     let proc_path = std::ffi::CString::new("/proc").unwrap();
     let proc_type = std::ffi::CString::new("proc").unwrap();
     let ret = unsafe {
@@ -286,10 +365,6 @@ fn setup_mount_namespace() -> Result<(), String> {
         return Err(format!("mount fresh /proc failed: {err}"));
     }
 
-    // Mount a private tmpfs for the bus socket. Create the mount point
-    // under /tmp (user-writable), then mount tmpfs over it. The tmpfs
-    // content is only visible inside this mount namespace. We use a
-    // fixed path since we're in our own mount namespace (no collision).
     let bus_dir = "/tmp/.underwrap-ns-bus";
     std::fs::create_dir_all(bus_dir)
         .map_err(|e| format!("creating bus mount point {bus_dir}: {e}"))?;
@@ -309,7 +384,6 @@ fn setup_mount_namespace() -> Result<(), String> {
         return Err(format!("mount tmpfs for private bus failed: {err}"));
     }
 
-    // Hide the real session bus socket.
     let uid = unsafe { libc::getuid() };
     let real_bus = format!("/run/user/{uid}/bus");
     if std::path::Path::new(&real_bus).exists() {
@@ -507,6 +581,34 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     cmd.env("DBUS_SESSION_BUS_ADDRESS", &actual_bus_address);
 
     Ok(())
+}
+
+fn cleanup_directory_staging_root() -> Result<(), String> {
+    let staging_root = std::ffi::CString::new(DIRECTORY_STAGING_ROOT).unwrap();
+    let ret = unsafe { libc::umount2(staging_root.as_ptr(), libc::MNT_DETACH) };
+    if ret != 0 {
+        return Err(format!(
+            "unmounting directory staging root failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    std::fs::remove_dir(DIRECTORY_STAGING_ROOT)
+        .map_err(|e| format!("removing directory staging mount point: {e}"))
+}
+
+fn resolve_target_home() -> Result<PathBuf, std::io::Error> {
+    let uid = unsafe { libc::getuid() };
+    let pwd = unsafe { libc::getpwuid(uid) };
+    if pwd.is_null() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("getpwuid({uid}) returned null"),
+        ));
+    }
+    let home = unsafe { std::ffi::CStr::from_ptr((*pwd).pw_dir) }
+        .to_str()
+        .map_err(std::io::Error::other)?;
+    Ok(PathBuf::from(home))
 }
 
 /// Read the execution bundle from the pipe on fd 3 and close the fd.

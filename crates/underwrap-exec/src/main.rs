@@ -15,9 +15,11 @@
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 
-use underwrap_protocol::exec::ExecBundle;
+use underwrap_protocol::exec::{ExecBundle, ExecDirectoryBinding};
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
+use underwrap_protocol::message::{
+    ReadDirectoryBinding, SecretBytes, WrapperRequest, WrapperResponse,
+};
 
 /// Fixed config directory used when running with elevated privileges.
 const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
@@ -25,6 +27,18 @@ const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
 /// Path to the underwrap-ns binary. Set by the NixOS module via sidecar config.
 /// Falls back to searching next to the current executable.
 const DEFAULT_NS_BINARY: &str = "/run/wrappers/bin/underwrap-ns";
+const FIRST_DIRECTORY_CHANNEL_FD: i32 = 10;
+
+struct ReceivedDirectoryBinding {
+    metadata: ReadDirectoryBinding,
+    channel_fd: i32,
+}
+
+type ReadSecretResult = (
+    std::collections::HashMap<String, SecretBytes>,
+    Option<i32>,
+    Vec<ReceivedDirectoryBinding>,
+);
 
 fn main() -> Result<()> {
     // Derive wrapper identity from the kernel-assigned effective GID,
@@ -42,7 +56,7 @@ fn main() -> Result<()> {
 
     // Request secret from daemon (while still setgid — daemon checks egid).
     // If libsecret mode, also receive the secretsd channel fd.
-    let (env_bindings, channel_fd) =
+    let (env_bindings, channel_fd, directory_bindings) =
         request_secret(&wrapper_config.wrapper_socket, wrapper_config.libsecret)?;
 
     // Drop all elevated privileges.
@@ -62,6 +76,7 @@ fn main() -> Result<()> {
         &all_args,
         env_bindings,
         channel_fd,
+        directory_bindings,
     )
 }
 
@@ -287,6 +302,7 @@ fn exec_via_ns(
     args: &[String],
     env_bindings: std::collections::HashMap<String, SecretBytes>,
     channel_fd: Option<i32>,
+    directory_bindings: Vec<ReceivedDirectoryBinding>,
 ) -> Result<()> {
     // Verify underwrap-ns exists before proceeding.
     if !std::path::Path::new(ns_binary).exists() {
@@ -315,6 +331,17 @@ fn exec_via_ns(
         bail!("pipe() failed: {err}");
     }
     let (pipe_read, pipe_write) = (pipe_fds[0], pipe_fds[1]);
+
+    let exec_directories: Vec<ExecDirectoryBinding> = directory_bindings
+        .iter()
+        .enumerate()
+        .map(|(index, binding)| ExecDirectoryBinding {
+            credential_ref: binding.metadata.credential_ref.clone(),
+            target_path: binding.metadata.target_path.clone(),
+            access: binding.metadata.access,
+            channel_fd: (FIRST_DIRECTORY_CHANNEL_FD + index as i32) as u32,
+        })
+        .collect();
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -352,6 +379,19 @@ fn exec_via_ns(
             unsafe { libc::close(ch_fd) };
         }
 
+        for (binding, exec_binding) in directory_bindings.iter().zip(&exec_directories) {
+            let target_fd = exec_binding.channel_fd as i32;
+            if binding.channel_fd != target_fd {
+                let ret = unsafe { libc::dup2(binding.channel_fd, target_fd) };
+                if ret < 0 {
+                    let err = std::io::Error::last_os_error();
+                    eprintln!("underwrap-exec: dup2 directory channel fd failed: {err}");
+                    std::process::exit(1);
+                }
+            }
+            unsafe { libc::close(binding.channel_fd) };
+        }
+
         // Build argv for underwrap-ns: <ns_binary> <target> [args...]
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new(ns_binary);
@@ -385,9 +425,12 @@ fn exec_via_ns(
     // Close read end.
     unsafe { libc::close(pipe_read) };
 
-    // Close channel fd in parent — only the child needs it.
+    // Close channel fds in parent — only the child needs them at exec time.
     if let Some(ch_fd) = channel_fd {
         unsafe { libc::close(ch_fd) };
+    }
+    for binding in &directory_bindings {
+        unsafe { libc::close(binding.channel_fd) };
     }
 
     // Write env bindings to pipe.
@@ -398,6 +441,7 @@ fn exec_via_ns(
             env: env_bindings,
             env_passthrough: config.env_passthrough.clone(),
             env_set: config.env_set.clone(),
+            directories: exec_directories,
         };
         write_frame_sync(&mut pipe, &payload).context("writing env bindings to pipe")?;
         // pipe_write closed on drop.
@@ -535,10 +579,7 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
 /// Request credentials from the daemon. If `libsecret` is true, also
 /// receive the secretsd channel fd via SCM_RIGHTS.
 /// Returns (env_bindings, optional_channel_fd).
-fn request_secret(
-    socket_path: &str,
-    libsecret: bool,
-) -> Result<(std::collections::HashMap<String, SecretBytes>, Option<i32>)> {
+fn request_secret(socket_path: &str, libsecret: bool) -> Result<ReadSecretResult> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
@@ -547,8 +588,8 @@ fn request_secret(
     write_frame_sync(&mut stream, &req)?;
 
     let response: WrapperResponse = read_frame_sync(&mut stream)?;
-    let env_bindings = match response {
-        WrapperResponse::ReadOk { env } => env,
+    let (env_bindings, directories) = match response {
+        WrapperResponse::ReadOk { env, directories } => (env, directories),
         WrapperResponse::Error { code, message } => {
             bail!("daemon denied request ({code:?}): {message}");
         }
@@ -571,7 +612,21 @@ fn request_secret(
         None
     };
 
-    Ok((env_bindings, channel_fd))
+    let mut directory_bindings = Vec::with_capacity(directories.len());
+    for metadata in directories {
+        let fd = underwrap_protocol::scm_rights::recv_fd(&stream).with_context(|| {
+            format!(
+                "failed to receive directory channel fd for credential '{}'",
+                metadata.credential_ref
+            )
+        })?;
+        directory_bindings.push(ReceivedDirectoryBinding {
+            metadata,
+            channel_fd: fd,
+        });
+    }
+
+    Ok((env_bindings, channel_fd, directory_bindings))
 }
 
 fn drop_privilege() -> Result<()> {

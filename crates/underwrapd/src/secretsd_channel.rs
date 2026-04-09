@@ -145,14 +145,15 @@ fn process_request(
                         message: "invalid prefix".to_string(),
                     };
                 }
-                format!("{prefix}{rel_prefix}")
+                format!("{prefix}/{rel_prefix}")
             };
 
             match store.list(&full_prefix) {
                 Ok(ids) => {
+                    let relative_prefix = format!("{prefix}/");
                     let relative_ids: Vec<String> = ids
                         .into_iter()
-                        .filter_map(|id| id.strip_prefix(prefix).map(|s| s.to_string()))
+                        .filter_map(|id| id.strip_prefix(&relative_prefix).map(|s| s.to_string()))
                         .collect();
                     debug!(wrapper = %wrapper_name, prefix = %full_prefix, count = relative_ids.len(), "secretsd list");
                     SecretsdResponse::ListOk { ids: relative_ids }
@@ -206,7 +207,7 @@ fn scoped_id(prefix: &str, relative_id: &str) -> Option<String> {
     if relative_id.is_empty() || has_traversal(relative_id) {
         return None;
     }
-    Some(format!("{prefix}{relative_id}"))
+    Some(format!("{prefix}/{relative_id}"))
 }
 
 /// Check for path traversal attempts.
@@ -270,7 +271,7 @@ mod tests {
         }
     }
 
-    const PREFIX: &str = "test-wrapper/libsecret/";
+    const PREFIX: &str = "test-wrapper/libsecret";
     const WRAPPER: &str = "test-wrapper";
 
     #[test]

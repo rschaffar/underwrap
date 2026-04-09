@@ -184,6 +184,13 @@ fn build_allowed_user_uids(config: &DaemonConfig) -> Result<std::collections::Ha
 
 /// Validate configuration at load time.
 fn validate_config(config: &DaemonConfig) -> Result<()> {
+    for (cred_ref, credential) in &config.credentials {
+        if let CredentialMode::Directory { path } = &credential.mode {
+            validate_relative_credential_path(path)
+                .with_context(|| format!("credential '{cred_ref}' has invalid directory path"))?;
+        }
+    }
+
     let mut sockets = std::collections::HashSet::new();
     for (name, wrapper) in &config.wrappers {
         anyhow::ensure!(
@@ -206,6 +213,7 @@ fn validate_config(config: &DaemonConfig) -> Result<()> {
 
         let mut env_vars = std::collections::HashSet::new();
         let mut libsecret_count = 0usize;
+        let mut directory_paths: Vec<String> = Vec::new();
         for (cred_ref, usage) in &wrapper.use_map {
             let credential = config.credentials.get(cred_ref).with_context(|| {
                 format!("wrapper '{name}' references undeclared credential '{cred_ref}'")
@@ -228,6 +236,23 @@ fn validate_config(config: &DaemonConfig) -> Result<()> {
                 CredentialMode::Libsecret => {
                     libsecret_count += 1;
                 }
+                CredentialMode::Directory { path } => {
+                    validate_relative_credential_path(path).with_context(|| {
+                        format!("wrapper '{name}' uses directory credential '{cred_ref}' with invalid path")
+                    })?;
+                    directory_paths.push(path.clone());
+                }
+            }
+        }
+        for (i, left) in directory_paths.iter().enumerate() {
+            for right in directory_paths.iter().skip(i + 1) {
+                anyhow::ensure!(
+                    !paths_overlap(left, right),
+                    "wrapper '{}' uses overlapping directory credential paths '{}' and '{}'",
+                    name,
+                    left,
+                    right,
+                );
             }
         }
         anyhow::ensure!(
@@ -265,6 +290,30 @@ fn validate_config(config: &DaemonConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_relative_credential_path(path: &str) -> Result<()> {
+    anyhow::ensure!(!path.is_empty(), "path must not be empty");
+    anyhow::ensure!(!path.starts_with('/'), "path must be relative");
+    anyhow::ensure!(!path.contains('\0'), "path must not contain null bytes");
+    for component in path.split('/') {
+        anyhow::ensure!(
+            !component.is_empty(),
+            "path must not contain empty segments"
+        );
+        anyhow::ensure!(component != "." && component != "..", "path must be clean");
+    }
+    Ok(())
+}
+
+fn paths_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|rest| rest.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn bind_socket(
@@ -609,20 +658,35 @@ async fn handle_wrapper(
         write_frame_async(&mut stream, &follow_up_response).await?;
     }
 
-    // If this is a successful read for a libsecret-enabled wrapper,
-    // create a socketpair and send one end via SCM_RIGHTS.
+    // If this is a successful read for a wrapper with scoped channels,
+    // create those channels and send one end via SCM_RIGHTS.
     if matches!(&response, WrapperResponse::ReadOk { .. })
         && matches!(&request, WrapperRequest::Read { .. })
         && let Some(wrapper_def) = state.config.wrappers.get(wrapper_name)
-        && let Some((credential_ref, access)) =
-            wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
     {
-        match setup_secretsd_channel(&stream, credential_ref, access, &state).await {
-            Ok(()) => {
-                info!(wrapper = %wrapper_name, credential = %credential_ref, "secretsd channel established");
+        if let Some((credential_ref, access)) =
+            wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
+        {
+            match setup_secretsd_channel(&stream, credential_ref, access, &state).await {
+                Ok(()) => {
+                    info!(wrapper = %wrapper_name, credential = %credential_ref, "secretsd channel established");
+                }
+                Err(e) => {
+                    error!(wrapper = %wrapper_name, credential = %credential_ref, err = %e, "failed to setup secretsd channel");
+                }
             }
-            Err(e) => {
-                error!(wrapper = %wrapper_name, credential = %credential_ref, err = %e, "failed to setup secretsd channel");
+        }
+
+        for binding in wrapper_directory_bindings(wrapper_def, &state.config.credentials) {
+            match setup_directory_channel(&stream, &binding.credential_ref, binding.access, &state)
+                .await
+            {
+                Ok(()) => {
+                    info!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, "directory channel established");
+                }
+                Err(e) => {
+                    error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, err = %e, "failed to setup directory channel");
+                }
             }
         }
     }
@@ -665,12 +729,45 @@ async fn setup_secretsd_channel(
     daemon_end.set_nonblocking(true)?;
     let daemon_stream = UnixStream::from_std(daemon_end)?;
 
-    let prefix = format!("{credential_ref}/");
+    let prefix = credential_ref.to_string();
     let store: Arc<dyn underwrap_store::StorageBackend> = state.store_arc();
     let name = credential_ref.to_string();
 
     tokio::spawn(async move {
         crate::secretsd_channel::run_channel(daemon_stream, store, prefix, name, access).await;
+    });
+
+    Ok(())
+}
+
+async fn setup_directory_channel(
+    stream: &UnixStream,
+    credential_ref: &str,
+    access: AccessMode,
+    state: &State,
+) -> Result<()> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    let (daemon_end, wrapper_end) =
+        underwrap_protocol::scm_rights::create_socketpair().context("creating socketpair")?;
+
+    let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(stream.as_raw_fd()) };
+    let wrapper_fd = wrapper_end.as_raw_fd();
+    let send_result = underwrap_protocol::scm_rights::send_fd(&std_stream, wrapper_fd);
+    std::mem::forget(std_stream);
+    send_result.context("sending directory channel fd")?;
+    drop(wrapper_end);
+
+    daemon_end.set_nonblocking(true)?;
+    let daemon_stream = UnixStream::from_std(daemon_end)?;
+
+    let prefix = format!("{credential_ref}/files");
+    let store = state.store_arc();
+    let credential = credential_ref.to_string();
+
+    tokio::spawn(async move {
+        crate::directory_channel::run_channel(daemon_stream, store, prefix, credential, access)
+            .await;
     });
 
     Ok(())
@@ -701,6 +798,31 @@ fn wrapper_env_credentials<'a>(
             out.push((cred_ref.as_str(), variable.as_str()));
         }
     }
+    out
+}
+
+fn wrapper_directory_bindings(
+    wrapper: &WrapperDef,
+    credentials: &std::collections::HashMap<String, underwrap_protocol::config::CredentialDef>,
+) -> Vec<ReadDirectoryBinding> {
+    let mut out = Vec::new();
+    for (cred_ref, usage) in &wrapper.use_map {
+        if let Some(underwrap_protocol::config::CredentialDef {
+            mode: CredentialMode::Directory { path },
+        }) = credentials.get(cred_ref)
+        {
+            out.push(ReadDirectoryBinding {
+                credential_ref: cred_ref.clone(),
+                target_path: path.clone(),
+                access: usage.access,
+            });
+        }
+    }
+    out.sort_by(|a, b| {
+        a.target_path
+            .cmp(&b.target_path)
+            .then(a.credential_ref.cmp(&b.credential_ref))
+    });
     out
 }
 
@@ -757,7 +879,12 @@ async fn process_read_for(
         }
     }
 
-    WrapperResponse::ReadOk { env }
+    let directories = wrapper_directory_bindings(wrapper_def, &state.config.credentials);
+    for binding in &directories {
+        audit::read_granted(wrapper_name, &binding.credential_ref, Some(peer_uid), scope);
+    }
+
+    WrapperResponse::ReadOk { env, directories }
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,10 +1248,18 @@ fn process_control(
             secret_id,
             material,
         } => {
-            if !state.config.credentials.contains_key(secret_id) {
+            let Some(credential) = state.config.credentials.get(secret_id) else {
                 return ControlResponse::Error {
                     code: ErrorCode::NotFound,
                     message: format!("credential '{secret_id}' not declared in configuration"),
+                };
+            };
+            if !matches!(credential.mode, CredentialMode::Env { .. }) {
+                return ControlResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: format!(
+                        "credential '{secret_id}' is not an env credential; use the wrapped tool or a mode-specific import path instead"
+                    ),
                 };
             }
 
@@ -1149,11 +1284,11 @@ fn build_wrapper_status(name: &str, state: &State) -> Option<WrapperStatus> {
     let wrapper = state.config.wrappers.get(name)?;
     let mut usage = Vec::new();
     for (cred_ref, binding) in &wrapper.use_map {
-        let stored = match state.store.read(cred_ref) {
-            Ok(Some(_)) => Some(true),
-            Ok(None) => Some(false),
-            Err(_) => None,
-        };
+        let stored = state
+            .config
+            .credentials
+            .get(cred_ref)
+            .and_then(|credential| credential_stored(cred_ref, credential, &*state.store).ok());
         usage.push(CredentialUsageStatus {
             credential: cred_ref.clone(),
             access: binding.access,
@@ -1175,13 +1310,10 @@ fn build_wrapper_status(name: &str, state: &State) -> Option<WrapperStatus> {
 }
 
 fn build_credential_status(name: &str, state: &State) -> Option<CredentialStatus> {
-    if !state.config.credentials.contains_key(name) {
-        return None;
-    }
+    let credential = state.config.credentials.get(name)?;
 
-    let (stored, storage_error) = match state.store.read(name) {
-        Ok(Some(_)) => (true, None),
-        Ok(None) => (false, None),
+    let (stored, storage_error) = match credential_stored(name, credential, &*state.store) {
+        Ok(stored) => (stored, None),
         Err(e) => (false, Some(format!("{e}"))),
     };
 
@@ -1190,4 +1322,18 @@ fn build_credential_status(name: &str, state: &State) -> Option<CredentialStatus
         stored,
         storage_error,
     })
+}
+
+fn credential_stored(
+    cred_ref: &str,
+    credential: &underwrap_protocol::config::CredentialDef,
+    store: &dyn StorageBackend,
+) -> Result<bool> {
+    match &credential.mode {
+        CredentialMode::Env { .. } => Ok(store.read(cred_ref)?.is_some()),
+        CredentialMode::Libsecret => Ok(!store.list(cred_ref)?.is_empty()),
+        CredentialMode::Directory { .. } => {
+            Ok(!store.list(&format!("{cred_ref}/files"))?.is_empty())
+        }
+    }
 }

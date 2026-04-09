@@ -30,6 +30,11 @@ credentials:
     mode: env
     variable: SLACK_TOKEN
 
+  # A reusable directory credential rooted at $HOME/.config/gws.
+  gws/state:
+    mode: directory
+    path: .config/gws
+
 wrappers:
   # Each wrapper entry defines one underwrap-facing command.
   # The socket and group together form the authenticated wrapper identity:
@@ -84,4 +89,16 @@ wrappers:
         access: read-only
     unlock:
       mode: always
+      maxSeconds: 1800
+
+  # A tool that persists backend-managed credential state in a directory tree.
+  gws-auth:
+    target: /usr/bin/gws
+    socket: /run/underwrap/gws-auth.sock
+    group: underwrap-gws-auth
+    use:
+      gws/state:
+        access: read-write
+    unlock:
+      mode: optional
       maxSeconds: 1800

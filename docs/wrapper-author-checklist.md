@@ -124,21 +124,28 @@ Ask:
 Log identifiers, paths, and wrapper names.
 Do **not** log secret material.
 
-## 8. Does the wrapper need libsecret mode?
+## 8. Does the wrapper need libsecret mode or directory mode?
 
 Use libsecret mode when the target genuinely expects Secret Service behavior, such as:
 
 - `gh auth login`
 - tools that store/retrieve credentials via libsecret
 
+Use directory mode when the target persists backend-managed credential state in files under the user's home view, such as:
+
+- config directories containing tokens or refresh state
+- tools that expect credential files under `.config/` or `.local/share/`
+
 Do **not** use libsecret mode just because it sounds more advanced.
+Do **not** use directory mode as a catch-all for random writable app state.
 
 Ask:
 
 - does the target need Secret Service semantics?
+- does it actually persist credential material in a directory tree?
 - or is a simple env-injected secret enough?
 
-The simpler mode is usually better unless the workflow really needs libsecret.
+The simpler mode is usually better unless the workflow really needs libsecret or directory-backed state.
 
 ## 9. Does the wrapper need unlock semantics?
 

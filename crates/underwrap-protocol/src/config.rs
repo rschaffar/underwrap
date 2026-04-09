@@ -175,6 +175,9 @@ pub enum CredentialMode {
     /// Expose as a private Secret Service namespace.
     #[serde(rename = "libsecret")]
     Libsecret,
+    /// Expose as a private directory mounted into the target home view.
+    #[serde(rename = "directory")]
+    Directory { path: String },
 }
 
 /// A wrapper definition.
@@ -314,6 +317,21 @@ storage:
         match &config.storage {
             StorageConfig::Plain { dir } => assert_eq!(dir, &PathBuf::from("/tmp/test-secrets")),
             _ => panic!("expected Plain backend"),
+        }
+    }
+
+    #[test]
+    fn directory_credential_parses() {
+        let yaml = r#"
+credentials:
+  gws/state:
+    mode: directory
+    path: .config/gws
+"#;
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        match &config.credentials["gws/state"].mode {
+            CredentialMode::Directory { path } => assert_eq!(path, ".config/gws"),
+            other => panic!("expected directory credential, got {other:?}"),
         }
     }
 

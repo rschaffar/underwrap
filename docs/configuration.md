@@ -60,10 +60,11 @@ For an instance named `work`, the module creates names following this pattern:
 
 A **credential** is a reusable resource inside an instance.
 
-A credential defines how it is exposed to targets. Today there are two credential modes:
+A credential defines how it is exposed to targets. Today there are three credential modes:
 
 - `env` — inject as an environment variable
 - `libsecret` — expose as a private Secret Service namespace
+- `directory` — expose a private backend-managed directory in the target's home view
 
 Example:
 
@@ -76,16 +77,39 @@ credentials."jira/api-token" = {
 credentials."github/gh" = {
   mode = "libsecret";
 };
+
+credentials."gws/state" = {
+  mode = "directory";
+  path = ".config/gws";
+};
 ```
 
 ### Credential options
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
-| `mode` | `"env"` or `"libsecret"` | required | How the credential is exposed |
+| `mode` | `"env"`, `"libsecret"`, or `"directory"` | required | How the credential is exposed |
 | `variable` | string or `null` | `null` | Environment variable name for `mode = "env"` |
+| `path` | string or `null` | `null` | Target-home-relative directory path for `mode = "directory"` |
 
 A credential reference is implicitly scoped by the instance behind the scenes, so the same reference string may be reused safely across different instances.
+
+### Directory credentials
+
+A `directory` credential exposes a backend-managed directory tree at a path relative to the target user's real home directory.
+
+Example:
+
+```nix
+credentials."gws/state" = {
+  mode = "directory";
+  path = ".config/gws";
+};
+```
+
+underwrap materializes that directory inside the wrapper namespace just before exec. For `read-write` bindings it syncs resulting file changes back to the backend after the target exits. For `read-only` bindings it mounts the directory read-only.
+
+The path must be relative and clean. Absolute paths and traversal components such as `..` are rejected.
 
 ## Wrappers
 
@@ -124,11 +148,17 @@ use."jira/api-token" = {
 };
 ```
 
-For shared mutable state such as a libsecret namespace:
+For shared mutable state such as a libsecret namespace or backend-managed directory:
 
 ```nix
 use."github/gh" = {
   access = "read-write";
+};
+```
+
+```nix
+use."gws/state" = {
+  access = "read-only";
 };
 ```
 
@@ -178,6 +208,11 @@ services.underwrap.instances.work = {
     "github/gh" = {
       mode = "libsecret";
     };
+
+    "gws/state" = {
+      mode = "directory";
+      path = ".config/gws";
+    };
   };
 
   wrappers = {
@@ -204,6 +239,16 @@ services.underwrap.instances.work = {
         maxSeconds = 1800;
       };
     };
+
+    gws-auth = {
+      target = "${pkgs.gws}/bin/gws";
+      use."gws/state".access = "read-write";
+      unlock = {
+        mode = "optional";
+        maxSeconds = 1800;
+      };
+    };
+  };
   };
 };
 ```
@@ -315,13 +360,15 @@ Those files contain the information `underwrap-exec` needs at runtime, such as:
 
 ## Storing credentials
 
-Store a declared credential through the control socket:
+Store an `env` credential through the control socket:
 
 ```bash
 sudo underwrapctl --socket /run/underwrap-work/control.sock store jira/api-token
 ```
 
-`underwrapctl` reads from standard input until EOF.
+`underwrapctl` reads UTF-8 text from standard input until EOF.
+
+`directory` and `libsecret` credentials are normally populated by the wrapped tool itself while it is running under underwrap. They are not stored with the plain `store` command.
 
 ## Related docs
 

@@ -16,6 +16,48 @@ let
       echo "$pid"
     done
   '';
+  dirReadScript = pkgs.writeShellScript "dir-read-target" ''
+    set -eu
+    ${pkgs.coreutils}/bin/cat "$HOME/.config/underwrap-dir-a/token"
+    ${pkgs.coreutils}/bin/printf '\n'
+    ${pkgs.coreutils}/bin/cat "$HOME/.local/share/underwrap-dir-b/meta"
+    ${pkgs.coreutils}/bin/printf '\n'
+  '';
+  dirWriteScript = pkgs.writeShellScript "dir-write-target" ''
+    set -eu
+    mode="''${1:-seed}"
+    ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a/sub"
+    ${pkgs.coreutils}/bin/mkdir -p "$HOME/.local/share/underwrap-dir-b"
+    case "$mode" in
+      seed)
+        printf 'token-seed' > "$HOME/.config/underwrap-dir-a/token"
+        printf 'nested-seed' > "$HOME/.config/underwrap-dir-a/sub/nested"
+        printf 'meta-seed' > "$HOME/.local/share/underwrap-dir-b/meta"
+        printf 'old-file' > "$HOME/.local/share/underwrap-dir-b/old"
+        ;;
+      update)
+        printf 'token-updated' > "$HOME/.config/underwrap-dir-a/token"
+        printf 'nested-updated' > "$HOME/.config/underwrap-dir-a/sub/nested"
+        printf 'meta-updated' > "$HOME/.local/share/underwrap-dir-b/meta"
+        ${pkgs.coreutils}/bin/rm -f "$HOME/.local/share/underwrap-dir-b/old"
+        ;;
+      *)
+        echo "unknown mode: $mode" >&2
+        exit 1
+        ;;
+    esac
+  '';
+  dirSleepScript = pkgs.writeShellScript "dir-sleep-target" ''
+    set -eu
+    ${pkgs.coreutils}/bin/cat "$HOME/.config/underwrap-dir-a/token" >/dev/null
+    ${pkgs.coreutils}/bin/cat "$HOME/.local/share/underwrap-dir-b/meta" >/dev/null
+    exec ${pkgs.coreutils}/bin/sleep "''${1:-300}"
+  '';
+  dirSymlinkScript = pkgs.writeShellScript "dir-symlink-target" ''
+    set -eu
+    ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
+    exec ${pkgs.coreutils}/bin/ln -s /etc/passwd "$HOME/.config/underwrap-dir-a/evil"
+  '';
 in {
   imports = [ nixosModule ];
 
@@ -106,6 +148,14 @@ in {
           "test/caps-tok" = { mode = "env"; variable = "CAPS_SECRET"; };
           "test/libsecret-store" = { mode = "libsecret"; };
           "test/ns-pids-store" = { mode = "libsecret"; };
+          "test/dir-a" = {
+            mode = "directory";
+            path = ".config/underwrap-dir-a";
+          };
+          "test/dir-b" = {
+            mode = "directory";
+            path = ".local/share/underwrap-dir-b";
+          };
         };
 
         wrappers = {
@@ -143,6 +193,30 @@ in {
             target = "${capsScript}";
             use."test/caps-tok".access = "read-only";
             envSet.PATH = pkgs.lib.makeBinPath [ pkgs.gnugrep ];
+          };
+          test-dir-write = {
+            target = "${dirWriteScript}";
+            use."test/dir-a".access = "read-write";
+            use."test/dir-b".access = "read-write";
+          };
+          test-dir-read = {
+            target = "${dirReadScript}";
+            use."test/dir-a".access = "read-only";
+            use."test/dir-b".access = "read-only";
+          };
+          test-dir-readonly-write = {
+            target = "${dirWriteScript}";
+            use."test/dir-a".access = "read-only";
+            use."test/dir-b".access = "read-only";
+          };
+          test-dir-sleep = {
+            target = "${dirSleepScript}";
+            use."test/dir-a".access = "read-only";
+            use."test/dir-b".access = "read-only";
+          };
+          test-dir-symlink = {
+            target = "${dirSymlinkScript}";
+            use."test/dir-a".access = "read-write";
           };
         };
       };

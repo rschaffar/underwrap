@@ -112,6 +112,32 @@ The target sees a private `DBUS_SESSION_BUS_ADDRESS` and talks to `underwrap-sec
 
 `underwrap-secretsd` does not authenticate to the daemon on its own. Instead, the daemon creates a pre-authenticated channel during the original wrapper request and passes one end of that channel into the namespace.
 
+## Directory credential flow
+
+Directory credentials reuse the same basic capability pattern as libsecret mode.
+
+Conceptually:
+
+```text
+underwrap-exec
+  -> underwrap-ns
+      -> namespace-private staging directory
+      -> bind-mount into $HOME/<configured-path>
+      -> target
+```
+
+For each configured directory credential binding:
+
+1. the daemon authenticates the wrapper request
+2. it creates a scoped channel for that credential root
+3. `underwrap-exec` passes channel metadata to `underwrap-ns`
+4. `underwrap-ns` materializes the current backend files in a namespace-private staging directory
+5. it bind-mounts that directory into the target's home view
+6. if the binding is read-only, it mounts it read-only
+7. after target exit, `underwrap-ns` syncs file changes back to the backend for read-write bindings
+
+Backend storage stays one key per file under `<ref>/files/<relative-path>`.
+
 See:
 
 - [GitHub via libsecret](gh-libsecret.md)

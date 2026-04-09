@@ -37,6 +37,9 @@ let
         if c.mode == "env" then {
           mode = "env";
           inherit (c) variable;
+        } else if c.mode == "directory" then {
+          mode = "directory";
+          inherit (c) path;
         } else {
           mode = "libsecret";
         }
@@ -186,12 +189,17 @@ let
   credentialSubmodule = lib.types.submodule {
     options = {
       mode = lib.mkOption {
-        type = lib.types.enum [ "env" "libsecret" ];
+        type = lib.types.enum [ "env" "libsecret" "directory" ];
       };
       variable = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Environment variable name for env credentials.";
+      };
+      path = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Target-home-relative path for directory credentials.";
       };
     };
   };
@@ -306,6 +314,13 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = lib.flatten (lib.mapAttrsToList (instName: inst:
+      lib.mapAttrsToList (ref: c: {
+        assertion = if c.mode == "env" then c.variable != null && c.path == null else if c.mode == "directory" then c.path != null && c.variable == null else c.variable == null && c.path == null;
+        message = if c.mode == "env" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": env credentials require variable and must not set path" else if c.mode == "directory" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": directory credentials require path and must not set variable" else "services.underwrap.instances.${instName}.credentials.\"${ref}\": libsecret credentials must not set variable or path";
+      }) inst.credentials
+    ) cfg.instances);
+
     # Merge all instance users.
     users.users = lib.mkMerge (lib.mapAttrsToList (_: i: i.users) instances);
     users.groups = lib.mkMerge (lib.mapAttrsToList (_: i: i.groups) instances);
