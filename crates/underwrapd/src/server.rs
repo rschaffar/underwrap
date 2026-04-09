@@ -1337,3 +1337,230 @@ fn credential_stored(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct MemStore {
+        data: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl MemStore {
+        fn with_entries(entries: &[(&str, &[u8])]) -> Self {
+            Self {
+                data: Mutex::new(
+                    entries
+                        .iter()
+                        .map(|(k, v)| ((*k).to_string(), v.to_vec()))
+                        .collect(),
+                ),
+            }
+        }
+    }
+
+    impl StorageBackend for MemStore {
+        fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>> {
+            Ok(self
+                .data
+                .lock()
+                .unwrap()
+                .get(secret_id)
+                .cloned()
+                .map(Into::into))
+        }
+
+        fn write(&self, secret_id: &str, material: &[u8]) -> Result<()> {
+            self.data
+                .lock()
+                .unwrap()
+                .insert(secret_id.to_string(), material.to_vec());
+            Ok(())
+        }
+
+        fn list(&self, prefix: &str) -> Result<Vec<String>> {
+            let mut ids: Vec<_> = self
+                .data
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|id| id.starts_with(prefix))
+                .cloned()
+                .collect();
+            ids.sort();
+            Ok(ids)
+        }
+
+        fn delete(&self, secret_id: &str) -> Result<bool> {
+            Ok(self.data.lock().unwrap().remove(secret_id).is_some())
+        }
+    }
+
+    fn env_credential(variable: &str) -> underwrap_protocol::config::CredentialDef {
+        underwrap_protocol::config::CredentialDef {
+            mode: CredentialMode::Env {
+                variable: variable.to_string(),
+            },
+        }
+    }
+
+    fn libsecret_credential() -> underwrap_protocol::config::CredentialDef {
+        underwrap_protocol::config::CredentialDef {
+            mode: CredentialMode::Libsecret {},
+        }
+    }
+
+    fn directory_credential(path: &str) -> underwrap_protocol::config::CredentialDef {
+        underwrap_protocol::config::CredentialDef {
+            mode: CredentialMode::Directory {
+                path: path.to_string(),
+            },
+        }
+    }
+
+    fn wrapper_with_uses(
+        uses: &[(&str, underwrap_protocol::config::CredentialUse)],
+    ) -> WrapperDef {
+        WrapperDef {
+            target: "/usr/bin/true".into(),
+            use_map: uses
+                .iter()
+                .map(|(name, usage)| ((*name).to_string(), usage.clone()))
+                .collect(),
+            unlock: underwrap_protocol::config::UnlockPolicy::default(),
+            socket: "/tmp/test.sock".into(),
+            group: "test-group".to_string(),
+            unlock_key: None,
+        }
+    }
+
+    #[test]
+    fn validate_relative_credential_path_accepts_clean_relative_paths() {
+        assert!(validate_relative_credential_path(".config/gh").is_ok());
+        assert!(validate_relative_credential_path("dir/subdir/file").is_ok());
+    }
+
+    #[test]
+    fn validate_relative_credential_path_rejects_bad_inputs() {
+        for bad in ["", "/abs", ".", "..", "a//b", "a/./b", "a/../b", "a\0b"] {
+            assert!(
+                validate_relative_credential_path(bad).is_err(),
+                "expected rejection for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn paths_overlap_detects_identical_and_nested_paths() {
+        assert!(paths_overlap("a/b", "a/b"));
+        assert!(paths_overlap("a", "a/b"));
+        assert!(paths_overlap("a/b", "a"));
+        assert!(!paths_overlap("a/b", "a-b"));
+        assert!(!paths_overlap("a/b", "a/c"));
+    }
+
+    #[test]
+    fn check_peer_auth_covers_allow_all_root_uid_uid_and_gid() {
+        assert!(check_peer_auth(&None, &[], &[]).is_ok());
+
+        let root = Some(PeerCred {
+            pid: 1,
+            uid: 0,
+            gid: 999,
+            egid: Some(999),
+        });
+        assert!(check_peer_auth(&root, &[1000], &[1001]).is_ok());
+
+        let by_uid = Some(PeerCred {
+            pid: 2,
+            uid: 1000,
+            gid: 2000,
+            egid: Some(2000),
+        });
+        assert!(check_peer_auth(&by_uid, &[1000], &[]).is_ok());
+
+        let by_gid = Some(PeerCred {
+            pid: 3,
+            uid: 3000,
+            gid: 2000,
+            egid: Some(2000),
+        });
+        assert!(check_peer_auth(&by_gid, &[], &[2000]).is_ok());
+
+        let denied = check_peer_auth(&by_gid, &[1234], &[5678]).unwrap_err();
+        assert!(denied.contains("not in allowlist"));
+        assert!(check_peer_auth(&None, &[1234], &[]).is_err());
+    }
+
+    #[test]
+    fn wrapper_binding_helpers_select_expected_credentials() {
+        let credentials = HashMap::from([
+            ("github/token".to_string(), env_credential("GH_TOKEN")),
+            ("libsecret/default".to_string(), libsecret_credential()),
+            (
+                "gws/state".to_string(),
+                directory_credential(".config/gcloud"),
+            ),
+        ]);
+        let wrapper = wrapper_with_uses(&[
+            (
+                "libsecret/default",
+                underwrap_protocol::config::CredentialUse {
+                    access: AccessMode::ReadWrite,
+                },
+            ),
+            (
+                "github/token",
+                underwrap_protocol::config::CredentialUse {
+                    access: AccessMode::ReadOnly,
+                },
+            ),
+            (
+                "gws/state",
+                underwrap_protocol::config::CredentialUse {
+                    access: AccessMode::ReadWrite,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            wrapper_libsecret_binding(&wrapper, &credentials),
+            Some(("libsecret/default", AccessMode::ReadWrite))
+        );
+
+        assert_eq!(
+            wrapper_env_credentials(&wrapper, &credentials),
+            vec![("github/token", "GH_TOKEN")]
+        );
+
+        assert_eq!(
+            wrapper_directory_bindings(&wrapper, &credentials),
+            vec![ReadDirectoryBinding {
+                credential_ref: "gws/state".to_string(),
+                target_path: ".config/gcloud".to_string(),
+                access: AccessMode::ReadWrite,
+            }]
+        );
+    }
+
+    #[test]
+    fn credential_stored_checks_env_libsecret_and_directory_namespaces() {
+        let store = MemStore::with_entries(&[
+            ("github/token", b"ghp_test"),
+            ("libsecret/default/item_1", b"secret"),
+            ("gws/state/files/access_tokens.json", b"{}"),
+        ]);
+
+        assert!(credential_stored("github/token", &env_credential("GH_TOKEN"), &store).unwrap());
+        assert!(credential_stored("libsecret/default", &libsecret_credential(), &store).unwrap());
+        assert!(credential_stored("gws/state", &directory_credential(".config/gcloud"), &store)
+            .unwrap());
+
+        assert!(!credential_stored("missing/env", &env_credential("MISSING"), &store).unwrap());
+        assert!(!credential_stored("missing/libsecret", &libsecret_credential(), &store).unwrap());
+        assert!(!credential_stored("missing/dir", &directory_credential(".config/missing"), &store)
+            .unwrap());
+    }
+}
