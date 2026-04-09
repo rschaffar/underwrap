@@ -15,13 +15,13 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub storage: StorageConfig,
 
+    /// Reusable credentials, keyed by credential reference.
+    #[serde(default)]
+    pub credentials: HashMap<String, CredentialDef>,
+
     /// Wrapper definitions, keyed by wrapper name.
     #[serde(default)]
     pub wrappers: HashMap<String, WrapperDef>,
-
-    /// Secret definitions, keyed by secret id (e.g. "github/token").
-    #[serde(default)]
-    pub secrets: HashMap<String, SecretDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,7 +63,7 @@ fn default_control_mode() -> u32 {
 }
 
 /// Deserialize a Unix permission mode from either an integer or an octal string.
-/// Accepts: 432 (decimal), "0660" (octal string), "660" (octal string without prefix).
+/// Accepts: 384 (decimal), "0600" (octal string), "600" (octal string without prefix).
 fn deserialize_mode<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -76,7 +76,7 @@ where
         type Value = u32;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("an integer or octal string like \"0660\"")
+            formatter.write_str("an integer or octal string like \"0600\"")
         }
 
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<u32, E> {
@@ -153,88 +153,81 @@ fn default_storage_dir() -> PathBuf {
     PathBuf::from("/var/lib/underwrap/secrets")
 }
 
+/// A reusable credential definition, keyed by credential reference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialDef {
+    #[serde(flatten)]
+    pub mode: CredentialMode,
+}
+
+/// How a credential is exposed to the wrapped target.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode")]
+pub enum CredentialMode {
+    /// Inject as an environment variable.
+    #[serde(rename = "env")]
+    Env { variable: String },
+    /// Expose as a private Secret Service namespace.
+    #[serde(rename = "libsecret")]
+    Libsecret,
+}
+
 /// A wrapper definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WrapperDef {
     /// Absolute path to the target binary to exec.
     pub target: PathBuf,
 
-    /// Secret reference (must match a key in `secrets`).
-    pub secret: String,
+    /// Credential usage bindings for this wrapper, keyed by credential ref.
+    #[serde(rename = "use", default)]
+    pub use_map: HashMap<String, CredentialUse>,
 
-    /// How the secret is injected into the child process.
+    /// Wrapper unlock policy.
     #[serde(default)]
-    pub injection: InjectionMode,
-
-    /// Whether this wrapper requires an explicit unlock before reads.
-    /// If true, reads are denied unless an active unlock grant exists.
-    #[serde(default)]
-    pub require_unlock: bool,
+    pub unlock: UnlockPolicy,
 
     /// Unix socket path for this wrapper's authenticated daemon channel.
-    ///
-    /// Each wrapper gets its own socket. The daemon binds this path at
-    /// startup, assigns it to the wrapper's group, and accepts only peers
-    /// whose effective GID matches the configured wrapper group.
     pub socket: PathBuf,
 
     /// Unix group name for GID-based wrapper identity.
-    ///
-    /// The daemon resolves this group to a GID at startup and uses
-    /// SO_PEERCRED effective GID to verify the caller's identity.
-    /// The wrapper binary must be installed setgid to this group
-    /// (e.g. via security.wrappers on NixOS).
     pub group: String,
 
     /// SSH public key (OpenSSH format) required for unlock authentication.
-    /// If set, unlock requests must provide a valid SSH agent signature.
-    /// If unset, unlock is granted without challenge (GID identity only).
+    /// If set, unlock requests can use SSH-agent challenge flow.
     #[serde(default)]
     pub unlock_key: Option<String>,
-
-    /// Whether this wrapper provides a private D-Bus session with a
-    /// Secret Service provider (underwrap-secretsd) inside the PID namespace.
-    /// Enables tools using libsecret (e.g. gh) to store/retrieve credentials.
-    #[serde(default)]
-    pub libsecret: bool,
 }
-/// How the secret material is delivered to the child process.
-///
-/// Currently only `env` is implemented. Additional modes (stdin, tempfile)
-/// may be added later.
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode")]
-pub enum InjectionMode {
-    /// Set an environment variable.
-    #[serde(rename = "env")]
-    Env {
-        #[serde(default = "default_env_var")]
-        variable: String,
-    },
+pub struct CredentialUse {
+    pub access: AccessMode,
 }
 
-impl Default for InjectionMode {
-    fn default() -> Self {
-        Self::Env {
-            variable: default_env_var(),
-        }
-    }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AccessMode {
+    #[serde(rename = "read-only")]
+    ReadOnly,
+    #[serde(rename = "read-write")]
+    ReadWrite,
 }
 
-fn default_env_var() -> String {
-    "UNDERWRAP_SECRET".to_string()
-}
-
-/// A secret entry definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecretDef {
-    /// Whether this secret can be updated at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UnlockPolicy {
     #[serde(default)]
-    pub mutable: bool,
+    pub mode: UnlockMode,
+    #[serde(rename = "maxSeconds")]
+    pub max_seconds: Option<u64>,
+}
 
-    /// Labels / metadata.
-    #[serde(default)]
-    pub labels: HashMap<String, String>,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum UnlockMode {
+    #[default]
+    #[serde(rename = "always-unlocked")]
+    AlwaysUnlocked,
+    #[serde(rename = "always")]
+    Always,
+    #[serde(rename = "optional")]
+    Optional,
 }
 
 #[cfg(test)]
@@ -246,63 +239,63 @@ mod tests {
         let yaml = "{}";
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.wrappers.is_empty());
-        assert!(config.secrets.is_empty());
+        assert!(config.credentials.is_empty());
     }
 
     #[test]
     fn full_wrapper_config() {
         let yaml = r#"
+credentials:
+  github/token:
+    mode: env
+    variable: GH_TOKEN
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
-    secret: github/token
     socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
-    injection:
-      mode: env
-      variable: GH_TOKEN
-secrets:
-  github/token:
-    mutable: false
+    use:
+      github/token:
+        access: read-only
+    unlock:
+      mode: always-unlocked
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.wrappers.len(), 1);
+        assert_eq!(config.credentials.len(), 1);
         let w = &config.wrappers["gh-authorized"];
         assert_eq!(w.target, PathBuf::from("/usr/bin/gh"));
-        assert_eq!(w.secret, "github/token");
-        let InjectionMode::Env { variable } = &w.injection;
-        assert_eq!(variable, "GH_TOKEN");
+        assert_eq!(w.use_map.len(), 1);
+        assert_eq!(w.unlock.mode, UnlockMode::AlwaysUnlocked);
+        match &config.credentials["github/token"].mode {
+            CredentialMode::Env { variable } => assert_eq!(variable, "GH_TOKEN"),
+            other => panic!("expected env credential, got {other:?}"),
+        }
     }
 
     #[test]
-    fn injection_defaults() {
+    fn unlock_policy_parses() {
         let yaml = r#"
+credentials:
+  github/gh:
+    mode: libsecret
 wrappers:
-  w:
-    target: /bin/true
-    secret: s
-    socket: /run/underwrap/w.sock
-    group: testgroup
+  gh-auth:
+    target: /usr/bin/gh
+    socket: /run/underwrap/gh-auth.sock
+    group: underwrap-gh-auth
+    use:
+      github/gh:
+        access: read-write
+    unlock:
+      mode: optional
+      maxSeconds: 1800
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        let w = &config.wrappers["w"];
-        let InjectionMode::Env { variable } = &w.injection;
-        assert_eq!(variable, "UNDERWRAP_SECRET");
-    }
-
-    #[test]
-    fn mutable_secret() {
-        let yaml = r#"
-secrets:
-  test/mutable-secret:
-    mutable: true
-    labels:
-      owner: example-org
-"#;
-        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        let s = &config.secrets["test/mutable-secret"];
-        assert!(s.mutable);
-        assert_eq!(s.labels["owner"], "example-org");
+        let w = &config.wrappers["gh-auth"];
+        assert_eq!(w.unlock.mode, UnlockMode::Optional);
+        assert_eq!(w.unlock.max_seconds, Some(1800));
+        assert_eq!(w.use_map["github/gh"].access, AccessMode::ReadWrite);
     }
 
     #[test]
@@ -324,32 +317,38 @@ storage:
         let config = DaemonConfig {
             sockets: SocketConfig::default(),
             storage: StorageConfig::default(),
+            credentials: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "test/secret".to_string(),
+                    CredentialDef {
+                        mode: CredentialMode::Env {
+                            variable: "MY_VAR".to_string(),
+                        },
+                    },
+                );
+                m
+            },
             wrappers: {
                 let mut m = HashMap::new();
                 m.insert(
                     "test".to_string(),
                     WrapperDef {
                         target: PathBuf::from("/bin/test"),
-                        secret: "test/secret".to_string(),
-                        injection: InjectionMode::Env {
-                            variable: "MY_VAR".to_string(),
+                        use_map: {
+                            let mut u = HashMap::new();
+                            u.insert(
+                                "test/secret".to_string(),
+                                CredentialUse {
+                                    access: AccessMode::ReadOnly,
+                                },
+                            );
+                            u
                         },
-                        require_unlock: false,
+                        unlock: UnlockPolicy::default(),
                         socket: PathBuf::from("/run/underwrap/test.sock"),
                         group: "testgroup".to_string(),
                         unlock_key: None,
-                        libsecret: false,
-                    },
-                );
-                m
-            },
-            secrets: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "test/secret".to_string(),
-                    SecretDef {
-                        mutable: true,
-                        labels: HashMap::new(),
                     },
                 );
                 m
@@ -358,6 +357,6 @@ storage:
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed.wrappers.len(), 1);
-        assert_eq!(parsed.secrets.len(), 1);
+        assert_eq!(parsed.credentials.len(), 1);
     }
 }

@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
 
     info!(
         wrappers = config.wrappers.len(),
-        secrets = config.secrets.len(),
+        credentials = config.credentials.len(),
         "loaded configuration"
     );
 

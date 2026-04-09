@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::net::UnixStream;
 use tracing::{debug, error, info, warn};
 
+use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::{SecretsdErrorCode, SecretsdRequest, SecretsdResponse};
 use underwrap_store::StorageBackend;
@@ -28,10 +29,11 @@ pub async fn run_channel(
     store: Arc<dyn StorageBackend>,
     prefix: String,
     wrapper_name: String,
+    access: AccessMode,
 ) {
     info!(wrapper = %wrapper_name, prefix = %prefix, "secretsd channel opened");
 
-    if let Err(e) = channel_loop(stream, store, &prefix, &wrapper_name).await {
+    if let Err(e) = channel_loop(stream, store, &prefix, &wrapper_name, access).await {
         // EOF is normal (namespace died), other errors are logged.
         debug!(wrapper = %wrapper_name, err = %e, "secretsd channel closed");
     }
@@ -44,6 +46,7 @@ async fn channel_loop(
     store: Arc<dyn StorageBackend>,
     prefix: &str,
     wrapper_name: &str,
+    access: AccessMode,
 ) -> Result<()> {
     loop {
         let request: SecretsdRequest = match read_frame_async(&mut stream).await {
@@ -61,7 +64,7 @@ async fn channel_loop(
             }
         };
 
-        let response = process_request(&request, &*store, prefix, wrapper_name);
+        let response = process_request(&request, &*store, prefix, wrapper_name, access);
         write_frame_async(&mut stream, &response).await?;
     }
 }
@@ -71,6 +74,7 @@ fn process_request(
     store: &dyn StorageBackend,
     prefix: &str,
     wrapper_name: &str,
+    access: AccessMode,
 ) -> SecretsdResponse {
     match request {
         SecretsdRequest::Read { secret_id } => {
@@ -120,6 +124,12 @@ fn process_request(
             secret_id,
             material,
         } => {
+            if access != AccessMode::ReadWrite {
+                return SecretsdResponse::Error {
+                    code: SecretsdErrorCode::Unauthorized,
+                    message: "credential is read-only".to_string(),
+                };
+            }
             let full_id = scoped_id(prefix, secret_id);
             if full_id.is_none() {
                 warn!(wrapper = %wrapper_name, id = %secret_id, "rejected invalid secretsd write");
@@ -190,6 +200,12 @@ fn process_request(
         }
 
         SecretsdRequest::Delete { secret_id } => {
+            if access != AccessMode::ReadWrite {
+                return SecretsdResponse::Error {
+                    code: SecretsdErrorCode::Unauthorized,
+                    message: "credential is read-only".to_string(),
+                };
+            }
             let full_id = scoped_id(prefix, secret_id);
             if full_id.is_none() {
                 warn!(wrapper = %wrapper_name, id = %secret_id, "rejected invalid secretsd delete");
@@ -311,6 +327,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Ok { .. }));
 
@@ -328,6 +345,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         match resp {
             SecretsdResponse::Ok { material, .. } => {
@@ -362,6 +380,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         match resp {
             SecretsdResponse::Ok { ids: Some(ids), .. } => {
@@ -381,6 +400,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         match resp {
             SecretsdResponse::Ok { ids: Some(ids), .. } => {
@@ -404,6 +424,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         match resp {
             SecretsdResponse::Ok {
@@ -435,6 +456,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
 
@@ -446,6 +468,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
 
@@ -457,6 +480,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
 
@@ -468,6 +492,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
 
@@ -479,6 +504,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
     }
@@ -498,6 +524,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
     }

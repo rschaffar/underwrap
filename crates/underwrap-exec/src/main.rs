@@ -41,7 +41,7 @@ fn main() -> Result<()> {
 
     // Request secret from daemon (while still setgid — daemon checks egid).
     // If libsecret mode, also receive the secretsd channel fd.
-    let (mut material, channel_fd) =
+    let (env_bindings, channel_fd) =
         request_secret(&wrapper_config.wrapper_socket, wrapper_config.libsecret)?;
 
     // Drop all elevated privileges.
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
         ns_binary,
         &wrapper_config,
         &all_args,
-        &mut material,
+        env_bindings,
         channel_fd,
     )
 }
@@ -309,12 +309,12 @@ fn ssh_key_type_from_blob(blob: &[u8]) -> &str {
     std::str::from_utf8(&blob[4..4 + type_len]).unwrap_or("ssh-unknown")
 }
 
-/// Fork, pipe the secret to the child, child execs underwrap-ns.
+/// Fork, pipe env secret bindings to the child, child execs underwrap-ns.
 fn exec_via_ns(
     ns_binary: &str,
     config: &WrapperExecConfig,
     args: &[String],
-    material: &mut String,
+    env_bindings: std::collections::HashMap<String, String>,
     channel_fd: Option<i32>,
 ) -> Result<()> {
     // Verify underwrap-ns exists before proceeding.
@@ -381,10 +381,9 @@ fn exec_via_ns(
             unsafe { libc::close(ch_fd) };
         }
 
-        // Build argv for underwrap-ns: <ns_binary> <env_var> <target> [args...]
+        // Build argv for underwrap-ns: <ns_binary> <target> [args...]
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new(ns_binary);
-        cmd.arg(&config.env_variable);
         cmd.arg(&config.target);
 
         // ALWAYS strip internal env vars from the child — a malicious user
@@ -419,7 +418,7 @@ fn exec_via_ns(
         std::process::exit(1);
     }
 
-    // === Parent: write secret to pipe, wait for child ===
+    // === Parent: write env bindings to pipe, wait for child ===
 
     // Close read end.
     unsafe { libc::close(pipe_read) };
@@ -429,19 +428,16 @@ fn exec_via_ns(
         unsafe { libc::close(ch_fd) };
     }
 
-    // Write secret to pipe.
+    // Write env bindings to pipe.
     {
         use std::io::Write;
         use std::os::unix::io::FromRawFd;
         let mut pipe = unsafe { std::fs::File::from_raw_fd(pipe_write) };
-        pipe.write_all(material.as_bytes())
-            .context("writing secret to pipe")?;
+        let payload = serde_json::to_vec(&serde_json::json!({ "env": env_bindings }))?;
+        pipe.write_all(&payload)
+            .context("writing env bindings to pipe")?;
         // pipe_write closed on drop.
     }
-
-    // Zeroize the secret from this process's memory.
-    use zeroize::Zeroize;
-    material.zeroize();
 
     // Wait for child.
     let mut status: libc::c_int = 0;
@@ -507,7 +503,6 @@ fn resolve_gid_name(gid: u32) -> Result<String> {
 
 struct WrapperExecConfig {
     target: String,
-    env_variable: String,
     wrapper_socket: String,
     ns_binary: Option<String>,
     /// Whether libsecret mode is enabled for this wrapper.
@@ -538,8 +533,6 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
     #[derive(serde::Deserialize)]
     struct WrapperFile {
         target: String,
-        #[serde(default = "default_env")]
-        env_variable: String,
         wrapper_socket: String,
         #[serde(default)]
         ns_binary: Option<String>,
@@ -554,9 +547,6 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
         #[serde(default)]
         env_set: std::collections::HashMap<String, String>,
     }
-    fn default_env() -> String {
-        "UNDERWRAP_SECRET".to_string()
-    }
 
     let wf: WrapperFile = serde_yaml::from_str(&text)?;
     if !wf.target.starts_with('/') {
@@ -568,7 +558,6 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
 
     Ok(WrapperExecConfig {
         target: wf.target,
-        env_variable: wf.env_variable,
         wrapper_socket: wf.wrapper_socket,
         ns_binary: wf.ns_binary,
         libsecret: wf.libsecret,
@@ -579,10 +568,13 @@ fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
     })
 }
 
-/// Request the secret from the daemon. If `libsecret` is true, also
+/// Request credentials from the daemon. If `libsecret` is true, also
 /// receive the secretsd channel fd via SCM_RIGHTS.
-/// Returns (secret_material, optional_channel_fd).
-fn request_secret(socket_path: &str, libsecret: bool) -> Result<(String, Option<i32>)> {
+/// Returns (env_bindings, optional_channel_fd).
+fn request_secret(
+    socket_path: &str,
+    libsecret: bool,
+) -> Result<(std::collections::HashMap<String, String>, Option<i32>)> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
@@ -591,13 +583,11 @@ fn request_secret(socket_path: &str, libsecret: bool) -> Result<(String, Option<
     write_frame_sync(&mut stream, &req)?;
 
     let response: WrapperResponse = read_frame_sync(&mut stream)?;
-    let material = match response {
-        WrapperResponse::Ok {
-            material: Some(m), ..
-        } => m.into(),
-        WrapperResponse::Ok { material: None, .. } => {
-            bail!("daemon returned no material");
+    let env_bindings = match response {
+        WrapperResponse::Ok { env: Some(env), .. } => {
+            env.into_iter().map(|(k, v)| (k, String::from(v))).collect()
         }
+        WrapperResponse::Ok { env: None, .. } => std::collections::HashMap::new(),
         WrapperResponse::Error { code, message } => {
             bail!("daemon denied request ({code:?}): {message}");
         }
@@ -620,7 +610,7 @@ fn request_secret(socket_path: &str, libsecret: bool) -> Result<(String, Option<
         None
     };
 
-    Ok((material, channel_fd))
+    Ok((env_bindings, channel_fd))
 }
 
 fn drop_privilege() -> Result<()> {

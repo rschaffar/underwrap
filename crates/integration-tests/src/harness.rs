@@ -24,10 +24,10 @@ pub struct TestDaemon {
 }
 
 impl TestDaemon {
-    /// Start a daemon with the given wrapper and secret definitions.
+    /// Start a daemon with the given wrapper and credential definitions.
     pub async fn start(
         mut wrappers: HashMap<String, WrapperDef>,
-        secrets: HashMap<String, SecretDef>,
+        credentials: HashMap<String, CredentialDef>,
     ) -> Result<Self> {
         let tempdir = tempfile::TempDir::new()?;
         let base = tempdir.path();
@@ -50,8 +50,8 @@ impl TestDaemon {
             storage: StorageConfig::Plain {
                 dir: storage_dir.clone(),
             },
+            credentials,
             wrappers,
-            secrets,
         };
 
         let shutdown = Arc::new(Notify::new());
@@ -124,7 +124,7 @@ impl TestDaemon {
         Ok(resp)
     }
 
-    /// Store a secret via the control socket.
+    /// Store a credential via the control socket.
     pub async fn store_secret(&self, secret_id: &str, material: &str) -> Result<ControlResponse> {
         self.control_request(&ControlRequest::Store {
             secret_id: secret_id.to_string(),
@@ -158,7 +158,6 @@ fn current_group_name() -> String {
     let gid = unsafe { libc::getegid() };
     let grp = unsafe { libc::getgrgid(gid) };
     if grp.is_null() {
-        // Fallback: use numeric GID.
         return gid.to_string();
     }
     let name = unsafe { std::ffi::CStr::from_ptr((*grp).gr_name) };
@@ -166,41 +165,51 @@ fn current_group_name() -> String {
 }
 
 /// Create a simple wrapper def for testing (no unlock required).
-pub fn wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
+pub fn wrapper(target: &str, secret: &str, _env_var: &str) -> WrapperDef {
+    let mut use_map = HashMap::new();
+    use_map.insert(
+        secret.to_string(),
+        CredentialUse {
+            access: AccessMode::ReadOnly,
+        },
+    );
     WrapperDef {
         target: PathBuf::from(target),
-        secret: secret.to_string(),
-        injection: InjectionMode::Env {
-            variable: env_var.to_string(),
-        },
-        require_unlock: false,
+        use_map,
+        unlock: UnlockPolicy::default(),
         socket: PathBuf::new(),
         group: current_group_name(),
         unlock_key: None,
-        libsecret: false,
     }
 }
 
 /// Create a wrapper def that requires unlock before reads.
-pub fn locked_wrapper(target: &str, secret: &str, env_var: &str) -> WrapperDef {
+pub fn locked_wrapper(target: &str, secret: &str, _env_var: &str) -> WrapperDef {
+    let mut use_map = HashMap::new();
+    use_map.insert(
+        secret.to_string(),
+        CredentialUse {
+            access: AccessMode::ReadOnly,
+        },
+    );
     WrapperDef {
         target: PathBuf::from(target),
-        secret: secret.to_string(),
-        injection: InjectionMode::Env {
-            variable: env_var.to_string(),
+        use_map,
+        unlock: UnlockPolicy {
+            mode: UnlockMode::Always,
+            max_seconds: Some(3600),
         },
-        require_unlock: true,
         socket: PathBuf::new(),
         group: current_group_name(),
         unlock_key: None,
-        libsecret: false,
     }
 }
 
-/// Create a simple secret def for testing.
-pub fn secret(mutable: bool) -> SecretDef {
-    SecretDef {
-        mutable,
-        labels: HashMap::new(),
+/// Create a simple env credential def for testing.
+pub fn secret(_mutable: bool) -> CredentialDef {
+    CredentialDef {
+        mode: CredentialMode::Env {
+            variable: "UNDERWRAP_SECRET".to_string(),
+        },
     }
 }

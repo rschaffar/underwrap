@@ -96,63 +96,53 @@ in {
     instances = {
       # Local instance: plain storage on disk.
       local = {
+        credentials = {
+          "test/token" = { mode = "env"; variable = "MY_TOKEN"; };
+          "test/other" = { mode = "env"; variable = "OTHER_SECRET"; };
+          "test/locked-tok" = { mode = "env"; variable = "LOCKED_TOKEN"; };
+          "test/dumpable-tok" = { mode = "env"; variable = "DUMPABLE_SECRET"; };
+          "test/crash-tok" = { mode = "env"; variable = "CRASH_SECRET"; };
+          "test/caps-tok" = { mode = "env"; variable = "CAPS_SECRET"; };
+          "test/libsecret-store" = { mode = "libsecret"; };
+          "test/ns-pids-store" = { mode = "libsecret"; };
+        };
+
         wrappers = {
           test-echo = {
             target = "${pkgs.coreutils}/bin/env";
-            secret = "test/token";
-            injection = { mode = "env"; variable = "MY_TOKEN"; };
+            use."test/token".access = "read-only";
           };
           test-echo2 = {
             target = "${pkgs.coreutils}/bin/echo";
-            secret = "test/other";
-            injection = { mode = "env"; variable = "OTHER_SECRET"; };
+            use."test/other".access = "read-only";
           };
           test-locked = {
             target = "${pkgs.coreutils}/bin/env";
-            secret = "test/locked-tok";
-            injection = { mode = "env"; variable = "LOCKED_TOKEN"; };
-            requireUnlock = true;
+            use."test/locked-tok".access = "read-only";
+            unlock = { mode = "always"; maxSeconds = 60; };
           };
           test-sleep = {
             target = "${pkgs.coreutils}/bin/sleep";
-            secret = "test/dumpable-tok";
-            injection = { mode = "env"; variable = "DUMPABLE_SECRET"; };
+            use."test/dumpable-tok".access = "read-only";
           };
           test-crash = {
             target = "${crashScript}";
-            secret = "test/crash-tok";
-            injection = { mode = "env"; variable = "CRASH_SECRET"; };
+            use."test/crash-tok".access = "read-only";
           };
           test-libsecret = {
             target = "${pkgs.libsecret}/bin/secret-tool";
-            secret = "test/libsecret-tok";
-            injection = { mode = "env"; variable = "LIBSECRET_UNUSED"; };
-            libsecret = true;
+            use."test/libsecret-store".access = "read-write";
           };
           test-ns-pids = {
             target = "${listPidsScript}";
-            secret = "test/ns-pids-tok";
-            injection = { mode = "env"; variable = "NS_UNUSED"; };
+            use."test/ns-pids-store".access = "read-only";
             envSet.PATH = pkgs.lib.makeBinPath [ pkgs.coreutils ];
-            libsecret = true;  # libsecret mode creates mount namespace with fresh /proc
           };
           test-caps = {
             target = "${capsScript}";
-            secret = "test/caps-tok";
-            injection = { mode = "env"; variable = "CAPS_SECRET"; };
+            use."test/caps-tok".access = "read-only";
             envSet.PATH = pkgs.lib.makeBinPath [ pkgs.gnugrep ];
           };
-        };
-
-        secrets = {
-          "test/token" = { mutable = false; };
-          "test/other" = { mutable = true; };
-          "test/locked-tok" = { mutable = false; };
-          "test/dumpable-tok" = { mutable = false; };
-          "test/crash-tok" = { mutable = false; };
-          "test/libsecret-tok" = { mutable = false; };
-          "test/caps-tok" = { mutable = false; };
-          "test/ns-pids-tok" = { mutable = false; };
         };
       };
 
@@ -160,16 +150,14 @@ in {
       tunnel = {
         remote.enable = true;
 
-        wrappers = {
-          remote-echo = {
-            target = "${pkgs.coreutils}/bin/env";
-            secret = "remote/token";
-            injection = { mode = "env"; variable = "REMOTE_TOKEN"; };
-          };
+        credentials."remote/token" = {
+          mode = "env";
+          variable = "REMOTE_TOKEN";
         };
 
-        secrets = {
-          "remote/token" = { mutable = false; };
+        wrappers.remote-echo = {
+          target = "${pkgs.coreutils}/bin/env";
+          use."remote/token".access = "read-only";
         };
       };
     };

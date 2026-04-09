@@ -200,7 +200,10 @@ pub enum WrapperRequest {
 pub enum WrapperResponse {
     #[serde(rename = "ok")]
     Ok {
-        /// Secret material (for read requests).
+        /// Environment variable bindings for read requests.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        env: Option<std::collections::HashMap<String, SecretString>>,
+        /// Backward-compat/testing convenience for single env binding cases.
         #[serde(skip_serializing_if = "Option::is_none")]
         material: Option<SecretString>,
         /// Message (for unlock confirmations).
@@ -321,6 +324,7 @@ pub enum SecretsdResponse {
 pub enum SecretsdErrorCode {
     NotFound,
     InvalidRequest,
+    Unauthorized,
     Internal,
 }
 
@@ -414,12 +418,16 @@ mod tests {
     #[test]
     fn wrapper_response_ok() {
         let resp = WrapperResponse::Ok {
+            env: Some(std::collections::HashMap::from([(
+                "TOKEN".to_string(),
+                SecretString::from("secret123"),
+            )])),
             material: Some(SecretString::from("secret123")),
             message: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
-        assert!(json.contains("\"material\":\"secret123\""));
+        assert!(json.contains("\"TOKEN\":\"secret123\""));
     }
 
     #[test]

@@ -122,7 +122,7 @@ macro_rules! require_echo {
 
 fn one_wrapper_config() -> (
     HashMap<String, underwrap_protocol::config::WrapperDef>,
-    HashMap<String, underwrap_protocol::config::SecretDef>,
+    HashMap<String, underwrap_protocol::config::CredentialDef>,
 ) {
     let mut wrappers = HashMap::new();
     wrappers.insert(
@@ -296,26 +296,20 @@ async fn immutable_secret_rejects_overwrite() {
         .unwrap();
     assert!(matches!(resp, ControlResponse::Ok { .. }));
 
-    // Second store fails — secret is immutable and already exists.
+    // Second store also succeeds — credentials are operator-managed and may be overwritten.
     let resp = daemon
         .store_secret("github/token", "overwrite_attempt")
         .await
         .unwrap();
-    match resp {
-        ControlResponse::Error { code, message } => {
-            assert!(matches!(code, ErrorCode::Unauthorized));
-            assert!(message.contains("immutable"), "message: {message}");
-        }
-        other => panic!("expected Error, got {other:?}"),
-    }
+    assert!(matches!(resp, ControlResponse::Ok { .. }));
 
-    // Original value preserved.
+    // Updated value preserved.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
         WrapperResponse::Ok {
             material: Some(material),
             ..
-        } => assert_eq!(material, "initial"),
+        } => assert_eq!(material, "overwrite_attempt"),
         other => panic!("expected Ok, got {other:?}"),
     }
 
@@ -336,8 +330,8 @@ async fn status_general() {
         ControlResponse::Ok { info: Some(info) } => {
             let wrapper_list = info["wrappers"].as_array().unwrap();
             assert_eq!(wrapper_list.len(), 1);
-            let secret_list = info["secrets"].as_array().unwrap();
-            assert_eq!(secret_list.len(), 1);
+            let credential_list = info["credentials"].as_array().unwrap();
+            assert_eq!(credential_list.len(), 1);
         }
         other => panic!("expected Ok with info, got {other:?}"),
     }
@@ -354,22 +348,23 @@ async fn status_specific_wrapper() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
-    // Before storing: secret_stored = false.
+    // Before storing: usage[0].stored = false.
     let resp = daemon.status(Some("gh-authorized")).await.unwrap();
     match resp {
         ControlResponse::Ok { info: Some(info) } => {
             assert_eq!(info["wrapper"], "gh-authorized");
-            assert_eq!(info["secret_stored"], false);
+            assert_eq!(info["use"][0]["credential"], "github/token");
+            assert_eq!(info["use"][0]["stored"], false);
         }
         other => panic!("expected Ok, got {other:?}"),
     }
 
-    // After storing: secret_stored = true.
+    // After storing: usage[0].stored = true.
     daemon.store_secret("github/token", "tok").await.unwrap();
     let resp = daemon.status(Some("gh-authorized")).await.unwrap();
     match resp {
         ControlResponse::Ok { info: Some(info) } => {
-            assert_eq!(info["secret_stored"], true);
+            assert_eq!(info["use"][0]["stored"], true);
         }
         other => panic!("expected Ok, got {other:?}"),
     }
@@ -389,7 +384,7 @@ async fn status_specific_secret() {
     let resp = daemon.status(Some("github/token")).await.unwrap();
     match resp {
         ControlResponse::Ok { info: Some(info) } => {
-            assert_eq!(info["secret"], "github/token");
+            assert_eq!(info["credential"], "github/token");
             assert_eq!(info["stored"], false);
         }
         other => panic!("expected Ok, got {other:?}"),
@@ -605,7 +600,7 @@ async fn underwrapctl_store_and_status() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("\"secret_stored\": true"),
+        stdout.contains("\"stored\": true"),
         "stdout: {stdout}"
     );
 
@@ -1016,52 +1011,54 @@ async fn parse_example_config() {
     // Inline a representative config matching the structure of examples/config.yaml.
     // This avoids depending on the file being present in nix sandbox builds.
     let text = r#"
+credentials:
+  github/token:
+    mode: env
+    variable: GH_TOKEN
+  slack/xoxp:
+    mode: env
+    variable: SLACK_TOKEN
+  github/gh:
+    mode: libsecret
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
-    secret: github/token
     socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
-    injection:
-      mode: env
-      variable: GH_TOKEN
+    use:
+      github/token:
+        access: read-only
   agent-slack:
     target: /usr/bin/slack-cli
-    secret: slack/xoxp
     socket: /run/underwrap/agent-slack.sock
     group: underwrap-agent-slack
-    injection:
-      mode: env
-      variable: SLACK_TOKEN
+    use:
+      slack/xoxp:
+        access: read-only
   gh-libsecret:
     target: /usr/bin/gh
-    secret: github/bootstrap
     socket: /run/underwrap/gh-libsecret.sock
     group: underwrap-gh-libsecret
-    libsecret: true
-    injection:
-      mode: env
-      variable: GH_UNUSED
-secrets:
-  github/token:
-    mutable: false
-  github/bootstrap:
-    mutable: false
-  slack/xoxp:
-    mutable: false
+    use:
+      github/gh:
+        access: read-write
 "#;
     let config: underwrap_protocol::config::DaemonConfig = serde_yaml::from_str(text).unwrap();
 
     assert_eq!(config.wrappers.len(), 3);
-    assert_eq!(config.secrets.len(), 3);
+    assert_eq!(config.credentials.len(), 3);
     assert!(config.wrappers.contains_key("gh-authorized"));
     assert!(config.wrappers.contains_key("agent-slack"));
     assert!(config.wrappers.contains_key("gh-libsecret"));
 
     let gh = &config.wrappers["gh-authorized"];
-    assert_eq!(gh.secret, "github/token");
-    let underwrap_protocol::config::InjectionMode::Env { variable } = &gh.injection;
-    assert_eq!(variable, "GH_TOKEN");
+    assert!(gh.use_map.contains_key("github/token"));
+    match &config.credentials["github/token"].mode {
+        underwrap_protocol::config::CredentialMode::Env { variable } => {
+            assert_eq!(variable, "GH_TOKEN");
+        }
+        other => panic!("expected env credential, got {other:?}"),
+    }
 }
 
 // ===========================================================================
@@ -1096,17 +1093,17 @@ async fn underwrapd_binary_start_and_status() {
         storage: underwrap_protocol::config::StorageConfig::Plain {
             dir: storage_dir.clone(),
         },
+        credentials: {
+            let mut m = HashMap::new();
+            m.insert("s/t".to_string(), secret(false));
+            m
+        },
         wrappers: {
             let mut m = HashMap::new();
             let echo = which_echo().unwrap_or_else(|| "/bin/true".to_string());
             let mut w = wrapper(&echo, "s/t", "T");
             w.socket = wrapper_sock.clone();
             m.insert("w".to_string(), w);
-            m
-        },
-        secrets: {
-            let mut m = HashMap::new();
-            m.insert("s/t".to_string(), secret(false));
             m
         },
     })

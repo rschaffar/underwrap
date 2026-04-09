@@ -11,7 +11,9 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
-use underwrap_protocol::config::DaemonConfig;
+use underwrap_protocol::config::{
+    AccessMode, CredentialMode, DaemonConfig, UnlockMode, WrapperDef,
+};
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 
@@ -34,7 +36,6 @@ struct State {
     config: DaemonConfig,
     store: Arc<dyn StorageBackend>,
     unlock: UnlockState,
-    write_locks: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl State {
@@ -66,7 +67,6 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         config: config.clone(),
         store,
         unlock: UnlockState::new(),
-        write_locks: std::sync::Mutex::new(std::collections::HashSet::new()),
     });
 
     let control_listener = bind_socket(
@@ -163,13 +163,6 @@ fn resolve_group_gid(name: &str) -> Result<u32> {
 fn validate_config(config: &DaemonConfig) -> Result<()> {
     let mut sockets = std::collections::HashSet::new();
     for (name, wrapper) in &config.wrappers {
-        if !config.secrets.contains_key(&wrapper.secret) {
-            anyhow::bail!(
-                "wrapper '{}' references undeclared secret '{}'",
-                name,
-                wrapper.secret
-            );
-        }
         anyhow::ensure!(
             wrapper.socket.is_absolute(),
             "wrapper '{}' socket must be an absolute path, got '{}'",
@@ -182,6 +175,71 @@ fn validate_config(config: &DaemonConfig) -> Result<()> {
             name,
             wrapper.socket.display(),
         );
+        anyhow::ensure!(
+            !wrapper.use_map.is_empty(),
+            "wrapper '{}' must use at least one credential",
+            name
+        );
+
+        let mut env_vars = std::collections::HashSet::new();
+        let mut libsecret_count = 0usize;
+        for (cred_ref, usage) in &wrapper.use_map {
+            let credential = config.credentials.get(cred_ref).with_context(|| {
+                format!("wrapper '{name}' references undeclared credential '{cred_ref}'")
+            })?;
+            match &credential.mode {
+                CredentialMode::Env { variable } => {
+                    anyhow::ensure!(
+                        usage.access == AccessMode::ReadOnly,
+                        "wrapper '{}' uses env credential '{}' with read-write access; env credentials must be read-only",
+                        name,
+                        cred_ref,
+                    );
+                    anyhow::ensure!(
+                        env_vars.insert(variable.clone()),
+                        "wrapper '{}' uses multiple env credentials that map to variable '{}'",
+                        name,
+                        variable,
+                    );
+                }
+                CredentialMode::Libsecret => {
+                    libsecret_count += 1;
+                }
+            }
+        }
+        anyhow::ensure!(
+            libsecret_count <= 1,
+            "wrapper '{}' may use at most one libsecret credential",
+            name,
+        );
+        match wrapper.unlock.mode {
+            UnlockMode::AlwaysUnlocked => {
+                anyhow::ensure!(
+                    wrapper.unlock.max_seconds.is_none(),
+                    "wrapper '{}' unlock.mode=always-unlocked must not set maxSeconds",
+                    name,
+                );
+            }
+            UnlockMode::Always => {
+                anyhow::ensure!(
+                    wrapper.unlock.max_seconds.is_some(),
+                    "wrapper '{}' unlock.mode=always requires maxSeconds",
+                    name,
+                );
+            }
+            UnlockMode::Optional => {
+                anyhow::ensure!(
+                    wrapper.unlock.max_seconds.is_some(),
+                    "wrapper '{}' unlock.mode=optional requires maxSeconds",
+                    name,
+                );
+                anyhow::ensure!(
+                    wrapper.unlock_key.is_some(),
+                    "wrapper '{}' unlock.mode=optional requires unlock_key",
+                    name,
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -502,22 +560,18 @@ async fn handle_wrapper(
 
     // If this is a successful read for a libsecret-enabled wrapper,
     // create a socketpair and send one end via SCM_RIGHTS.
-    if matches!(
-        &response,
-        WrapperResponse::Ok {
-            material: Some(_),
-            ..
-        }
-    ) && matches!(&request, WrapperRequest::Read { .. })
+    if matches!(&response, WrapperResponse::Ok { .. })
+        && matches!(&request, WrapperRequest::Read { .. })
         && let Some(wrapper_def) = state.config.wrappers.get(wrapper_name)
-        && wrapper_def.libsecret
+        && let Some((credential_ref, access)) =
+            wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
     {
-        match setup_secretsd_channel(&stream, wrapper_name, &state).await {
+        match setup_secretsd_channel(&stream, credential_ref, access, &state).await {
             Ok(()) => {
-                info!(wrapper = %wrapper_name, "secretsd channel established");
+                info!(wrapper = %wrapper_name, credential = %credential_ref, "secretsd channel established");
             }
             Err(e) => {
-                error!(wrapper = %wrapper_name, err = %e, "failed to setup secretsd channel");
+                error!(wrapper = %wrapper_name, credential = %credential_ref, err = %e, "failed to setup secretsd channel");
             }
         }
     }
@@ -530,7 +584,8 @@ async fn handle_wrapper(
 /// and spawn a channel handler for the daemon's end.
 async fn setup_secretsd_channel(
     stream: &UnixStream,
-    wrapper_name: &str,
+    credential_ref: &str,
+    access: AccessMode,
     state: &State,
 ) -> Result<()> {
     use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -559,15 +614,43 @@ async fn setup_secretsd_channel(
     daemon_end.set_nonblocking(true)?;
     let daemon_stream = UnixStream::from_std(daemon_end)?;
 
-    let prefix = format!("{wrapper_name}/libsecret/");
+    let prefix = format!("{credential_ref}/");
     let store: Arc<dyn underwrap_store::StorageBackend> = state.store_arc();
-    let name = wrapper_name.to_string();
+    let name = credential_ref.to_string();
 
     tokio::spawn(async move {
-        crate::secretsd_channel::run_channel(daemon_stream, store, prefix, name).await;
+        crate::secretsd_channel::run_channel(daemon_stream, store, prefix, name, access).await;
     });
 
     Ok(())
+}
+
+fn wrapper_libsecret_binding<'a>(
+    wrapper: &'a WrapperDef,
+    credentials: &'a std::collections::HashMap<String, underwrap_protocol::config::CredentialDef>,
+) -> Option<(&'a str, AccessMode)> {
+    wrapper.use_map.iter().find_map(|(cred_ref, usage)| {
+        match credentials.get(cred_ref).map(|c| &c.mode) {
+            Some(CredentialMode::Libsecret) => Some((cred_ref.as_str(), usage.access)),
+            _ => None,
+        }
+    })
+}
+
+fn wrapper_env_credentials<'a>(
+    wrapper: &'a WrapperDef,
+    credentials: &'a std::collections::HashMap<String, underwrap_protocol::config::CredentialDef>,
+) -> Vec<(&'a str, &'a str)> {
+    let mut out = Vec::new();
+    for cred_ref in wrapper.use_map.keys() {
+        if let Some(underwrap_protocol::config::CredentialDef {
+            mode: CredentialMode::Env { variable },
+        }) = credentials.get(cred_ref)
+        {
+            out.push((cred_ref.as_str(), variable.as_str()));
+        }
+    }
+    out
 }
 
 async fn process_read_for(
@@ -587,8 +670,8 @@ async fn process_read_for(
         }
     };
 
-    // Check unlock state if wrapper requires it.
-    if wrapper_def.require_unlock
+    // Check unlock state based on wrapper policy.
+    if wrapper_def.unlock.mode != UnlockMode::AlwaysUnlocked
         && let Err(reason) = state.unlock.check(wrapper_name, scope, peer_uid)
     {
         audit::read_denied(wrapper_name, &reason, peer_uid, scope);
@@ -598,41 +681,51 @@ async fn process_read_for(
         };
     }
 
-    let secret_id = &wrapper_def.secret;
+    let mut env = std::collections::HashMap::new();
+    for (cred_ref, variable) in wrapper_env_credentials(wrapper_def, &state.config.credentials) {
+        match state.store.read(cred_ref) {
+            Ok(Some(material)) => {
+                let material = match material.into_utf8_string() {
+                    Ok(material) => material,
+                    Err(e) => {
+                        error!(wrapper = %wrapper_name, credential = %cred_ref, err = %e, "stored credential is not valid UTF-8");
+                        return WrapperResponse::Error {
+                            code: ErrorCode::Internal,
+                            message: "stored credential is not valid UTF-8".to_string(),
+                        };
+                    }
+                };
+                audit::read_granted(wrapper_name, cred_ref, peer_uid, scope);
+                env.insert(variable.to_string(), material.into());
+            }
+            Ok(None) => {
+                let msg = format!("credential '{cred_ref}' not found in store");
+                audit::read_denied(wrapper_name, &msg, peer_uid, scope);
+                return WrapperResponse::Error {
+                    code: ErrorCode::NotFound,
+                    message: msg,
+                };
+            }
+            Err(e) => {
+                error!(credential = %cred_ref, err = %e, "storage read error");
+                return WrapperResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: "internal storage error".to_string(),
+                };
+            }
+        }
+    }
 
-    match state.store.read(secret_id) {
-        Ok(Some(material)) => {
-            let material = match material.into_utf8_string() {
-                Ok(material) => material,
-                Err(e) => {
-                    error!(wrapper = %wrapper_name, secret = %secret_id, err = %e, "stored secret is not valid UTF-8");
-                    return WrapperResponse::Error {
-                        code: ErrorCode::Internal,
-                        message: "stored secret is not valid UTF-8".to_string(),
-                    };
-                }
-            };
-            audit::read_granted(wrapper_name, secret_id, peer_uid, scope);
-            WrapperResponse::Ok {
-                material: Some(material.into()),
-                message: None,
-            }
-        }
-        Ok(None) => {
-            let msg = format!("secret '{secret_id}' not found in store");
-            audit::read_denied(wrapper_name, &msg, peer_uid, scope);
-            WrapperResponse::Error {
-                code: ErrorCode::NotFound,
-                message: msg,
-            }
-        }
-        Err(e) => {
-            error!(secret = %secret_id, err = %e, "storage read error");
-            WrapperResponse::Error {
-                code: ErrorCode::Internal,
-                message: "internal storage error".to_string(),
-            }
-        }
+    let material = if env.len() == 1 {
+        env.values().next().cloned()
+    } else {
+        None
+    };
+
+    WrapperResponse::Ok {
+        env: Some(env),
+        material,
+        message: None,
     }
 }
 
@@ -640,9 +733,7 @@ async fn process_read_for(
 // Self-service unlock via wrapper socket (with optional SSH agent challenge)
 // ---------------------------------------------------------------------------
 
-/// Handle an unlock request. If the wrapper has an `unlock_key`, send a
-/// challenge nonce that the caller must sign with their SSH agent.
-/// If no key is configured, grant immediately (GID identity is sufficient).
+/// Handle an unlock request according to the wrapper's unlock policy.
 fn process_wrapper_unlock(
     wrapper_name: &str,
     scope: Option<&str>,
@@ -660,31 +751,47 @@ fn process_wrapper_unlock(
         }
     };
 
-    if !wrapper_def.require_unlock {
-        return WrapperResponse::Error {
+    match wrapper_def.unlock.mode {
+        UnlockMode::AlwaysUnlocked => WrapperResponse::Error {
             code: ErrorCode::Internal,
             message: format!("wrapper '{wrapper_name}' does not require unlock"),
-        };
-    }
+        },
+        UnlockMode::Always | UnlockMode::Optional => {
+            let max = wrapper_def
+                .unlock
+                .max_seconds
+                .expect("validated maxSeconds");
+            if let Some(requested) = seconds
+                && requested > max
+            {
+                return WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: format!(
+                        "requested unlock duration {requested}s exceeds maxSeconds {max}s"
+                    ),
+                };
+            }
 
-    if wrapper_def.unlock_key.is_some() {
-        // Generate challenge nonce for SSH agent signing.
-        let nonce: [u8; 32] = rand::random();
-        let nonce_hex = hex::encode(nonce);
+            if wrapper_def.unlock_key.is_some() {
+                // Generate challenge nonce for SSH agent signing.
+                let nonce: [u8; 32] = rand::random();
+                let nonce_hex = hex::encode(nonce);
 
-        // Store pending challenge in unlock state.
-        state
-            .unlock
-            .set_pending_challenge(wrapper_name, scope, peer_uid, &nonce_hex);
+                // Store pending challenge in unlock state.
+                state
+                    .unlock
+                    .set_pending_challenge(wrapper_name, scope, peer_uid, &nonce_hex);
 
-        WrapperResponse::Challenge { nonce: nonce_hex }
-    } else {
-        // No SSH key required — grant immediately.
-        state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
-        audit::unlocked(wrapper_name, scope, seconds, peer_uid);
-        WrapperResponse::Ok {
-            material: None,
-            message: Some("unlocked".to_string()),
+                WrapperResponse::Challenge { nonce: nonce_hex }
+            } else {
+                state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
+                audit::unlocked(wrapper_name, scope, seconds, peer_uid);
+                WrapperResponse::Ok {
+                    env: None,
+                    material: None,
+                    message: Some("unlocked".to_string()),
+                }
+            }
         }
     }
 }
@@ -821,6 +928,7 @@ fn process_wrapper_unlock_response(
     state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
     audit::unlocked(wrapper_name, scope, seconds, peer_uid);
     WrapperResponse::Ok {
+        env: None,
         material: None,
         message: Some("unlocked".to_string()),
     }
@@ -900,10 +1008,24 @@ fn process_control(
             scope,
             seconds,
         } => {
-            if !state.config.wrappers.contains_key(target) {
+            let wrapper = match state.config.wrappers.get(target) {
+                Some(w) => w,
+                None => {
+                    return ControlResponse::Error {
+                        code: ErrorCode::NotFound,
+                        message: format!("unknown wrapper '{target}'"),
+                    };
+                }
+            };
+            if let Some(requested) = seconds
+                && let Some(max) = wrapper.unlock.max_seconds
+                && *requested > max
+            {
                 return ControlResponse::Error {
-                    code: ErrorCode::NotFound,
-                    message: format!("unknown wrapper '{target}'"),
+                    code: ErrorCode::Unauthorized,
+                    message: format!(
+                        "requested unlock duration {requested}s exceeds maxSeconds {max}s"
+                    ),
                 };
             }
             // Root (uid=0) unlock grants cover all UIDs (admin grant).
@@ -923,64 +1045,26 @@ fn process_control(
             secret_id,
             material,
         } => {
-            // Check that the secret is declared in config.
-            let secret_def = match state.config.secrets.get(secret_id) {
-                Some(def) => def,
-                None => {
-                    return ControlResponse::Error {
-                        code: ErrorCode::NotFound,
-                        message: format!("secret '{secret_id}' not declared in configuration"),
-                    };
-                }
-            };
+            if !state.config.credentials.contains_key(secret_id) {
+                return ControlResponse::Error {
+                    code: ErrorCode::NotFound,
+                    message: format!("credential '{secret_id}' not declared in configuration"),
+                };
+            }
 
-            // Serialize writes per secret to prevent immutability TOCTOU.
-            {
-                let mut locks = state.write_locks.lock().unwrap();
-                if !locks.insert(secret_id.clone()) {
-                    // Another concurrent write is in progress for this secret.
-                    return ControlResponse::Error {
+            match state.store.write(secret_id, material.as_bytes()) {
+                Ok(()) => {
+                    audit::secret_stored(secret_id, peer_uid);
+                    ControlResponse::Ok { info: None }
+                }
+                Err(e) => {
+                    error!(secret = %secret_id, err = %e, "storage write error");
+                    ControlResponse::Error {
                         code: ErrorCode::Internal,
-                        message: format!("concurrent write to '{secret_id}'"),
-                    };
-                }
-            }
-
-            // Now we hold the per-secret lock. Check + write atomically.
-            let result = (|| {
-                if !secret_def.mutable
-                    && let Ok(Some(_)) = state.store.read(secret_id)
-                {
-                    let reason = "immutable and already exists";
-                    audit::store_denied(secret_id, reason, peer_uid);
-                    return ControlResponse::Error {
-                        code: ErrorCode::Unauthorized,
-                        message: format!("secret '{secret_id}' is {reason}"),
-                    };
-                }
-
-                match state.store.write(secret_id, material.as_bytes()) {
-                    Ok(()) => {
-                        audit::secret_stored(secret_id, peer_uid);
-                        ControlResponse::Ok { info: None }
-                    }
-                    Err(e) => {
-                        error!(secret = %secret_id, err = %e, "storage write error");
-                        ControlResponse::Error {
-                            code: ErrorCode::Internal,
-                            message: "internal storage error".to_string(),
-                        }
+                        message: "internal storage error".to_string(),
                     }
                 }
-            })();
-
-            // Release per-secret lock.
-            {
-                let mut locks = state.write_locks.lock().unwrap();
-                locks.remove(secret_id);
             }
-
-            result
         }
     }
 }
@@ -990,41 +1074,50 @@ fn build_status(target: &Option<String>, state: &State) -> serde_json::Value {
         None => {
             let mut wrappers: Vec<&String> = state.config.wrappers.keys().collect();
             wrappers.sort();
-            let mut secrets: Vec<&String> = state.config.secrets.keys().collect();
-            secrets.sort();
+            let mut credentials: Vec<&String> = state.config.credentials.keys().collect();
+            credentials.sort();
             serde_json::json!({
                 "wrappers": wrappers,
-                "secrets": secrets,
+                "credentials": credentials,
             })
         }
         Some(name) => {
             if let Some(w) = state.config.wrappers.get(name) {
-                let (stored, storage_error) = match state.store.read(&w.secret) {
-                    Ok(Some(_)) => (true, None),
-                    Ok(None) => (false, None),
-                    Err(e) => (false, Some(format!("{e}"))),
-                };
                 let unlock_status = state.unlock.status(name);
-                let mut status = serde_json::json!({
+                let usage: Vec<serde_json::Value> = w
+                    .use_map
+                    .iter()
+                    .map(|(cred_ref, binding)| {
+                        let stored = match state.store.read(cred_ref) {
+                            Ok(Some(_)) => Some(true),
+                            Ok(None) => Some(false),
+                            Err(_) => None,
+                        };
+                        serde_json::json!({
+                            "credential": cred_ref,
+                            "access": binding.access,
+                            "stored": stored,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
                     "wrapper": name,
                     "target": w.target,
-                    "secret": w.secret,
-                    "secret_stored": stored,
-                    "require_unlock": w.require_unlock,
-                    "unlock": unlock_status,
-                });
-                if let Some(err) = storage_error {
-                    status["storage_error"] = serde_json::json!(err);
-                }
-                status
-            } else if state.config.secrets.contains_key(name) {
+                    "use": usage,
+                    "unlock": {
+                        "mode": w.unlock.mode,
+                        "maxSeconds": w.unlock.max_seconds,
+                        "status": unlock_status,
+                    },
+                })
+            } else if state.config.credentials.contains_key(name) {
                 let (stored, storage_error) = match state.store.read(name) {
                     Ok(Some(_)) => (true, None),
                     Ok(None) => (false, None),
                     Err(e) => (false, Some(format!("{e}"))),
                 };
                 let mut status = serde_json::json!({
-                    "secret": name,
+                    "credential": name,
                     "stored": stored,
                 });
                 if let Some(err) = storage_error {

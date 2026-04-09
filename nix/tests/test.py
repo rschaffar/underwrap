@@ -64,9 +64,7 @@ machine.succeed(f"echo -n 'other_secret_val' | {UWCTL_LOCAL} store test/other")
 machine.succeed(f"echo -n 'locked_secret' | {UWCTL_LOCAL} store test/locked-tok")
 machine.succeed(f"echo -n 'dumpable_test_secret' | {UWCTL_LOCAL} store test/dumpable-tok")
 machine.succeed(f"echo -n 'crash_secret_value' | {UWCTL_LOCAL} store test/crash-tok")
-machine.succeed(f"echo -n 'libsecret_base' | {UWCTL_LOCAL} store test/libsecret-tok")
 machine.succeed(f"echo -n 'caps_test_val' | {UWCTL_LOCAL} store test/caps-tok")
-machine.succeed(f"echo -n 'ns_pids_val' | {UWCTL_LOCAL} store test/ns-pids-tok")
 
 # Status.
 status = machine.succeed(f"{UWCTL_LOCAL} status")
@@ -74,10 +72,8 @@ assert "local-test-echo" in status
 status = machine.succeed(f"{UWCTL_LOCAL} status local-test-echo")
 assert "true" in status
 
-# Immutability.
-machine.fail(f"echo -n 'overwrite' | {UWCTL_LOCAL} store test/token")
-
-# Mutable overwrite.
+# Operator-managed credential refs may be updated through the control socket.
+machine.succeed(f"echo -n 'overwrite' | {UWCTL_LOCAL} store test/token")
 machine.succeed(f"echo -n 'updated_val' | {UWCTL_LOCAL} store test/other")
 
 # ============================================================
@@ -85,7 +81,7 @@ machine.succeed(f"echo -n 'updated_val' | {UWCTL_LOCAL} store test/other")
 # ============================================================
 
 output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
-assert "MY_TOKEN=ghp_testvmtoken" in output, f"expected MY_TOKEN: {output}"
+assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN: {output}"
 machine.log("PASS: unprivileged user can use wrapper")
 
 output = machine.succeed(su("/run/wrappers/bin/local-test-echo2 hello"))
@@ -133,7 +129,7 @@ machine.log("PASS: unprivileged user cannot read secret files")
 
 # Wrapper output contains only its own secret.
 output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
-assert "MY_TOKEN=ghp_testvmtoken" in output
+assert "MY_TOKEN=overwrite" in output
 assert "OTHER_SECRET" not in output
 assert "LOCKED_TOKEN" not in output
 machine.log("PASS: wrapper output contains only its own secret")
@@ -168,7 +164,7 @@ machine.succeed("systemctl restart underwrapd-local.service")
 machine.wait_for_file("/run/underwrap-local/wrapper-test-echo.sock")
 time.sleep(0.5)
 output = machine.succeed("/run/wrappers/bin/local-test-echo")
-assert "MY_TOKEN=ghp_testvmtoken" in output
+assert "MY_TOKEN=overwrite" in output
 machine.log("PASS: secrets persist across restart")
 
 # ============================================================
@@ -391,7 +387,7 @@ machine.succeed(
 # Run via the symlink — argv[0] = local-test-echo2, but egid = test-echo's group.
 # The wrapper should load test-echo's config and return test-echo's secret.
 output = machine.succeed(su("/tmp/local-test-echo2")).strip()
-assert "MY_TOKEN=ghp_testvmtoken" in output, \
+assert "MY_TOKEN=overwrite" in output, \
     f"FAIL: symlink wrapper did not get the correct (test-echo) secret: {output}"
 # It must NOT have loaded test-echo2's config (which would show OTHER_SECRET).
 assert "OTHER_SECRET" not in output, \
@@ -460,7 +456,7 @@ machine.log("PASS: secret-tool lookup via libsecret wrapper")
 
 # Verify the secret IS in the backend storage (via the daemon).
 backend_files = machine.succeed(
-    "find /var/lib/underwrap-local/secrets/local-test-libsecret/ -type f 2>/dev/null || echo none"
+    "find /var/lib/underwrap-local/secrets/test/libsecret-store/ -type f 2>/dev/null || echo none"
 ).strip()
 assert backend_files != "none", "expected libsecret backend files"
 machine.log("PASS: libsecret data stored in backend")

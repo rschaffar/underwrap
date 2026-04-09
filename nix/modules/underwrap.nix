@@ -32,26 +32,28 @@ let
         backend = "plain";
         dir = "${stateDir}/secrets";
       };
+      credentials = lib.mapAttrs (_ref: c:
+        if c.mode == "env" then {
+          mode = "env";
+          inherit (c) variable;
+        } else {
+          mode = "libsecret";
+        }
+      ) inst.credentials;
       wrappers = lib.mapAttrs' (name: w:
-        lib.nameValuePair "${instName}-${name}" {
+        lib.nameValuePair "${instName}-${name}" ({
           target = w.target;
-          secret = w.secret;
-          injection = w.injection;
-          require_unlock = w.requireUnlock;
+          use = w.use;
+          unlock = {
+            mode = w.unlock.mode;
+            maxSeconds = w.unlock.maxSeconds;
+          };
           socket = wrapperSocketPath name;
           group = wrapperGroupName name;
-          libsecret = w.libsecret;
-        }
+        } // lib.optionalAttrs (w.unlockKey != null) {
+          unlock_key = w.unlockKey;
+        })
       ) inst.wrappers;
-      secrets = lib.mapAttrs (_name: s: {
-        inherit (s) mutable;
-      } // lib.optionalAttrs (s.labels != {}) {
-        inherit (s) labels;
-      }) inst.secrets;
-      # Note: libsecret-enabled wrappers store items via the secretsd channel,
-      # which writes directly to the StorageBackend with a scoped prefix
-      # (<wrapper>/libsecret/*). These keys do not need to be pre-declared
-      # in the secrets map — the channel handler enforces access control.
     };
 
     configFile = pkgs.writeText "underwrap-${instName}-config.yaml"
@@ -60,14 +62,16 @@ let
     nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
 
     wrapperConfigs = lib.mapAttrs (name: w:
-      pkgs.writeText "${instName}-${name}.yaml" (builtins.toJSON ({
+      let
+        usesLibsecret = lib.any (ref: inst.credentials.${ref}.mode == "libsecret")
+          (builtins.attrNames w.use);
+      in pkgs.writeText "${instName}-${name}.yaml" (builtins.toJSON ({
         target = w.target;
-        env_variable = w.injection.variable or "UNDERWRAP_SECRET";
         wrapper_socket = wrapperSocketPath name;
         ns_binary = nsBinaryPath;
         env_passthrough = w.envPassthrough;
         env_set = w.envSet;
-      } // lib.optionalAttrs w.libsecret {
+      } // lib.optionalAttrs usesLibsecret {
         libsecret = true;
         dbus_daemon_binary = "${pkgs.dbus}/bin/dbus-daemon";
         secretsd_binary = "${cfg.package}/bin/underwrap-secretsd";
@@ -178,36 +182,60 @@ let
   instances = lib.mapAttrs mkInstance cfg.instances;
 
   # Submodule types.
+  credentialSubmodule = lib.types.submodule {
+    options = {
+      mode = lib.mkOption {
+        type = lib.types.enum [ "env" "libsecret" ];
+      };
+      variable = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Environment variable name for env credentials.";
+      };
+    };
+  };
+
+  credentialUseSubmodule = lib.types.submodule {
+    options = {
+      access = lib.mkOption {
+        type = lib.types.enum [ "read-only" "read-write" ];
+        default = "read-only";
+      };
+    };
+  };
+
+  unlockSubmodule = lib.types.submodule {
+    options = {
+      mode = lib.mkOption {
+        type = lib.types.enum [ "always-unlocked" "always" "optional" ];
+        default = "always-unlocked";
+      };
+      maxSeconds = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = null;
+      };
+    };
+  };
+
   wrapperSubmodule = lib.types.submodule {
     options = {
       target = lib.mkOption {
         type = lib.types.str;
         description = "Absolute path to the target binary.";
       };
-      secret = lib.mkOption {
-        type = lib.types.str;
-        description = "Secret reference (must match a key in secrets).";
+      use = lib.mkOption {
+        type = lib.types.attrsOf credentialUseSubmodule;
+        default = {};
+        description = "Credential usage bindings for this wrapper.";
       };
-      injection = lib.mkOption {
-        type = lib.types.attrs;
-        default = { mode = "env"; variable = "UNDERWRAP_SECRET"; };
-        description = "Injection mode configuration.";
+      unlock = lib.mkOption {
+        type = unlockSubmodule;
+        default = {};
       };
-      requireUnlock = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Require explicit unlock before reads.";
-      };
-      libsecret = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Enable libsecret mode: provide a private D-Bus session with a
-          Secret Service provider inside the PID namespace. Enables tools
-          using libsecret (e.g. gh) to store/retrieve credentials via
-          org.freedesktop.secrets, with storage going through the underwrap
-          backend (encrypted/remote).
-        '';
+      unlockKey = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "SSH public key used for optional unlock challenge flow.";
       };
       envPassthrough = lib.mkOption {
         type = lib.types.listOf lib.types.str;
@@ -232,27 +260,14 @@ let
     };
   };
 
-  secretSubmodule = lib.types.submodule {
-    options = {
-      mutable = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-      };
-      labels = lib.mkOption {
-        type = lib.types.attrsOf lib.types.str;
-        default = {};
-      };
-    };
-  };
-
   instanceSubmodule = lib.types.submodule {
     options = {
-      wrappers = lib.mkOption {
-        type = lib.types.attrsOf wrapperSubmodule;
+      credentials = lib.mkOption {
+        type = lib.types.attrsOf credentialSubmodule;
         default = {};
       };
-      secrets = lib.mkOption {
-        type = lib.types.attrsOf secretSubmodule;
+      wrappers = lib.mkOption {
+        type = lib.types.attrsOf wrapperSubmodule;
         default = {};
       };
       encryption = {

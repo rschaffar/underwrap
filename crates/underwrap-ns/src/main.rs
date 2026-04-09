@@ -11,8 +11,8 @@
 //! 6. Child: sets the env var, execs the target
 //! 7. Parent: waits for child, forwards exit code
 //!
-//! Usage: underwrap-ns <env_var> <target> [args...]
-//! The secret is read from fd 3 (not stdin, not argv).
+//! Usage: underwrap-ns <target> [args...]
+//! Environment secret bindings are read from fd 3 (not stdin, not argv).
 
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -32,19 +32,18 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
+    if args.len() < 2 {
         return Err(format!(
-            "usage: {} <env_var> <target> [args...]",
+            "usage: {} <target> [args...]",
             args.first().map(|s| s.as_str()).unwrap_or("underwrap-ns")
         ));
     }
-    let env_var = &args[1];
-    let target = &args[2];
-    let target_args = &args[3..];
+    let target = &args[1];
+    let target_args = &args[2..];
 
-    // Read secret from fd 3.
-    let mut material =
-        read_secret_fd().map_err(|e| format!("reading secret from fd {SECRET_FD}: {e}"))?;
+    // Read env secret bindings from fd 3.
+    let env_secrets =
+        read_secret_fd().map_err(|e| format!("reading env bindings from fd {SECRET_FD}: {e}"))?;
 
     // Make this process non-dumpable immediately. Since the parent process
     // (this process after fork) never execs, the flag persists for its
@@ -207,8 +206,10 @@ fn run() -> Result<(), String> {
             }
         }
 
-        // Inject the secret.
-        cmd.env(env_var, &material);
+        // Inject env secret bindings.
+        for (key, value) in &env_secrets {
+            cmd.env(key, value);
+        }
 
         if libsecret {
             // Launch private D-Bus session bus + secretsd inside the namespace.
@@ -231,12 +232,6 @@ fn run() -> Result<(), String> {
 
     // Parent: drop caps (parent doesn't need them after fork).
     drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
-
-    // Parent: zeroize the secret — only the child (in the namespace) needs it.
-    {
-        use zeroize::Zeroize;
-        material.zeroize();
-    }
 
     // Parent: wait for child, forward exit code.
     let mut status: libc::c_int = 0;
@@ -520,16 +515,23 @@ fn setup_libsecret(cmd: &mut std::process::Command) -> Result<(), String> {
     Ok(())
 }
 
-/// Read the secret from the pipe on fd 3 and close the fd.
-fn read_secret_fd() -> Result<String, std::io::Error> {
+/// Read environment secret bindings from the pipe on fd 3 and close the fd.
+fn read_secret_fd() -> Result<std::collections::HashMap<String, String>, std::io::Error> {
     use std::os::unix::io::FromRawFd;
+
+    #[derive(serde::Deserialize)]
+    struct SecretBundle {
+        #[serde(default)]
+        env: std::collections::HashMap<String, String>,
+    }
 
     // SAFETY: fd 3 is expected to be a valid pipe read-end passed by underwrap-exec.
     let mut file = unsafe { std::fs::File::from_raw_fd(SECRET_FD) };
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
+    let bundle: SecretBundle = serde_json::from_str(&buf).map_err(std::io::Error::other)?;
     // File is closed on drop.
-    Ok(buf)
+    Ok(bundle.env)
 }
 
 /// Drop all Linux capabilities.
