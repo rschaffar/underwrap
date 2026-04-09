@@ -13,17 +13,17 @@ use tracing::{error, info, warn};
 
 #[cfg(test)]
 use underwrap_protocol::config::WrapperDef;
-use underwrap_protocol::config::{AccessMode, CredentialMode, DaemonConfig, UnlockMode};
+use underwrap_protocol::config::{AccessMode, DaemonConfig, UnlockMode};
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 
 use crate::audit;
-#[cfg(test)]
-use crate::peer_auth::PeerCred;
-use crate::peer_auth::{check_peer_auth, get_peer_cred};
-#[cfg(test)]
-use crate::status::credential_stored;
-use crate::status::{build_credential_status, build_wrapper_status};
+use crate::control::handle_control;
+use crate::peer_auth::get_peer_cred;
+use crate::startup::{
+    bind_socket, build_allowed_user_uids, build_wrapper_gid_map, next_listener_result,
+    validate_config,
+};
 use crate::unlock::UnlockState;
 use crate::wrapper_bindings::{
     wrapper_directory_bindings, wrapper_env_credentials, wrapper_libsecret_binding,
@@ -41,11 +41,11 @@ const WRAPPER_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 const WRAPPER_UNLOCK_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Shared daemon state passed to connection handlers.
-struct State {
-    config: DaemonConfig,
-    store: Arc<dyn StorageBackend>,
-    allowed_user_uids: std::collections::HashSet<u32>,
-    unlock: UnlockState,
+pub(crate) struct State {
+    pub(crate) config: DaemonConfig,
+    pub(crate) store: Arc<dyn StorageBackend>,
+    pub(crate) allowed_user_uids: std::collections::HashSet<u32>,
+    pub(crate) unlock: UnlockState,
 }
 
 impl State {
@@ -129,237 +129,6 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         }
         None => next_listener_result(&mut tasks).await,
     }
-}
-
-async fn next_listener_result(tasks: &mut JoinSet<Result<()>>) -> Result<()> {
-    match tasks.join_next().await {
-        Some(r) => r.context("listener task panicked")?,
-        None => Ok(()),
-    }
-}
-
-/// Build a wrapper-name → GID lookup table.
-/// Resolves group names to GIDs via libc getgrnam at startup.
-fn build_wrapper_gid_map(config: &DaemonConfig) -> Result<std::collections::HashMap<String, u32>> {
-    let mut gids = std::collections::HashSet::new();
-    let mut map = std::collections::HashMap::new();
-    for (name, wrapper) in &config.wrappers {
-        let group_name = &wrapper.group;
-        let gid = resolve_group_gid(group_name)
-            .with_context(|| format!("resolving group '{group_name}' for wrapper '{name}'"))?;
-        anyhow::ensure!(
-            gids.insert(gid),
-            "wrapper '{}' resolves to duplicate GID {} (group '{}'). Wrapper identity requires unique GIDs.",
-            name,
-            gid,
-            group_name,
-        );
-        info!(wrapper = %name, group = %group_name, gid = gid, "resolved wrapper group");
-        map.insert(name.clone(), gid);
-    }
-    Ok(map)
-}
-
-/// Resolve a Unix group name to a GID.
-fn resolve_group_gid(name: &str) -> Result<u32> {
-    let c_name = std::ffi::CString::new(name)
-        .with_context(|| format!("group name '{name}' contains null byte"))?;
-    let grp = unsafe { libc::getgrnam(c_name.as_ptr()) };
-    if grp.is_null() {
-        anyhow::bail!("group '{name}' not found");
-    }
-    Ok(unsafe { (*grp).gr_gid })
-}
-
-fn resolve_user_uid(name: &str) -> Result<u32> {
-    let c_name = std::ffi::CString::new(name)
-        .with_context(|| format!("user name '{name}' contains null byte"))?;
-    let pwd = unsafe { libc::getpwnam(c_name.as_ptr()) };
-    if pwd.is_null() {
-        anyhow::bail!("user '{name}' not found");
-    }
-    Ok(unsafe { (*pwd).pw_uid })
-}
-
-fn build_allowed_user_uids(config: &DaemonConfig) -> Result<std::collections::HashSet<u32>> {
-    let mut set = std::collections::HashSet::new();
-    for user in &config.allowed_users {
-        let uid =
-            resolve_user_uid(user).with_context(|| format!("resolving allowed user '{user}'"))?;
-        set.insert(uid);
-    }
-    Ok(set)
-}
-
-/// Validate configuration at load time.
-fn validate_config(config: &DaemonConfig) -> Result<()> {
-    for (cred_ref, credential) in &config.credentials {
-        if let CredentialMode::Directory { path } = &credential.mode {
-            validate_relative_credential_path(path)
-                .with_context(|| format!("credential '{cred_ref}' has invalid directory path"))?;
-        }
-    }
-
-    let mut sockets = std::collections::HashSet::new();
-    for (name, wrapper) in &config.wrappers {
-        anyhow::ensure!(
-            wrapper.socket.is_absolute(),
-            "wrapper '{}' socket must be an absolute path, got '{}'",
-            name,
-            wrapper.socket.display(),
-        );
-        anyhow::ensure!(
-            sockets.insert(wrapper.socket.clone()),
-            "wrapper '{}' reuses socket path '{}'",
-            name,
-            wrapper.socket.display(),
-        );
-        anyhow::ensure!(
-            !wrapper.use_map.is_empty(),
-            "wrapper '{}' must use at least one credential",
-            name
-        );
-
-        let mut env_vars = std::collections::HashSet::new();
-        let mut libsecret_count = 0usize;
-        let mut directory_paths: Vec<String> = Vec::new();
-        for (cred_ref, usage) in &wrapper.use_map {
-            let credential = config.credentials.get(cred_ref).with_context(|| {
-                format!("wrapper '{name}' references undeclared credential '{cred_ref}'")
-            })?;
-            match &credential.mode {
-                CredentialMode::Env { variable } => {
-                    anyhow::ensure!(
-                        usage.access == AccessMode::ReadOnly,
-                        "wrapper '{}' uses env credential '{}' with read-write access; env credentials must be read-only",
-                        name,
-                        cred_ref,
-                    );
-                    anyhow::ensure!(
-                        env_vars.insert(variable.clone()),
-                        "wrapper '{}' uses multiple env credentials that map to variable '{}'",
-                        name,
-                        variable,
-                    );
-                }
-                CredentialMode::Libsecret {} => {
-                    libsecret_count += 1;
-                }
-                CredentialMode::Directory { path } => {
-                    validate_relative_credential_path(path).with_context(|| {
-                        format!("wrapper '{name}' uses directory credential '{cred_ref}' with invalid path")
-                    })?;
-                    directory_paths.push(path.clone());
-                }
-            }
-        }
-        for (i, left) in directory_paths.iter().enumerate() {
-            for right in directory_paths.iter().skip(i + 1) {
-                anyhow::ensure!(
-                    !paths_overlap(left, right),
-                    "wrapper '{}' uses overlapping directory credential paths '{}' and '{}'",
-                    name,
-                    left,
-                    right,
-                );
-            }
-        }
-        anyhow::ensure!(
-            libsecret_count <= 1,
-            "wrapper '{}' may use at most one libsecret credential",
-            name,
-        );
-        match wrapper.unlock.mode {
-            UnlockMode::AlwaysUnlocked => {
-                anyhow::ensure!(
-                    wrapper.unlock.max_seconds.is_none(),
-                    "wrapper '{}' unlock.mode=always-unlocked must not set maxSeconds",
-                    name,
-                );
-            }
-            UnlockMode::Always => {
-                anyhow::ensure!(
-                    wrapper.unlock.max_seconds.is_some(),
-                    "wrapper '{}' unlock.mode=always requires maxSeconds",
-                    name,
-                );
-            }
-            UnlockMode::Optional => {
-                anyhow::ensure!(
-                    wrapper.unlock.max_seconds.is_some(),
-                    "wrapper '{}' unlock.mode=optional requires maxSeconds",
-                    name,
-                );
-                anyhow::ensure!(
-                    wrapper.unlock_key.is_some(),
-                    "wrapper '{}' unlock.mode=optional requires unlock_key",
-                    name,
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_relative_credential_path(path: &str) -> Result<()> {
-    anyhow::ensure!(!path.is_empty(), "path must not be empty");
-    anyhow::ensure!(!path.starts_with('/'), "path must be relative");
-    anyhow::ensure!(!path.contains('\0'), "path must not contain null bytes");
-    for component in path.split('/') {
-        anyhow::ensure!(
-            !component.is_empty(),
-            "path must not contain empty segments"
-        );
-        anyhow::ensure!(component != "." && component != "..", "path must be clean");
-    }
-    Ok(())
-}
-
-fn paths_overlap(left: &str, right: &str) -> bool {
-    left == right
-        || left
-            .strip_prefix(right)
-            .is_some_and(|rest| rest.starts_with('/'))
-        || right
-            .strip_prefix(left)
-            .is_some_and(|rest| rest.starts_with('/'))
-}
-
-fn bind_socket(
-    path: &std::path::Path,
-    mode: u32,
-    label: &str,
-    group_gid: Option<u32>,
-) -> Result<UnixListener> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {label} socket dir {}", parent.display()))?;
-    }
-    let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path)
-        .with_context(|| format!("binding {label} socket {}", path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        use std::os::unix::fs::PermissionsExt;
-
-        if let Some(gid) = group_gid {
-            let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
-                .with_context(|| format!("converting {label} socket path for chown"))?;
-            let ret = unsafe { libc::chown(c_path.as_ptr(), u32::MAX, gid) };
-            if ret != 0 {
-                let err = std::io::Error::last_os_error();
-                anyhow::bail!("setting {label} socket group to {gid} failed: {err}");
-            }
-        }
-
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-            .with_context(|| format!("setting {label} socket permissions to {mode:#o}"))?;
-    }
-
-    info!(path = %path.display(), mode = format!("{mode:#o}"), "{label} socket listening");
-    Ok(listener)
 }
 
 async fn accept_loop<F, Fut>(listener: UnixListener, state: Arc<State>, handler: F) -> Result<()>
@@ -926,229 +695,19 @@ fn process_wrapper_unlock_response(
     WrapperResponse::UnlockOk
 }
 
-// ---------------------------------------------------------------------------
-// Control socket handler
-// ---------------------------------------------------------------------------
-
-async fn handle_control(mut stream: UnixStream, state: Arc<State>) -> Result<()> {
-    let peer = get_peer_cred(&stream);
-
-    // Auth check for control socket.
-    if let Err(reason) = check_peer_auth(
-        &peer,
-        &state.config.sockets.control_allow_uids,
-        &state.config.sockets.control_allow_gids,
-    ) {
-        audit::auth_denied(
-            "control",
-            &reason,
-            peer.as_ref().map(|p| p.uid),
-            peer.as_ref().map(|p| p.gid),
-        );
-        let response = ControlResponse::Error {
-            code: ErrorCode::Unauthorized,
-            message: reason,
-        };
-        write_frame_async(&mut stream, &response).await?;
-        stream.shutdown().await?;
-        return Ok(());
-    }
-
-    let request: ControlRequest = read_frame_async(&mut stream).await?;
-
-    // Log the command type but NEVER the secret material.
-    match &request {
-        ControlRequest::StatusAll => {
-            info!(command = "status_all", peer = ?peer, "control request");
-        }
-        ControlRequest::StatusTarget { target } => {
-            info!(command = "status_target", target = %target, peer = ?peer, "control request");
-        }
-        ControlRequest::Store { secret_id, .. } => {
-            info!(command = "store", secret_id = %secret_id, peer = ?peer, "control request");
-        }
-        ControlRequest::Unlock {
-            target,
-            scope,
-            seconds,
-            ..
-        } => {
-            info!(command = "unlock", target = %target, scope = ?scope, seconds = ?seconds, peer = ?peer, "control request");
-        }
-        ControlRequest::Lock { target, scope } => {
-            info!(command = "lock", target = ?target, scope = ?scope, peer = ?peer, "control request");
-        }
-    }
-
-    let peer_uid = peer.as_ref().map(|p| p.uid);
-    let response = process_control(&request, &state, peer_uid);
-
-    write_frame_async(&mut stream, &response).await?;
-    stream.shutdown().await?;
-    Ok(())
-}
-
-fn process_control(
-    request: &ControlRequest,
-    state: &State,
-    peer_uid: Option<u32>,
-) -> ControlResponse {
-    match request {
-        ControlRequest::StatusAll => {
-            let mut wrappers: Vec<String> = state.config.wrappers.keys().cloned().collect();
-            wrappers.sort();
-            let mut credentials: Vec<String> = state.config.credentials.keys().cloned().collect();
-            credentials.sort();
-            ControlResponse::StatusAllOk {
-                wrappers,
-                credentials,
-            }
-        }
-        ControlRequest::StatusTarget { target } => {
-            if let Some(status) =
-                build_wrapper_status(target, &state.config, &state.unlock, &*state.store)
-            {
-                ControlResponse::StatusWrapperOk { status }
-            } else if let Some(status) =
-                build_credential_status(target, &state.config, &*state.store)
-            {
-                ControlResponse::StatusCredentialOk { status }
-            } else {
-                ControlResponse::Error {
-                    code: ErrorCode::NotFound,
-                    message: format!("unknown target '{target}'"),
-                }
-            }
-        }
-        ControlRequest::Unlock {
-            target,
-            scope,
-            seconds,
-            grant_user,
-            grant_all,
-        } => {
-            let wrapper = match state.config.wrappers.get(target) {
-                Some(w) => w,
-                None => {
-                    return ControlResponse::Error {
-                        code: ErrorCode::NotFound,
-                        message: format!("unknown wrapper '{target}'"),
-                    };
-                }
-            };
-            if let Some(requested) = seconds
-                && let Some(max) = wrapper.unlock.max_seconds
-                && *requested > max
-            {
-                return ControlResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: format!(
-                        "requested unlock duration {requested}s exceeds maxSeconds {max}s"
-                    ),
-                };
-            }
-
-            let caller_uid = match peer_uid {
-                Some(uid) => uid,
-                None => {
-                    return ControlResponse::Error {
-                        code: ErrorCode::Unauthorized,
-                        message: "could not determine caller uid".to_string(),
-                    };
-                }
-            };
-
-            let mut grant_uids = Vec::new();
-            if caller_uid == 0 {
-                if *grant_all {
-                    grant_uids.extend(state.allowed_user_uids.iter().copied());
-                } else if let Some(user) = grant_user {
-                    let uid = match resolve_user_uid(user) {
-                        Ok(uid) => uid,
-                        Err(e) => {
-                            return ControlResponse::Error {
-                                code: ErrorCode::NotFound,
-                                message: format!("unknown user '{user}': {e}"),
-                            };
-                        }
-                    };
-                    if !state.allowed_user_uids.is_empty()
-                        && !state.allowed_user_uids.contains(&uid)
-                    {
-                        return ControlResponse::Error {
-                            code: ErrorCode::Unauthorized,
-                            message: format!("user '{user}' is not allowed for this instance"),
-                        };
-                    }
-                    grant_uids.push(uid);
-                } else {
-                    return ControlResponse::Error {
-                        code: ErrorCode::Unauthorized,
-                        message: "root must specify --for-user or --for-all".to_string(),
-                    };
-                }
-            } else {
-                if grant_user.is_some() || *grant_all {
-                    return ControlResponse::Error {
-                        code: ErrorCode::Unauthorized,
-                        message: "only root may use --for-user or --for-all".to_string(),
-                    };
-                }
-                grant_uids.push(caller_uid);
-            }
-
-            for uid in grant_uids {
-                state.unlock.unlock(target, scope.as_deref(), *seconds, uid);
-            }
-            audit::unlocked(target, scope.as_deref(), *seconds, Some(caller_uid));
-            ControlResponse::UnlockOk
-        }
-        ControlRequest::Lock { target, scope } => {
-            state.unlock.lock(target.as_deref(), scope.as_deref());
-            audit::locked(target.as_deref(), scope.as_deref(), peer_uid);
-            ControlResponse::LockOk
-        }
-        ControlRequest::Store {
-            secret_id,
-            material,
-        } => {
-            let Some(credential) = state.config.credentials.get(secret_id) else {
-                return ControlResponse::Error {
-                    code: ErrorCode::NotFound,
-                    message: format!("credential '{secret_id}' not declared in configuration"),
-                };
-            };
-            if !matches!(credential.mode, CredentialMode::Env { .. }) {
-                return ControlResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: format!(
-                        "credential '{secret_id}' is not an env credential; use the wrapped tool or a mode-specific import path instead"
-                    ),
-                };
-            }
-
-            match state.store.write(secret_id, material.as_ref()) {
-                Ok(()) => {
-                    audit::secret_stored(secret_id, peer_uid);
-                    ControlResponse::StoreOk
-                }
-                Err(e) => {
-                    error!(secret = %secret_id, err = %e, "storage write error");
-                    ControlResponse::Error {
-                        code: ErrorCode::Internal,
-                        message: "internal storage error".to_string(),
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::process_control;
+    use crate::peer_auth::{PeerCred, check_peer_auth};
+    use crate::startup::{paths_overlap, validate_relative_credential_path};
+    use crate::status::credential_stored;
+    use crate::wrapper_bindings::{
+        wrapper_directory_bindings, wrapper_env_credentials, wrapper_libsecret_binding,
+    };
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use underwrap_protocol::config::CredentialMode;
 
     struct MemStore {
         data: Mutex<HashMap<String, Vec<u8>>>,
