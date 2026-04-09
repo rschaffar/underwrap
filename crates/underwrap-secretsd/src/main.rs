@@ -19,15 +19,14 @@ mod dbus_service;
 const WELL_KNOWN_NAME: &str = "org.freedesktop.secrets";
 const BASE_PATH: &str = "/org/freedesktop/secrets";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Args {
     bus_address: String,
     channel_fd: i32,
     ready_fd: Option<i32>,
 }
 
-fn parse_args() -> Result<Args> {
-    let args: Vec<String> = std::env::args().collect();
+fn parse_args_from(args: &[String]) -> Result<Args> {
     let mut bus_address = None;
     let mut channel_fd = None;
     let mut ready_fd = None;
@@ -69,6 +68,11 @@ fn parse_args() -> Result<Args> {
         channel_fd: channel_fd.context("--channel-fd is required")?,
         ready_fd,
     })
+}
+
+fn parse_args() -> Result<Args> {
+    let args: Vec<String> = std::env::args().collect();
+    parse_args_from(&args)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -184,4 +188,58 @@ async fn main() -> Result<()> {
     std::future::pending::<()>().await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_args_from_parses_required_and_optional_arguments() {
+        let args = vec![
+            "underwrap-secretsd".to_string(),
+            "--bus-address".to_string(),
+            "unix:path=/tmp/bus".to_string(),
+            "--channel-fd".to_string(),
+            "4".to_string(),
+            "--ready-fd".to_string(),
+            "9".to_string(),
+        ];
+        let parsed = parse_args_from(&args).unwrap();
+        assert_eq!(parsed.bus_address, "unix:path=/tmp/bus");
+        assert_eq!(parsed.channel_fd, 4);
+        assert_eq!(parsed.ready_fd, Some(9));
+    }
+
+    #[test]
+    fn parse_args_from_requires_known_arguments_and_values() {
+        let err = parse_args_from(&["underwrap-secretsd".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("--bus-address is required"));
+
+        let err = parse_args_from(&[
+            "underwrap-secretsd".to_string(),
+            "--bus-address".to_string(),
+            "unix:path=/tmp/bus".to_string(),
+            "--channel-fd".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("--channel-fd requires a value"));
+
+        let err = parse_args_from(&[
+            "underwrap-secretsd".to_string(),
+            "--bus-address".to_string(),
+            "unix:path=/tmp/bus".to_string(),
+            "--channel-fd".to_string(),
+            "nope".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("--channel-fd must be a number"));
+
+        let err = parse_args_from(&[
+            "underwrap-secretsd".to_string(),
+            "--bogus".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown argument"));
+    }
 }

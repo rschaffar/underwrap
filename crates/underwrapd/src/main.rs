@@ -11,6 +11,10 @@ struct Cli {
     config: PathBuf,
 }
 
+fn parse_daemon_config(config_text: &str) -> Result<underwrap_protocol::config::DaemonConfig> {
+    serde_yaml::from_str(config_text).context("parsing config")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Harden: non-dumpable + no core dumps. The daemon holds secrets in memory.
@@ -45,8 +49,7 @@ async fn main() -> Result<()> {
 
     let config_text = std::fs::read_to_string(&cli.config)
         .with_context(|| format!("reading config from {}", cli.config.display()))?;
-    let config: underwrap_protocol::config::DaemonConfig =
-        serde_yaml::from_str(&config_text).context("parsing config")?;
+    let config = parse_daemon_config(&config_text)?;
 
     info!(
         wrappers = config.wrappers.len(),
@@ -55,4 +58,29 @@ async fn main() -> Result<()> {
     );
 
     underwrapd::server::run(config, None).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn cli_parses_config_flag() {
+        let cli = Cli::parse_from(["underwrapd", "--config", "/tmp/test-config.yaml"]);
+        assert_eq!(cli.config, PathBuf::from("/tmp/test-config.yaml"));
+    }
+
+    #[test]
+    fn parse_daemon_config_parses_minimal_yaml() {
+        let config = parse_daemon_config(
+            r#"
+credentials: {}
+wrappers: {}
+"#,
+        )
+        .unwrap();
+        assert!(config.credentials.is_empty());
+        assert!(config.wrappers.is_empty());
+    }
 }

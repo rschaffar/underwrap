@@ -16,6 +16,10 @@ struct Cli {
     config: PathBuf,
 }
 
+fn parse_backend_config(config_text: &str) -> Result<server::BackendConfig> {
+    serde_yaml::from_str(config_text).context("parsing config")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Harden: non-dumpable + no core dumps. The backend daemon holds secrets.
@@ -50,8 +54,7 @@ async fn main() -> Result<()> {
 
     let config_text = std::fs::read_to_string(&cli.config)
         .with_context(|| format!("reading config from {}", cli.config.display()))?;
-    let config: server::BackendConfig =
-        serde_yaml::from_str(&config_text).context("parsing config")?;
+    let config = parse_backend_config(&config_text)?;
 
     info!(
         socket = %config.socket.display(),
@@ -59,4 +62,30 @@ async fn main() -> Result<()> {
     );
 
     server::run(config).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn cli_parses_config_flag() {
+        let cli = Cli::parse_from(["underwrap-backendd", "--config", "/tmp/backend.yaml"]);
+        assert_eq!(cli.config, PathBuf::from("/tmp/backend.yaml"));
+    }
+
+    #[test]
+    fn parse_backend_config_parses_minimal_yaml() {
+        let config = parse_backend_config(
+            r#"
+socket: /run/underwrap/backend.sock
+storage:
+  backend: plain
+  dir: /var/lib/underwrap-backend/secrets
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.socket, PathBuf::from("/run/underwrap/backend.sock"));
+    }
 }
