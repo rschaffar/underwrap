@@ -80,13 +80,15 @@ fn main() -> Result<()> {
     )
 }
 
-/// Handle --unlock: request unlock via the wrapper socket with SSH agent challenge.
-fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
-    let wrapper_config = load_wrapper_config(wrapper_name)?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnlockArgs {
+    seconds: Option<u64>,
+    scope: Option<String>,
+}
 
-    // Parse --seconds N and --scope S from args.
+fn parse_unlock_args(args: &[String], default_scope: Option<String>) -> Result<UnlockArgs> {
     let mut seconds: Option<u64> = None;
-    let mut scope: Option<String> = std::env::var("UNDERWRAP_SCOPE").ok();
+    let mut scope = default_scope;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -107,6 +109,15 @@ fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
         }
         i += 1;
     }
+
+    Ok(UnlockArgs { seconds, scope })
+}
+
+/// Handle --unlock: request unlock via the wrapper socket with SSH agent challenge.
+fn handle_unlock(wrapper_name: &str, args: &[String]) -> Result<()> {
+    let wrapper_config = load_wrapper_config(wrapper_name)?;
+    let UnlockArgs { seconds, scope } =
+        parse_unlock_args(args, std::env::var("UNDERWRAP_SCOPE").ok())?;
 
     // Step 1: Send unlock request.
     let mut stream = UnixStream::connect(&wrapper_config.wrapper_socket)
@@ -664,6 +675,58 @@ fn drop_privilege() -> Result<()> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn parse_unlock_args_uses_default_scope_and_parses_seconds() {
+        let args = vec!["--seconds".to_string(), "60".to_string()];
+        let parsed = parse_unlock_args(&args, Some("session-1".to_string())).unwrap();
+        assert_eq!(
+            parsed,
+            UnlockArgs {
+                seconds: Some(60),
+                scope: Some("session-1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_unlock_args_explicit_scope_overrides_default() {
+        let args = vec![
+            "--scope".to_string(),
+            "cli-scope".to_string(),
+            "--seconds".to_string(),
+            "5".to_string(),
+        ];
+        let parsed = parse_unlock_args(&args, Some("env-scope".to_string())).unwrap();
+        assert_eq!(
+            parsed,
+            UnlockArgs {
+                seconds: Some(5),
+                scope: Some("cli-scope".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_unlock_args_rejects_missing_value_and_unknown_argument() {
+        let err = parse_unlock_args(&["--seconds".to_string()], None).unwrap_err();
+        assert!(err.to_string().contains("--seconds requires a value"));
+
+        let err = parse_unlock_args(&["--scope".to_string()], None).unwrap_err();
+        assert!(err.to_string().contains("--scope requires a value"));
+
+        let err = parse_unlock_args(&["--bogus".to_string()], None).unwrap_err();
+        assert!(err.to_string().contains("unknown unlock argument"));
+    }
+
+    #[test]
+    fn take_ssh_string_returns_payload_and_advances_position() {
+        let buf = [0, 0, 0, 3, 9, 8, 7, 1, 2];
+        let mut pos = 0;
+        let out = take_ssh_string(&buf, &mut pos, "test").unwrap();
+        assert_eq!(out, &[9, 8, 7]);
+        assert_eq!(pos, 7);
+    }
 
     #[test]
     fn read_ssh_agent_message_rejects_oversized_response() {
