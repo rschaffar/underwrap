@@ -183,7 +183,10 @@ mod tests {
         let base = dir.path();
 
         for bad in ["", "/abs", ".", "..", "a//b", "a/./b", "a/../b", "bad\0id"] {
-            assert!(validated_path(base, bad).is_err(), "expected rejection for {bad:?}");
+            assert!(
+                validated_path(base, bad).is_err(),
+                "expected rejection for {bad:?}"
+            );
         }
     }
 

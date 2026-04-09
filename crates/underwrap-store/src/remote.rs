@@ -287,7 +287,10 @@ mod tests {
         wait_for_socket(&socket_path);
         let backend = RemoteBackend::open(&socket_path).unwrap();
         let err = backend.write("github/token", b"value").unwrap_err();
-        assert!(err.to_string().contains("unexpected backend response to write"));
+        assert!(
+            err.to_string()
+                .contains("unexpected backend response to write")
+        );
 
         handle.join().unwrap();
     }

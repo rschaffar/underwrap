@@ -410,7 +410,9 @@ fn require_absolute_env_path(var_name: &str) -> Result<String, String> {
     let value = std::env::var(var_name)
         .map_err(|_| format!("{var_name} not set (required for libsecret mode)"))?;
     if !value.starts_with('/') {
-        return Err(format!("{var_name} must be an absolute path, got: {value:?}"));
+        return Err(format!(
+            "{var_name} must be an absolute path, got: {value:?}"
+        ));
     }
     Ok(value)
 }
@@ -754,7 +756,10 @@ mod tests {
         let target_env = build_target_env(&host_env, &sample_exec_bundle()).unwrap();
         assert_eq!(target_env.get("HOME"), Some(&"/home/alice".to_string()));
         assert_eq!(target_env.get("LANG"), Some(&"en_US.UTF-8".to_string()));
-        assert_eq!(target_env.get("CUSTOM_PASSTHROUGH"), Some(&"allowed".to_string()));
+        assert_eq!(
+            target_env.get("CUSTOM_PASSTHROUGH"),
+            Some(&"allowed".to_string())
+        );
         assert_eq!(target_env.get("PATH"), Some(&"/trusted/bin".to_string()));
         assert_eq!(target_env.get("GH_TOKEN"), Some(&"ghp_test".to_string()));
         assert!(!target_env.contains_key("LD_PRELOAD"));

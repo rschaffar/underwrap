@@ -65,9 +65,7 @@ fn build_request(command: &Commands, store_material: Option<String>) -> Result<C
         },
         Commands::Store { secret_id } => ControlRequest::Store {
             secret_id: secret_id.clone(),
-            material: store_material
-                .context("store material missing")?
-                .into(),
+            material: store_material.context("store material missing")?.into(),
         },
         Commands::Unlock {
             target,

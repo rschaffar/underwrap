@@ -146,7 +146,12 @@ mod tests {
     #[test]
     fn audit_helpers_emit_expected_event_names_and_fields() {
         let output = capture_logs(|| {
-            read_granted("gh-authorized", "github/token", Some(1000), Some("session-1"));
+            read_granted(
+                "gh-authorized",
+                "github/token",
+                Some(1000),
+                Some("session-1"),
+            );
             auth_denied("wrapper", "gid mismatch", Some(1000), Some(2000));
             secretsd_write("gh-authorized", "default/item_1");
         });
