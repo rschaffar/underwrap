@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tokio::net::UnixStream;
@@ -150,9 +150,6 @@ async fn read_stdin() -> Result<String> {
         if buf.ends_with('\r') {
             buf.pop();
         }
-    }
-    if !buf.is_char_boundary(buf.len()) {
-        bail!("stdin did not contain valid UTF-8 text");
     }
     Ok(buf)
 }
