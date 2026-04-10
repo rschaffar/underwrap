@@ -126,6 +126,8 @@ in {
   systemd.tmpfiles.rules = [
     "d /run/underwrap-backend 0700 underwrap-backend underwrap-backend -"
     "d /var/lib/underwrap-backend/secrets 0700 underwrap-backend underwrap-backend -"
+    "d /var/lib/underwrap-backend-local 0700 underwrap-local underwrap-local -"
+    "d /var/lib/underwrap-backend-local/secrets 0700 underwrap-local underwrap-local -"
   ];
 
   # SSH server for the tunnel.
@@ -134,24 +136,58 @@ in {
     settings.StreamLocalBindUnlink = "yes";
   };
 
-  # Two underwrap instances: one local backend, one remote-backed frontend.
+  # Local backend daemon serving the local frontend instance.
+  systemd.services.underwrap-backendd-local = {
+    description = "underwrap backend daemon (local)";
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "simple";
+      User = "underwrap-local";
+      Group = "underwrap-local";
+      ExecStart = let
+        cfg = pkgs.writeText "underwrap-local-backend.yaml" (builtins.toJSON {
+          storage = {
+            backend = "plain";
+            dir = "/var/lib/underwrap-backend-local/secrets";
+          };
+          bindings.local = {
+            socket = "/run/underwrap-local/backend/backend.sock";
+            mode = 432;
+            prefix = null;
+          };
+        });
+      in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
+      Restart = "on-failure";
+      UMask = "0077";
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectControlGroups = true;
+      ProtectKernelModules = true;
+      ProtectKernelTunables = true;
+      ProtectClock = true;
+      ProtectHostname = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      RestrictSUIDSGID = true;
+      RestrictRealtime = true;
+      SystemCallArchitectures = "native";
+      RestrictAddressFamilies = [ "AF_UNIX" ];
+      NoNewPrivileges = true;
+      LimitCORE = 0;
+      ReadWritePaths = [ "/run/underwrap-local/backend" "/var/lib/underwrap-backend-local" ];
+    };
+  };
+
+  # Two underwrap frontend instances: one locally satisfied, one remote-forwarded.
   services.underwrap = {
     enable = true;
     package = underwrapPackage;
 
-    backends = {
-      local = {
-        provider = "local";
-      };
-      remote = {
-        provider = "remote";
-      };
-    };
-
     instances = {
-      # Local instance: plain storage through a local backend daemon.
+      # Local instance: frontend talks to a local backend socket.
       local = {
-        backend = "local";
         allowedUsers = [ "testuser" ];
         credentials = {
           "test/token" = { mode = "env"; variable = "MY_TOKEN"; };
@@ -237,7 +273,6 @@ in {
 
       # Remote instance: same frontend contract, backend socket satisfied by SSH tunnel.
       tunnel = {
-        backend = "remote";
         allowedUsers = [ "testuser" ];
 
         credentials."remote/token" = {

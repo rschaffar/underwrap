@@ -23,12 +23,8 @@ let
   # Per-instance helper functions. All names are prefixed with the instance name
   # to ensure full isolation between instances.
   mkInstance = instName: inst: let
-    backendName = inst.backend;
-    backend = cfg.backends.${backendName};
     daemonUser = "underwrap-${instName}";
     daemonGroup = "underwrap-${instName}";
-    backendUser = "underwrap-backend-${backendName}";
-    backendGroup = "underwrap-backend-${backendName}";
     tunnelUser = "underwrap-${instName}-tunnel";
     wrapperGroupName = name: "underwrap-${instName}-${name}";
     wrapperSocketPath = name: "${runDir}/wrapper-${name}.sock";
@@ -36,10 +32,7 @@ let
     backendDir = "${runDir}/backend";
     backendSocket = "${backendDir}/backend.sock";
     stateDir = "/var/lib/underwrap-${instName}";
-    backendNamespace =
-      if inst.backendNamespace != null then inst.backendNamespace
-      else if lib.length (lib.filter (other: other.backend == backendName) (lib.attrValues cfg.instances)) > 1 then instName
-      else null;
+    backendNamespace = null;
 
     runtimeConfig = {
       sockets = {
@@ -107,7 +100,6 @@ let
     );
 
   in {
-    backendName = backendName;
     backendNamespace = backendNamespace;
     backendSocket = backendSocket;
     backendDir = backendDir;
@@ -116,14 +108,13 @@ let
       "${daemonUser}" = {
         isSystemUser = true;
         group = daemonGroup;
-        extraGroups = [ backendGroup ] ++ lib.mapAttrsToList (name: _w: wrapperGroupName name) inst.wrappers;
+        extraGroups = lib.mapAttrsToList (name: _w: wrapperGroupName name) inst.wrappers;
         home = stateDir;
         description = "underwrap daemon (${instName})";
       };
-    } // lib.optionalAttrs (backend.provider == "remote") {
       "${tunnelUser}" = {
         isSystemUser = true;
-        group = backendGroup;
+        group = daemonGroup;
         home = "/var/lib/${tunnelUser}";
         createHome = true;
         description = "underwrap tunnel (${instName})";
@@ -151,15 +142,14 @@ let
 
     tmpfiles = [
       "d ${runDir} 0755 ${daemonUser} ${daemonGroup} -"
-      "d ${backendDir} 0770 ${if backend.provider == "local" then backendUser else "root"} ${backendGroup} -"
+      "d ${backendDir} 0770 ${daemonUser} ${daemonGroup} -"
       "d ${stateDir} 0700 ${daemonUser} ${daemonGroup} -"
     ];
 
     service = {
       description = "underwrap daemon (${instName})";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ] ++ lib.optionals (backend.provider == "local") [ "underwrap-backendd-${backendName}.service" ];
-      requires = lib.optionals (backend.provider == "local") [ "underwrap-backendd-${backendName}.service" ];
+      after = [ "network.target" ];
       serviceConfig = {
         Type = "simple";
         User = daemonUser;
@@ -189,89 +179,13 @@ let
       };
     };
 
-    sshSettings = lib.optionalAttrs (backend.provider == "remote") {
+    sshSettings = {
       StreamLocalBindUnlink = "yes";
-    };
-  };
-
-  mkBackend = backendName: backend: let
-    backendUser = "underwrap-backend-${backendName}";
-    backendGroup = "underwrap-backend-${backendName}";
-    stateDir = "/var/lib/underwrap-backend-${backendName}";
-    boundInstances = lib.filterAttrs (_: inst: inst.backend == backendName) cfg.instances;
-    backendConfigFile = pkgs.writeText "underwrap-${backendName}-backend.yaml"
-      (builtins.toJSON {
-        storage = if backend.encryption.enable then {
-          backend = "encrypted";
-          dir = "${stateDir}/secrets";
-          key_file = backend.encryption.keyFile;
-        } else {
-          backend = "plain";
-          dir = "${stateDir}/secrets";
-        };
-        bindings = lib.mapAttrs (instName: _:
-          let instance = instances.${instName};
-          in {
-            socket = instance.backendSocket;
-            mode = 432;
-            prefix = instance.backendNamespace;
-          }
-        ) boundInstances;
-      });
-  in {
-    users = lib.optionalAttrs (backend.provider == "local") {
-      "${backendUser}" = {
-        isSystemUser = true;
-        group = backendGroup;
-        home = stateDir;
-        description = "underwrap backend (${backendName})";
-      };
-    };
-
-    groups = { "${backendGroup}" = {}; };
-
-    tmpfiles = lib.optionals (backend.provider == "local") [
-      "d ${stateDir} 0700 ${backendUser} ${backendGroup} -"
-      "d ${stateDir}/secrets 0700 ${backendUser} ${backendGroup} -"
-    ];
-
-    service = lib.mkIf (backend.provider == "local") {
-      description = "underwrap backend daemon (${backendName})";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
-      serviceConfig = {
-        Type = "simple";
-        User = backendUser;
-        Group = backendGroup;
-        ExecStart = "${cfg.package}/bin/underwrap-backendd --config ${backendConfigFile}";
-        Restart = "on-failure";
-        RestartSec = "2s";
-        UMask = "0077";
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        PrivateDevices = true;
-        ProtectControlGroups = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        ProtectClock = true;
-        ProtectHostname = true;
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
-        RestrictSUIDSGID = true;
-        RestrictRealtime = true;
-        SystemCallArchitectures = "native";
-        RestrictAddressFamilies = [ "AF_UNIX" ];
-        NoNewPrivileges = true;
-        LimitCORE = 0;
-        ReadWritePaths = [ stateDir ] ++ map (instName: instances.${instName}.backendDir) (builtins.attrNames boundInstances);
-      };
     };
   };
 
   # Build all instance configs.
   instances = lib.mapAttrs mkInstance cfg.instances;
-  backends = lib.mapAttrs mkBackend cfg.backends;
 
   # Submodule types.
   credentialSubmodule = lib.types.submodule {
@@ -357,37 +271,12 @@ let
     };
   };
 
-  backendSubmodule = lib.types.submodule {
-    options = {
-      provider = lib.mkOption {
-        type = lib.types.enum [ "local" "remote" ];
-        default = "local";
-      };
-      encryption = {
-        enable = lib.mkEnableOption "encrypted backend storage";
-        keyFile = lib.mkOption {
-          type = lib.types.path;
-          default = "/dev/null";
-        };
-      };
-    };
-  };
-
   instanceSubmodule = lib.types.submodule {
     options = {
       allowedUsers = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [];
         description = "Usernames allowed to execute wrappers in this instance. Empty = allow all.";
-      };
-      backend = lib.mkOption {
-        type = lib.types.str;
-        description = "Name of the backend this instance uses.";
-      };
-      backendNamespace = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Optional namespace/prefix inside the backend storage. Defaults to the instance name when a backend is shared by multiple instances.";
       };
       credentials = lib.mkOption {
         type = lib.types.attrsOf credentialSubmodule;
@@ -407,12 +296,6 @@ in {
     package = lib.mkOption {
       type = lib.types.package;
       description = "The underwrap package.";
-    };
-
-    backends = lib.mkOption {
-      type = lib.types.attrsOf backendSubmodule;
-      default = {};
-      description = "Reusable backend definitions. Multiple instances may point at the same backend.";
     };
 
     instances = lib.mkOption {
@@ -443,20 +326,11 @@ in {
           }
         ) inst.wrappers)
       ) cfg.instances))
-      ++ (lib.mapAttrsToList (instName: inst: {
-        assertion = builtins.hasAttr inst.backend cfg.backends;
-        message = "services.underwrap.instances.${instName}.backend refers to an undefined backend '${inst.backend}'";
-      }) cfg.instances);
+      ;
 
-    # Merge frontend instance users plus backend users/groups.
-    users.users = lib.mkMerge (
-      (lib.mapAttrsToList (_: i: i.users) instances)
-      ++ (lib.mapAttrsToList (_: b: b.users) backends)
-    );
-    users.groups = lib.mkMerge (
-      (lib.mapAttrsToList (_: i: i.groups) instances)
-      ++ (lib.mapAttrsToList (_: b: b.groups) backends)
-    );
+    # Merge all instance users.
+    users.users = lib.mkMerge (lib.mapAttrsToList (_: i: i.users) instances);
+    users.groups = lib.mkMerge (lib.mapAttrsToList (_: i: i.groups) instances);
 
     # Shared underwrap-ns (one binary, all instances use it).
     security.wrappers = lib.mkMerge ([{
@@ -472,21 +346,14 @@ in {
     environment.etc = lib.mkMerge (lib.mapAttrsToList (_: i: i.etcFiles) instances);
 
     # Tmpfiles.
-    systemd.tmpfiles.rules = lib.mkMerge (
-      (lib.mapAttrsToList (_: i: i.tmpfiles) instances)
-      ++ (lib.mapAttrsToList (_: b: b.tmpfiles) backends)
-    );
+    systemd.tmpfiles.rules = lib.mkMerge (lib.mapAttrsToList (_: i: i.tmpfiles) instances);
 
-    # One frontend service per instance, plus one local backend daemon per backend.
-    systemd.services =
-      (lib.mapAttrs' (name: _:
-        lib.nameValuePair "underwrapd-${name}" instances.${name}.service
-      ) cfg.instances)
-      // lib.filterAttrs (_: v: v != {}) (lib.mapAttrs' (name: _:
-        lib.nameValuePair "underwrap-backendd-${name}" backends.${name}.service
-      ) cfg.backends);
+    # One frontend service per instance.
+    systemd.services = lib.mapAttrs' (name: _:
+      lib.nameValuePair "underwrapd-${name}" instances.${name}.service
+    ) cfg.instances;
 
-    # SSH settings (enabled when any referenced backend is remote).
+    # SSH settings.
     services.openssh.settings = lib.mkMerge (lib.mapAttrsToList (_: i: i.sshSettings) instances);
   };
 }
