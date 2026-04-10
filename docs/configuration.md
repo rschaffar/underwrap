@@ -11,11 +11,15 @@ services.underwrap = {
   enable = true;
   package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
+  backends.<name> = {
+    provider = "local"; # or "remote"
+    encryption = { ... };
+  };
+
   instances.<name> = {
+    backend = "<backend-name>";
     credentials = { ... };
     wrappers = { ... };
-    encryption = { ... };
-    remote = { ... };
   };
 };
 ```
@@ -26,17 +30,24 @@ An **instance** is an isolated deployment unit.
 
 Each instance gets its own:
 
-- daemon user and group
+- frontend daemon user and group
 - runtime directory
-- state directory
 - systemd service
 - wrapper groups
-- optional tunnel user
+- backend socket path expected by the frontend
+- optional tunnel user when its backend provider is remote
+
+Backends are configured separately and may be reused across multiple instances.
 
 Example:
 
 ```nix
+services.underwrap.backends.work = {
+  provider = "local";
+};
+
 services.underwrap.instances.work = {
+  backend = "work";
   credentials = { ... };
   wrappers = { ... };
 };
@@ -53,7 +64,7 @@ For an instance named `work`, the module creates names following this pattern:
 | daemon service | `underwrapd-work.service` |
 | runtime directory | `/run/underwrap-work/` |
 | state directory | `/var/lib/underwrap-work/` |
-| tunnel directory | `/run/underwrap-work/tunnel/` |
+| backend socket path | `/run/underwrap-work/backend/backend.sock` |
 | optional tunnel user | `underwrap-work-tunnel` |
 
 ## Credentials
@@ -259,46 +270,75 @@ services.underwrap.instances.work = {
 
 ## Multiple instances
 
-You can run multiple isolated instances on the same machine.
+You can run multiple isolated frontend instances on the same machine, and they may either use separate backends or reuse the same backend definition.
 
 ```nix
-services.underwrap.instances = {
-  work = {
+services.underwrap = {
+  backends.shared = {
+    provider = "local";
+  };
+
+  instances.work = {
+    backend = "shared";
     credentials = { ... };
     wrappers = { ... };
   };
 
-  personal = {
+  instances.personal = {
+    backend = "shared";
     credentials = { ... };
     wrappers = { ... };
   };
 };
 ```
 
-## Encrypted local backend storage
+When multiple instances share one backend, the module assigns them distinct backend namespaces by default so their stored objects remain separated.
 
-To enable encrypted storage for the backend that serves an instance:
+## Backends
+
+A backend defines who provides storage to one or more frontend instances.
+
+### Local backend
 
 ```nix
-instances.work = {
-  encryption.enable = true;
-  encryption.keyFile = /var/lib/underwrap-work/master.key;
+backends.work = {
+  provider = "local";
+};
 
+instances.work = {
+  backend = "work";
   credentials = { ... };
   wrappers = { ... };
 };
 ```
 
-This configures the local `underwrap-backendd-work` service to use encrypted storage.
+That creates a local `underwrap-backendd-work` service and points the frontend instance at its expected backend socket path.
 
-## Remote backend mode
-
-To use a remote backend provider for the instance:
+### Encrypted local backend
 
 ```nix
-instances.work = {
-  remote.enable = true;
+backends.work = {
+  provider = "local";
+  encryption.enable = true;
+  encryption.keyFile = /var/lib/underwrap-backend-work/master.key;
+};
 
+instances.work = {
+  backend = "work";
+  credentials = { ... };
+  wrappers = { ... };
+};
+```
+
+### Remote backend provider
+
+```nix
+backends.work = {
+  provider = "remote";
+};
+
+instances.work = {
+  backend = "work";
   credentials = { ... };
   wrappers = { ... };
 };

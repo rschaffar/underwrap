@@ -95,6 +95,7 @@ in {
           };
           bindings.tunnel = {
             socket = "/run/underwrap-backend/backend.sock";
+            mode = 384;
             prefix = null;
           };
         });
@@ -133,14 +134,24 @@ in {
     settings.StreamLocalBindUnlink = "yes";
   };
 
-  # Two underwrap instances: local storage + remote/tunnel.
+  # Two underwrap instances: one local backend, one remote-backed frontend.
   services.underwrap = {
     enable = true;
     package = underwrapPackage;
 
-    instances = {
-      # Local instance: plain storage on disk.
+    backends = {
       local = {
+        provider = "local";
+      };
+      remote = {
+        provider = "remote";
+      };
+    };
+
+    instances = {
+      # Local instance: plain storage through a local backend daemon.
+      local = {
+        backend = "local";
         allowedUsers = [ "testuser" ];
         credentials = {
           "test/token" = { mode = "env"; variable = "MY_TOKEN"; };
@@ -224,10 +235,10 @@ in {
         };
       };
 
-      # Remote instance: secrets served over SSH tunnel.
+      # Remote instance: same frontend contract, backend socket satisfied by SSH tunnel.
       tunnel = {
+        backend = "remote";
         allowedUsers = [ "testuser" ];
-        remote.enable = true;
 
         credentials."remote/token" = {
           mode = "env";

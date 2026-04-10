@@ -21,10 +21,17 @@ use underwrap_store::StorageBackend;
 pub struct BackendBindingConfig {
     /// Path to the Unix socket to listen on for this binding.
     pub socket: PathBuf,
+    /// Unix mode for the socket file.
+    #[serde(default = "default_binding_socket_mode")]
+    pub mode: u32,
     /// Optional storage prefix used to namespace all keys for this binding.
     /// If omitted, the binding sees the storage root directly.
     #[serde(default)]
     pub prefix: Option<String>,
+}
+
+fn default_binding_socket_mode() -> u32 {
+    0o600
 }
 
 /// Backend daemon configuration.
@@ -121,7 +128,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(
                 &binding_config.socket,
-                std::fs::Permissions::from_mode(0o600),
+                std::fs::Permissions::from_mode(binding_config.mode),
             )?;
         }
 

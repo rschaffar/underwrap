@@ -39,19 +39,25 @@ From the user's point of view, the wrapper command still looks normal.
 
 ## What changes in configuration
 
-On the target machine, you enable remote mode for the instance:
+On the target machine, you define a remote backend provider and point the instance at it:
 
 ```nix
-services.underwrap.instances.work = {
-  remote.enable = true;
-
-  credentials."github/gh" = {
-    mode = "libsecret";
+services.underwrap = {
+  backends.work = {
+    provider = "remote";
   };
 
-  wrappers.gh-auth = {
-    target = "${pkgs.gh}/bin/gh";
-    use."github/gh".access = "read-write";
+  instances.work = {
+    backend = "work";
+
+    credentials."github/gh" = {
+      mode = "libsecret";
+    };
+
+    wrappers.gh-auth = {
+      target = "${pkgs.gh}/bin/gh";
+      use."github/gh".access = "read-write";
+    };
   };
 };
 ```
@@ -65,10 +71,14 @@ On the trusted machine, run `underwrap-backendd` with a backend config.
 A minimal example:
 
 ```yaml
-socket: /run/underwrap-backend/backend.sock
 storage:
   backend: plain
   dir: /home/you/.underwrap/secrets
+bindings:
+  work:
+    socket: /run/underwrap-backend/backend.sock
+    mode: 384
+    prefix: null
 ```
 
 Then start:
@@ -148,7 +158,7 @@ For production-style deployments, the SSH key used for that tunnel should be res
 A typical `authorized_keys` restriction looks like:
 
 ```text
-restrict,streamlocal-forward=/run/underwrap-work/tunnel/backend.sock ssh-ed25519 AAAA...
+restrict,streamlocal-forward=/run/underwrap-work/backend/backend.sock ssh-ed25519 AAAA...
 ```
 
 
@@ -174,7 +184,7 @@ The module sets the needed OpenSSH server setting for remote-enabled instances.
 
 ### Secrets seem to be local anyway
 
-Check your instance configuration. If `remote.enable = true` is not set, the instance will use local storage instead.
+Check your instance configuration. If the instance is not pointing at a backend with `provider = "remote"`, it will use a local backend service instead.
 
 ## Related docs
 

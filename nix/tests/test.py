@@ -139,7 +139,7 @@ def local_isolation():
     machine.fail(su(f"echo test | {UWCTL_LOCAL} status"))
     machine.log("PASS: unprivileged user cannot access control socket")
 
-    machine.fail(su("cat /var/lib/underwrap-local/secrets/test/token"))
+    machine.fail(su("cat /var/lib/underwrap-backend-local/secrets/test/token"))
     machine.log("PASS: unprivileged user cannot read secret files")
 
     # Wrapper output contains only its own secret.
@@ -489,7 +489,7 @@ def local_libsecret_mode():
 
     # Verify the secret IS in the backend storage (via the daemon).
     backend_files = machine.succeed(
-        "find /var/lib/underwrap-local/secrets/test/libsecret-store/ -type f 2>/dev/null || echo none"
+        "find /var/lib/underwrap-backend-local/secrets/test/libsecret-store/ -type f 2>/dev/null || echo none"
     ).strip()
     assert backend_files != "none", "expected libsecret backend files"
     machine.log("PASS: libsecret data stored in backend")
@@ -527,7 +527,7 @@ def local_libsecret_mode():
     # /proc, /sys, /dev.
     leak_files = machine.succeed(
         "find / -type f "
-        "-not -path '/var/lib/underwrap-local/secrets/*' "
+        "-not -path '/var/lib/underwrap-backend-local/secrets/*' "
         "-not -path '/proc/*' "
         "-not -path '/sys/*' "
         "-not -path '/nix/*' "
@@ -567,11 +567,11 @@ def local_directory_credentials():
 
     # Verify one backend entry per file and deletion propagation.
     dir_a_backend_files = machine.succeed(
-        "find /var/lib/underwrap-local/secrets/test/dir-a/files -type f -printf '%P\\n' | sort"
+        "find /var/lib/underwrap-backend-local/secrets/test/dir-a/files -type f -printf '%P\\n' | sort"
     ).strip().split("\n")
     assert dir_a_backend_files == ["sub/nested", "token"], f"unexpected dir-a backend files: {dir_a_backend_files}"
     dir_b_backend_files = machine.succeed(
-        "find /var/lib/underwrap-local/secrets/test/dir-b/files -type f -printf '%P\\n' | sort || true"
+        "find /var/lib/underwrap-backend-local/secrets/test/dir-b/files -type f -printf '%P\\n' | sort || true"
     ).strip().split("\n")
     assert dir_b_backend_files == ["meta"], f"unexpected dir-b backend files: {dir_b_backend_files}"
     machine.log("PASS: directory backend stores one entry per file and propagates deletions")
@@ -716,7 +716,7 @@ def remote_tunnel_lifecycle():
     machine.log("PASS: remote secret via tunnel")
 
     # No secret on local disk.
-    machine.fail("test -f /var/lib/underwrap-tunnel/secrets/remote/token")
+    machine.fail("test -f /var/lib/underwrap-backend-remote/secrets/remote/token")
     machine.log("PASS: no secret on local disk")
 
     # Kill tunnel: fail.

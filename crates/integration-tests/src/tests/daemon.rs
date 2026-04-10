@@ -84,6 +84,7 @@ async fn underwrapd_binary_start_and_status() {
             "test".to_string(),
             underwrap_backendd::server::BackendBindingConfig {
                 socket: backend_socket.clone(),
+                mode: 0o600,
                 prefix: None,
             },
         )]),
