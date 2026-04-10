@@ -41,6 +41,12 @@ underwrap's docs are organized by question:
 4. [Testing](testing.md)
 5. [Security](security.md)
 
+A good default verification command once you are set up is:
+
+```bash
+nix flake check
+```
+
 ### If you are reviewing the security model
 
 1. [Architecture](architecture.md)

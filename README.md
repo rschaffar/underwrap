@@ -157,7 +157,15 @@ For a short decision guide, see [Choosing underwrap](docs/comparison.md).
 ```bash
 nix develop
 cargo build
+nix flake check
+```
+
+If you want the manual layered equivalent instead of the flake gate, run:
+
+```bash
 cargo test --workspace
+cargo fmt -- --check
+cargo clippy --all-targets --workspace -- -D warnings
 nix build .#checks.x86_64-linux.vm-test
 ```
 

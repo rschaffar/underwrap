@@ -9,7 +9,24 @@ For a project like this, both matter. Unit and integration tests catch protocol 
 
 ## Recommended commands
 
-Before trusting a meaningful change, run:
+The easiest "run everything that matters" command is now:
+
+```bash
+nix flake check
+```
+
+That runs the workspace checks defined in `flake.nix`, including:
+
+- Rust tests
+- `cargo nextest`
+- `cargo fmt -- --check`
+- `cargo clippy --all-targets --workspace -- -D warnings`
+- `cargo-audit`
+- `cargo-deny`
+- `cargo-llvm-cov`
+- the NixOS VM test
+
+If you prefer running the layers manually before a larger change, use:
 
 ```bash
 cargo test --workspace
@@ -25,11 +42,13 @@ The workspace tests cover things such as:
 - config parsing and protocol serialization
 - IPC framing
 - storage backends
-- daemon read/write behavior
+- daemon control and wrapper request behavior
 - unlock and lock state handling
 - fd passing and scoped libsecret channel behavior
 - scoped directory channel behavior
 - Secret Service data model behavior
+- CLI request construction and integration flows
+- wrapper and namespace helper logic
 
 These tests are fast and good at catching mistakes in individual components.
 
@@ -107,6 +126,21 @@ In addition to the VM test, pay close attention to:
 - namespace setup
 
 Those are the areas where small mistakes can undermine the intended model.
+
+## Running individual flake checks
+
+If you want one specific gate instead of the whole flake, the main checks are:
+
+```bash
+nix build .#checks.x86_64-linux.workspace-test
+nix build .#checks.x86_64-linux.workspace-nextest
+nix build .#checks.x86_64-linux.workspace-clippy
+nix build .#checks.x86_64-linux.workspace-fmt
+nix build .#checks.x86_64-linux.workspace-audit
+nix build .#checks.x86_64-linux.workspace-deny
+nix build .#checks.x86_64-linux.workspace-llvm-cov
+nix build .#checks.x86_64-linux.vm-test
+```
 
 ## Related docs
 

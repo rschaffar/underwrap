@@ -21,6 +21,8 @@ The short version:
 | `underwrap-backendd` | Optional backend daemon for remote storage | trusted workstation or backend host |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
 
+The current implementation is intentionally structured so the high-level execution paths read top-down and the lower-level mechanics live in smaller modules. That matters for review: this is a security-sensitive project, so keeping process flow, authorization, protocol handling, and storage concerns visibly separate is part of the assurance story.
+
 ## Why the wrapper chain has two stages
 
 underwrap splits wrapper execution into two binaries:
@@ -148,7 +150,7 @@ See:
 
 ```text
 crates/
-  underwrap-protocol        shared config, messages, IPC framing, fd passing
+  underwrap-protocol        shared config, message families, IPC framing, fd passing
   underwrap-store           backend trait and implementations
   underwrapd                frontend daemon on the target host
   underwrap-backendd        backend daemon for remote mode
@@ -159,6 +161,50 @@ crates/
   underwrap-secretsd        Secret Service implementation for libsecret mode
   integration-tests         cross-component tests
 ```
+
+Some internal splits are worth calling out because they mirror the main trust boundaries.
+
+### `underwrapd` internal shape
+
+`underwrapd` is no longer one giant server file. Its main pieces are:
+
+- `server.rs` — daemon startup and listener orchestration
+- `startup.rs` — config validation, UID/GID resolution, socket binding
+- `peer_auth.rs` — `SO_PEERCRED` and effective-GID checks
+- `control.rs` — control-socket request handling
+- `wrapper_flow.rs` — wrapper-socket request flow
+- `unlock_flow.rs` — challenge-response unlock logic
+- `status.rs` — wrapper and credential status building
+- `wrapper_bindings.rs` — env/libsecret/directory binding selection
+
+That means the daemon reads more like a book: startup, then control plane, then wrapper plane, with lower-level helpers split out rather than mixed inline.
+
+### `underwrap-ns` internal shape
+
+`underwrap-ns` is structured the same way:
+
+- `main.rs` — high-level orchestration and fork/child/parent phase ordering
+- `env.rs` — target environment assembly
+- `caps.rs` — `no_new_privs` and capability drop logic
+- `mounts.rs` — mount namespace setup and staging cleanup
+- `libsecret.rs` — private D-Bus + `underwrap-secretsd` orchestration
+- `directory_credential.rs` — backend-managed directory materialization and sync
+
+### `underwrap-secretsd` internal shape
+
+The Secret Service implementation is split by D-Bus interface:
+
+- `dbus_service.rs` — shared types and path helpers
+- `dbus_service/service.rs` — `org.freedesktop.Secret.Service`
+- `dbus_service/collection.rs` — collection interface
+- `dbus_service/item.rs` — item interface
+
+### `underwrap-protocol` and `underwrap-secretsd-store`
+
+Two other crates are intentionally split by domain family rather than left as giant files:
+
+- `underwrap-protocol/src/message/` groups message types by protocol family
+- `underwrap-secretsd-store/src/store/` groups the in-memory Secret Service data model by collection, alias, item, search, and JSON concerns
 
 ## NixOS module responsibilities
 
