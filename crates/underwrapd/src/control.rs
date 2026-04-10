@@ -175,7 +175,7 @@ fn process_unlock_request(
 
     let grant_uids = match resolve_unlock_grantees(caller_uid, grant_user, grant_all, state) {
         Ok(uids) => uids,
-        Err(response) => return response,
+        Err(err) => return err.into_control_response(),
     };
 
     for uid in grant_uids {
@@ -185,12 +185,42 @@ fn process_unlock_request(
     ControlResponse::UnlockOk
 }
 
+enum UnlockGrantError {
+    UnknownUser(String),
+    UserNotAllowed(String),
+    RootMustSpecifyTarget,
+    NonRootMayNotGrant,
+}
+
+impl UnlockGrantError {
+    fn into_control_response(self) -> ControlResponse {
+        match self {
+            Self::UnknownUser(message) => ControlResponse::Error {
+                code: ErrorCode::NotFound,
+                message,
+            },
+            Self::UserNotAllowed(message) => ControlResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message,
+            },
+            Self::RootMustSpecifyTarget => ControlResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "root must specify --for-user or --for-all".to_string(),
+            },
+            Self::NonRootMayNotGrant => ControlResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "only root may use --for-user or --for-all".to_string(),
+            },
+        }
+    }
+}
+
 fn resolve_unlock_grantees(
     caller_uid: u32,
     grant_user: &Option<String>,
     grant_all: bool,
     state: &State,
-) -> std::result::Result<Vec<u32>, ControlResponse> {
+) -> std::result::Result<Vec<u32>, UnlockGrantError> {
     if caller_uid == 0 {
         if grant_all {
             return Ok(state.allowed_user_uids.iter().copied().collect());
@@ -200,32 +230,24 @@ fn resolve_unlock_grantees(
             let uid = match resolve_user_uid(user) {
                 Ok(uid) => uid,
                 Err(e) => {
-                    return Err(ControlResponse::Error {
-                        code: ErrorCode::NotFound,
-                        message: format!("unknown user '{user}': {e}"),
-                    });
+                    return Err(UnlockGrantError::UnknownUser(format!(
+                        "unknown user '{user}': {e}"
+                    )));
                 }
             };
             if !state.allowed_user_uids.is_empty() && !state.allowed_user_uids.contains(&uid) {
-                return Err(ControlResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: format!("user '{user}' is not allowed for this instance"),
-                });
+                return Err(UnlockGrantError::UserNotAllowed(format!(
+                    "user '{user}' is not allowed for this instance"
+                )));
             }
             return Ok(vec![uid]);
         }
 
-        return Err(ControlResponse::Error {
-            code: ErrorCode::Unauthorized,
-            message: "root must specify --for-user or --for-all".to_string(),
-        });
+        return Err(UnlockGrantError::RootMustSpecifyTarget);
     }
 
     if grant_user.is_some() || grant_all {
-        return Err(ControlResponse::Error {
-            code: ErrorCode::Unauthorized,
-            message: "only root may use --for-user or --for-all".to_string(),
-        });
+        return Err(UnlockGrantError::NonRootMayNotGrant);
     }
 
     Ok(vec![caller_uid])

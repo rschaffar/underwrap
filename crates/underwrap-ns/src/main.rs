@@ -21,7 +21,7 @@ mod libsecret;
 mod mounts;
 
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use caps::{drop_caps, set_no_new_privs};
 use directory_credential::{
@@ -126,7 +126,7 @@ fn prepare_namespace(
 fn prepare_mounted_directories(
     exec_bundle: &ExecBundle,
     has_directory_credentials: bool,
-    target_home: &PathBuf,
+    target_home: &Path,
 ) -> Result<Vec<directory_credential::MountedDirectory>, String> {
     if has_directory_credentials {
         prepare_directory_mounts(
