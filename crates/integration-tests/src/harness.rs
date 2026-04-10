@@ -19,6 +19,7 @@ pub struct TestDaemon {
     pub wrapper_sockets: HashMap<String, PathBuf>,
     pub control_socket: PathBuf,
     pub backend_socket: PathBuf,
+    pub backend_management_socket: PathBuf,
     pub storage_dir: PathBuf,
     shutdown: Arc<Notify>,
     backend_shutdown: Arc<Notify>,
@@ -38,6 +39,7 @@ impl TestDaemon {
 
         let control_socket = base.join("control.sock");
         let backend_socket = base.join("backend.sock");
+        let backend_management_socket = base.join("backend-mgmt.sock");
         let storage_dir = base.join("secrets");
         let mut wrapper_sockets = HashMap::new();
 
@@ -48,15 +50,13 @@ impl TestDaemon {
         }
 
         let backend_config = underwrap_backendd::server::BackendConfig {
-            storage: StorageConfig::Plain {
-                dir: storage_dir.clone(),
+            management: underwrap_backendd::server::ManagementConfig {
+                socket: backend_management_socket.clone(),
             },
-            bindings: HashMap::from([(
+            stores: HashMap::from([(
                 "test".to_string(),
-                underwrap_backendd::server::BackendBindingConfig {
-                    socket: backend_socket.clone(),
-                    mode: 0o600,
-                    prefix: None,
+                StorageConfig::Plain {
+                    dir: storage_dir.clone(),
                 },
             )]),
         };
@@ -71,6 +71,10 @@ impl TestDaemon {
                 underwrap_backendd::server::run(backend_config, Some(backend_shutdown_clone)).await
             })
         });
+
+        wait_for_path(&backend_management_socket).await?;
+        backend_export_socket(&backend_management_socket, "test", &backend_socket, 0o600).await?;
+        wait_for_path(&backend_socket).await?;
 
         let config = DaemonConfig {
             sockets: SocketConfig {
@@ -93,21 +97,16 @@ impl TestDaemon {
                 async move { underwrapd::server::run(config, Some(shutdown_clone)).await },
             );
 
-        // Wait for sockets to appear.
-        for _ in 0..100 {
-            if control_socket.exists()
-                && backend_socket.exists()
-                && wrapper_sockets.values().all(|p| p.exists())
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        wait_for_path(&control_socket).await?;
+        for socket in wrapper_sockets.values() {
+            wait_for_path(socket).await?;
         }
 
         Ok(Self {
             wrapper_sockets,
             control_socket,
             backend_socket,
+            backend_management_socket,
             storage_dir,
             shutdown,
             backend_shutdown,
@@ -188,6 +187,37 @@ impl TestDaemon {
         self.backend_shutdown.notify_one();
         self.backend_handle.join().unwrap()?;
         Ok(())
+    }
+}
+
+async fn wait_for_path(path: &std::path::Path) -> Result<()> {
+    for _ in 0..100 {
+        if path.exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    anyhow::bail!("path never appeared: {}", path.display())
+}
+
+async fn backend_export_socket(
+    management_socket: &std::path::Path,
+    store: &str,
+    backend_socket: &std::path::Path,
+    mode: u32,
+) -> Result<()> {
+    let mut stream = UnixStream::connect(management_socket).await?;
+    let request = BackendMgmtRequest::ExportSocket {
+        store: store.to_string(),
+        socket: backend_socket.display().to_string(),
+        mode,
+    };
+    write_frame_async(&mut stream, &request).await?;
+    let response: BackendMgmtResponse = read_frame_async(&mut stream).await?;
+    match response {
+        BackendMgmtResponse::ExportSocketOk => Ok(()),
+        BackendMgmtResponse::Error { message, .. } => anyhow::bail!(message),
+        other => anyhow::bail!("unexpected backend management response: {other:?}"),
     }
 }
 

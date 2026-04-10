@@ -46,7 +46,8 @@ At a high level:
 Depending on how you configure it, underwrap can also:
 
 - keep secrets in a backend service on the same machine or on a remote workstation
-- keep secrets on a remote workstation via an SSH-tunneled backend
+- manage backend stores behind a privileged backend management socket
+- satisfy the same per-instance backend socket contract locally or via SSH forwarding
 - provide a private Secret Service (`libsecret`) environment for tools such as `gh`
 
 ## What makes it interesting

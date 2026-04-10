@@ -89,14 +89,10 @@ in {
       Group = "underwrap-backend";
       ExecStart = let
         cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
-          storage = {
+          management.socket = "/run/underwrap-backend/mgmt.sock";
+          stores.remote = {
             backend = "plain";
             dir = "/var/lib/underwrap-backend/secrets";
-          };
-          bindings.tunnel = {
-            socket = "/run/underwrap-backend/backend.sock";
-            mode = 384;
-            prefix = null;
           };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
@@ -123,6 +119,34 @@ in {
     };
   };
 
+  systemd.services.underwrap-backend-export = {
+    description = "export remote backend store socket";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "underwrap-backendd.service" ];
+    requires = [ "underwrap-backendd.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      User = "underwrap-backend";
+      Group = "underwrap-backend";
+      ExecStart = pkgs.writeShellScript "underwrap-backend-export" ''
+        set -eu
+        count=0
+        while [ "$count" -lt 200 ]; do
+          if test -S /run/underwrap-backend/mgmt.sock; then
+            exec ${underwrapPackage}/bin/underwrap-backend-ctl \
+              --socket /run/underwrap-backend/mgmt.sock \
+              export remote /run/underwrap-backend/backend.sock --mode 0600
+          fi
+          count=$((count + 1))
+          ${pkgs.coreutils}/bin/sleep 0.05
+        done
+        echo "management socket never appeared" >&2
+        exit 1
+      '';
+      RemainAfterExit = true;
+    };
+  };
+
   systemd.tmpfiles.rules = [
     "d /run/underwrap-backend 0700 underwrap-backend underwrap-backend -"
     "d /var/lib/underwrap-backend/secrets 0700 underwrap-backend underwrap-backend -"
@@ -146,14 +170,10 @@ in {
       Group = "underwrap-local";
       ExecStart = let
         cfg = pkgs.writeText "underwrap-local-backend.yaml" (builtins.toJSON {
-          storage = {
+          management.socket = "/run/underwrap-local/backend/mgmt.sock";
+          stores.local = {
             backend = "plain";
             dir = "/var/lib/underwrap-backend-local/secrets";
-          };
-          bindings.local = {
-            socket = "/run/underwrap-local/backend/backend.sock";
-            mode = 432;
-            prefix = null;
           };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
@@ -177,6 +197,34 @@ in {
       NoNewPrivileges = true;
       LimitCORE = 0;
       ReadWritePaths = [ "/run/underwrap-local/backend" "/var/lib/underwrap-backend-local" ];
+    };
+  };
+
+  systemd.services.underwrap-backend-export-local = {
+    description = "export local backend store socket";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "underwrap-backendd-local.service" ];
+    requires = [ "underwrap-backendd-local.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      User = "underwrap-local";
+      Group = "underwrap-local";
+      ExecStart = pkgs.writeShellScript "underwrap-backend-export-local" ''
+        set -eu
+        count=0
+        while [ "$count" -lt 200 ]; do
+          if test -S /run/underwrap-local/backend/mgmt.sock; then
+            exec ${underwrapPackage}/bin/underwrap-backend-ctl \
+              --socket /run/underwrap-local/backend/mgmt.sock \
+              export local /run/underwrap-local/backend/backend.sock --mode 0660
+          fi
+          count=$((count + 1))
+          ${pkgs.coreutils}/bin/sleep 0.05
+        done
+        echo "management socket never appeared" >&2
+        exit 1
+      '';
+      RemainAfterExit = true;
     };
   };
 

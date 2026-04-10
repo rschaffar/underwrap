@@ -1,0 +1,18 @@
+# Example underwrap-backendd configuration.
+#
+# This file is separate from the frontend underwrap NixOS module. It defines
+# backend-owned stores plus the privileged management socket used by
+# underwrap-backend-ctl.
+
+management:
+  socket: /run/underwrap-backend/mgmt.sock
+
+stores:
+  work:
+    backend: encrypted
+    dir: /var/lib/underwrap-backend/work
+    key_file: /var/lib/underwrap-backend/work.key
+
+  personal:
+    backend: plain
+    dir: /var/lib/underwrap-backend/personal

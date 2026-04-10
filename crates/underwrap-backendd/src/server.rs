@@ -1,162 +1,80 @@
 //! Backend daemon server.
 //!
-//! Listens on a Unix socket, handles BackendRequest messages,
-//! serves secret material from a StorageBackend.
+//! Exposes a management socket used to dynamically export named stores onto
+//! Unix sockets, and serves the backend data protocol on those exported sockets.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
+use tokio::task::{AbortHandle, JoinSet};
 use tracing::{error, info};
 
 use underwrap_protocol::config::StorageConfig;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse};
+use underwrap_protocol::message::{
+    BackendErrorCode, BackendExportStatus, BackendMgmtRequest, BackendMgmtResponse, BackendRequest,
+    BackendResponse,
+};
 use underwrap_store::StorageBackend;
 
-/// One frontend/backend binding served by this backend daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackendBindingConfig {
-    /// Path to the Unix socket to listen on for this binding.
+pub struct ManagementConfig {
     pub socket: PathBuf,
-    /// Unix mode for the socket file.
-    #[serde(default = "default_binding_socket_mode")]
-    pub mode: u32,
-    /// Optional storage prefix used to namespace all keys for this binding.
-    /// If omitted, the binding sees the storage root directly.
-    #[serde(default)]
-    pub prefix: Option<String>,
 }
 
-fn default_binding_socket_mode() -> u32 {
-    0o600
-}
-
-/// Backend daemon configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
-    /// Storage backend configuration owned by this backend daemon.
-    #[serde(default)]
-    pub storage: StorageConfig,
+    pub management: ManagementConfig,
+    pub stores: HashMap<String, StorageConfig>,
+}
 
-    /// Named frontend bindings served by this daemon.
-    pub bindings: std::collections::HashMap<String, BackendBindingConfig>,
+struct ExportEntry {
+    store: String,
+    socket: PathBuf,
+    mode: u32,
+    abort: AbortHandle,
 }
 
 struct State {
-    store: Arc<dyn StorageBackend>,
-}
-
-struct ScopedStore {
-    prefix: Option<String>,
-    inner: Arc<dyn StorageBackend>,
-}
-
-impl ScopedStore {
-    fn scoped_id(&self, secret_id: &str) -> String {
-        match &self.prefix {
-            Some(prefix) => format!("{}/{}", prefix, secret_id),
-            None => secret_id.to_string(),
-        }
-    }
-
-    fn scoped_prefix(&self, prefix: &str) -> String {
-        match &self.prefix {
-            Some(binding_prefix) => {
-                if prefix.is_empty() {
-                    binding_prefix.clone()
-                } else {
-                    format!("{}/{}", binding_prefix, prefix)
-                }
-            }
-            None => prefix.to_string(),
-        }
-    }
-}
-
-impl StorageBackend for ScopedStore {
-    fn read(
-        &self,
-        secret_id: &str,
-    ) -> anyhow::Result<Option<underwrap_protocol::message::SecretBytes>> {
-        self.inner.read(&self.scoped_id(secret_id))
-    }
-
-    fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
-        self.inner.write(&self.scoped_id(secret_id), material)
-    }
-
-    fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
-        let scoped_prefix = self.scoped_prefix(prefix);
-        let ids = self.inner.list(&scoped_prefix)?;
-        match &self.prefix {
-            Some(binding_prefix) => {
-                let strip_prefix = format!("{binding_prefix}/");
-                Ok(ids
-                    .into_iter()
-                    .filter_map(|id| id.strip_prefix(&strip_prefix).map(|s| s.to_string()))
-                    .collect())
-            }
-            None => Ok(ids),
-        }
-    }
-
-    fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
-        self.inner.delete(&self.scoped_id(secret_id))
-    }
+    stores: HashMap<String, Arc<dyn StorageBackend>>,
+    exports: Mutex<HashMap<PathBuf, ExportEntry>>,
 }
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
-    let store: Arc<dyn StorageBackend> = Arc::from(underwrap_store::open(&config.storage)?);
-    let mut listeners = Vec::new();
+    let stores = open_stores(&config.stores)?;
+    let state = Arc::new(State {
+        stores,
+        exports: Mutex::new(HashMap::new()),
+    });
 
-    for (binding, binding_config) in &config.bindings {
-        if let Some(parent) = binding_config.socket.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating socket dir {}", parent.display()))?;
-        }
-        let _ = std::fs::remove_file(&binding_config.socket);
+    let management_listener = bind_socket(&config.management.socket, 0o600).with_context(|| {
+        format!(
+            "binding management socket {}",
+            config.management.socket.display()
+        )
+    })?;
+    info!(path = %config.management.socket.display(), "backend management socket listening");
 
-        let listener = UnixListener::bind(&binding_config.socket).with_context(|| {
-            format!("binding backend socket {}", binding_config.socket.display())
-        })?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                &binding_config.socket,
-                std::fs::Permissions::from_mode(binding_config.mode),
-            )?;
-        }
-
-        info!(binding = %binding, path = %binding_config.socket.display(), "backend socket listening");
-        listeners.push((binding.clone(), binding_config.prefix.clone(), listener));
-    }
-
-    let mut tasks = tokio::task::JoinSet::new();
-    for (_binding, prefix, listener) in listeners {
-        let scoped_store: Arc<dyn StorageBackend> = Arc::new(ScopedStore {
-            prefix,
-            inner: Arc::clone(&store),
-        });
-        let state = Arc::new(State {
-            store: scoped_store,
-        });
-        tasks.spawn(async move { accept_loop(listener, state).await });
-    }
+    let mut tasks = JoinSet::new();
+    tasks.spawn(management_accept_loop(
+        management_listener,
+        Arc::clone(&state),
+    ));
 
     match shutdown {
         Some(notify) => {
             tokio::select! {
                 r = tasks.join_next() => match r {
-                    Some(result) => result.context("backend listener task panicked")?,
+                    Some(result) => result.context("backend management task panicked")?,
                     None => Ok(()),
                 },
                 _ = notify.notified() => {
                     info!("backend shutdown signal received");
+                    shutdown_exports(&state).await;
                     tasks.abort_all();
                     while tasks.join_next().await.is_some() {}
                     Ok(())
@@ -164,40 +82,198 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             }
         }
         None => match tasks.join_next().await {
-            Some(result) => result.context("backend listener task panicked")?,
+            Some(result) => result.context("backend management task panicked")?,
             None => Ok(()),
         },
     }
 }
 
-async fn accept_loop(listener: UnixListener, state: Arc<State>) -> Result<()> {
+fn open_stores(
+    configs: &HashMap<String, StorageConfig>,
+) -> Result<HashMap<String, Arc<dyn StorageBackend>>> {
+    let mut stores = HashMap::new();
+    for (name, config) in configs {
+        let store: Arc<dyn StorageBackend> = Arc::from(underwrap_store::open(config)?);
+        stores.insert(name.clone(), store);
+    }
+    Ok(stores)
+}
+
+fn bind_socket(path: &Path, mode: u32) -> Result<UnixListener> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating socket dir {}", parent.display()))?;
+    }
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
+
+    Ok(listener)
+}
+
+async fn management_accept_loop(listener: UnixListener, state: Arc<State>) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let state = Arc::clone(&state);
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, &state).await {
-                error!("backend connection error: {e:#}");
+            if let Err(e) = handle_management_connection(stream, &state).await {
+                error!("backend management connection error: {e:#}");
             }
         });
     }
 }
 
-async fn handle_connection(mut stream: UnixStream, state: &State) -> Result<()> {
+async fn handle_management_connection(mut stream: UnixStream, state: &State) -> Result<()> {
     loop {
-        let request: BackendRequest = match read_frame_async(&mut stream).await {
+        let request: BackendMgmtRequest = match read_frame_async(&mut stream).await {
             Ok(req) => req,
             Err(_) => break,
         };
-
-        let response = process_request(&request, state).await;
+        let response = process_management_request(request, state).await;
         write_frame_async(&mut stream, &response).await?;
     }
     Ok(())
 }
 
-async fn process_request(request: &BackendRequest, state: &State) -> BackendResponse {
+async fn process_management_request(
+    request: BackendMgmtRequest,
+    state: &State,
+) -> BackendMgmtResponse {
     match request {
-        BackendRequest::Read { secret_id } => match state.store.read(secret_id) {
+        BackendMgmtRequest::ListStores => {
+            let mut stores: Vec<String> = state.stores.keys().cloned().collect();
+            stores.sort();
+            BackendMgmtResponse::ListStoresOk { stores }
+        }
+        BackendMgmtRequest::ListExports => {
+            let exports = state.exports.lock().await;
+            let mut list: Vec<BackendExportStatus> = exports
+                .values()
+                .map(|entry| BackendExportStatus {
+                    store: entry.store.clone(),
+                    socket: entry.socket.display().to_string(),
+                    mode: entry.mode,
+                })
+                .collect();
+            list.sort_by(|a, b| a.socket.cmp(&b.socket));
+            BackendMgmtResponse::ListExportsOk { exports: list }
+        }
+        BackendMgmtRequest::ExportSocket {
+            store,
+            socket,
+            mode,
+        } => match export_store_socket(state, &store, PathBuf::from(socket), mode).await {
+            Ok(()) => BackendMgmtResponse::ExportSocketOk,
+            Err(e) => BackendMgmtResponse::Error {
+                code: BackendErrorCode::Internal,
+                message: e.to_string(),
+            },
+        },
+        BackendMgmtRequest::UnexportSocket { socket } => {
+            let existed = unexport_store_socket(state, &PathBuf::from(socket)).await;
+            BackendMgmtResponse::UnexportSocketOk { existed }
+        }
+    }
+}
+
+async fn export_store_socket(
+    state: &State,
+    store_name: &str,
+    socket: PathBuf,
+    mode: u32,
+) -> Result<()> {
+    let store = state
+        .stores
+        .get(store_name)
+        .with_context(|| format!("unknown store '{store_name}'"))?
+        .clone();
+
+    {
+        let mut exports = state.exports.lock().await;
+        if let Some(existing) = exports.remove(&socket) {
+            existing.abort.abort();
+        }
+    }
+    let _ = std::fs::remove_file(&socket);
+
+    let listener = bind_socket(&socket, mode)
+        .with_context(|| format!("binding export socket {}", socket.display()))?;
+    info!(store = %store_name, path = %socket.display(), mode = format!("{mode:#o}"), "backend export socket listening");
+
+    let store_name_owned = store_name.to_string();
+    let socket_for_task = socket.clone();
+    let handle = tokio::spawn(async move {
+        if let Err(e) = data_accept_loop(listener, store).await {
+            error!(store = %store_name_owned, path = %socket_for_task.display(), "backend data listener error: {e:#}");
+        }
+    });
+
+    let mut exports = state.exports.lock().await;
+    exports.insert(
+        socket.clone(),
+        ExportEntry {
+            store: store_name.to_string(),
+            socket,
+            mode,
+            abort: handle.abort_handle(),
+        },
+    );
+    Ok(())
+}
+
+async fn unexport_store_socket(state: &State, socket: &Path) -> bool {
+    let mut exports = state.exports.lock().await;
+    if let Some(entry) = exports.remove(socket) {
+        entry.abort.abort();
+        let _ = std::fs::remove_file(socket);
+        true
+    } else {
+        false
+    }
+}
+
+async fn shutdown_exports(state: &State) {
+    let sockets: Vec<PathBuf> = {
+        let exports = state.exports.lock().await;
+        exports.keys().cloned().collect()
+    };
+    for socket in sockets {
+        let _ = unexport_store_socket(state, &socket).await;
+    }
+}
+
+async fn data_accept_loop(listener: UnixListener, store: Arc<dyn StorageBackend>) -> Result<()> {
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            if let Err(e) = handle_data_connection(stream, &*store).await {
+                error!("backend data connection error: {e:#}");
+            }
+        });
+    }
+}
+
+async fn handle_data_connection(mut stream: UnixStream, store: &dyn StorageBackend) -> Result<()> {
+    loop {
+        let request: BackendRequest = match read_frame_async(&mut stream).await {
+            Ok(req) => req,
+            Err(_) => break,
+        };
+        let response = process_request(&request, store).await;
+        write_frame_async(&mut stream, &response).await?;
+    }
+    Ok(())
+}
+
+async fn process_request(request: &BackendRequest, store: &dyn StorageBackend) -> BackendResponse {
+    match request {
+        BackendRequest::Read { secret_id } => match store.read(secret_id) {
             Ok(material) => {
                 info!(secret = %secret_id, present = material.is_some(), "backend read");
                 BackendResponse::ReadOk { material }
@@ -207,11 +283,10 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 message: format!("storage error: {e}"),
             },
         },
-
         BackendRequest::Write {
             secret_id,
             material,
-        } => match state.store.write(secret_id, material.as_ref()) {
+        } => match store.write(secret_id, material.as_ref()) {
             Ok(()) => {
                 info!(secret = %secret_id, "backend write");
                 BackendResponse::WriteOk
@@ -221,8 +296,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 message: format!("storage error: {e}"),
             },
         },
-
-        BackendRequest::List { prefix } => match state.store.list(prefix) {
+        BackendRequest::List { prefix } => match store.list(prefix) {
             Ok(ids) => {
                 info!(prefix = %prefix, count = ids.len(), "backend list");
                 BackendResponse::ListOk { ids }
@@ -232,8 +306,7 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 message: format!("storage error: {e}"),
             },
         },
-
-        BackendRequest::Delete { secret_id } => match state.store.delete(secret_id) {
+        BackendRequest::Delete { secret_id } => match store.delete(secret_id) {
             Ok(existed) => {
                 info!(secret = %secret_id, existed = existed, "backend delete");
                 BackendResponse::DeleteOk { existed }
@@ -243,7 +316,6 @@ async fn process_request(request: &BackendRequest, state: &State) -> BackendResp
                 message: format!("storage error: {e}"),
             },
         },
-
         BackendRequest::Status => {
             info!("backend status");
             BackendResponse::StatusOk
@@ -334,21 +406,15 @@ mod tests {
         }
     }
 
-    fn state_with_store(store: TestStore) -> State {
-        State {
-            store: Arc::new(store),
-        }
-    }
-
     #[tokio::test]
     async fn process_request_read_write_list_delete_and_status() {
-        let state = state_with_store(TestStore::with_data(&[("github/token", b"ghp_test")]));
+        let store = TestStore::with_data(&[("github/token", b"ghp_test")]);
 
         let resp = process_request(
             &BackendRequest::Read {
                 secret_id: "github/token".to_string(),
             },
-            &state,
+            &store,
         )
         .await;
         assert_eq!(
@@ -363,7 +429,7 @@ mod tests {
                 secret_id: "github/user".to_string(),
                 material: b"octocat".as_slice().into(),
             },
-            &state,
+            &store,
         )
         .await;
         assert_eq!(resp, BackendResponse::WriteOk);
@@ -372,7 +438,7 @@ mod tests {
             &BackendRequest::List {
                 prefix: "github".to_string(),
             },
-            &state,
+            &store,
         )
         .await;
         assert_eq!(
@@ -386,12 +452,12 @@ mod tests {
             &BackendRequest::Delete {
                 secret_id: "github/token".to_string(),
             },
-            &state,
+            &store,
         )
         .await;
         assert_eq!(resp, BackendResponse::DeleteOk { existed: true });
 
-        let resp = process_request(&BackendRequest::Status, &state).await;
+        let resp = process_request(&BackendRequest::Status, &store).await;
         assert_eq!(resp, BackendResponse::StatusOk);
     }
 
@@ -426,9 +492,8 @@ mod tests {
         ] {
             let store = TestStore::new();
             store.fail(op);
-            let state = state_with_store(store);
 
-            let resp = process_request(&request, &state).await;
+            let resp = process_request(&request, &store).await;
             match resp {
                 BackendResponse::Error { code, message } => {
                     assert_eq!(code, BackendErrorCode::Internal);

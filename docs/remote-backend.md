@@ -1,192 +1,117 @@
 # Remote backend
 
-Remote backend mode lets you keep secrets on a trusted machine — typically your workstation — while still running wrappers on a different NixOS machine.
-
-The important property is simple:
-
-> the target machine runs the wrappers, but it does not need to store the secrets locally
-
-## When remote mode is useful
-
-Use it when:
-
-- the target machine is ephemeral or lightly trusted
-- the wrapper host is an agent VM or automation box
-- you want a clean "connect = available, disconnect = unavailable" model
-- you want high-value secret material to stay on your workstation
-
-## The model
-
-In remote mode, there are still two roles:
-
-- **`underwrapd`** on the target machine as frontend
-- **`underwrap-backendd`** on the trusted backend machine as storage backend
-
-An SSH remote forward exposes the expected backend socket path to the target machine.
+underwrap always uses the same frontend contract:
 
 ```text
-target machine                             trusted workstation
---------------                             -------------------
-wrapper
-  -> underwrapd
-       -> /run/underwrap-<instance>/backend/backend.sock
-             -> SSH remote forward
-                  -> underwrap-backendd
-                       -> local secret storage
+/run/underwrap-<instance>/backend/backend.sock
 ```
 
-From the user's point of view, the wrapper command still looks normal.
+The frontend daemon connects to that socket whether the backend is local or remote.
 
-## What changes in configuration
+The only question is: **who provides that socket?**
 
-On the target machine, you define a remote backend provider and point the instance at it:
+- local deployment: a local `underwrap-backendd` export
+- remote deployment: an SSH forward to a trusted machine running `underwrap-backendd`
 
-```nix
-services.underwrap = {
-  backends.work = {
-    provider = "remote";
-  };
+## Components
 
-  instances.work = {
-    backend = "work";
+A remote deployment has two roles:
 
-    credentials."github/gh" = {
-      mode = "libsecret";
-    };
+- **target machine** — runs `underwrapd`, wrappers, and the wrapped tools
+- **backend machine** — runs `underwrap-backendd` and stores the secrets
 
-    wrappers.gh-auth = {
-      target = "${pkgs.gh}/bin/gh";
-      use."github/gh".access = "read-write";
-    };
-  };
-};
-```
+The backend machine also exposes a privileged management socket for backend operators.
 
-The wrapper definitions look the same. The difference is only who provides the backend socket path that `underwrapd` connects to.
+## Static backend config
 
-## Backend daemon setup
+`underwrap-backendd` uses a static config file that defines:
 
-On the trusted machine, run `underwrap-backendd` with a backend config.
+- the management socket
+- the predefined stores
 
-A minimal example:
+Example:
 
 ```yaml
-storage:
-  backend: plain
-  dir: /home/you/.underwrap/secrets
-bindings:
+management:
+  socket: /run/underwrap-backend/mgmt.sock
+
+stores:
   work:
-    socket: /run/underwrap-backend/backend.sock
-    mode: 384
-    prefix: null
+    backend: plain
+    dir: /var/lib/underwrap-backend/work
 ```
 
-Then start:
+Start the backend daemon on the trusted machine:
 
 ```bash
-underwrap-backendd --config ~/.underwrap/backend.yaml
+underwrap-backendd --config ~/.config/underwrap/backend.yaml
 ```
 
-## Establishing the tunnel
+## Exporting a store to a data socket
 
-The NixOS module creates a per-instance tunnel user such as:
+Before forwarding, export the store onto a normal backend protocol socket on the backend machine:
 
-```text
-underwrap-work-tunnel
+```bash
+underwrap-backend-ctl \
+  --socket /run/underwrap-backend/mgmt.sock \
+  export work /run/underwrap-backend/work.sock --mode 0600
 ```
 
-From the trusted machine, create the remote forward:
+That creates a regular backend data socket serving the `work` store.
+
+The frontend still does not know the store name. It only ever sees a socket.
+
+## Forwarding to the target machine
+
+Now satisfy the target machine's expected per-instance socket path with SSH remote forwarding:
 
 ```bash
 ssh -N \
-  -R /run/underwrap-work/backend/backend.sock:/run/underwrap-backend/backend.sock \
+  -R /run/underwrap-work/backend/backend.sock:/run/underwrap-backend/work.sock \
   underwrap-work-tunnel@target-machine
 ```
 
-That is the key path for the generated module layout:
+After that, the target machine has:
 
 ```text
 /run/underwrap-work/backend/backend.sock
 ```
 
-## Availability model
+and `underwrapd` can use the remote backend exactly as if it were local.
 
-Remote mode has a nice operational property:
+## Why the frontend does not name stores
 
-- tunnel up -> wrappers can read secrets
-- tunnel down -> wrappers fail to read secrets
+The frontend does **not** send a store name over the protocol.
 
-In practice, that means:
+Instead:
 
-- **connecting the tunnel makes secrets available**
-- **disconnecting the tunnel removes backend access**
+- backend config defines stores
+- backend management tooling exports one chosen store to one chosen socket
+- socket identity selects the store
 
-That is not a complete authorization model on its own, but it is a very useful operational boundary.
+That keeps backend routing out of the frontend API and avoids trusting client-supplied namespace or store identifiers.
 
-## Security boundaries
+## Security notes
 
-### What remote mode improves
+The management socket is privileged. Treat it as an administrative interface.
 
-- secrets do not need to be stored on the target machine
-- high-value secret material can stay on the trusted workstation
-- the target still benefits from underwrap's normal wrapper chain and identity checks
+Whoever can access it can:
 
-### What remote mode does not change
+- inspect available stores
+- export stores onto sockets
+- remove exports
 
-- the target process still receives the credential material it needs for the invocation
-- `root` on the target machine is still `root`
-- trust shifts to the backend machine and the SSH tunnel setup
+So it should normally be accessible only to a backend operator user or root.
 
-### Backend daemon trust model
+The forwarded per-instance socket on the target machine is much less privileged. It only exposes the already-selected store view that was exported on the backend side.
 
-`underwrap-backendd` does not implement its own complex multi-tenant authentication layer.
+## Current operator workflow
 
-The intended trust boundary is:
+Today, the intended flow is:
 
-- the backend socket is local to the trusted machine
-- it stays protected by filesystem permissions
-- the only remote exposure path is the SSH forward you explicitly create
+1. configure and start `underwrap-backendd` on the backend machine
+2. export a store with `underwrap-backend-ctl`
+3. satisfy the target machine's expected socket path locally or via SSH forwarding
+4. run the frontend instance normally
 
-In other words: remote mode assumes you trust the workstation that holds the backend daemon.
-
-## Tunnel user notes
-
-The NixOS module creates the tunnel user without a normal shell and places it in the daemon group so the forwarded socket can be created where `underwrapd` expects it.
-
-For production-style deployments, the SSH key used for that tunnel should be restricted.
-
-A typical `authorized_keys` restriction looks like:
-
-```text
-restrict,streamlocal-forward=/run/underwrap-work/backend/backend.sock ssh-ed25519 AAAA...
-```
-
-
-## Troubleshooting
-
-### Wrapper fails with backend connection errors
-
-Check whether the SSH tunnel is up and whether the forwarded socket exists:
-
-```bash
-ls -l /run/underwrap-work/tunnel/
-```
-
-### Tunnel user cannot create the socket
-
-Make sure:
-
-- remote mode is enabled for the instance
-- the runtime tunnel directory exists
-- OpenSSH is configured to allow stream-local forwarding
-
-The module sets the needed OpenSSH server setting for remote-enabled instances.
-
-### Secrets seem to be local anyway
-
-Check your instance configuration. If the instance is not pointing at a backend with `provider = "remote"`, it will use a local backend service instead.
-
-## Related docs
-
-- [Configuration reference](configuration.md)
-- [Security](security.md)
+Future helper tooling can build on the same model and automate the SSH-forward lifecycle without changing the frontend contract.

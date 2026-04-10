@@ -11,18 +11,26 @@ services.underwrap = {
   enable = true;
   package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
-  backends.<name> = {
-    provider = "local"; # or "remote"
-    encryption = { ... };
-  };
-
   instances.<name> = {
-    backend = "<backend-name>";
     credentials = { ... };
     wrappers = { ... };
   };
 };
 ```
+
+The NixOS module is now **frontend-only**.
+
+It does **not** provision or model backend services. Each frontend instance simply expects its backend protocol socket at:
+
+```text
+/run/underwrap-<instance>/backend/backend.sock
+```
+
+That socket may be provided by:
+
+- a local `underwrap-backendd` export on the same machine
+- an SSH forward to a remote `underwrap-backendd`
+- future helper tooling that manages those exports dynamically
 
 ## Instances
 
@@ -35,19 +43,14 @@ Each instance gets its own:
 - systemd service
 - wrapper groups
 - backend socket path expected by the frontend
-- optional tunnel user when its backend provider is remote
+- tunnel user for future SSH-forward workflows
 
-Backends are configured separately and may be reused across multiple instances.
+Backend provisioning is external to the frontend module.
 
 Example:
 
 ```nix
-services.underwrap.backends.work = {
-  provider = "local";
-};
-
 services.underwrap.instances.work = {
-  backend = "work";
   credentials = { ... };
   wrappers = { ... };
 };
@@ -270,85 +273,60 @@ services.underwrap.instances.work = {
 
 ## Multiple instances
 
-You can run multiple isolated frontend instances on the same machine, and they may either use separate backends or reuse the same backend definition.
+You can run multiple isolated frontend instances on the same machine.
 
-```nix
-services.underwrap = {
-  backends.shared = {
-    provider = "local";
-  };
+Each instance always uses its own expected backend socket path:
 
-  instances.work = {
-    backend = "shared";
-    credentials = { ... };
-    wrappers = { ... };
-  };
+- `work` → `/run/underwrap-work/backend/backend.sock`
+- `personal` → `/run/underwrap-personal/backend/backend.sock`
 
-  instances.personal = {
-    backend = "shared";
-    credentials = { ... };
-    wrappers = { ... };
-  };
-};
-```
-
-When multiple instances share one backend, the module assigns them distinct backend namespaces by default so their stored objects remain separated.
+How those sockets are provided is a backend/operator concern, not a frontend module concern.
 
 ## Backends
 
-A backend defines who provides storage to one or more frontend instances.
+`underwrap-backendd` is configured separately from the frontend module.
 
-### Local backend
+Its static config defines:
 
-```nix
-backends.work = {
-  provider = "local";
-};
+- a privileged **management socket**
+- one or more predefined **stores**
 
-instances.work = {
-  backend = "work";
-  credentials = { ... };
-  wrappers = { ... };
-};
+Example backend config:
+
+```yaml
+management:
+  socket: /run/underwrap-backend/mgmt.sock
+
+stores:
+  work:
+    backend: plain
+    dir: /var/lib/underwrap-backend/work
+
+  personal:
+    backend: encrypted
+    dir: /var/lib/underwrap-backend/personal
+    key_file: /var/lib/underwrap-backend/personal.key
 ```
 
-That creates a local `underwrap-backendd-work` service and points the frontend instance at its expected backend socket path.
+Then an operator exports a chosen store onto a frontend-visible socket with `underwrap-backend-ctl`:
 
-### Encrypted local backend
-
-```nix
-backends.work = {
-  provider = "local";
-  encryption.enable = true;
-  encryption.keyFile = /var/lib/underwrap-backend-work/master.key;
-};
-
-instances.work = {
-  backend = "work";
-  credentials = { ... };
-  wrappers = { ... };
-};
+```bash
+underwrap-backend-ctl \
+  --socket /run/underwrap-backend/mgmt.sock \
+  export work /run/underwrap-work/backend/backend.sock --mode 0660
 ```
 
-### Remote backend provider
+The frontend never names the store in its own config and never selects it in the protocol. Socket identity selects the exported store.
 
-```nix
-backends.work = {
-  provider = "remote";
-};
+To inspect or remove dynamic exports:
 
-instances.work = {
-  backend = "work";
-  credentials = { ... };
-  wrappers = { ... };
-};
+```bash
+underwrap-backend-ctl --socket /run/underwrap-backend/mgmt.sock list-stores
+underwrap-backend-ctl --socket /run/underwrap-backend/mgmt.sock list-exports
+underwrap-backend-ctl --socket /run/underwrap-backend/mgmt.sock unexport /run/underwrap-work/backend/backend.sock
 ```
 
-In this mode, the frontend daemon still expects a backend socket locally, but that path is satisfied by an SSH forward:
-
-```text
-/run/underwrap-work/backend/backend.sock
-```
+For remote use, the frontend still expects the same per-instance socket path locally, but that path may be satisfied by SSH forwarding instead of a local export. See [Remote backend](remote-backend.md).
 
 ## Environment handling
 

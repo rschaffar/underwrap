@@ -61,13 +61,13 @@ wrappers:
 
 #[tokio::test]
 async fn underwrapd_binary_start_and_status() {
-    // Ensure the standalone binary is freshly built. `cargo test` may compile
-    // the crate without updating `target/debug/underwrapd`, and this test wants
-    // to exercise the real binary entry point.
     ensure_package_built("underwrapd");
     ensure_package_built("underwrap-backendd");
+    ensure_package_built("underwrap-backendctl");
 
     let daemon_bin = require_bin!("underwrapd");
+    let backend_bin = require_bin!("underwrap-backendd");
+    let backend_ctl = require_bin!("underwrap-backend-ctl");
 
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
@@ -75,17 +75,16 @@ async fn underwrapd_binary_start_and_status() {
     let wrapper_sock = base.join("wrapper-w.sock");
     let control_sock = base.join("control.sock");
     let backend_socket = base.join("backend.sock");
+    let backend_management_socket = base.join("backend-mgmt.sock");
 
     let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
-        storage: underwrap_protocol::config::StorageConfig::Plain {
-            dir: base.join("secrets"),
+        management: underwrap_backendd::server::ManagementConfig {
+            socket: backend_management_socket.clone(),
         },
-        bindings: HashMap::from([(
+        stores: HashMap::from([(
             "test".to_string(),
-            underwrap_backendd::server::BackendBindingConfig {
-                socket: backend_socket.clone(),
-                mode: 0o600,
-                prefix: None,
+            underwrap_protocol::config::StorageConfig::Plain {
+                dir: base.join("secrets"),
             },
         )]),
     })
@@ -93,13 +92,38 @@ async fn underwrapd_binary_start_and_status() {
     let backend_config_path = base.join("backend.yaml");
     std::fs::write(&backend_config_path, &backend_config).unwrap();
 
-    let backend_bin = require_bin!("underwrap-backendd");
     let mut backend_child = tokio::process::Command::new(&backend_bin)
         .args(["--config", backend_config_path.to_str().unwrap()])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
+
+    for _ in 0..100 {
+        if backend_management_socket.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        backend_management_socket.exists(),
+        "backend management socket never appeared"
+    );
+
+    let export_status = tokio::process::Command::new(&backend_ctl)
+        .args([
+            "--socket",
+            backend_management_socket.to_str().unwrap(),
+            "export",
+            "test",
+            backend_socket.to_str().unwrap(),
+            "--mode",
+            "0600",
+        ])
+        .status()
+        .await
+        .unwrap();
+    assert!(export_status.success(), "backend export command failed");
 
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
         sockets: underwrap_protocol::config::SocketConfig {
@@ -137,7 +161,6 @@ async fn underwrapd_binary_start_and_status() {
         .spawn()
         .unwrap();
 
-    // Wait for sockets.
     for _ in 0..100 {
         if control_sock.exists() && wrapper_sock.exists() && backend_socket.exists() {
             break;
@@ -147,7 +170,6 @@ async fn underwrapd_binary_start_and_status() {
     assert!(control_sock.exists(), "control socket never appeared");
     assert!(wrapper_sock.exists(), "wrapper socket never appeared");
 
-    // Send a status request directly.
     let mut stream = tokio::net::UnixStream::connect(&control_sock)
         .await
         .unwrap();
@@ -166,7 +188,6 @@ async fn underwrapd_binary_start_and_status() {
         other => panic!("expected StatusAllOk, got {other:?}"),
     }
 
-    // Kill the daemon.
     child.kill().await.unwrap();
     backend_child.kill().await.unwrap();
 }

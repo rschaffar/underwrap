@@ -22,6 +22,9 @@ def boot_and_service_checks():
     machine.wait_for_unit("underwrapd-local.service")
     machine.wait_for_unit("underwrapd-tunnel.service")
     machine.wait_for_unit("underwrap-backendd.service")
+    machine.wait_for_unit("underwrap-backend-export.service")
+    machine.wait_for_unit("underwrap-backendd-local.service")
+    machine.wait_for_unit("underwrap-backend-export-local.service")
     machine.wait_for_unit("sshd.service")
 
     machine.succeed("id testuser")

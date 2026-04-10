@@ -1,0 +1,16 @@
+[package]
+name = "underwrap-backendctl"
+description = "Administrative CLI for underwrap-backendd management socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "underwrap-backend-ctl"
+path = "src/main.rs"
+
+[dependencies]
+underwrap-protocol = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }

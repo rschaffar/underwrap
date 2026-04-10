@@ -4,6 +4,8 @@
 
 #[path = "message/backend.rs"]
 mod backend;
+#[path = "message/backend_mgmt.rs"]
+mod backend_mgmt;
 #[path = "message/common.rs"]
 mod common;
 #[path = "message/control.rs"]
@@ -20,6 +22,7 @@ mod status;
 mod wrapper;
 
 pub use backend::{BackendRequest, BackendResponse};
+pub use backend_mgmt::{BackendExportStatus, BackendMgmtRequest, BackendMgmtResponse};
 pub use common::SecretBytes;
 pub use control::{ControlRequest, ControlResponse};
 pub use directory::{DirectoryRequest, DirectoryResponse};
@@ -76,6 +79,18 @@ mod tests {
         };
         let encoded = encode_to_vec(&req).unwrap();
         let parsed: BackendRequest = decode_from_slice(&encoded).unwrap();
+        assert_eq!(parsed, req);
+    }
+
+    #[test]
+    fn backend_management_export_roundtrip() {
+        let req = BackendMgmtRequest::ExportSocket {
+            store: "work".to_string(),
+            socket: "/run/underwrap-work/backend/backend.sock".to_string(),
+            mode: 0o660,
+        };
+        let encoded = encode_to_vec(&req).unwrap();
+        let parsed: BackendMgmtRequest = decode_from_slice(&encoded).unwrap();
         assert_eq!(parsed, req);
     }
 

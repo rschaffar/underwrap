@@ -8,6 +8,7 @@ The short version:
 - `underwrap-exec` is the setgid entry wrapper
 - `underwrap-ns` is the namespace helper
 - `underwrap-backendd` is the backend service in both local and remote deployments
+- `underwrap-backend-ctl` is the privileged management tool for exporting stores onto sockets
 - `underwrap-secretsd` is the private Secret Service implementation used in libsecret mode
 
 ## The main components
@@ -19,6 +20,7 @@ The short version:
 | `underwrap-ns` | Stage 2 wrapper: create namespace, exec target | `/run/wrappers/bin/underwrap-ns` |
 | `underwrapctl` | Administrative CLI for store/status/unlock/lock | target host |
 | `underwrap-backendd` | Backend service providing storage to frontend daemons | local host or trusted workstation/backend host |
+| `underwrap-backend-ctl` | Backend management CLI for listing stores and creating/removing socket exports | backend operator host |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
 
 The current implementation is intentionally structured so the high-level execution paths read top-down and the lower-level mechanics live in smaller modules. That matters for review: this is a security-sensitive project, so keeping process flow, authorization, protocol handling, and storage concerns visibly separate is part of the assurance story.
@@ -76,13 +78,14 @@ underwrap is designed around a frontend/backend split.
 
 - `underwrapd` is the frontend that owns wrapper authentication, unlock policy, scoped channels, and audit events
 - `underwrap-backendd` is the backend that owns the actual storage implementation
+- `underwrap-backend-ctl` exports a chosen backend store onto a chosen Unix socket
 
 Available backend storage modes currently include:
 
 - **plain** — plaintext files owned by the backend daemon
 - **encrypted** — encrypted files with a master key owned by the backend daemon
 
-The frontend always talks to a backend socket. In local deployments that socket is provided by a local `underwrap-backendd`; in remote deployments the same socket contract is satisfied by an SSH forward to a remote `underwrap-backendd`.
+The frontend always talks to a backend socket. In local deployments that socket is provided by a local `underwrap-backendd` export; in remote deployments the same socket contract is satisfied by an SSH forward to a remote `underwrap-backendd` export.
 
 ## Remote backend flow
 
