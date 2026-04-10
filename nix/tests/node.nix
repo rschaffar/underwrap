@@ -89,10 +89,13 @@ in {
       Group = "underwrap-backend";
       ExecStart = let
         cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
-          socket = "/run/underwrap-backend/backend.sock";
           storage = {
             backend = "plain";
             dir = "/var/lib/underwrap-backend/secrets";
+          };
+          bindings.tunnel = {
+            socket = "/run/underwrap-backend/backend.sock";
+            prefix = null;
           };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";

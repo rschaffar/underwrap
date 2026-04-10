@@ -4,10 +4,10 @@ This document explains how underwrap is put together.
 
 The short version:
 
-- `underwrapd` is the main daemon on the target machine
+- `underwrapd` is the frontend daemon on the target machine
 - `underwrap-exec` is the setgid entry wrapper
 - `underwrap-ns` is the namespace helper
-- `underwrap-backendd` is the optional remote backend daemon
+- `underwrap-backendd` is the backend service in both local and remote deployments
 - `underwrap-secretsd` is the private Secret Service implementation used in libsecret mode
 
 ## The main components
@@ -18,7 +18,7 @@ The short version:
 | `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/<instance>-<wrapper>` |
 | `underwrap-ns` | Stage 2 wrapper: create namespace, exec target | `/run/wrappers/bin/underwrap-ns` |
 | `underwrapctl` | Administrative CLI for store/status/unlock/lock | target host |
-| `underwrap-backendd` | Optional backend daemon for remote storage | trusted workstation or backend host |
+| `underwrap-backendd` | Backend service providing storage to frontend daemons | local host or trusted workstation/backend host |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
 
 The current implementation is intentionally structured so the high-level execution paths read top-down and the lower-level mechanics live in smaller modules. That matters for review: this is a security-sensitive project, so keeping process flow, authorization, protocol handling, and storage concerns visibly separate is part of the assurance story.
@@ -72,25 +72,27 @@ This is one of the central design choices in underwrap.
 
 ## Storage model
 
-underwrap is designed around a storage backend abstraction.
+underwrap is designed around a frontend/backend split.
 
-Available backend modes include:
+- `underwrapd` is the frontend that owns wrapper authentication, unlock policy, scoped channels, and audit events
+- `underwrap-backendd` is the backend that owns the actual storage implementation
 
-- **plain** — local storage on the target machine
-- **encrypted** — local storage with encryption at rest
-- **remote** — a forwarded Unix socket to `underwrap-backendd`
+Available backend storage modes currently include:
 
-From the wrapper's point of view, the flow is the same either way: it asks `underwrapd` for material, and `underwrapd` gets that material from its configured backend.
+- **plain** — plaintext files owned by the backend daemon
+- **encrypted** — encrypted files with a master key owned by the backend daemon
+
+The frontend always talks to a backend socket. In local deployments that socket is provided by a local `underwrap-backendd`; in remote deployments the same socket contract is satisfied by an SSH forward to a remote `underwrap-backendd`.
 
 ## Remote backend flow
 
-In remote mode, the target machine still runs `underwrapd`, but secret storage moves elsewhere.
+In remote mode, the target machine still runs `underwrapd`, but the backend socket is satisfied by an SSH forward instead of a local backend listener.
 
 ```text
-wrapper -> underwrapd on target host -> SSH-forwarded Unix socket -> underwrap-backendd on workstation
+wrapper -> underwrapd on target host -> expected backend socket path -> SSH-forwarded Unix socket -> underwrap-backendd on workstation
 ```
 
-This lets you keep secrets off the target machine entirely while preserving the same wrapper UX.
+This lets you keep secrets off the target machine entirely while preserving the same frontend/backend protocol and the same wrapper UX.
 
 See [Remote backend](remote-backend.md).
 

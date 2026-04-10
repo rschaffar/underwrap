@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Notify;
 use tracing::{error, info};
 
 use underwrap_protocol::config::StorageConfig;
@@ -15,42 +16,154 @@ use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse};
 use underwrap_store::StorageBackend;
 
+/// One frontend/backend binding served by this backend daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendBindingConfig {
+    /// Path to the Unix socket to listen on for this binding.
+    pub socket: PathBuf,
+    /// Optional storage prefix used to namespace all keys for this binding.
+    /// If omitted, the binding sees the storage root directly.
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
 /// Backend daemon configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
-    /// Path to the Unix socket to listen on.
-    pub socket: PathBuf,
-
-    /// Storage backend configuration.
+    /// Storage backend configuration owned by this backend daemon.
     #[serde(default)]
     pub storage: StorageConfig,
+
+    /// Named frontend bindings served by this daemon.
+    pub bindings: std::collections::HashMap<String, BackendBindingConfig>,
 }
 
 struct State {
-    store: Box<dyn StorageBackend>,
+    store: Arc<dyn StorageBackend>,
 }
 
-pub async fn run(config: BackendConfig) -> Result<()> {
-    let store = underwrap_store::open(&config.storage)?;
-    let state = Arc::new(State { store });
+struct ScopedStore {
+    prefix: Option<String>,
+    inner: Arc<dyn StorageBackend>,
+}
 
-    if let Some(parent) = config.socket.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating socket dir {}", parent.display()))?;
-    }
-    let _ = std::fs::remove_file(&config.socket);
-
-    let listener = UnixListener::bind(&config.socket)
-        .with_context(|| format!("binding backend socket {}", config.socket.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&config.socket, std::fs::Permissions::from_mode(0o600))?;
+impl ScopedStore {
+    fn scoped_id(&self, secret_id: &str) -> String {
+        match &self.prefix {
+            Some(prefix) => format!("{}/{}", prefix, secret_id),
+            None => secret_id.to_string(),
+        }
     }
 
-    info!(path = %config.socket.display(), "backend socket listening");
+    fn scoped_prefix(&self, prefix: &str) -> String {
+        match &self.prefix {
+            Some(binding_prefix) => {
+                if prefix.is_empty() {
+                    binding_prefix.clone()
+                } else {
+                    format!("{}/{}", binding_prefix, prefix)
+                }
+            }
+            None => prefix.to_string(),
+        }
+    }
+}
 
+impl StorageBackend for ScopedStore {
+    fn read(
+        &self,
+        secret_id: &str,
+    ) -> anyhow::Result<Option<underwrap_protocol::message::SecretBytes>> {
+        self.inner.read(&self.scoped_id(secret_id))
+    }
+
+    fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
+        self.inner.write(&self.scoped_id(secret_id), material)
+    }
+
+    fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
+        let scoped_prefix = self.scoped_prefix(prefix);
+        let ids = self.inner.list(&scoped_prefix)?;
+        match &self.prefix {
+            Some(binding_prefix) => {
+                let strip_prefix = format!("{binding_prefix}/");
+                Ok(ids
+                    .into_iter()
+                    .filter_map(|id| id.strip_prefix(&strip_prefix).map(|s| s.to_string()))
+                    .collect())
+            }
+            None => Ok(ids),
+        }
+    }
+
+    fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
+        self.inner.delete(&self.scoped_id(secret_id))
+    }
+}
+
+pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
+    let store: Arc<dyn StorageBackend> = Arc::from(underwrap_store::open(&config.storage)?);
+    let mut listeners = Vec::new();
+
+    for (binding, binding_config) in &config.bindings {
+        if let Some(parent) = binding_config.socket.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating socket dir {}", parent.display()))?;
+        }
+        let _ = std::fs::remove_file(&binding_config.socket);
+
+        let listener = UnixListener::bind(&binding_config.socket).with_context(|| {
+            format!("binding backend socket {}", binding_config.socket.display())
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                &binding_config.socket,
+                std::fs::Permissions::from_mode(0o600),
+            )?;
+        }
+
+        info!(binding = %binding, path = %binding_config.socket.display(), "backend socket listening");
+        listeners.push((binding.clone(), binding_config.prefix.clone(), listener));
+    }
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for (_binding, prefix, listener) in listeners {
+        let scoped_store: Arc<dyn StorageBackend> = Arc::new(ScopedStore {
+            prefix,
+            inner: Arc::clone(&store),
+        });
+        let state = Arc::new(State {
+            store: scoped_store,
+        });
+        tasks.spawn(async move { accept_loop(listener, state).await });
+    }
+
+    match shutdown {
+        Some(notify) => {
+            tokio::select! {
+                r = tasks.join_next() => match r {
+                    Some(result) => result.context("backend listener task panicked")?,
+                    None => Ok(()),
+                },
+                _ = notify.notified() => {
+                    info!("backend shutdown signal received");
+                    tasks.abort_all();
+                    while tasks.join_next().await.is_some() {}
+                    Ok(())
+                }
+            }
+        }
+        None => match tasks.join_next().await {
+            Some(result) => result.context("backend listener task panicked")?,
+            None => Ok(()),
+        },
+    }
+}
+
+async fn accept_loop(listener: UnixListener, state: Arc<State>) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let state = Arc::clone(&state);
@@ -216,7 +329,7 @@ mod tests {
 
     fn state_with_store(store: TestStore) -> State {
         State {
-            store: Box::new(store),
+            store: Arc::new(store),
         }
     }
 

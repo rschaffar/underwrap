@@ -1,6 +1,7 @@
 //! End-to-end integration tests.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
@@ -116,6 +117,27 @@ macro_rules! require_echo {
     };
 }
 
+fn ensure_package_built(package: &'static str) {
+    static UNDERWRAPCTL: OnceLock<()> = OnceLock::new();
+    static UNDERWRAPD: OnceLock<()> = OnceLock::new();
+    static UNDERWRAP_BACKENDD: OnceLock<()> = OnceLock::new();
+
+    let once = match package {
+        "underwrapctl" => &UNDERWRAPCTL,
+        "underwrapd" => &UNDERWRAPD,
+        "underwrap-backendd" => &UNDERWRAP_BACKENDD,
+        other => panic!("unsupported package build cache for {other}"),
+    };
+
+    once.get_or_init(|| {
+        let build_status = std::process::Command::new("cargo")
+            .args(["build", "-p", package])
+            .status()
+            .unwrap();
+        assert!(build_status.success(), "cargo build -p {package} failed");
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -188,14 +210,16 @@ async fn daemon_config_error(
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
     let control_socket = base.join("control.sock");
-    let storage_dir = base.join("secrets");
+    let backend_socket = base.join("backend.sock");
 
     let config = underwrap_protocol::config::DaemonConfig {
         sockets: underwrap_protocol::config::SocketConfig {
             control: control_socket,
             ..Default::default()
         },
-        storage: underwrap_protocol::config::StorageConfig::Plain { dir: storage_dir },
+        backend: underwrap_protocol::config::BackendSocketConfig {
+            socket: backend_socket,
+        },
         allowed_users: Vec::new(),
         credentials,
         wrappers: HashMap::from([("dir-wrapper".to_string(), wrapper_def)]),

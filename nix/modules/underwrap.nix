@@ -30,7 +30,8 @@ let
     wrapperGroupName = name: "underwrap-${instName}-${name}";
     wrapperSocketPath = name: "${runDir}/wrapper-${name}.sock";
     runDir = "/run/underwrap-${instName}";
-    tunnelDir = "/run/underwrap-${instName}/tunnel";
+    backendDir = "${runDir}/backend";
+    backendSocket = "${backendDir}/backend.sock";
     stateDir = "/var/lib/underwrap-${instName}";
 
     runtimeConfig = {
@@ -38,18 +39,10 @@ let
         control = "${runDir}/control.sock";
         control_mode = "0600";
       };
-      allowed_users = inst.allowedUsers;
-      storage = if inst.remote.enable then {
-        backend = "remote";
-        socket = "${tunnelDir}/backend.sock";
-      } else if inst.encryption.enable then {
-        backend = "encrypted";
-        dir = "${stateDir}/secrets";
-        key_file = inst.encryption.keyFile;
-      } else {
-        backend = "plain";
-        dir = "${stateDir}/secrets";
+      backend = {
+        socket = backendSocket;
       };
+      allowed_users = inst.allowedUsers;
       credentials = lib.mapAttrs (_ref: c:
         if c.mode == "env" then {
           mode = "env";
@@ -81,6 +74,22 @@ let
       (builtins.toJSON runtimeConfig);
 
     nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
+
+    backendConfigFile = pkgs.writeText "underwrap-${instName}-backend.yaml"
+      (builtins.toJSON {
+        storage = if inst.encryption.enable then {
+          backend = "encrypted";
+          dir = "${stateDir}/secrets";
+          key_file = inst.encryption.keyFile;
+        } else {
+          backend = "plain";
+          dir = "${stateDir}/secrets";
+        };
+        bindings.${instName} = {
+          socket = backendSocket;
+          prefix = null;
+        };
+      });
 
     wrapperConfigs = lib.mapAttrs (name: w:
       let
@@ -150,16 +159,16 @@ let
 
     # Tmpfiles rules.
     # runDir is 0755 (not group-writable) — protects wrapper-*.sock and control.sock.
-    # tunnelDir is 0770 group-writable — only for the backend tunnel socket.
+    # backendDir is 0770 group-writable so either the local backend daemon or a
+    # remote-forward provider can create the backend socket where underwrapd expects it.
     tmpfiles = [
       "d ${runDir} 0755 ${daemonUser} ${daemonGroup} -"
+      "d ${backendDir} 0770 ${daemonUser} ${daemonGroup} -"
       "d ${stateDir} 0700 ${daemonUser} ${daemonGroup} -"
       "d ${stateDir}/secrets 0700 ${daemonUser} ${daemonGroup} -"
-    ] ++ lib.optionals inst.remote.enable [
-      "d ${tunnelDir} 0770 ${daemonUser} ${daemonGroup} -"
     ];
 
-    # Systemd service.
+    # Frontend daemon.
     service = {
       description = "underwrap daemon (${instName})";
       wantedBy = [ "multi-user.target" ];
@@ -189,7 +198,40 @@ let
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
         NoNewPrivileges = true;
         LimitCORE = 0;
-        ReadWritePaths = [ runDir stateDir ];
+        ReadWritePaths = [ runDir ];
+      };
+    };
+
+    backendService = lib.mkIf (!inst.remote.enable) {
+      description = "underwrap backend daemon (${instName})";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network.target" ];
+      serviceConfig = {
+        Type = "simple";
+        User = daemonUser;
+        Group = daemonGroup;
+        ExecStart = "${cfg.package}/bin/underwrap-backendd --config ${backendConfigFile}";
+        Restart = "on-failure";
+        RestartSec = "2s";
+        UMask = "0077";
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectControlGroups = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        RestrictSUIDSGID = true;
+        RestrictRealtime = true;
+        SystemCallArchitectures = "native";
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        NoNewPrivileges = true;
+        LimitCORE = 0;
+        ReadWritePaths = [ backendDir stateDir ];
       };
     };
 
@@ -371,10 +413,15 @@ in {
     # Tmpfiles.
     systemd.tmpfiles.rules = lib.mkMerge (lib.mapAttrsToList (_: i: i.tmpfiles) instances);
 
-    # One systemd service per instance.
-    systemd.services = lib.mapAttrs' (name: _:
-      lib.nameValuePair "underwrapd-${name}" instances.${name}.service
-    ) cfg.instances;
+    # One frontend service per instance, plus a local backend daemon when the
+    # instance is not configured to use a remote provider.
+    systemd.services =
+      (lib.mapAttrs' (name: _:
+        lib.nameValuePair "underwrapd-${name}" instances.${name}.service
+      ) cfg.instances)
+      // lib.filterAttrs (_: v: v != {}) (lib.mapAttrs' (name: _:
+        lib.nameValuePair "underwrap-backendd-${name}" instances.${name}.backendService
+      ) cfg.instances);
 
     # SSH settings (merged from all remote instances).
     services.openssh.settings = lib.mkMerge (lib.mapAttrsToList (_: i: i.sshSettings) instances);

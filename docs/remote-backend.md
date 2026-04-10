@@ -17,19 +17,19 @@ Use it when:
 
 ## The model
 
-In remote mode, there are two daemons:
+In remote mode, there are still two roles:
 
-- **`underwrapd`** on the target machine
-- **`underwrap-backendd`** on the trusted backend machine
+- **`underwrapd`** on the target machine as frontend
+- **`underwrap-backendd`** on the trusted backend machine as storage backend
 
-An SSH remote forward exposes the backend socket to the target machine.
+An SSH remote forward exposes the expected backend socket path to the target machine.
 
 ```text
 target machine                             trusted workstation
 --------------                             -------------------
 wrapper
   -> underwrapd
-       -> /run/underwrap-<instance>/tunnel/backend.sock
+       -> /run/underwrap-<instance>/backend/backend.sock
              -> SSH remote forward
                   -> underwrap-backendd
                        -> local secret storage
@@ -56,7 +56,7 @@ services.underwrap.instances.work = {
 };
 ```
 
-The wrapper definitions look the same. The difference is where `underwrapd` reads from.
+The wrapper definitions look the same. The difference is only who provides the backend socket path that `underwrapd` connects to.
 
 ## Backend daemon setup
 
@@ -89,14 +89,14 @@ From the trusted machine, create the remote forward:
 
 ```bash
 ssh -N \
-  -R /run/underwrap-work/tunnel/backend.sock:/run/underwrap-backend/backend.sock \
+  -R /run/underwrap-work/backend/backend.sock:/run/underwrap-backend/backend.sock \
   underwrap-work-tunnel@target-machine
 ```
 
 That is the key path for the generated module layout:
 
 ```text
-/run/underwrap-work/tunnel/backend.sock
+/run/underwrap-work/backend/backend.sock
 ```
 
 ## Availability model

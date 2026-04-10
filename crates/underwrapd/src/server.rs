@@ -43,17 +43,10 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     // Validate config at startup: every wrapper.secret must reference a declared secret.
     validate_config(&config)?;
 
-    // Open the storage backend.
-    let store: Arc<dyn StorageBackend> = match &config.storage {
-        underwrap_protocol::config::StorageConfig::Remote { socket } => {
-            Arc::new(underwrap_store::RemoteBackend::open(socket)?)
-        }
-        other => {
-            let boxed = underwrap_store::open(other)?;
-            // Convert Box<dyn StorageBackend> to Arc<dyn StorageBackend>.
-            Arc::from(boxed)
-        }
-    };
+    // Open the backend client.
+    let store: Arc<dyn StorageBackend> = Arc::new(underwrap_store::RemoteBackend::open(
+        &config.backend.socket,
+    )?);
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
     let allowed_user_uids = build_allowed_user_uids(&config)?;

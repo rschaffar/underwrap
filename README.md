@@ -9,7 +9,7 @@ Run local CLI tools with secrets injected just in time — without handing those
 >
 > If you spot a weakness, questionable assumption, or misleading claim, feedback is very welcome.
 
-**NixOS only.** underwrap relies on NixOS features such as `security.wrappers`, declarative users and groups, file capabilities, and a NixOS module that generates the wrapper chain and daemon configuration. The one exception is `underwrap-backendd`, the optional remote backend daemon, which can run on other Linux machines.
+**NixOS only.** underwrap relies on NixOS features such as `security.wrappers`, declarative users and groups, file capabilities, and a NixOS module that generates the wrapper chain and daemon configuration. `underwrap-backendd` is the backend service for both local and remote deployments; in remote setups it can also run on other Linux machines.
 
 ## Why this exists
 

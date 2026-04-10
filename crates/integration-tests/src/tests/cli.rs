@@ -2,11 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn underwrapctl_store_and_status() {
-    let build_status = std::process::Command::new("cargo")
-        .args(["build", "-p", "underwrapctl"])
-        .status()
-        .unwrap();
-    assert!(build_status.success(), "cargo build -p underwrapctl failed");
+    ensure_package_built("underwrapctl");
     let ctl_bin = require_bin!("underwrapctl");
 
     let (wrappers, secrets) = one_wrapper_config();
@@ -61,11 +57,7 @@ async fn underwrapctl_store_and_status() {
 
 #[tokio::test]
 async fn underwrapctl_store_undeclared_exits_nonzero() {
-    let build_status = std::process::Command::new("cargo")
-        .args(["build", "-p", "underwrapctl"])
-        .status()
-        .unwrap();
-    assert!(build_status.success(), "cargo build -p underwrapctl failed");
+    ensure_package_built("underwrapctl");
     let ctl_bin = require_bin!("underwrapctl");
 
     let (wrappers, secrets) = one_wrapper_config();
@@ -104,11 +96,7 @@ async fn underwrapctl_store_undeclared_exits_nonzero() {
 
 #[tokio::test]
 async fn underwrapctl_unlock_and_lock() {
-    let build_status = std::process::Command::new("cargo")
-        .args(["build", "-p", "underwrapctl"])
-        .status()
-        .unwrap();
-    assert!(build_status.success(), "cargo build -p underwrapctl failed");
+    ensure_package_built("underwrapctl");
     let ctl_bin = require_bin!("underwrapctl");
 
     let mut wrappers = HashMap::new();
@@ -168,11 +156,7 @@ async fn underwrapctl_unlock_and_lock() {
 
 #[tokio::test]
 async fn underwrapctl_unlock_unknown_wrapper_exits_nonzero() {
-    let build_status = std::process::Command::new("cargo")
-        .args(["build", "-p", "underwrapctl"])
-        .status()
-        .unwrap();
-    assert!(build_status.success(), "cargo build -p underwrapctl failed");
+    ensure_package_built("underwrapctl");
     let ctl_bin = require_bin!("underwrapctl");
 
     let (wrappers, secrets) = one_wrapper_config();

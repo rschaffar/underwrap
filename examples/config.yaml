@@ -8,13 +8,8 @@ sockets:
   control: /run/underwrap/control.sock
   control_mode: "0600"
 
-storage:
-  backend: plain
-  dir: /var/lib/underwrap/secrets
-  # Or encrypted:
-  # backend: encrypted
-  # dir: /var/lib/underwrap/secrets
-  # key_file: /var/lib/underwrap/master.key
+backend:
+  socket: /run/underwrap/backend.sock
 
 credentials:
   # A reusable env-injected token.

@@ -184,8 +184,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use underwrap_protocol::config::{
-        CredentialDef, CredentialMode, CredentialUse, DaemonConfig, SocketConfig, StorageConfig,
-        UnlockPolicy, WrapperDef,
+        BackendSocketConfig, CredentialDef, CredentialMode, CredentialUse, DaemonConfig,
+        SocketConfig, UnlockPolicy, WrapperDef,
     };
     use underwrap_store::StorageBackend;
 
@@ -212,8 +212,8 @@ mod tests {
         State {
             config: DaemonConfig {
                 sockets: SocketConfig::default(),
-                storage: StorageConfig::Plain {
-                    dir: PathBuf::from("/tmp/test"),
+                backend: BackendSocketConfig {
+                    socket: PathBuf::from("/tmp/backend.sock"),
                 },
                 allowed_users: Vec::new(),
                 credentials: HashMap::from([(

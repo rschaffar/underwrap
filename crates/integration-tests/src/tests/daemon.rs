@@ -64,11 +64,8 @@ async fn underwrapd_binary_start_and_status() {
     // Ensure the standalone binary is freshly built. `cargo test` may compile
     // the crate without updating `target/debug/underwrapd`, and this test wants
     // to exercise the real binary entry point.
-    let build_status = std::process::Command::new("cargo")
-        .args(["build", "-p", "underwrapd"])
-        .status()
-        .unwrap();
-    assert!(build_status.success(), "cargo build -p underwrapd failed");
+    ensure_package_built("underwrapd");
+    ensure_package_built("underwrap-backendd");
 
     let daemon_bin = require_bin!("underwrapd");
 
@@ -77,15 +74,39 @@ async fn underwrapd_binary_start_and_status() {
 
     let wrapper_sock = base.join("wrapper-w.sock");
     let control_sock = base.join("control.sock");
-    let storage_dir = base.join("secrets");
+    let backend_socket = base.join("backend.sock");
+
+    let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
+        storage: underwrap_protocol::config::StorageConfig::Plain {
+            dir: base.join("secrets"),
+        },
+        bindings: HashMap::from([(
+            "test".to_string(),
+            underwrap_backendd::server::BackendBindingConfig {
+                socket: backend_socket.clone(),
+                prefix: None,
+            },
+        )]),
+    })
+    .unwrap();
+    let backend_config_path = base.join("backend.yaml");
+    std::fs::write(&backend_config_path, &backend_config).unwrap();
+
+    let backend_bin = require_bin!("underwrap-backendd");
+    let mut backend_child = tokio::process::Command::new(&backend_bin)
+        .args(["--config", backend_config_path.to_str().unwrap()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
 
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
         sockets: underwrap_protocol::config::SocketConfig {
             control: control_sock.clone(),
             ..Default::default()
         },
-        storage: underwrap_protocol::config::StorageConfig::Plain {
-            dir: storage_dir.clone(),
+        backend: underwrap_protocol::config::BackendSocketConfig {
+            socket: backend_socket.clone(),
         },
         allowed_users: Vec::new(),
         credentials: {
@@ -117,7 +138,7 @@ async fn underwrapd_binary_start_and_status() {
 
     // Wait for sockets.
     for _ in 0..100 {
-        if control_sock.exists() && wrapper_sock.exists() {
+        if control_sock.exists() && wrapper_sock.exists() && backend_socket.exists() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -146,4 +167,5 @@ async fn underwrapd_binary_start_and_status() {
 
     // Kill the daemon.
     child.kill().await.unwrap();
+    backend_child.kill().await.unwrap();
 }

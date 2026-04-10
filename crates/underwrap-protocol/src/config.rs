@@ -11,9 +11,9 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub sockets: SocketConfig,
 
-    /// Secret storage backend.
+    /// Backend connection used by the frontend daemon.
     #[serde(default)]
-    pub storage: StorageConfig,
+    pub backend: BackendSocketConfig,
 
     /// Usernames allowed to execute wrappers in this instance.
     /// Empty = allow all local users.
@@ -158,6 +158,24 @@ fn default_storage_dir() -> PathBuf {
     PathBuf::from("/var/lib/underwrap/secrets")
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendSocketConfig {
+    #[serde(default = "default_backend_socket")]
+    pub socket: PathBuf,
+}
+
+impl Default for BackendSocketConfig {
+    fn default() -> Self {
+        Self {
+            socket: default_backend_socket(),
+        }
+    }
+}
+
+fn default_backend_socket() -> PathBuf {
+    PathBuf::from("/run/underwrap/backend.sock")
+}
+
 /// A reusable credential definition, keyed by credential reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialDef {
@@ -248,6 +266,10 @@ mod tests {
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.wrappers.is_empty());
         assert!(config.credentials.is_empty());
+        assert_eq!(
+            config.backend.socket,
+            PathBuf::from("/run/underwrap/backend.sock")
+        );
     }
 
     #[test]
@@ -307,17 +329,16 @@ wrappers:
     }
 
     #[test]
-    fn storage_plain_config() {
+    fn backend_socket_config() {
         let yaml = r#"
-storage:
-  backend: plain
-  dir: /tmp/test-secrets
+backend:
+  socket: /tmp/test-backend.sock
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        match &config.storage {
-            StorageConfig::Plain { dir } => assert_eq!(dir, &PathBuf::from("/tmp/test-secrets")),
-            _ => panic!("expected Plain backend"),
-        }
+        assert_eq!(
+            config.backend.socket,
+            PathBuf::from("/tmp/test-backend.sock")
+        );
     }
 
     #[test]
@@ -388,7 +409,9 @@ credentials:
     fn config_roundtrip() {
         let config = DaemonConfig {
             sockets: SocketConfig::default(),
-            storage: StorageConfig::default(),
+            backend: BackendSocketConfig {
+                socket: PathBuf::from("/run/underwrap/backend.sock"),
+            },
             allowed_users: vec!["alice".to_string()],
             credentials: {
                 let mut m = HashMap::new();
@@ -429,6 +452,10 @@ credentials:
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            parsed.backend.socket,
+            PathBuf::from("/run/underwrap/backend.sock")
+        );
         assert_eq!(parsed.wrappers.len(), 1);
         assert_eq!(parsed.credentials.len(), 1);
     }

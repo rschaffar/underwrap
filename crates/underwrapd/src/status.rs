@@ -191,8 +191,8 @@ mod tests {
     fn build_status_helpers_report_wrapper_and_credential_state() {
         let config = DaemonConfig {
             sockets: Default::default(),
-            storage: underwrap_protocol::config::StorageConfig::Plain {
-                dir: PathBuf::from("/tmp/test-store"),
+            backend: underwrap_protocol::config::BackendSocketConfig {
+                socket: PathBuf::from("/tmp/backend.sock"),
             },
             allowed_users: Vec::new(),
             credentials: HashMap::from([("github/token".to_string(), env_credential("GH_TOKEN"))]),

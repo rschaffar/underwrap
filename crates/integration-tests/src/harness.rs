@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
 use tokio::net::UnixStream;
 use tokio::sync::Notify;
 
@@ -17,8 +18,11 @@ use underwrap_protocol::message::*;
 pub struct TestDaemon {
     pub wrapper_sockets: HashMap<String, PathBuf>,
     pub control_socket: PathBuf,
+    pub backend_socket: PathBuf,
     pub storage_dir: PathBuf,
     shutdown: Arc<Notify>,
+    backend_shutdown: Arc<Notify>,
+    backend_handle: thread::JoinHandle<Result<()>>,
     _tempdir: tempfile::TempDir,
     handle: tokio::task::JoinHandle<Result<()>>,
 }
@@ -33,6 +37,7 @@ impl TestDaemon {
         let base = tempdir.path();
 
         let control_socket = base.join("control.sock");
+        let backend_socket = base.join("backend.sock");
         let storage_dir = base.join("secrets");
         let mut wrapper_sockets = HashMap::new();
 
@@ -42,13 +47,37 @@ impl TestDaemon {
             wrapper_sockets.insert(name, socket);
         }
 
+        let backend_config = underwrap_backendd::server::BackendConfig {
+            storage: StorageConfig::Plain {
+                dir: storage_dir.clone(),
+            },
+            bindings: HashMap::from([(
+                "test".to_string(),
+                underwrap_backendd::server::BackendBindingConfig {
+                    socket: backend_socket.clone(),
+                    prefix: None,
+                },
+            )]),
+        };
+        let backend_shutdown = Arc::new(Notify::new());
+        let backend_shutdown_clone = Arc::clone(&backend_shutdown);
+        let backend_handle = thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                underwrap_backendd::server::run(backend_config, Some(backend_shutdown_clone)).await
+            })
+        });
+
         let config = DaemonConfig {
             sockets: SocketConfig {
                 control: control_socket.clone(),
                 ..Default::default()
             },
-            storage: StorageConfig::Plain {
-                dir: storage_dir.clone(),
+            backend: BackendSocketConfig {
+                socket: backend_socket.clone(),
             },
             allowed_users: Vec::new(),
             credentials,
@@ -65,7 +94,10 @@ impl TestDaemon {
 
         // Wait for sockets to appear.
         for _ in 0..100 {
-            if control_socket.exists() && wrapper_sockets.values().all(|p| p.exists()) {
+            if control_socket.exists()
+                && backend_socket.exists()
+                && wrapper_sockets.values().all(|p| p.exists())
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -74,8 +106,11 @@ impl TestDaemon {
         Ok(Self {
             wrapper_sockets,
             control_socket,
+            backend_socket,
             storage_dir,
             shutdown,
+            backend_shutdown,
+            backend_handle,
             _tempdir: tempdir,
             handle,
         })
@@ -149,6 +184,8 @@ impl TestDaemon {
     pub async fn stop(self) -> Result<()> {
         self.shutdown.notify_one();
         self.handle.await??;
+        self.backend_shutdown.notify_one();
+        self.backend_handle.join().unwrap()?;
         Ok(())
     }
 }

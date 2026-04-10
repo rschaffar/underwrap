@@ -3,7 +3,7 @@ use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
 
-mod server;
+use underwrap_backendd::server;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -56,12 +56,9 @@ async fn main() -> Result<()> {
         .with_context(|| format!("reading config from {}", cli.config.display()))?;
     let config = parse_backend_config(&config_text)?;
 
-    info!(
-        socket = %config.socket.display(),
-        "starting backend daemon"
-    );
+    info!(bindings = config.bindings.len(), "starting backend daemon");
 
-    server::run(config).await
+    server::run(config, None).await
 }
 
 #[cfg(test)]
@@ -79,13 +76,18 @@ mod tests {
     fn parse_backend_config_parses_minimal_yaml() {
         let config = parse_backend_config(
             r#"
-socket: /run/underwrap/backend.sock
 storage:
   backend: plain
   dir: /var/lib/underwrap-backend/secrets
+bindings:
+  default:
+    socket: /run/underwrap/backend.sock
 "#,
         )
         .unwrap();
-        assert_eq!(config.socket, PathBuf::from("/run/underwrap/backend.sock"));
+        assert_eq!(
+            config.bindings["default"].socket,
+            PathBuf::from("/run/underwrap/backend.sock")
+        );
     }
 }

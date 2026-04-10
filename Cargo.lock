@@ -1052,6 +1052,7 @@ dependencies = [
  "ssh-key",
  "tempfile",
  "tokio",
+ "underwrap-backendd",
  "underwrap-protocol",
  "underwrapd",
 ]

@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use underwrap_protocol::config::{
-    AccessMode, CredentialDef, CredentialMode, CredentialUse, DaemonConfig, SocketConfig,
-    StorageConfig, UnlockMode, UnlockPolicy, WrapperDef,
+    AccessMode, BackendSocketConfig, CredentialDef, CredentialMode, CredentialUse, DaemonConfig,
+    SocketConfig, UnlockMode, UnlockPolicy, WrapperDef,
 };
 use underwrap_protocol::message::{ControlRequest, ControlResponse, ErrorCode, SecretBytes};
 
@@ -105,8 +105,8 @@ fn state_with_config_and_store(
     State {
         config: DaemonConfig {
             sockets: SocketConfig::default(),
-            storage: StorageConfig::Plain {
-                dir: PathBuf::from("/tmp/underwrap-test"),
+            backend: BackendSocketConfig {
+                socket: PathBuf::from("/tmp/backend.sock"),
             },
             allowed_users: Vec::new(),
             credentials,

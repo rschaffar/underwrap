@@ -275,9 +275,9 @@ services.underwrap.instances = {
 };
 ```
 
-## Encrypted local storage
+## Encrypted local backend storage
 
-To enable encrypted local storage:
+To enable encrypted storage for the backend that serves an instance:
 
 ```nix
 instances.work = {
@@ -289,9 +289,11 @@ instances.work = {
 };
 ```
 
+This configures the local `underwrap-backendd-work` service to use encrypted storage.
+
 ## Remote backend mode
 
-To use the remote backend:
+To use a remote backend provider for the instance:
 
 ```nix
 instances.work = {
@@ -302,10 +304,10 @@ instances.work = {
 };
 ```
 
-In this mode, the frontend daemon expects the forwarded backend socket at:
+In this mode, the frontend daemon still expects a backend socket locally, but that path is satisfied by an SSH forward:
 
 ```text
-/run/underwrap-work/tunnel/backend.sock
+/run/underwrap-work/backend/backend.sock
 ```
 
 ## Environment handling
