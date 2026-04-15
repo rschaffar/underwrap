@@ -12,6 +12,8 @@ underwrap's docs are organized by question:
   - [GitHub via libsecret](gh-libsecret.md)
   - [Remote backend](remote-backend.md)
   - [Backend v2 architecture (draft)](backend-v2-architecture.md)
+  - [Backend v2 implementation plan (draft)](backend-v2-implementation-plan.md)
+  - [Backend v2 policy and API schema (draft)](backend-v2-policy-api.md)
 - **How do I configure it in NixOS?** → [Configuration reference](configuration.md)
 - **How does the system fit together?** → [Architecture](architecture.md)
 - **What are the security goals, mechanisms, and limits?** → [Security](security.md)

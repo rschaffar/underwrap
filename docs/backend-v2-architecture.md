@@ -73,7 +73,7 @@ the backend.
 It continues to own:
 
 - wrapper authentication from kernel identity
-- local unlock policy, unless explicitly moved later
+- local enforcement of wrapper identity and local wrapper ceilings
 - scoped channel creation for libsecret and directory flows
 - local audit of wrapper use
 
@@ -85,7 +85,20 @@ identity, not from a client-supplied store name in the request body.
 This preserves the spirit of the current socket-selected store model while
 moving it to a cleaner network architecture.
 
-### 4. Support centrally hosted secret state
+### 4. Add central wrapper-level authorization control
+
+The backend should be able to decide, centrally and dynamically, whether a
+specific wrapper may access a specific resource with a specific operation.
+
+That enables a real control plane for:
+
+- enabling or disabling a wrapper entirely
+- allowing or denying access to one exact secret
+- granting read-only vs read-write access
+- revoking access centrally without changing local wrapper installation
+- replacing the current local unlock mechanism with a clearer central model
+
+### 5. Support centrally hosted secret state
 
 The backend should be able to hold:
 
@@ -94,12 +107,12 @@ The backend should be able to hold:
 - backend-managed directory/file state
 - future credential state that still follows underwrap's storage invariants
 
-### 5. Keep the target process out of the backend trust boundary
+### 6. Keep the target process out of the backend trust boundary
 
 Wrapped tools should not receive backend credentials or talk to the backend
 service directly.
 
-### 6. Improve operational clarity
+### 7. Improve operational clarity
 
 Operators should be able to reason about:
 
@@ -179,6 +192,7 @@ Responsibilities:
 
 - authenticate `underwrapd` instances
 - map instance identity to backend namespace
+- evaluate wrapper/resource authorization policy
 - read/write/list/delete secret state
 - persist backend-managed mutable state
 - provide backend-side audit and health reporting
@@ -244,9 +258,12 @@ That means:
 
 ## Authorization model
 
-The backend should authorize based on the authenticated instance principal.
+Backend v2 should authorize on two levels:
 
-### Core rule
+1. **instance identity** selects the backend namespace
+2. **trusted wrapper identity + resource + operation** decides whether access is allowed
+
+### Core rules
 
 **The client does not choose the namespace/store in the request body.**
 
@@ -256,25 +273,100 @@ Instead:
 - backend maps that principal to a namespace or store view
 - requests operate only within that mapped namespace
 
-That means requests can stay simple:
+**The backend does not independently authenticate the wrapper from the OS.**
 
-- read secret by id
-- write secret by id
-- list ids by prefix
-- delete secret by id
+Instead:
 
-without adding a trusted `store` or `namespace` parameter supplied by the
-client.
+- `underwrapd` proves wrapper identity locally from kernel-backed information
+- `underwrapd` sends the trusted wrapper name as part of the backend request
+- backend uses that trusted wrapper identity for authorization decisions
 
-## Local unlock vs backend authorization
+### Static local ceiling + central dynamic policy
 
-Backend v2 should begin with a simple split:
+Authorization should be the intersection of two controls.
 
-- `underwrapd` keeps local wrapper unlock policy
-- backend enforces only instance-level authentication and namespace authorization
+#### 1. Local wrapper ceiling
 
-A backend-side lease or unlock concept may be added later if it serves a clear
-purpose, but it is not required to make the architecture clean.
+The local underwrap config still defines what a wrapper is ever designed to use.
+
+Examples:
+
+- wrapper `gh-comment` may reference only `github/token`
+- wrapper `gh-auth` may reference only `gh/libsecret`
+- wrapper `aws-prod` may reference only `aws/prod`
+
+This remains a local design-time ceiling enforced by `underwrapd`.
+
+#### 2. Central backend policy and grants
+
+The backend then decides what is currently allowed.
+
+Examples:
+
+- wrapper `gh-comment` may read `github/token`
+- wrapper `gh-comment` may not write `github/token`
+- wrapper `aws-prod` is currently disabled entirely
+- wrapper `gh-auth` has temporary write access to a libsecret namespace
+
+This is the runtime control plane.
+
+### Effective access rule
+
+Access is allowed only if:
+
+- the local wrapper config permits the wrapper to reference that resource, and
+- the backend policy permits that wrapper/resource/operation for that instance
+
+### Policy tuple
+
+The backend policy should be modeled at least as:
+
+```text
+(instance, wrapper, resource, operation) -> allow/deny
+```
+
+That is the key backend-v2 authorization primitive.
+
+### Resource kinds
+
+The policy model should not assume every access is just a plain secret read.
+
+At minimum it should cover:
+
+- **secret**
+  - read/write a specific secret id
+- **libsecret namespace**
+  - read-only or read-write access to a logical libsecret store
+- **directory credential**
+  - read-only or read-write access to a backend-managed directory tree
+
+### Grants replace local unlock
+
+The current local unlock flow should be treated as transitional and removable.
+
+Backend v2 should replace it with central policy/grants such as:
+
+- permanently enabled wrapper/resource rules
+- temporarily enabled grants with expiry
+- immediate revocation or disablement
+
+This is a cleaner and more user-friendly control model than the current
+SSH-signature-based local unlock flow.
+
+### Authorization-aware backend operations
+
+The backend API should be designed so authorization is part of the operation,
+not a separate optional preflight step.
+
+Conceptually, prefer operations like:
+
+- read secret as wrapper X
+- write secret as wrapper X
+- open libsecret session as wrapper X
+- open directory session as wrapper X
+
+rather than a loose `authorize()` call followed by a separate unauthenticated
+state operation.
 
 ## Backend data model
 
@@ -369,6 +461,7 @@ The important protocol decision is not REST vs gRPC; it is:
 
 - authenticated instance identity
 - backend-side namespace binding
+- central wrapper/resource authorization policy
 - no static bearer secrets as the core auth model
 
 ## Operational model
@@ -380,6 +473,7 @@ Backend v2 should be easy to explain operationally:
 - `underwrapd` connects outbound to the backend
 - backend authenticates the instance
 - backend serves only that instance's namespace/policy view
+- backend can centrally enable, disable, or restrict individual wrappers/resources
 
 This is a cleaner fit for hardened NixOS-managed VMs than requiring operators to
 materialize a target-local socket path via SSH forwarding.
@@ -460,10 +554,10 @@ an `underwrapd` instance?
 How does a newly provisioned target VM obtain its first backend client
 credential?
 
-### 3. Backend-side leases
+### 3. Policy and grant representation
 
-Should the backend eventually gain an explicit lease/unlock concept, or should
-instance authentication plus local wrapper unlock remain the whole model?
+How should central wrapper/resource policy and temporary grants be represented
+in backend config and persisted state?
 
 ### 4. Rich-state encoding
 
@@ -483,13 +577,15 @@ these decisions first:
 1. `underwrapd` is the only backend client on target machines
 2. backend is a central authenticated network service
 3. backend namespace selection comes from authenticated instance identity
-4. local wrapper unlock remains in `underwrapd` for the first version
-5. backend v2 starts with a small underwrap-native HTTPS API
-6. SSH-forwarded socket export remote mode is considered transitional and removable
+4. backend owns central wrapper/resource authorization policy and grants
+5. the current local unlock flow is planned for removal, not preservation
+6. backend v2 starts with a small underwrap-native HTTPS API
+7. SSH-forwarded socket export remote mode is considered transitional and removable
 
-If those six are accepted, the next design note should specify:
+If those seven are accepted, the next design note should specify:
 
 - exact instance identity and auth bootstrap
+- the wrapper/resource policy model
 - concrete backend API surface
 - config schema changes
 - migration of `underwrap-store::RemoteBackend` into a transport-neutral client model
