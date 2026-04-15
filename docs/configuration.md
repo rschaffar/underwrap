@@ -18,9 +18,9 @@ services.underwrap = {
 };
 ```
 
-The NixOS module is now **frontend-only**.
+The NixOS module configures frontend instances.
 
-It does **not** provision or model backend services. Each frontend instance simply expects its backend protocol socket at:
+Backend services are managed separately. Each frontend instance expects its backend protocol socket at:
 
 ```text
 /run/underwrap-<instance>/backend/backend.sock
@@ -30,7 +30,7 @@ That socket may be provided by:
 
 - a local `underwrap-backendd` export on the same machine
 - an SSH forward to a remote `underwrap-backendd`
-- future helper tooling that manages those exports dynamically
+- management tooling that creates and removes exports dynamically
 
 ## Instances
 
@@ -45,7 +45,7 @@ Each instance gets its own:
 - backend socket path expected by the frontend
 - tunnel user for future SSH-forward workflows
 
-Backend provisioning is external to the frontend module.
+Backend provisioning is separate from the frontend module.
 
 Example:
 
@@ -326,7 +326,7 @@ underwrap-backend-ctl --socket /run/underwrap-backend/mgmt.sock list-exports
 underwrap-backend-ctl --socket /run/underwrap-backend/mgmt.sock unexport /run/underwrap-work/backend/backend.sock
 ```
 
-For remote use, the frontend still expects the same per-instance socket path locally, but that path may be satisfied by SSH forwarding instead of a local export. See [Remote backend](remote-backend.md).
+For remote use, the same per-instance socket path is satisfied by SSH forwarding rather than by a local export. See [Remote backend](remote-backend.md).
 
 ## Environment handling
 

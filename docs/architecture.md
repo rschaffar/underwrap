@@ -23,7 +23,7 @@ The short version:
 | `underwrap-backend-ctl` | Backend management CLI for listing stores and creating/removing socket exports | backend operator host |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
 
-The current implementation is intentionally structured so the high-level execution paths read top-down and the lower-level mechanics live in smaller modules. That matters for review: this is a security-sensitive project, so keeping process flow, authorization, protocol handling, and storage concerns visibly separate is part of the assurance story.
+The implementation is intentionally structured so the high-level execution paths read top-down and the lower-level mechanics live in smaller modules. That matters for review: this is a security-sensitive project, so keeping process flow, authorization, protocol handling, and storage concerns visibly separate is part of the assurance story.
 
 ## Why the wrapper chain has two stages
 
@@ -80,7 +80,7 @@ underwrap is designed around a frontend/backend split.
 - `underwrap-backendd` is the backend that owns the actual storage implementation
 - `underwrap-backend-ctl` exports a chosen backend store onto a chosen Unix socket
 
-Available backend storage modes currently include:
+Available backend storage modes include:
 
 - **plain** — plaintext files owned by the backend daemon
 - **encrypted** — encrypted files with a master key owned by the backend daemon
@@ -89,7 +89,7 @@ The frontend always talks to a backend socket. In local deployments that socket 
 
 ## Remote backend flow
 
-In remote mode, the target machine still runs `underwrapd`, but the backend socket is satisfied by an SSH forward instead of a local backend listener.
+In remote mode, the target machine runs `underwrapd`, and the backend socket is satisfied by an SSH forward rather than by a local backend listener.
 
 ```text
 wrapper -> underwrapd on target host -> expected backend socket path -> SSH-forwarded Unix socket -> underwrap-backendd on workstation
@@ -171,7 +171,7 @@ Some internal splits are worth calling out because they mirror the main trust bo
 
 ### `underwrapd` internal shape
 
-`underwrapd` is no longer one giant server file. Its main pieces are:
+`underwrapd` is split into focused modules. Its main pieces are:
 
 - `server.rs` — daemon startup and listener orchestration
 - `startup.rs` — config validation, UID/GID resolution, socket binding

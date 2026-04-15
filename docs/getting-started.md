@@ -157,9 +157,9 @@ sudo underwrapctl --socket /run/underwrap-work/control.sock status work-jira
 
 That should show the configured target, secret ID, and whether the secret is stored.
 
-## What you achieved
+## Result
 
-You now have a working underwrap deployment with:
+You have a working underwrap deployment with:
 
 - kernel-backed wrapper identity via the wrapper socket plus the wrapper's group
 - secret delivery at invocation time instead of shell-export time

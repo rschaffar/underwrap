@@ -59,7 +59,7 @@ underwrap-backend-ctl \
 
 That creates a regular backend data socket serving the `work` store.
 
-The frontend still does not know the store name. It only ever sees a socket.
+The frontend does not know the store name. It only sees a socket.
 
 ## Forwarding to the target machine
 
@@ -105,13 +105,13 @@ So it should normally be accessible only to a backend operator user or root.
 
 The forwarded per-instance socket on the target machine is much less privileged. It only exposes the already-selected store view that was exported on the backend side.
 
-## Current operator workflow
+## Operator workflow
 
-Today, the intended flow is:
+The basic flow is:
 
 1. configure and start `underwrap-backendd` on the backend machine
 2. export a store with `underwrap-backend-ctl`
 3. satisfy the target machine's expected socket path locally or via SSH forwarding
 4. run the frontend instance normally
 
-Future helper tooling can build on the same model and automate the SSH-forward lifecycle without changing the frontend contract.
+Additional tooling can automate the SSH-forward lifecycle while keeping the same frontend contract.
