@@ -478,6 +478,7 @@ mod tests {
                 sockets: SocketConfig::default(),
                 backend: BackendSocketConfig {
                     socket: PathBuf::from("/tmp/backend.sock"),
+                    ..Default::default()
                 },
                 allowed_users: Vec::new(),
                 credentials: HashMap::from([

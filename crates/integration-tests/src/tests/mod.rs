@@ -221,6 +221,7 @@ async fn daemon_config_error(
         },
         backend: underwrap_protocol::config::BackendSocketConfig {
             socket: backend_socket,
+            ..Default::default()
         },
         allowed_users: Vec::new(),
         credentials,

@@ -158,16 +158,44 @@ fn default_storage_dir() -> PathBuf {
     PathBuf::from("/var/lib/underwrap/secrets")
 }
 
+/// Backend transport mode used by `underwrapd`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum BackendMode {
+    /// Connect to a backend protocol over a Unix socket.
+    #[default]
+    #[serde(rename = "unix-socket")]
+    UnixSocket,
+    /// Connect to a backend service over HTTPS.
+    #[serde(rename = "service")]
+    Service,
+}
+
+/// Frontend backend-client configuration.
+///
+/// The historical shape was just a Unix socket path. The struct now carries a
+/// transport mode so the frontend can evolve toward a service backend without
+/// changing the rest of the daemon architecture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendSocketConfig {
+    /// Backend transport mode.
+    #[serde(default)]
+    pub mode: BackendMode,
+
+    /// Path to the backend Unix socket when `mode = "unix-socket"`.
     #[serde(default = "default_backend_socket")]
     pub socket: PathBuf,
+
+    /// Backend service URL when `mode = "service"`.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 impl Default for BackendSocketConfig {
     fn default() -> Self {
         Self {
+            mode: BackendMode::UnixSocket,
             socket: default_backend_socket(),
+            url: None,
         }
     }
 }
@@ -266,10 +294,12 @@ mod tests {
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.wrappers.is_empty());
         assert!(config.credentials.is_empty());
+        assert_eq!(config.backend.mode, BackendMode::UnixSocket);
         assert_eq!(
             config.backend.socket,
             PathBuf::from("/run/underwrap/backend.sock")
         );
+        assert_eq!(config.backend.url, None);
     }
 
     #[test]
@@ -335,9 +365,26 @@ backend:
   socket: /tmp/test-backend.sock
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.backend.mode, BackendMode::UnixSocket);
         assert_eq!(
             config.backend.socket,
             PathBuf::from("/tmp/test-backend.sock")
+        );
+        assert_eq!(config.backend.url, None);
+    }
+
+    #[test]
+    fn backend_service_config() {
+        let yaml = r#"
+backend:
+  mode: service
+  url: https://backend.example.internal
+"#;
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.backend.mode, BackendMode::Service);
+        assert_eq!(
+            config.backend.url.as_deref(),
+            Some("https://backend.example.internal")
         );
     }
 
@@ -410,7 +457,9 @@ credentials:
         let config = DaemonConfig {
             sockets: SocketConfig::default(),
             backend: BackendSocketConfig {
+                mode: BackendMode::UnixSocket,
                 socket: PathBuf::from("/run/underwrap/backend.sock"),
+                url: None,
             },
             allowed_users: vec!["alice".to_string()],
             credentials: {
@@ -452,10 +501,12 @@ credentials:
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.backend.mode, BackendMode::UnixSocket);
         assert_eq!(
             parsed.backend.socket,
             PathBuf::from("/run/underwrap/backend.sock")
         );
+        assert_eq!(parsed.backend.url, None);
         assert_eq!(parsed.wrappers.len(), 1);
         assert_eq!(parsed.credentials.len(), 1);
     }

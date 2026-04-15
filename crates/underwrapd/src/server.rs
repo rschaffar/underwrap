@@ -44,9 +44,8 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     validate_config(&config)?;
 
     // Open the backend client.
-    let store: Arc<dyn StorageBackend> = Arc::new(underwrap_store::RemoteBackend::open(
-        &config.backend.socket,
-    )?);
+    let store: Arc<dyn StorageBackend> =
+        Arc::from(underwrap_store::open_backend_client(&config.backend)?);
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
     let allowed_user_uids = build_allowed_user_uids(&config)?;

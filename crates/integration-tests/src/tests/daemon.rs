@@ -132,6 +132,7 @@ async fn underwrapd_binary_start_and_status() {
         },
         backend: underwrap_protocol::config::BackendSocketConfig {
             socket: backend_socket.clone(),
+            ..Default::default()
         },
         allowed_users: Vec::new(),
         credentials: {

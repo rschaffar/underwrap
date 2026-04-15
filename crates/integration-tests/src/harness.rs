@@ -83,6 +83,7 @@ impl TestDaemon {
             },
             backend: BackendSocketConfig {
                 socket: backend_socket.clone(),
+                ..Default::default()
             },
             allowed_users: Vec::new(),
             credentials,

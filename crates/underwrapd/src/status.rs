@@ -193,6 +193,7 @@ mod tests {
             sockets: Default::default(),
             backend: underwrap_protocol::config::BackendSocketConfig {
                 socket: PathBuf::from("/tmp/backend.sock"),
+                ..Default::default()
             },
             allowed_users: Vec::new(),
             credentials: HashMap::from([("github/token".to_string(), env_credential("GH_TOKEN"))]),

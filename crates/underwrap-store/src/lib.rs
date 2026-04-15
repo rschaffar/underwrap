@@ -16,9 +16,10 @@ mod remote;
 pub use encrypted::EncryptedBackend;
 pub use plain::PlainBackend;
 pub use remote::RemoteBackend;
+pub use remote::RemoteBackend as UnixSocketBackend;
 
-use anyhow::Result;
-use underwrap_protocol::config::StorageConfig;
+use anyhow::{Result, bail};
+use underwrap_protocol::config::{BackendMode, BackendSocketConfig, StorageConfig};
 use underwrap_protocol::message::SecretBytes;
 
 /// The storage backend trait.
@@ -53,6 +54,17 @@ pub fn open(config: &StorageConfig) -> Result<Box<dyn StorageBackend>> {
             Ok(Box::new(EncryptedBackend::open(dir, key_file)?))
         }
         StorageConfig::Remote { socket } => Ok(Box::new(RemoteBackend::open(socket)?)),
+    }
+}
+
+/// Open the frontend backend client from daemon backend configuration.
+pub fn open_backend_client(config: &BackendSocketConfig) -> Result<Box<dyn StorageBackend>> {
+    match config.mode {
+        BackendMode::UnixSocket => Ok(Box::new(UnixSocketBackend::open(&config.socket)?)),
+        BackendMode::Service => {
+            let url = config.url.as_deref().unwrap_or("<missing>");
+            bail!("backend service mode is not implemented yet (configured url: {url})")
+        }
     }
 }
 
@@ -96,5 +108,33 @@ mod tests {
         .unwrap();
         let err = backend.read("github/token").unwrap_err();
         assert!(err.to_string().contains("connecting to backend at"));
+    }
+
+    #[test]
+    fn open_backend_client_dispatches_to_unix_socket_mode() {
+        let backend = open_backend_client(&BackendSocketConfig {
+            mode: BackendMode::UnixSocket,
+            socket: "/tmp/nonexistent-underwrap-backend.sock".into(),
+            url: None,
+        })
+        .unwrap();
+        let err = backend.read("github/token").unwrap_err();
+        assert!(err.to_string().contains("connecting to backend at"));
+    }
+
+    #[test]
+    fn open_backend_client_rejects_unimplemented_service_mode() {
+        let err = match open_backend_client(&BackendSocketConfig {
+            mode: BackendMode::Service,
+            socket: "/tmp/ignored.sock".into(),
+            url: Some("https://backend.example.internal".to_string()),
+        }) {
+            Ok(_) => panic!("expected service backend mode to be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("backend service mode is not implemented yet")
+        );
     }
 }
