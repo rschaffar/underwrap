@@ -11,6 +11,7 @@ use underwrap_protocol::message::{ErrorCode, WrapperRequest, WrapperResponse};
 
 use crate::audit;
 use crate::peer_auth::{PeerCred, get_peer_cred};
+use crate::policy::{authorize_operation, directory_resource, env_resource, libsecret_resource};
 use crate::server::State;
 use crate::unlock_flow::{process_wrapper_unlock, process_wrapper_unlock_response};
 use crate::wrapper_bindings::{
@@ -267,6 +268,22 @@ async fn establish_scoped_channels(
     if let Some((credential_ref, access)) =
         wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
     {
+        let resource = libsecret_resource(credential_ref);
+        let operation = match access {
+            AccessMode::ReadOnly => "libsecret.read",
+            AccessMode::ReadWrite => "libsecret.readwrite",
+        };
+        match authorize_operation(&*state.store, wrapper_name, &resource, operation) {
+            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {}
+            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+                error!(wrapper = %wrapper_name, credential = %credential_ref, reason = %reason, "backend policy denied libsecret channel");
+                return;
+            }
+            Err(e) => {
+                error!(wrapper = %wrapper_name, credential = %credential_ref, err = %e, "backend policy lookup failed for libsecret channel");
+                return;
+            }
+        }
         match setup_secretsd_channel(stream, credential_ref, access, state).await {
             Ok(()) => {
                 info!(wrapper = %wrapper_name, credential = %credential_ref, "secretsd channel established");
@@ -278,6 +295,22 @@ async fn establish_scoped_channels(
     }
 
     for binding in wrapper_directory_bindings(wrapper_def, &state.config.credentials) {
+        let resource = directory_resource(&binding.credential_ref);
+        let operation = match binding.access {
+            AccessMode::ReadOnly => "directory.read",
+            AccessMode::ReadWrite => "directory.readwrite",
+        };
+        match authorize_operation(&*state.store, wrapper_name, &resource, operation) {
+            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {}
+            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, reason = %reason, "backend policy denied directory channel");
+                continue;
+            }
+            Err(e) => {
+                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, err = %e, "backend policy lookup failed for directory channel");
+                continue;
+            }
+        }
         match setup_directory_channel(stream, &binding.credential_ref, binding.access, state).await
         {
             Ok(()) => {
@@ -375,8 +408,55 @@ pub(crate) async fn process_read_for(
         };
     }
 
+    if let Some((credential_ref, access)) =
+        wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
+    {
+        let resource = libsecret_resource(credential_ref);
+        let operation = match access {
+            AccessMode::ReadOnly => "libsecret.read",
+            AccessMode::ReadWrite => "libsecret.readwrite",
+        };
+        match authorize_operation(&*state.store, wrapper_name, &resource, operation) {
+            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {
+                audit::read_granted(wrapper_name, credential_ref, Some(peer_uid), scope);
+            }
+            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+                return WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: reason,
+                };
+            }
+            Err(e) => {
+                error!(credential = %credential_ref, err = %e, "policy lookup error");
+                return WrapperResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: "internal policy error".to_string(),
+                };
+            }
+        }
+    }
+
     let mut env = std::collections::HashMap::new();
     for (cred_ref, variable) in wrapper_env_credentials(wrapper_def, &state.config.credentials) {
+        let resource = env_resource(cred_ref);
+        match authorize_operation(&*state.store, wrapper_name, &resource, "secret.read") {
+            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {}
+            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+                return WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: reason,
+                };
+            }
+            Err(e) => {
+                error!(credential = %cred_ref, err = %e, "policy lookup error");
+                return WrapperResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: "internal policy error".to_string(),
+                };
+            }
+        }
         match state.store.read(cred_ref) {
             Ok(Some(material)) => {
                 audit::read_granted(wrapper_name, cred_ref, Some(peer_uid), scope);
@@ -400,9 +480,33 @@ pub(crate) async fn process_read_for(
         }
     }
 
-    let directories = wrapper_directory_bindings(wrapper_def, &state.config.credentials);
-    for binding in &directories {
-        audit::read_granted(wrapper_name, &binding.credential_ref, Some(peer_uid), scope);
+    let mut directories = Vec::new();
+    for binding in wrapper_directory_bindings(wrapper_def, &state.config.credentials) {
+        let resource = directory_resource(&binding.credential_ref);
+        let operation = match binding.access {
+            AccessMode::ReadOnly => "directory.read",
+            AccessMode::ReadWrite => "directory.readwrite",
+        };
+        match authorize_operation(&*state.store, wrapper_name, &resource, operation) {
+            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {
+                audit::read_granted(wrapper_name, &binding.credential_ref, Some(peer_uid), scope);
+                directories.push(binding);
+            }
+            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+                return WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: reason,
+                };
+            }
+            Err(e) => {
+                error!(credential = %binding.credential_ref, err = %e, "policy lookup error");
+                return WrapperResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: "internal policy error".to_string(),
+                };
+            }
+        }
     }
 
     WrapperResponse::ReadOk { env, directories }
@@ -434,6 +538,23 @@ mod tests {
                         .map(|(k, v)| ((*k).to_string(), v.to_vec()))
                         .collect(),
                 ),
+            }
+        }
+
+        fn with_policy(
+            entries: &[(&str, &[u8])],
+            document: underwrap_protocol::policy::PolicyDocument,
+        ) -> Self {
+            let mut data: HashMap<String, Vec<u8>> = entries
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.to_vec()))
+                .collect();
+            data.insert(
+                underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID.to_string(),
+                serde_json::to_vec(&document).unwrap(),
+            );
+            Self {
+                data: Mutex::new(data),
             }
         }
     }
@@ -473,6 +594,16 @@ mod tests {
     }
 
     fn state_for(unlock: UnlockPolicy) -> State {
+        state_with_store(
+            unlock,
+            Arc::new(MemStore::with_entries(&[("github/token", b"ghp_test")])),
+        )
+    }
+
+    fn state_with_store(
+        unlock: UnlockPolicy,
+        store: Arc<dyn underwrap_store::StorageBackend>,
+    ) -> State {
         State {
             config: DaemonConfig {
                 sockets: SocketConfig::default(),
@@ -524,7 +655,7 @@ mod tests {
                     },
                 )]),
             },
-            store: Arc::new(MemStore::with_entries(&[("github/token", b"ghp_test")])),
+            store,
             allowed_user_uids: std::collections::HashSet::new(),
             unlock: UnlockState::new(),
         }
@@ -554,6 +685,58 @@ mod tests {
         match resp {
             WrapperResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Locked)),
             other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_read_for_denies_when_backend_policy_lacks_required_rule() {
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_policy(
+            &[("github/token", b"ghp_test")],
+            underwrap_protocol::policy::PolicyDocument::default(),
+        ));
+        let state = state_with_store(UnlockPolicy::default(), store);
+        let resp = process_read_for("gh-authorized", None, &state, 1000).await;
+        match resp {
+            WrapperResponse::Error { code, message } => {
+                assert!(matches!(code, ErrorCode::Unauthorized));
+                assert!(message.contains("no backend policy rule"));
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_read_for_allows_when_backend_policy_has_required_rules() {
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_policy(
+            &[("github/token", b"ghp_test")],
+            underwrap_protocol::policy::PolicyDocument {
+                wrappers: Vec::new(),
+                rules: vec![
+                    underwrap_protocol::policy::PolicyRule {
+                        id: "env-read".to_string(),
+                        wrapper: "gh-authorized".to_string(),
+                        resource: "secret:github/token".to_string(),
+                        operation: "secret.read".to_string(),
+                        effect: underwrap_protocol::policy::PolicyEffect::Allow,
+                    },
+                    underwrap_protocol::policy::PolicyRule {
+                        id: "dir-rw".to_string(),
+                        wrapper: "gh-authorized".to_string(),
+                        resource: "directory:gws/state".to_string(),
+                        operation: "directory.readwrite".to_string(),
+                        effect: underwrap_protocol::policy::PolicyEffect::Allow,
+                    },
+                ],
+            },
+        ));
+        let state = state_with_store(UnlockPolicy::default(), store);
+        let resp = process_read_for("gh-authorized", None, &state, 1000).await;
+        match resp {
+            WrapperResponse::ReadOk { env, directories } => {
+                assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
+                assert_eq!(directories.len(), 1);
+            }
+            other => panic!("expected ReadOk, got {other:?}"),
         }
     }
 }

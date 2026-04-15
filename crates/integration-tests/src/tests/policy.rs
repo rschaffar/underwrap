@@ -1,0 +1,131 @@
+use super::*;
+use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, PolicyRule, WrapperPolicyState};
+
+#[tokio::test]
+async fn backend_policy_roundtrip_over_management_socket() {
+    let (wrappers, secrets) = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+
+    assert_eq!(daemon.get_policy("test").await.unwrap(), None);
+
+    let document = PolicyDocument {
+        wrappers: vec![WrapperPolicyState {
+            wrapper: "gh-authorized".to_string(),
+            enabled: true,
+            reason: None,
+        }],
+        rules: vec![PolicyRule {
+            id: "allow-read".to_string(),
+            wrapper: "gh-authorized".to_string(),
+            resource: "secret:github/token".to_string(),
+            operation: "secret.read".to_string(),
+            effect: PolicyEffect::Allow,
+        }],
+    };
+    daemon.put_policy("test", &document).await.unwrap();
+
+    let loaded = daemon.get_policy("test").await.unwrap().unwrap();
+    assert_eq!(loaded, document);
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn wrapper_read_is_denied_when_policy_document_has_no_matching_rule() {
+    let (wrappers, secrets) = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+
+    daemon
+        .store_secret("github/token", "ghp_test123")
+        .await
+        .unwrap();
+    daemon
+        .put_policy("test", &PolicyDocument::default())
+        .await
+        .unwrap();
+
+    let resp = daemon.read_request("gh-authorized").await.unwrap();
+    match resp {
+        WrapperResponse::Error { code, message } => {
+            assert!(matches!(code, ErrorCode::Unauthorized));
+            assert!(message.contains("no backend policy rule"));
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
+    let (wrappers, secrets) = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+
+    daemon
+        .store_secret("github/token", "ghp_test123")
+        .await
+        .unwrap();
+    daemon
+        .put_policy(
+            "test",
+            &PolicyDocument {
+                wrappers: Vec::new(),
+                rules: vec![PolicyRule {
+                    id: "allow-read".to_string(),
+                    wrapper: "gh-authorized".to_string(),
+                    resource: "secret:github/token".to_string(),
+                    operation: "secret.read".to_string(),
+                    effect: PolicyEffect::Allow,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+    let resp = daemon.read_request("gh-authorized").await.unwrap();
+    assert_eq!(expect_single_env_string(resp), "ghp_test123");
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn disabled_wrapper_is_denied_even_with_allow_rule() {
+    let (wrappers, secrets) = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+
+    daemon
+        .store_secret("github/token", "ghp_test123")
+        .await
+        .unwrap();
+    daemon
+        .put_policy(
+            "test",
+            &PolicyDocument {
+                wrappers: vec![WrapperPolicyState {
+                    wrapper: "gh-authorized".to_string(),
+                    enabled: false,
+                    reason: Some("disabled centrally".to_string()),
+                }],
+                rules: vec![PolicyRule {
+                    id: "allow-read".to_string(),
+                    wrapper: "gh-authorized".to_string(),
+                    resource: "secret:github/token".to_string(),
+                    operation: "secret.read".to_string(),
+                    effect: PolicyEffect::Allow,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+    let resp = daemon.read_request("gh-authorized").await.unwrap();
+    match resp {
+        WrapperResponse::Error { code, message } => {
+            assert!(matches!(code, ErrorCode::Unauthorized));
+            assert!(message.contains("disabled centrally"));
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
+}

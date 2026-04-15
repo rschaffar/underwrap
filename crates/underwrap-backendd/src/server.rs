@@ -19,6 +19,7 @@ use underwrap_protocol::message::{
     BackendErrorCode, BackendExportStatus, BackendMgmtRequest, BackendMgmtResponse, BackendRequest,
     BackendResponse,
 };
+use underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID;
 use underwrap_store::StorageBackend;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,7 +179,44 @@ async fn process_management_request(
             let existed = unexport_store_socket(state, &PathBuf::from(socket)).await;
             BackendMgmtResponse::UnexportSocketOk { existed }
         }
+        BackendMgmtRequest::GetPolicy { store } => match get_policy_document(state, &store) {
+            Ok(document_json) => BackendMgmtResponse::GetPolicyOk { document_json },
+            Err(e) => BackendMgmtResponse::Error {
+                code: BackendErrorCode::Internal,
+                message: e.to_string(),
+            },
+        },
+        BackendMgmtRequest::PutPolicy {
+            store,
+            document_json,
+        } => match put_policy_document(state, &store, &document_json) {
+            Ok(()) => BackendMgmtResponse::PutPolicyOk,
+            Err(e) => BackendMgmtResponse::Error {
+                code: BackendErrorCode::Internal,
+                message: e.to_string(),
+            },
+        },
     }
+}
+
+fn get_policy_document(state: &State, store_name: &str) -> Result<Option<String>> {
+    let store = state
+        .stores
+        .get(store_name)
+        .with_context(|| format!("unknown store '{store_name}'"))?;
+    let document = store.read(POLICY_DOCUMENT_SECRET_ID)?;
+    Ok(document.map(|bytes| String::from_utf8_lossy(bytes.as_ref()).into_owned()))
+}
+
+fn put_policy_document(state: &State, store_name: &str, document_json: &str) -> Result<()> {
+    let store = state
+        .stores
+        .get(store_name)
+        .with_context(|| format!("unknown store '{store_name}'"))?;
+    // Validate that the JSON parses as a policy document before persisting it.
+    let _: underwrap_protocol::policy::PolicyDocument =
+        serde_json::from_str(document_json).context("parsing policy document json")?;
+    store.write(POLICY_DOCUMENT_SECRET_ID, document_json.as_bytes())
 }
 
 async fn export_store_socket(
@@ -503,5 +541,35 @@ mod tests {
                 other => panic!("expected Error, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn policy_document_roundtrips_through_management_helpers() {
+        let state = State {
+            stores: HashMap::from([(
+                "work".to_string(),
+                Arc::new(TestStore::new()) as Arc<dyn StorageBackend>,
+            )]),
+            exports: tokio::sync::Mutex::new(HashMap::new()),
+        };
+
+        let json = r#"{"wrappers":[{"wrapper":"gh-comment","enabled":true}],"rules":[{"id":"r1","wrapper":"gh-comment","resource":"secret:github/token","operation":"secret.read","effect":"allow"}]}"#;
+        put_policy_document(&state, "work", json).unwrap();
+        let stored = get_policy_document(&state, "work").unwrap();
+        assert_eq!(stored.as_deref(), Some(json));
+    }
+
+    #[test]
+    fn put_policy_document_rejects_invalid_json() {
+        let state = State {
+            stores: HashMap::from([(
+                "work".to_string(),
+                Arc::new(TestStore::new()) as Arc<dyn StorageBackend>,
+            )]),
+            exports: tokio::sync::Mutex::new(HashMap::new()),
+        };
+
+        let err = put_policy_document(&state, "work", "not-json").unwrap_err();
+        assert!(err.to_string().contains("parsing policy document json"));
     }
 }

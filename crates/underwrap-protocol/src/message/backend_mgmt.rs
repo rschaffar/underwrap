@@ -16,6 +16,13 @@ pub enum BackendMgmtRequest {
     UnexportSocket {
         socket: String,
     },
+    GetPolicy {
+        store: String,
+    },
+    PutPolicy {
+        store: String,
+        document_json: String,
+    },
 }
 
 impl WireEncode for BackendMgmtRequest {
@@ -37,6 +44,18 @@ impl WireEncode for BackendMgmtRequest {
                 3u8.encode(out)?;
                 socket.encode(out)
             }
+            Self::GetPolicy { store } => {
+                4u8.encode(out)?;
+                store.encode(out)
+            }
+            Self::PutPolicy {
+                store,
+                document_json,
+            } => {
+                5u8.encode(out)?;
+                store.encode(out)?;
+                document_json.encode(out)
+            }
         }
     }
 }
@@ -53,6 +72,13 @@ impl WireDecode for BackendMgmtRequest {
             }),
             3 => Ok(Self::UnexportSocket {
                 socket: String::decode(reader)?,
+            }),
+            4 => Ok(Self::GetPolicy {
+                store: String::decode(reader)?,
+            }),
+            5 => Ok(Self::PutPolicy {
+                store: String::decode(reader)?,
+                document_json: String::decode(reader)?,
             }),
             other => Err(anyhow!(
                 "invalid backend management request discriminant: {other}"
@@ -98,6 +124,10 @@ pub enum BackendMgmtResponse {
     UnexportSocketOk {
         existed: bool,
     },
+    GetPolicyOk {
+        document_json: Option<String>,
+    },
+    PutPolicyOk,
     Error {
         code: BackendErrorCode,
         message: String,
@@ -120,8 +150,13 @@ impl WireEncode for BackendMgmtResponse {
                 3u8.encode(out)?;
                 existed.encode(out)
             }
-            Self::Error { code, message } => {
+            Self::GetPolicyOk { document_json } => {
                 4u8.encode(out)?;
+                document_json.encode(out)
+            }
+            Self::PutPolicyOk => 5u8.encode(out),
+            Self::Error { code, message } => {
+                6u8.encode(out)?;
                 code.encode(out)?;
                 message.encode(out)
             }
@@ -142,7 +177,11 @@ impl WireDecode for BackendMgmtResponse {
             3 => Ok(Self::UnexportSocketOk {
                 existed: bool::decode(reader)?,
             }),
-            4 => Ok(Self::Error {
+            4 => Ok(Self::GetPolicyOk {
+                document_json: Option::<String>::decode(reader)?,
+            }),
+            5 => Ok(Self::PutPolicyOk),
+            6 => Ok(Self::Error {
                 code: BackendErrorCode::decode(reader)?,
                 message: String::decode(reader)?,
             }),

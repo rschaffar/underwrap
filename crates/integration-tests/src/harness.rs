@@ -12,6 +12,7 @@ use tokio::sync::Notify;
 use underwrap_protocol::config::*;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
+use underwrap_protocol::policy::PolicyDocument;
 
 /// A running test daemon with temp dirs and sockets.
 #[allow(dead_code)]
@@ -179,6 +180,44 @@ impl TestDaemon {
             None => ControlRequest::StatusAll,
         };
         self.control_request(&request).await
+    }
+
+    pub async fn get_policy(&self, store: &str) -> Result<Option<PolicyDocument>> {
+        let mut stream = UnixStream::connect(&self.backend_management_socket).await?;
+        write_frame_async(
+            &mut stream,
+            &BackendMgmtRequest::GetPolicy {
+                store: store.to_string(),
+            },
+        )
+        .await?;
+        let response: BackendMgmtResponse = read_frame_async(&mut stream).await?;
+        match response {
+            BackendMgmtResponse::GetPolicyOk { document_json } => document_json
+                .map(|document_json| serde_json::from_str(&document_json))
+                .transpose()
+                .map_err(Into::into),
+            BackendMgmtResponse::Error { message, .. } => anyhow::bail!(message),
+            other => anyhow::bail!("unexpected backend management response: {other:?}"),
+        }
+    }
+
+    pub async fn put_policy(&self, store: &str, doc: &PolicyDocument) -> Result<()> {
+        let mut stream = UnixStream::connect(&self.backend_management_socket).await?;
+        write_frame_async(
+            &mut stream,
+            &BackendMgmtRequest::PutPolicy {
+                store: store.to_string(),
+                document_json: serde_json::to_string(doc)?,
+            },
+        )
+        .await?;
+        let response: BackendMgmtResponse = read_frame_async(&mut stream).await?;
+        match response {
+            BackendMgmtResponse::PutPolicyOk => Ok(()),
+            BackendMgmtResponse::Error { message, .. } => anyhow::bail!(message),
+            other => anyhow::bail!("unexpected backend management response: {other:?}"),
+        }
     }
 
     /// Shut down the daemon.

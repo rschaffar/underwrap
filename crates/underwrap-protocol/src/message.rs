@@ -95,6 +95,17 @@ mod tests {
     }
 
     #[test]
+    fn backend_management_policy_roundtrip() {
+        let req = BackendMgmtRequest::PutPolicy {
+            store: "work".to_string(),
+            document_json: "{\"wrappers\":[],\"rules\":[]}".to_string(),
+        };
+        let encoded = encode_to_vec(&req).unwrap();
+        let parsed: BackendMgmtRequest = decode_from_slice(&encoded).unwrap();
+        assert_eq!(parsed, req);
+    }
+
+    #[test]
     fn secretsd_response_roundtrip() {
         let resp = SecretsdResponse::ReadOk {
             material: Some("token".into()),

@@ -14,3 +14,4 @@ underwrap-protocol = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
+serde_json = { workspace = true }

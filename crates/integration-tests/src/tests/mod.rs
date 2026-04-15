@@ -241,5 +241,6 @@ async fn daemon_config_error(
 mod cli;
 mod daemon;
 mod directory_and_status;
+mod policy;
 mod store_read;
 mod unlock;
