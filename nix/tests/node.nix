@@ -68,7 +68,7 @@ let
 in {
   imports = [ nixosModule ];
 
-  environment.systemPackages = [ underwrapPackage pkgs.openssh pkgs.libsecret pkgs.python3 ];
+  environment.systemPackages = [ underwrapPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl ];
 
   # Normal user who runs wrappers.
   users.users.testuser = {
@@ -112,6 +112,9 @@ in {
               underwrap-tunnel.store = "remote";
             };
           };
+          admin = {
+            listen = "127.0.0.1:19444";
+          };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
       Restart = "on-failure";
@@ -137,33 +140,6 @@ in {
     };
   };
 
-  systemd.services.underwrap-backend-export = {
-    description = "export remote backend store socket";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "underwrap-backendd.service" ];
-    requires = [ "underwrap-backendd.service" ];
-    serviceConfig = {
-      Type = "oneshot";
-      User = "underwrap-backend";
-      Group = "underwrap-backend";
-      ExecStart = pkgs.writeShellScript "underwrap-backend-export" ''
-        set -eu
-        count=0
-        while [ "$count" -lt 200 ]; do
-          if test -S /run/underwrap-backend/mgmt.sock; then
-            exec ${underwrapPackage}/bin/underwrap-backend-ctl \
-              --socket /run/underwrap-backend/mgmt.sock \
-              export remote /run/underwrap-backend/backend.sock --mode 0600
-          fi
-          count=$((count + 1))
-          ${pkgs.coreutils}/bin/sleep 0.05
-        done
-        echo "management socket never appeared" >&2
-        exit 1
-      '';
-      RemainAfterExit = true;
-    };
-  };
 
   systemd.tmpfiles.rules = [
     "d /run/underwrap-backend 0700 underwrap-backend underwrap-backend -"
@@ -204,6 +180,9 @@ in {
               underwrap-local.store = "local";
             };
           };
+          admin = {
+            listen = "127.0.0.1:19443";
+          };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
       Restart = "on-failure";
@@ -229,33 +208,6 @@ in {
     };
   };
 
-  systemd.services.underwrap-backend-export-local = {
-    description = "export local backend store socket";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "underwrap-backendd-local.service" ];
-    requires = [ "underwrap-backendd-local.service" ];
-    serviceConfig = {
-      Type = "oneshot";
-      User = "underwrap-local";
-      Group = "underwrap-local";
-      ExecStart = pkgs.writeShellScript "underwrap-backend-export-local" ''
-        set -eu
-        count=0
-        while [ "$count" -lt 200 ]; do
-          if test -S /run/underwrap-local/backend/mgmt.sock; then
-            exec ${underwrapPackage}/bin/underwrap-backend-ctl \
-              --socket /run/underwrap-local/backend/mgmt.sock \
-              export local /run/underwrap-local/backend/backend.sock --mode 0660
-          fi
-          count=$((count + 1))
-          ${pkgs.coreutils}/bin/sleep 0.05
-        done
-        echo "management socket never appeared" >&2
-        exit 1
-      '';
-      RemainAfterExit = true;
-    };
-  };
 
   # Two underwrap frontend instances: one locally satisfied, one remote-forwarded.
   services.underwrap = {

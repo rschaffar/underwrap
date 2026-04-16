@@ -56,11 +56,18 @@ pub struct ServiceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminConfig {
+    pub listen: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
     pub management: ManagementConfig,
     pub stores: HashMap<String, StorageConfig>,
     #[serde(default)]
     pub service: Option<ServiceConfig>,
+    #[serde(default)]
+    pub admin: Option<AdminConfig>,
 }
 
 struct ExportEntry {
@@ -77,6 +84,10 @@ struct State {
 
 struct ServiceRuntimeState {
     clients: HashMap<String, Arc<dyn StorageBackend>>,
+}
+
+struct AdminRuntimeState {
+    stores: HashMap<String, Arc<dyn StorageBackend>>,
 }
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
@@ -112,6 +123,17 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             tls_acceptor,
             service_state,
         ));
+    }
+
+    if let Some(admin_config) = &config.admin {
+        let admin_listener = TcpListener::bind(&admin_config.listen)
+            .await
+            .with_context(|| format!("binding admin listener {}", admin_config.listen))?;
+        let admin_state = Arc::new(AdminRuntimeState {
+            stores: state.stores.clone(),
+        });
+        info!(listen = %admin_config.listen, stores = admin_state.stores.len(), "backend admin HTTP listening");
+        tasks.spawn(admin_accept_loop(admin_listener, admin_state));
     }
 
     match shutdown {
@@ -506,6 +528,34 @@ async fn process_request(request: &BackendRequest, store: &dyn StorageBackend) -
     }
 }
 
+async fn admin_accept_loop(listener: TcpListener, state: Arc<AdminRuntimeState>) -> Result<()> {
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if let Err(e) = handle_admin_connection(stream, state).await {
+                error!("backend admin connection error: {e:#}");
+            }
+        });
+    }
+}
+
+async fn handle_admin_connection(
+    stream: tokio::net::TcpStream,
+    state: Arc<AdminRuntimeState>,
+) -> Result<()> {
+    let service = service_fn(move |req| {
+        let state = Arc::clone(&state);
+        async move { handle_admin_request(req, state).await }
+    });
+
+    hyper::server::conn::http1::Builder::new()
+        .serve_connection(TokioIo::new(stream), service)
+        .await
+        .context("serving admin HTTP connection")?;
+    Ok(())
+}
+
 async fn service_accept_loop(
     listener: TcpListener,
     acceptor: TlsAcceptor,
@@ -697,6 +747,255 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response<Ful
             message: message.to_string(),
         },
     )
+}
+
+fn admin_store<'a>(
+    state: &'a AdminRuntimeState,
+    store: &str,
+) -> Result<&'a Arc<dyn StorageBackend>> {
+    state
+        .stores
+        .get(store)
+        .with_context(|| format!("unknown store '{store}'"))
+}
+
+async fn handle_admin_request(
+    request: Request<Incoming>,
+    state: Arc<AdminRuntimeState>,
+) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    let response = match (request.method(), request.uri().path()) {
+        (&Method::GET, "/v1/admin/stores") => {
+            let mut stores: Vec<String> = state.stores.keys().cloned().collect();
+            stores.sort();
+            json_response(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminStoresResponse { stores },
+            )
+        }
+        (&Method::POST, "/v1/admin/secret/read") => match parse_json_body::<
+            underwrap_protocol::service::AdminSecretReadRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store)
+                .and_then(|store| store.read(&body.secret_id))
+            {
+                Ok(material) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminSecretReadResponse {
+                        material_b64: material.map(|material| {
+                            base64::engine::general_purpose::STANDARD.encode(material.as_ref())
+                        }),
+                    },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/secret/write") => {
+            match parse_json_body::<underwrap_protocol::service::AdminSecretWriteRequest>(request)
+                .await
+            {
+                Ok(body) => match base64::engine::general_purpose::STANDARD
+                    .decode(&body.material_b64)
+                {
+                    Ok(material) => match admin_store(&state, &body.store)
+                        .and_then(|store| store.write(&body.secret_id, &material))
+                    {
+                        Ok(()) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminOkResponse { ok: true },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    },
+                    Err(e) => error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        &format!("invalid base64 payload: {e}"),
+                    ),
+                },
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/admin/secret/list") => match parse_json_body::<
+            underwrap_protocol::service::AdminSecretListRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store)
+                .and_then(|store| store.list(&body.prefix))
+            {
+                Ok(ids) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminSecretListResponse { ids },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/secret/delete") => match parse_json_body::<
+            underwrap_protocol::service::AdminSecretDeleteRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store)
+                .and_then(|store| store.delete(&body.secret_id))
+            {
+                Ok(existed) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/policy/get") => {
+            match parse_json_body::<underwrap_protocol::service::AdminPolicyGetRequest>(request)
+                .await
+            {
+                Ok(body) => {
+                    let doc = match admin_store(&state, &body.store).and_then(|store| {
+                        match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                            Some(material) => Ok(serde_json::from_slice(material.as_ref())?),
+                            None => Ok(underwrap_protocol::policy::PolicyDocument::default()),
+                        }
+                    }) {
+                        Ok(doc) => doc,
+                        Err(e) => {
+                            return Ok(error_response(
+                                StatusCode::BAD_REQUEST,
+                                "admin_error",
+                                &e.to_string(),
+                            ));
+                        }
+                    };
+                    json_response(
+                        StatusCode::OK,
+                        &underwrap_protocol::service::AdminPolicyGetResponse { document: doc },
+                    )
+                }
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/admin/policy/put") => match parse_json_body::<
+            underwrap_protocol::service::AdminPolicyPutRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
+                store.write(
+                    POLICY_DOCUMENT_SECRET_ID,
+                    serde_json::to_vec(&body.document)?.as_slice(),
+                )
+            }) {
+                Ok(()) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminOkResponse { ok: true },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/wrapper/set-state") => match parse_json_body::<
+            underwrap_protocol::service::AdminWrapperStateRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
+                let mut doc: underwrap_protocol::policy::PolicyDocument =
+                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                        Some(material) => serde_json::from_slice(material.as_ref())?,
+                        None => underwrap_protocol::policy::PolicyDocument::default(),
+                    };
+                if let Some(state) = doc
+                    .wrappers
+                    .iter_mut()
+                    .find(|state| state.wrapper == body.wrapper)
+                {
+                    state.enabled = body.enabled;
+                    state.reason = body.reason.clone();
+                } else {
+                    doc.wrappers
+                        .push(underwrap_protocol::policy::WrapperPolicyState {
+                            wrapper: body.wrapper.clone(),
+                            enabled: body.enabled,
+                            reason: body.reason.clone(),
+                        });
+                }
+                doc.wrappers.sort_by(|a, b| a.wrapper.cmp(&b.wrapper));
+                store.write(
+                    POLICY_DOCUMENT_SECRET_ID,
+                    serde_json::to_vec(&doc)?.as_slice(),
+                )
+            }) {
+                Ok(()) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminOkResponse { ok: true },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/rule/upsert") => match parse_json_body::<
+            underwrap_protocol::service::AdminRuleUpsertRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
+                let mut doc: underwrap_protocol::policy::PolicyDocument =
+                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                        Some(material) => serde_json::from_slice(material.as_ref())?,
+                        None => underwrap_protocol::policy::PolicyDocument::default(),
+                    };
+                if let Some(rule) = doc.rules.iter_mut().find(|rule| rule.id == body.rule.id) {
+                    *rule = body.rule.clone();
+                } else {
+                    doc.rules.push(body.rule.clone());
+                }
+                doc.rules.sort_by(|a, b| a.id.cmp(&b.id));
+                store.write(
+                    POLICY_DOCUMENT_SECRET_ID,
+                    serde_json::to_vec(&doc)?.as_slice(),
+                )
+            }) {
+                Ok(()) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminOkResponse { ok: true },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/rule/delete") => match parse_json_body::<
+            underwrap_protocol::service::AdminRuleDeleteRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
+                let mut doc: underwrap_protocol::policy::PolicyDocument =
+                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                        Some(material) => serde_json::from_slice(material.as_ref())?,
+                        None => underwrap_protocol::policy::PolicyDocument::default(),
+                    };
+                doc.rules.retain(|rule| rule.id != body.id);
+                store.write(
+                    POLICY_DOCUMENT_SECRET_ID,
+                    serde_json::to_vec(&doc)?.as_slice(),
+                )
+            }) {
+                Ok(()) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminOkResponse { ok: true },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
+    };
+    Ok(response)
 }
 
 #[cfg(test)]

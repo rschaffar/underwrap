@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::policy::{PolicyDocument, PolicyRule};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceStatusResponse {
     pub ok: bool,
@@ -51,6 +53,92 @@ pub struct ServiceDeleteResponse {
 pub struct ServiceErrorResponse {
     pub code: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminStoresResponse {
+    pub stores: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminSecretReadRequest {
+    pub store: String,
+    pub secret_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminSecretReadResponse {
+    pub material_b64: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminSecretWriteRequest {
+    pub store: String,
+    pub secret_id: String,
+    pub material_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminSecretListRequest {
+    pub store: String,
+    pub prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminSecretListResponse {
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminSecretDeleteRequest {
+    pub store: String,
+    pub secret_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminSecretDeleteResponse {
+    pub existed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminPolicyGetRequest {
+    pub store: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminPolicyGetResponse {
+    pub document: PolicyDocument,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminPolicyPutRequest {
+    pub store: String,
+    pub document: PolicyDocument,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminWrapperStateRequest {
+    pub store: String,
+    pub wrapper: String,
+    pub enabled: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminRuleUpsertRequest {
+    pub store: String,
+    pub rule: PolicyRule,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminRuleDeleteRequest {
+    pub store: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminOkResponse {
+    pub ok: bool,
 }
 
 #[cfg(test)]

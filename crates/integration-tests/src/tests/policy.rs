@@ -6,7 +6,10 @@ async fn backend_policy_roundtrip_over_management_socket() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
-    assert_eq!(daemon.get_policy("test").await.unwrap(), None);
+    assert_eq!(
+        daemon.get_policy("test").await.unwrap(),
+        Some(PolicyDocument::default())
+    );
 
     let document = PolicyDocument {
         wrappers: vec![WrapperPolicyState {

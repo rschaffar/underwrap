@@ -21,6 +21,7 @@ pub struct TestDaemon {
     pub control_socket: PathBuf,
     pub backend_socket: PathBuf,
     pub backend_management_socket: PathBuf,
+    pub admin_url: String,
     pub storage_dir: PathBuf,
     shutdown: Arc<Notify>,
     backend_shutdown: Arc<Notify>,
@@ -50,6 +51,8 @@ impl TestDaemon {
             wrapper_sockets.insert(name, socket);
         }
 
+        let admin_port = pick_unused_port()?;
+        let admin_url = format!("http://127.0.0.1:{admin_port}");
         let backend_config = underwrap_backendd::server::BackendConfig {
             management: underwrap_backendd::server::ManagementConfig {
                 socket: backend_management_socket.clone(),
@@ -61,6 +64,9 @@ impl TestDaemon {
                 },
             )]),
             service: None,
+            admin: Some(underwrap_backendd::server::AdminConfig {
+                listen: format!("127.0.0.1:{admin_port}"),
+            }),
         };
         let backend_shutdown = Arc::new(Notify::new());
         let backend_shutdown_clone = Arc::clone(&backend_shutdown);
@@ -75,6 +81,7 @@ impl TestDaemon {
         });
 
         wait_for_path(&backend_management_socket).await?;
+        wait_for_admin(&admin_url).await?;
         backend_export_socket(&backend_management_socket, "test", &backend_socket, 0o600).await?;
         wait_for_path(&backend_socket).await?;
 
@@ -110,6 +117,7 @@ impl TestDaemon {
             control_socket,
             backend_socket,
             backend_management_socket,
+            admin_url,
             storage_dir,
             shutdown,
             backend_shutdown,
@@ -146,6 +154,8 @@ impl TestDaemon {
         let pki = test_pki_paths(base, client_name)?;
         let ready_pki = test_pki_paths(base, principal_client_name(accepted_principal)?)?;
 
+        let admin_port = pick_unused_port()?;
+        let admin_url = format!("http://127.0.0.1:{admin_port}");
         let backend_config = underwrap_backendd::server::BackendConfig {
             management: underwrap_backendd::server::ManagementConfig {
                 socket: backend_management_socket.clone(),
@@ -170,6 +180,9 @@ impl TestDaemon {
                     },
                 )]),
             }),
+            admin: Some(underwrap_backendd::server::AdminConfig {
+                listen: format!("127.0.0.1:{admin_port}"),
+            }),
         };
         let backend_shutdown = Arc::new(Notify::new());
         let backend_shutdown_clone = Arc::clone(&backend_shutdown);
@@ -184,6 +197,7 @@ impl TestDaemon {
         });
 
         wait_for_path(&backend_management_socket).await?;
+        wait_for_admin(&admin_url).await?;
         wait_for_service(
             &service_url,
             &ready_pki.ca_cert,
@@ -227,6 +241,7 @@ impl TestDaemon {
             control_socket,
             backend_socket,
             backend_management_socket,
+            admin_url,
             storage_dir,
             shutdown,
             backend_shutdown,
@@ -301,41 +316,39 @@ impl TestDaemon {
     }
 
     pub async fn get_policy(&self, store: &str) -> Result<Option<PolicyDocument>> {
-        let mut stream = UnixStream::connect(&self.backend_management_socket).await?;
-        write_frame_async(
-            &mut stream,
-            &BackendMgmtRequest::GetPolicy {
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/v1/admin/policy/get", self.admin_url))
+            .json(&underwrap_protocol::service::AdminPolicyGetRequest {
                 store: store.to_string(),
-            },
-        )
-        .await?;
-        let response: BackendMgmtResponse = read_frame_async(&mut stream).await?;
-        match response {
-            BackendMgmtResponse::GetPolicyOk { document_json } => document_json
-                .map(|document_json| serde_json::from_str(&document_json))
-                .transpose()
-                .map_err(Into::into),
-            BackendMgmtResponse::Error { message, .. } => anyhow::bail!(message),
-            other => anyhow::bail!("unexpected backend management response: {other:?}"),
-        }
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        let body: underwrap_protocol::service::AdminPolicyGetResponse = response.json().await?;
+        Ok(Some(body.document))
     }
 
     pub async fn put_policy(&self, store: &str, doc: &PolicyDocument) -> Result<()> {
-        let mut stream = UnixStream::connect(&self.backend_management_socket).await?;
-        write_frame_async(
-            &mut stream,
-            &BackendMgmtRequest::PutPolicy {
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/v1/admin/policy/put", self.admin_url))
+            .json(&underwrap_protocol::service::AdminPolicyPutRequest {
                 store: store.to_string(),
-                document_json: serde_json::to_string(doc)?,
-            },
-        )
-        .await?;
-        let response: BackendMgmtResponse = read_frame_async(&mut stream).await?;
-        match response {
-            BackendMgmtResponse::PutPolicyOk => Ok(()),
-            BackendMgmtResponse::Error { message, .. } => anyhow::bail!(message),
-            other => anyhow::bail!("unexpected backend management response: {other:?}"),
-        }
+                document: doc.clone(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(())
     }
 
     /// Shut down the daemon.
@@ -348,7 +361,7 @@ impl TestDaemon {
     }
 }
 
-const TEST_CA_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+pub(crate) const TEST_CA_PEM: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDGTCCAgGgAwIBAgIUDzLEbd9HNdAV+jW3B9DEKAVIjJcwDQYJKoZIhvcNAQEL
 BQAwHDEaMBgGA1UEAwwRdW5kZXJ3cmFwLXRlc3QtY2EwHhcNMjYwNDE2MDAzNzAx
 WhcNMzYwNDEzMDAzNzAxWjAcMRowGAYDVQQDDBF1bmRlcndyYXAtdGVzdC1jYTCC
@@ -369,7 +382,7 @@ dlg0gy8NbKgHU/E+k3R5jMBJaeNfHCaFF8otAtpqoheBX3u5b1MwTQ7EVLsfZN1V
 -----END CERTIFICATE-----
 "#;
 
-const TEST_SERVER_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+pub(crate) const TEST_SERVER_PEM: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDQzCCAiugAwIBAgIUVnjkCKXzQiyHyEsQ3ey4lgWkrS8wDQYJKoZIhvcNAQEL
 BQAwHDEaMBgGA1UEAwwRdW5kZXJ3cmFwLXRlc3QtY2EwHhcNMjYwNDE2MDAzNzAy
 WhcNMzYwNDEzMDAzNzAyWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqG
@@ -391,7 +404,7 @@ Ec7n9CeusZNwlgN7yGlJ7ZGZA8ZPT1g=
 -----END CERTIFICATE-----
 "#;
 
-const TEST_SERVER_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+pub(crate) const TEST_SERVER_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCm7XnsD0fkZ9rg
 6rK5De5RWuP8LLAIhbriQPgRhin2pkjv6rYrwAZ2yuTtG+Agx98FIFI4jczJVbsH
 PEAJ8L0JlWy0GnFQqYu2wLZWMhDlCOALKdJH72H9zyg/32KMWI+WYqZr90WZ7hTz
@@ -421,7 +434,7 @@ njrLWgQcV84jPKUGV8pK3NnXi72v9xuPw0jKEZ0bEqbUmpFytwoqO86HyhqgIVmT
 -----END PRIVATE KEY-----
 "#;
 
-const TEST_CLIENT_LOCAL_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+pub(crate) const TEST_CLIENT_LOCAL_PEM: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDKzCCAhOgAwIBAgIUVnjkCKXzQiyHyEsQ3ey4lgWkrTAwDQYJKoZIhvcNAQEL
 BQAwHDEaMBgGA1UEAwwRdW5kZXJ3cmFwLXRlc3QtY2EwHhcNMjYwNDE2MDAzNzAy
 WhcNMzYwNDEzMDAzNzAyWjAaMRgwFgYDVQQDDA91bmRlcndyYXAtbG9jYWwwggEi
@@ -442,7 +455,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
 -----END CERTIFICATE-----
 "#;
 
-const TEST_CLIENT_LOCAL_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+pub(crate) const TEST_CLIENT_LOCAL_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDcJDP5K69TcG9+
 uHM7q+xG7p0c7Cgex8XYVs3yFDpHk6UOG/JqL0bKa32rhO7LR8VxPprIyqV24LB8
 vTi52A2/oA/dZiVouv9bkCiBOun0XDQAHveocrIYnhjvq8qrpdfFdZ+2oB/V78Mb
@@ -472,7 +485,7 @@ n+Q8b5k7ohmMbkOzzdUIrM8L
 -----END PRIVATE KEY-----
 "#;
 
-const TEST_CLIENT_TUNNEL_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+pub(crate) const TEST_CLIENT_TUNNEL_PEM: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDLDCCAhSgAwIBAgIUVnjkCKXzQiyHyEsQ3ey4lgWkrTEwDQYJKoZIhvcNAQEL
 BQAwHDEaMBgGA1UEAwwRdW5kZXJ3cmFwLXRlc3QtY2EwHhcNMjYwNDE2MDAzNzAy
 WhcNMzYwNDEzMDAzNzAyWjAbMRkwFwYDVQQDDBB1bmRlcndyYXAtdHVubmVsMIIB
@@ -493,7 +506,7 @@ z4+5Ls2wVcKKSFUKzG1NlD/sKY+2KGbF7iiN1TvlCo/bjxtNlCyL7i2tNRBJqPwD
 -----END CERTIFICATE-----
 "#;
 
-const TEST_CLIENT_TUNNEL_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+pub(crate) const TEST_CLIENT_TUNNEL_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDpmW/XM7RSGc/y
 VNwo+7vbKTQ7eRBbAAQxTldI/zhnLHVGhvh/vS6SuQatIR1oYmBiSvj510O8r2Dh
 usOsbPZr/rvgy4b87dCeqN/gbRVHjDzRyv39/Snd4+wYVQMxNlNUErJSAqy2b0dZ
@@ -583,6 +596,19 @@ fn test_pki_paths(base: &std::path::Path, client_name: &str) -> Result<TestPkiPa
 fn pick_unused_port() -> Result<u16> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     Ok(listener.local_addr()?.port())
+}
+
+async fn wait_for_admin(url: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if let Ok(response) = client.get(format!("{url}/v1/admin/stores")).send().await
+            && response.status().is_success()
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    anyhow::bail!("admin API never became ready at {url}")
 }
 
 async fn wait_for_service(

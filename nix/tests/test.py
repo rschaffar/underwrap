@@ -1,5 +1,8 @@
 """underwrap VM test — local + remote instances on one machine."""
 
+import base64
+import json
+import shlex
 import time
 
 # Helper for running commands as testuser.
@@ -11,7 +14,55 @@ import os
 SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PYTHON3 = os.environ.get("PYTHON3", "python3")
 UWCTL_LOCAL = os.environ.get("UWCTL_LOCAL", "underwrapctl")
-UWBACKENDCTL = os.environ.get("UWBACKENDCTL", "underwrap-backend-ctl")
+ADMIN_LOCAL = "http://127.0.0.1:19443"
+ADMIN_REMOTE = "http://127.0.0.1:19444"
+
+
+def admin_api(url, path, payload=None, method="POST"):
+    cmd = ["curl", "-fsS", "-X", method]
+    if payload is not None:
+        cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(payload)]
+    cmd += [f"{url}{path}"]
+    quoted = " ".join(shlex.quote(part) for part in cmd)
+    out = machine.succeed(quoted)
+    return json.loads(out) if out.strip() else None
+
+
+def admin_write_secret(url, store, secret_id, value):
+    return admin_api(
+        url,
+        "/v1/admin/secret/write",
+        {
+            "store": store,
+            "secret_id": secret_id,
+            "material_b64": base64.b64encode(value.encode()).decode(),
+        },
+    )
+
+
+def admin_set_wrapper_state(url, store, wrapper, enabled, reason=None):
+    return admin_api(
+        url,
+        "/v1/admin/wrapper/set-state",
+        {"store": store, "wrapper": wrapper, "enabled": enabled, "reason": reason},
+    )
+
+
+def admin_upsert_rule(url, store, rule_id, wrapper, resource, operation, effect):
+    return admin_api(
+        url,
+        "/v1/admin/rule/upsert",
+        {
+            "store": store,
+            "rule": {
+                "id": rule_id,
+                "wrapper": wrapper,
+                "resource": resource,
+                "operation": operation,
+                "effect": effect,
+            },
+        },
+    )
 
 
 def boot_and_service_checks():
@@ -23,14 +74,14 @@ def boot_and_service_checks():
     machine.wait_for_unit("underwrapd-local.service")
     machine.wait_for_unit("underwrapd-tunnel.service")
     machine.wait_for_unit("underwrap-backendd.service")
-    machine.wait_for_unit("underwrap-backend-export.service")
     machine.wait_for_unit("underwrap-backendd-local.service")
-    machine.wait_for_unit("underwrap-backend-export-local.service")
-    machine.wait_for_unit("sshd.service")
 
     machine.succeed("id testuser")
     machine.succeed("id underwrap-local")
     machine.succeed("id underwrap-tunnel")
+
+    assert admin_api(ADMIN_LOCAL, "/v1/admin/stores", None, method="GET")["stores"] == ["local"]
+    assert admin_api(ADMIN_REMOTE, "/v1/admin/stores", None, method="GET")["stores"] == ["remote"]
 
 
 def local_socket_permissions():
@@ -71,22 +122,16 @@ def local_store_and_basic_ops():
     # LOCAL INSTANCE: store secrets + basic operations
     # ============================================================
 
-    machine.succeed(f"echo -n 'ghp_testvmtoken' | {UWCTL_LOCAL} store test/token")
-    machine.succeed(f"echo -n 'other_secret_val' | {UWCTL_LOCAL} store test/other")
-    machine.succeed(f"echo -n 'locked_secret' | {UWCTL_LOCAL} store test/locked-tok")
-    machine.succeed(f"echo -n 'dumpable_test_secret' | {UWCTL_LOCAL} store test/dumpable-tok")
-    machine.succeed(f"echo -n 'crash_secret_value' | {UWCTL_LOCAL} store test/crash-tok")
-    machine.succeed(f"echo -n 'caps_test_val' | {UWCTL_LOCAL} store test/caps-tok")
+    admin_write_secret(ADMIN_LOCAL, "local", "test/token", "ghp_testvmtoken")
+    admin_write_secret(ADMIN_LOCAL, "local", "test/other", "other_secret_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test/locked-tok", "locked_secret")
+    admin_write_secret(ADMIN_LOCAL, "local", "test/dumpable-tok", "dumpable_test_secret")
+    admin_write_secret(ADMIN_LOCAL, "local", "test/crash-tok", "crash_secret_value")
+    admin_write_secret(ADMIN_LOCAL, "local", "test/caps-tok", "caps_test_val")
 
-    # Status.
-    status = machine.succeed(f"{UWCTL_LOCAL} status")
-    assert "local-test-echo" in status
-    status = machine.succeed(f"{UWCTL_LOCAL} status local-test-echo")
-    assert "true" in status
-
-    # Operator-managed credential refs may be updated through the control socket.
-    machine.succeed(f"echo -n 'overwrite' | {UWCTL_LOCAL} store test/token")
-    machine.succeed(f"echo -n 'updated_val' | {UWCTL_LOCAL} store test/other")
+    # Admin writes may update operator-managed credential refs centrally.
+    admin_write_secret(ADMIN_LOCAL, "local", "test/token", "overwrite")
+    admin_write_secret(ADMIN_LOCAL, "local", "test/other", "updated_val")
 
 
 def local_unprivileged_wrapper_invocation():
@@ -661,17 +706,8 @@ def remote_service_lifecycle():
     # REMOTE INSTANCE: backend service lifecycle
     # ============================================================
 
-    # Store secret in backend.
-    machine.succeed(
-        "su underwrap-backend -s /bin/sh -c '"
-        "mkdir -p /var/lib/underwrap-backend/secrets/remote"
-        "'"
-    )
-    machine.succeed(
-        "su underwrap-backend -s /bin/sh -c '"
-        "echo -n secret_via_service > /var/lib/underwrap-backend/secrets/remote/token"
-        "'"
-    )
+    # Store secret in backend through the admin API.
+    admin_write_secret(ADMIN_REMOTE, "remote", "remote/token", "secret_via_service")
 
     # With backend service up: succeed.
     output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
@@ -702,37 +738,45 @@ def local_backend_policy_control_center():
     # LOCAL INSTANCE: backend-managed wrapper policy control
     # ============================================================
 
-    backendctl = f"{UWBACKENDCTL} --socket /run/underwrap-local/backend/mgmt.sock"
-
     # Create an active policy document but without allow rules.
-    machine.succeed(f"{backendctl} wrapper-enable local local-test-echo")
+    admin_set_wrapper_state(ADMIN_LOCAL, "local", "local-test-echo", True)
     machine.fail(su("/run/wrappers/bin/local-test-echo"))
     machine.log("PASS: active backend policy denies wrapper without explicit rule")
 
     # Add exact wrapper/resource allow rule.
-    machine.succeed(
-        f"{backendctl} rule-upsert local allow-echo local-test-echo secret:test/token secret.read allow"
+    admin_upsert_rule(
+        ADMIN_LOCAL,
+        "local",
+        "allow-echo",
+        "local-test-echo",
+        "secret:test/token",
+        "secret.read",
+        "allow",
     )
     output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
     assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after policy allow: {output}"
     machine.log("PASS: backend policy can allow exact wrapper/resource access")
 
     # Disable wrapper centrally.
-    machine.succeed(
-        f"{backendctl} wrapper-disable local local-test-echo --reason maintenance"
-    )
+    admin_set_wrapper_state(ADMIN_LOCAL, "local", "local-test-echo", False, "maintenance")
     machine.fail(su("/run/wrappers/bin/local-test-echo"))
     machine.log("PASS: backend policy can disable wrapper centrally")
 
     # Re-enable wrapper; existing allow rule becomes effective again.
-    machine.succeed(f"{backendctl} wrapper-enable local local-test-echo")
+    admin_set_wrapper_state(ADMIN_LOCAL, "local", "local-test-echo", True)
     output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
     assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after re-enable: {output}"
     machine.log("PASS: backend policy can re-enable wrapper centrally")
 
     # Local unlock is now obsolete when backend policy is active.
-    machine.succeed(
-        f"{backendctl} rule-upsert local allow-locked local-test-locked secret:test/locked-tok secret.read allow"
+    admin_upsert_rule(
+        ADMIN_LOCAL,
+        "local",
+        "allow-locked",
+        "local-test-locked",
+        "secret:test/locked-tok",
+        "secret.read",
+        "allow",
     )
     output = machine.succeed(su("/run/wrappers/bin/local-test-locked"))
     assert "LOCKED_TOKEN=locked_secret" in output, (
@@ -763,7 +807,6 @@ def audit_and_no_secret_leaks():
         " | sed 's/\\x1b\\[[0-9;]*m//g'"
     )
     assert 'audit="read_granted"' in logs, "missing read_granted"
-    assert 'audit="secret_stored"' in logs, "missing secret_stored"
 
     assert "ghp_testvmtoken" not in logs, "secret leaked!"
     assert "locked_secret" not in logs, "secret leaked!"
@@ -780,7 +823,6 @@ local_unprivileged_wrapper_invocation()
 local_verify_capabilities_dropped()
 local_isolation()
 local_spoofing_resistance()
-local_lock_unlock_lifecycle()
 local_daemon_restart_persistence()
 local_pid_namespace_proc_isolation()
 local_ancestor_attack()

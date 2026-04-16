@@ -63,19 +63,27 @@ wrappers:
 async fn underwrapd_binary_start_and_status() {
     ensure_package_built("underwrapd");
     ensure_package_built("underwrap-backendd");
-    ensure_package_built("underwrap-backendctl");
 
     let daemon_bin = require_bin!("underwrapd");
     let backend_bin = require_bin!("underwrap-backendd");
-    let backend_ctl = require_bin!("underwrap-backend-ctl");
+    let admin_port = 18446u16;
 
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
 
     let wrapper_sock = base.join("wrapper-w.sock");
     let control_sock = base.join("control.sock");
-    let backend_socket = base.join("backend.sock");
     let backend_management_socket = base.join("backend-mgmt.sock");
+    let server_cert = base.join("server.pem");
+    let server_key = base.join("server.key");
+    let ca_cert = base.join("ca.pem");
+    let client_cert = base.join("client.pem");
+    let client_key = base.join("client.key");
+    std::fs::write(&server_cert, crate::harness::TEST_SERVER_PEM).unwrap();
+    std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
+    std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
+    std::fs::write(&client_cert, crate::harness::TEST_CLIENT_LOCAL_PEM).unwrap();
+    std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
 
     let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
         management: underwrap_backendd::server::ManagementConfig {
@@ -87,7 +95,23 @@ async fn underwrapd_binary_start_and_status() {
                 dir: base.join("secrets"),
             },
         )]),
-        service: None,
+        service: Some(underwrap_backendd::server::ServiceConfig {
+            listen: "127.0.0.1:18447".to_string(),
+            tls: underwrap_backendd::server::ServiceTlsConfig {
+                cert_file: server_cert.clone(),
+                key_file: server_key.clone(),
+                client_ca_file: ca_cert.clone(),
+            },
+            clients: HashMap::from([(
+                "underwrap-local".to_string(),
+                underwrap_backendd::server::ServiceClientConfig {
+                    store: "test".to_string(),
+                },
+            )]),
+        }),
+        admin: Some(underwrap_backendd::server::AdminConfig {
+            listen: format!("127.0.0.1:{admin_port}"),
+        }),
     })
     .unwrap();
     let backend_config_path = base.join("backend.yaml");
@@ -111,29 +135,18 @@ async fn underwrapd_binary_start_and_status() {
         "backend management socket never appeared"
     );
 
-    let export_status = tokio::process::Command::new(&backend_ctl)
-        .args([
-            "--socket",
-            backend_management_socket.to_str().unwrap(),
-            "export",
-            "test",
-            backend_socket.to_str().unwrap(),
-            "--mode",
-            "0600",
-        ])
-        .status()
-        .await
-        .unwrap();
-    assert!(export_status.success(), "backend export command failed");
-
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
         sockets: underwrap_protocol::config::SocketConfig {
             control: control_sock.clone(),
             ..Default::default()
         },
         backend: underwrap_protocol::config::BackendSocketConfig {
-            socket: backend_socket.clone(),
-            ..Default::default()
+            mode: underwrap_protocol::config::BackendMode::Service,
+            socket: "/tmp/unused.sock".into(),
+            url: Some("https://127.0.0.1:18447".to_string()),
+            ca_file: Some(ca_cert.clone()),
+            client_cert_file: Some(client_cert.clone()),
+            client_key_file: Some(client_key.clone()),
         },
         allowed_users: Vec::new(),
         credentials: {
@@ -164,7 +177,7 @@ async fn underwrapd_binary_start_and_status() {
         .unwrap();
 
     for _ in 0..100 {
-        if control_sock.exists() && wrapper_sock.exists() && backend_socket.exists() {
+        if control_sock.exists() && wrapper_sock.exists() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
