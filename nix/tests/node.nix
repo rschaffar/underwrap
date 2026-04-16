@@ -2,6 +2,13 @@
 { pkgs, underwrapPackage, nixosModule, ... }:
 
 let
+  testCaPem = pkgs.writeText "underwrap-test-ca.pem" (builtins.readFile ../../testdata/pki/ca.pem);
+  testServerPem = pkgs.writeText "underwrap-test-server.pem" (builtins.readFile ../../testdata/pki/server.pem);
+  testServerKey = pkgs.writeText "underwrap-test-server.key" (builtins.readFile ../../testdata/pki/server.key);
+  testLocalClientPem = pkgs.writeText "underwrap-test-client-local.pem" (builtins.readFile ../../testdata/pki/client-local.pem);
+  testLocalClientKey = pkgs.writeText "underwrap-test-client-local.key" (builtins.readFile ../../testdata/pki/client-local.key);
+  testTunnelClientPem = pkgs.writeText "underwrap-test-client-tunnel.pem" (builtins.readFile ../../testdata/pki/client-tunnel.pem);
+  testTunnelClientKey = pkgs.writeText "underwrap-test-client-tunnel.key" (builtins.readFile ../../testdata/pki/client-tunnel.key);
   crashScript = pkgs.writeShellScript "crash-target" ''
     kill -SEGV $$
   '';
@@ -94,6 +101,17 @@ in {
             backend = "plain";
             dir = "/var/lib/underwrap-backend/secrets";
           };
+          service = {
+            listen = "127.0.0.1:18444";
+            tls = {
+              cert_file = testServerPem;
+              key_file = testServerKey;
+              client_ca_file = testCaPem;
+            };
+            clients = {
+              underwrap-tunnel.store = "remote";
+            };
+          };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
       Restart = "on-failure";
@@ -175,6 +193,17 @@ in {
             backend = "plain";
             dir = "/var/lib/underwrap-backend-local/secrets";
           };
+          service = {
+            listen = "127.0.0.1:18443";
+            tls = {
+              cert_file = testServerPem;
+              key_file = testServerKey;
+              client_ca_file = testCaPem;
+            };
+            clients = {
+              underwrap-local.store = "local";
+            };
+          };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
       Restart = "on-failure";
@@ -193,7 +222,7 @@ in {
       RestrictSUIDSGID = true;
       RestrictRealtime = true;
       SystemCallArchitectures = "native";
-      RestrictAddressFamilies = [ "AF_UNIX" ];
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
       NoNewPrivileges = true;
       LimitCORE = 0;
       ReadWritePaths = [ "/run/underwrap-local/backend" "/var/lib/underwrap-backend-local" ];
@@ -237,6 +266,13 @@ in {
       # Local instance: frontend talks to a local backend socket.
       local = {
         allowedUsers = [ "testuser" ];
+        backend = {
+          mode = "service";
+          url = "https://127.0.0.1:18443";
+          caFile = testCaPem;
+          clientCertFile = testLocalClientPem;
+          clientKeyFile = testLocalClientKey;
+        };
         credentials = {
           "test/token" = { mode = "env"; variable = "MY_TOKEN"; };
           "test/other" = { mode = "env"; variable = "OTHER_SECRET"; };
@@ -322,6 +358,13 @@ in {
       # Remote instance: same frontend contract, backend socket satisfied by SSH tunnel.
       tunnel = {
         allowedUsers = [ "testuser" ];
+        backend = {
+          mode = "service";
+          url = "https://127.0.0.1:18444";
+          caFile = testCaPem;
+          clientCertFile = testTunnelClientPem;
+          clientKeyFile = testTunnelClientKey;
+        };
 
         credentials."remote/token" = {
           mode = "env";

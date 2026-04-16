@@ -656,9 +656,9 @@ def local_directory_credentials():
     time.sleep(0.5)
 
 
-def remote_tunnel_lifecycle():
+def remote_service_lifecycle():
     # ============================================================
-    # REMOTE INSTANCE: tunnel lifecycle
+    # REMOTE INSTANCE: backend service lifecycle
     # ============================================================
 
     # Store secret in backend.
@@ -669,83 +669,32 @@ def remote_tunnel_lifecycle():
     )
     machine.succeed(
         "su underwrap-backend -s /bin/sh -c '"
-        "echo -n secret_via_tunnel > /var/lib/underwrap-backend/secrets/remote/token"
+        "echo -n secret_via_service > /var/lib/underwrap-backend/secrets/remote/token"
         "'"
     )
 
-    # Generate SSH key for backend user.
-    machine.succeed(
-        "su underwrap-backend -s /bin/sh -c '"
-        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-        "ssh-keygen -t ed25519 -f ~/.ssh/tunnel_key -N \"\" -q"
-        "'"
-    )
-
-    # Authorize key for tunnel user.
-    pubkey = machine.succeed(
-        "cat /var/lib/underwrap-backend/.ssh/tunnel_key.pub"
-    ).strip()
-    tunnel_home = machine.succeed(
-        "getent passwd underwrap-tunnel-tunnel | cut -d: -f6"
-    ).strip()
-    machine.succeed(f"mkdir -p {tunnel_home}/.ssh && chmod 700 {tunnel_home}/.ssh")
-    machine.succeed(f"echo '{pubkey}' > {tunnel_home}/.ssh/authorized_keys")
-    machine.succeed(f"chmod 600 {tunnel_home}/.ssh/authorized_keys")
-    machine.succeed(f"chown -R underwrap-tunnel-tunnel:underwrap-tunnel {tunnel_home}/.ssh")
-
-    # Without tunnel: fail.
-    machine.fail("test -S /run/underwrap-tunnel/backend/backend.sock")
-    machine.fail(su("/run/wrappers/bin/tunnel-remote-echo"))
-    machine.log("PASS: wrapper fails without tunnel")
-
-    # Establish SSH tunnel.
-    machine.succeed(
-        "su underwrap-backend -s /bin/sh -c '"
-        "ssh -f -N "
-        "-o StrictHostKeyChecking=no "
-        "-o UserKnownHostsFile=/dev/null "
-        "-i ~/.ssh/tunnel_key "
-        "-R /run/underwrap-tunnel/backend/backend.sock:/run/underwrap-backend/backend.sock "
-        "underwrap-tunnel-tunnel@localhost"
-        "'"
-    )
-    time.sleep(1)
-    machine.succeed("test -S /run/underwrap-tunnel/backend/backend.sock")
-    machine.succeed("chmod 0660 /run/underwrap-tunnel/backend/backend.sock")
-    machine.log("PASS: tunnel established")
-
-    # With tunnel: succeed.
+    # With backend service up: succeed.
     output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
-    assert "REMOTE_TOKEN=secret_via_tunnel" in output, f"expected REMOTE_TOKEN: {output}"
-    machine.log("PASS: remote secret via tunnel")
+    assert "REMOTE_TOKEN=secret_via_service" in output, f"expected REMOTE_TOKEN: {output}"
+    machine.log("PASS: remote secret via backend service")
 
-    # No secret on local disk.
-    machine.fail("test -f /var/lib/underwrap-backend-remote/secrets/remote/token")
-    machine.log("PASS: no secret on local disk")
+    # No secret on local frontend store disk.
+    machine.fail("test -f /var/lib/underwrap-backend-local/secrets/remote/token")
+    machine.log("PASS: no remote secret on local frontend disk")
 
-    # Kill tunnel: fail.
-    machine.execute("pkill -f 'ssh.*tunnel_key' || true")
+    # Stop backend service: fail.
+    machine.succeed("systemctl stop underwrap-backendd.service")
     time.sleep(0.5)
-    machine.succeed("rm -f /run/underwrap-tunnel/backend/backend.sock")
     machine.fail(su("/run/wrappers/bin/tunnel-remote-echo"))
-    machine.log("PASS: fails after tunnel killed")
+    machine.log("PASS: wrapper fails when backend service is down")
 
-    # Reconnect: succeed.
-    machine.succeed(
-        "su underwrap-backend -s /bin/sh -c '"
-        "ssh -f -N "
-        "-o StrictHostKeyChecking=no "
-        "-o UserKnownHostsFile=/dev/null "
-        "-i ~/.ssh/tunnel_key "
-        "-R /run/underwrap-tunnel/backend/backend.sock:/run/underwrap-backend/backend.sock "
-        "underwrap-tunnel-tunnel@localhost"
-        "'"
-    )
+    # Restart backend service: succeed again.
+    machine.succeed("systemctl start underwrap-backendd.service")
+    machine.wait_for_unit("underwrap-backendd.service")
     time.sleep(1)
-    machine.succeed("chmod 0660 /run/underwrap-tunnel/backend/backend.sock")
     output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
-    assert "REMOTE_TOKEN=secret_via_tunnel" in output
-    machine.log("PASS: works after reconnect")
+    assert "REMOTE_TOKEN=secret_via_service" in output
+    machine.log("PASS: wrapper works after backend service restart")
 
 
 def local_backend_policy_control_center():
@@ -818,7 +767,7 @@ def audit_and_no_secret_leaks():
 
     assert "ghp_testvmtoken" not in logs, "secret leaked!"
     assert "locked_secret" not in logs, "secret leaked!"
-    assert "secret_via_tunnel" not in logs, "secret leaked!"
+    assert "secret_via_service" not in logs, "secret leaked!"
     assert "my_gh_token_value" not in logs, "libsecret secret leaked!"
     machine.log("PASS: audit events present, no secrets in logs")
 
@@ -840,7 +789,7 @@ local_symlink_confused_deputy_attack()
 local_proc_isolation_libsecret_mode()
 local_libsecret_mode()
 local_directory_credentials()
-remote_tunnel_lifecycle()
+remote_service_lifecycle()
 instance_isolation()
 local_backend_policy_control_center()
 audit_and_no_secret_leaks()

@@ -87,6 +87,7 @@ async fn underwrapd_binary_start_and_status() {
                 dir: base.join("secrets"),
             },
         )]),
+        service: None,
     })
     .unwrap();
     let backend_config_path = base.join("backend.yaml");

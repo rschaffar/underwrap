@@ -143,8 +143,8 @@ impl TestDaemon {
 
         let service_port = pick_unused_port()?;
         let service_url = format!("https://127.0.0.1:{service_port}");
-        let pki = test_pki_paths(client_name)?;
-        let ready_pki = test_pki_paths(principal_client_name(accepted_principal)?)?;
+        let pki = test_pki_paths(base, client_name)?;
+        let ready_pki = test_pki_paths(base, principal_client_name(accepted_principal)?)?;
 
         let backend_config = underwrap_backendd::server::BackendConfig {
             management: underwrap_backendd::server::ManagementConfig {
@@ -364,25 +364,41 @@ fn principal_client_name(principal: &str) -> Result<&'static str> {
     }
 }
 
-fn test_pki_paths(client_name: &str) -> Result<TestPkiPaths> {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
-    let pki_dir = workspace_root.join("testdata/pki");
-    let (client_cert, client_key) = match client_name {
+fn test_pki_paths(base: &std::path::Path, client_name: &str) -> Result<TestPkiPaths> {
+    let pki_dir = base.join("pki");
+    std::fs::create_dir_all(&pki_dir)?;
+
+    let ca_cert = pki_dir.join("ca.pem");
+    let server_cert = pki_dir.join("server.pem");
+    let server_key = pki_dir.join("server.key");
+    std::fs::write(&ca_cert, include_bytes!("../testdata/pki/ca.pem"))?;
+    std::fs::write(&server_cert, include_bytes!("../testdata/pki/server.pem"))?;
+    std::fs::write(&server_key, include_bytes!("../testdata/pki/server.key"))?;
+
+    let (client_cert, client_key, client_cert_bytes, client_key_bytes): (&str, &str, &[u8], &[u8]) = match client_name {
         "local" => (
-            pki_dir.join("client-local.pem"),
-            pki_dir.join("client-local.key"),
+            "client-local.pem",
+            "client-local.key",
+            include_bytes!("../testdata/pki/client-local.pem"),
+            include_bytes!("../testdata/pki/client-local.key"),
         ),
         "tunnel" => (
-            pki_dir.join("client-tunnel.pem"),
-            pki_dir.join("client-tunnel.key"),
+            "client-tunnel.pem",
+            "client-tunnel.key",
+            include_bytes!("../testdata/pki/client-tunnel.pem"),
+            include_bytes!("../testdata/pki/client-tunnel.key"),
         ),
         other => anyhow::bail!("unknown test client name '{other}'"),
     };
+    let client_cert = pki_dir.join(client_cert);
+    let client_key = pki_dir.join(client_key);
+    std::fs::write(&client_cert, client_cert_bytes)?;
+    std::fs::write(&client_key, client_key_bytes)?;
+
     Ok(TestPkiPaths {
-        ca_cert: pki_dir.join("ca.pem"),
-        server_cert: pki_dir.join("server.pem"),
-        server_key: pki_dir.join("server.key"),
+        ca_cert,
+        server_cert,
+        server_key,
         client_cert,
         client_key,
     })

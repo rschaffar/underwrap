@@ -39,8 +39,15 @@ let
         control = "${runDir}/control.sock";
         control_mode = "0600";
       };
-      backend = {
-        socket = backendSocket;
+      backend = if inst.backend.mode == "service" then {
+        mode = "service";
+        url = inst.backend.url;
+        ca_file = inst.backend.caFile;
+        client_cert_file = inst.backend.clientCertFile;
+        client_key_file = inst.backend.clientKeyFile;
+      } else {
+        mode = "unix-socket";
+        socket = if inst.backend.socket != null then inst.backend.socket else backendSocket;
       };
       allowed_users = inst.allowedUsers;
       credentials = lib.mapAttrs (_ref: c:
@@ -271,12 +278,51 @@ let
     };
   };
 
+  backendSubmodule = lib.types.submodule {
+    options = {
+      mode = lib.mkOption {
+        type = lib.types.enum [ "unix-socket" "service" ];
+        default = "unix-socket";
+      };
+      socket = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Backend Unix socket path when mode = unix-socket. Defaults to the instance backend socket path.";
+      };
+      url = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Backend service URL when mode = service.";
+      };
+      caFile = lib.mkOption {
+        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+        default = null;
+        description = "CA certificate file used to verify the backend service when mode = service.";
+      };
+      clientCertFile = lib.mkOption {
+        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+        default = null;
+        description = "Client certificate file used for backend mTLS when mode = service.";
+      };
+      clientKeyFile = lib.mkOption {
+        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+        default = null;
+        description = "Client private key file used for backend mTLS when mode = service.";
+      };
+    };
+  };
+
   instanceSubmodule = lib.types.submodule {
     options = {
       allowedUsers = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [];
         description = "Usernames allowed to execute wrappers in this instance. Empty = allow all.";
+      };
+      backend = lib.mkOption {
+        type = backendSubmodule;
+        default = {};
+        description = "Frontend backend client configuration for this instance.";
       };
       credentials = lib.mkOption {
         type = lib.types.attrsOf credentialSubmodule;
@@ -308,7 +354,15 @@ in {
   config = lib.mkIf cfg.enable {
     assertions =
       (lib.flatten (lib.mapAttrsToList (instName: inst:
-        (lib.mapAttrsToList (ref: c: {
+        [ {
+            assertion = if inst.backend.mode == "service"
+              then inst.backend.url != null && inst.backend.caFile != null && inst.backend.clientCertFile != null && inst.backend.clientKeyFile != null && inst.backend.socket == null
+              else inst.backend.url == null && inst.backend.caFile == null && inst.backend.clientCertFile == null && inst.backend.clientKeyFile == null;
+            message = if inst.backend.mode == "service"
+              then "services.underwrap.instances.${instName}.backend: service mode requires url, caFile, clientCertFile, clientKeyFile and must not set socket"
+              else "services.underwrap.instances.${instName}.backend: unix-socket mode must not set service URL or mTLS files";
+          }
+        ] ++ (lib.mapAttrsToList (ref: c: {
           assertion = if c.mode == "env" then c.variable != null && c.path == null else if c.mode == "directory" then c.path != null && c.variable == null && isCleanRelativePath c.path else c.variable == null && c.path == null;
           message = if c.mode == "env" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": env credentials require variable and must not set path" else if c.mode == "directory" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": directory credentials require a clean relative path and must not set variable" else "services.underwrap.instances.${instName}.credentials.\"${ref}\": libsecret credentials must not set variable or path";
         }) inst.credentials)
