@@ -11,6 +11,7 @@ import os
 SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PYTHON3 = os.environ.get("PYTHON3", "python3")
 UWCTL_LOCAL = os.environ.get("UWCTL_LOCAL", "underwrapctl")
+UWBACKENDCTL = os.environ.get("UWBACKENDCTL", "underwrap-backend-ctl")
 
 
 def boot_and_service_checks():
@@ -747,6 +748,50 @@ def remote_tunnel_lifecycle():
     machine.log("PASS: works after reconnect")
 
 
+def local_backend_policy_control_center():
+    # ============================================================
+    # LOCAL INSTANCE: backend-managed wrapper policy control
+    # ============================================================
+
+    backendctl = f"{UWBACKENDCTL} --socket /run/underwrap-local/backend/mgmt.sock"
+
+    # Create an active policy document but without allow rules.
+    machine.succeed(f"{backendctl} wrapper-enable local local-test-echo")
+    machine.fail(su("/run/wrappers/bin/local-test-echo"))
+    machine.log("PASS: active backend policy denies wrapper without explicit rule")
+
+    # Add exact wrapper/resource allow rule.
+    machine.succeed(
+        f"{backendctl} rule-upsert local allow-echo local-test-echo secret:test/token secret.read allow"
+    )
+    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after policy allow: {output}"
+    machine.log("PASS: backend policy can allow exact wrapper/resource access")
+
+    # Disable wrapper centrally.
+    machine.succeed(
+        f"{backendctl} wrapper-disable local local-test-echo --reason maintenance"
+    )
+    machine.fail(su("/run/wrappers/bin/local-test-echo"))
+    machine.log("PASS: backend policy can disable wrapper centrally")
+
+    # Re-enable wrapper; existing allow rule becomes effective again.
+    machine.succeed(f"{backendctl} wrapper-enable local local-test-echo")
+    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after re-enable: {output}"
+    machine.log("PASS: backend policy can re-enable wrapper centrally")
+
+    # Local unlock is now obsolete when backend policy is active.
+    machine.succeed(
+        f"{backendctl} rule-upsert local allow-locked local-test-locked secret:test/locked-tok secret.read allow"
+    )
+    output = machine.succeed(su("/run/wrappers/bin/local-test-locked"))
+    assert "LOCKED_TOKEN=locked_secret" in output, (
+        f"expected locked wrapper to work via backend policy without local unlock: {output}"
+    )
+    machine.log("PASS: backend policy replaces local unlock when active")
+
+
 def instance_isolation():
     # ============================================================
     # INSTANCE ISOLATION: cross-instance access blocked
@@ -797,5 +842,6 @@ local_libsecret_mode()
 local_directory_credentials()
 remote_tunnel_lifecycle()
 instance_isolation()
+local_backend_policy_control_center()
 audit_and_no_secret_leaks()
 
