@@ -348,6 +348,181 @@ impl TestDaemon {
     }
 }
 
+const TEST_CA_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDGTCCAgGgAwIBAgIUDzLEbd9HNdAV+jW3B9DEKAVIjJcwDQYJKoZIhvcNAQEL
+BQAwHDEaMBgGA1UEAwwRdW5kZXJ3cmFwLXRlc3QtY2EwHhcNMjYwNDE2MDAzNzAx
+WhcNMzYwNDEzMDAzNzAxWjAcMRowGAYDVQQDDBF1bmRlcndyYXAtdGVzdC1jYTCC
+ASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAOEpAbI8m/9ph1hN2ESZd5Kv
+N6whju6KszjKCnWF1/HjbzOWgGHAGaLELstS5d+1bMlA0EXTlmp4I5uN/x2Fm5EI
+GXLGopnadGhnlfGQ4z9Szpfr6RxHRn+MxvWdLavrAStDuUbRwxqJmIqcHmL4WJTS
+c69S9s/1JFgWYVm3nQAjLj0EH2al7HJ6Jygu9Q2eZl9ueIjBGsT36xY44odYMqPF
+64W3wHgYVBXZK0+HkxcocHa7ciQ1Qgmyc0krTNknjR5zep/yq7ReIB+CqucCsr4e
+92eE57Wf3UCXu49liVujTPC56ivMMsapwbjqiyjiYHKGf6VlRsd990VFr+Ar3ZMC
+AwEAAaNTMFEwHQYDVR0OBBYEFJUnI6Bxe5iBsEMutUi2/YrD9XXeMB8GA1UdIwQY
+MBaAFJUnI6Bxe5iBsEMutUi2/YrD9XXeMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZI
+hvcNAQELBQADggEBANbo9Yc5jEKsvlLAErGbYrWTq72V4KzuIIjhIbFGbtITkiB2
+oa9e1JCh7HYXIgVZNyXkP817fdPt8uHUAmhgwdOtSNwIu+nUI7L3GCcb6gvL4cRz
+AZU4o2LbjuUmfRl7BTK7sL/jKco9EbqYQqnxRvxnlvHrzlbM+gnTtBnNNy0sVzP4
+orP4J8SCiNNioevdLTsj8EUwTxF3NNuDcZPyPLKthWyuHmlKinyPihHOxT5QXDN+
+dlg0gy8NbKgHU/E+k3R5jMBJaeNfHCaFF8otAtpqoheBX3u5b1MwTQ7EVLsfZN1V
++BGi1gTGHPsIv0CDVx/LkVmaqwv+rhPZqv4Ymhg=
+-----END CERTIFICATE-----
+"#;
+
+const TEST_SERVER_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDQzCCAiugAwIBAgIUVnjkCKXzQiyHyEsQ3ey4lgWkrS8wDQYJKoZIhvcNAQEL
+BQAwHDEaMBgGA1UEAwwRdW5kZXJ3cmFwLXRlc3QtY2EwHhcNMjYwNDE2MDAzNzAy
+WhcNMzYwNDEzMDAzNzAyWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqG
+SIb3DQEBAQUAA4IBDwAwggEKAoIBAQCm7XnsD0fkZ9rg6rK5De5RWuP8LLAIhbri
+QPgRhin2pkjv6rYrwAZ2yuTtG+Agx98FIFI4jczJVbsHPEAJ8L0JlWy0GnFQqYu2
+wLZWMhDlCOALKdJH72H9zyg/32KMWI+WYqZr90WZ7hTzlNdA0C5vH9mOHOAKIrCF
+F1z2MGmTkR5h+26HCzoCRtFZdaKSjWsTF7GJEvK+0zpBh2lelP6cnj5usuleXoXm
++QYRoz8Gwh5Cwtq0f7nrHvrG0SakrGqqCAdYUIeSJje12PvsRWaLs+1gS3MP8eEy
+8vy2a6a4yM7rQLhBItk37PK/3RdJMeAipDUf1PghzH5ZR+sEhTz7AgMBAAGjgYQw
+gYEwGgYDVR0RBBMwEYIJbG9jYWxob3N0hwR/AAABMBMGA1UdJQQMMAoGCCsGAQUF
+BwMBMA4GA1UdDwEB/wQEAwIFoDAdBgNVHQ4EFgQUYopvBM3Lphog2L94aAvR/tL7
+hq0wHwYDVR0jBBgwFoAUlScjoHF7mIGwQy61SLb9isP1dd4wDQYJKoZIhvcNAQEL
+BQADggEBAIjG16boNh4U5lXJPMO4fa3+3bAao1CPdZJjqTw1aawQg7Cp7vQSULvg
+BAz2xmGjdYayQALCA/9AyWCKFdGQ3pLDT2Vt2ecU7sXoFz8XnnX0mUD9VgqAyifi
+eAo4A7bTjlA16n9RCtDm7wYqXnL4mjoy8zisfiMJ3MGxltwiT4LrTSwYOwVxjbOR
+weP4Wyayn/7F7PhUY4i2/8ykNw77z7BOLsiEkFfMGsySTkdBgxQPIrj59IadTh7I
+w/42D54cE+Qq65DQvBADKmLYHj50M9q7dJvBh4vNEQYNPEGVlYdG02EEGyYMmggo
+Ec7n9CeusZNwlgN7yGlJ7ZGZA8ZPT1g=
+-----END CERTIFICATE-----
+"#;
+
+const TEST_SERVER_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCm7XnsD0fkZ9rg
+6rK5De5RWuP8LLAIhbriQPgRhin2pkjv6rYrwAZ2yuTtG+Agx98FIFI4jczJVbsH
+PEAJ8L0JlWy0GnFQqYu2wLZWMhDlCOALKdJH72H9zyg/32KMWI+WYqZr90WZ7hTz
+lNdA0C5vH9mOHOAKIrCFF1z2MGmTkR5h+26HCzoCRtFZdaKSjWsTF7GJEvK+0zpB
+h2lelP6cnj5usuleXoXm+QYRoz8Gwh5Cwtq0f7nrHvrG0SakrGqqCAdYUIeSJje1
+2PvsRWaLs+1gS3MP8eEy8vy2a6a4yM7rQLhBItk37PK/3RdJMeAipDUf1PghzH5Z
+R+sEhTz7AgMBAAECggEAAOSnEQWek4ZKvDFaoMrbn5Z7lHnYvJ2akQ4FRcgQqWqH
+sWDxde0icQ2c3qKWNxawBs2peEv/RdnY6lephWQYXtjB1Xo0E65p5PcbAqhklr/O
+vcCM3ihVvznrM+GfcV4im+IN6eikzVy3bVDlO0o3NWOs56nCjnX+Y81AM2uxj5c7
+pHxBY9fyby6bug/uD0WkptEDBXaoSH/hk8r3VDfZ5ZFjDiCbfCwvoN5mvR7pcWeA
+F6TchuIyFOUMXjqOihmT4dib3zVFeqpktcsNZAjhBcgmbVU7JctQEoEfzQpF4MyO
+PTJVriKv467HwmzLx+KGuNZrUDCLLkVlWAuCbw+DwQKBgQDavLiO0gfE1siw4sAG
+M6HO/52NQdwDNCqM9IY5kPsxVUKPQKO25+iGiPyoNPUTtZLxCK0cKpRZGcGb7dJt
+vfDIQKzjVKhg6tSi7rv72uVO0oTO3rIayroDKdl0bEyMWKG4GskBHCD/ILoeuxlp
+XR93bL0VW/fLzCjBjvtugoDHMwKBgQDDXU4oo31qIAY5SDzSfU/siArOwpUNW9EE
+K4NJtOQujfb4ic3G0jL6tBvNLT1U8RqdymxAL1qc27vXGgXy0y4FJNxR5Z7jiTyf
+WUtYVsZ/4TXHxAnoEceJ+Kbv1b+HGUQE/NMPYRbC8jUuowU7igXMdcy7jHxLX+0F
+ty5y2DMTGQKBgC2kUXJjuwFEvA3E0sK4hVv3FH4ELw9wFCzjXRqn+PI7Uy8nEsI4
+s9lWvjmvCzB4o9etssl8zQWmjTKnNlB14Mc4T5sD8DqA5au12v3bmBuRa+rqpwlW
+IehFFD3p1zM1z1DmLekQYIY74vpEmjHVH5rA0tehIByjViHFXwuZKZvnAoGAQZQd
+e1i97ZTIYgwUlpeH758O+a6pd+19MQgmLuSwv8vZvj4LvBStFijFOE9aShwQ0iyz
+v6vln8fGuwK6QnOO/B0Oc9M/TaOwnNDNkN64DQ8dDWyJ4sOtFmxIJTO78e6SPZZc
+hsoRaOkC3x/Lztua7LISQlZ7FpYhqwx9ZAGcy2kCgYAILVNi5GiOGHpH0YApBD7m
+njrLWgQcV84jPKUGV8pK3NnXi72v9xuPw0jKEZ0bEqbUmpFytwoqO86HyhqgIVmT
+5mqgo6ZEdH7HdErSQ214Jn+mJGOKPL5ATV25saedad+ZwdWFv5iM9qVHd0oElani
+9EKE9krwYlhyzUEyB74aDA==
+-----END PRIVATE KEY-----
+"#;
+
+const TEST_CLIENT_LOCAL_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDKzCCAhOgAwIBAgIUVnjkCKXzQiyHyEsQ3ey4lgWkrTAwDQYJKoZIhvcNAQEL
+BQAwHDEaMBgGA1UEAwwRdW5kZXJ3cmFwLXRlc3QtY2EwHhcNMjYwNDE2MDAzNzAy
+WhcNMzYwNDEzMDAzNzAyWjAaMRgwFgYDVQQDDA91bmRlcndyYXAtbG9jYWwwggEi
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDcJDP5K69TcG9+uHM7q+xG7p0c
+7Cgex8XYVs3yFDpHk6UOG/JqL0bKa32rhO7LR8VxPprIyqV24LB8vTi52A2/oA/d
+ZiVouv9bkCiBOun0XDQAHveocrIYnhjvq8qrpdfFdZ+2oB/V78Mbf6FaNMJxvvUN
+hCRXh/hstwlHVACJFX0MlGU/3WAhpRF09QjIfxLUqm1t5Sd9Qg0a2IsX+qrFhDiu
+35anBoCx0x9AJl6yO40KgoDZ7iDmWLw55T2GVnSQEdTelxzsf9jFLjEzm56mymR+
+DGWdMNPEKY6wyvuJClEYLEsHaNMfTi9Jp+9FgH5spuy7E9UqpqeciYAHlDrxAgMB
+AAGjZzBlMBMGA1UdJQQMMAoGCCsGAQUFBwMCMA4GA1UdDwEB/wQEAwIFoDAdBgNV
+HQ4EFgQUrZfzoVv+iUwAlCedd1/ancfUi7YwHwYDVR0jBBgwFoAUlScjoHF7mIGw
+Qy61SLb9isP1dd4wDQYJKoZIhvcNAQELBQADggEBAMj5BtbOalwYWAi9HQt0JNPq
+NtRObdNx6Yg2uZWYAyhVXnhLerZ82hWagK/oH0KCgKFCSK140oZS/Nt7xtQ9YJXs
+g5WyGnsteF3QZ9cuUc+0te4eMOmXRMch8HtxyD1sCuO/wyKhtQSCO+OQGNvsEnKa
+1rl3PFTjG3SE5ldDwRjGSlrf9+6uf2OcqJBLaL4dcOJ0Fsrf0gkkPpbrC5hJdNSo
+Q+0W8oyLdzgmGNMRY4vvhu4cjYkbPLgrNS3fQLnnom3Jv5GzO3M2ifS9mkj249Bu
+cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
+-----END CERTIFICATE-----
+"#;
+
+const TEST_CLIENT_LOCAL_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDcJDP5K69TcG9+
+uHM7q+xG7p0c7Cgex8XYVs3yFDpHk6UOG/JqL0bKa32rhO7LR8VxPprIyqV24LB8
+vTi52A2/oA/dZiVouv9bkCiBOun0XDQAHveocrIYnhjvq8qrpdfFdZ+2oB/V78Mb
+f6FaNMJxvvUNhCRXh/hstwlHVACJFX0MlGU/3WAhpRF09QjIfxLUqm1t5Sd9Qg0a
+2IsX+qrFhDiu35anBoCx0x9AJl6yO40KgoDZ7iDmWLw55T2GVnSQEdTelxzsf9jF
+LjEzm56mymR+DGWdMNPEKY6wyvuJClEYLEsHaNMfTi9Jp+9FgH5spuy7E9Uqpqec
+iYAHlDrxAgMBAAECggEABExQZ7a1ss7K3X31UYKf/4tKfeFiP+YZf7mjphylHedF
+AWlUJoS3aI24V5pGBYnoYed1kxKqT/+vcHMLFc1RKObzklh7hd/DSzbNhKbpYRYR
+BZjVL+iz35lMHjdT4t2vQJ2lHXYjQvx+OiXn+QR3UKxYWWAFa+BVrk01URtDsqlz
+hB2LutpbqjGBTNmw6MBjewdoKHnfQr/+gXpP6h1o4pbi2Ldf9gQXjI/xaor1DcvL
+e6mEQ0w6ypeFOZl/FlSlsHD3k93Ks3P32vnCteTHYKdk2/gZUhnDosb9PSq6MXLC
+FZsf24y0JJSoVM/5ynx5SM0ZiM78pTm5LvEdlaXdYQKBgQD9i/oqGYXpWIHZu6v8
+vtYr4Cmmyg51jY4E4omJhfzibbwB+MvEA3Ssa0/0bBpPLQYKiu9uJDCEQii8pJkD
+U6n48OqfqFJ76IrsLsrEcO74cP1Y1UI+PwietYYIrTvUARwPZajNd/I0pcB1Fhj+
+VzdSfR5i30iLCVA4W7cYANunYQKBgQDeRXt9LhoKGcstJilr+2U1JfeqqpW87Z0y
+ukOy5T4RKwACEqCV4KR1xlhbYp8EOnODO3BTgbY91QeCN2JFwvBNVpJ0B32fWno7
+qcjI5gnjrqAddI4gE01PZTflXYJaYDB5BLZj4RqfxLTrvKGdRbZ3pOGKEIIC4Dqn
+47fBJDqNkQKBgQDmyXEuvQi9fEjF7iQA7Zx5V5PSM/2xVuY84A+dVI75dDU7/kFL
+7HFZOF0Q+Q2BoFPtaMXEFcDrwmTeQVzeQFtpM7H9HfPmwacikP0Ujk+XaRHSuFuR
+2UJ5ZHXalATvVws5oKlkTZf0ACQM785URQMgXK86BFA97n5Mrn8cpDtMQQKBgAUe
+KnK+bgEPiPsYJtoCptjrb+FxHhOEkRsK6OYkmyJAEDb8ANCSpJbFo2EvSyQIyIIc
+C0EQ+oY/8nVQGyYqD+hn9uVPCthxd+EJzsK5cT7Z1Xv4JBGfACe01+2jEo5MKrGO
+pzhzhW5qVBQdescpRMNKe5r3OFcinJcjCicbU3HRAoGBAJyyj47yD7wmCTYjI9lm
+rrcOpIyQtPhY4bEQjdcW7OLNkfLFlM0iSNgusC871ul8MGh2bRV576UzBu9GWkLq
+yagHeu/N+0B5jZ7TUD3FNiTWHDglKbkMSi7rbDUFQZDOKG0A+Y5B2qobPSEoTw03
+n+Q8b5k7ohmMbkOzzdUIrM8L
+-----END PRIVATE KEY-----
+"#;
+
+const TEST_CLIENT_TUNNEL_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDLDCCAhSgAwIBAgIUVnjkCKXzQiyHyEsQ3ey4lgWkrTEwDQYJKoZIhvcNAQEL
+BQAwHDEaMBgGA1UEAwwRdW5kZXJ3cmFwLXRlc3QtY2EwHhcNMjYwNDE2MDAzNzAy
+WhcNMzYwNDEzMDAzNzAyWjAbMRkwFwYDVQQDDBB1bmRlcndyYXAtdHVubmVsMIIB
+IjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6Zlv1zO0UhnP8lTcKPu72yk0
+O3kQWwAEMU5XSP84Zyx1Rob4f70ukrkGrSEdaGJgYkr4+ddDvK9g4brDrGz2a/67
+4MuG/O3Qnqjf4G0VR4w80cr9/f0p3ePsGFUDMTZTVBKyUgKstm9HWT5tJYtFaS/l
+aSuZc3uHlmiDyxo9nPHA2P6T8oQHd4rhnxpNCHCThGDkqLtZPab8iofP7HlXc5q/
+GLP/mR8myopuf6dB3cZIUl1T9sd2QhOy/EKhtKrDvB+VA7BYAYFG/eJxpcDw1n0C
+uaGKKGhlKN4nDwvsDjvuSIyrD9K3IKBdUHQw7qCAx0TSWgcrikp9Cd+HmCyycwID
+AQABo2cwZTATBgNVHSUEDDAKBggrBgEFBQcDAjAOBgNVHQ8BAf8EBAMCBaAwHQYD
+VR0OBBYEFBoz4yFrIHRXhK4m14r1xcFknR3qMB8GA1UdIwQYMBaAFJUnI6Bxe5iB
+sEMutUi2/YrD9XXeMA0GCSqGSIb3DQEBCwUAA4IBAQCAu6E2ovw9PMd76NoYByeB
+oLomNEt3MqzuDwcbC51lqcoxEUd27Lwaj1f7QJhSotRHQXyBPXDLx+RLg5NqcDDu
+KalPgx0lwgfWl7YIEwYNSgPDKBKTlBYmKAzwpotSkvcUG+A4CB0cW9vQMYVs7N5K
+y2N9mjRjJ5YnEZYR/MPAoN1KVrkbFVXWlrRU/GQby+d1cdxjzv50EF3Xrp9AASJH
+HC+swIzw4x0XvDesFyLWoPs/oqzYCnuQ3iO6AnIdSXrG19V3C14WdWnzkaSTkBR5
+z4+5Ls2wVcKKSFUKzG1NlD/sKY+2KGbF7iiN1TvlCo/bjxtNlCyL7i2tNRBJqPwD
+-----END CERTIFICATE-----
+"#;
+
+const TEST_CLIENT_TUNNEL_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDpmW/XM7RSGc/y
+VNwo+7vbKTQ7eRBbAAQxTldI/zhnLHVGhvh/vS6SuQatIR1oYmBiSvj510O8r2Dh
+usOsbPZr/rvgy4b87dCeqN/gbRVHjDzRyv39/Snd4+wYVQMxNlNUErJSAqy2b0dZ
+Pm0li0VpL+VpK5lze4eWaIPLGj2c8cDY/pPyhAd3iuGfGk0IcJOEYOSou1k9pvyK
+h8/seVdzmr8Ys/+ZHybKim5/p0HdxkhSXVP2x3ZCE7L8QqG0qsO8H5UDsFgBgUb9
+4nGlwPDWfQK5oYooaGUo3icPC+wOO+5IjKsP0rcgoF1QdDDuoIDHRNJaByuKSn0J
+34eYLLJzAgMBAAECggEAEOJvTA3HrduBxVFO7INti6TJyrawcPNqWioAcx1HdWWo
+QGXHFmyVLjPDgMYQ+xeJQfGLV3uwwLWoeghm1lK16Q5rhA8R/bwuxRkNvYoE7Lv9
+NWjHvREMcqZjzUpvxaHYmg4T54ub8j/O12uEth7/8F9u5JArMkaugTeitw55f5ty
+aiCLj/cba0p5sayq1Q77AYeGQze+dOheltOHlpLFsRrPY23tcd9p6S5RxSODhOxJ
+Jm1OcGALlcig8XOnHsLBqdQQyDu7N7KISe4eVDl2vrzxi/T/0HhtBSOGZlm0F+ex
+D2jul2C9kJYUhtJG0Pp8NC+91XRIEz3Vl3KDv277EQKBgQD5iL0oF8+DW7m36MjU
+LjsL7hQqBvGl8+J/dly/XHEL3g3oPkqJn+Bmzw+O58aoZq6L612p8eeinR7DLhJf
+W384lo8wyvW11SZfabtGlfv2rNBPEFkTqf8K2IlA62rsmkjk2JpVXPRfow4341JE
+vGMAC0MUlbr/Vw8h9f7uz12uOwKBgQDvpv8FCaHL6OohptevxkcJNTXhVyeXCuzi
+uPAU7zxunEdCfkCOrpDaNwXEAbtGRR0i4fmeXPAKq0SqFghz7+bVGXkewrnoFM5X
+JttVFpcK57STno2Yg+kw8M8Pbzqd+yz48uRyG79TCpZa/OWFxYtQffgDM3UAErP8
+645Hgc+xKQKBgQDL8Vj/+q3sYzxftg7lc79ombW7P5+ijbiRinB1Kh1uoJbnOHn9
+D0D9ZcAGgSIZIosH6l7L9dzmR9oLlY0IiKRq4Iq5SzgU29eX5bddElozGrzJ0cer
+zaWX/K/48i+anuJyvyEsIWPNAlwti0oCyaF0OMAjg9iotkO08vPfxHWBXwKBgQDr
+1L4oSu45Jx8ftnuRseC9ous+sPF4pXuvMKaxMyuY/ZjySiNlRUuuMW8vDzUnVWPy
+q8VknbhqB1guuDfhPzc8hTC3oJApXjAfe1FjTjOcu57rlZ9pcoXLb22TlrVsOXxs
+DznXQI7qPQTwzOVg2qDZuNyS6dQ9GiqcvYDpxUiI4QKBgQCWXx5sy7sQOKV8LLI1
+s2nWK9tXXBiCDkLj4uWVVirM5eZaNBc/3LhzMWNrFvjOkewa10lyGShKbuWBXGyJ
+zudEDAqozu2dZ/IIyOA3kMXlCRCEbhMGJB8M72nGJ2ARtqk9rklxz3YBUwk8s/6r
+Nlst7NiyDJwGjvGceYEfzrQieg==
+-----END PRIVATE KEY-----
+"#;
+
 struct TestPkiPaths {
     ca_cert: PathBuf,
     server_cert: PathBuf,
@@ -371,25 +546,26 @@ fn test_pki_paths(base: &std::path::Path, client_name: &str) -> Result<TestPkiPa
     let ca_cert = pki_dir.join("ca.pem");
     let server_cert = pki_dir.join("server.pem");
     let server_key = pki_dir.join("server.key");
-    std::fs::write(&ca_cert, include_bytes!("../testdata/pki/ca.pem"))?;
-    std::fs::write(&server_cert, include_bytes!("../testdata/pki/server.pem"))?;
-    std::fs::write(&server_key, include_bytes!("../testdata/pki/server.key"))?;
+    std::fs::write(&ca_cert, TEST_CA_PEM.as_bytes())?;
+    std::fs::write(&server_cert, TEST_SERVER_PEM.as_bytes())?;
+    std::fs::write(&server_key, TEST_SERVER_KEY.as_bytes())?;
 
-    let (client_cert, client_key, client_cert_bytes, client_key_bytes): (&str, &str, &[u8], &[u8]) = match client_name {
-        "local" => (
-            "client-local.pem",
-            "client-local.key",
-            include_bytes!("../testdata/pki/client-local.pem"),
-            include_bytes!("../testdata/pki/client-local.key"),
-        ),
-        "tunnel" => (
-            "client-tunnel.pem",
-            "client-tunnel.key",
-            include_bytes!("../testdata/pki/client-tunnel.pem"),
-            include_bytes!("../testdata/pki/client-tunnel.key"),
-        ),
-        other => anyhow::bail!("unknown test client name '{other}'"),
-    };
+    let (client_cert, client_key, client_cert_bytes, client_key_bytes): (&str, &str, &[u8], &[u8]) =
+        match client_name {
+            "local" => (
+                "client-local.pem",
+                "client-local.key",
+                TEST_CLIENT_LOCAL_PEM.as_bytes(),
+                TEST_CLIENT_LOCAL_KEY.as_bytes(),
+            ),
+            "tunnel" => (
+                "client-tunnel.pem",
+                "client-tunnel.key",
+                TEST_CLIENT_TUNNEL_PEM.as_bytes(),
+                TEST_CLIENT_TUNNEL_KEY.as_bytes(),
+            ),
+            other => anyhow::bail!("unknown test client name '{other}'"),
+        };
     let client_cert = pki_dir.join(client_cert);
     let client_key = pki_dir.join(client_key);
     std::fs::write(&client_cert, client_cert_bytes)?;
