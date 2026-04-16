@@ -19,8 +19,6 @@ use underwrap_protocol::policy::PolicyDocument;
 pub struct TestDaemon {
     pub wrapper_sockets: HashMap<String, PathBuf>,
     pub control_socket: PathBuf,
-    pub backend_socket: PathBuf,
-    pub backend_management_socket: PathBuf,
     pub admin_url: String,
     pub storage_dir: PathBuf,
     shutdown: Arc<Notify>,
@@ -33,98 +31,10 @@ pub struct TestDaemon {
 impl TestDaemon {
     /// Start a daemon with the given wrapper and credential definitions.
     pub async fn start(
-        mut wrappers: HashMap<String, WrapperDef>,
+        wrappers: HashMap<String, WrapperDef>,
         credentials: HashMap<String, CredentialDef>,
     ) -> Result<Self> {
-        let tempdir = tempfile::TempDir::new()?;
-        let base = tempdir.path();
-
-        let control_socket = base.join("control.sock");
-        let backend_socket = base.join("backend.sock");
-        let backend_management_socket = base.join("backend-mgmt.sock");
-        let storage_dir = base.join("secrets");
-        let mut wrapper_sockets = HashMap::new();
-
-        for name in wrappers.keys().cloned().collect::<Vec<_>>() {
-            let socket = base.join(format!("wrapper-{name}.sock"));
-            wrappers.get_mut(&name).expect("wrapper must exist").socket = socket.clone();
-            wrapper_sockets.insert(name, socket);
-        }
-
-        let admin_port = pick_unused_port()?;
-        let admin_url = format!("http://127.0.0.1:{admin_port}");
-        let backend_config = underwrap_backendd::server::BackendConfig {
-            management: underwrap_backendd::server::ManagementConfig {
-                socket: backend_management_socket.clone(),
-            },
-            stores: HashMap::from([(
-                "test".to_string(),
-                StorageConfig::Plain {
-                    dir: storage_dir.clone(),
-                },
-            )]),
-            service: None,
-            admin: Some(underwrap_backendd::server::AdminConfig {
-                listen: format!("127.0.0.1:{admin_port}"),
-            }),
-        };
-        let backend_shutdown = Arc::new(Notify::new());
-        let backend_shutdown_clone = Arc::clone(&backend_shutdown);
-        let backend_handle = thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async move {
-                underwrap_backendd::server::run(backend_config, Some(backend_shutdown_clone)).await
-            })
-        });
-
-        wait_for_path(&backend_management_socket).await?;
-        wait_for_admin(&admin_url).await?;
-        backend_export_socket(&backend_management_socket, "test", &backend_socket, 0o600).await?;
-        wait_for_path(&backend_socket).await?;
-
-        let config = DaemonConfig {
-            sockets: SocketConfig {
-                control: control_socket.clone(),
-                ..Default::default()
-            },
-            backend: BackendSocketConfig {
-                socket: backend_socket.clone(),
-                ..Default::default()
-            },
-            allowed_users: Vec::new(),
-            credentials,
-            wrappers,
-        };
-
-        let shutdown = Arc::new(Notify::new());
-        let shutdown_clone = Arc::clone(&shutdown);
-
-        let handle =
-            tokio::spawn(
-                async move { underwrapd::server::run(config, Some(shutdown_clone)).await },
-            );
-
-        wait_for_path(&control_socket).await?;
-        for socket in wrapper_sockets.values() {
-            wait_for_path(socket).await?;
-        }
-
-        Ok(Self {
-            wrapper_sockets,
-            control_socket,
-            backend_socket,
-            backend_management_socket,
-            admin_url,
-            storage_dir,
-            shutdown,
-            backend_shutdown,
-            backend_handle,
-            _tempdir: tempdir,
-            handle,
-        })
+        Self::start_service_mode(wrappers, credentials, "local", "underwrap-local").await
     }
 
     /// Start a daemon against backend HTTPS service mode.
@@ -138,8 +48,6 @@ impl TestDaemon {
         let base = tempdir.path();
 
         let control_socket = base.join("control.sock");
-        let backend_socket = base.join("backend.sock");
-        let backend_management_socket = base.join("backend-mgmt.sock");
         let storage_dir = base.join("secrets");
         let mut wrapper_sockets = HashMap::new();
 
@@ -157,9 +65,6 @@ impl TestDaemon {
         let admin_port = pick_unused_port()?;
         let admin_url = format!("http://127.0.0.1:{admin_port}");
         let backend_config = underwrap_backendd::server::BackendConfig {
-            management: underwrap_backendd::server::ManagementConfig {
-                socket: backend_management_socket.clone(),
-            },
             stores: HashMap::from([(
                 "test".to_string(),
                 StorageConfig::Plain {
@@ -196,7 +101,6 @@ impl TestDaemon {
             })
         });
 
-        wait_for_path(&backend_management_socket).await?;
         wait_for_admin(&admin_url).await?;
         wait_for_service(
             &service_url,
@@ -213,7 +117,7 @@ impl TestDaemon {
             },
             backend: BackendSocketConfig {
                 mode: underwrap_protocol::config::BackendMode::Service,
-                socket: backend_socket.clone(),
+                socket: "/tmp/unused-backend.sock".into(),
                 url: Some(service_url),
                 ca_file: Some(pki.ca_cert.clone()),
                 client_cert_file: Some(pki.client_cert.clone()),
@@ -239,8 +143,6 @@ impl TestDaemon {
         Ok(Self {
             wrapper_sockets,
             control_socket,
-            backend_socket,
-            backend_management_socket,
             admin_url,
             storage_dir,
             shutdown,
@@ -594,8 +496,11 @@ fn test_pki_paths(base: &std::path::Path, client_name: &str) -> Result<TestPkiPa
 }
 
 fn pick_unused_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.port())
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(43000);
+    let port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
+    anyhow::ensure!(port < 60000, "ran out of test ports");
+    Ok(port)
 }
 
 async fn wait_for_admin(url: &str) -> Result<()> {
@@ -648,27 +553,6 @@ async fn wait_for_path(path: &std::path::Path) -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     anyhow::bail!("path never appeared: {}", path.display())
-}
-
-async fn backend_export_socket(
-    management_socket: &std::path::Path,
-    store: &str,
-    backend_socket: &std::path::Path,
-    mode: u32,
-) -> Result<()> {
-    let mut stream = UnixStream::connect(management_socket).await?;
-    let request = BackendMgmtRequest::ExportSocket {
-        store: store.to_string(),
-        socket: backend_socket.display().to_string(),
-        mode,
-    };
-    write_frame_async(&mut stream, &request).await?;
-    let response: BackendMgmtResponse = read_frame_async(&mut stream).await?;
-    match response {
-        BackendMgmtResponse::ExportSocketOk => Ok(()),
-        BackendMgmtResponse::Error { message, .. } => anyhow::bail!(message),
-        other => anyhow::bail!("unexpected backend management response: {other:?}"),
-    }
 }
 
 // ---------------------------------------------------------------------------

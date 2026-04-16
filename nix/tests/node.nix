@@ -96,7 +96,6 @@ in {
       Group = "underwrap-backend";
       ExecStart = let
         cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
-          management.socket = "/run/underwrap-backend/mgmt.sock";
           stores.remote = {
             backend = "plain";
             dir = "/var/lib/underwrap-backend/secrets";
@@ -164,7 +163,6 @@ in {
       Group = "underwrap-local";
       ExecStart = let
         cfg = pkgs.writeText "underwrap-local-backend.yaml" (builtins.toJSON {
-          management.socket = "/run/underwrap-local/backend/mgmt.sock";
           stores.local = {
             backend = "plain";
             dir = "/var/lib/underwrap-backend-local/secrets";

@@ -1,7 +1,7 @@
 //! Backend daemon server.
 //!
-//! Exposes a management socket used to dynamically export named stores onto
-//! Unix sockets, and serves the backend data protocol on those exported sockets.
+//! Serves the runtime HTTPS API for `underwrapd` clients and a separate admin
+//! HTTP API for operators and tests.
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -15,25 +15,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::net::{TcpListener, UnixListener, UnixStream};
-use tokio::sync::{Mutex, Notify};
-use tokio::task::{AbortHandle, JoinSet};
+use tokio::net::TcpListener;
+use tokio::sync::Notify;
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info};
 
 use underwrap_protocol::config::StorageConfig;
-use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::message::{
-    BackendErrorCode, BackendExportStatus, BackendMgmtRequest, BackendMgmtResponse, BackendRequest,
-    BackendResponse,
-};
 use underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID;
-use underwrap_store::StorageBackend;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ManagementConfig {
-    pub socket: PathBuf,
-}
+#[cfg(test)]
+use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse};
+use underwrap_store::StorageBackend;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceTlsConfig {
@@ -62,24 +55,11 @@ pub struct AdminConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
-    pub management: ManagementConfig,
     pub stores: HashMap<String, StorageConfig>,
     #[serde(default)]
     pub service: Option<ServiceConfig>,
     #[serde(default)]
     pub admin: Option<AdminConfig>,
-}
-
-struct ExportEntry {
-    store: String,
-    socket: PathBuf,
-    mode: u32,
-    abort: AbortHandle,
-}
-
-struct State {
-    stores: HashMap<String, Arc<dyn StorageBackend>>,
-    exports: Mutex<HashMap<PathBuf, ExportEntry>>,
 }
 
 struct ServiceRuntimeState {
@@ -92,30 +72,14 @@ struct AdminRuntimeState {
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores = open_stores(&config.stores)?;
-    let state = Arc::new(State {
-        stores,
-        exports: Mutex::new(HashMap::new()),
-    });
-
-    let management_listener = bind_socket(&config.management.socket, 0o600).with_context(|| {
-        format!(
-            "binding management socket {}",
-            config.management.socket.display()
-        )
-    })?;
-    info!(path = %config.management.socket.display(), "backend management socket listening");
 
     let mut tasks = JoinSet::new();
-    tasks.spawn(management_accept_loop(
-        management_listener,
-        Arc::clone(&state),
-    ));
 
     if let Some(service_config) = &config.service {
         let service_listener = TcpListener::bind(&service_config.listen)
             .await
             .with_context(|| format!("binding service listener {}", service_config.listen))?;
-        let service_state = Arc::new(build_service_runtime_state(&state, service_config)?);
+        let service_state = Arc::new(build_service_runtime_state(&stores, service_config)?);
         let tls_acceptor = build_tls_acceptor(&service_config.tls)?;
         info!(listen = %service_config.listen, clients = service_config.clients.len(), "backend HTTPS service listening");
         tasks.spawn(service_accept_loop(
@@ -130,7 +94,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             .await
             .with_context(|| format!("binding admin listener {}", admin_config.listen))?;
         let admin_state = Arc::new(AdminRuntimeState {
-            stores: state.stores.clone(),
+            stores: stores.clone(),
         });
         info!(listen = %admin_config.listen, stores = admin_state.stores.len(), "backend admin HTTP listening");
         tasks.spawn(admin_accept_loop(admin_listener, admin_state));
@@ -145,7 +109,6 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
                 },
                 _ = notify.notified() => {
                     info!("backend shutdown signal received");
-                    shutdown_exports(&state).await;
                     tasks.abort_all();
                     while tasks.join_next().await.is_some() {}
                     Ok(())
@@ -171,13 +134,12 @@ fn open_stores(
 }
 
 fn build_service_runtime_state(
-    state: &State,
+    stores: &HashMap<String, Arc<dyn StorageBackend>>,
     config: &ServiceConfig,
 ) -> Result<ServiceRuntimeState> {
     let mut clients = HashMap::new();
     for (principal, client) in &config.clients {
-        let store = state
-            .stores
+        let store = stores
             .get(&client.store)
             .with_context(|| {
                 format!(
@@ -267,215 +229,33 @@ fn extract_client_principal(
     Ok(common_name.to_string())
 }
 
-fn bind_socket(path: &Path, mode: u32) -> Result<UnixListener> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating socket dir {}", parent.display()))?;
-    }
-    let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-    }
-
-    Ok(listener)
-}
-
-async fn management_accept_loop(listener: UnixListener, state: Arc<State>) -> Result<()> {
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let state = Arc::clone(&state);
-        tokio::spawn(async move {
-            if let Err(e) = handle_management_connection(stream, &state).await {
-                error!("backend management connection error: {e:#}");
-            }
-        });
-    }
-}
-
-async fn handle_management_connection(mut stream: UnixStream, state: &State) -> Result<()> {
-    loop {
-        let request: BackendMgmtRequest = match read_frame_async(&mut stream).await {
-            Ok(req) => req,
-            Err(_) => break,
-        };
-        let response = process_management_request(request, state).await;
-        write_frame_async(&mut stream, &response).await?;
-    }
-    Ok(())
-}
-
-async fn process_management_request(
-    request: BackendMgmtRequest,
-    state: &State,
-) -> BackendMgmtResponse {
-    match request {
-        BackendMgmtRequest::ListStores => {
-            let mut stores: Vec<String> = state.stores.keys().cloned().collect();
-            stores.sort();
-            BackendMgmtResponse::ListStoresOk { stores }
-        }
-        BackendMgmtRequest::ListExports => {
-            let exports = state.exports.lock().await;
-            let mut list: Vec<BackendExportStatus> = exports
-                .values()
-                .map(|entry| BackendExportStatus {
-                    store: entry.store.clone(),
-                    socket: entry.socket.display().to_string(),
-                    mode: entry.mode,
-                })
-                .collect();
-            list.sort_by(|a, b| a.socket.cmp(&b.socket));
-            BackendMgmtResponse::ListExportsOk { exports: list }
-        }
-        BackendMgmtRequest::ExportSocket {
-            store,
-            socket,
-            mode,
-        } => match export_store_socket(state, &store, PathBuf::from(socket), mode).await {
-            Ok(()) => BackendMgmtResponse::ExportSocketOk,
-            Err(e) => BackendMgmtResponse::Error {
-                code: BackendErrorCode::Internal,
-                message: e.to_string(),
-            },
-        },
-        BackendMgmtRequest::UnexportSocket { socket } => {
-            let existed = unexport_store_socket(state, &PathBuf::from(socket)).await;
-            BackendMgmtResponse::UnexportSocketOk { existed }
-        }
-        BackendMgmtRequest::GetPolicy { store } => match get_policy_document(state, &store) {
-            Ok(document_json) => BackendMgmtResponse::GetPolicyOk { document_json },
-            Err(e) => BackendMgmtResponse::Error {
-                code: BackendErrorCode::Internal,
-                message: e.to_string(),
-            },
-        },
-        BackendMgmtRequest::PutPolicy {
-            store,
-            document_json,
-        } => match put_policy_document(state, &store, &document_json) {
-            Ok(()) => BackendMgmtResponse::PutPolicyOk,
-            Err(e) => BackendMgmtResponse::Error {
-                code: BackendErrorCode::Internal,
-                message: e.to_string(),
-            },
-        },
-    }
-}
-
-fn get_policy_document(state: &State, store_name: &str) -> Result<Option<String>> {
-    let store = state
-        .stores
+#[cfg(test)]
+fn get_policy_document(
+    stores: &HashMap<String, Arc<dyn StorageBackend>>,
+    store_name: &str,
+) -> Result<Option<String>> {
+    let store = stores
         .get(store_name)
         .with_context(|| format!("unknown store '{store_name}'"))?;
     let document = store.read(POLICY_DOCUMENT_SECRET_ID)?;
     Ok(document.map(|bytes| String::from_utf8_lossy(bytes.as_ref()).into_owned()))
 }
 
-fn put_policy_document(state: &State, store_name: &str, document_json: &str) -> Result<()> {
-    let store = state
-        .stores
+#[cfg(test)]
+fn put_policy_document(
+    stores: &HashMap<String, Arc<dyn StorageBackend>>,
+    store_name: &str,
+    document_json: &str,
+) -> Result<()> {
+    let store = stores
         .get(store_name)
         .with_context(|| format!("unknown store '{store_name}'"))?;
-    // Validate that the JSON parses as a policy document before persisting it.
     let _: underwrap_protocol::policy::PolicyDocument =
         serde_json::from_str(document_json).context("parsing policy document json")?;
     store.write(POLICY_DOCUMENT_SECRET_ID, document_json.as_bytes())
 }
 
-async fn export_store_socket(
-    state: &State,
-    store_name: &str,
-    socket: PathBuf,
-    mode: u32,
-) -> Result<()> {
-    let store = state
-        .stores
-        .get(store_name)
-        .with_context(|| format!("unknown store '{store_name}'"))?
-        .clone();
-
-    {
-        let mut exports = state.exports.lock().await;
-        if let Some(existing) = exports.remove(&socket) {
-            existing.abort.abort();
-        }
-    }
-    let _ = std::fs::remove_file(&socket);
-
-    let listener = bind_socket(&socket, mode)
-        .with_context(|| format!("binding export socket {}", socket.display()))?;
-    info!(store = %store_name, path = %socket.display(), mode = format!("{mode:#o}"), "backend export socket listening");
-
-    let store_name_owned = store_name.to_string();
-    let socket_for_task = socket.clone();
-    let handle = tokio::spawn(async move {
-        if let Err(e) = data_accept_loop(listener, store).await {
-            error!(store = %store_name_owned, path = %socket_for_task.display(), "backend data listener error: {e:#}");
-        }
-    });
-
-    let mut exports = state.exports.lock().await;
-    exports.insert(
-        socket.clone(),
-        ExportEntry {
-            store: store_name.to_string(),
-            socket,
-            mode,
-            abort: handle.abort_handle(),
-        },
-    );
-    Ok(())
-}
-
-async fn unexport_store_socket(state: &State, socket: &Path) -> bool {
-    let mut exports = state.exports.lock().await;
-    if let Some(entry) = exports.remove(socket) {
-        entry.abort.abort();
-        let _ = std::fs::remove_file(socket);
-        true
-    } else {
-        false
-    }
-}
-
-async fn shutdown_exports(state: &State) {
-    let sockets: Vec<PathBuf> = {
-        let exports = state.exports.lock().await;
-        exports.keys().cloned().collect()
-    };
-    for socket in sockets {
-        let _ = unexport_store_socket(state, &socket).await;
-    }
-}
-
-async fn data_accept_loop(listener: UnixListener, store: Arc<dyn StorageBackend>) -> Result<()> {
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let store = Arc::clone(&store);
-        tokio::spawn(async move {
-            if let Err(e) = handle_data_connection(stream, &*store).await {
-                error!("backend data connection error: {e:#}");
-            }
-        });
-    }
-}
-
-async fn handle_data_connection(mut stream: UnixStream, store: &dyn StorageBackend) -> Result<()> {
-    loop {
-        let request: BackendRequest = match read_frame_async(&mut stream).await {
-            Ok(req) => req,
-            Err(_) => break,
-        };
-        let response = process_request(&request, store).await;
-        write_frame_async(&mut stream, &response).await?;
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 async fn process_request(request: &BackendRequest, store: &dyn StorageBackend) -> BackendResponse {
     match request {
         BackendRequest::Read { secret_id } => match store.read(secret_id) {
@@ -1182,31 +962,25 @@ mod tests {
 
     #[test]
     fn policy_document_roundtrips_through_management_helpers() {
-        let state = State {
-            stores: HashMap::from([(
-                "work".to_string(),
-                Arc::new(TestStore::new()) as Arc<dyn StorageBackend>,
-            )]),
-            exports: tokio::sync::Mutex::new(HashMap::new()),
-        };
+        let stores = HashMap::from([(
+            "work".to_string(),
+            Arc::new(TestStore::new()) as Arc<dyn StorageBackend>,
+        )]);
 
         let json = r#"{"wrappers":[{"wrapper":"gh-comment","enabled":true}],"rules":[{"id":"r1","wrapper":"gh-comment","resource":"secret:github/token","operation":"secret.read","effect":"allow"}]}"#;
-        put_policy_document(&state, "work", json).unwrap();
-        let stored = get_policy_document(&state, "work").unwrap();
+        put_policy_document(&stores, "work", json).unwrap();
+        let stored = get_policy_document(&stores, "work").unwrap();
         assert_eq!(stored.as_deref(), Some(json));
     }
 
     #[test]
     fn put_policy_document_rejects_invalid_json() {
-        let state = State {
-            stores: HashMap::from([(
-                "work".to_string(),
-                Arc::new(TestStore::new()) as Arc<dyn StorageBackend>,
-            )]),
-            exports: tokio::sync::Mutex::new(HashMap::new()),
-        };
+        let stores = HashMap::from([(
+            "work".to_string(),
+            Arc::new(TestStore::new()) as Arc<dyn StorageBackend>,
+        )]);
 
-        let err = put_policy_document(&state, "work", "not-json").unwrap_err();
+        let err = put_policy_document(&stores, "work", "not-json").unwrap_err();
         assert!(err.to_string().contains("parsing policy document json"));
     }
 }

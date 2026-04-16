@@ -2,7 +2,7 @@ use super::*;
 use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, PolicyRule, WrapperPolicyState};
 
 #[tokio::test]
-async fn backend_policy_roundtrip_over_management_socket() {
+async fn backend_policy_roundtrip_over_admin_api() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 

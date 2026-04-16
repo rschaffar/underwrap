@@ -73,7 +73,6 @@ async fn underwrapd_binary_start_and_status() {
 
     let wrapper_sock = base.join("wrapper-w.sock");
     let control_sock = base.join("control.sock");
-    let backend_management_socket = base.join("backend-mgmt.sock");
     let server_cert = base.join("server.pem");
     let server_key = base.join("server.key");
     let ca_cert = base.join("ca.pem");
@@ -86,9 +85,6 @@ async fn underwrapd_binary_start_and_status() {
     std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
 
     let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
-        management: underwrap_backendd::server::ManagementConfig {
-            socket: backend_management_socket.clone(),
-        },
         stores: HashMap::from([(
             "test".to_string(),
             underwrap_protocol::config::StorageConfig::Plain {
@@ -124,16 +120,7 @@ async fn underwrapd_binary_start_and_status() {
         .spawn()
         .unwrap();
 
-    for _ in 0..100 {
-        if backend_management_socket.exists() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(
-        backend_management_socket.exists(),
-        "backend management socket never appeared"
-    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
         sockets: underwrap_protocol::config::SocketConfig {

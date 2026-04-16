@@ -56,7 +56,12 @@ async fn main() -> Result<()> {
         .with_context(|| format!("reading config from {}", cli.config.display()))?;
     let config = parse_backend_config(&config_text)?;
 
-    info!(stores = config.stores.len(), management_socket = %config.management.socket.display(), "starting backend daemon");
+    info!(
+        stores = config.stores.len(),
+        has_service = config.service.is_some(),
+        has_admin = config.admin.is_some(),
+        "starting backend daemon"
+    );
 
     server::run(config, None).await
 }
@@ -76,8 +81,6 @@ mod tests {
     fn parse_backend_config_parses_minimal_yaml() {
         let config = parse_backend_config(
             r#"
-management:
-  socket: /run/underwrap-backend/mgmt.sock
 stores:
   default:
     backend: plain
@@ -85,10 +88,8 @@ stores:
 "#,
         )
         .unwrap();
-        assert_eq!(
-            config.management.socket,
-            PathBuf::from("/run/underwrap-backend/mgmt.sock")
-        );
         assert!(config.stores.contains_key("default"));
+        assert!(config.service.is_none());
+        assert!(config.admin.is_none());
     }
 }

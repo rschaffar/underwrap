@@ -121,13 +121,11 @@ fn ensure_package_built(package: &'static str) {
     static UNDERWRAPCTL: OnceLock<()> = OnceLock::new();
     static UNDERWRAPD: OnceLock<()> = OnceLock::new();
     static UNDERWRAP_BACKENDD: OnceLock<()> = OnceLock::new();
-    static UNDERWRAP_BACKEND_CTL: OnceLock<()> = OnceLock::new();
 
     let once = match package {
         "underwrapctl" => &UNDERWRAPCTL,
         "underwrapd" => &UNDERWRAPD,
         "underwrap-backendd" => &UNDERWRAP_BACKENDD,
-        "underwrap-backendctl" => &UNDERWRAP_BACKEND_CTL,
         other => panic!("unsupported package build cache for {other}"),
     };
 
