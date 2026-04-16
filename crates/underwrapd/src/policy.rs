@@ -11,6 +11,10 @@ pub(crate) fn load_policy_document(store: &dyn StorageBackend) -> Result<Option<
     Ok(Some(document))
 }
 
+pub(crate) fn backend_policy_active(store: &dyn StorageBackend) -> Result<bool> {
+    Ok(load_policy_document(store)?.is_some())
+}
+
 pub(crate) fn authorize_operation(
     store: &dyn StorageBackend,
     wrapper: &str,

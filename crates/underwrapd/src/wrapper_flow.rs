@@ -11,7 +11,10 @@ use underwrap_protocol::message::{ErrorCode, WrapperRequest, WrapperResponse};
 
 use crate::audit;
 use crate::peer_auth::{PeerCred, get_peer_cred};
-use crate::policy::{authorize_operation, directory_resource, env_resource, libsecret_resource};
+use crate::policy::{
+    authorize_operation, backend_policy_active, directory_resource, env_resource,
+    libsecret_resource,
+};
 use crate::server::State;
 use crate::unlock_flow::{process_wrapper_unlock, process_wrapper_unlock_response};
 use crate::wrapper_bindings::{
@@ -398,7 +401,19 @@ pub(crate) async fn process_read_for(
         }
     };
 
-    if wrapper_def.unlock.mode != UnlockMode::AlwaysUnlocked
+    let backend_policy_enabled = match backend_policy_active(&*state.store) {
+        Ok(active) => active,
+        Err(e) => {
+            error!(wrapper = %wrapper_name, err = %e, "policy lookup error");
+            return WrapperResponse::Error {
+                code: ErrorCode::Internal,
+                message: "internal policy error".to_string(),
+            };
+        }
+    };
+
+    if !backend_policy_enabled
+        && wrapper_def.unlock.mode != UnlockMode::AlwaysUnlocked
         && let Err(reason) = state.unlock.check(wrapper_name, scope, peer_uid)
     {
         audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
@@ -738,5 +753,40 @@ mod tests {
             }
             other => panic!("expected ReadOk, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn backend_policy_replaces_local_unlock_when_present() {
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_policy(
+            &[("github/token", b"ghp_test")],
+            underwrap_protocol::policy::PolicyDocument {
+                wrappers: Vec::new(),
+                rules: vec![
+                    underwrap_protocol::policy::PolicyRule {
+                        id: "env-read".to_string(),
+                        wrapper: "gh-authorized".to_string(),
+                        resource: "secret:github/token".to_string(),
+                        operation: "secret.read".to_string(),
+                        effect: underwrap_protocol::policy::PolicyEffect::Allow,
+                    },
+                    underwrap_protocol::policy::PolicyRule {
+                        id: "dir-rw".to_string(),
+                        wrapper: "gh-authorized".to_string(),
+                        resource: "directory:gws/state".to_string(),
+                        operation: "directory.readwrite".to_string(),
+                        effect: underwrap_protocol::policy::PolicyEffect::Allow,
+                    },
+                ],
+            },
+        ));
+        let state = state_with_store(
+            UnlockPolicy {
+                mode: UnlockMode::Always,
+                max_seconds: Some(60),
+            },
+            store,
+        );
+        let resp = process_read_for("gh-authorized", None, &state, 1000).await;
+        assert!(matches!(resp, WrapperResponse::ReadOk { .. }));
     }
 }

@@ -11,6 +11,7 @@ use underwrap_protocol::message::{ControlRequest, ControlResponse, ErrorCode};
 
 use crate::audit;
 use crate::peer_auth::{check_peer_auth, get_peer_cred};
+use crate::policy::backend_policy_active;
 use crate::server::State;
 use crate::startup::resolve_user_uid;
 use crate::status::{build_credential_status, build_wrapper_status};
@@ -97,11 +98,21 @@ pub(crate) fn process_control(
             state,
             peer_uid,
         ),
-        ControlRequest::Lock { target, scope } => {
-            state.unlock.lock(target.as_deref(), scope.as_deref());
-            audit::locked(target.as_deref(), scope.as_deref(), peer_uid);
-            ControlResponse::LockOk
-        }
+        ControlRequest::Lock { target, scope } => match backend_policy_active(&*state.store) {
+            Ok(true) => ControlResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "backend-managed policy is active; local lock is disabled".to_string(),
+            },
+            Ok(false) => {
+                state.unlock.lock(target.as_deref(), scope.as_deref());
+                audit::locked(target.as_deref(), scope.as_deref(), peer_uid);
+                ControlResponse::LockOk
+            }
+            Err(_) => ControlResponse::Error {
+                code: ErrorCode::Internal,
+                message: "internal policy error".to_string(),
+            },
+        },
         ControlRequest::Store {
             secret_id,
             material,
@@ -152,6 +163,22 @@ fn process_unlock_request(
             };
         }
     };
+
+    match backend_policy_active(&*state.store) {
+        Ok(true) => {
+            return ControlResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "backend-managed policy is active; local unlock is disabled".to_string(),
+            };
+        }
+        Ok(false) => {}
+        Err(_) => {
+            return ControlResponse::Error {
+                code: ErrorCode::Internal,
+                message: "internal policy error".to_string(),
+            };
+        }
+    }
 
     if let Some(requested) = seconds
         && let Some(max) = wrapper.unlock.max_seconds

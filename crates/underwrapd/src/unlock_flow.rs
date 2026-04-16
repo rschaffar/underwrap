@@ -5,6 +5,7 @@ use underwrap_protocol::config::UnlockMode;
 use underwrap_protocol::message::{ErrorCode, WrapperResponse};
 
 use crate::audit;
+use crate::policy::backend_policy_active;
 use crate::server::State;
 
 /// Handle an unlock request according to the wrapper's unlock policy.
@@ -24,6 +25,23 @@ pub(crate) fn process_wrapper_unlock(
             };
         }
     };
+
+    match backend_policy_active(&*state.store) {
+        Ok(true) => {
+            return WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "backend-managed policy is active; local unlock is disabled".to_string(),
+            };
+        }
+        Ok(false) => {}
+        Err(e) => {
+            error!(wrapper = %wrapper_name, err = %e, "failed to determine backend policy mode");
+            return WrapperResponse::Error {
+                code: ErrorCode::Internal,
+                message: "internal policy error".to_string(),
+            };
+        }
+    }
 
     match wrapper_def.unlock.mode {
         UnlockMode::AlwaysUnlocked => WrapperResponse::Error {
@@ -85,6 +103,23 @@ pub(crate) fn process_wrapper_unlock_response(
             };
         }
     };
+
+    match backend_policy_active(&*state.store) {
+        Ok(true) => {
+            return WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "backend-managed policy is active; local unlock is disabled".to_string(),
+            };
+        }
+        Ok(false) => {}
+        Err(e) => {
+            error!(wrapper = %wrapper_name, err = %e, "failed to determine backend policy mode");
+            return WrapperResponse::Error {
+                code: ErrorCode::Internal,
+                message: "internal policy error".to_string(),
+            };
+        }
+    }
 
     let expected_key = match &wrapper_def.unlock_key {
         Some(k) => k,
@@ -208,7 +243,34 @@ mod tests {
         }
     }
 
+    struct PolicyStore(Vec<u8>);
+    impl StorageBackend for PolicyStore {
+        fn read(
+            &self,
+            secret_id: &str,
+        ) -> anyhow::Result<Option<underwrap_protocol::message::SecretBytes>> {
+            if secret_id == underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID {
+                Ok(Some(self.0.as_slice().into()))
+            } else {
+                Ok(None)
+            }
+        }
+        fn write(&self, _: &str, _: &[u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn list(&self, _: &str) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn delete(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
     fn state_for(wrapper: WrapperDef) -> State {
+        state_with_store(wrapper, Arc::new(EmptyStore))
+    }
+
+    fn state_with_store(wrapper: WrapperDef, store: Arc<dyn StorageBackend>) -> State {
         State {
             config: DaemonConfig {
                 sockets: SocketConfig::default(),
@@ -227,7 +289,7 @@ mod tests {
                 )]),
                 wrappers: HashMap::from([("locked-w".to_string(), wrapper)]),
             },
-            store: Arc::new(EmptyStore),
+            store,
             allowed_user_uids: std::collections::HashSet::new(),
             unlock: crate::unlock::UnlockState::new(),
         }
@@ -336,6 +398,28 @@ mod tests {
             b"p",
         ) {
             WrapperResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Internal)),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_wrapper_unlock_is_disabled_when_backend_policy_is_active() {
+        let document = underwrap_protocol::policy::PolicyDocument::default();
+        let state = state_with_store(
+            wrapper(
+                UnlockPolicy {
+                    mode: UnlockMode::Always,
+                    max_seconds: Some(10),
+                },
+                None,
+            ),
+            Arc::new(PolicyStore(serde_json::to_vec(&document).unwrap())),
+        );
+        match process_wrapper_unlock("locked-w", None, Some(5), 1000, &state) {
+            WrapperResponse::Error { code, message } => {
+                assert!(matches!(code, ErrorCode::Unauthorized));
+                assert!(message.contains("backend-managed policy is active"));
+            }
             other => panic!("expected Error, got {other:?}"),
         }
     }

@@ -27,6 +27,17 @@ impl MemStore {
             ),
         }
     }
+
+    fn with_policy_document(document: underwrap_protocol::policy::PolicyDocument) -> Self {
+        let mut data = HashMap::new();
+        data.insert(
+            underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID.to_string(),
+            serde_json::to_vec(&document).unwrap(),
+        );
+        Self {
+            data: Mutex::new(data),
+        }
+    }
 }
 
 impl underwrap_store::StorageBackend for MemStore {
@@ -100,7 +111,7 @@ fn state_with_config_and_store(
     wrappers: HashMap<String, WrapperDef>,
     credentials: HashMap<String, CredentialDef>,
     allowed_user_uids: std::collections::HashSet<u32>,
-    store: MemStore,
+    store: Arc<dyn underwrap_store::StorageBackend>,
 ) -> State {
     State {
         config: DaemonConfig {
@@ -113,7 +124,7 @@ fn state_with_config_and_store(
             credentials,
             wrappers,
         },
-        store: Arc::new(store),
+        store,
         allowed_user_uids,
         unlock: UnlockState::new(),
     }
@@ -135,7 +146,7 @@ fn process_control_status_all_and_status_target_cover_wrapper_and_credential() {
         wrappers,
         credentials,
         std::collections::HashSet::new(),
-        MemStore::with_entries(&[("github/token", b"ghp_test")]),
+        Arc::new(MemStore::with_entries(&[("github/token", b"ghp_test")])),
     );
 
     let resp = process_control(&ControlRequest::StatusAll, &state, Some(1000));
@@ -200,7 +211,7 @@ fn process_control_unlock_enforces_authorization_rules() {
         base_wrappers.clone(),
         base_credentials.clone(),
         std::collections::HashSet::from([0]),
-        MemStore::with_entries(&[]),
+        Arc::new(MemStore::with_entries(&[])),
     );
 
     let resp = process_control(
@@ -264,7 +275,7 @@ fn process_control_unlock_enforces_authorization_rules() {
         base_wrappers,
         base_credentials,
         std::collections::HashSet::from([123456]),
-        MemStore::with_entries(&[]),
+        Arc::new(MemStore::with_entries(&[])),
     );
     let resp = process_control(
         &ControlRequest::Unlock {
@@ -299,7 +310,7 @@ fn process_control_unlock_enforces_authorization_rules() {
         HashMap::from([("locked-w".to_string(), wrapper)]),
         HashMap::from([("github/token".to_string(), env_credential("GH_TOKEN"))]),
         std::collections::HashSet::from([0]),
-        MemStore::with_entries(&[]),
+        Arc::new(MemStore::with_entries(&[])),
     );
     let resp = process_control(
         &ControlRequest::Unlock {
@@ -350,7 +361,7 @@ fn process_control_lock_and_store_rejections() {
             ),
         ]),
         std::collections::HashSet::new(),
-        MemStore::with_entries(&[]),
+        Arc::new(MemStore::with_entries(&[])),
     );
 
     let resp = process_control(
@@ -400,6 +411,64 @@ fn process_control_lock_and_store_rejections() {
         ControlResponse::Error { code, message } => {
             assert_eq!(code, ErrorCode::Unauthorized);
             assert!(message.contains("not an env credential"));
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+#[test]
+fn process_control_unlock_and_lock_are_disabled_when_backend_policy_is_active() {
+    let mut wrapper = wrapper_with_uses(&[(
+        "github/token",
+        CredentialUse {
+            access: AccessMode::ReadOnly,
+        },
+    )]);
+    wrapper.unlock = UnlockPolicy {
+        mode: UnlockMode::Always,
+        max_seconds: Some(30),
+    };
+
+    let state = state_with_config_and_store(
+        HashMap::from([("locked-w".to_string(), wrapper)]),
+        HashMap::from([("github/token".to_string(), env_credential("GH_TOKEN"))]),
+        std::collections::HashSet::new(),
+        Arc::new(MemStore::with_policy_document(
+            underwrap_protocol::policy::PolicyDocument::default(),
+        )),
+    );
+
+    let unlock = process_control(
+        &ControlRequest::Unlock {
+            target: "locked-w".to_string(),
+            scope: None,
+            seconds: Some(10),
+            grant_user: None,
+            grant_all: false,
+        },
+        &state,
+        Some(1000),
+    );
+    match unlock {
+        ControlResponse::Error { code, message } => {
+            assert_eq!(code, ErrorCode::Unauthorized);
+            assert!(message.contains("backend-managed policy is active"));
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+
+    let lock = process_control(
+        &ControlRequest::Lock {
+            target: Some("locked-w".to_string()),
+            scope: None,
+        },
+        &state,
+        Some(1000),
+    );
+    match lock {
+        ControlResponse::Error { code, message } => {
+            assert_eq!(code, ErrorCode::Unauthorized);
+            assert!(message.contains("backend-managed policy is active"));
         }
         other => panic!("expected Error, got {other:?}"),
     }
