@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+include = [
+  "src/**",
+  "testdata/**",
+  "Cargo.toml",
+]
 
 # This crate contains only tests — no library or binary.
 [lib]
