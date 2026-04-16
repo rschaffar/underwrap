@@ -4,13 +4,21 @@
 //! Unix sockets, and serves the backend data protocol on those exported sockets.
 
 use anyhow::{Context, Result};
+use base64::Engine;
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Incoming;
+use hyper::service::service_fn;
+use hyper::{Method, Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::{AbortHandle, JoinSet};
+use tokio_rustls::TlsAcceptor;
 use tracing::{error, info};
 
 use underwrap_protocol::config::StorageConfig;
@@ -28,9 +36,31 @@ pub struct ManagementConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceTlsConfig {
+    pub cert_file: PathBuf,
+    pub key_file: PathBuf,
+    pub client_ca_file: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceClientConfig {
+    pub store: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceConfig {
+    pub listen: String,
+    pub tls: ServiceTlsConfig,
+    #[serde(default)]
+    pub clients: HashMap<String, ServiceClientConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
     pub management: ManagementConfig,
     pub stores: HashMap<String, StorageConfig>,
+    #[serde(default)]
+    pub service: Option<ServiceConfig>,
 }
 
 struct ExportEntry {
@@ -43,6 +73,10 @@ struct ExportEntry {
 struct State {
     stores: HashMap<String, Arc<dyn StorageBackend>>,
     exports: Mutex<HashMap<PathBuf, ExportEntry>>,
+}
+
+struct ServiceRuntimeState {
+    clients: HashMap<String, Arc<dyn StorageBackend>>,
 }
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
@@ -65,6 +99,20 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
         management_listener,
         Arc::clone(&state),
     ));
+
+    if let Some(service_config) = &config.service {
+        let service_listener = TcpListener::bind(&service_config.listen)
+            .await
+            .with_context(|| format!("binding service listener {}", service_config.listen))?;
+        let service_state = Arc::new(build_service_runtime_state(&state, service_config)?);
+        let tls_acceptor = build_tls_acceptor(&service_config.tls)?;
+        info!(listen = %service_config.listen, clients = service_config.clients.len(), "backend HTTPS service listening");
+        tasks.spawn(service_accept_loop(
+            service_listener,
+            tls_acceptor,
+            service_state,
+        ));
+    }
 
     match shutdown {
         Some(notify) => {
@@ -98,6 +146,103 @@ fn open_stores(
         stores.insert(name.clone(), store);
     }
     Ok(stores)
+}
+
+fn build_service_runtime_state(
+    state: &State,
+    config: &ServiceConfig,
+) -> Result<ServiceRuntimeState> {
+    let mut clients = HashMap::new();
+    for (principal, client) in &config.clients {
+        let store = state
+            .stores
+            .get(&client.store)
+            .with_context(|| {
+                format!(
+                    "service client '{principal}' references unknown store '{}'",
+                    client.store
+                )
+            })?
+            .clone();
+        clients.insert(principal.clone(), store);
+    }
+    Ok(ServiceRuntimeState { clients })
+}
+
+fn build_tls_acceptor(config: &ServiceTlsConfig) -> Result<TlsAcceptor> {
+    use rustls::server::WebPkiClientVerifier;
+    use rustls::{RootCertStore, ServerConfig};
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let certs = load_cert_chain(&config.cert_file)?;
+    let key = load_private_key(&config.key_file)?;
+    let client_ca_certs = load_cert_chain(&config.client_ca_file)?;
+
+    let mut roots = RootCertStore::empty();
+    for cert in client_ca_certs {
+        roots.add(cert).context("adding client CA certificate")?;
+    }
+
+    let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+        .build()
+        .context("building rustls client verifier")?;
+
+    let server_config = ServerConfig::builder()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs, key)
+        .context("building rustls server config")?;
+
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
+fn load_cert_chain(path: &Path) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+    let pem = std::fs::read(path)
+        .with_context(|| format!("reading certificate file {}", path.display()))?;
+    let mut reader = std::io::BufReader::new(pem.as_slice());
+    let certs = rustls_pemfile::certs(&mut reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("parsing certificate PEM")?;
+    anyhow::ensure!(
+        !certs.is_empty(),
+        "certificate file '{}' contained no certificates",
+        path.display()
+    );
+    Ok(certs)
+}
+
+fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
+    let pem = std::fs::read(path)
+        .with_context(|| format!("reading private key file {}", path.display()))?;
+    let mut reader = std::io::BufReader::new(pem.as_slice());
+    if let Some(key) =
+        rustls_pemfile::private_key(&mut reader).context("parsing private key PEM")?
+    {
+        Ok(key)
+    } else {
+        anyhow::bail!(
+            "private key file '{}' contained no private key",
+            path.display()
+        )
+    }
+}
+
+fn extract_client_principal(
+    certs: &[rustls::pki_types::CertificateDer<'static>],
+) -> Result<String> {
+    let cert = certs
+        .first()
+        .context("client did not present a certificate")?;
+    let (_, parsed) =
+        x509_parser::parse_x509_certificate(cert.as_ref()).context("parsing client certificate")?;
+    let common_name = parsed
+        .subject()
+        .iter_common_name()
+        .next()
+        .context("client certificate missing common name")?
+        .as_str()
+        .context("client certificate common name is not valid utf-8")?;
+    Ok(common_name.to_string())
 }
 
 fn bind_socket(path: &Path, mode: u32) -> Result<UnixListener> {
@@ -359,6 +504,199 @@ async fn process_request(request: &BackendRequest, store: &dyn StorageBackend) -
             BackendResponse::StatusOk
         }
     }
+}
+
+async fn service_accept_loop(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    state: Arc<ServiceRuntimeState>,
+) -> Result<()> {
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let acceptor = acceptor.clone();
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if let Err(e) = handle_service_connection(stream, acceptor, state).await {
+                error!("backend service connection error: {e:#}");
+            }
+        });
+    }
+}
+
+async fn handle_service_connection(
+    stream: tokio::net::TcpStream,
+    acceptor: TlsAcceptor,
+    state: Arc<ServiceRuntimeState>,
+) -> Result<()> {
+    let tls_stream = acceptor
+        .accept(stream)
+        .await
+        .context("accepting TLS connection")?;
+    let principal = extract_client_principal(
+        tls_stream
+            .get_ref()
+            .1
+            .peer_certificates()
+            .context("reading peer certificates")?,
+    )?;
+    let store = state
+        .clients
+        .get(&principal)
+        .with_context(|| format!("unknown client principal '{principal}'"))?
+        .clone();
+
+    let service = service_fn(move |req| {
+        let principal = principal.clone();
+        let store = store.clone();
+        async move { handle_service_request(req, principal, store).await }
+    });
+
+    hyper::server::conn::http1::Builder::new()
+        .serve_connection(TokioIo::new(tls_stream), service)
+        .await
+        .context("serving HTTPS connection")?;
+    Ok(())
+}
+
+async fn handle_service_request(
+    request: Request<Incoming>,
+    principal: String,
+    store: Arc<dyn StorageBackend>,
+) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    let response = match (request.method(), request.uri().path()) {
+        (&Method::GET, "/v1/status") => json_response(
+            StatusCode::OK,
+            &underwrap_protocol::service::ServiceStatusResponse {
+                ok: true,
+                principal,
+            },
+        ),
+        (&Method::POST, "/v1/read") => {
+            match parse_json_body::<underwrap_protocol::service::ServiceReadRequest>(request).await
+            {
+                Ok(body) => match store.read(&body.secret_id) {
+                    Ok(material) => json_response(
+                        StatusCode::OK,
+                        &underwrap_protocol::service::ServiceReadResponse {
+                            material_b64: material.map(|material| {
+                                base64::engine::general_purpose::STANDARD.encode(material.as_ref())
+                            }),
+                        },
+                    ),
+                    Err(e) => error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &format!("storage error: {e}"),
+                    ),
+                },
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/write") => {
+            match parse_json_body::<underwrap_protocol::service::ServiceWriteRequest>(request).await
+            {
+                Ok(body) => {
+                    match base64::engine::general_purpose::STANDARD.decode(&body.material_b64) {
+                        Ok(material) => match store.write(&body.secret_id, &material) {
+                            Ok(()) => json_response(
+                                StatusCode::OK,
+                                &underwrap_protocol::service::ServiceWriteResponse { ok: true },
+                            ),
+                            Err(e) => error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "internal",
+                                &format!("storage error: {e}"),
+                            ),
+                        },
+                        Err(e) => error_response(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_request",
+                            &format!("invalid base64 payload: {e}"),
+                        ),
+                    }
+                }
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/list") => {
+            match parse_json_body::<underwrap_protocol::service::ServiceListRequest>(request).await
+            {
+                Ok(body) => match store.list(&body.prefix) {
+                    Ok(ids) => json_response(
+                        StatusCode::OK,
+                        &underwrap_protocol::service::ServiceListResponse { ids },
+                    ),
+                    Err(e) => error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &format!("storage error: {e}"),
+                    ),
+                },
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/delete") => {
+            match parse_json_body::<underwrap_protocol::service::ServiceDeleteRequest>(request)
+                .await
+            {
+                Ok(body) => match store.delete(&body.secret_id) {
+                    Ok(existed) => json_response(
+                        StatusCode::OK,
+                        &underwrap_protocol::service::ServiceDeleteResponse { existed },
+                    ),
+                    Err(e) => error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &format!("storage error: {e}"),
+                    ),
+                },
+                Err(response) => response,
+            }
+        }
+        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown endpoint"),
+    };
+    Ok(response)
+}
+
+async fn parse_json_body<T: serde::de::DeserializeOwned>(
+    request: Request<Incoming>,
+) -> std::result::Result<T, Response<Full<Bytes>>> {
+    let body = match request.into_body().collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(e) => {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("failed to read request body: {e}"),
+            ));
+        }
+    };
+    serde_json::from_slice(&body).map_err(|e| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            &format!("invalid JSON request body: {e}"),
+        )
+    })
+}
+
+fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Response<Full<Bytes>> {
+    let bytes = serde_json::to_vec(body).expect("serializing service response");
+    Response::builder()
+        .status(status)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(bytes)))
+        .expect("building HTTP response")
+}
+
+fn error_response(status: StatusCode, code: &str, message: &str) -> Response<Full<Bytes>> {
+    json_response(
+        status,
+        &underwrap_protocol::service::ServiceErrorResponse {
+            code: code.to_string(),
+            message: message.to_string(),
+        },
+    )
 }
 
 #[cfg(test)]

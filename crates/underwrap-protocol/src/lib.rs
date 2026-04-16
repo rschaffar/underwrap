@@ -4,6 +4,7 @@ pub mod ipc;
 pub mod message;
 pub mod policy;
 pub mod scm_rights;
+pub mod service;
 
 /// Default socket path for the control socket.
 pub const CONTROL_SOCKET_PATH: &str = "/run/underwrap/control.sock";

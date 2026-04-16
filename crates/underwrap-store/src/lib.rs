@@ -12,13 +12,15 @@ mod encrypted;
 mod path;
 mod plain;
 mod remote;
+mod service;
 
 pub use encrypted::EncryptedBackend;
 pub use plain::PlainBackend;
 pub use remote::RemoteBackend;
 pub use remote::RemoteBackend as UnixSocketBackend;
+pub use service::ServiceBackend;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use underwrap_protocol::config::{BackendMode, BackendSocketConfig, StorageConfig};
 use underwrap_protocol::message::SecretBytes;
 
@@ -61,10 +63,7 @@ pub fn open(config: &StorageConfig) -> Result<Box<dyn StorageBackend>> {
 pub fn open_backend_client(config: &BackendSocketConfig) -> Result<Box<dyn StorageBackend>> {
     match config.mode {
         BackendMode::UnixSocket => Ok(Box::new(UnixSocketBackend::open(&config.socket)?)),
-        BackendMode::Service => {
-            let url = config.url.as_deref().unwrap_or("<missing>");
-            bail!("backend service mode is not implemented yet (configured url: {url})")
-        }
+        BackendMode::Service => Ok(Box::new(ServiceBackend::open(config)?)),
     }
 }
 
@@ -116,6 +115,9 @@ mod tests {
             mode: BackendMode::UnixSocket,
             socket: "/tmp/nonexistent-underwrap-backend.sock".into(),
             url: None,
+            ca_file: None,
+            client_cert_file: None,
+            client_key_file: None,
         })
         .unwrap();
         let err = backend.read("github/token").unwrap_err();
@@ -123,18 +125,18 @@ mod tests {
     }
 
     #[test]
-    fn open_backend_client_rejects_unimplemented_service_mode() {
+    fn open_backend_client_rejects_missing_service_tls_settings() {
         let err = match open_backend_client(&BackendSocketConfig {
             mode: BackendMode::Service,
             socket: "/tmp/ignored.sock".into(),
             url: Some("https://backend.example.internal".to_string()),
+            ca_file: None,
+            client_cert_file: None,
+            client_key_file: None,
         }) {
             Ok(_) => panic!("expected service backend mode to be rejected"),
             Err(err) => err,
         };
-        assert!(
-            err.to_string()
-                .contains("backend service mode is not implemented yet")
-        );
+        assert!(err.to_string().contains("backend.ca_file"));
     }
 }

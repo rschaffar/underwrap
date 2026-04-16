@@ -16,3 +16,4 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+serde_json = { workspace = true }

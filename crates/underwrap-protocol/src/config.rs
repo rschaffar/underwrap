@@ -188,6 +188,19 @@ pub struct BackendSocketConfig {
     /// Backend service URL when `mode = "service"`.
     #[serde(default)]
     pub url: Option<String>,
+
+    /// CA certificate bundle used to verify the backend service when
+    /// `mode = "service"`.
+    #[serde(default)]
+    pub ca_file: Option<PathBuf>,
+
+    /// Client certificate file used for mTLS when `mode = "service"`.
+    #[serde(default)]
+    pub client_cert_file: Option<PathBuf>,
+
+    /// Client private key file used for mTLS when `mode = "service"`.
+    #[serde(default)]
+    pub client_key_file: Option<PathBuf>,
 }
 
 impl Default for BackendSocketConfig {
@@ -196,6 +209,9 @@ impl Default for BackendSocketConfig {
             mode: BackendMode::UnixSocket,
             socket: default_backend_socket(),
             url: None,
+            ca_file: None,
+            client_cert_file: None,
+            client_key_file: None,
         }
     }
 }
@@ -300,6 +316,9 @@ mod tests {
             PathBuf::from("/run/underwrap/backend.sock")
         );
         assert_eq!(config.backend.url, None);
+        assert_eq!(config.backend.ca_file, None);
+        assert_eq!(config.backend.client_cert_file, None);
+        assert_eq!(config.backend.client_key_file, None);
     }
 
     #[test]
@@ -371,6 +390,9 @@ backend:
             PathBuf::from("/tmp/test-backend.sock")
         );
         assert_eq!(config.backend.url, None);
+        assert_eq!(config.backend.ca_file, None);
+        assert_eq!(config.backend.client_cert_file, None);
+        assert_eq!(config.backend.client_key_file, None);
     }
 
     #[test]
@@ -378,13 +400,28 @@ backend:
         let yaml = r#"
 backend:
   mode: service
-  url: https://backend.example.internal
+  url: https://backend.example.internal:8443
+  ca_file: /etc/underwrap/ca.pem
+  client_cert_file: /etc/underwrap/client.pem
+  client_key_file: /etc/underwrap/client.key
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.backend.mode, BackendMode::Service);
         assert_eq!(
             config.backend.url.as_deref(),
-            Some("https://backend.example.internal")
+            Some("https://backend.example.internal:8443")
+        );
+        assert_eq!(
+            config.backend.ca_file,
+            Some(PathBuf::from("/etc/underwrap/ca.pem"))
+        );
+        assert_eq!(
+            config.backend.client_cert_file,
+            Some(PathBuf::from("/etc/underwrap/client.pem"))
+        );
+        assert_eq!(
+            config.backend.client_key_file,
+            Some(PathBuf::from("/etc/underwrap/client.key"))
         );
     }
 
@@ -460,6 +497,9 @@ credentials:
                 mode: BackendMode::UnixSocket,
                 socket: PathBuf::from("/run/underwrap/backend.sock"),
                 url: None,
+                ca_file: None,
+                client_cert_file: None,
+                client_key_file: None,
             },
             allowed_users: vec!["alice".to_string()],
             credentials: {
@@ -507,6 +547,9 @@ credentials:
             PathBuf::from("/run/underwrap/backend.sock")
         );
         assert_eq!(parsed.backend.url, None);
+        assert_eq!(parsed.backend.ca_file, None);
+        assert_eq!(parsed.backend.client_cert_file, None);
+        assert_eq!(parsed.backend.client_key_file, None);
         assert_eq!(parsed.wrappers.len(), 1);
         assert_eq!(parsed.credentials.len(), 1);
     }

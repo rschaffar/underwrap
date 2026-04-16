@@ -242,5 +242,6 @@ mod cli;
 mod daemon;
 mod directory_and_status;
 mod policy;
+mod service_transport;
 mod store_read;
 mod unlock;
