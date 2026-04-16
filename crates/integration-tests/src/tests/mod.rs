@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 
 use crate::harness::*;
@@ -118,12 +117,10 @@ macro_rules! require_echo {
 }
 
 fn ensure_package_built(package: &'static str) {
-    static UNDERWRAPCTL: OnceLock<()> = OnceLock::new();
     static UNDERWRAPD: OnceLock<()> = OnceLock::new();
     static UNDERWRAP_BACKENDD: OnceLock<()> = OnceLock::new();
 
     let once = match package {
-        "underwrapctl" => &UNDERWRAPCTL,
         "underwrapd" => &UNDERWRAPD,
         "underwrap-backendd" => &UNDERWRAP_BACKENDD,
         other => panic!("unsupported package build cache for {other}"),
@@ -171,30 +168,6 @@ fn expect_single_env_string(resp: WrapperResponse) -> String {
     String::from_utf8(expect_single_env_bytes(resp)).unwrap()
 }
 
-fn expect_status_all(resp: ControlResponse) -> (Vec<String>, Vec<String>) {
-    match resp {
-        ControlResponse::StatusAllOk {
-            wrappers,
-            credentials,
-        } => (wrappers, credentials),
-        other => panic!("expected StatusAllOk, got {other:?}"),
-    }
-}
-
-fn expect_wrapper_status(resp: ControlResponse) -> WrapperStatus {
-    match resp {
-        ControlResponse::StatusWrapperOk { status } => status,
-        other => panic!("expected StatusWrapperOk, got {other:?}"),
-    }
-}
-
-fn expect_credential_status(resp: ControlResponse) -> CredentialStatus {
-    match resp {
-        ControlResponse::StatusCredentialOk { status } => status,
-        other => panic!("expected StatusCredentialOk, got {other:?}"),
-    }
-}
-
 fn directory_credential(path: &str) -> underwrap_protocol::config::CredentialDef {
     underwrap_protocol::config::CredentialDef {
         mode: underwrap_protocol::config::CredentialMode::Directory {
@@ -209,17 +182,17 @@ async fn daemon_config_error(
 ) -> String {
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
-    let control_socket = base.join("control.sock");
-    let backend_socket = base.join("backend.sock");
+    let backend_url = "https://127.0.0.1:65535".to_string();
 
     let config = underwrap_protocol::config::DaemonConfig {
-        sockets: underwrap_protocol::config::SocketConfig {
-            control: control_socket,
-            ..Default::default()
-        },
+        sockets: underwrap_protocol::config::SocketConfig::default(),
         backend: underwrap_protocol::config::BackendSocketConfig {
-            socket: backend_socket,
-            ..Default::default()
+            mode: underwrap_protocol::config::BackendMode::Service,
+            socket: "/tmp/unused.sock".into(),
+            url: Some(backend_url),
+            ca_file: Some(base.join("ca.pem")),
+            client_cert_file: Some(base.join("client.pem")),
+            client_key_file: Some(base.join("client.key")),
         },
         allowed_users: Vec::new(),
         credentials,
@@ -236,10 +209,9 @@ async fn daemon_config_error(
 // Store and read flow
 // ===========================================================================
 
-mod cli;
 mod daemon;
 mod directory_and_status;
 mod policy;
 mod service_transport;
 mod store_read;
-mod unlock;
+mod wrapper_approval;

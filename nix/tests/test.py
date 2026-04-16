@@ -13,7 +13,6 @@ def su(cmd):
 import os
 SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PYTHON3 = os.environ.get("PYTHON3", "python3")
-UWCTL_LOCAL = os.environ.get("UWCTL_LOCAL", "underwrapctl")
 ADMIN_LOCAL = "http://127.0.0.1:19443"
 ADMIN_REMOTE = "http://127.0.0.1:19444"
 
@@ -95,9 +94,6 @@ def local_socket_permissions():
     assert perms == "660", f"expected 660, got {perms}"
     perms = machine.succeed("stat -c %G /run/underwrap-local/wrapper-test-echo.sock").strip()
     assert perms == "underwrap-local-test-echo", f"expected wrapper group, got {perms}"
-    perms = machine.succeed("stat -c %a /run/underwrap-local/control.sock").strip()
-    assert perms == "600", f"expected 600, got {perms}"
-
     # Groups exist.
     machine.succeed("getent group underwrap-local-test-echo")
     machine.succeed("getent group underwrap-local-test-echo2")
@@ -185,9 +181,6 @@ def local_isolation():
     # LOCAL INSTANCE: isolation
     # ============================================================
 
-    machine.fail(su(f"echo test | {UWCTL_LOCAL} status"))
-    machine.log("PASS: unprivileged user cannot access control socket")
-
     machine.fail(su("cat /var/lib/underwrap-backend-local/secrets/test/token"))
     machine.log("PASS: unprivileged user cannot read secret files")
 
@@ -206,23 +199,6 @@ def local_spoofing_resistance():
 
     machine.succeed(su(f"{PYTHON3} {SPOOF_SCRIPT}"))
     machine.log("PASS: wrapper socket spoofing blocked by permissions")
-
-
-def local_lock_unlock_lifecycle():
-    # ============================================================
-    # LOCAL INSTANCE: lock/unlock lifecycle
-    # ============================================================
-
-    machine.fail(su("/run/wrappers/bin/local-test-locked"))
-    machine.log("PASS: locked wrapper blocks unprivileged user")
-
-    machine.succeed(f"{UWCTL_LOCAL} unlock local-test-locked --seconds 60 --for-user testuser")
-    output = machine.succeed(su("/run/wrappers/bin/local-test-locked"))
-    assert "LOCKED_TOKEN=locked_secret" in output
-
-    machine.succeed(f"{UWCTL_LOCAL} lock local-test-locked")
-    machine.fail(su("/run/wrappers/bin/local-test-locked"))
-    machine.log("PASS: lock/unlock lifecycle works")
 
 
 def local_daemon_restart_persistence():

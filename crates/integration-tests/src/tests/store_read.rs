@@ -6,11 +6,10 @@ async fn store_then_read_secret() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     // Store the secret.
-    let resp = daemon
-        .store_secret("github/token", "ghp_test123")
+    daemon
+        .store_secret("test", "github/token", "ghp_test123")
         .await
         .unwrap();
-    assert!(matches!(resp, ControlResponse::StoreOk));
 
     // Read it back through the wrapper socket.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
@@ -52,56 +51,12 @@ async fn read_uses_wrapper_socket_without_client_supplied_name() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     daemon
-        .store_secret("github/token", "real_token")
+        .store_secret("test", "github/token", "real_token")
         .await
         .unwrap();
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     assert_eq!(expect_single_env_string(resp), "real_token");
-
-    daemon.stop().await.unwrap();
-}
-
-// ===========================================================================
-// Store undeclared secret → error
-// ===========================================================================
-
-#[tokio::test]
-async fn store_undeclared_secret_rejected() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
-
-    let resp = daemon.store_secret("unknown/secret", "data").await.unwrap();
-    match resp {
-        ControlResponse::Error { code, message } => {
-            assert!(matches!(code, ErrorCode::NotFound));
-            assert!(message.contains("unknown/secret"));
-        }
-        other => panic!("expected Error, got {other:?}"),
-    }
-
-    daemon.stop().await.unwrap();
-}
-
-#[tokio::test]
-async fn store_directory_credential_rejected() {
-    let mut wrappers = HashMap::new();
-    wrappers.insert(
-        "dir-w".to_string(),
-        wrapper("/usr/bin/true", "gws/state", "IGNORED"),
-    );
-    let mut credentials = HashMap::new();
-    credentials.insert("gws/state".to_string(), directory_credential(".config/gws"));
-    let daemon = TestDaemon::start(wrappers, credentials).await.unwrap();
-
-    let resp = daemon.store_secret("gws/state", "data").await.unwrap();
-    match resp {
-        ControlResponse::Error { code, message } => {
-            assert!(matches!(code, ErrorCode::Unauthorized));
-            assert!(message.contains("not an env credential"));
-        }
-        other => panic!("expected Error, got {other:?}"),
-    }
 
     daemon.stop().await.unwrap();
 }
@@ -127,12 +82,12 @@ async fn overwrite_mutable_secret() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     // Store initial value.
-    daemon.store_secret("mut/tok", "v1").await.unwrap();
+    daemon.store_secret("test", "mut/tok", "v1").await.unwrap();
     let resp = daemon.read_request("mutable-w").await.unwrap();
     assert_eq!(expect_single_env_string(resp), "v1");
 
     // Overwrite.
-    daemon.store_secret("mut/tok", "v2").await.unwrap();
+    daemon.store_secret("test", "mut/tok", "v2").await.unwrap();
     let resp = daemon.read_request("mutable-w").await.unwrap();
     assert_eq!(expect_single_env_string(resp), "v2");
 
@@ -149,18 +104,16 @@ async fn immutable_secret_rejects_overwrite() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     // First store succeeds (secret doesn't exist yet).
-    let resp = daemon
-        .store_secret("github/token", "initial")
+    daemon
+        .store_secret("test", "github/token", "initial")
         .await
         .unwrap();
-    assert!(matches!(resp, ControlResponse::StoreOk));
 
     // Second store also succeeds — credentials are operator-managed and may be overwritten.
-    let resp = daemon
-        .store_secret("github/token", "overwrite_attempt")
+    daemon
+        .store_secret("test", "github/token", "overwrite_attempt")
         .await
         .unwrap();
-    assert!(matches!(resp, ControlResponse::StoreOk));
 
     // Updated value preserved.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
@@ -179,7 +132,7 @@ async fn concurrent_reads() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     daemon
-        .store_secret("github/token", "ghp_concurrent")
+        .store_secret("test", "github/token", "ghp_concurrent")
         .await
         .unwrap();
 
@@ -226,7 +179,7 @@ async fn hierarchical_secret_ids() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     daemon
-        .store_secret("org/team/service/token", "deep_val")
+        .store_secret("test", "org/team/service/token", "deep_val")
         .await
         .unwrap();
 
@@ -247,7 +200,10 @@ async fn large_secret_material() {
 
     // ~32KB of data (simulating a larger credential blob).
     let big = "x".repeat(32_000);
-    daemon.store_secret("github/token", &big).await.unwrap();
+    daemon
+        .store_secret("test", "github/token", &big)
+        .await
+        .unwrap();
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     assert_eq!(expect_single_env_bytes(resp).len(), 32_000);
@@ -265,7 +221,10 @@ async fn secret_with_special_chars() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     let special = "tok=\"abc 123\"\nnewline\ttab\0null";
-    daemon.store_secret("github/token", special).await.unwrap();
+    daemon
+        .store_secret("test", "github/token", special)
+        .await
+        .unwrap();
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     assert_eq!(expect_single_env_bytes(resp), special.as_bytes());
@@ -294,7 +253,10 @@ async fn rapid_store_read_cycles() {
 
     for i in 0..50 {
         let val = format!("tok_{i}");
-        daemon.store_secret("rapid/tok", &val).await.unwrap();
+        daemon
+            .store_secret("test", "rapid/tok", &val)
+            .await
+            .unwrap();
 
         let resp = daemon.read_request("rapid-wrapper").await.unwrap();
         assert_eq!(expect_single_env_string(resp), val, "iteration {i}");
@@ -302,7 +264,3 @@ async fn rapid_store_read_cycles() {
 
     daemon.stop().await.unwrap();
 }
-
-// ===========================================================================
-// Unlock: locked wrapper denies reads
-// ===========================================================================

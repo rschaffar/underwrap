@@ -2,6 +2,7 @@
 //! and provides helpers for IPC.
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,7 +19,6 @@ use underwrap_protocol::policy::PolicyDocument;
 #[allow(dead_code)]
 pub struct TestDaemon {
     pub wrapper_sockets: HashMap<String, PathBuf>,
-    pub control_socket: PathBuf,
     pub admin_url: String,
     pub storage_dir: PathBuf,
     shutdown: Arc<Notify>,
@@ -47,7 +47,6 @@ impl TestDaemon {
         let tempdir = tempfile::TempDir::new()?;
         let base = tempdir.path();
 
-        let control_socket = base.join("control.sock");
         let storage_dir = base.join("secrets");
         let mut wrapper_sockets = HashMap::new();
 
@@ -111,10 +110,7 @@ impl TestDaemon {
         .await?;
 
         let config = DaemonConfig {
-            sockets: SocketConfig {
-                control: control_socket.clone(),
-                ..Default::default()
-            },
+            sockets: SocketConfig::default(),
             backend: BackendSocketConfig {
                 mode: underwrap_protocol::config::BackendMode::Service,
                 socket: "/tmp/unused-backend.sock".into(),
@@ -135,14 +131,12 @@ impl TestDaemon {
                 async move { underwrapd::server::run(config, Some(shutdown_clone)).await },
             );
 
-        wait_for_path(&control_socket).await?;
         for socket in wrapper_sockets.values() {
             wait_for_path(socket).await?;
         }
 
         Ok(Self {
             wrapper_sockets,
-            control_socket,
             admin_url,
             storage_dir,
             shutdown,
@@ -189,32 +183,24 @@ impl TestDaemon {
         Ok(resp)
     }
 
-    /// Send a control request and return the response.
-    pub async fn control_request(&self, req: &ControlRequest) -> Result<ControlResponse> {
-        let mut stream = UnixStream::connect(&self.control_socket).await?;
-        write_frame_async(&mut stream, req).await?;
-        let resp: ControlResponse = read_frame_async(&mut stream).await?;
-        Ok(resp)
-    }
-
-    /// Store a credential via the control socket.
-    pub async fn store_secret(&self, secret_id: &str, material: &str) -> Result<ControlResponse> {
-        self.control_request(&ControlRequest::Store {
-            secret_id: secret_id.to_string(),
-            material: material.to_string().into(),
-        })
-        .await
-    }
-
-    /// Query status via the control socket.
-    pub async fn status(&self, target: Option<&str>) -> Result<ControlResponse> {
-        let request = match target {
-            Some(target) => ControlRequest::StatusTarget {
-                target: target.to_string(),
-            },
-            None => ControlRequest::StatusAll,
-        };
-        self.control_request(&request).await
+    /// Write a secret through the backend admin API.
+    pub async fn store_secret(&self, store: &str, secret_id: &str, material: &str) -> Result<()> {
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/v1/admin/secret/write", self.admin_url))
+            .json(&underwrap_protocol::service::AdminSecretWriteRequest {
+                store: store.to_string(),
+                secret_id: secret_id.to_string(),
+                material_b64: base64::engine::general_purpose::STANDARD.encode(material.as_bytes()),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(())
     }
 
     pub async fn get_policy(&self, store: &str) -> Result<Option<PolicyDocument>> {

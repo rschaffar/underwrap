@@ -2798,18 +2798,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "underwrapctl"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "serde",
- "serde_json",
- "tokio",
- "underwrap-protocol",
-]
-
-[[package]]
 name = "underwrapd"
 version = "0.1.0"
 dependencies = [

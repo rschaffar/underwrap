@@ -64,7 +64,6 @@
           packages = {
             default = workspace;
             underwrapd = mkCrate "underwrapd";
-            underwrapctl = mkCrate "underwrapctl";
             underwrap-exec = mkCrate "underwrap-exec";
             underwrap-ns = mkCrate "underwrap-ns";
             underwrap-backendd = mkCrate "underwrap-backendd";
@@ -179,7 +178,6 @@
                 os.environ["SPOOF_SCRIPT"] = "${spoofScript}"
                 os.environ["ANCESTOR_ATTACK_SCRIPT"] = "${ancestorAttackScript}"
                 os.environ["PYTHON3"] = "${pkgs.python3}/bin/python3"
-                os.environ["UWCTL_LOCAL"] = "${perSystem.packages.${system}.default}/bin/underwrapctl --socket /run/underwrap-local/control.sock"
                 ${testScript}
               '';
             };

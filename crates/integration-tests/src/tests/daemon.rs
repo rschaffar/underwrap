@@ -1,4 +1,5 @@
 use super::*;
+use base64::Engine;
 
 #[tokio::test]
 async fn parse_example_config() {
@@ -56,23 +57,24 @@ wrappers:
 }
 
 // ===========================================================================
-// underwrapd binary: starts and responds to status
+// underwrapd binary: starts and can read via wrapper using backend admin-seeded state
 // ===========================================================================
 
 #[tokio::test]
-async fn underwrapd_binary_start_and_status() {
+async fn underwrapd_binary_start_and_read() {
     ensure_package_built("underwrapd");
     ensure_package_built("underwrap-backendd");
 
     let daemon_bin = require_bin!("underwrapd");
     let backend_bin = require_bin!("underwrap-backendd");
     let admin_port = 18446u16;
+    let admin_url = format!("http://127.0.0.1:{admin_port}");
+    let service_url = "https://127.0.0.1:18447".to_string();
 
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
 
     let wrapper_sock = base.join("wrapper-w.sock");
-    let control_sock = base.join("control.sock");
     let server_cert = base.join("server.pem");
     let server_key = base.join("server.key");
     let ca_cert = base.join("ca.pem");
@@ -123,14 +125,11 @@ async fn underwrapd_binary_start_and_status() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
-        sockets: underwrap_protocol::config::SocketConfig {
-            control: control_sock.clone(),
-            ..Default::default()
-        },
+        sockets: underwrap_protocol::config::SocketConfig::default(),
         backend: underwrap_protocol::config::BackendSocketConfig {
             mode: underwrap_protocol::config::BackendMode::Service,
             socket: "/tmp/unused.sock".into(),
-            url: Some("https://127.0.0.1:18447".to_string()),
+            url: Some(service_url.clone()),
             ca_file: Some(ca_cert.clone()),
             client_cert_file: Some(client_cert.clone()),
             client_key_file: Some(client_key.clone()),
@@ -164,31 +163,58 @@ async fn underwrapd_binary_start_and_status() {
         .unwrap();
 
     for _ in 0..100 {
-        if control_sock.exists() && wrapper_sock.exists() {
+        if wrapper_sock.exists() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(control_sock.exists(), "control socket never appeared");
     assert!(wrapper_sock.exists(), "wrapper socket never appeared");
 
-    let mut stream = tokio::net::UnixStream::connect(&control_sock)
+    let client = reqwest::Client::new();
+    let write_resp = client
+        .post(format!("{admin_url}/v1/admin/secret/write"))
+        .json(&underwrap_protocol::service::AdminSecretWriteRequest {
+            store: "test".to_string(),
+            secret_id: "s/t".to_string(),
+            material_b64: base64::engine::general_purpose::STANDARD.encode("value"),
+        })
+        .send()
         .await
         .unwrap();
-    let req = ControlRequest::StatusAll;
+    assert!(write_resp.status().is_success());
+
+    let policy_resp = client
+        .post(format!("{admin_url}/v1/admin/policy/put"))
+        .json(&underwrap_protocol::service::AdminPolicyPutRequest {
+            store: "test".to_string(),
+            document: underwrap_protocol::policy::PolicyDocument {
+                wrappers: Vec::new(),
+                rules: vec![underwrap_protocol::policy::PolicyRule {
+                    id: "allow-read".to_string(),
+                    wrapper: "w".to_string(),
+                    resource: "secret:s/t".to_string(),
+                    operation: "secret.read".to_string(),
+                    effect: underwrap_protocol::policy::PolicyEffect::Allow,
+                }],
+            },
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(policy_resp.status().is_success());
+
+    let mut stream = tokio::net::UnixStream::connect(&wrapper_sock)
+        .await
+        .unwrap();
+    let req = WrapperRequest::Read { scope: None };
     underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
         .await
         .unwrap();
-    let resp: ControlResponse = underwrap_protocol::ipc::read_frame_async(&mut stream)
+    let resp: WrapperResponse = underwrap_protocol::ipc::read_frame_async(&mut stream)
         .await
         .unwrap();
 
-    match resp {
-        ControlResponse::StatusAllOk { wrappers, .. } => {
-            assert_eq!(wrappers.len(), 1);
-        }
-        other => panic!("expected StatusAllOk, got {other:?}"),
-    }
+    assert_eq!(expect_single_env_string(resp), "value");
 
     child.kill().await.unwrap();
     backend_child.kill().await.unwrap();

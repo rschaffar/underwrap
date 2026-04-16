@@ -1,17 +1,16 @@
 //! Unix socket server for underwrapd.
 //!
-//! Runs wrapper socket listeners plus the control socket listener.
+//! Runs wrapper socket listeners.
 
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixListener;
 use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
 use tracing::{error, info};
 
 use underwrap_protocol::config::DaemonConfig;
 
-use crate::control::handle_control;
 use crate::startup::{
     bind_socket, build_allowed_user_uids, build_wrapper_gid_map, next_listener_result,
     validate_config,
@@ -56,19 +55,7 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         unlock: UnlockState::new(),
     });
 
-    let control_listener = bind_socket(
-        &config.sockets.control,
-        config.sockets.control_mode,
-        "control",
-        None,
-    )?;
-
     let mut tasks = JoinSet::new();
-    tasks.spawn(accept_loop(
-        control_listener,
-        Arc::clone(&state),
-        handle_control,
-    ));
 
     for (name, wrapper) in &config.wrappers {
         let gid = *wrapper_to_gid
@@ -103,31 +90,6 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
             }
         }
         None => next_listener_result(&mut tasks).await,
-    }
-}
-
-async fn accept_loop<F, Fut>(listener: UnixListener, state: Arc<State>, handler: F) -> Result<()>
-where
-    F: Fn(UnixStream, Arc<State>) -> Fut + Send + Sync + Copy + 'static,
-    Fut: std::future::Future<Output = Result<()>> + Send,
-{
-    let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-
-    loop {
-        let (stream, _addr) = listener.accept().await?;
-        let state = Arc::clone(&state);
-        let permit = semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore closed");
-
-        tokio::spawn(async move {
-            if let Err(e) = handler(stream, state).await {
-                error!("connection error: {e:#}");
-            }
-            drop(permit);
-        });
     }
 }
 

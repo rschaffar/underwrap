@@ -1,12 +1,10 @@
 pub mod audit;
-pub(crate) mod control;
 pub mod directory_channel;
 pub(crate) mod peer_auth;
 pub(crate) mod policy;
 pub mod secretsd_channel;
 pub mod server;
 pub(crate) mod startup;
-pub(crate) mod status;
 pub mod storage;
 pub mod unlock;
 pub(crate) mod unlock_flow;
