@@ -2691,17 +2691,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "underwrap-backendctl"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "serde_json",
- "tokio",
- "underwrap-protocol",
-]
-
-[[package]]
 name = "underwrap-backendd"
 version = "0.1.0"
 dependencies = [
