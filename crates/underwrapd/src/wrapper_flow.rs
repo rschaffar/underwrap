@@ -742,6 +742,7 @@ mod tests {
                         effect: underwrap_protocol::policy::PolicyEffect::Allow,
                     },
                 ],
+                grants: Vec::new(),
             },
         ));
         let state = state_with_store(UnlockPolicy::default(), store);
@@ -777,6 +778,7 @@ mod tests {
                         effect: underwrap_protocol::policy::PolicyEffect::Allow,
                     },
                 ],
+                grants: Vec::new(),
             },
         ));
         let state = state_with_store(

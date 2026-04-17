@@ -773,6 +773,65 @@ async fn handle_admin_request(
             },
             Err(response) => response,
         },
+        (&Method::POST, "/v1/admin/grant/upsert") => match parse_json_body::<
+            underwrap_protocol::service::AdminGrantUpsertRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
+                let mut doc: underwrap_protocol::policy::PolicyDocument =
+                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                        Some(material) => serde_json::from_slice(material.as_ref())?,
+                        None => underwrap_protocol::policy::PolicyDocument::default(),
+                    };
+                if let Some(grant) = doc
+                    .grants
+                    .iter_mut()
+                    .find(|grant| grant.id == body.grant.id)
+                {
+                    *grant = body.grant.clone();
+                } else {
+                    doc.grants.push(body.grant.clone());
+                }
+                doc.grants.sort_by(|a, b| a.id.cmp(&b.id));
+                store.write(
+                    POLICY_DOCUMENT_SECRET_ID,
+                    serde_json::to_vec(&doc)?.as_slice(),
+                )
+            }) {
+                Ok(()) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminOkResponse { ok: true },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/grant/delete") => match parse_json_body::<
+            underwrap_protocol::service::AdminGrantDeleteRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
+                let mut doc: underwrap_protocol::policy::PolicyDocument =
+                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                        Some(material) => serde_json::from_slice(material.as_ref())?,
+                        None => underwrap_protocol::policy::PolicyDocument::default(),
+                    };
+                doc.grants.retain(|grant| grant.id != body.id);
+                store.write(
+                    POLICY_DOCUMENT_SECRET_ID,
+                    serde_json::to_vec(&doc)?.as_slice(),
+                )
+            }) {
+                Ok(()) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminOkResponse { ok: true },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     };
     Ok(response)

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::policy::{PolicyDocument, PolicyRule};
+use crate::policy::{PolicyDocument, PolicyGrant, PolicyRule};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceStatusResponse {
@@ -132,6 +132,18 @@ pub struct AdminRuleUpsertRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminRuleDeleteRequest {
+    pub store: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminGrantUpsertRequest {
+    pub store: String,
+    pub grant: PolicyGrant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminGrantDeleteRequest {
     pub store: String,
     pub id: String,
 }

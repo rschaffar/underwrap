@@ -211,6 +211,7 @@ async fn daemon_config_error(
 
 mod daemon;
 mod directory_and_status;
+mod grants;
 mod policy;
 mod service_transport;
 mod store_read;

@@ -119,6 +119,7 @@ mod tests {
                 operation: "secret.read".to_string(),
                 effect: PolicyEffect::Allow,
             }],
+            grants: Vec::new(),
         }));
         assert!(matches!(
             authorize_operation(&store, "gh-comment", "secret:github/token", "secret.read")
@@ -138,6 +139,7 @@ mod tests {
                 operation: "secret.read".to_string(),
                 effect: PolicyEffect::Allow,
             }],
+            grants: Vec::new(),
         }));
         assert_eq!(
             authorize_operation(&store, "gh-comment", "secret:github/token", "secret.read")

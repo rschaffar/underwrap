@@ -24,6 +24,7 @@ async fn service_mode_roundtrip_reads_secret() {
                     operation: "secret.read".to_string(),
                     effect: PolicyEffect::Allow,
                 }],
+                grants: Vec::new(),
             },
         )
         .await

@@ -24,6 +24,7 @@ async fn backend_policy_roundtrip_over_admin_api() {
             operation: "secret.read".to_string(),
             effect: PolicyEffect::Allow,
         }],
+        grants: Vec::new(),
     };
     daemon.put_policy("test", &document).await.unwrap();
 
@@ -80,6 +81,7 @@ async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
                     operation: "secret.read".to_string(),
                     effect: PolicyEffect::Allow,
                 }],
+                grants: Vec::new(),
             },
         )
         .await
@@ -116,6 +118,7 @@ async fn disabled_wrapper_is_denied_even_with_allow_rule() {
                     operation: "secret.read".to_string(),
                     effect: PolicyEffect::Allow,
                 }],
+                grants: Vec::new(),
             },
         )
         .await

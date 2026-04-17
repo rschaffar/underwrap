@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use underwrap_protocol::config::*;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
-use underwrap_protocol::policy::PolicyDocument;
+use underwrap_protocol::policy::{PolicyDocument, PolicyGrant};
 
 /// A running test daemon with temp dirs and sockets.
 #[allow(dead_code)]
@@ -228,6 +228,42 @@ impl TestDaemon {
             .json(&underwrap_protocol::service::AdminPolicyPutRequest {
                 store: store.to_string(),
                 document: doc.clone(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(())
+    }
+
+    pub async fn upsert_grant(&self, store: &str, grant: &PolicyGrant) -> Result<()> {
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/v1/admin/grant/upsert", self.admin_url))
+            .json(&underwrap_protocol::service::AdminGrantUpsertRequest {
+                store: store.to_string(),
+                grant: grant.clone(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(())
+    }
+
+    pub async fn delete_grant(&self, store: &str, id: &str) -> Result<()> {
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/v1/admin/grant/delete", self.admin_url))
+            .json(&underwrap_protocol::service::AdminGrantDeleteRequest {
+                store: store.to_string(),
+                id: id.to_string(),
             })
             .send()
             .await?;

@@ -196,6 +196,7 @@ async fn underwrapd_binary_start_and_read() {
                     operation: "secret.read".to_string(),
                     effect: underwrap_protocol::policy::PolicyEffect::Allow,
                 }],
+                grants: Vec::new(),
             },
         })
         .send()

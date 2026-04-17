@@ -64,6 +64,34 @@ def admin_upsert_rule(url, store, rule_id, wrapper, resource, operation, effect)
     )
 
 
+def admin_upsert_grant(url, store, grant_id, wrapper, resource, operation, effect, starts_at_epoch=None, expires_at_epoch=None, reason=None):
+    return admin_api(
+        url,
+        "/v1/admin/grant/upsert",
+        {
+            "store": store,
+            "grant": {
+                "id": grant_id,
+                "wrapper": wrapper,
+                "resource": resource,
+                "operation": operation,
+                "effect": effect,
+                "starts_at_epoch": starts_at_epoch,
+                "expires_at_epoch": expires_at_epoch,
+                "reason": reason,
+            },
+        },
+    )
+
+
+def admin_delete_grant(url, store, grant_id):
+    return admin_api(
+        url,
+        "/v1/admin/grant/delete",
+        {"store": store, "id": grant_id},
+    )
+
+
 def boot_and_service_checks():
     # ============================================================
     # BOOT + SERVICE CHECKS
@@ -709,6 +737,55 @@ def remote_service_lifecycle():
     machine.log("PASS: wrapper works after backend service restart")
 
 
+def local_backend_managed_grants():
+    # ============================================================
+    # LOCAL INSTANCE: backend-managed grants
+    # ============================================================
+
+    now = int(time.time())
+
+    # No baseline rule for this wrapper/resource pair, so a time-bounded grant is required.
+    admin_set_wrapper_state(ADMIN_LOCAL, "local", "local-test-echo2", True)
+    machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
+    machine.log("PASS: wrapper without baseline rule is denied before grant")
+
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        "grant-echo2",
+        "local-test-echo2",
+        "secret:test/other",
+        "secret.read",
+        "allow",
+        starts_at_epoch=now - 1,
+        expires_at_epoch=now + 30,
+        reason="temporary allow",
+    )
+    output = machine.succeed(su("/run/wrappers/bin/local-test-echo2 hello"))
+    assert "hello" in output
+    machine.log("PASS: active backend grant allows wrapper action")
+
+    admin_delete_grant(ADMIN_LOCAL, "local", "grant-echo2")
+    machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
+    machine.log("PASS: deleting backend grant revokes future wrapper action")
+
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        "grant-expired",
+        "local-test-echo2",
+        "secret:test/other",
+        "secret.read",
+        "allow",
+        starts_at_epoch=now - 60,
+        expires_at_epoch=now - 1,
+        reason="expired allow",
+    )
+    machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
+    machine.log("PASS: expired backend grant is not honored")
+
+
+
 def local_backend_policy_control_center():
     # ============================================================
     # LOCAL INSTANCE: backend-managed wrapper policy control
@@ -810,5 +887,6 @@ local_directory_credentials()
 remote_service_lifecycle()
 instance_isolation()
 local_backend_policy_control_center()
+local_backend_managed_grants()
 audit_and_no_secret_leaks()
 
