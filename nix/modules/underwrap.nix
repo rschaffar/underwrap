@@ -65,14 +65,14 @@ let
         lib.nameValuePair "${instName}-${name}" ({
           target = w.target;
           use = w.use;
-          unlock = {
-            mode = w.unlock.mode;
-            maxSeconds = w.unlock.maxSeconds;
+          approval = {
+            mode = w.approval.mode;
+            maxSeconds = w.approval.maxSeconds;
           };
           socket = wrapperSocketPath name;
           group = wrapperGroupName name;
-        } // lib.optionalAttrs (w.unlockKey != null) {
-          unlock_key = w.unlockKey;
+        } // lib.optionalAttrs (w.approvalKey != null) {
+          approval_key = w.approvalKey;
         })
       ) inst.wrappers;
     };
@@ -222,11 +222,11 @@ let
     };
   };
 
-  unlockSubmodule = lib.types.submodule {
+  approvalSubmodule = lib.types.submodule {
     options = {
       mode = lib.mkOption {
-        type = lib.types.enum [ "always-unlocked" "always" "optional" ];
-        default = "always-unlocked";
+        type = lib.types.enum [ "always-approved" "approval-required" "approval-optional" ];
+        default = "always-approved";
       };
       maxSeconds = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.positive;
@@ -246,14 +246,14 @@ let
         default = {};
         description = "Credential usage bindings for this wrapper.";
       };
-      unlock = lib.mkOption {
-        type = unlockSubmodule;
+      approval = lib.mkOption {
+        type = approvalSubmodule;
         default = {};
       };
-      unlockKey = lib.mkOption {
+      approvalKey = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "SSH public key used for optional unlock challenge flow.";
+        description = "SSH public key used for optional approval challenge flow.";
       };
       envPassthrough = lib.mkOption {
         type = lib.types.listOf lib.types.str;

@@ -5,10 +5,11 @@ use tokio::net::UnixStream;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
-use underwrap_protocol::config::{AccessMode, UnlockMode};
+use underwrap_protocol::config::{AccessMode, ApprovalMode};
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::{ErrorCode, WrapperRequest, WrapperResponse};
 
+use crate::approval_flow::{process_wrapper_approval, process_wrapper_approval_response};
 use crate::audit;
 use crate::peer_auth::{PeerCred, get_peer_cred};
 use crate::policy::{
@@ -16,7 +17,6 @@ use crate::policy::{
     libsecret_resource,
 };
 use crate::server::State;
-use crate::unlock_flow::{process_wrapper_unlock, process_wrapper_unlock_response};
 use crate::wrapper_bindings::{
     wrapper_directory_bindings, wrapper_env_credentials, wrapper_libsecret_binding,
 };
@@ -48,7 +48,7 @@ pub(crate) async fn handle_wrapper(
         dispatch_wrapper_request(&request, wrapper_name, peer.as_ref(), peer_uid, &state).await;
     write_frame_async(&mut stream, &response).await?;
 
-    if let Some(follow_up_response) = handle_unlock_follow_up(
+    if let Some(follow_up_response) = handle_approval_follow_up(
         &mut stream,
         &response,
         wrapper_name,
@@ -174,19 +174,19 @@ async fn dispatch_wrapper_request(
             info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
             process_read_for(wrapper_name, scope.as_deref(), state, peer_uid).await
         }
-        WrapperRequest::Unlock { scope, seconds } => {
-            info!(wrapper = %wrapper_name, peer = ?peer, "unlock request via wrapper socket");
-            process_wrapper_unlock(wrapper_name, scope.as_deref(), *seconds, peer_uid, state)
+        WrapperRequest::Approve { scope, seconds } => {
+            info!(wrapper = %wrapper_name, peer = ?peer, "approval request via wrapper socket");
+            process_wrapper_approval(wrapper_name, scope.as_deref(), *seconds, peer_uid, state)
         }
-        WrapperRequest::UnlockResponse {
+        WrapperRequest::ApproveResponse {
             scope,
             seconds,
             challenge,
             signature,
             public_key_blob,
         } => {
-            info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response");
-            process_wrapper_unlock_response(
+            info!(wrapper = %wrapper_name, peer = ?peer, "approval challenge response");
+            process_wrapper_approval_response(
                 wrapper_name,
                 scope.as_deref(),
                 *seconds,
@@ -200,7 +200,7 @@ async fn dispatch_wrapper_request(
     }
 }
 
-async fn handle_unlock_follow_up(
+async fn handle_approval_follow_up(
     stream: &mut UnixStream,
     response: &WrapperResponse,
     wrapper_name: &str,
@@ -216,22 +216,22 @@ async fn handle_unlock_follow_up(
         Ok(Ok(request)) => request,
         Ok(Err(e)) => return Err(e),
         Err(_) => {
-            warn!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge follow-up timeout");
+            warn!(wrapper = %wrapper_name, peer = ?peer, "approval challenge follow-up timeout");
             stream.shutdown().await?;
             return Ok(None);
         }
     };
 
     let follow_up_response = match &follow_up {
-        WrapperRequest::UnlockResponse {
+        WrapperRequest::ApproveResponse {
             scope,
             seconds,
             challenge,
             signature,
             public_key_blob,
         } => {
-            info!(wrapper = %wrapper_name, peer = ?peer, "unlock challenge response (same connection)");
-            process_wrapper_unlock_response(
+            info!(wrapper = %wrapper_name, peer = ?peer, "approval challenge response (same connection)");
+            process_wrapper_approval_response(
                 wrapper_name,
                 scope.as_deref(),
                 *seconds,
@@ -244,7 +244,7 @@ async fn handle_unlock_follow_up(
         }
         _ => WrapperResponse::Error {
             code: ErrorCode::Internal,
-            message: "expected UnlockResponse after Challenge".to_string(),
+            message: "expected ApproveResponse after Challenge".to_string(),
         },
     };
 
@@ -413,8 +413,8 @@ pub(crate) async fn process_read_for(
     };
 
     if !backend_policy_enabled
-        && wrapper_def.unlock.mode != UnlockMode::AlwaysUnlocked
-        && let Err(reason) = state.unlock.check(wrapper_name, scope, peer_uid)
+        && wrapper_def.approval.mode != ApprovalMode::AlwaysApproved
+        && let Err(reason) = state.approval.check(wrapper_name, scope, peer_uid)
     {
         audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
         return WrapperResponse::Error {
@@ -530,13 +530,13 @@ pub(crate) async fn process_read_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unlock::UnlockState;
+    use crate::approval::ApprovalState;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use underwrap_protocol::config::{
-        AccessMode, BackendSocketConfig, CredentialDef, CredentialMode, CredentialUse,
-        DaemonConfig, SocketConfig, UnlockPolicy, WrapperDef,
+        AccessMode, ApprovalPolicy, BackendSocketConfig, CredentialDef, CredentialMode,
+        CredentialUse, DaemonConfig, SocketConfig, WrapperDef,
     };
     use underwrap_protocol::message::SecretBytes;
 
@@ -608,15 +608,15 @@ mod tests {
         }
     }
 
-    fn state_for(unlock: UnlockPolicy) -> State {
+    fn state_for(approval: ApprovalPolicy) -> State {
         state_with_store(
-            unlock,
+            approval,
             Arc::new(MemStore::with_entries(&[("github/token", b"ghp_test")])),
         )
     }
 
     fn state_with_store(
-        unlock: UnlockPolicy,
+        approval: ApprovalPolicy,
         store: Arc<dyn underwrap_store::StorageBackend>,
     ) -> State {
         State {
@@ -663,22 +663,22 @@ mod tests {
                                 },
                             ),
                         ]),
-                        unlock,
+                        approval,
                         socket: PathBuf::from("/tmp/test.sock"),
                         group: "test-group".to_string(),
-                        unlock_key: None,
+                        approval_key: None,
                     },
                 )]),
             },
             store,
             allowed_user_uids: std::collections::HashSet::new(),
-            unlock: UnlockState::new(),
+            approval: ApprovalState::new(),
         }
     }
 
     #[tokio::test]
     async fn process_read_for_returns_env_and_directory_bindings() {
-        let state = state_for(UnlockPolicy::default());
+        let state = state_for(ApprovalPolicy::default());
         let resp = process_read_for("gh-authorized", None, &state, 1000).await;
         match resp {
             WrapperResponse::ReadOk { env, directories } => {
@@ -691,9 +691,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_read_for_enforces_unlock_state() {
-        let state = state_for(UnlockPolicy {
-            mode: UnlockMode::Always,
+    async fn process_read_for_enforces_approval_state() {
+        let state = state_for(ApprovalPolicy {
+            mode: ApprovalMode::Required,
             max_seconds: Some(60),
         });
         let resp = process_read_for("gh-authorized", None, &state, 1000).await;
@@ -709,7 +709,7 @@ mod tests {
             &[("github/token", b"ghp_test")],
             underwrap_protocol::policy::PolicyDocument::default(),
         ));
-        let state = state_with_store(UnlockPolicy::default(), store);
+        let state = state_with_store(ApprovalPolicy::default(), store);
         let resp = process_read_for("gh-authorized", None, &state, 1000).await;
         match resp {
             WrapperResponse::Error { code, message } => {
@@ -745,7 +745,7 @@ mod tests {
                 grants: Vec::new(),
             },
         ));
-        let state = state_with_store(UnlockPolicy::default(), store);
+        let state = state_with_store(ApprovalPolicy::default(), store);
         let resp = process_read_for("gh-authorized", None, &state, 1000).await;
         match resp {
             WrapperResponse::ReadOk { env, directories } => {
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backend_policy_replaces_local_unlock_when_present() {
+    async fn backend_policy_replaces_local_approval_when_present() {
         let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_policy(
             &[("github/token", b"ghp_test")],
             underwrap_protocol::policy::PolicyDocument {
@@ -782,8 +782,8 @@ mod tests {
             },
         ));
         let state = state_with_store(
-            UnlockPolicy {
-                mode: UnlockMode::Always,
+            ApprovalPolicy {
+                mode: ApprovalMode::Required,
                 max_seconds: Some(60),
             },
             store,

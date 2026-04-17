@@ -1,23 +1,23 @@
-//! Unlock state management.
+//! Approval state management.
 //!
-//! Tracks per-wrapper, per-scope, per-uid unlock grants with time-based expiry.
+//! Tracks per-wrapper, per-scope, per-uid approval grants with time-based expiry.
 //! Scope is a caller-provided convenience label; the uid binding ensures that
-//! one user's unlock cannot be reused by another process with a different uid.
+//! one user's approval cannot be reused by another process with a different uid.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use underwrap_protocol::message::{UnlockGrantStatus, UnlockStatus};
+use underwrap_protocol::message::{ApprovalGrantStatus, ApprovalStatus};
 
-/// Key for an unlock grant: (wrapper_name, scope, uid).
+/// Key for an approval grant: (wrapper_name, scope, uid).
 /// scope=None means "all scopes" for this wrapper+uid.
 type GrantKey = (String, Option<String>, u32);
 
-/// An active unlock grant.
+/// An active approval grant.
 #[derive(Debug, Clone)]
 struct Grant {
-    /// Expiry time. None = no expiry (unlocked until explicit lock).
+    /// Expiry time. None = no expiry (approved until explicit revoke).
     expires_at: Option<Instant>,
 }
 
@@ -30,27 +30,27 @@ impl Grant {
     }
 }
 
-/// Pending challenge for SSH agent unlock.
+/// Pending challenge for SSH agent approval.
 #[derive(Debug)]
 struct PendingChallenge {
     nonce: Vec<u8>,
     expires_at: Instant,
 }
 
-/// Thread-safe unlock state store.
-pub struct UnlockState {
+/// Thread-safe approval state store.
+pub struct ApprovalState {
     grants: Mutex<HashMap<GrantKey, Grant>>,
     /// Pending SSH agent challenges: (wrapper, scope, uid) → nonce.
     pending: Mutex<HashMap<GrantKey, PendingChallenge>>,
 }
 
-impl Default for UnlockState {
+impl Default for ApprovalState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl UnlockState {
+impl ApprovalState {
     pub fn new() -> Self {
         Self {
             grants: Mutex::new(HashMap::new()),
@@ -58,8 +58,8 @@ impl UnlockState {
         }
     }
 
-    /// Create an unlock grant for a wrapper, optionally scoped, bound to a uid.
-    pub fn unlock(&self, wrapper: &str, scope: Option<&str>, seconds: Option<u64>, uid: u32) {
+    /// Create an approval grant for a wrapper, optionally scoped, bound to a uid.
+    pub fn approve(&self, wrapper: &str, scope: Option<&str>, seconds: Option<u64>, uid: u32) {
         let key = (wrapper.to_string(), scope.map(|s| s.to_string()), uid);
         let grant = Grant {
             expires_at: seconds.map(|s| Instant::now() + std::time::Duration::from_secs(s)),
@@ -69,7 +69,7 @@ impl UnlockState {
     }
 
     /// Lock a specific wrapper (optionally scoped), or everything.
-    pub fn lock(&self, wrapper: Option<&str>, scope: Option<&str>) {
+    pub fn revoke(&self, wrapper: Option<&str>, scope: Option<&str>) {
         let mut grants = self.grants.lock().unwrap();
         match wrapper {
             Some(w) => match scope {
@@ -87,7 +87,7 @@ impl UnlockState {
         }
     }
 
-    /// Check if a wrapper is unlocked for the given scope and uid.
+    /// Check if a wrapper is approved for the given scope and uid.
     pub fn check(&self, wrapper: &str, scope: Option<&str>, uid: u32) -> Result<(), String> {
         let mut grants = self.grants.lock().unwrap();
 
@@ -111,11 +111,11 @@ impl UnlockState {
             return Ok(());
         }
 
-        Err(format!("wrapper '{wrapper}' is locked"))
+        Err(format!("wrapper '{wrapper}' is not approved"))
     }
 
     /// Get status info for a wrapper.
-    pub fn status(&self, wrapper: &str) -> UnlockStatus {
+    pub fn status(&self, wrapper: &str) -> ApprovalStatus {
         let grants = self.grants.lock().unwrap();
         let mut active = Vec::new();
 
@@ -127,7 +127,7 @@ impl UnlockState {
                         .map(|d| d.as_secs())
                         .unwrap_or(0)
                 });
-                active.push(UnlockGrantStatus {
+                active.push(ApprovalGrantStatus {
                     scope: scope.clone(),
                     uid: *uid,
                     remaining_seconds,
@@ -135,14 +135,14 @@ impl UnlockState {
             }
         }
 
-        UnlockStatus {
+        ApprovalStatus {
             wrapper: wrapper.to_string(),
-            unlocked: !active.is_empty(),
+            approved: !active.is_empty(),
             grants: active,
         }
     }
 
-    /// Store a pending challenge nonce for SSH agent unlock.
+    /// Store a pending challenge nonce for SSH agent approval.
     /// Expires after 60 seconds.
     pub fn set_pending_challenge(
         &self,
@@ -186,102 +186,102 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unlock_and_check() {
-        let state = UnlockState::new();
-        state.unlock("w", None, None, 1000);
+    fn approve_and_check() {
+        let state = ApprovalState::new();
+        state.approve("w", None, None, 1000);
         assert!(state.check("w", None, 1000).is_ok());
     }
 
     #[test]
     fn locked_by_default() {
-        let state = UnlockState::new();
+        let state = ApprovalState::new();
         assert!(state.check("w", None, 1000).is_err());
     }
 
     #[test]
     fn time_limited_still_valid() {
-        let state = UnlockState::new();
-        state.unlock("w", None, Some(3600), 1000);
+        let state = ApprovalState::new();
+        state.approve("w", None, Some(3600), 1000);
         assert!(state.check("w", None, 1000).is_ok());
     }
 
     #[test]
     fn time_limited_expired() {
-        let state = UnlockState::new();
-        state.unlock("w", None, Some(0), 1000);
+        let state = ApprovalState::new();
+        state.approve("w", None, Some(0), 1000);
         std::thread::sleep(std::time::Duration::from_millis(10));
         assert!(state.check("w", None, 1000).is_err());
     }
 
     #[test]
-    fn scoped_unlock() {
-        let state = UnlockState::new();
-        state.unlock("w", Some("s1"), None, 1000);
+    fn scoped_approval() {
+        let state = ApprovalState::new();
+        state.approve("w", Some("s1"), None, 1000);
         assert!(state.check("w", Some("s1"), 1000).is_ok());
         assert!(state.check("w", Some("s2"), 1000).is_err());
     }
 
     #[test]
     fn uid_isolation() {
-        let state = UnlockState::new();
-        state.unlock("w", None, None, 1000);
+        let state = ApprovalState::new();
+        state.approve("w", None, None, 1000);
         assert!(state.check("w", None, 1000).is_ok());
         assert!(state.check("w", None, 2000).is_err());
     }
 
     #[test]
     fn global_scope_covers_scoped_check() {
-        let state = UnlockState::new();
-        state.unlock("w", None, None, 1000);
+        let state = ApprovalState::new();
+        state.approve("w", None, None, 1000);
         assert!(state.check("w", Some("any-scope"), 1000).is_ok());
     }
 
     #[test]
-    fn lock_specific() {
-        let state = UnlockState::new();
-        state.unlock("w1", None, None, 1000);
-        state.unlock("w2", None, None, 1000);
-        state.lock(Some("w1"), None);
+    fn revoke_specific() {
+        let state = ApprovalState::new();
+        state.approve("w1", None, None, 1000);
+        state.approve("w2", None, None, 1000);
+        state.revoke(Some("w1"), None);
         assert!(state.check("w1", None, 1000).is_err());
         assert!(state.check("w2", None, 1000).is_ok());
     }
 
     #[test]
-    fn lock_everything() {
-        let state = UnlockState::new();
-        state.unlock("w1", None, None, 1000);
-        state.unlock("w2", None, None, 1000);
-        state.lock(None, None);
+    fn revoke_everything() {
+        let state = ApprovalState::new();
+        state.approve("w1", None, None, 1000);
+        state.approve("w2", None, None, 1000);
+        state.revoke(None, None);
         assert!(state.check("w1", None, 1000).is_err());
         assert!(state.check("w2", None, 1000).is_err());
     }
 
     #[test]
     fn lock_scoped() {
-        let state = UnlockState::new();
-        state.unlock("w", Some("s1"), None, 1000);
-        state.unlock("w", Some("s2"), None, 1000);
-        state.lock(Some("w"), Some("s1"));
+        let state = ApprovalState::new();
+        state.approve("w", Some("s1"), None, 1000);
+        state.approve("w", Some("s2"), None, 1000);
+        state.revoke(Some("w"), Some("s1"));
         assert!(state.check("w", Some("s1"), 1000).is_err());
         assert!(state.check("w", Some("s2"), 1000).is_ok());
     }
 
     #[test]
     fn status_shows_grants() {
-        let state = UnlockState::new();
+        let state = ApprovalState::new();
         let s = state.status("w");
-        assert!(!s.unlocked);
+        assert!(!s.approved);
 
-        state.unlock("w", None, Some(3600), 1000);
+        state.approve("w", None, Some(3600), 1000);
         let s = state.status("w");
-        assert!(s.unlocked);
+        assert!(s.approved);
         assert!(s.grants[0].remaining_seconds.unwrap() > 0);
     }
 
     #[test]
     fn multiple_reads_same_grant() {
-        let state = UnlockState::new();
-        state.unlock("w", None, Some(3600), 1000);
+        let state = ApprovalState::new();
+        state.approve("w", None, Some(3600), 1000);
         assert!(state.check("w", None, 1000).is_ok());
         assert!(state.check("w", None, 1000).is_ok());
     }

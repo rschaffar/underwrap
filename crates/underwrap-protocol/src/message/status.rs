@@ -1,18 +1,18 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{AccessMode, UnlockMode};
+use crate::config::{AccessMode, ApprovalMode};
 use crate::ipc::{WireDecode, WireEncode, WireReader};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UnlockGrantStatus {
+pub struct ApprovalGrantStatus {
     pub scope: Option<String>,
     pub uid: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remaining_seconds: Option<u64>,
 }
 
-impl WireEncode for UnlockGrantStatus {
+impl WireEncode for ApprovalGrantStatus {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         self.scope.encode(out)?;
         self.uid.encode(out)?;
@@ -20,7 +20,7 @@ impl WireEncode for UnlockGrantStatus {
     }
 }
 
-impl WireDecode for UnlockGrantStatus {
+impl WireDecode for ApprovalGrantStatus {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         Ok(Self {
             scope: Option::<String>::decode(reader)?,
@@ -31,26 +31,26 @@ impl WireDecode for UnlockGrantStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UnlockStatus {
+pub struct ApprovalStatus {
     pub wrapper: String,
-    pub unlocked: bool,
-    pub grants: Vec<UnlockGrantStatus>,
+    pub approved: bool,
+    pub grants: Vec<ApprovalGrantStatus>,
 }
 
-impl WireEncode for UnlockStatus {
+impl WireEncode for ApprovalStatus {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         self.wrapper.encode(out)?;
-        self.unlocked.encode(out)?;
+        self.approved.encode(out)?;
         self.grants.encode(out)
     }
 }
 
-impl WireDecode for UnlockStatus {
+impl WireDecode for ApprovalStatus {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         Ok(Self {
             wrapper: String::decode(reader)?,
-            unlocked: bool::decode(reader)?,
-            grants: Vec::<UnlockGrantStatus>::decode(reader)?,
+            approved: bool::decode(reader)?,
+            grants: Vec::<ApprovalGrantStatus>::decode(reader)?,
         })
     }
 }
@@ -82,14 +82,14 @@ impl WireDecode for CredentialUsageStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WrapperUnlockStatus {
-    pub mode: UnlockMode,
+pub struct WrapperApprovalStatus {
+    pub mode: ApprovalMode,
     #[serde(rename = "maxSeconds")]
     pub max_seconds: Option<u64>,
-    pub status: UnlockStatus,
+    pub status: ApprovalStatus,
 }
 
-impl WireEncode for WrapperUnlockStatus {
+impl WireEncode for WrapperApprovalStatus {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         self.mode.encode(out)?;
         self.max_seconds.encode(out)?;
@@ -97,12 +97,12 @@ impl WireEncode for WrapperUnlockStatus {
     }
 }
 
-impl WireDecode for WrapperUnlockStatus {
+impl WireDecode for WrapperApprovalStatus {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         Ok(Self {
-            mode: UnlockMode::decode(reader)?,
+            mode: ApprovalMode::decode(reader)?,
             max_seconds: Option::<u64>::decode(reader)?,
-            status: UnlockStatus::decode(reader)?,
+            status: ApprovalStatus::decode(reader)?,
         })
     }
 }
@@ -112,7 +112,7 @@ pub struct WrapperStatus {
     pub wrapper: String,
     pub target: String,
     pub usage: Vec<CredentialUsageStatus>,
-    pub unlock: WrapperUnlockStatus,
+    pub approval: WrapperApprovalStatus,
 }
 
 impl WireEncode for WrapperStatus {
@@ -120,7 +120,7 @@ impl WireEncode for WrapperStatus {
         self.wrapper.encode(out)?;
         self.target.encode(out)?;
         self.usage.encode(out)?;
-        self.unlock.encode(out)
+        self.approval.encode(out)
     }
 }
 
@@ -130,7 +130,7 @@ impl WireDecode for WrapperStatus {
             wrapper: String::decode(reader)?,
             target: String::decode(reader)?,
             usage: Vec::<CredentialUsageStatus>::decode(reader)?,
-            unlock: WrapperUnlockStatus::decode(reader)?,
+            approval: WrapperApprovalStatus::decode(reader)?,
         })
     }
 }

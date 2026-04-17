@@ -1,3 +1,7 @@
+#[path = "unlock.rs"]
+pub mod approval;
+#[path = "unlock_flow.rs"]
+pub(crate) mod approval_flow;
 pub mod audit;
 pub mod directory_channel;
 pub(crate) mod peer_auth;
@@ -6,8 +10,6 @@ pub mod secretsd_channel;
 pub mod server;
 pub(crate) mod startup;
 pub mod storage;
-pub mod unlock;
-pub(crate) mod unlock_flow;
 pub(crate) mod wrapper_bindings;
 pub(crate) mod wrapper_flow;
 
@@ -20,6 +22,6 @@ mod tests {
         let _ = audit::read_granted as fn(&str, &str, Option<u32>, Option<&str>);
         let _ = server::run;
         let _ = storage::open;
-        let _ = unlock::UnlockState::new();
+        let _ = approval::ApprovalState::new();
     }
 }

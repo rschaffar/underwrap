@@ -1,16 +1,16 @@
 use anyhow::Result;
 use underwrap_protocol::config::{CredentialMode, DaemonConfig};
 use underwrap_protocol::message::{
-    CredentialStatus, CredentialUsageStatus, WrapperStatus, WrapperUnlockStatus,
+    CredentialStatus, CredentialUsageStatus, WrapperApprovalStatus, WrapperStatus,
 };
 use underwrap_store::StorageBackend;
 
-use crate::unlock::UnlockState;
+use crate::approval::ApprovalState;
 
 pub(crate) fn build_wrapper_status(
     name: &str,
     config: &DaemonConfig,
-    unlock: &UnlockState,
+    approval: &ApprovalState,
     store: &dyn StorageBackend,
 ) -> Option<WrapperStatus> {
     let wrapper = config.wrappers.get(name)?;
@@ -32,10 +32,10 @@ pub(crate) fn build_wrapper_status(
         wrapper: name.to_string(),
         target: wrapper.target.display().to_string(),
         usage,
-        unlock: WrapperUnlockStatus {
-            mode: wrapper.unlock.mode,
-            max_seconds: wrapper.unlock.max_seconds,
-            status: unlock.status(name),
+        approval: WrapperApprovalStatus {
+            mode: wrapper.approval.mode,
+            max_seconds: wrapper.approval.max_seconds,
+            status: approval.status(name),
         },
     })
 }
@@ -80,7 +80,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
     use underwrap_protocol::config::{
-        AccessMode, CredentialDef, CredentialUse, UnlockPolicy, WrapperDef,
+        AccessMode, CredentialDef, CredentialUse, ApprovalPolicy, WrapperDef,
     };
     use underwrap_protocol::message::SecretBytes;
 
@@ -207,18 +207,18 @@ mod tests {
                             access: AccessMode::ReadOnly,
                         },
                     )]),
-                    unlock: UnlockPolicy::default(),
+                    approval: ApprovalPolicy::default(),
                     socket: PathBuf::from("/tmp/wrapper.sock"),
                     group: "test-group".to_string(),
-                    unlock_key: None,
+                    approval_key: None,
                 },
             )]),
         };
-        let unlock = UnlockState::new();
+        let approval = ApprovalState::new();
         let store = MemStore::with_entries(&[("github/token", b"ghp_test")]);
 
         let wrapper_status =
-            build_wrapper_status("gh-authorized", &config, &unlock, &store).unwrap();
+            build_wrapper_status("gh-authorized", &config, &approval, &store).unwrap();
         assert_eq!(wrapper_status.wrapper, "gh-authorized");
         assert_eq!(wrapper_status.usage.len(), 1);
         assert_eq!(wrapper_status.usage[0].stored, Some(true));

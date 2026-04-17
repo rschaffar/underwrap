@@ -71,7 +71,7 @@ wrappers:
     use:
       github/gh:
         access: read-write
-    unlock:
+    approval:
       mode: optional
       maxSeconds: 1800
 
@@ -82,7 +82,7 @@ wrappers:
     use:
       github/gh:
         access: read-only
-    unlock:
+    approval:
       mode: always
       maxSeconds: 1800
 
@@ -94,6 +94,6 @@ wrappers:
     use:
       gws/state:
         access: read-write
-    unlock:
+    approval:
       mode: optional
       maxSeconds: 1800

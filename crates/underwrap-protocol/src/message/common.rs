@@ -1,4 +1,4 @@
-use crate::config::{AccessMode, UnlockMode};
+use crate::config::{AccessMode, ApprovalMode};
 use crate::ipc::{WireDecode, WireEncode, WireReader};
 use anyhow::{Result, anyhow};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -131,23 +131,23 @@ impl WireDecode for AccessMode {
     }
 }
 
-impl WireEncode for UnlockMode {
+impl WireEncode for ApprovalMode {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {
-            Self::AlwaysUnlocked => 0u8.encode(out),
-            Self::Always => 1u8.encode(out),
-            Self::Optional => 2u8.encode(out),
+            Self::AlwaysApproved => 0u8.encode(out),
+            Self::Required => 1u8.encode(out),
+            Self::OptionalApproval => 2u8.encode(out),
         }
     }
 }
 
-impl WireDecode for UnlockMode {
+impl WireDecode for ApprovalMode {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         match u8::decode(reader)? {
-            0 => Ok(Self::AlwaysUnlocked),
-            1 => Ok(Self::Always),
-            2 => Ok(Self::Optional),
-            other => Err(anyhow!("invalid unlock mode discriminant: {other}")),
+            0 => Ok(Self::AlwaysApproved),
+            1 => Ok(Self::Required),
+            2 => Ok(Self::OptionalApproval),
+            other => Err(anyhow!("invalid approval mode discriminant: {other}")),
         }
     }
 }

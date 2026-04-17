@@ -11,11 +11,11 @@ pub enum WrapperRequest {
     Read {
         scope: Option<String>,
     },
-    Unlock {
+    Approve {
         scope: Option<String>,
         seconds: Option<u64>,
     },
-    UnlockResponse {
+    ApproveResponse {
         scope: Option<String>,
         seconds: Option<u64>,
         challenge: Vec<u8>,
@@ -31,12 +31,12 @@ impl WireEncode for WrapperRequest {
                 0u8.encode(out)?;
                 scope.encode(out)
             }
-            Self::Unlock { scope, seconds } => {
+            Self::Approve { scope, seconds } => {
                 1u8.encode(out)?;
                 scope.encode(out)?;
                 seconds.encode(out)
             }
-            Self::UnlockResponse {
+            Self::ApproveResponse {
                 scope,
                 seconds,
                 challenge,
@@ -60,11 +60,11 @@ impl WireDecode for WrapperRequest {
             0 => Ok(Self::Read {
                 scope: Option::<String>::decode(reader)?,
             }),
-            1 => Ok(Self::Unlock {
+            1 => Ok(Self::Approve {
                 scope: Option::<String>::decode(reader)?,
                 seconds: Option::<u64>::decode(reader)?,
             }),
-            2 => Ok(Self::UnlockResponse {
+            2 => Ok(Self::ApproveResponse {
                 scope: Option::<String>::decode(reader)?,
                 seconds: Option::<u64>::decode(reader)?,
                 challenge: Vec::<u8>::decode(reader)?,
@@ -110,7 +110,7 @@ pub enum WrapperResponse {
     Challenge {
         nonce: Vec<u8>,
     },
-    UnlockOk,
+    ApprovalOk,
     Error {
         code: ErrorCode,
         message: String,
@@ -129,7 +129,7 @@ impl WireEncode for WrapperResponse {
                 1u8.encode(out)?;
                 nonce.encode(out)
             }
-            Self::UnlockOk => 2u8.encode(out),
+            Self::ApprovalOk => 2u8.encode(out),
             Self::Error { code, message } => {
                 3u8.encode(out)?;
                 code.encode(out)?;
@@ -149,7 +149,7 @@ impl WireDecode for WrapperResponse {
             1 => Ok(Self::Challenge {
                 nonce: Vec::<u8>::decode(reader)?,
             }),
-            2 => Ok(Self::UnlockOk),
+            2 => Ok(Self::ApprovalOk),
             3 => Ok(Self::Error {
                 code: ErrorCode::decode(reader)?,
                 message: String::decode(reader)?,

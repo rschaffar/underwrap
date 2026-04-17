@@ -1,15 +1,15 @@
 use tracing::{error, warn};
 
 use ssh_key::public::KeyData;
-use underwrap_protocol::config::UnlockMode;
+use underwrap_protocol::config::ApprovalMode;
 use underwrap_protocol::message::{ErrorCode, WrapperResponse};
 
 use crate::audit;
 use crate::policy::backend_policy_active;
 use crate::server::State;
 
-/// Handle an unlock request according to the wrapper's unlock policy.
-pub(crate) fn process_wrapper_unlock(
+/// Handle an approval request according to the wrapper's approval policy.
+pub(crate) fn process_wrapper_approval(
     wrapper_name: &str,
     scope: Option<&str>,
     seconds: Option<u64>,
@@ -30,7 +30,7 @@ pub(crate) fn process_wrapper_unlock(
         Ok(true) => {
             return WrapperResponse::Error {
                 code: ErrorCode::Unauthorized,
-                message: "backend-managed policy is active; local unlock is disabled".to_string(),
+                message: "backend-managed policy is active; local approval is disabled".to_string(),
             };
         }
         Ok(false) => {}
@@ -43,14 +43,14 @@ pub(crate) fn process_wrapper_unlock(
         }
     }
 
-    match wrapper_def.unlock.mode {
-        UnlockMode::AlwaysUnlocked => WrapperResponse::Error {
+    match wrapper_def.approval.mode {
+        ApprovalMode::AlwaysApproved => WrapperResponse::Error {
             code: ErrorCode::Internal,
-            message: format!("wrapper '{wrapper_name}' does not require unlock"),
+            message: format!("wrapper '{wrapper_name}' does not require approval"),
         },
-        UnlockMode::Always | UnlockMode::Optional => {
+        ApprovalMode::Required | ApprovalMode::OptionalApproval => {
             let max = wrapper_def
-                .unlock
+                .approval
                 .max_seconds
                 .expect("validated maxSeconds");
             if let Some(requested) = seconds
@@ -59,32 +59,34 @@ pub(crate) fn process_wrapper_unlock(
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: format!(
-                        "requested unlock duration {requested}s exceeds maxSeconds {max}s"
+                        "requested approval duration {requested}s exceeds maxSeconds {max}s"
                     ),
                 };
             }
 
-            if wrapper_def.unlock_key.is_some() {
+            if wrapper_def.approval_key.is_some() {
                 let nonce: [u8; 32] = rand::random();
                 state
-                    .unlock
+                    .approval
                     .set_pending_challenge(wrapper_name, scope, peer_uid, &nonce);
 
                 WrapperResponse::Challenge {
                     nonce: nonce.to_vec(),
                 }
             } else {
-                state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
-                audit::unlocked(wrapper_name, scope, seconds, Some(peer_uid));
-                WrapperResponse::UnlockOk
+                state
+                    .approval
+                    .approve(wrapper_name, scope, seconds, peer_uid);
+                audit::approved(wrapper_name, scope, seconds, Some(peer_uid));
+                WrapperResponse::ApprovalOk
             }
         }
     }
 }
 
-/// Handle the second round of unlock: verify the SSH signature over the challenge.
+/// Handle the second round of approval: verify the SSH signature over the challenge.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn process_wrapper_unlock_response(
+pub(crate) fn process_wrapper_approval_response(
     wrapper_name: &str,
     scope: Option<&str>,
     seconds: Option<u64>,
@@ -108,7 +110,7 @@ pub(crate) fn process_wrapper_unlock_response(
         Ok(true) => {
             return WrapperResponse::Error {
                 code: ErrorCode::Unauthorized,
-                message: "backend-managed policy is active; local unlock is disabled".to_string(),
+                message: "backend-managed policy is active; local approval is disabled".to_string(),
             };
         }
         Ok(false) => {}
@@ -121,12 +123,12 @@ pub(crate) fn process_wrapper_unlock_response(
         }
     }
 
-    let expected_key = match &wrapper_def.unlock_key {
+    let expected_key = match &wrapper_def.approval_key {
         Some(k) => k,
         None => {
             return WrapperResponse::Error {
                 code: ErrorCode::Internal,
-                message: "wrapper has no unlock_key configured".to_string(),
+                message: "wrapper has no approval_key configured".to_string(),
             };
         }
     };
@@ -134,10 +136,10 @@ pub(crate) fn process_wrapper_unlock_response(
     let expected_pk = match ssh_key::PublicKey::from_openssh(expected_key) {
         Ok(k) => k,
         Err(e) => {
-            error!(wrapper = %wrapper_name, err = %e, "invalid configured unlock_key");
+            error!(wrapper = %wrapper_name, err = %e, "invalid configured approval_key");
             return WrapperResponse::Error {
                 code: ErrorCode::Internal,
-                message: "invalid configured unlock_key".to_string(),
+                message: "invalid configured approval_key".to_string(),
             };
         }
     };
@@ -154,15 +156,15 @@ pub(crate) fn process_wrapper_unlock_response(
     };
 
     if expected_pk.key_data() != caller_pk.key_data() {
-        audit::auth_denied("unlock", "public key mismatch", Some(peer_uid), None);
+        audit::auth_denied("approval", "public key mismatch", Some(peer_uid), None);
         return WrapperResponse::Error {
             code: ErrorCode::Unauthorized,
-            message: "public key does not match configured unlock_key".to_string(),
+            message: "public key does not match configured approval_key".to_string(),
         };
     }
 
     if !state
-        .unlock
+        .approval
         .verify_pending_challenge(wrapper_name, scope, peer_uid, challenge)
     {
         return WrapperResponse::Error {
@@ -196,7 +198,7 @@ pub(crate) fn process_wrapper_unlock_response(
 
     if !valid {
         audit::auth_denied(
-            "unlock",
+            "approval",
             "signature verification failed",
             Some(peer_uid),
             None,
@@ -207,9 +209,11 @@ pub(crate) fn process_wrapper_unlock_response(
         };
     }
 
-    state.unlock.unlock(wrapper_name, scope, seconds, peer_uid);
-    audit::unlocked(wrapper_name, scope, seconds, Some(peer_uid));
-    WrapperResponse::UnlockOk
+    state
+        .approval
+        .approve(wrapper_name, scope, seconds, peer_uid);
+    audit::approved(wrapper_name, scope, seconds, Some(peer_uid));
+    WrapperResponse::ApprovalOk
 }
 
 #[cfg(test)]
@@ -219,8 +223,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use underwrap_protocol::config::{
-        BackendSocketConfig, CredentialDef, CredentialMode, CredentialUse, DaemonConfig,
-        SocketConfig, UnlockPolicy, WrapperDef,
+        ApprovalPolicy, BackendSocketConfig, CredentialDef, CredentialMode, CredentialUse,
+        DaemonConfig, SocketConfig, WrapperDef,
     };
     use underwrap_store::StorageBackend;
 
@@ -287,15 +291,15 @@ mod tests {
                         },
                     },
                 )]),
-                wrappers: HashMap::from([("locked-w".to_string(), wrapper)]),
+                wrappers: HashMap::from([("approval-w".to_string(), wrapper)]),
             },
             store,
             allowed_user_uids: std::collections::HashSet::new(),
-            unlock: crate::unlock::UnlockState::new(),
+            approval: crate::approval::ApprovalState::new(),
         }
     }
 
-    fn wrapper(unlock: UnlockPolicy, unlock_key: Option<String>) -> WrapperDef {
+    fn wrapper(approval: ApprovalPolicy, approval_key: Option<String>) -> WrapperDef {
         WrapperDef {
             target: PathBuf::from("/usr/bin/true"),
             use_map: HashMap::from([(
@@ -304,70 +308,70 @@ mod tests {
                     access: underwrap_protocol::config::AccessMode::ReadOnly,
                 },
             )]),
-            unlock,
+            approval,
             socket: PathBuf::from("/tmp/test.sock"),
             group: "test-group".to_string(),
-            unlock_key,
+            approval_key,
         }
     }
 
     #[test]
-    fn process_wrapper_unlock_rejects_always_unlocked_and_excessive_duration() {
-        let state = state_for(wrapper(UnlockPolicy::default(), None));
-        match process_wrapper_unlock("locked-w", None, None, 1000, &state) {
+    fn process_wrapper_approval_rejects_always_approvaled_and_excessive_duration() {
+        let state = state_for(wrapper(ApprovalPolicy::default(), None));
+        match process_wrapper_approval("approval-w", None, None, 1000, &state) {
             WrapperResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Internal)),
             other => panic!("expected Error, got {other:?}"),
         }
 
         let state = state_for(wrapper(
-            UnlockPolicy {
-                mode: UnlockMode::Always,
+            ApprovalPolicy {
+                mode: ApprovalMode::Required,
                 max_seconds: Some(10),
             },
             None,
         ));
-        match process_wrapper_unlock("locked-w", None, Some(20), 1000, &state) {
+        match process_wrapper_approval("approval-w", None, Some(20), 1000, &state) {
             WrapperResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Unauthorized)),
             other => panic!("expected Error, got {other:?}"),
         }
     }
 
     #[test]
-    fn process_wrapper_unlock_grants_without_key_and_challenges_with_key() {
+    fn process_wrapper_approval_grants_without_key_and_challenges_with_key() {
         let state = state_for(wrapper(
-            UnlockPolicy {
-                mode: UnlockMode::Always,
+            ApprovalPolicy {
+                mode: ApprovalMode::Required,
                 max_seconds: Some(10),
             },
             None,
         ));
         assert!(matches!(
-            process_wrapper_unlock("locked-w", Some("s"), Some(5), 1000, &state),
-            WrapperResponse::UnlockOk
+            process_wrapper_approval("approval-w", Some("s"), Some(5), 1000, &state),
+            WrapperResponse::ApprovalOk
         ));
-        assert!(state.unlock.check("locked-w", Some("s"), 1000).is_ok());
+        assert!(state.approval.check("approval-w", Some("s"), 1000).is_ok());
 
         let state = state_for(wrapper(
-            UnlockPolicy { mode: UnlockMode::Optional, max_seconds: Some(10) },
+            ApprovalPolicy { mode: ApprovalMode::OptionalApproval, max_seconds: Some(10) },
             Some("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGd8eWQ4d2nJ5z2jdK5rj5nP4Jv8xK9w7V6Y8Q1JcKQ9 test".to_string()),
         ));
-        match process_wrapper_unlock("locked-w", Some("s"), Some(5), 1000, &state) {
+        match process_wrapper_approval("approval-w", Some("s"), Some(5), 1000, &state) {
             WrapperResponse::Challenge { nonce } => assert_eq!(nonce.len(), 32),
             other => panic!("expected Challenge, got {other:?}"),
         }
     }
 
     #[test]
-    fn process_wrapper_unlock_response_rejects_missing_or_invalid_key_material() {
+    fn process_wrapper_approval_response_rejects_missing_or_invalid_key_material() {
         let state = state_for(wrapper(
-            UnlockPolicy {
-                mode: UnlockMode::Always,
+            ApprovalPolicy {
+                mode: ApprovalMode::Required,
                 max_seconds: Some(10),
             },
             None,
         ));
-        match process_wrapper_unlock_response(
-            "locked-w",
+        match process_wrapper_approval_response(
+            "approval-w",
             None,
             Some(5),
             1000,
@@ -381,14 +385,14 @@ mod tests {
         }
 
         let state = state_for(wrapper(
-            UnlockPolicy {
-                mode: UnlockMode::Optional,
+            ApprovalPolicy {
+                mode: ApprovalMode::OptionalApproval,
                 max_seconds: Some(10),
             },
             Some("not-a-key".to_string()),
         ));
-        match process_wrapper_unlock_response(
-            "locked-w",
+        match process_wrapper_approval_response(
+            "approval-w",
             None,
             Some(5),
             1000,
@@ -403,19 +407,19 @@ mod tests {
     }
 
     #[test]
-    fn process_wrapper_unlock_is_disabled_when_backend_policy_is_active() {
+    fn process_wrapper_approval_is_disabled_when_backend_policy_is_active() {
         let document = underwrap_protocol::policy::PolicyDocument::default();
         let state = state_with_store(
             wrapper(
-                UnlockPolicy {
-                    mode: UnlockMode::Always,
+                ApprovalPolicy {
+                    mode: ApprovalMode::Required,
                     max_seconds: Some(10),
                 },
                 None,
             ),
             Arc::new(PolicyStore(serde_json::to_vec(&document).unwrap())),
         );
-        match process_wrapper_unlock("locked-w", None, Some(5), 1000, &state) {
+        match process_wrapper_approval("approval-w", None, Some(5), 1000, &state) {
             WrapperResponse::Error { code, message } => {
                 assert!(matches!(code, ErrorCode::Unauthorized));
                 assert!(message.contains("backend-managed policy is active"));

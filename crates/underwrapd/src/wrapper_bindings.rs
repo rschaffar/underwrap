@@ -59,7 +59,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use underwrap_protocol::config::{CredentialDef, CredentialUse, UnlockPolicy};
+    use underwrap_protocol::config::{ApprovalPolicy, CredentialDef, CredentialUse};
 
     fn env_credential(variable: &str) -> CredentialDef {
         CredentialDef {
@@ -90,10 +90,10 @@ mod tests {
                 .iter()
                 .map(|(name, usage)| ((*name).to_string(), usage.clone()))
                 .collect(),
-            unlock: UnlockPolicy::default(),
+            approval: ApprovalPolicy::default(),
             socket: PathBuf::new(),
             group: "test-group".to_string(),
-            unlock_key: None,
+            approval_key: None,
         }
     }
 

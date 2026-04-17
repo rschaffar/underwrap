@@ -14,7 +14,7 @@ async fn wrapper_ssh_signature_approval_same_connection() {
 
     let mut wrappers = HashMap::new();
     let mut w = locked_wrapper("/usr/bin/true", "key-locked/tok", "TOK");
-    w.unlock_key = Some(public_key_openssh);
+    w.approval_key = Some(public_key_openssh);
     wrappers.insert("key-locked-w".to_string(), w);
 
     let mut secrets = HashMap::new();
@@ -27,7 +27,7 @@ async fn wrapper_ssh_signature_approval_same_connection() {
         .unwrap();
 
     let mut stream = daemon.connect_wrapper("key-locked-w").await.unwrap();
-    let req = WrapperRequest::Unlock {
+    let req = WrapperRequest::Approve {
         scope: None,
         seconds: None,
     };
@@ -51,7 +51,7 @@ async fn wrapper_ssh_signature_approval_same_connection() {
     wire_sig.extend_from_slice(&(sig_bytes.len() as u32).to_be_bytes());
     wire_sig.extend_from_slice(&sig_bytes);
 
-    let req2 = WrapperRequest::UnlockResponse {
+    let req2 = WrapperRequest::ApproveResponse {
         scope: None,
         seconds: None,
         challenge: nonce,
@@ -60,7 +60,7 @@ async fn wrapper_ssh_signature_approval_same_connection() {
     };
     write_frame_async(&mut stream, &req2).await.unwrap();
     let resp2: WrapperResponse = read_frame_async(&mut stream).await.unwrap();
-    assert!(matches!(resp2, WrapperResponse::UnlockOk));
+    assert!(matches!(resp2, WrapperResponse::ApprovalOk));
 
     let resp = daemon.read_request("key-locked-w").await.unwrap();
     assert_eq!(expect_single_env_string(resp), "key_secret");

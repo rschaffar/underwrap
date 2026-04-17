@@ -4,7 +4,7 @@ use tokio::task::JoinSet;
 use tracing::info;
 
 use underwrap_protocol::config::{
-    AccessMode, BackendMode, CredentialMode, DaemonConfig, UnlockMode,
+    AccessMode, ApprovalMode, BackendMode, CredentialMode, DaemonConfig,
 };
 
 /// Build a wrapper-name → GID lookup table.
@@ -174,30 +174,30 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
             "wrapper '{}' may use at most one libsecret credential",
             name,
         );
-        match wrapper.unlock.mode {
-            UnlockMode::AlwaysUnlocked => {
+        match wrapper.approval.mode {
+            ApprovalMode::AlwaysApproved => {
                 anyhow::ensure!(
-                    wrapper.unlock.max_seconds.is_none(),
-                    "wrapper '{}' unlock.mode=always-unlocked must not set maxSeconds",
+                    wrapper.approval.max_seconds.is_none(),
+                    "wrapper '{}' approval.mode=always-approved must not set maxSeconds",
                     name,
                 );
             }
-            UnlockMode::Always => {
+            ApprovalMode::Required => {
                 anyhow::ensure!(
-                    wrapper.unlock.max_seconds.is_some(),
-                    "wrapper '{}' unlock.mode=always requires maxSeconds",
+                    wrapper.approval.max_seconds.is_some(),
+                    "wrapper '{}' approval.mode=approval-required requires maxSeconds",
                     name,
                 );
             }
-            UnlockMode::Optional => {
+            ApprovalMode::OptionalApproval => {
                 anyhow::ensure!(
-                    wrapper.unlock.max_seconds.is_some(),
-                    "wrapper '{}' unlock.mode=optional requires maxSeconds",
+                    wrapper.approval.max_seconds.is_some(),
+                    "wrapper '{}' approval.mode=approval-optional requires maxSeconds",
                     name,
                 );
                 anyhow::ensure!(
-                    wrapper.unlock_key.is_some(),
-                    "wrapper '{}' unlock.mode=optional requires unlock_key",
+                    wrapper.approval_key.is_some(),
+                    "wrapper '{}' approval.mode=approval-optional requires approval_key",
                     name,
                 );
             }

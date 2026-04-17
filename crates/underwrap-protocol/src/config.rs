@@ -252,9 +252,9 @@ pub struct WrapperDef {
     #[serde(rename = "use", default)]
     pub use_map: HashMap<String, CredentialUse>,
 
-    /// Wrapper unlock policy.
+    /// Wrapper approval policy.
     #[serde(default)]
-    pub unlock: UnlockPolicy,
+    pub approval: ApprovalPolicy,
 
     /// Unix socket path for this wrapper's authenticated daemon channel.
     pub socket: PathBuf,
@@ -262,10 +262,10 @@ pub struct WrapperDef {
     /// Unix group name for GID-based wrapper identity.
     pub group: String,
 
-    /// SSH public key (OpenSSH format) required for unlock authentication.
-    /// If set, unlock requests can use SSH-agent challenge flow.
+    /// SSH public key (OpenSSH format) required for approval authentication.
+    /// If set, approval requests can use SSH-agent challenge flow.
     #[serde(default)]
-    pub unlock_key: Option<String>,
+    pub approval_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,22 +282,22 @@ pub enum AccessMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UnlockPolicy {
+pub struct ApprovalPolicy {
     #[serde(default)]
-    pub mode: UnlockMode,
+    pub mode: ApprovalMode,
     #[serde(rename = "maxSeconds")]
     pub max_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum UnlockMode {
+pub enum ApprovalMode {
     #[default]
-    #[serde(rename = "always-unlocked")]
-    AlwaysUnlocked,
-    #[serde(rename = "always")]
-    Always,
-    #[serde(rename = "optional")]
-    Optional,
+    #[serde(rename = "always-approved", alias = "always-unlocked")]
+    AlwaysApproved,
+    #[serde(rename = "approval-required", alias = "always")]
+    Required,
+    #[serde(rename = "approval-optional", alias = "optional")]
+    OptionalApproval,
 }
 
 #[cfg(test)]
@@ -336,8 +336,8 @@ wrappers:
     use:
       github/token:
         access: read-only
-    unlock:
-      mode: always-unlocked
+    approval:
+      mode: always-approved
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.wrappers.len(), 1);
@@ -345,7 +345,7 @@ wrappers:
         let w = &config.wrappers["gh-authorized"];
         assert_eq!(w.target, PathBuf::from("/usr/bin/gh"));
         assert_eq!(w.use_map.len(), 1);
-        assert_eq!(w.unlock.mode, UnlockMode::AlwaysUnlocked);
+        assert_eq!(w.approval.mode, ApprovalMode::AlwaysApproved);
         match &config.credentials["github/token"].mode {
             CredentialMode::Env { variable } => assert_eq!(variable, "GH_TOKEN"),
             other => panic!("expected env credential, got {other:?}"),
@@ -353,7 +353,7 @@ wrappers:
     }
 
     #[test]
-    fn unlock_policy_parses() {
+    fn approval_policy_parses() {
         let yaml = r#"
 credentials:
   github/gh:
@@ -366,14 +366,14 @@ wrappers:
     use:
       github/gh:
         access: read-write
-    unlock:
+    approval:
       mode: optional
       maxSeconds: 1800
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         let w = &config.wrappers["gh-auth"];
-        assert_eq!(w.unlock.mode, UnlockMode::Optional);
-        assert_eq!(w.unlock.max_seconds, Some(1800));
+        assert_eq!(w.approval.mode, ApprovalMode::OptionalApproval);
+        assert_eq!(w.approval.max_seconds, Some(1800));
         assert_eq!(w.use_map["github/gh"].access, AccessMode::ReadWrite);
     }
 
@@ -530,10 +530,10 @@ credentials:
                             );
                             u
                         },
-                        unlock: UnlockPolicy::default(),
+                        approval: ApprovalPolicy::default(),
                         socket: PathBuf::from("/run/underwrap/test.sock"),
                         group: "testgroup".to_string(),
-                        unlock_key: None,
+                        approval_key: None,
                     },
                 );
                 m

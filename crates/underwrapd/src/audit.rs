@@ -52,23 +52,13 @@ pub fn store_denied(secret: &str, reason: &str, peer_uid: Option<u32>) {
     );
 }
 
-/// Audit event for unlock.
-pub fn unlocked(wrapper: &str, scope: Option<&str>, seconds: Option<u64>, peer_uid: Option<u32>) {
+/// Audit event for approval.
+pub fn approved(wrapper: &str, scope: Option<&str>, seconds: Option<u64>, peer_uid: Option<u32>) {
     info!(
-        audit = "unlocked",
+        audit = "approved",
         wrapper = wrapper,
         scope = scope,
         seconds = seconds,
-        peer_uid = peer_uid,
-    );
-}
-
-/// Audit event for lock.
-pub fn locked(target: Option<&str>, scope: Option<&str>, peer_uid: Option<u32>) {
-    info!(
-        audit = "locked",
-        target = target,
-        scope = scope,
         peer_uid = peer_uid,
     );
 }

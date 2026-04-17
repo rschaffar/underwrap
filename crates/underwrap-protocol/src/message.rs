@@ -26,8 +26,8 @@ pub use directory::{DirectoryRequest, DirectoryResponse};
 pub use errors::{BackendErrorCode, DirectoryErrorCode, ErrorCode, SecretsdErrorCode};
 pub use secretsd::{SecretsdRequest, SecretsdResponse};
 pub use status::{
-    CredentialStatus, CredentialUsageStatus, UnlockGrantStatus, UnlockStatus, WrapperStatus,
-    WrapperUnlockStatus,
+    ApprovalGrantStatus, ApprovalStatus, CredentialStatus, CredentialUsageStatus,
+    WrapperApprovalStatus, WrapperStatus,
 };
 pub use wrapper::{ReadDirectoryBinding, WrapperRequest, WrapperResponse};
 
