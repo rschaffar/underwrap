@@ -151,17 +151,40 @@ impl PolicyDocument {
         true
     }
 
-    pub fn evaluate_at(
+    /// Evaluate a `(wrapper, resource, operation)` tuple skipping the mode
+    /// gate. Used after the caller has already satisfied a per-call approval
+    /// challenge for this wrapper and wants to know whether the rule/grant
+    /// layer permits the specific operation.
+    pub fn evaluate_after_approval_at(
         &self,
         wrapper: &str,
         resource: &str,
         operation: &str,
         now_epoch: u64,
     ) -> PolicyDecision {
-        if let Err(decision) = self.gate_on_mode(wrapper, now_epoch) {
-            return decision;
-        }
+        self.rules_and_grants_at(wrapper, resource, operation, now_epoch)
+    }
 
+    pub fn evaluate_after_approval(
+        &self,
+        wrapper: &str,
+        resource: &str,
+        operation: &str,
+    ) -> PolicyDecision {
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        self.evaluate_after_approval_at(wrapper, resource, operation, now_epoch)
+    }
+
+    fn rules_and_grants_at(
+        &self,
+        wrapper: &str,
+        resource: &str,
+        operation: &str,
+        now_epoch: u64,
+    ) -> PolicyDecision {
         if self.grants.iter().any(|grant| {
             grant.wrapper == wrapper
                 && grant.resource == resource
@@ -213,6 +236,19 @@ impl PolicyDocument {
             .map(|duration| duration.as_secs())
             .unwrap_or(0);
         self.evaluate_at(wrapper, resource, operation, now_epoch)
+    }
+
+    pub fn evaluate_at(
+        &self,
+        wrapper: &str,
+        resource: &str,
+        operation: &str,
+        now_epoch: u64,
+    ) -> PolicyDecision {
+        if let Err(decision) = self.gate_on_mode(wrapper, now_epoch) {
+            return decision;
+        }
+        self.rules_and_grants_at(wrapper, resource, operation, now_epoch)
     }
 }
 
@@ -365,6 +401,36 @@ mod tests {
         );
         assert!(matches!(
             doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 201),
+            PolicyDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn evaluate_after_approval_skips_the_mode_gate() {
+        let doc = PolicyDocument {
+            wrappers: vec![WrapperPolicyState {
+                wrapper: "aws-prod".to_string(),
+                mode: WrapperApprovalMode::PerCallApproval {
+                    approval_key: "ssh-ed25519 AAAA".to_string(),
+                },
+                reason: None,
+            }],
+            rules: vec![allow_rule("aws-prod", "secret:aws/prod", "secret.read")],
+            grants: Vec::new(),
+        };
+        // With the gate, per-call approval wins over the allow-rule.
+        assert!(matches!(
+            doc.evaluate_at("aws-prod", "secret:aws/prod", "secret.read", 100),
+            PolicyDecision::NeedsApproval { .. }
+        ));
+        // After approval the allow-rule carries.
+        assert_eq!(
+            doc.evaluate_after_approval_at("aws-prod", "secret:aws/prod", "secret.read", 100),
+            PolicyDecision::Allow
+        );
+        // Missing rule still denies even after approval.
+        assert!(matches!(
+            doc.evaluate_after_approval_at("aws-prod", "secret:aws/other", "secret.read", 100),
             PolicyDecision::Deny { .. }
         ));
     }

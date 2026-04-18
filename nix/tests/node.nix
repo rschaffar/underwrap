@@ -254,7 +254,6 @@ in {
           test-locked = {
             target = "${pkgs.coreutils}/bin/env";
             use."test/locked-tok".access = "read-only";
-            approval = { mode = "approval-required"; maxSeconds = 60; };
           };
           test-sleep = {
             target = "${pkgs.coreutils}/bin/sleep";

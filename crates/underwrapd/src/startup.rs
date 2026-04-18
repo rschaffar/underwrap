@@ -3,9 +3,7 @@ use tokio::net::UnixListener;
 use tokio::task::JoinSet;
 use tracing::info;
 
-use underwrap_protocol::config::{
-    AccessMode, ApprovalMode, BackendMode, CredentialMode, DaemonConfig,
-};
+use underwrap_protocol::config::{AccessMode, BackendMode, CredentialMode, DaemonConfig};
 
 /// Build a wrapper-name → GID lookup table.
 /// Resolves group names to GIDs via libc getgrnam at startup.
@@ -174,34 +172,6 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
             "wrapper '{}' may use at most one libsecret credential",
             name,
         );
-        match wrapper.approval.mode {
-            ApprovalMode::AlwaysApproved => {
-                anyhow::ensure!(
-                    wrapper.approval.max_seconds.is_none(),
-                    "wrapper '{}' approval.mode=always-approved must not set maxSeconds",
-                    name,
-                );
-            }
-            ApprovalMode::Required => {
-                anyhow::ensure!(
-                    wrapper.approval.max_seconds.is_some(),
-                    "wrapper '{}' approval.mode=approval-required requires maxSeconds",
-                    name,
-                );
-            }
-            ApprovalMode::OptionalApproval => {
-                anyhow::ensure!(
-                    wrapper.approval.max_seconds.is_some(),
-                    "wrapper '{}' approval.mode=approval-optional requires maxSeconds",
-                    name,
-                );
-                anyhow::ensure!(
-                    wrapper.approval_key.is_some(),
-                    "wrapper '{}' approval.mode=approval-optional requires approval_key",
-                    name,
-                );
-            }
-        }
     }
     Ok(())
 }

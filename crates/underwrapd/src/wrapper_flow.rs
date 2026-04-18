@@ -5,15 +5,16 @@ use tokio::net::UnixStream;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
-use underwrap_protocol::config::{AccessMode, ApprovalMode};
+use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::{ErrorCode, WrapperRequest, WrapperResponse};
+use underwrap_protocol::policy::PolicyDecision;
 
-use crate::approval_flow::{process_wrapper_approval, process_wrapper_approval_response};
+use crate::approval::{self, IssuedChallenge};
 use crate::audit;
 use crate::peer_auth::{PeerCred, get_peer_cred};
 use crate::policy::{
-    authorize_operation, backend_policy_active, directory_resource, env_resource,
+    authorize_after_approval, authorize_operation, directory_resource, env_resource,
     libsecret_resource,
 };
 use crate::server::State;
@@ -22,7 +23,7 @@ use crate::wrapper_bindings::{
 };
 
 const WRAPPER_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
-const WRAPPER_UNLOCK_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const WRAPPER_APPROVAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn handle_wrapper(
     mut stream: UnixStream,
@@ -44,24 +45,34 @@ pub(crate) async fn handle_wrapper(
             None => return Ok(()),
         };
 
-    let response =
-        dispatch_wrapper_request(&request, wrapper_name, peer.as_ref(), peer_uid, &state).await;
-    write_frame_async(&mut stream, &response).await?;
+    let scope = match &request {
+        WrapperRequest::Read { scope } => scope.clone(),
+        WrapperRequest::ApprovalProof { .. } => {
+            write_frame_async(
+                &mut stream,
+                &WrapperResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: "first frame must be Read".to_string(),
+                },
+            )
+            .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
 
-    if let Some(follow_up_response) = handle_approval_follow_up(
+    let response = complete_read(
         &mut stream,
-        &response,
+        scope.as_deref(),
         wrapper_name,
         peer.as_ref(),
         peer_uid,
         &state,
     )
-    .await?
-    {
-        write_frame_async(&mut stream, &follow_up_response).await?;
-    }
+    .await?;
+    write_frame_async(&mut stream, &response).await?;
 
-    establish_scoped_channels(&stream, &request, &response, wrapper_name, &state).await;
+    establish_scoped_channels(&stream, &response, wrapper_name, &state).await;
 
     stream.shutdown().await?;
     Ok(())
@@ -162,105 +173,159 @@ async fn read_initial_wrapper_request(
     }
 }
 
-async fn dispatch_wrapper_request(
-    request: &WrapperRequest,
+/// Run the full read flow, including a per-call approval round-trip when
+/// backend policy demands one.
+async fn complete_read(
+    stream: &mut UnixStream,
+    scope: Option<&str>,
     wrapper_name: &str,
     peer: Option<&PeerCred>,
     peer_uid: u32,
     state: &State,
-) -> WrapperResponse {
-    match request {
-        WrapperRequest::Read { scope } => {
-            info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
-            process_read_for(wrapper_name, scope.as_deref(), state, peer_uid).await
+) -> Result<WrapperResponse> {
+    info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
+
+    let approval_satisfied = match check_wrapper_mode(wrapper_name, state) {
+        Ok(ModeGate::Proceed) => false,
+        Ok(ModeGate::NeedApproval(approval_key)) => {
+            match run_approval_round(stream, wrapper_name, &approval_key, peer_uid, state).await? {
+                ApprovalOutcome::Approved => true,
+                ApprovalOutcome::Rejected(response) => return Ok(response),
+            }
         }
-        WrapperRequest::Approve { scope, seconds } => {
-            info!(wrapper = %wrapper_name, peer = ?peer, "approval request via wrapper socket");
-            process_wrapper_approval(wrapper_name, scope.as_deref(), *seconds, peer_uid, state)
+        Err(response) => return Ok(response),
+    };
+
+    Ok(process_read_for(wrapper_name, scope, state, peer_uid, approval_satisfied).await)
+}
+
+enum ModeGate {
+    Proceed,
+    NeedApproval(String),
+}
+
+fn check_wrapper_mode(wrapper_name: &str, state: &State) -> Result<ModeGate, WrapperResponse> {
+    // Probe the policy document by evaluating a dummy tuple: we only care
+    // whether the mode gate fires. We pick a sentinel resource/operation
+    // pair; this never allow-matches any real rule.
+    match authorize_operation(
+        &*state.store,
+        wrapper_name,
+        "__underwrap/mode-probe",
+        "__underwrap.mode-probe",
+    ) {
+        Ok(PolicyDecision::NeedsApproval { approval_key }) => {
+            Ok(ModeGate::NeedApproval(approval_key))
         }
-        WrapperRequest::ApproveResponse {
-            scope,
-            seconds,
-            challenge,
-            signature,
-            public_key_blob,
-        } => {
-            info!(wrapper = %wrapper_name, peer = ?peer, "approval challenge response");
-            process_wrapper_approval_response(
-                wrapper_name,
-                scope.as_deref(),
-                *seconds,
-                peer_uid,
-                state,
-                challenge,
-                signature,
-                public_key_blob,
-            )
+        Ok(_) => Ok(ModeGate::Proceed),
+        Err(e) => {
+            error!(wrapper = %wrapper_name, err = %e, "policy lookup error");
+            Err(WrapperResponse::Error {
+                code: ErrorCode::Internal,
+                message: "internal policy error".to_string(),
+            })
         }
     }
 }
 
-async fn handle_approval_follow_up(
+enum ApprovalOutcome {
+    Approved,
+    Rejected(WrapperResponse),
+}
+
+async fn run_approval_round(
     stream: &mut UnixStream,
-    response: &WrapperResponse,
     wrapper_name: &str,
-    peer: Option<&PeerCred>,
+    approval_key: &str,
     peer_uid: u32,
     state: &State,
-) -> Result<Option<WrapperResponse>> {
-    if !matches!(response, WrapperResponse::Challenge { .. }) {
-        return Ok(None);
-    }
+) -> Result<ApprovalOutcome> {
+    let IssuedChallenge {
+        challenge_id,
+        nonce,
+        approval_key,
+    } = state.pending_approvals.issue(wrapper_name, approval_key);
+    write_frame_async(
+        stream,
+        &WrapperResponse::ApprovalRequired {
+            challenge_id: challenge_id.clone(),
+            nonce,
+            approval_key,
+        },
+    )
+    .await?;
 
-    let follow_up = match timeout(WRAPPER_UNLOCK_RESPONSE_TIMEOUT, read_frame_async(stream)).await {
-        Ok(Ok(request)) => request,
-        Ok(Err(e)) => return Err(e),
-        Err(_) => {
-            warn!(wrapper = %wrapper_name, peer = ?peer, "approval challenge follow-up timeout");
-            stream.shutdown().await?;
-            return Ok(None);
-        }
-    };
+    let proof_request =
+        match timeout(WRAPPER_APPROVAL_RESPONSE_TIMEOUT, read_frame_async(stream)).await {
+            Ok(Ok(req)) => req,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                warn!(wrapper = %wrapper_name, "approval challenge follow-up timeout");
+                return Ok(ApprovalOutcome::Rejected(WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: "approval challenge timeout".to_string(),
+                }));
+            }
+        };
 
-    let follow_up_response = match &follow_up {
-        WrapperRequest::ApproveResponse {
-            scope,
-            seconds,
-            challenge,
+    let (proof_challenge_id, signature, public_key_blob) = match proof_request {
+        WrapperRequest::ApprovalProof {
+            challenge_id,
             signature,
             public_key_blob,
-        } => {
-            info!(wrapper = %wrapper_name, peer = ?peer, "approval challenge response (same connection)");
-            process_wrapper_approval_response(
-                wrapper_name,
-                scope.as_deref(),
-                *seconds,
-                peer_uid,
-                state,
-                challenge,
-                signature,
-                public_key_blob,
-            )
+        } => (challenge_id, signature, public_key_blob),
+        WrapperRequest::Read { .. } => {
+            return Ok(ApprovalOutcome::Rejected(WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: "expected ApprovalProof after ApprovalRequired".to_string(),
+            }));
         }
-        _ => WrapperResponse::Error {
-            code: ErrorCode::Internal,
-            message: "expected ApproveResponse after Challenge".to_string(),
-        },
     };
 
-    Ok(Some(follow_up_response))
+    if proof_challenge_id != challenge_id {
+        return Ok(ApprovalOutcome::Rejected(WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: "approval challenge id mismatch".to_string(),
+        }));
+    }
+
+    let (stored_wrapper, stored_nonce, stored_key) =
+        match state.pending_approvals.consume(&proof_challenge_id) {
+            Ok(entry) => entry,
+            Err(e) => {
+                return Ok(ApprovalOutcome::Rejected(WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: format!("approval challenge not found: {e}"),
+                }));
+            }
+        };
+    if stored_wrapper != wrapper_name {
+        return Ok(ApprovalOutcome::Rejected(WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: "approval challenge wrapper mismatch".to_string(),
+        }));
+    }
+
+    if let Err(e) = approval::verify_proof(&stored_key, &stored_nonce, &signature, &public_key_blob)
+    {
+        audit::auth_denied("approval", &e.to_string(), Some(peer_uid), None);
+        return Ok(ApprovalOutcome::Rejected(WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: "approval signature rejected".to_string(),
+        }));
+    }
+
+    audit::approved(wrapper_name, None, None, Some(peer_uid));
+    Ok(ApprovalOutcome::Approved)
 }
 
 async fn establish_scoped_channels(
     stream: &UnixStream,
-    request: &WrapperRequest,
     response: &WrapperResponse,
     wrapper_name: &str,
     state: &State,
 ) {
-    if !matches!(response, WrapperResponse::ReadOk { .. })
-        || !matches!(request, WrapperRequest::Read { .. })
-    {
+    if !matches!(response, WrapperResponse::ReadOk { .. }) {
         return;
     }
 
@@ -276,14 +341,14 @@ async fn establish_scoped_channels(
             AccessMode::ReadOnly => "libsecret.read",
             AccessMode::ReadWrite => "libsecret.readwrite",
         };
-        match authorize_operation(&*state.store, wrapper_name, &resource, operation) {
-            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {}
-            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+        match authorize_after_approval(&*state.store, wrapper_name, &resource, operation) {
+            Ok(PolicyDecision::Allow) => {}
+            Ok(PolicyDecision::Deny { reason }) => {
                 error!(wrapper = %wrapper_name, credential = %credential_ref, reason = %reason, "backend policy denied libsecret channel");
                 return;
             }
-            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
-                error!(wrapper = %wrapper_name, credential = %credential_ref, "libsecret channel blocked by per-call approval mode");
+            Ok(PolicyDecision::NeedsApproval { .. }) => {
+                error!(wrapper = %wrapper_name, credential = %credential_ref, "libsecret channel unexpectedly required approval after read");
                 return;
             }
             Err(e) => {
@@ -307,14 +372,14 @@ async fn establish_scoped_channels(
             AccessMode::ReadOnly => "directory.read",
             AccessMode::ReadWrite => "directory.readwrite",
         };
-        match authorize_operation(&*state.store, wrapper_name, &resource, operation) {
-            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {}
-            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+        match authorize_after_approval(&*state.store, wrapper_name, &resource, operation) {
+            Ok(PolicyDecision::Allow) => {}
+            Ok(PolicyDecision::Deny { reason }) => {
                 error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, reason = %reason, "backend policy denied directory channel");
                 continue;
             }
-            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
-                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, "directory channel blocked by per-call approval mode");
+            Ok(PolicyDecision::NeedsApproval { .. }) => {
+                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, "directory channel unexpectedly required approval after read");
                 continue;
             }
             Err(e) => {
@@ -392,11 +457,15 @@ async fn setup_directory_channel(
     .await
 }
 
+/// Run the post-gate read: rule/grant authorization for each credential
+/// and fetch of any env-bound secret material. When `approval_satisfied`
+/// is true, mode gating is bypassed (the caller just proved presence).
 pub(crate) async fn process_read_for(
     wrapper_name: &str,
     scope: Option<&str>,
     state: &State,
     peer_uid: u32,
+    approval_satisfied: bool,
 ) -> WrapperResponse {
     let wrapper_def = match state.config.wrappers.get(wrapper_name) {
         Some(w) => w,
@@ -409,27 +478,13 @@ pub(crate) async fn process_read_for(
         }
     };
 
-    let backend_policy_enabled = match backend_policy_active(&*state.store) {
-        Ok(active) => active,
-        Err(e) => {
-            error!(wrapper = %wrapper_name, err = %e, "policy lookup error");
-            return WrapperResponse::Error {
-                code: ErrorCode::Internal,
-                message: "internal policy error".to_string(),
-            };
+    let authorize = |resource: &str, operation: &str| {
+        if approval_satisfied {
+            authorize_after_approval(&*state.store, wrapper_name, resource, operation)
+        } else {
+            authorize_operation(&*state.store, wrapper_name, resource, operation)
         }
     };
-
-    if !backend_policy_enabled
-        && wrapper_def.approval.mode != ApprovalMode::AlwaysApproved
-        && let Err(reason) = state.approval.check(wrapper_name, scope, peer_uid)
-    {
-        audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
-        return WrapperResponse::Error {
-            code: ErrorCode::Locked,
-            message: reason,
-        };
-    }
 
     if let Some((credential_ref, access)) =
         wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
@@ -439,18 +494,18 @@ pub(crate) async fn process_read_for(
             AccessMode::ReadOnly => "libsecret.read",
             AccessMode::ReadWrite => "libsecret.readwrite",
         };
-        match authorize_operation(&*state.store, wrapper_name, &resource, operation) {
-            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {
+        match authorize(&resource, operation) {
+            Ok(PolicyDecision::Allow) => {
                 audit::read_granted(wrapper_name, credential_ref, Some(peer_uid), scope);
             }
-            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+            Ok(PolicyDecision::Deny { reason }) => {
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: reason,
                 };
             }
-            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
+            Ok(PolicyDecision::NeedsApproval { .. }) => {
                 let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
@@ -471,16 +526,16 @@ pub(crate) async fn process_read_for(
     let mut env = std::collections::HashMap::new();
     for (cred_ref, variable) in wrapper_env_credentials(wrapper_def, &state.config.credentials) {
         let resource = env_resource(cred_ref);
-        match authorize_operation(&*state.store, wrapper_name, &resource, "secret.read") {
-            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {}
-            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+        match authorize(&resource, "secret.read") {
+            Ok(PolicyDecision::Allow) => {}
+            Ok(PolicyDecision::Deny { reason }) => {
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: reason,
                 };
             }
-            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
+            Ok(PolicyDecision::NeedsApproval { .. }) => {
                 let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
@@ -526,19 +581,19 @@ pub(crate) async fn process_read_for(
             AccessMode::ReadOnly => "directory.read",
             AccessMode::ReadWrite => "directory.readwrite",
         };
-        match authorize_operation(&*state.store, wrapper_name, &resource, operation) {
-            Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {
+        match authorize(&resource, operation) {
+            Ok(PolicyDecision::Allow) => {
                 audit::read_granted(wrapper_name, &binding.credential_ref, Some(peer_uid), scope);
                 directories.push(binding);
             }
-            Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+            Ok(PolicyDecision::Deny { reason }) => {
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: reason,
                 };
             }
-            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
+            Ok(PolicyDecision::NeedsApproval { .. }) => {
                 let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
@@ -562,13 +617,12 @@ pub(crate) async fn process_read_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::approval::ApprovalState;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use underwrap_protocol::config::{
-        AccessMode, ApprovalPolicy, BackendSocketConfig, CredentialDef, CredentialMode,
-        CredentialUse, DaemonConfig, SocketConfig, WrapperDef,
+        AccessMode, BackendSocketConfig, CredentialDef, CredentialMode, CredentialUse,
+        DaemonConfig, SocketConfig, WrapperDef,
     };
     use underwrap_protocol::message::SecretBytes;
 
@@ -640,17 +694,7 @@ mod tests {
         }
     }
 
-    fn state_for(approval: ApprovalPolicy) -> State {
-        state_with_store(
-            approval,
-            Arc::new(MemStore::with_entries(&[("github/token", b"ghp_test")])),
-        )
-    }
-
-    fn state_with_store(
-        approval: ApprovalPolicy,
-        store: Arc<dyn underwrap_store::StorageBackend>,
-    ) -> State {
+    fn state_with_store(store: Arc<dyn underwrap_store::StorageBackend>) -> State {
         State {
             config: DaemonConfig {
                 sockets: SocketConfig::default(),
@@ -695,23 +739,24 @@ mod tests {
                                 },
                             ),
                         ]),
-                        approval,
                         socket: PathBuf::from("/tmp/test.sock"),
                         group: "test-group".to_string(),
-                        approval_key: None,
                     },
                 )]),
             },
             store,
             allowed_user_uids: std::collections::HashSet::new(),
-            approval: ApprovalState::new(),
+            pending_approvals: approval::PendingApprovals::new(),
         }
     }
 
     #[tokio::test]
     async fn process_read_for_returns_env_and_directory_bindings() {
-        let state = state_for(ApprovalPolicy::default());
-        let resp = process_read_for("gh-authorized", None, &state, 1000).await;
+        let state = state_with_store(Arc::new(MemStore::with_entries(&[(
+            "github/token",
+            b"ghp_test",
+        )])));
+        let resp = process_read_for("gh-authorized", None, &state, 1000, true).await;
         match resp {
             WrapperResponse::ReadOk { env, directories } => {
                 assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
@@ -723,26 +768,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_read_for_enforces_approval_state() {
-        let state = state_for(ApprovalPolicy {
-            mode: ApprovalMode::Required,
-            max_seconds: Some(60),
-        });
-        let resp = process_read_for("gh-authorized", None, &state, 1000).await;
-        match resp {
-            WrapperResponse::Error { code, .. } => assert!(matches!(code, ErrorCode::Locked)),
-            other => panic!("expected Error, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn process_read_for_denies_when_backend_policy_lacks_required_rule() {
         let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_policy(
             &[("github/token", b"ghp_test")],
             underwrap_protocol::policy::PolicyDocument::default(),
         ));
-        let state = state_with_store(ApprovalPolicy::default(), store);
-        let resp = process_read_for("gh-authorized", None, &state, 1000).await;
+        let state = state_with_store(store);
+        let resp = process_read_for("gh-authorized", None, &state, 1000, false).await;
         match resp {
             WrapperResponse::Error { code, message } => {
                 assert!(matches!(code, ErrorCode::Unauthorized));
@@ -777,8 +809,8 @@ mod tests {
                 grants: Vec::new(),
             },
         ));
-        let state = state_with_store(ApprovalPolicy::default(), store);
-        let resp = process_read_for("gh-authorized", None, &state, 1000).await;
+        let state = state_with_store(store);
+        let resp = process_read_for("gh-authorized", None, &state, 1000, false).await;
         match resp {
             WrapperResponse::ReadOk { env, directories } => {
                 assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
@@ -789,11 +821,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backend_policy_replaces_local_approval_when_present() {
+    async fn process_read_for_requires_per_call_approval_when_mode_demands() {
         let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_policy(
             &[("github/token", b"ghp_test")],
             underwrap_protocol::policy::PolicyDocument {
-                wrappers: Vec::new(),
+                wrappers: vec![underwrap_protocol::policy::WrapperPolicyState {
+                    wrapper: "gh-authorized".to_string(),
+                    mode: underwrap_protocol::policy::WrapperApprovalMode::PerCallApproval {
+                        approval_key: "ssh-ed25519 AAAA".to_string(),
+                    },
+                    reason: None,
+                }],
                 rules: vec![
                     underwrap_protocol::policy::PolicyRule {
                         id: "env-read".to_string(),
@@ -813,14 +851,15 @@ mod tests {
                 grants: Vec::new(),
             },
         ));
-        let state = state_with_store(
-            ApprovalPolicy {
-                mode: ApprovalMode::Required,
-                max_seconds: Some(60),
-            },
-            store,
-        );
-        let resp = process_read_for("gh-authorized", None, &state, 1000).await;
+        let state = state_with_store(store);
+
+        // Without the approval marker, authorization bubbles the NeedsApproval
+        // shape back as an Unauthorized error.
+        let resp = process_read_for("gh-authorized", None, &state, 1000, false).await;
+        assert!(matches!(resp, WrapperResponse::Error { .. }));
+
+        // With approval satisfied, the same request succeeds.
+        let resp = process_read_for("gh-authorized", None, &state, 1000, true).await;
         assert!(matches!(resp, WrapperResponse::ReadOk { .. }));
     }
 }

@@ -47,11 +47,6 @@ fn main() -> Result<()> {
     let wrapper_name = detect_wrapper_name_from_egid()?;
     let all_args: Vec<String> = std::env::args().skip(1).collect();
 
-    // Check if this is an approval request.
-    if all_args.first().map(|s| s.as_str()) == Some("--approve") {
-        return handle_approval(&wrapper_name, &all_args[1..]);
-    }
-
     let wrapper_config = load_wrapper_config(&wrapper_name)?;
 
     // Request secret from daemon (while still setgid — daemon checks egid).
@@ -78,97 +73,6 @@ fn main() -> Result<()> {
         channel_fd,
         directory_bindings,
     )
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ApprovalArgs {
-    seconds: Option<u64>,
-    scope: Option<String>,
-}
-
-fn parse_approval_args(args: &[String], default_scope: Option<String>) -> Result<ApprovalArgs> {
-    let mut seconds: Option<u64> = None;
-    let mut scope = default_scope;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--seconds" => {
-                i += 1;
-                seconds = Some(
-                    args.get(i)
-                        .context("--seconds requires a value")?
-                        .parse()
-                        .context("--seconds must be a number")?,
-                );
-            }
-            "--scope" => {
-                i += 1;
-                scope = Some(args.get(i).context("--scope requires a value")?.clone());
-            }
-            other => bail!("unknown approval argument: {other}"),
-        }
-        i += 1;
-    }
-
-    Ok(ApprovalArgs { seconds, scope })
-}
-
-/// Handle --approve: request approval via the wrapper socket with SSH agent challenge.
-fn handle_approval(wrapper_name: &str, args: &[String]) -> Result<()> {
-    let wrapper_config = load_wrapper_config(wrapper_name)?;
-    let ApprovalArgs { seconds, scope } =
-        parse_approval_args(args, std::env::var("UNDERWRAP_SCOPE").ok())?;
-
-    // Step 1: Send approval request.
-    let mut stream = UnixStream::connect(&wrapper_config.wrapper_socket)
-        .with_context(|| format!("connecting to daemon at {}", wrapper_config.wrapper_socket))?;
-
-    let req = WrapperRequest::Approve {
-        scope: scope.clone(),
-        seconds,
-    };
-    write_frame_sync(&mut stream, &req)?;
-    let resp: WrapperResponse = read_frame_sync(&mut stream)?;
-
-    match resp {
-        WrapperResponse::ApprovalOk => {
-            drop(stream);
-            eprintln!("approved");
-            drop_privilege()?;
-            Ok(())
-        }
-        WrapperResponse::Challenge { nonce } => {
-            let (signature, public_key_blob) = sign_with_ssh_agent(&nonce)?;
-
-            let req2 = WrapperRequest::ApproveResponse {
-                scope,
-                seconds,
-                challenge: nonce,
-                signature,
-                public_key_blob,
-            };
-            write_frame_sync(&mut stream, &req2)?;
-            let resp2: WrapperResponse = read_frame_sync(&mut stream)?;
-            drop(stream);
-
-            drop_privilege()?;
-
-            match resp2 {
-                WrapperResponse::ApprovalOk => {
-                    eprintln!("approved");
-                    Ok(())
-                }
-                WrapperResponse::Error { message, .. } => {
-                    bail!("approval failed: {message}");
-                }
-                _ => bail!("unexpected response"),
-            }
-        }
-        WrapperResponse::Error { message, .. } => {
-            bail!("approval request failed: {message}");
-        }
-        _ => bail!("unexpected response"),
-    }
 }
 
 /// Sign a challenge nonce using the SSH agent (SSH_AUTH_SOCK).
@@ -598,14 +502,34 @@ fn request_secret(socket_path: &str, libsecret: bool) -> Result<ReadSecretResult
     let req = WrapperRequest::Read { scope };
     write_frame_sync(&mut stream, &req)?;
 
-    let response: WrapperResponse = read_frame_sync(&mut stream)?;
+    let mut response: WrapperResponse = read_frame_sync(&mut stream)?;
+    if let WrapperResponse::ApprovalRequired {
+        challenge_id,
+        nonce,
+        approval_key,
+    } = &response
+    {
+        let (signature, public_key_blob) = sign_with_ssh_agent(nonce)?;
+        let proof = WrapperRequest::ApprovalProof {
+            challenge_id: challenge_id.clone(),
+            signature,
+            public_key_blob,
+        };
+        eprintln!(
+            "underwrap-exec: per-call approval requested by daemon (key starts with {})",
+            approval_key.split_whitespace().next().unwrap_or("?")
+        );
+        write_frame_sync(&mut stream, &proof)?;
+        response = read_frame_sync(&mut stream)?;
+    }
+
     let (env_bindings, directories) = match response {
         WrapperResponse::ReadOk { env, directories } => (env, directories),
         WrapperResponse::Error { code, message } => {
             bail!("daemon denied request ({code:?}): {message}");
         }
-        WrapperResponse::Challenge { .. } | WrapperResponse::ApprovalOk => {
-            bail!("unexpected response for read request");
+        WrapperResponse::ApprovalRequired { .. } => {
+            bail!("daemon issued a second approval challenge; refusing");
         }
     };
 
@@ -675,49 +599,6 @@ fn drop_privilege() -> Result<()> {
 mod tests {
     use super::*;
     use std::io::Cursor;
-
-    #[test]
-    fn parse_approval_args_uses_default_scope_and_parses_seconds() {
-        let args = vec!["--seconds".to_string(), "60".to_string()];
-        let parsed = parse_approval_args(&args, Some("session-1".to_string())).unwrap();
-        assert_eq!(
-            parsed,
-            ApprovalArgs {
-                seconds: Some(60),
-                scope: Some("session-1".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_approval_args_explicit_scope_overrides_default() {
-        let args = vec![
-            "--scope".to_string(),
-            "cli-scope".to_string(),
-            "--seconds".to_string(),
-            "5".to_string(),
-        ];
-        let parsed = parse_approval_args(&args, Some("env-scope".to_string())).unwrap();
-        assert_eq!(
-            parsed,
-            ApprovalArgs {
-                seconds: Some(5),
-                scope: Some("cli-scope".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_approval_args_rejects_missing_value_and_unknown_argument() {
-        let err = parse_approval_args(&["--seconds".to_string()], None).unwrap_err();
-        assert!(err.to_string().contains("--seconds requires a value"));
-
-        let err = parse_approval_args(&["--scope".to_string()], None).unwrap_err();
-        assert!(err.to_string().contains("--scope requires a value"));
-
-        let err = parse_approval_args(&["--bogus".to_string()], None).unwrap_err();
-        assert!(err.to_string().contains("unknown approval argument"));
-    }
 
     #[test]
     fn take_ssh_string_returns_payload_and_advances_position() {

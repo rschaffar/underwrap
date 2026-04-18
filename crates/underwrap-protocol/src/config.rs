@@ -252,20 +252,11 @@ pub struct WrapperDef {
     #[serde(rename = "use", default)]
     pub use_map: HashMap<String, CredentialUse>,
 
-    /// Wrapper approval policy.
-    #[serde(default)]
-    pub approval: ApprovalPolicy,
-
     /// Unix socket path for this wrapper's authenticated daemon channel.
     pub socket: PathBuf,
 
     /// Unix group name for GID-based wrapper identity.
     pub group: String,
-
-    /// SSH public key (OpenSSH format) required for approval authentication.
-    /// If set, approval requests can use SSH-agent challenge flow.
-    #[serde(default)]
-    pub approval_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,25 +270,6 @@ pub enum AccessMode {
     ReadOnly,
     #[serde(rename = "read-write")]
     ReadWrite,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ApprovalPolicy {
-    #[serde(default)]
-    pub mode: ApprovalMode,
-    #[serde(rename = "maxSeconds")]
-    pub max_seconds: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum ApprovalMode {
-    #[default]
-    #[serde(rename = "always-approved", alias = "always-unlocked")]
-    AlwaysApproved,
-    #[serde(rename = "approval-required", alias = "always")]
-    Required,
-    #[serde(rename = "approval-optional", alias = "optional")]
-    OptionalApproval,
 }
 
 #[cfg(test)]
@@ -336,8 +308,6 @@ wrappers:
     use:
       github/token:
         access: read-only
-    approval:
-      mode: always-approved
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.wrappers.len(), 1);
@@ -345,36 +315,10 @@ wrappers:
         let w = &config.wrappers["gh-authorized"];
         assert_eq!(w.target, PathBuf::from("/usr/bin/gh"));
         assert_eq!(w.use_map.len(), 1);
-        assert_eq!(w.approval.mode, ApprovalMode::AlwaysApproved);
         match &config.credentials["github/token"].mode {
             CredentialMode::Env { variable } => assert_eq!(variable, "GH_TOKEN"),
             other => panic!("expected env credential, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn approval_policy_parses() {
-        let yaml = r#"
-credentials:
-  github/gh:
-    mode: libsecret
-wrappers:
-  gh-auth:
-    target: /usr/bin/gh
-    socket: /run/underwrap/gh-auth.sock
-    group: underwrap-gh-auth
-    use:
-      github/gh:
-        access: read-write
-    approval:
-      mode: optional
-      maxSeconds: 1800
-"#;
-        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        let w = &config.wrappers["gh-auth"];
-        assert_eq!(w.approval.mode, ApprovalMode::OptionalApproval);
-        assert_eq!(w.approval.max_seconds, Some(1800));
-        assert_eq!(w.use_map["github/gh"].access, AccessMode::ReadWrite);
     }
 
     #[test]
@@ -530,10 +474,8 @@ credentials:
                             );
                             u
                         },
-                        approval: ApprovalPolicy::default(),
                         socket: PathBuf::from("/run/underwrap/test.sock"),
                         group: "testgroup".to_string(),
-                        approval_key: None,
                     },
                 );
                 m

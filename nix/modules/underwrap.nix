@@ -62,18 +62,12 @@ let
         }
       ) inst.credentials;
       wrappers = lib.mapAttrs' (name: w:
-        lib.nameValuePair "${instName}-${name}" ({
+        lib.nameValuePair "${instName}-${name}" {
           target = w.target;
           use = w.use;
-          approval = {
-            mode = w.approval.mode;
-            maxSeconds = w.approval.maxSeconds;
-          };
           socket = wrapperSocketPath name;
           group = wrapperGroupName name;
-        } // lib.optionalAttrs (w.approvalKey != null) {
-          approval_key = w.approvalKey;
-        })
+        }
       ) inst.wrappers;
     };
 
@@ -222,19 +216,6 @@ let
     };
   };
 
-  approvalSubmodule = lib.types.submodule {
-    options = {
-      mode = lib.mkOption {
-        type = lib.types.enum [ "always-approved" "approval-required" "approval-optional" ];
-        default = "always-approved";
-      };
-      maxSeconds = lib.mkOption {
-        type = lib.types.nullOr lib.types.ints.positive;
-        default = null;
-      };
-    };
-  };
-
   wrapperSubmodule = lib.types.submodule {
     options = {
       target = lib.mkOption {
@@ -245,15 +226,6 @@ let
         type = lib.types.attrsOf credentialUseSubmodule;
         default = {};
         description = "Credential usage bindings for this wrapper.";
-      };
-      approval = lib.mkOption {
-        type = approvalSubmodule;
-        default = {};
-      };
-      approvalKey = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "SSH public key used for optional approval challenge flow.";
       };
       envPassthrough = lib.mkOption {
         type = lib.types.listOf lib.types.str;

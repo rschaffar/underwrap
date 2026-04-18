@@ -11,10 +11,6 @@ pub(crate) fn load_policy_document(store: &dyn StorageBackend) -> Result<Option<
     Ok(Some(document))
 }
 
-pub(crate) fn backend_policy_active(store: &dyn StorageBackend) -> Result<bool> {
-    Ok(load_policy_document(store)?.is_some())
-}
-
 pub(crate) fn authorize_operation(
     store: &dyn StorageBackend,
     wrapper: &str,
@@ -23,6 +19,20 @@ pub(crate) fn authorize_operation(
 ) -> Result<PolicyDecision> {
     match load_policy_document(store)? {
         Some(document) => Ok(document.evaluate(wrapper, resource, operation)),
+        None => Ok(PolicyDecision::Allow),
+    }
+}
+
+/// Like [`authorize_operation`] but skips the per-wrapper mode gate. Used after
+/// the caller has already satisfied a per-call approval challenge.
+pub(crate) fn authorize_after_approval(
+    store: &dyn StorageBackend,
+    wrapper: &str,
+    resource: &str,
+    operation: &str,
+) -> Result<PolicyDecision> {
+    match load_policy_document(store)? {
+        Some(document) => Ok(document.evaluate_after_approval(wrapper, resource, operation)),
         None => Ok(PolicyDecision::Allow),
     }
 }

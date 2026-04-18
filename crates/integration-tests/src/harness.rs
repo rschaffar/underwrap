@@ -592,7 +592,7 @@ fn current_group_name() -> String {
     name.to_string_lossy().to_string()
 }
 
-/// Create a simple wrapper def for testing (no approval required).
+/// Create a simple wrapper def for testing.
 pub fn wrapper(target: &str, secret: &str, _env_var: &str) -> WrapperDef {
     let mut use_map = HashMap::new();
     use_map.insert(
@@ -604,32 +604,8 @@ pub fn wrapper(target: &str, secret: &str, _env_var: &str) -> WrapperDef {
     WrapperDef {
         target: PathBuf::from(target),
         use_map,
-        approval: ApprovalPolicy::default(),
         socket: PathBuf::new(),
         group: current_group_name(),
-        approval_key: None,
-    }
-}
-
-/// Create a wrapper def that requires approval before reads.
-pub fn locked_wrapper(target: &str, secret: &str, _env_var: &str) -> WrapperDef {
-    let mut use_map = HashMap::new();
-    use_map.insert(
-        secret.to_string(),
-        CredentialUse {
-            access: AccessMode::ReadOnly,
-        },
-    );
-    WrapperDef {
-        target: PathBuf::from(target),
-        use_map,
-        approval: ApprovalPolicy {
-            mode: ApprovalMode::Required,
-            max_seconds: Some(3600),
-        },
-        socket: PathBuf::new(),
-        group: current_group_name(),
-        approval_key: None,
     }
 }
 
@@ -651,18 +627,6 @@ mod tests {
         let wrapper = wrapper("/usr/bin/gh", "github/token", "GH_TOKEN");
         assert_eq!(wrapper.target, PathBuf::from("/usr/bin/gh"));
         assert_eq!(wrapper.use_map.len(), 1);
-        assert_eq!(
-            wrapper.use_map.get("github/token").unwrap().access,
-            AccessMode::ReadOnly
-        );
-        assert_eq!(wrapper.approval.mode, ApprovalMode::AlwaysApproved);
-    }
-
-    #[test]
-    fn locked_wrapper_builder_sets_approval_policy() {
-        let wrapper = locked_wrapper("/usr/bin/gh", "github/token", "GH_TOKEN");
-        assert_eq!(wrapper.approval.mode, ApprovalMode::Required);
-        assert_eq!(wrapper.approval.max_seconds, Some(3600));
         assert_eq!(
             wrapper.use_map.get("github/token").unwrap().access,
             AccessMode::ReadOnly

@@ -11,7 +11,7 @@ use tracing::{error, info};
 
 use underwrap_protocol::config::DaemonConfig;
 
-use crate::approval::ApprovalState;
+use crate::approval::PendingApprovals;
 use crate::startup::{
     bind_socket, build_allowed_user_uids, build_wrapper_gid_map, next_listener_result,
     validate_config,
@@ -27,7 +27,7 @@ pub(crate) struct State {
     pub(crate) config: DaemonConfig,
     pub(crate) store: Arc<dyn StorageBackend>,
     pub(crate) allowed_user_uids: std::collections::HashSet<u32>,
-    pub(crate) approval: ApprovalState,
+    pub(crate) pending_approvals: PendingApprovals,
 }
 
 impl State {
@@ -52,7 +52,7 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         config: config.clone(),
         store,
         allowed_user_uids,
-        approval: ApprovalState::new(),
+        pending_approvals: PendingApprovals::new(),
     });
 
     let mut tasks = JoinSet::new();

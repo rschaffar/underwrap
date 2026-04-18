@@ -8,17 +8,13 @@ use super::errors::ErrorCode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperRequest {
-    Read {
-        scope: Option<String>,
-    },
-    Approve {
-        scope: Option<String>,
-        seconds: Option<u64>,
-    },
-    ApproveResponse {
-        scope: Option<String>,
-        seconds: Option<u64>,
-        challenge: Vec<u8>,
+    /// Normal secret read; may trigger an `ApprovalRequired` response when the
+    /// wrapper is in `PerCallApproval` mode.
+    Read { scope: Option<String> },
+    /// Follow-up to an `ApprovalRequired` response: the wrapper presents an
+    /// SSH-agent signature over the daemon-issued nonce.
+    ApprovalProof {
+        challenge_id: String,
         signature: Vec<u8>,
         public_key_blob: Vec<u8>,
     },
@@ -31,22 +27,13 @@ impl WireEncode for WrapperRequest {
                 0u8.encode(out)?;
                 scope.encode(out)
             }
-            Self::Approve { scope, seconds } => {
-                1u8.encode(out)?;
-                scope.encode(out)?;
-                seconds.encode(out)
-            }
-            Self::ApproveResponse {
-                scope,
-                seconds,
-                challenge,
+            Self::ApprovalProof {
+                challenge_id,
                 signature,
                 public_key_blob,
             } => {
-                2u8.encode(out)?;
-                scope.encode(out)?;
-                seconds.encode(out)?;
-                challenge.encode(out)?;
+                1u8.encode(out)?;
+                challenge_id.encode(out)?;
                 signature.encode(out)?;
                 public_key_blob.encode(out)
             }
@@ -60,14 +47,8 @@ impl WireDecode for WrapperRequest {
             0 => Ok(Self::Read {
                 scope: Option::<String>::decode(reader)?,
             }),
-            1 => Ok(Self::Approve {
-                scope: Option::<String>::decode(reader)?,
-                seconds: Option::<u64>::decode(reader)?,
-            }),
-            2 => Ok(Self::ApproveResponse {
-                scope: Option::<String>::decode(reader)?,
-                seconds: Option::<u64>::decode(reader)?,
-                challenge: Vec::<u8>::decode(reader)?,
+            1 => Ok(Self::ApprovalProof {
+                challenge_id: String::decode(reader)?,
                 signature: Vec::<u8>::decode(reader)?,
                 public_key_blob: Vec::<u8>::decode(reader)?,
             }),
@@ -107,10 +88,15 @@ pub enum WrapperResponse {
         env: std::collections::HashMap<String, SecretBytes>,
         directories: Vec<ReadDirectoryBinding>,
     },
-    Challenge {
+    /// The wrapper is in per-call approval mode. The caller must sign `nonce`
+    /// with the private half of `approval_key` (OpenSSH public key) and return
+    /// the signature in a `WrapperRequest::ApprovalProof` on the same
+    /// connection.
+    ApprovalRequired {
+        challenge_id: String,
         nonce: Vec<u8>,
+        approval_key: String,
     },
-    ApprovalOk,
     Error {
         code: ErrorCode,
         message: String,
@@ -125,13 +111,18 @@ impl WireEncode for WrapperResponse {
                 env.encode(out)?;
                 directories.encode(out)
             }
-            Self::Challenge { nonce } => {
+            Self::ApprovalRequired {
+                challenge_id,
+                nonce,
+                approval_key,
+            } => {
                 1u8.encode(out)?;
-                nonce.encode(out)
+                challenge_id.encode(out)?;
+                nonce.encode(out)?;
+                approval_key.encode(out)
             }
-            Self::ApprovalOk => 2u8.encode(out),
             Self::Error { code, message } => {
-                3u8.encode(out)?;
+                2u8.encode(out)?;
                 code.encode(out)?;
                 message.encode(out)
             }
@@ -146,11 +137,12 @@ impl WireDecode for WrapperResponse {
                 env: std::collections::HashMap::<String, SecretBytes>::decode(reader)?,
                 directories: Vec::<ReadDirectoryBinding>::decode(reader)?,
             }),
-            1 => Ok(Self::Challenge {
+            1 => Ok(Self::ApprovalRequired {
+                challenge_id: String::decode(reader)?,
                 nonce: Vec::<u8>::decode(reader)?,
+                approval_key: String::decode(reader)?,
             }),
-            2 => Ok(Self::ApprovalOk),
-            3 => Ok(Self::Error {
+            2 => Ok(Self::Error {
                 code: ErrorCode::decode(reader)?,
                 message: String::decode(reader)?,
             }),

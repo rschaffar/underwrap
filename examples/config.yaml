@@ -71,9 +71,6 @@ wrappers:
     use:
       github/gh:
         access: read-write
-    approval:
-      mode: optional
-      maxSeconds: 1800
 
   gh-pr:
     target: /nix/store/...-gh-pr-helper/bin/gh-pr-helper
@@ -82,9 +79,6 @@ wrappers:
     use:
       github/gh:
         access: read-only
-    approval:
-      mode: always
-      maxSeconds: 1800
 
   # A tool that persists backend-managed credential state in a directory tree.
   gws-auth:
@@ -94,6 +88,3 @@ wrappers:
     use:
       gws/state:
         access: read-write
-    approval:
-      mode: optional
-      maxSeconds: 1800
