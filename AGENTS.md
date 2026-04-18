@@ -52,12 +52,12 @@ nix build .#checks.x86_64-linux.vm-test              # NixOS VM test (21 asserti
 
 ```
 crates/
-  underwrap-protocol/    # Shared: IPC framing, config schema, messages, SCM_RIGHTS
-  underwrap-store/       # StorageBackend trait: plain, encrypted, remote
-  underwrapd/            # Frontend daemon: identity, unlock, audit, secretsd channels
-  underwrap-backendd/    # Backend daemon: storage, OAuth derivation
-  underwrapctl/          # CLI: status, store, unlock, lock
-  underwrap-exec/        # Wrapper stage 1 (setgid): get secret, pipe to stage 2
+  underwrap-protocol/    # Shared: IPC framing, config schema, messages, SCM_RIGHTS, policy types
+  underwrap-store/       # StorageBackend trait: plain, encrypted; mTLS HTTPS service client
+  underwrapd/            # Frontend daemon: identity, per-call approval, audit, secretsd channels
+  underwrap-backendd/    # Central HTTPS service + admin API; storage; expiry sweeper
+  underwrap-admin-ui/    # Operator web UI in front of the admin API
+  underwrap-exec/        # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
   underwrap-ns/          # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
   underwrap-secretsd/    # D-Bus Secret Service provider for libsecret mode
   underwrap-secretsd-store/ # In-memory Secret Service data model + JSON serialization
@@ -67,21 +67,25 @@ nix/
   tests/node.nix         # VM test node configuration
   tests/test.py          # VM test script (Python)
   tests/spoof.py         # Socket spoofing test helper
-docs/                    # Documentation (architecture, security, config, etc.)
-examples/config.yaml     # Annotated example daemon config
+docs/                    # Documentation (backend, admin UI, security, etc.)
+examples/config.yaml     # Annotated example frontend config
 ```
 
 ## Key files to understand first
 
-- `crates/underwrap-exec/src/main.rs` — two-stage wrapper entry point
+- `crates/underwrap-exec/src/main.rs` — two-stage wrapper entry point with
+  per-call approval ssh-agent signing
 - `crates/underwrap-ns/src/main.rs` — PID namespace + hardening + libsecret mode
-- `crates/underwrapd/src/server.rs` — daemon: identity resolution, unlock, dispatch
-- `crates/underwrapd/src/secretsd_channel.rs` — scoped channel handler for secretsd
-- `crates/underwrap-store/src/lib.rs` — StorageBackend trait (read/write/list/delete)
-- `crates/underwrap-secretsd/src/main.rs` — D-Bus Secret Service provider
-- `crates/underwrap-secretsd/src/dbus_service.rs` — D-Bus interface implementations
+- `crates/underwrapd/src/server.rs` — daemon: identity resolution, wrapper dispatch
+- `crates/underwrapd/src/approval.rs` — pending-challenge store + signature verify
+- `crates/underwrapd/src/wrapper_flow.rs` — the wrapper socket request flow
+- `crates/underwrap-backendd/src/server.rs` — HTTPS service + admin API + expiry sweeper
+- `crates/underwrap-admin-ui/src/server.rs` — axum routes for the operator UI
+- `crates/underwrap-protocol/src/policy.rs` — PolicyDocument, WrapperApprovalMode
+- `crates/underwrap-store/src/service.rs` — mTLS HTTPS backend client
 - `nix/modules/underwrap.nix` — NixOS module (generates everything)
-- `docs/security.md` — every security mechanism explained (including libsecret mode)
+- `docs/backend.md` — the backend's data model and API surface
+- `docs/security.md` — every security mechanism explained
 
 ## Code conventions
 
@@ -150,9 +154,11 @@ on backward compatibility concerns.
 
 - Unit tests: in each crate, run with `cargo test -p <crate>`
 - Integration tests: `cargo test -p integration-tests` (some skip without cap_sys_admin)
+- Admin UI end-to-end: `cargo test -p underwrap-admin-ui --test end_to_end`
 - VM test: `nix build .#checks.x86_64-linux.vm-test` — boots a real NixOS VM, tests
-  both local and remote backends, unprivileged user, spoofing resistance, PID namespace
-  isolation, memory protection, core dump prevention, SSH tunnel lifecycle
+  local and remote-style instances against real `underwrap-backendd` processes,
+  unprivileged user, spoofing resistance, PID namespace isolation, memory
+  protection, core dump prevention, policy-driven wrapper locking
 
 ## Architecture notes
 
@@ -161,8 +167,10 @@ on backward compatibility concerns.
 
 **Identity model:** wrapper socket selects expected wrapper + setgid group → `SO_PEERCRED` effective GID → daemon confirms the match
 
-**Remote backend:** frontend daemon connects to `underwrap-backendd` via SSH-tunneled Unix socket.
-Tunnel connect = unlock. Tunnel disconnect = lock.
+**Central backend:** the frontend daemon connects outbound to
+`underwrap-backendd` over HTTPS with mTLS. The backend holds secrets + the
+policy document. Operators manage the backend through the web-based
+`underwrap-admin-ui` service using bearer tokens on the admin API.
 
 **Multi-instance:** `services.underwrap.instances.<name>` — fully isolated users, groups, sockets.
 
@@ -186,22 +194,23 @@ PID + mount namespace (created by underwrap-ns)
 4. Launches private `dbus-daemon` + `underwrap-secretsd` in namespace
 5. secretsd claims `org.freedesktop.secrets` on the private bus
 6. Target sees `DBUS_SESSION_BUS_ADDRESS` pointing to private bus
-7. All libsecret read/write: secretsd → daemon channel → StorageBackend
+7. All libsecret read/write: secretsd → daemon channel → daemon's central backend
 8. fd 4 (channel) is CLOSED before exec'ing the target
 9. On namespace exit: kernel SIGKILL kills dbus-daemon + secretsd
 
 See `docs/security.md` "Design invariants" and "Secretsd channel" for security analysis.
 
-**Bootstrap flow** (e.g., `gh auth login` via libsecret wrapper):
-```
-1. User runs:  work-gh auth login
-2. underwrap-exec gets secret + secretsd channel fd from daemon
-3. underwrap-ns creates namespace, launches dbus-daemon + secretsd
-4. secretsd loads metadata from backend, signals readiness
-5. gh does OAuth flow, calls libsecret CreateItem to store token
-6. secretsd writes token to backend via channel (encrypted/remote)
-7. Next run: gh calls SearchItems + GetSecret, gets token from backend
-```
+**Per-call approval** (when a wrapper is in that backend mode):
+
+1. underwrap-exec connects and sends `WrapperRequest::Read`
+2. underwrapd evaluates policy and responds with
+   `WrapperResponse::ApprovalRequired { challenge_id, nonce, approval_key }`
+3. underwrap-exec signs the nonce via `SSH_AUTH_SOCK` and sends
+   `WrapperRequest::ApprovalProof { challenge_id, signature, public_key_blob }`
+4. underwrapd verifies the signature against the policy-stored key,
+   consumes the nonce, and re-authorizes the read with the mode gate
+   bypassed
+5. The usual `ReadOk` / scoped-channel flow continues
 
 ## Completed work
 

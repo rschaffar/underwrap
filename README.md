@@ -45,10 +45,14 @@ At a high level:
 
 Depending on how you configure it, underwrap can also:
 
-- keep secrets in a backend service on the same machine or on a remote workstation
-- manage backend stores behind a privileged backend management socket
-- satisfy the same per-instance backend socket contract locally or via SSH forwarding
-- provide a private Secret Service (`libsecret`) environment for tools such as `gh`
+- keep secrets in a central `underwrap-backendd` service on the same
+  machine or on a trusted remote workstation/server
+- let operators manage wrapper modes, rules, and grants through the
+  browser-based [admin UI](docs/admin-ui.md)
+- require a fresh SSH-agent signature for individual invocations of
+  high-privilege wrappers (per-call approval)
+- provide a private Secret Service (`libsecret`) environment for tools
+  such as `gh`
 
 ## What makes it interesting
 
@@ -131,8 +135,9 @@ underwrap is most useful when you want one of these patterns:
 - **A libsecret-backed CLI inside a private session**
   - Example: `gh auth login` storing credentials through underwrap's private Secret Service
 
-- **A remote-backend deployment**
-  - Secrets live on your workstation; target machines only see them through an SSH tunnel
+- **A central-backend deployment**
+  - Secrets live on your workstation or a central server; target
+    machines reach them through authenticated HTTPS with mTLS
 
 ## Should you use underwrap?
 
@@ -176,11 +181,13 @@ Then start with [Getting started](docs/getting-started.md).
 
 - [Documentation overview](docs/index.md)
 - [Getting started](docs/getting-started.md)
+- [The underwrap backend](docs/backend.md)
+- [Admin UI](docs/admin-ui.md)
 - [Agent-facing wrappers](docs/agents.md)
 - [GitHub via libsecret](docs/gh-libsecret.md)
 - [Configuration reference](docs/configuration.md)
 - [Architecture](docs/architecture.md)
-- [Remote backend](docs/remote-backend.md)
+- [Deploying the central backend](docs/remote-backend.md)
 - [Security](docs/security.md)
 - [Testing](docs/testing.md)
 - [Choosing underwrap](docs/comparison.md)
@@ -188,7 +195,9 @@ Then start with [Getting started](docs/getting-started.md).
 
 ## Status
 
-The implementation already covers the core wrapper chain, multi-instance NixOS deployment, remote backend mode, and libsecret mode.
+The implementation covers the core wrapper chain, multi-instance NixOS
+deployment, the central HTTPS backend with mTLS, the operator admin UI,
+libsecret mode, and directory credential mode.
 
 What it still needs most is:
 

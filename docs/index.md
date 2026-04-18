@@ -10,10 +10,9 @@ underwrap's docs are organized by question:
 - **What should I check before I call a wrapper design done?** → [Wrapper author checklist](wrapper-author-checklist.md)
 - **How do the advanced workflows work?**
   - [GitHub via libsecret](gh-libsecret.md)
-  - [Remote backend](remote-backend.md)
-  - [Backend v2 architecture (draft)](backend-v2-architecture.md)
-  - [Backend v2 implementation plan (draft)](backend-v2-implementation-plan.md)
-  - [Backend v2 policy and API schema (draft)](backend-v2-policy-api.md)
+  - [Deploying the central backend](remote-backend.md)
+  - [The underwrap backend](backend.md)
+  - [Admin UI](admin-ui.md)
 - **How do I configure it in NixOS?** → [Configuration reference](configuration.md)
 - **How does the system fit together?** → [Architecture](architecture.md)
 - **What are the security goals, mechanisms, and limits?** → [Security](security.md)
@@ -39,10 +38,12 @@ underwrap's docs are organized by question:
 ### If you want to deploy it seriously
 
 1. [Getting started](getting-started.md)
-2. [Configuration reference](configuration.md)
-3. [Remote backend](remote-backend.md) if relevant
-4. [Testing](testing.md)
-5. [Security](security.md)
+2. [The underwrap backend](backend.md)
+3. [Deploying the central backend](remote-backend.md)
+4. [Admin UI](admin-ui.md)
+5. [Configuration reference](configuration.md)
+6. [Testing](testing.md)
+7. [Security](security.md)
 
 A good default verification command once you are set up is:
 
@@ -86,7 +87,8 @@ This is where underwrap moves beyond simple env-var injection.
 
 Examples:
 - `gh` storing credentials via a private Secret Service in libsecret mode
-- remote backend mode where secrets remain on your workstation
+- central backend mode where secrets remain on a trusted workstation or
+  server and target hosts only see them through authenticated HTTPS
 
 ## A note on the security docs
 

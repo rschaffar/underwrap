@@ -2,48 +2,91 @@
 
 This guide walks through the simplest useful underwrap setup:
 
-- one NixOS instance
-- one wrapper
-- one static secret
-- one familiar CLI: [`jira-cli`](https://github.com/ankitpokhrel/jira-cli)
+- a central `underwrap-backendd` (here on the same machine, for
+  simplicity — the same steps work when it lives on a separate host),
+- one NixOS instance with one wrapper,
+- one static secret,
+- one familiar CLI: [`jira-cli`](https://github.com/ankitpokhrel/jira-cli).
 
-The goal is not to show every feature. The goal is to get your **first successful wrapper** running with as little conceptual overhead as possible.
+The goal is not to show every feature. It's the smallest path to a
+first working wrapper and a working operator UI.
 
 After this, move on to:
 
 - [Agent-facing wrappers](agents.md)
 - [GitHub via libsecret](gh-libsecret.md)
-- [Remote backend](remote-backend.md)
+- [Deploying the central backend](remote-backend.md)
+- [Admin UI](admin-ui.md)
 
 ## What you will build
 
-A wrapper called:
-
-```bash
-work-jira
+```text
+operator browser ─► underwrap-admin-ui ─► underwrap-backendd
+                                            ▲
+                                            │ mTLS
+                                            │
+user@console ─► work-jira (setgid) ─► underwrapd-work ─┘
 ```
 
-When a user runs it, underwrap will inject `JIRA_API_TOKEN` just for that invocation and then execute `jira`.
+When a user runs `work-jira`, underwrap injects `JIRA_API_TOKEN` just
+for that invocation and then executes `jira`. The secret is fetched
+from the backend the operator configured.
 
 ## Prerequisites
 
-- **NixOS**
-- a flake-based system configuration
-- the underwrap flake added as an input
+- NixOS with a flake-based system configuration.
+- The underwrap flake added as an input:
 
-Add underwrap to your `flake.nix`:
+  ```nix
+  inputs.underwrap.url = "github:rschaffar/underwrap";
+  ```
 
-```nix
-inputs.underwrap.url = "github:rschaffar/underwrap";
+- A CA + server + client certificate pair for mTLS between the frontend
+  daemon and the backend. See
+  [Deploying the central backend](remote-backend.md) for one-liner
+  recipes with `step-ca`.
+
+## 1. Start the backend
+
+Write `/etc/underwrap-backend/config.yaml`:
+
+```yaml
+stores:
+  work:
+    backend: plain
+    dir: /var/lib/underwrap-backend/work
+
+service:
+  listen: 127.0.0.1:18443
+  tls:
+    cert_file: /etc/underwrap-backend/server.pem
+    key_file: /etc/underwrap-backend/server.key
+    client_ca_file: /etc/underwrap-backend/ca.pem
+  clients:
+    underwrap-work@localhost:
+      store: work
+
+admin:
+  listen: 127.0.0.1:19443
+  tokens:
+    ops:
+      token_file: /run/keys/underwrap-admin-ops
 ```
 
-## 1. Enable underwrap and define one credential + one wrapper
+Provision the admin token and start the daemon:
+
+```bash
+head -c 32 /dev/urandom | base64 > /run/keys/underwrap-admin-ops
+chmod 0400 /run/keys/underwrap-admin-ops
+underwrap-backendd --config /etc/underwrap-backend/config.yaml
+```
+
+## 2. Define the frontend instance
 
 In your NixOS configuration:
 
 ```nix
 { pkgs, underwrap, ... }:
-
 {
   imports = [ underwrap.nixosModules.default ];
 
@@ -51,23 +94,22 @@ In your NixOS configuration:
     enable = true;
     package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
-    # Define one underwrap instance named "work".
-    # The instance name becomes part of generated resources such as:
-    # - systemd service: underwrapd-work.service
-    # - wrapper binary: /run/wrappers/bin/work-jira
-    # - runtime dir: /run/underwrap-work/
     instances.work = {
-      # Declare a reusable credential inside the instance.
+      allowedUsers = [ "alice" ];
+      backend = {
+        url = "https://127.0.0.1:18443";
+        caFile = "/etc/underwrap/ca.pem";
+        clientCertFile = "/etc/underwrap/client-work.pem";
+        clientKeyFile = "/etc/underwrap/client-work.key";
+      };
+
       credentials."jira/api-token" = {
         mode = "env";
         variable = "JIRA_API_TOKEN";
       };
 
-      # Define one wrapper inside the "work" instance.
       wrappers.jira = {
         target = "${pkgs.jira-cli-go}/bin/jira";
-
-        # Bind the declared credential into this wrapper.
         use."jira/api-token".access = "read-only";
       };
     };
@@ -75,152 +117,137 @@ In your NixOS configuration:
 }
 ```
 
-Rebuild your system:
+Rebuild:
 
 ```bash
 sudo nixos-rebuild switch
 ```
 
-## 2. What the module creates
+The module creates:
 
-For this example, the NixOS module will create:
-
-- daemon user and group: `underwrap-work`
+- daemon user/group: `underwrap-work`
 - wrapper group: `underwrap-work-jira`
 - daemon service: `underwrapd-work.service`
 - wrapper socket: `/run/underwrap-work/wrapper-jira.sock`
-- control socket: `/run/underwrap-work/control.sock`
 - setgid wrapper: `/run/wrappers/bin/work-jira`
 - wrapper sidecar config: `/etc/underwrap/wrappers/work-jira.yaml`
 
-You do not create those pieces manually. The module wires them up for you.
+## 3. Store the secret and authorize the wrapper
 
-## 3. Store the Jira API token
-
-Store the token through the control socket.
+The backend starts empty. Put the token in, then add an allow rule so
+`work-jira` can read it:
 
 ```bash
-sudo underwrapctl --socket /run/underwrap-work/control.sock store jira/api-token
+TOKEN=$(cat /run/keys/underwrap-admin-ops)
+
+# Store the token. Value is base64-encoded bytes.
+curl -sS -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"store":"work","secret_id":"jira/api-token",
+       "material_b64":"'"$(printf 'your-real-jira-token' | base64)"'"}' \
+  http://127.0.0.1:19443/v1/admin/secret/write
+
+# Allow the wrapper to read it.
+curl -sS -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"store":"work","rule":{
+        "id":"work-jira-read",
+        "wrapper":"work-jira",
+        "resource":"secret:jira/api-token",
+        "operation":"secret.read",
+        "effect":"allow"
+      }}' \
+  http://127.0.0.1:19443/v1/admin/rule/upsert
 ```
 
-`underwrapctl` reads from standard input. Paste the token, then press `Ctrl-D`.
+Alternately, run the [admin UI](admin-ui.md) and do it from the browser.
 
-> [!TIP]
-> Do not put real secrets directly on the shell command line. Pasting into standard input is safer than `echo token | ...`.
+## 4. Initialize `jira-cli`
 
-## 4. Make sure `jira-cli` itself is initialized
-
-underwrap only delivers the secret. `jira-cli` still needs its normal client-side configuration.
-
-Run this once as the user who will use the wrapper:
+underwrap only delivers the secret. `jira-cli` still needs its usual
+client-side configuration:
 
 ```bash
 jira init
 ```
 
-For the simple cloud-token case, `jira-cli` will use `JIRA_API_TOKEN` when it is present. underwrap will provide that variable only while `work-jira` is running.
-
-> [!NOTE]
-> If you use an on-premise Jira PAT workflow that also requires `JIRA_AUTH_TYPE=bearer`, you can set that via `envSet` in the wrapper configuration. Keep the getting-started example simple first.
-
 ## 5. Run the wrapper
-
-Now run:
 
 ```bash
 work-jira issue list
 ```
 
-That should feel like running `jira issue list`, except the token came from underwrap instead of from your shell environment.
+This should feel like running `jira issue list`, except the token came
+from underwrap.
 
-## 6. Verify the setup
+## Verify the setup
 
-Check that the daemon is running:
+Daemon up?
 
 ```bash
 systemctl status underwrapd-work.service
 ```
 
-Check that the wrapper exists and is setgid:
+Wrapper setgid bit?
 
 ```bash
 ls -l /run/wrappers/bin/work-jira
+# → -rwxr-sr-x ... root underwrap-work-jira ...
 ```
 
-You should see the wrapper owned by `root`, group `underwrap-work-jira`, with the setgid bit set.
-
-Check underwrap's view of the wrapper:
+Policy and secret stored?
 
 ```bash
-sudo underwrapctl --socket /run/underwrap-work/control.sock status work-jira
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"store":"work"}' \
+  http://127.0.0.1:19443/v1/admin/policy/get | jq
 ```
-
-That should show the configured target, secret ID, and whether the secret is stored.
-
-## Result
-
-You have a working underwrap deployment with:
-
-- kernel-backed wrapper identity via the wrapper socket plus the wrapper's group
-- secret delivery at invocation time instead of shell-export time
-- a fixed target binary from root-owned configuration
-- a clean base to build more opinionated wrappers on top of
 
 ## Common next steps
 
-### Move from broad CLI wrapping to narrow wrappers
-
-If an agent or automation system will call the wrapper, you will usually want a narrow helper in front of the full CLI.
-
-Read: [Agent-facing wrappers](agents.md)
-
-Before you call a wrapper design “done”, also read: [Wrapper author checklist](wrapper-author-checklist.md)
-
-### Use `gh` with login flows instead of a plain env var
-
-If you want `gh auth login` and stored credentials to work cleanly, use libsecret mode.
-
-Read: [GitHub via libsecret](gh-libsecret.md)
-
+- **Narrower wrappers for agents** — see
+  [Agent-facing wrappers](agents.md) and the
+  [wrapper author checklist](wrapper-author-checklist.md).
+- **`gh auth login` with stored credentials** — see
+  [GitHub via libsecret](gh-libsecret.md).
+- **Per-call operator approval for high-privilege wrappers** — set the
+  wrapper's mode to `per-call-approval` in the admin UI and register
+  your SSH public key. Every invocation then requires a fresh
+  ssh-agent signature.
 
 ## Troubleshooting
 
 ### `peer egid does not map to any configured wrapper`
 
 The process did not reach the daemon through a valid setgid wrapper.
+Check that `/run/wrappers/bin/work-jira` exists, is setgid, and is
+group-owned by `underwrap-work-jira`.
 
-Check:
+### `connecting to backend at https://127.0.0.1:18443` fails
 
-- `/run/wrappers/bin/work-jira` exists
-- it has the setgid bit
-- its group is `underwrap-work-jira`
-
-### `connecting to /run/underwrap-work/wrapper-jira.sock` fails
-
-The daemon is not running or the runtime directory was not created correctly.
-
+The daemon cannot reach the backend, or the mTLS material is wrong.
 Check:
 
 ```bash
-systemctl status underwrapd-work.service
-ls -l /run/underwrap-work/
+systemctl status underwrap-backendd.service
+openssl s_client -connect 127.0.0.1:18443 \
+  -CAfile /etc/underwrap/ca.pem \
+  -cert   /etc/underwrap/client-work.pem \
+  -key    /etc/underwrap/client-work.key
 ```
 
 ### The wrapper runs but Jira still fails to authenticate
 
-underwrap may be working, but `jira-cli` may still be uninitialized or pointed at the wrong Jira instance.
-
-Check:
-
-```bash
-jira init
-```
-
-Then try the wrapper again.
+underwrap is probably working; `jira-cli` may still be uninitialized or
+pointed at the wrong Jira instance. Re-run `jira init`.
 
 ## Keep reading
 
 - [Documentation overview](index.md)
+- [The underwrap backend](backend.md)
 - [Configuration reference](configuration.md)
 - [Wrapper author checklist](wrapper-author-checklist.md)
 - [Security](security.md)

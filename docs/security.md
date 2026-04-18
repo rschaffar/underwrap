@@ -469,13 +469,13 @@ This is a deliberate choice:
 - kernel-level permission gating before connection
 - strict daemon-side authorization after connection
 
-### Control socket
+### Backend-managed administration
 
-The control socket is restricted to the daemon user context and is intended for administrative operations such as store, status, unlock, and lock.
-
-### Remote tunnel socket directory
-
-When remote mode is enabled, the tunnel directory is group-writable so the SSH forward can create the backend socket where `underwrapd` expects it.
+The admin surface is not a Unix socket on the target host. Operators
+manage wrapper modes, rules, and grants through the central
+`underwrap-backendd`'s admin HTTP API (bearer-token authenticated) or
+through the browser-based `underwrap-admin-ui` in front of it. The
+target host only needs outbound mTLS access to the backend.
 
 ---
 
@@ -508,33 +508,47 @@ Logging does not make a system secure, but in systems that are trying to be secu
 
 ---
 
-## Remote backend security model
+## Central backend security model
 
-Remote mode changes **where** secrets live, but not the basic wrapper flow on the target host.
+Running `underwrap-backendd` centrally changes **where** secrets live,
+but not the basic wrapper flow on the target host.
 
-### What remote mode is trying to buy you
+### What the central backend is trying to buy you
 
-- the target host does not need to store the secrets locally
-- high-value secret material can stay on a more trusted workstation
-- tunnel availability becomes an operational access boundary
+- The target host does not need to store any secret material on disk.
+- High-value secret material stays on a more trusted workstation or
+  server. A compromised target host gets the secret it needed for one
+  invocation, not the store.
+- Central policy: wrapper modes, rules, and grants are configured in
+  one place and enforced by one process. Operators can revoke access
+  centrally without touching the target host.
 
 ### What it does not buy you
 
-- the target process still receives the credential material it needs for the invocation
-- `root` on the target or backend host is still `root`
-- a compromised backend workstation is still a compromised backend workstation
+- The target process still receives the credential material it needs
+  for the invocation.
+- `root` on the target or backend host is still `root`.
+- A compromised backend host is still a compromised backend host.
 
-### Backend daemon trust model
+### Backend trust model
 
-`underwrap-backendd` is intentionally simple. It does not implement a second, elaborate per-client authentication system of its own.
+`underwrap-backendd` authenticates two distinct surfaces:
 
-The intended trust boundary is:
+- **Runtime** (`/v1/*`) — mutual TLS. Every `underwrapd` instance gets
+  one client certificate. The certificate's subject CN is the instance
+  principal; the backend maps it to one store and serves only that
+  store. Unknown principals are rejected before any request handler
+  runs.
+- **Admin** (`/v1/admin/*`) — bearer tokens. Each operator has one
+  opaque token loaded from a file at startup. Tokens are compared in
+  constant time. The matched operator name is recorded with every
+  audit event.
 
-- the backend socket is local to the trusted backend machine
-- it is protected by normal filesystem permissions
-- remote access happens only through an SSH forward you deliberately create
-
-This is a pragmatic trust model, not a zero-trust one.
+The admin listener is plain HTTP. When it needs to be reachable beyond
+localhost, the operator is expected to front it with a local
+TLS-terminating reverse proxy. The bundled `underwrap-admin-ui` is
+itself one such client, designed to sit on a jump host or behind the
+same TLS front.
 
 ---
 

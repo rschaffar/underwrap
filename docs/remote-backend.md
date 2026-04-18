@@ -1,117 +1,202 @@
-# Remote backend
+# Deploying the central backend
 
-underwrap always uses the same frontend contract:
+underwrap splits its storage from its local enforcement. On any NixOS
+machine that runs wrappers, `underwrapd` brokers wrapper identity
+locally; it reads and writes secrets by talking to a central
+`underwrap-backendd` over HTTPS with mutual TLS.
 
-```text
-/run/underwrap-<instance>/backend/backend.sock
+This page walks through a two-machine deployment:
+
+- **backend host** — runs `underwrap-backendd`. Holds the real secret
+  state and the policy document.
+- **target host** — runs `underwrapd` and the wrappers. Connects
+  outbound to the backend host.
+
+For the local-only shape, run both on the same machine and point
+`underwrapd` at `127.0.0.1`. Everything below still applies.
+
+## Preparing the PKI
+
+mTLS is the backend's one true authentication. You need:
+
+- a CA certificate used to sign both server and client certificates,
+- a server certificate whose SANs include the address operators and the
+  target host will use (`localhost`, an internal hostname, or an IP),
+- one client certificate per target instance. The **subject CN** is the
+  instance principal the backend will recognize.
+
+A minimal `step-ca` recipe:
+
+```bash
+step certificate create \
+  "underwrap-backend-ca" ca.pem ca.key \
+  --profile root-ca --insecure --no-password
+
+step certificate create \
+  "backend.example.internal" server.pem server.key \
+  --profile leaf --ca ca.pem --ca-key ca.key \
+  --san backend.example.internal --san 127.0.0.1 \
+  --not-after 8760h --insecure --no-password
+
+step certificate create \
+  "underwrap-work@vm-01" client-work.pem client-work.key \
+  --profile leaf --ca ca.pem --ca-key ca.key \
+  --not-after 8760h --insecure --no-password
 ```
 
-The frontend daemon connects to that socket whether the backend is local or remote.
+Copy `ca.pem`, `server.pem`, and `server.key` to the backend host. Copy
+`ca.pem`, `client-work.pem`, and `client-work.key` to the target host.
 
-The only question is: **who provides that socket?**
+## Backend host
 
-- local deployment: a local `underwrap-backendd` export
-- remote deployment: an SSH forward to a trusted machine running `underwrap-backendd`
-
-## Components
-
-A remote deployment has two roles:
-
-- **target machine** — runs `underwrapd`, wrappers, and the wrapped tools
-- **backend machine** — runs `underwrap-backendd` and stores the secrets
-
-The backend machine also exposes a privileged management socket for backend operators.
-
-## Static backend config
-
-`underwrap-backendd` uses a static config file that defines:
-
-- the management socket
-- the predefined stores
-
-Example:
+Install `underwrap-backendd` (it builds with plain `cargo build -p
+underwrap-backendd`, no NixOS wrapper machinery required) and write
+`/etc/underwrap-backend/config.yaml`:
 
 ```yaml
-management:
-  socket: /run/underwrap-backend/mgmt.sock
-
 stores:
   work:
     backend: plain
     dir: /var/lib/underwrap-backend/work
+
+service:
+  listen: 0.0.0.0:18443
+  tls:
+    cert_file: /etc/underwrap-backend/server.pem
+    key_file: /etc/underwrap-backend/server.key
+    client_ca_file: /etc/underwrap-backend/ca.pem
+  clients:
+    underwrap-work@vm-01:
+      store: work
+
+admin:
+  listen: 127.0.0.1:19443
+  tokens:
+    ops:
+      token_file: /run/keys/underwrap-admin-ops
 ```
 
-Start the backend daemon on the trusted machine:
+Provision the admin token:
 
 ```bash
-underwrap-backendd --config ~/.config/underwrap/backend.yaml
+head -c 32 /dev/urandom | base64 > /run/keys/underwrap-admin-ops
+chmod 0400 /run/keys/underwrap-admin-ops
 ```
 
-## Exporting a store to a data socket
+Start the daemon with whichever init system suits you. A minimal systemd
+unit is in the VM test
+(`nix/tests/node.nix`) — copy its `ProtectSystem`, `PrivateTmp`,
+`RestrictAddressFamilies`, and `NoNewPrivileges` flags.
 
-Before forwarding, export the store onto a normal backend protocol socket on the backend machine:
+## Target host (NixOS)
+
+Configure `services.underwrap` to connect outbound to the backend:
+
+```nix
+services.underwrap = {
+  enable = true;
+  package = pkgs.underwrap;
+
+  instances.work = {
+    allowedUsers = [ "alice" ];
+    backend = {
+      url = "https://backend.example.internal:18443";
+      caFile = "/etc/underwrap/ca.pem";
+      clientCertFile = "/etc/underwrap/client-work.pem";
+      clientKeyFile = "/etc/underwrap/client-work.key";
+    };
+
+    credentials."github/token" = {
+      mode = "env";
+      variable = "GH_TOKEN";
+    };
+
+    wrappers.work-gh = {
+      target = "${pkgs.gh}/bin/gh";
+      use."github/token".access = "read-only";
+    };
+  };
+};
+```
+
+The wrapper appears at `/run/wrappers/bin/work-gh`. Its GID maps to the
+`underwrap-work-work-gh` group the module generates; `underwrapd`
+derives the wrapper name from `SO_PEERCRED` + the `/proc/<pid>/status`
+effective GID.
+
+Restart the frontend instance service:
 
 ```bash
-underwrap-backend-ctl \
-  --socket /run/underwrap-backend/mgmt.sock \
-  export work /run/underwrap-backend/work.sock --mode 0600
+systemctl restart underwrapd-work.service
 ```
 
-That creates a regular backend data socket serving the `work` store.
+## Putting a wrapper under policy
 
-The frontend does not know the store name. It only sees a socket.
+Out of the box, the backend's policy document is empty. An empty
+document means **every request with no matching rule is denied**, so new
+wrappers always need at least one allow-rule before they can do
+anything.
 
-## Forwarding to the target machine
-
-Now satisfy the target machine's expected per-instance socket path with SSH remote forwarding:
+The short way:
 
 ```bash
-ssh -N \
-  -R /run/underwrap-work/backend/backend.sock:/run/underwrap-backend/work.sock \
-  underwrap-work-tunnel@target-machine
+# from the backend host
+TOKEN=$(cat /run/keys/underwrap-admin-ops)
+
+# Create an allow rule so work-gh can read github/token.
+curl -sS -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "store": "work",
+        "rule": {
+          "id": "gh-token-read",
+          "wrapper": "work-gh",
+          "resource": "secret:github/token",
+          "operation": "secret.read",
+          "effect": "allow"
+        }
+      }' \
+  http://127.0.0.1:19443/v1/admin/rule/upsert
+
+# Store the actual secret value.
+curl -sS -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"store":"work","secret_id":"github/token",
+       "material_b64":"'"$(printf 'ghp_…' | base64)"'"}' \
+  http://127.0.0.1:19443/v1/admin/secret/write
 ```
 
-After that, the target machine has:
+The [admin UI](admin-ui.md) offers the same primitives with a browser.
 
-```text
-/run/underwrap-work/backend/backend.sock
-```
+## Wrapper approval modes
 
-and `underwrapd` can use the remote backend exactly as if it were local.
+Wrappers default to "unlocked forever" on first use. Centrally change
+that any time:
 
-## Why the frontend does not name stores
+- **`locked`** — deny everything. Use this for wrappers under
+  maintenance or compromise investigation.
+- **`unlocked { until_epoch }`** — allow through rules until the given
+  epoch; `underwrap-backendd` flips the entry back to `locked`
+  automatically.
+- **`per-call-approval { approval_key }`** — require the operator to
+  sign a fresh nonce with their SSH agent on every invocation. Use this
+  for high-privilege wrappers where ambient automation should never be
+  able to act alone.
 
-The frontend does **not** send a store name over the protocol.
+The wrapper-side behavior is identical across modes; only the backend
+policy changes.
 
-Instead:
+## What this is not
 
-- backend config defines stores
-- backend management tooling exports one chosen store to one chosen socket
-- socket identity selects the store
+This page does **not** describe:
 
-That keeps backend routing out of the frontend API and avoids trusting client-supplied namespace or store identifiers.
+- The retired SSH-forwarded Unix socket + `underwrap-backend-ctl export`
+  model.
+- The retired local `underwrapctl` control socket.
+- The retired local timed-unlock flow (`underwrap-exec --approve`
+  `--seconds`).
 
-## Security notes
-
-The management socket is privileged. Treat it as an administrative interface.
-
-Whoever can access it can:
-
-- inspect available stores
-- export stores onto sockets
-- remove exports
-
-So it should normally be accessible only to a backend operator user or root.
-
-The forwarded per-instance socket on the target machine is much less privileged. It only exposes the already-selected store view that was exported on the backend side.
-
-## Operator workflow
-
-The basic flow is:
-
-1. configure and start `underwrap-backendd` on the backend machine
-2. export a store with `underwrap-backend-ctl`
-3. satisfy the target machine's expected socket path locally or via SSH forwarding
-4. run the frontend instance normally
-
-Additional tooling can automate the SSH-forward lifecycle while keeping the same frontend contract.
+Those shapes no longer exist in the codebase. Any reference in older
+commits or old configs will fail at startup today.

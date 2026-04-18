@@ -51,28 +51,25 @@ services.underwrap.instances.work = {
   wrappers.gh-auth = {
     target = "${pkgs.gh}/bin/gh";
     use."github/gh".access = "read-write";
-    unlock = {
-      mode = "optional";
-      maxSeconds = 1800;
-    };
-    unlockKey = "ssh-ed25519 AAAA...";
   };
 
   wrappers.gh-pr = {
     target = "/nix/store/...-gh-pr-helper/bin/gh-pr-helper";
     use."github/gh".access = "read-only";
-    unlock = {
-      mode = "always";
-      maxSeconds = 1800;
-    };
   };
 };
 ```
 
-This is a good first-release shape because it keeps the credential namespace reusable while separating:
+This is a good first-release shape because it keeps the credential
+namespace reusable while separating:
 
 - the wrapper that may mutate the store
 - the wrappers that may only read from it
+
+Wrapper availability (locked / unlocked / per-call approval with an
+SSH key) is set on the backend side; the local wrapper config stays
+minimal. See [The underwrap backend](backend.md) and
+[Admin UI](admin-ui.md) for the modes and how to set them.
 
 ## Access levels
 

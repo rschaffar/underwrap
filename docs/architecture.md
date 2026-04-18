@@ -1,130 +1,131 @@
 # Architecture
 
-This document explains how underwrap is put together.
+This document is the high-level map of underwrap. For the backend
+surface in depth, see [The underwrap backend](backend.md).
 
-The short version:
-
-- `underwrapd` is the frontend daemon on the target machine
-- `underwrap-exec` is the setgid entry wrapper
-- `underwrap-ns` is the namespace helper
-- `underwrap-backendd` is the backend service in both local and remote deployments
-- `underwrap-backend-ctl` is the privileged management tool for exporting stores onto sockets
-- `underwrap-secretsd` is the private Secret Service implementation used in libsecret mode
-
-## The main components
+## Components
 
 | Component | Role | Typical location |
 |---|---|---|
 | `underwrapd` | Frontend daemon on the target host | NixOS machine running wrappers |
 | `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/<instance>-<wrapper>` |
 | `underwrap-ns` | Stage 2 wrapper: create namespace, exec target | `/run/wrappers/bin/underwrap-ns` |
-| `underwrapctl` | Administrative CLI for store/status/unlock/lock | target host |
-| `underwrap-backendd` | Backend service providing storage to frontend daemons | local host or trusted workstation/backend host |
-| `underwrap-backend-ctl` | Backend management CLI for listing stores and creating/removing socket exports | backend operator host |
+| `underwrap-backendd` | Central service: holds secrets + policy, authenticates `underwrapd` instances over mTLS | operator workstation or central server |
+| `underwrap-admin-ui` | Operator web UI in front of the backend admin API | next to `underwrap-backendd` or on a jump host |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
 
-The implementation is intentionally structured so the high-level execution paths read top-down and the lower-level mechanics live in smaller modules. That matters for review: this is a security-sensitive project, so keeping process flow, authorization, protocol handling, and storage concerns visibly separate is part of the assurance story.
+The implementation deliberately splits process flow, authorization,
+protocol handling, and storage into separate modules. Reviewers can read
+the layers top-down without spelunking.
 
 ## Why the wrapper chain has two stages
 
-underwrap splits wrapper execution into two binaries:
+`underwrap-exec` and `underwrap-ns` are installed as separate setgid
+binaries:
 
 1. **`underwrap-exec`**
    - installed setgid to a per-wrapper group
-   - used for wrapper identity
-   - talks to the daemon and receives secret material
-
+   - authenticates against `underwrapd` via kernel identity and
+     receives secret material
 2. **`underwrap-ns`**
    - installed with `cap_sys_admin` and `cap_setpcap`
-   - used to create the PID namespace and related isolation
-   - sets `PR_SET_NO_NEW_PRIVS` before exec of the final target and attempts to prune the capability bounding set where the kernel permits it
+   - creates the PID/mount namespace, sets `PR_SET_NO_NEW_PRIVS`, prunes
+     the capability bounding set where the kernel permits it, and
+     execs the final target
 
-The split exists because NixOS `security.wrappers` does not let one wrapper binary carry both the setgid identity mechanism and the capability-based namespace setup cleanly.
+The split exists because NixOS `security.wrappers` cannot cleanly carry
+both the setgid identity story and the capability-based namespace
+story on one binary.
 
 ## End-to-end request flow
 
-For a normal env-var wrapper, the flow looks like this:
+For a normal env-var wrapper:
 
 ```text
 user runs work-jira issue list
-  -> /run/wrappers/bin/work-jira                         (underwrap-exec, setgid)
+  -> /run/wrappers/bin/work-jira                       (underwrap-exec, setgid)
   -> connect to /run/underwrap-work/wrapper-jira.sock
   -> underwrapd verifies the peer's effective GID matches that wrapper socket
-  -> underwrapd reads or derives the secret
+  -> underwrapd authorizes and reads the secret from the central backend (HTTPS + mTLS)
   -> underwrap-exec drops privilege
   -> secret is handed to underwrap-ns over fd 3
   -> underwrap-ns creates the target environment
   -> target execs with the injected secret
 ```
 
-## Identity model
+When the backend policy puts the wrapper in **per-call approval** mode
+the daemon adds one round-trip before the read: it issues a nonce,
+waits for the wrapper's ssh-agent signature, verifies it against the
+policy's `approval_key`, and only then fetches the secret.
+
+## Local identity model
 
 The daemon does not trust a client-supplied wrapper name.
 
 Instead:
 
-- each wrapper binary is installed setgid to a dedicated group
-- each wrapper gets its own wrapper socket
-- the wrapper socket determines the expected wrapper
-- the daemon obtains the peer process credentials from the kernel
-- it reads the peer's effective GID from `/proc/<pid>/status`
-- the peer effective GID must match the wrapper selected by that socket
+- each wrapper binary is installed setgid to a dedicated group,
+- each wrapper gets its own wrapper socket,
+- the socket determines the *expected* wrapper,
+- the daemon reads the peer's effective GID from `/proc/<pid>/status`,
+- the peer effective GID must match the wrapper selected by the socket.
 
-This is one of the central design choices in underwrap.
+This is one of the central design choices in underwrap. Nothing the
+wrapper says on the socket identifies it — the kernel does.
 
-## Storage model
+## Central authorization model
 
-underwrap is designed around a frontend/backend split.
+Everything beyond "is this wrapper allowed to talk to me at all" lives
+in the backend's `PolicyDocument`:
 
-- `underwrapd` is the frontend that owns wrapper authentication, unlock policy, scoped channels, and audit events
-- `underwrap-backendd` is the backend that owns the actual storage implementation
-- `underwrap-backend-ctl` exports a chosen backend store onto a chosen Unix socket
+- per-wrapper **approval mode** (`locked` / `unlocked{until?}` /
+  `per-call-approval{approval_key}`)
+- per-`(wrapper, resource, operation)` **rules** (permanent allow/deny)
+- per-`(wrapper, resource, operation)` **grants** (time-bounded
+  allow/deny)
 
-Available backend storage modes include:
+See [The underwrap backend](backend.md) for the evaluation order,
+policy data model, and API shape. `underwrapd` fetches the policy
+document through the backend's authenticated service, evaluates it
+locally for each request, and surfaces `NeedsApproval` to the wrapper
+when per-call approval is required.
 
-- **plain** — plaintext files owned by the backend daemon
-- **encrypted** — encrypted files with a master key owned by the backend daemon
+## Backend storage
 
-The frontend always talks to a backend socket. In local deployments that socket is provided by a local `underwrap-backendd` export; in remote deployments the same socket contract is satisfied by an SSH forward to a remote `underwrap-backendd` export.
+`underwrap-backendd` persists everything under one of:
 
-## Remote backend flow
+- **plain** — files owned by the backend daemon user,
+- **encrypted** — ChaCha20-Poly1305 files keyed by a 32-byte master key
+  file.
 
-In remote mode, the target machine runs `underwrapd`, and the backend socket is satisfied by an SSH forward rather than by a local backend listener.
-
-```text
-wrapper -> underwrapd on target host -> expected backend socket path -> SSH-forwarded Unix socket -> underwrap-backendd on workstation
-```
-
-This lets you keep secrets off the target machine entirely while preserving the same frontend/backend protocol and the same wrapper UX.
-
-See [Remote backend](remote-backend.md).
+The service listener exposes only the narrow runtime surface
+(`/v1/read`, `/v1/write`, `/v1/list`, `/v1/delete`, `/v1/status`). A
+separate admin listener exposes the policy and audit surface.
 
 ## Libsecret flow
 
 Libsecret mode adds two extra processes inside the wrapper namespace:
 
-- `dbus-daemon`
+- `dbus-daemon` (private to the namespace)
 - `underwrap-secretsd`
-
-Conceptually:
 
 ```text
 underwrap-exec
   -> underwrap-ns
       -> private dbus-daemon
-      -> underwrap-secretsd
+      -> underwrap-secretsd  (talks back via the daemon's scoped channel fd)
       -> target (for example gh)
 ```
 
-The target sees a private `DBUS_SESSION_BUS_ADDRESS` and talks to `underwrap-secretsd` as its Secret Service provider.
-
-`underwrap-secretsd` does not authenticate to the daemon on its own. Instead, the daemon creates a pre-authenticated channel during the original wrapper request and passes one end of that channel into the namespace.
+The target sees a private `DBUS_SESSION_BUS_ADDRESS` and uses
+`underwrap-secretsd` as its Secret Service provider. `underwrap-secretsd`
+does not authenticate to the daemon on its own; the daemon creates a
+pre-authenticated channel during the original wrapper request and
+passes one end into the namespace.
 
 ## Directory credential flow
 
-Directory credentials reuse the same basic capability pattern as libsecret mode.
-
-Conceptually:
+Directory credentials reuse the same channel pattern as libsecret mode:
 
 ```text
 underwrap-exec
@@ -134,32 +135,20 @@ underwrap-exec
       -> target
 ```
 
-For each configured directory credential binding:
-
-1. the daemon authenticates the wrapper request
-2. it creates a scoped channel for that credential root
-3. `underwrap-exec` passes channel metadata to `underwrap-ns`
-4. `underwrap-ns` materializes the current backend files in a namespace-private staging directory
-5. it bind-mounts that directory into the target's home view
-6. if the binding is read-only, it mounts it read-only
-7. after target exit, `underwrap-ns` syncs file changes back to the backend for read-write bindings
-
-Backend storage stays one key per file under `<ref>/files/<relative-path>`.
-
-See:
-
-- [GitHub via libsecret](gh-libsecret.md)
-- [Security](security.md)
+For each directory binding, `underwrap-ns` materializes current backend
+files into a namespace-private staging directory, bind-mounts it into
+the target's home view (read-only when the binding is read-only), and
+syncs changes back to the backend after exit for read-write bindings.
 
 ## Crate layout
 
 ```text
 crates/
   underwrap-protocol        shared config, message families, IPC framing, fd passing
-  underwrap-store           backend trait and implementations
+  underwrap-store           storage trait + backend implementations + mTLS HTTPS client
   underwrapd                frontend daemon on the target host
-  underwrap-backendd        backend daemon for remote mode
-  underwrapctl              administrative CLI
+  underwrap-backendd        central authenticated HTTPS service
+  underwrap-admin-ui        operator web UI in front of the admin API
   underwrap-exec            stage 1 wrapper (setgid)
   underwrap-ns              stage 2 wrapper (namespace setup)
   underwrap-secretsd-store  in-memory Secret Service data model
@@ -167,70 +156,53 @@ crates/
   integration-tests         cross-component tests
 ```
 
-Some internal splits are worth calling out because they mirror the main trust boundaries.
-
-### `underwrapd` internal shape
-
-`underwrapd` is split into focused modules. Its main pieces are:
+### `underwrapd` internals
 
 - `server.rs` — daemon startup and listener orchestration
 - `startup.rs` — config validation, UID/GID resolution, socket binding
 - `peer_auth.rs` — `SO_PEERCRED` and effective-GID checks
-- `control.rs` — control-socket request handling
-- `wrapper_flow.rs` — wrapper-socket request flow
-- `unlock_flow.rs` — challenge-response unlock logic
-- `status.rs` — wrapper and credential status building
+- `wrapper_flow.rs` — the wrapper request flow including the per-call
+  approval round-trip
+- `approval.rs` — pending-challenge store and SSH signature verification
+- `policy.rs` — loads the backend's policy document and evaluates it
+- `status.rs` — wrapper/credential status for the admin API audit
 - `wrapper_bindings.rs` — env/libsecret/directory binding selection
 
-That means the daemon reads more like a book: startup, then control plane, then wrapper plane, with lower-level helpers split out rather than mixed inline.
+### `underwrap-ns` internals
 
-### `underwrap-ns` internal shape
-
-`underwrap-ns` is structured the same way:
-
-- `main.rs` — high-level orchestration and fork/child/parent phase ordering
+- `main.rs` — high-level orchestration and fork/child/parent phasing
 - `env.rs` — target environment assembly
 - `caps.rs` — `no_new_privs` and capability drop logic
 - `mounts.rs` — mount namespace setup and staging cleanup
 - `libsecret.rs` — private D-Bus + `underwrap-secretsd` orchestration
-- `directory_credential.rs` — backend-managed directory materialization and sync
+- `directory_credential.rs` — directory materialization and sync
 
-### `underwrap-secretsd` internal shape
-
-The Secret Service implementation is split by D-Bus interface:
+### `underwrap-secretsd` internals
 
 - `dbus_service.rs` — shared types and path helpers
 - `dbus_service/service.rs` — `org.freedesktop.Secret.Service`
 - `dbus_service/collection.rs` — collection interface
 - `dbus_service/item.rs` — item interface
 
-### `underwrap-protocol` and `underwrap-secretsd-store`
-
-Two other crates are intentionally split by domain family rather than left as giant files:
-
-- `underwrap-protocol/src/message/` groups message types by protocol family
-- `underwrap-secretsd-store/src/store/` groups the in-memory Secret Service data model by collection, alias, item, search, and JSON concerns
-
 ## NixOS module responsibilities
 
-The NixOS module is a large part of the architecture, not just packaging glue.
-
-It generates and manages:
+The NixOS module generates and manages:
 
 - instance users and groups
 - per-wrapper groups
 - setgid wrapper binaries
 - the shared `underwrap-ns` wrapper
-- daemon config files
-- wrapper sidecar configs
+- daemon config files and sidecar configs
 - systemd services
 - runtime and state directories
-- tunnel users for remote mode
 
-That is why underwrap is explicitly NixOS-first.
+This is why underwrap is NixOS-first: the module is load-bearing for
+the identity model, not packaging sugar.
 
-## Where to go next
+## Further reading
 
+- [The underwrap backend](backend.md)
+- [Deploying the central backend](remote-backend.md)
+- [Admin UI](admin-ui.md)
 - [Configuration reference](configuration.md)
-- [Remote backend](remote-backend.md)
 - [Security](security.md)

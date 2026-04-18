@@ -147,15 +147,21 @@ Ask:
 
 The simpler mode is usually better unless the workflow really needs libsecret or directory-backed state.
 
-## 9. Does the wrapper need unlock semantics?
+## 9. Does the wrapper need operator approval per invocation?
+
+This is a backend-side question, not a local one.
 
 Ask:
 
-- is the secret sensitive enough that reads should require an explicit unlock?
-- is there a clear user workflow for that unlock?
-- is the unlock duration/scope reasonable?
+- is the secret sensitive enough that every invocation should require
+  an operator-present ssh-agent signature?
+- is there a clear user workflow for signing?
+- is a time-bounded central unlock enough, or do you really want
+  per-call approval?
 
-If unlock is enabled, it should serve a real operational purpose, not just make the wrapper awkward.
+If per-call approval is enabled, it should serve a real operational
+purpose — not just friction. Set wrapper modes in the
+[admin UI](admin-ui.md) or via `/v1/admin/wrapper/set-mode`.
 
 ## 10. Is the token itself scoped tightly enough?
 
