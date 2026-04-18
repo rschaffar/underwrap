@@ -8,8 +8,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use underwrap_protocol::message::{ApprovalGrantStatus, ApprovalStatus};
-
 /// Key for an approval grant: (wrapper_name, scope, uid).
 /// scope=None means "all scopes" for this wrapper+uid.
 type GrantKey = (String, Option<String>, u32);
@@ -112,34 +110,6 @@ impl ApprovalState {
         }
 
         Err(format!("wrapper '{wrapper}' is not approved"))
-    }
-
-    /// Get status info for a wrapper.
-    pub fn status(&self, wrapper: &str) -> ApprovalStatus {
-        let grants = self.grants.lock().unwrap();
-        let mut active = Vec::new();
-
-        for ((w, scope, uid), grant) in grants.iter() {
-            if w == wrapper && grant.is_valid() {
-                let remaining_seconds = grant.expires_at.map(|expires_at| {
-                    expires_at
-                        .checked_duration_since(Instant::now())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0)
-                });
-                active.push(ApprovalGrantStatus {
-                    scope: scope.clone(),
-                    uid: *uid,
-                    remaining_seconds,
-                });
-            }
-        }
-
-        ApprovalStatus {
-            wrapper: wrapper.to_string(),
-            approved: !active.is_empty(),
-            grants: active,
-        }
     }
 
     /// Store a pending challenge nonce for SSH agent approval.
@@ -264,18 +234,6 @@ mod tests {
         state.revoke(Some("w"), Some("s1"));
         assert!(state.check("w", Some("s1"), 1000).is_err());
         assert!(state.check("w", Some("s2"), 1000).is_ok());
-    }
-
-    #[test]
-    fn status_shows_grants() {
-        let state = ApprovalState::new();
-        let s = state.status("w");
-        assert!(!s.approved);
-
-        state.approve("w", None, Some(3600), 1000);
-        let s = state.status("w");
-        assert!(s.approved);
-        assert!(s.grants[0].remaining_seconds.unwrap() > 0);
     }
 
     #[test]

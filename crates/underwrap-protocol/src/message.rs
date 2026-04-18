@@ -6,29 +6,20 @@
 mod backend;
 #[path = "message/common.rs"]
 mod common;
-#[path = "message/control.rs"]
-mod control;
 #[path = "message/directory.rs"]
 mod directory;
 #[path = "message/errors.rs"]
 mod errors;
 #[path = "message/secretsd.rs"]
 mod secretsd;
-#[path = "message/status.rs"]
-mod status;
 #[path = "message/wrapper.rs"]
 mod wrapper;
 
 pub use backend::{BackendRequest, BackendResponse};
 pub use common::SecretBytes;
-pub use control::{ControlRequest, ControlResponse};
 pub use directory::{DirectoryRequest, DirectoryResponse};
 pub use errors::{BackendErrorCode, DirectoryErrorCode, ErrorCode, SecretsdErrorCode};
 pub use secretsd::{SecretsdRequest, SecretsdResponse};
-pub use status::{
-    ApprovalGrantStatus, ApprovalStatus, CredentialStatus, CredentialUsageStatus,
-    WrapperApprovalStatus, WrapperStatus,
-};
 pub use wrapper::{ReadDirectoryBinding, WrapperRequest, WrapperResponse};
 
 #[cfg(test)]
@@ -54,17 +45,6 @@ mod tests {
         };
         let encoded = encode_to_vec(&resp).unwrap();
         let parsed: WrapperResponse = decode_from_slice(&encoded).unwrap();
-        assert_eq!(parsed, resp);
-    }
-
-    #[test]
-    fn control_status_roundtrip() {
-        let resp = ControlResponse::StatusAllOk {
-            wrappers: vec!["gh-authorized".to_string()],
-            credentials: vec!["github/token".to_string()],
-        };
-        let encoded = encode_to_vec(&resp).unwrap();
-        let parsed: ControlResponse = decode_from_slice(&encoded).unwrap();
         assert_eq!(parsed, resp);
     }
 
