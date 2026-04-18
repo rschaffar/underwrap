@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::policy::{PolicyDocument, PolicyGrant, PolicyRule};
+use crate::policy::{PolicyDocument, PolicyGrant, PolicyRule, WrapperApprovalMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceStatusResponse {
@@ -117,10 +117,11 @@ pub struct AdminPolicyPutRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AdminWrapperStateRequest {
+pub struct AdminWrapperModeRequest {
     pub store: String,
     pub wrapper: String,
-    pub enabled: bool,
+    pub mode: WrapperApprovalMode,
+    #[serde(default)]
     pub reason: Option<String>,
 }
 

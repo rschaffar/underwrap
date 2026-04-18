@@ -282,6 +282,10 @@ async fn establish_scoped_channels(
                 error!(wrapper = %wrapper_name, credential = %credential_ref, reason = %reason, "backend policy denied libsecret channel");
                 return;
             }
+            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
+                error!(wrapper = %wrapper_name, credential = %credential_ref, "libsecret channel blocked by per-call approval mode");
+                return;
+            }
             Err(e) => {
                 error!(wrapper = %wrapper_name, credential = %credential_ref, err = %e, "backend policy lookup failed for libsecret channel");
                 return;
@@ -307,6 +311,10 @@ async fn establish_scoped_channels(
             Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {}
             Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
                 error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, reason = %reason, "backend policy denied directory channel");
+                continue;
+            }
+            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
+                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, "directory channel blocked by per-call approval mode");
                 continue;
             }
             Err(e) => {
@@ -442,6 +450,14 @@ pub(crate) async fn process_read_for(
                     message: reason,
                 };
             }
+            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
+                let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
+                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+                return WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: reason,
+                };
+            }
             Err(e) => {
                 error!(credential = %credential_ref, err = %e, "policy lookup error");
                 return WrapperResponse::Error {
@@ -458,6 +474,14 @@ pub(crate) async fn process_read_for(
         match authorize_operation(&*state.store, wrapper_name, &resource, "secret.read") {
             Ok(underwrap_protocol::policy::PolicyDecision::Allow) => {}
             Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+                return WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: reason,
+                };
+            }
+            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
+                let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
@@ -508,6 +532,14 @@ pub(crate) async fn process_read_for(
                 directories.push(binding);
             }
             Ok(underwrap_protocol::policy::PolicyDecision::Deny { reason }) => {
+                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+                return WrapperResponse::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: reason,
+                };
+            }
+            Ok(underwrap_protocol::policy::PolicyDecision::NeedsApproval { .. }) => {
+                let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,

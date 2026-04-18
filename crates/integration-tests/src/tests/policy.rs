@@ -1,5 +1,7 @@
 use super::*;
-use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, PolicyRule, WrapperPolicyState};
+use underwrap_protocol::policy::{
+    PolicyDocument, PolicyEffect, PolicyRule, WrapperApprovalMode, WrapperPolicyState,
+};
 
 #[tokio::test]
 async fn backend_policy_roundtrip_over_admin_api() {
@@ -14,7 +16,7 @@ async fn backend_policy_roundtrip_over_admin_api() {
     let document = PolicyDocument {
         wrappers: vec![WrapperPolicyState {
             wrapper: "gh-authorized".to_string(),
-            enabled: true,
+            mode: WrapperApprovalMode::Unlocked { until_epoch: None },
             reason: None,
         }],
         rules: vec![PolicyRule {
@@ -94,7 +96,7 @@ async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
 }
 
 #[tokio::test]
-async fn disabled_wrapper_is_denied_even_with_allow_rule() {
+async fn locked_wrapper_is_denied_even_with_allow_rule() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
@@ -108,8 +110,8 @@ async fn disabled_wrapper_is_denied_even_with_allow_rule() {
             &PolicyDocument {
                 wrappers: vec![WrapperPolicyState {
                     wrapper: "gh-authorized".to_string(),
-                    enabled: false,
-                    reason: Some("disabled centrally".to_string()),
+                    mode: WrapperApprovalMode::Locked,
+                    reason: Some("locked centrally".to_string()),
                 }],
                 rules: vec![PolicyRule {
                     id: "allow-read".to_string(),
@@ -128,7 +130,7 @@ async fn disabled_wrapper_is_denied_even_with_allow_rule() {
     match resp {
         WrapperResponse::Error { code, message } => {
             assert!(matches!(code, ErrorCode::Unauthorized));
-            assert!(message.contains("disabled centrally"));
+            assert!(message.contains("locked centrally"));
         }
         other => panic!("expected Error, got {other:?}"),
     }

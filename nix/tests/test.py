@@ -39,11 +39,19 @@ def admin_write_secret(url, store, secret_id, value):
     )
 
 
-def admin_set_wrapper_state(url, store, wrapper, enabled, reason=None):
+def admin_set_wrapper_mode(url, store, wrapper, mode, reason=None):
+    """Set a wrapper's approval mode.
+
+    `mode` is a dict that serializes WrapperApprovalMode, e.g.:
+      {"kind": "locked"}
+      {"kind": "unlocked"}
+      {"kind": "unlocked", "until_epoch": 1234}
+      {"kind": "per-call-approval", "approval_key": "ssh-ed25519 ..."}
+    """
     return admin_api(
         url,
-        "/v1/admin/wrapper/set-state",
-        {"store": store, "wrapper": wrapper, "enabled": enabled, "reason": reason},
+        "/v1/admin/wrapper/set-mode",
+        {"store": store, "wrapper": wrapper, "mode": mode, "reason": reason},
     )
 
 
@@ -745,7 +753,7 @@ def local_backend_managed_grants():
     now = int(time.time())
 
     # No baseline rule for this wrapper/resource pair, so a time-bounded grant is required.
-    admin_set_wrapper_state(ADMIN_LOCAL, "local", "local-test-echo2", True)
+    admin_set_wrapper_mode(ADMIN_LOCAL, "local", "local-test-echo2", {"kind": "unlocked"})
     machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
     machine.log("PASS: wrapper without baseline rule is denied before grant")
 
@@ -792,7 +800,7 @@ def local_backend_policy_control_center():
     # ============================================================
 
     # Create an active policy document but without allow rules.
-    admin_set_wrapper_state(ADMIN_LOCAL, "local", "local-test-echo", True)
+    admin_set_wrapper_mode(ADMIN_LOCAL, "local", "local-test-echo", {"kind": "unlocked"})
     machine.fail(su("/run/wrappers/bin/local-test-echo"))
     machine.log("PASS: active backend policy denies wrapper without explicit rule")
 
@@ -811,12 +819,12 @@ def local_backend_policy_control_center():
     machine.log("PASS: backend policy can allow exact wrapper/resource access")
 
     # Disable wrapper centrally.
-    admin_set_wrapper_state(ADMIN_LOCAL, "local", "local-test-echo", False, "maintenance")
+    admin_set_wrapper_mode(ADMIN_LOCAL, "local", "local-test-echo", {"kind": "locked"}, "maintenance")
     machine.fail(su("/run/wrappers/bin/local-test-echo"))
     machine.log("PASS: backend policy can disable wrapper centrally")
 
     # Re-enable wrapper; existing allow rule becomes effective again.
-    admin_set_wrapper_state(ADMIN_LOCAL, "local", "local-test-echo", True)
+    admin_set_wrapper_mode(ADMIN_LOCAL, "local", "local-test-echo", {"kind": "unlocked"})
     output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
     assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after re-enable: {output}"
     machine.log("PASS: backend policy can re-enable wrapper centrally")

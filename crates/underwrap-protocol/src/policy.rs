@@ -8,8 +8,15 @@ pub const POLICY_DOCUMENT_SECRET_ID: &str = "__underwrap/policy/document";
 /// Result of a policy check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyDecision {
+    /// The operation is allowed outright.
     Allow,
+    /// The operation is denied.
     Deny { reason: String },
+    /// The operation is allowed only after the operator completes a single-use
+    /// SSH-agent signature over a fresh nonce. The caller must run the
+    /// approval challenge flow against `approval_key` and re-evaluate with the
+    /// proof attached.
+    NeedsApproval { approval_key: String },
 }
 
 /// Whether a rule allows or denies a request.
@@ -20,11 +27,41 @@ pub enum PolicyEffect {
     Deny,
 }
 
+/// Backend-owned runtime mode for a single wrapper inside one instance
+/// namespace.
+///
+/// The mode decides *if* the wrapper can operate at all right now. Rules and
+/// grants then decide *which* resources and operations are in scope when the
+/// mode permits it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum WrapperApprovalMode {
+    /// Deny every request for this wrapper.
+    Locked,
+    /// Allow requests subject to rules/grants. Optionally auto-transitions back
+    /// to `Locked` at `until_epoch`.
+    Unlocked {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until_epoch: Option<u64>,
+    },
+    /// Allow requests subject to rules/grants *only* when the caller presents a
+    /// fresh SSH-agent signature verified against `approval_key`. Every single
+    /// request needs its own signature.
+    PerCallApproval { approval_key: String },
+}
+
+impl Default for WrapperApprovalMode {
+    fn default() -> Self {
+        Self::Unlocked { until_epoch: None }
+    }
+}
+
 /// Wrapper-level runtime state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WrapperPolicyState {
     pub wrapper: String,
-    pub enabled: bool,
+    #[serde(default)]
+    pub mode: WrapperApprovalMode,
     #[serde(default)]
     pub reason: Option<String>,
 }
@@ -67,16 +104,37 @@ pub struct PolicyDocument {
 }
 
 impl PolicyDocument {
-    pub fn wrapper_enabled(&self, wrapper: &str) -> std::result::Result<(), String> {
-        if let Some(state) = self.wrappers.iter().find(|state| state.wrapper == wrapper)
-            && !state.enabled
-        {
-            return Err(state
-                .reason
-                .clone()
-                .unwrap_or_else(|| format!("wrapper '{wrapper}' is disabled by backend policy")));
+    /// Get the runtime mode for a wrapper. Wrappers without an explicit entry
+    /// default to `Unlocked { until_epoch: None }` (permanently unlocked).
+    pub fn wrapper_mode(&self, wrapper: &str) -> WrapperApprovalMode {
+        self.wrappers
+            .iter()
+            .find(|state| state.wrapper == wrapper)
+            .map(|state| state.mode.clone())
+            .unwrap_or_default()
+    }
+
+    fn gate_on_mode(&self, wrapper: &str, now_epoch: u64) -> Result<(), PolicyDecision> {
+        let entry = self.wrappers.iter().find(|state| state.wrapper == wrapper);
+        let mode = entry.map(|e| e.mode.clone()).unwrap_or_default();
+        match mode {
+            WrapperApprovalMode::Locked => Err(PolicyDecision::Deny {
+                reason: entry
+                    .and_then(|e| e.reason.clone())
+                    .unwrap_or_else(|| format!("wrapper '{wrapper}' is locked")),
+            }),
+            WrapperApprovalMode::Unlocked { until_epoch } => match until_epoch {
+                Some(until) if now_epoch > until => Err(PolicyDecision::Deny {
+                    reason: format!(
+                        "wrapper '{wrapper}' unlock expired at epoch {until}, now {now_epoch}"
+                    ),
+                }),
+                _ => Ok(()),
+            },
+            WrapperApprovalMode::PerCallApproval { approval_key } => {
+                Err(PolicyDecision::NeedsApproval { approval_key })
+            }
         }
-        Ok(())
     }
 
     fn grant_active(grant: &PolicyGrant, now_epoch: u64) -> bool {
@@ -100,8 +158,8 @@ impl PolicyDocument {
         operation: &str,
         now_epoch: u64,
     ) -> PolicyDecision {
-        if let Err(reason) = self.wrapper_enabled(wrapper) {
-            return PolicyDecision::Deny { reason };
+        if let Err(decision) = self.gate_on_mode(wrapper, now_epoch) {
+            return decision;
         }
 
         if self.grants.iter().any(|grant| {
@@ -162,53 +220,102 @@ impl PolicyDocument {
 mod tests {
     use super::*;
 
-    #[test]
-    fn policy_decision_variants_are_constructible() {
-        let allow = PolicyDecision::Allow;
-        assert!(matches!(allow, PolicyDecision::Allow));
-
-        let deny = PolicyDecision::Deny {
-            reason: "locked".to_string(),
-        };
-        match deny {
-            PolicyDecision::Deny { reason } => assert_eq!(reason, "locked"),
-            PolicyDecision::Allow => panic!("expected deny"),
+    fn allow_rule(wrapper: &str, resource: &str, operation: &str) -> PolicyRule {
+        PolicyRule {
+            id: format!("{wrapper}:{resource}:{operation}"),
+            wrapper: wrapper.to_string(),
+            resource: resource.to_string(),
+            operation: operation.to_string(),
+            effect: PolicyEffect::Allow,
         }
     }
 
     #[test]
-    fn disabled_wrapper_denies_even_without_rules() {
-        let doc = PolicyDocument {
-            wrappers: vec![WrapperPolicyState {
-                wrapper: "gh-comment".to_string(),
-                enabled: false,
-                reason: Some("temporarily revoked".to_string()),
-            }],
-            rules: Vec::new(),
-            grants: Vec::new(),
-        };
+    fn default_wrapper_mode_is_unlocked_forever() {
+        let doc = PolicyDocument::default();
         assert_eq!(
-            doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 100),
-            PolicyDecision::Deny {
-                reason: "temporarily revoked".to_string()
-            }
+            doc.wrapper_mode("anything"),
+            WrapperApprovalMode::Unlocked { until_epoch: None }
         );
     }
 
     #[test]
-    fn explicit_deny_takes_precedence_over_allow() {
+    fn locked_mode_denies_even_with_matching_rule() {
+        let doc = PolicyDocument {
+            wrappers: vec![WrapperPolicyState {
+                wrapper: "gh-comment".to_string(),
+                mode: WrapperApprovalMode::Locked,
+                reason: Some("revoked".to_string()),
+            }],
+            rules: vec![allow_rule(
+                "gh-comment",
+                "secret:github/token",
+                "secret.read",
+            )],
+            grants: Vec::new(),
+        };
+        match doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 100) {
+            PolicyDecision::Deny { reason } => assert_eq!(reason, "revoked"),
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unlocked_until_enforces_expiry_lazily() {
+        let doc = PolicyDocument {
+            wrappers: vec![WrapperPolicyState {
+                wrapper: "gh-comment".to_string(),
+                mode: WrapperApprovalMode::Unlocked {
+                    until_epoch: Some(200),
+                },
+                reason: None,
+            }],
+            rules: vec![allow_rule(
+                "gh-comment",
+                "secret:github/token",
+                "secret.read",
+            )],
+            grants: Vec::new(),
+        };
+        assert_eq!(
+            doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 199),
+            PolicyDecision::Allow
+        );
+        assert!(matches!(
+            doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 201),
+            PolicyDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn per_call_approval_returns_needs_approval() {
+        let doc = PolicyDocument {
+            wrappers: vec![WrapperPolicyState {
+                wrapper: "aws-prod".to_string(),
+                mode: WrapperApprovalMode::PerCallApproval {
+                    approval_key: "ssh-ed25519 AAAA…".to_string(),
+                },
+                reason: None,
+            }],
+            rules: vec![allow_rule("aws-prod", "secret:aws/prod", "secret.read")],
+            grants: Vec::new(),
+        };
+        match doc.evaluate_at("aws-prod", "secret:aws/prod", "secret.read", 100) {
+            PolicyDecision::NeedsApproval { approval_key } => {
+                assert!(approval_key.starts_with("ssh-ed25519"));
+            }
+            other => panic!("expected NeedsApproval, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_deny_rule_takes_precedence_over_allow() {
         let doc = PolicyDocument {
             wrappers: Vec::new(),
             rules: vec![
+                allow_rule("gh-comment", "secret:github/token", "secret.read"),
                 PolicyRule {
-                    id: "1".to_string(),
-                    wrapper: "gh-comment".to_string(),
-                    resource: "secret:github/token".to_string(),
-                    operation: "secret.read".to_string(),
-                    effect: PolicyEffect::Allow,
-                },
-                PolicyRule {
-                    id: "2".to_string(),
+                    id: "deny".to_string(),
                     wrapper: "gh-comment".to_string(),
                     resource: "secret:github/token".to_string(),
                     operation: "secret.read".to_string(),
@@ -221,25 +328,6 @@ mod tests {
             doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 100),
             PolicyDecision::Deny { .. }
         ));
-    }
-
-    #[test]
-    fn explicit_allow_succeeds() {
-        let doc = PolicyDocument {
-            wrappers: Vec::new(),
-            rules: vec![PolicyRule {
-                id: "1".to_string(),
-                wrapper: "gh-comment".to_string(),
-                resource: "secret:github/token".to_string(),
-                operation: "secret.read".to_string(),
-                effect: PolicyEffect::Allow,
-            }],
-            grants: Vec::new(),
-        };
-        assert_eq!(
-            doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 100),
-            PolicyDecision::Allow
-        );
     }
 
     #[test]
@@ -279,5 +367,37 @@ mod tests {
             doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 201),
             PolicyDecision::Deny { .. }
         ));
+    }
+
+    #[test]
+    fn document_roundtrips_through_json_with_each_mode() {
+        let doc = PolicyDocument {
+            wrappers: vec![
+                WrapperPolicyState {
+                    wrapper: "a".to_string(),
+                    mode: WrapperApprovalMode::Locked,
+                    reason: Some("r".to_string()),
+                },
+                WrapperPolicyState {
+                    wrapper: "b".to_string(),
+                    mode: WrapperApprovalMode::Unlocked {
+                        until_epoch: Some(42),
+                    },
+                    reason: None,
+                },
+                WrapperPolicyState {
+                    wrapper: "c".to_string(),
+                    mode: WrapperApprovalMode::PerCallApproval {
+                        approval_key: "ssh-ed25519 AAAA".to_string(),
+                    },
+                    reason: None,
+                },
+            ],
+            rules: Vec::new(),
+            grants: Vec::new(),
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        let parsed: PolicyDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, doc);
     }
 }

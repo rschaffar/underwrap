@@ -130,4 +130,3 @@ impl WireDecode for AccessMode {
         }
     }
 }
-

@@ -45,7 +45,9 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use underwrap_protocol::message::SecretBytes;
-    use underwrap_protocol::policy::{PolicyEffect, PolicyRule, WrapperPolicyState};
+    use underwrap_protocol::policy::{
+        PolicyEffect, PolicyRule, WrapperApprovalMode, WrapperPolicyState,
+    };
 
     struct MemStore {
         data: Mutex<HashMap<String, Vec<u8>>>,
@@ -105,12 +107,12 @@ mod tests {
     }
 
     #[test]
-    fn authorize_operation_denies_disabled_wrapper() {
+    fn authorize_operation_denies_locked_wrapper() {
         let store = MemStore::with_policy(Some(PolicyDocument {
             wrappers: vec![WrapperPolicyState {
                 wrapper: "gh-comment".to_string(),
-                enabled: false,
-                reason: Some("disabled centrally".to_string()),
+                mode: WrapperApprovalMode::Locked,
+                reason: Some("locked centrally".to_string()),
             }],
             rules: vec![PolicyRule {
                 id: "allow-read".to_string(),
@@ -126,6 +128,33 @@ mod tests {
                 .unwrap(),
             PolicyDecision::Deny { .. }
         ));
+    }
+
+    #[test]
+    fn authorize_operation_surfaces_per_call_approval() {
+        let store = MemStore::with_policy(Some(PolicyDocument {
+            wrappers: vec![WrapperPolicyState {
+                wrapper: "aws-prod".to_string(),
+                mode: WrapperApprovalMode::PerCallApproval {
+                    approval_key: "ssh-ed25519 AAAA".to_string(),
+                },
+                reason: None,
+            }],
+            rules: vec![PolicyRule {
+                id: "allow-read".to_string(),
+                wrapper: "aws-prod".to_string(),
+                resource: "secret:aws/prod".to_string(),
+                operation: "secret.read".to_string(),
+                effect: PolicyEffect::Allow,
+            }],
+            grants: Vec::new(),
+        }));
+        match authorize_operation(&store, "aws-prod", "secret:aws/prod", "secret.read").unwrap() {
+            PolicyDecision::NeedsApproval { approval_key } => {
+                assert!(approval_key.starts_with("ssh-ed25519"));
+            }
+            other => panic!("expected NeedsApproval, got {other:?}"),
+        }
     }
 
     #[test]

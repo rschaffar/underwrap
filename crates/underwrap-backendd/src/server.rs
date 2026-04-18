@@ -678,8 +678,8 @@ async fn handle_admin_request(
             },
             Err(response) => response,
         },
-        (&Method::POST, "/v1/admin/wrapper/set-state") => match parse_json_body::<
-            underwrap_protocol::service::AdminWrapperStateRequest,
+        (&Method::POST, "/v1/admin/wrapper/set-mode") => match parse_json_body::<
+            underwrap_protocol::service::AdminWrapperModeRequest,
         >(request)
         .await
         {
@@ -694,13 +694,13 @@ async fn handle_admin_request(
                     .iter_mut()
                     .find(|state| state.wrapper == body.wrapper)
                 {
-                    state.enabled = body.enabled;
+                    state.mode = body.mode.clone();
                     state.reason = body.reason.clone();
                 } else {
                     doc.wrappers
                         .push(underwrap_protocol::policy::WrapperPolicyState {
                             wrapper: body.wrapper.clone(),
-                            enabled: body.enabled,
+                            mode: body.mode.clone(),
                             reason: body.reason.clone(),
                         });
                 }
