@@ -4,6 +4,50 @@ use underwrap_protocol::policy::{
 };
 
 #[tokio::test]
+async fn admin_api_rejects_missing_or_wrong_bearer_token() {
+    let (wrappers, secrets) = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+
+    let client = reqwest::Client::new();
+
+    let no_token = client
+        .get(format!("{}/v1/admin/stores", daemon.admin_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        no_token.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "expected 401 without bearer token"
+    );
+
+    let wrong_token = client
+        .get(format!("{}/v1/admin/stores", daemon.admin_url))
+        .bearer_auth("nope-not-the-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        wrong_token.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "expected 401 with wrong bearer token"
+    );
+
+    let right_token = client
+        .get(format!("{}/v1/admin/stores", daemon.admin_url))
+        .bearer_auth(&daemon.admin_token)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        right_token.status().is_success(),
+        "expected 200 with right token"
+    );
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn backend_policy_roundtrip_over_admin_api() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();

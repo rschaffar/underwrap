@@ -15,10 +15,11 @@ SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PYTHON3 = os.environ.get("PYTHON3", "python3")
 ADMIN_LOCAL = "http://127.0.0.1:19443"
 ADMIN_REMOTE = "http://127.0.0.1:19444"
+ADMIN_TOKEN = "vm-test-admin-token"
 
 
 def admin_api(url, path, payload=None, method="POST"):
-    cmd = ["curl", "-fsS", "-X", method]
+    cmd = ["curl", "-fsS", "-X", method, "-H", f"Authorization: Bearer {ADMIN_TOKEN}"]
     if payload is not None:
         cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(payload)]
     cmd += [f"{url}{path}"]

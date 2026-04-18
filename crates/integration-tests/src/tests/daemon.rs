@@ -114,9 +114,20 @@ async fn underwrapd_binary_start_and_read() {
         }),
         admin: Some(underwrap_backendd::server::AdminConfig {
             listen: format!("127.0.0.1:{admin_port}"),
+            tokens: HashMap::from([(
+                "tester".to_string(),
+                underwrap_backendd::server::AdminTokenConfig {
+                    token_file: {
+                        let token_path = base.join("admin-token");
+                        std::fs::write(&token_path, b"binary-test-token").unwrap();
+                        token_path
+                    },
+                },
+            )]),
         }),
     })
     .unwrap();
+    let admin_token = "binary-test-token";
     let backend_config_path = base.join("backend.yaml");
     std::fs::write(&backend_config_path, &backend_config).unwrap();
 
@@ -175,6 +186,7 @@ async fn underwrapd_binary_start_and_read() {
     let client = reqwest::Client::new();
     let write_resp = client
         .post(format!("{admin_url}/v1/admin/secret/write"))
+        .bearer_auth(admin_token)
         .json(&underwrap_protocol::service::AdminSecretWriteRequest {
             store: "test".to_string(),
             secret_id: "s/t".to_string(),
@@ -187,6 +199,7 @@ async fn underwrapd_binary_start_and_read() {
 
     let policy_resp = client
         .post(format!("{admin_url}/v1/admin/policy/put"))
+        .bearer_auth(admin_token)
         .json(&underwrap_protocol::service::AdminPolicyPutRequest {
             store: "test".to_string(),
             document: underwrap_protocol::policy::PolicyDocument {

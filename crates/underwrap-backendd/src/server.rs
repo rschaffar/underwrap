@@ -48,8 +48,19 @@ pub struct ServiceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminTokenConfig {
+    /// Path to a file whose contents are the opaque bearer token.
+    pub token_file: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
     pub listen: String,
+    /// Bearer tokens by operator name. Each request must present one via
+    /// `Authorization: Bearer <token>`. When empty, the admin API is
+    /// unavailable (no requests can authenticate).
+    #[serde(default)]
+    pub tokens: HashMap<String, AdminTokenConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +78,9 @@ struct ServiceRuntimeState {
 
 struct AdminRuntimeState {
     stores: HashMap<String, Arc<dyn StorageBackend>>,
+    /// Operator name → opaque bearer token. Both fields are trusted; the
+    /// caller authenticates by presenting a matching token.
+    tokens: HashMap<String, String>,
 }
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
@@ -92,10 +106,12 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
         let admin_listener = TcpListener::bind(&admin_config.listen)
             .await
             .with_context(|| format!("binding admin listener {}", admin_config.listen))?;
+        let tokens = load_admin_tokens(&admin_config.tokens)?;
         let admin_state = Arc::new(AdminRuntimeState {
             stores: stores.clone(),
+            tokens,
         });
-        info!(listen = %admin_config.listen, stores = admin_state.stores.len(), "backend admin HTTP listening");
+        info!(listen = %admin_config.listen, stores = admin_state.stores.len(), operators = admin_state.tokens.len(), "backend admin HTTP listening");
         tasks.spawn(admin_accept_loop(admin_listener, admin_state));
     }
 
@@ -487,6 +503,64 @@ fn admin_store<'a>(
         .with_context(|| format!("unknown store '{store}'"))
 }
 
+/// Read each admin token file, trim whitespace, and return the loaded map.
+fn load_admin_tokens(
+    configs: &HashMap<String, AdminTokenConfig>,
+) -> Result<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    for (name, entry) in configs {
+        let raw = std::fs::read_to_string(&entry.token_file).with_context(|| {
+            format!(
+                "reading admin token for operator '{name}' at {}",
+                entry.token_file.display()
+            )
+        })?;
+        let token = raw.trim().to_string();
+        anyhow::ensure!(
+            !token.is_empty(),
+            "admin token file for operator '{name}' at {} is empty",
+            entry.token_file.display()
+        );
+        out.insert(name.clone(), token);
+    }
+    Ok(out)
+}
+
+/// Extract the bearer token (after "Bearer ") from an Authorization header,
+/// matching it in constant time against any configured operator token.
+/// Returns the operator name on success.
+fn authenticate_admin(
+    state: &AdminRuntimeState,
+    headers: &hyper::HeaderMap,
+) -> std::result::Result<String, &'static str> {
+    use subtle::ConstantTimeEq;
+
+    let header = headers
+        .get(hyper::header::AUTHORIZATION)
+        .ok_or("missing Authorization header")?
+        .to_str()
+        .map_err(|_| "Authorization header is not valid UTF-8")?;
+    let token = header
+        .strip_prefix("Bearer ")
+        .ok_or("Authorization header must use the Bearer scheme")?
+        .trim();
+    if token.is_empty() {
+        return Err("empty bearer token");
+    }
+
+    let mut matched: Option<String> = None;
+    for (name, candidate) in &state.tokens {
+        // Constant-time compare; match only when lengths and bytes agree.
+        let lengths_equal = token.len() == candidate.len();
+        let bytes_equal: bool =
+            lengths_equal && token.as_bytes().ct_eq(candidate.as_bytes()).into();
+        if bytes_equal && matched.is_none() {
+            matched = Some(name.clone());
+        }
+    }
+    matched.ok_or("no configured operator token matched")
+}
+
 /// How often the expiry sweeper checks for expired `Unlocked { until }` windows.
 const EXPIRY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -547,6 +621,24 @@ async fn handle_admin_request(
     request: Request<Incoming>,
     state: Arc<AdminRuntimeState>,
 ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    let operator = match authenticate_admin(&state, request.headers()) {
+        Ok(op) => op,
+        Err(reason) => {
+            warn!(reason = reason, "rejected admin request");
+            return Ok(error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                reason,
+            ));
+        }
+    };
+    info!(
+        operator = %operator,
+        method = %request.method(),
+        path = request.uri().path(),
+        "admin request"
+    );
+
     let response = match (request.method(), request.uri().path()) {
         (&Method::GET, "/v1/admin/stores") => {
             let mut stores: Vec<String> = state.stores.keys().cloned().collect();
@@ -1010,5 +1102,85 @@ mod tests {
     fn sweep_expired_unlocks_is_noop_when_no_policy_document_exists() {
         let store = TestStore::new();
         assert_eq!(sweep_expired_unlocks(&store, 1000).unwrap(), 0);
+    }
+
+    fn admin_state_with_tokens(tokens: &[(&str, &str)]) -> AdminRuntimeState {
+        AdminRuntimeState {
+            stores: HashMap::new(),
+            tokens: tokens
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        }
+    }
+
+    fn headers_with_auth(value: Option<&str>) -> hyper::HeaderMap {
+        let mut headers = hyper::HeaderMap::new();
+        if let Some(v) = value {
+            headers.insert(
+                hyper::header::AUTHORIZATION,
+                hyper::header::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn authenticate_admin_rejects_missing_and_malformed_headers() {
+        let state = admin_state_with_tokens(&[("alice", "secret-alice-token-1234")]);
+        assert!(authenticate_admin(&state, &headers_with_auth(None)).is_err());
+        assert!(authenticate_admin(&state, &headers_with_auth(Some("Basic abc"))).is_err());
+        assert!(authenticate_admin(&state, &headers_with_auth(Some("Bearer "))).is_err());
+    }
+
+    #[test]
+    fn authenticate_admin_accepts_matching_token_and_rejects_others() {
+        let state = admin_state_with_tokens(&[
+            ("alice", "secret-alice-token-1234"),
+            ("bob", "secret-bob-token-abcd"),
+        ]);
+        let ok = authenticate_admin(
+            &state,
+            &headers_with_auth(Some("Bearer secret-bob-token-abcd")),
+        )
+        .unwrap();
+        assert_eq!(ok, "bob");
+
+        assert!(
+            authenticate_admin(&state, &headers_with_auth(Some("Bearer unknown-token"))).is_err()
+        );
+        assert!(
+            authenticate_admin(
+                &state,
+                &headers_with_auth(Some("Bearer secret-alice-token-12345")), // off by one byte
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn load_admin_tokens_reads_trimmed_token_from_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tok");
+        std::fs::write(&path, "  hello-token-value  \n").unwrap();
+        let tokens = load_admin_tokens(&HashMap::from([(
+            "alice".to_string(),
+            AdminTokenConfig { token_file: path },
+        )]))
+        .unwrap();
+        assert_eq!(tokens.get("alice").unwrap(), "hello-token-value");
+    }
+
+    #[test]
+    fn load_admin_tokens_rejects_empty_token() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tok");
+        std::fs::write(&path, "   \n").unwrap();
+        let err = load_admin_tokens(&HashMap::from([(
+            "alice".to_string(),
+            AdminTokenConfig { token_file: path },
+        )]))
+        .unwrap_err();
+        assert!(err.to_string().contains("empty"));
     }
 }

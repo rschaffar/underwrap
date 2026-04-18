@@ -70,6 +70,13 @@ in {
 
   environment.systemPackages = [ underwrapPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl ];
 
+  # Operator bearer token for the backend admin API. World-readable is fine
+  # in the VM test; real deployments would ship this via a secrets system.
+  environment.etc."underwrap-admin-token" = {
+    text = "vm-test-admin-token";
+    mode = "0644";
+  };
+
   # Normal user who runs wrappers.
   users.users.testuser = {
     isNormalUser = true;
@@ -113,6 +120,7 @@ in {
           };
           admin = {
             listen = "127.0.0.1:19444";
+            tokens.ops.token_file = "/etc/underwrap-admin-token";
           };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
@@ -180,6 +188,7 @@ in {
           };
           admin = {
             listen = "127.0.0.1:19443";
+            tokens.ops.token_file = "/etc/underwrap-admin-token";
           };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";

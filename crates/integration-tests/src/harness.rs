@@ -20,6 +20,7 @@ use underwrap_protocol::policy::{PolicyDocument, PolicyGrant};
 pub struct TestDaemon {
     pub wrapper_sockets: HashMap<String, PathBuf>,
     pub admin_url: String,
+    pub admin_token: String,
     pub storage_dir: PathBuf,
     shutdown: Arc<Notify>,
     backend_shutdown: Arc<Notify>,
@@ -63,6 +64,9 @@ impl TestDaemon {
 
         let admin_port = pick_unused_port()?;
         let admin_url = format!("http://127.0.0.1:{admin_port}");
+        let admin_token = format!("test-admin-token-{admin_port}-do-not-reuse-zA=");
+        let token_file = base.join("admin-token");
+        std::fs::write(&token_file, admin_token.as_bytes())?;
         let backend_config = underwrap_backendd::server::BackendConfig {
             stores: HashMap::from([(
                 "test".to_string(),
@@ -86,6 +90,10 @@ impl TestDaemon {
             }),
             admin: Some(underwrap_backendd::server::AdminConfig {
                 listen: format!("127.0.0.1:{admin_port}"),
+                tokens: HashMap::from([(
+                    "tester".to_string(),
+                    underwrap_backendd::server::AdminTokenConfig { token_file },
+                )]),
             }),
         };
         let backend_shutdown = Arc::new(Notify::new());
@@ -100,7 +108,7 @@ impl TestDaemon {
             })
         });
 
-        wait_for_admin(&admin_url).await?;
+        wait_for_admin(&admin_url, &admin_token).await?;
         wait_for_service(
             &service_url,
             &ready_pki.ca_cert,
@@ -135,6 +143,7 @@ impl TestDaemon {
         Ok(Self {
             wrapper_sockets,
             admin_url,
+            admin_token,
             storage_dir,
             shutdown,
             backend_shutdown,
@@ -180,11 +189,16 @@ impl TestDaemon {
         Ok(resp)
     }
 
+    fn admin_request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        reqwest::Client::new()
+            .request(method, format!("{}{}", self.admin_url, path))
+            .bearer_auth(&self.admin_token)
+    }
+
     /// Write a secret through the backend admin API.
     pub async fn store_secret(&self, store: &str, secret_id: &str, material: &str) -> Result<()> {
-        let client = reqwest::Client::new();
-        let response = client
-            .post(format!("{}/v1/admin/secret/write", self.admin_url))
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/secret/write")
             .json(&underwrap_protocol::service::AdminSecretWriteRequest {
                 store: store.to_string(),
                 secret_id: secret_id.to_string(),
@@ -201,9 +215,8 @@ impl TestDaemon {
     }
 
     pub async fn get_policy(&self, store: &str) -> Result<Option<PolicyDocument>> {
-        let client = reqwest::Client::new();
-        let response = client
-            .post(format!("{}/v1/admin/policy/get", self.admin_url))
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/policy/get")
             .json(&underwrap_protocol::service::AdminPolicyGetRequest {
                 store: store.to_string(),
             })
@@ -219,9 +232,8 @@ impl TestDaemon {
     }
 
     pub async fn put_policy(&self, store: &str, doc: &PolicyDocument) -> Result<()> {
-        let client = reqwest::Client::new();
-        let response = client
-            .post(format!("{}/v1/admin/policy/put", self.admin_url))
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/policy/put")
             .json(&underwrap_protocol::service::AdminPolicyPutRequest {
                 store: store.to_string(),
                 document: doc.clone(),
@@ -237,9 +249,8 @@ impl TestDaemon {
     }
 
     pub async fn upsert_grant(&self, store: &str, grant: &PolicyGrant) -> Result<()> {
-        let client = reqwest::Client::new();
-        let response = client
-            .post(format!("{}/v1/admin/grant/upsert", self.admin_url))
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/grant/upsert")
             .json(&underwrap_protocol::service::AdminGrantUpsertRequest {
                 store: store.to_string(),
                 grant: grant.clone(),
@@ -255,9 +266,8 @@ impl TestDaemon {
     }
 
     pub async fn delete_grant(&self, store: &str, id: &str) -> Result<()> {
-        let client = reqwest::Client::new();
-        let response = client
-            .post(format!("{}/v1/admin/grant/delete", self.admin_url))
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/grant/delete")
             .json(&underwrap_protocol::service::AdminGrantDeleteRequest {
                 store: store.to_string(),
                 id: id.to_string(),
@@ -522,10 +532,14 @@ fn pick_unused_port() -> Result<u16> {
     Ok(port)
 }
 
-async fn wait_for_admin(url: &str) -> Result<()> {
+async fn wait_for_admin(url: &str, token: &str) -> Result<()> {
     let client = reqwest::Client::new();
     for _ in 0..100 {
-        if let Ok(response) = client.get(format!("{url}/v1/admin/stores")).send().await
+        if let Ok(response) = client
+            .get(format!("{url}/v1/admin/stores"))
+            .bearer_auth(token)
+            .send()
+            .await
             && response.status().is_success()
         {
             return Ok(());
