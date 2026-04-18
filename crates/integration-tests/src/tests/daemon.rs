@@ -6,6 +6,11 @@ async fn parse_example_config() {
     // Inline a representative config matching the structure of examples/config.yaml.
     // This avoids depending on the file being present in nix sandbox builds.
     let text = r#"
+backend:
+  url: https://backend.example.internal:8443
+  ca_file: /etc/underwrap/ca.pem
+  client_cert_file: /etc/underwrap/client.pem
+  client_key_file: /etc/underwrap/client.key
 credentials:
   github/token:
     mode: env
@@ -125,11 +130,8 @@ async fn underwrapd_binary_start_and_read() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
-        sockets: underwrap_protocol::config::SocketConfig::default(),
-        backend: underwrap_protocol::config::BackendSocketConfig {
-            mode: underwrap_protocol::config::BackendMode::Service,
-            socket: "/tmp/unused.sock".into(),
-            url: Some(service_url.clone()),
+        backend: underwrap_protocol::config::BackendServiceConfig {
+            url: service_url.clone(),
             ca_file: Some(ca_cert.clone()),
             client_cert_file: Some(client_cert.clone()),
             client_key_file: Some(client_key.clone()),

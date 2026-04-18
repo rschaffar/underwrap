@@ -110,11 +110,8 @@ impl TestDaemon {
         .await?;
 
         let config = DaemonConfig {
-            sockets: SocketConfig::default(),
-            backend: BackendSocketConfig {
-                mode: underwrap_protocol::config::BackendMode::Service,
-                socket: "/tmp/unused-backend.sock".into(),
-                url: Some(service_url),
+            backend: BackendServiceConfig {
+                url: service_url,
                 ca_file: Some(pki.ca_cert.clone()),
                 client_cert_file: Some(pki.client_cert.clone()),
                 client_key_file: Some(pki.client_key.clone()),

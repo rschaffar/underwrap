@@ -7,13 +7,8 @@ use std::path::PathBuf;
 /// Top-level daemon configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
-    /// Socket configuration.
-    #[serde(default)]
-    pub sockets: SocketConfig,
-
-    /// Backend connection used by the frontend daemon.
-    #[serde(default)]
-    pub backend: BackendSocketConfig,
+    /// Backend service the frontend talks to.
+    pub backend: BackendServiceConfig,
 
     /// Usernames allowed to execute wrappers in this instance.
     /// Empty = allow all local users.
@@ -29,86 +24,8 @@ pub struct DaemonConfig {
     pub wrappers: HashMap<String, WrapperDef>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SocketConfig {
-    /// Path for the control socket.
-    #[serde(default = "default_control_socket")]
-    pub control: PathBuf,
-
-    /// Unix permission mode for the control socket.
-    /// Accepts integer (384) or octal string ("0600").
-    #[serde(
-        default = "default_control_mode",
-        deserialize_with = "deserialize_mode"
-    )]
-    pub control_mode: u32,
-
-    /// Allowed UIDs for the control socket. Empty = allow all.
-    #[serde(default)]
-    pub control_allow_uids: Vec<u32>,
-
-    /// Allowed GIDs for the control socket. Empty = allow all.
-    #[serde(default)]
-    pub control_allow_gids: Vec<u32>,
-}
-
-impl Default for SocketConfig {
-    fn default() -> Self {
-        Self {
-            control: default_control_socket(),
-            control_mode: default_control_mode(),
-            control_allow_uids: Vec::new(),
-            control_allow_gids: Vec::new(),
-        }
-    }
-}
-
-fn default_control_mode() -> u32 {
-    0o600
-}
-
-/// Deserialize a Unix permission mode from either an integer or an octal string.
-/// Accepts: 384 (decimal), "0600" (octal string), "600" (octal string without prefix).
-fn deserialize_mode<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de;
-
-    struct ModeVisitor;
-
-    impl<'de> de::Visitor<'de> for ModeVisitor {
-        type Value = u32;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("an integer or octal string like \"0600\"")
-        }
-
-        fn visit_u64<E: de::Error>(self, v: u64) -> Result<u32, E> {
-            u32::try_from(v).map_err(|_| E::custom(format!("mode {v} out of range")))
-        }
-
-        fn visit_i64<E: de::Error>(self, v: i64) -> Result<u32, E> {
-            u32::try_from(v).map_err(|_| E::custom(format!("mode {v} out of range")))
-        }
-
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<u32, E> {
-            let s = v
-                .strip_prefix("0o")
-                .or_else(|| v.strip_prefix("0"))
-                .unwrap_or(v);
-            u32::from_str_radix(s, 8).map_err(|_| E::custom(format!("invalid octal mode: {v:?}")))
-        }
-    }
-
-    deserializer.deserialize_any(ModeVisitor)
-}
-
-fn default_control_socket() -> PathBuf {
-    PathBuf::from(crate::CONTROL_SOCKET_PATH)
-}
-
-/// Storage backend configuration.
+/// Storage backend configuration — how `underwrap-backendd` persists secrets
+/// behind the service API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "backend")]
 pub enum StorageConfig {
@@ -127,13 +44,6 @@ pub enum StorageConfig {
         /// Path to the master key file (32 bytes, raw or hex-encoded).
         key_file: PathBuf,
     },
-    /// Remote backend: connects to underwrap-backendd over a Unix socket.
-    /// The socket is typically SSH-tunneled from a workstation.
-    #[serde(rename = "remote")]
-    Remote {
-        /// Path to the backend Unix socket.
-        socket: PathBuf,
-    },
 }
 
 impl Default for StorageConfig {
@@ -146,10 +56,9 @@ impl Default for StorageConfig {
 
 impl StorageConfig {
     /// Get the storage directory regardless of backend type.
-    pub fn dir(&self) -> Option<&PathBuf> {
+    pub fn dir(&self) -> &PathBuf {
         match self {
-            Self::Plain { dir } | Self::Encrypted { dir, .. } => Some(dir),
-            Self::Remote { .. } => None,
+            Self::Plain { dir } | Self::Encrypted { dir, .. } => dir,
         }
     }
 }
@@ -158,66 +67,22 @@ fn default_storage_dir() -> PathBuf {
     PathBuf::from("/var/lib/underwrap/secrets")
 }
 
-/// Backend transport mode used by `underwrapd`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum BackendMode {
-    /// Connect to a backend protocol over a Unix socket.
-    #[default]
-    #[serde(rename = "unix-socket")]
-    UnixSocket,
-    /// Connect to a backend service over HTTPS.
-    #[serde(rename = "service")]
-    Service,
-}
-
 /// Frontend backend-client configuration.
 ///
-/// The historical shape was just a Unix socket path. The struct now carries a
-/// transport mode so the frontend can evolve toward a service backend without
-/// changing the rest of the daemon architecture.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackendSocketConfig {
-    /// Backend transport mode.
-    #[serde(default)]
-    pub mode: BackendMode,
+/// The frontend talks to a central backend service over HTTPS with mTLS.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BackendServiceConfig {
+    /// Backend service URL, e.g. `https://backend.example.internal:8443`.
+    pub url: String,
 
-    /// Path to the backend Unix socket when `mode = "unix-socket"`.
-    #[serde(default = "default_backend_socket")]
-    pub socket: PathBuf,
-
-    /// Backend service URL when `mode = "service"`.
-    #[serde(default)]
-    pub url: Option<String>,
-
-    /// CA certificate bundle used to verify the backend service when
-    /// `mode = "service"`.
-    #[serde(default)]
+    /// CA certificate bundle used to verify the backend service certificate.
     pub ca_file: Option<PathBuf>,
 
-    /// Client certificate file used for mTLS when `mode = "service"`.
-    #[serde(default)]
+    /// Client certificate file used for mTLS.
     pub client_cert_file: Option<PathBuf>,
 
-    /// Client private key file used for mTLS when `mode = "service"`.
-    #[serde(default)]
+    /// Client private key file used for mTLS.
     pub client_key_file: Option<PathBuf>,
-}
-
-impl Default for BackendSocketConfig {
-    fn default() -> Self {
-        Self {
-            mode: BackendMode::UnixSocket,
-            socket: default_backend_socket(),
-            url: None,
-            ca_file: None,
-            client_cert_file: None,
-            client_key_file: None,
-        }
-    }
-}
-
-fn default_backend_socket() -> PathBuf {
-    PathBuf::from("/run/underwrap/backend.sock")
 }
 
 /// A reusable credential definition, keyed by credential reference.
@@ -278,24 +143,39 @@ mod tests {
 
     #[test]
     fn minimal_config() {
-        let yaml = "{}";
+        let yaml = r#"
+backend:
+  url: https://backend.example.internal:8443
+  ca_file: /etc/underwrap/ca.pem
+  client_cert_file: /etc/underwrap/client.pem
+  client_key_file: /etc/underwrap/client.key
+"#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.wrappers.is_empty());
         assert!(config.credentials.is_empty());
-        assert_eq!(config.backend.mode, BackendMode::UnixSocket);
+        assert_eq!(config.backend.url, "https://backend.example.internal:8443");
         assert_eq!(
-            config.backend.socket,
-            PathBuf::from("/run/underwrap/backend.sock")
+            config.backend.ca_file,
+            Some(PathBuf::from("/etc/underwrap/ca.pem"))
         );
-        assert_eq!(config.backend.url, None);
-        assert_eq!(config.backend.ca_file, None);
-        assert_eq!(config.backend.client_cert_file, None);
-        assert_eq!(config.backend.client_key_file, None);
+        assert_eq!(
+            config.backend.client_cert_file,
+            Some(PathBuf::from("/etc/underwrap/client.pem"))
+        );
+        assert_eq!(
+            config.backend.client_key_file,
+            Some(PathBuf::from("/etc/underwrap/client.key"))
+        );
     }
 
     #[test]
     fn full_wrapper_config() {
         let yaml = r#"
+backend:
+  url: https://backend.example.internal:8443
+  ca_file: /etc/underwrap/ca.pem
+  client_cert_file: /etc/underwrap/client.pem
+  client_key_file: /etc/underwrap/client.key
 credentials:
   github/token:
     mode: env
@@ -322,56 +202,13 @@ wrappers:
     }
 
     #[test]
-    fn backend_socket_config() {
-        let yaml = r#"
-backend:
-  socket: /tmp/test-backend.sock
-"#;
-        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.backend.mode, BackendMode::UnixSocket);
-        assert_eq!(
-            config.backend.socket,
-            PathBuf::from("/tmp/test-backend.sock")
-        );
-        assert_eq!(config.backend.url, None);
-        assert_eq!(config.backend.ca_file, None);
-        assert_eq!(config.backend.client_cert_file, None);
-        assert_eq!(config.backend.client_key_file, None);
-    }
-
-    #[test]
-    fn backend_service_config() {
-        let yaml = r#"
-backend:
-  mode: service
-  url: https://backend.example.internal:8443
-  ca_file: /etc/underwrap/ca.pem
-  client_cert_file: /etc/underwrap/client.pem
-  client_key_file: /etc/underwrap/client.key
-"#;
-        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.backend.mode, BackendMode::Service);
-        assert_eq!(
-            config.backend.url.as_deref(),
-            Some("https://backend.example.internal:8443")
-        );
-        assert_eq!(
-            config.backend.ca_file,
-            Some(PathBuf::from("/etc/underwrap/ca.pem"))
-        );
-        assert_eq!(
-            config.backend.client_cert_file,
-            Some(PathBuf::from("/etc/underwrap/client.pem"))
-        );
-        assert_eq!(
-            config.backend.client_key_file,
-            Some(PathBuf::from("/etc/underwrap/client.key"))
-        );
-    }
-
-    #[test]
     fn directory_credential_parses() {
         let yaml = r#"
+backend:
+  url: https://backend.example.internal
+  ca_file: /x
+  client_cert_file: /y
+  client_key_file: /z
 credentials:
   gws/state:
     mode: directory
@@ -387,6 +224,11 @@ credentials:
     #[test]
     fn directory_credential_requires_path() {
         let yaml = r#"
+backend:
+  url: https://x
+  ca_file: /x
+  client_cert_file: /y
+  client_key_file: /z
 credentials:
   gws/state:
     mode: directory
@@ -398,6 +240,11 @@ credentials:
     #[test]
     fn env_credential_rejects_path_field() {
         let yaml = r#"
+backend:
+  url: https://x
+  ca_file: /x
+  client_cert_file: /y
+  client_key_file: /z
 credentials:
   jira/api-token:
     mode: env
@@ -411,6 +258,11 @@ credentials:
     #[test]
     fn directory_credential_rejects_variable_field() {
         let yaml = r#"
+backend:
+  url: https://x
+  ca_file: /x
+  client_cert_file: /y
+  client_key_file: /z
 credentials:
   gws/state:
     mode: directory
@@ -424,6 +276,11 @@ credentials:
     #[test]
     fn libsecret_credential_rejects_path_field() {
         let yaml = r#"
+backend:
+  url: https://x
+  ca_file: /x
+  client_cert_file: /y
+  client_key_file: /z
 credentials:
   github/gh:
     mode: libsecret
@@ -431,68 +288,5 @@ credentials:
 "#;
         let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field `path`"));
-    }
-
-    #[test]
-    fn config_roundtrip() {
-        let config = DaemonConfig {
-            sockets: SocketConfig::default(),
-            backend: BackendSocketConfig {
-                mode: BackendMode::UnixSocket,
-                socket: PathBuf::from("/run/underwrap/backend.sock"),
-                url: None,
-                ca_file: None,
-                client_cert_file: None,
-                client_key_file: None,
-            },
-            allowed_users: vec!["alice".to_string()],
-            credentials: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "test/secret".to_string(),
-                    CredentialDef {
-                        mode: CredentialMode::Env {
-                            variable: "MY_VAR".to_string(),
-                        },
-                    },
-                );
-                m
-            },
-            wrappers: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "test".to_string(),
-                    WrapperDef {
-                        target: PathBuf::from("/bin/test"),
-                        use_map: {
-                            let mut u = HashMap::new();
-                            u.insert(
-                                "test/secret".to_string(),
-                                CredentialUse {
-                                    access: AccessMode::ReadOnly,
-                                },
-                            );
-                            u
-                        },
-                        socket: PathBuf::from("/run/underwrap/test.sock"),
-                        group: "testgroup".to_string(),
-                    },
-                );
-                m
-            },
-        };
-        let yaml = serde_yaml::to_string(&config).unwrap();
-        let parsed: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(parsed.backend.mode, BackendMode::UnixSocket);
-        assert_eq!(
-            parsed.backend.socket,
-            PathBuf::from("/run/underwrap/backend.sock")
-        );
-        assert_eq!(parsed.backend.url, None);
-        assert_eq!(parsed.backend.ca_file, None);
-        assert_eq!(parsed.backend.client_cert_file, None);
-        assert_eq!(parsed.backend.client_key_file, None);
-        assert_eq!(parsed.wrappers.len(), 1);
-        assert_eq!(parsed.credentials.len(), 1);
     }
 }

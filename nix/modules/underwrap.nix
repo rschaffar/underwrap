@@ -29,25 +29,14 @@ let
     wrapperGroupName = name: "underwrap-${instName}-${name}";
     wrapperSocketPath = name: "${runDir}/wrapper-${name}.sock";
     runDir = "/run/underwrap-${instName}";
-    backendDir = "${runDir}/backend";
-    backendSocket = "${backendDir}/backend.sock";
     stateDir = "/var/lib/underwrap-${instName}";
-    backendNamespace = null;
 
     runtimeConfig = {
-      sockets = {
-        control = "${runDir}/control.sock";
-        control_mode = "0600";
-      };
-      backend = if inst.backend.mode == "service" then {
-        mode = "service";
+      backend = {
         url = inst.backend.url;
         ca_file = inst.backend.caFile;
         client_cert_file = inst.backend.clientCertFile;
         client_key_file = inst.backend.clientKeyFile;
-      } else {
-        mode = "unix-socket";
-        socket = if inst.backend.socket != null then inst.backend.socket else backendSocket;
       };
       allowed_users = inst.allowedUsers;
       credentials = lib.mapAttrs (_ref: c:
@@ -101,10 +90,6 @@ let
     );
 
   in {
-    backendNamespace = backendNamespace;
-    backendSocket = backendSocket;
-    backendDir = backendDir;
-
     users = {
       "${daemonUser}" = {
         isSystemUser = true;
@@ -143,7 +128,6 @@ let
 
     tmpfiles = [
       "d ${runDir} 0755 ${daemonUser} ${daemonGroup} -"
-      "d ${backendDir} 0770 ${daemonUser} ${daemonGroup} -"
       "d ${stateDir} 0700 ${daemonUser} ${daemonGroup} -"
     ];
 
@@ -252,34 +236,21 @@ let
 
   backendSubmodule = lib.types.submodule {
     options = {
-      mode = lib.mkOption {
-        type = lib.types.enum [ "unix-socket" "service" ];
-        default = "unix-socket";
-      };
-      socket = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Backend Unix socket path when mode = unix-socket. Defaults to the instance backend socket path.";
-      };
       url = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Backend service URL when mode = service.";
+        type = lib.types.str;
+        description = "Backend service URL, e.g. https://backend.example.internal:8443.";
       };
       caFile = lib.mkOption {
-        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
-        default = null;
-        description = "CA certificate file used to verify the backend service when mode = service.";
+        type = lib.types.either lib.types.path lib.types.str;
+        description = "CA certificate file used to verify the backend service certificate.";
       };
       clientCertFile = lib.mkOption {
-        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
-        default = null;
-        description = "Client certificate file used for backend mTLS when mode = service.";
+        type = lib.types.either lib.types.path lib.types.str;
+        description = "Client certificate file used for backend mTLS.";
       };
       clientKeyFile = lib.mkOption {
-        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
-        default = null;
-        description = "Client private key file used for backend mTLS when mode = service.";
+        type = lib.types.either lib.types.path lib.types.str;
+        description = "Client private key file used for backend mTLS.";
       };
     };
   };
@@ -326,15 +297,7 @@ in {
   config = lib.mkIf cfg.enable {
     assertions =
       (lib.flatten (lib.mapAttrsToList (instName: inst:
-        [ {
-            assertion = if inst.backend.mode == "service"
-              then inst.backend.url != null && inst.backend.caFile != null && inst.backend.clientCertFile != null && inst.backend.clientKeyFile != null && inst.backend.socket == null
-              else inst.backend.url == null && inst.backend.caFile == null && inst.backend.clientCertFile == null && inst.backend.clientKeyFile == null;
-            message = if inst.backend.mode == "service"
-              then "services.underwrap.instances.${instName}.backend: service mode requires url, caFile, clientCertFile, clientKeyFile and must not set socket"
-              else "services.underwrap.instances.${instName}.backend: unix-socket mode must not set service URL or mTLS files";
-          }
-        ] ++ (lib.mapAttrsToList (ref: c: {
+        (lib.mapAttrsToList (ref: c: {
           assertion = if c.mode == "env" then c.variable != null && c.path == null else if c.mode == "directory" then c.path != null && c.variable == null && isCleanRelativePath c.path else c.variable == null && c.path == null;
           message = if c.mode == "env" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": env credentials require variable and must not set path" else if c.mode == "directory" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": directory credentials require a clean relative path and must not set variable" else "services.underwrap.instances.${instName}.credentials.\"${ref}\": libsecret credentials must not set variable or path";
         }) inst.credentials)

@@ -25,8 +25,6 @@ use tracing::{error, info, warn};
 use underwrap_protocol::config::StorageConfig;
 use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument, WrapperApprovalMode};
 
-#[cfg(test)]
-use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse};
 use underwrap_store::StorageBackend;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,59 +254,6 @@ fn put_policy_document(
     let _: underwrap_protocol::policy::PolicyDocument =
         serde_json::from_str(document_json).context("parsing policy document json")?;
     store.write(POLICY_DOCUMENT_SECRET_ID, document_json.as_bytes())
-}
-
-#[cfg(test)]
-async fn process_request(request: &BackendRequest, store: &dyn StorageBackend) -> BackendResponse {
-    match request {
-        BackendRequest::Read { secret_id } => match store.read(secret_id) {
-            Ok(material) => {
-                info!(secret = %secret_id, present = material.is_some(), "backend read");
-                BackendResponse::ReadOk { material }
-            }
-            Err(e) => BackendResponse::Error {
-                code: BackendErrorCode::Internal,
-                message: format!("storage error: {e}"),
-            },
-        },
-        BackendRequest::Write {
-            secret_id,
-            material,
-        } => match store.write(secret_id, material.as_ref()) {
-            Ok(()) => {
-                info!(secret = %secret_id, "backend write");
-                BackendResponse::WriteOk
-            }
-            Err(e) => BackendResponse::Error {
-                code: BackendErrorCode::Internal,
-                message: format!("storage error: {e}"),
-            },
-        },
-        BackendRequest::List { prefix } => match store.list(prefix) {
-            Ok(ids) => {
-                info!(prefix = %prefix, count = ids.len(), "backend list");
-                BackendResponse::ListOk { ids }
-            }
-            Err(e) => BackendResponse::Error {
-                code: BackendErrorCode::Internal,
-                message: format!("storage error: {e}"),
-            },
-        },
-        BackendRequest::Delete { secret_id } => match store.delete(secret_id) {
-            Ok(existed) => {
-                info!(secret = %secret_id, existed = existed, "backend delete");
-                BackendResponse::DeleteOk { existed }
-            }
-            Err(e) => BackendResponse::Error {
-                code: BackendErrorCode::Internal,
-                message: format!("storage error: {e}"),
-            },
-        },
-        BackendRequest::Status => {
-            info!("backend status");
-            BackendResponse::StatusOk
-        }
-    }
 }
 
 async fn admin_accept_loop(listener: TcpListener, state: Arc<AdminRuntimeState>) -> Result<()> {
@@ -916,20 +861,6 @@ mod tests {
             }
         }
 
-        fn with_data(entries: &[(&str, &[u8])]) -> Self {
-            let store = Self::new();
-            let mut data = store.data.lock().unwrap();
-            for (key, value) in entries {
-                data.insert((*key).to_string(), value.to_vec());
-            }
-            drop(data);
-            store
-        }
-
-        fn fail(&self, op: &'static str) {
-            self.fail_ops.lock().unwrap().insert(op);
-        }
-
         fn should_fail(&self, op: &'static str) -> anyhow::Result<()> {
             if self.fail_ops.lock().unwrap().contains(op) {
                 anyhow::bail!("forced {op} failure");
@@ -976,105 +907,6 @@ mod tests {
         fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
             self.should_fail("delete")?;
             Ok(self.data.lock().unwrap().remove(secret_id).is_some())
-        }
-    }
-
-    #[tokio::test]
-    async fn process_request_read_write_list_delete_and_status() {
-        let store = TestStore::with_data(&[("github/token", b"ghp_test")]);
-
-        let resp = process_request(
-            &BackendRequest::Read {
-                secret_id: "github/token".to_string(),
-            },
-            &store,
-        )
-        .await;
-        assert_eq!(
-            resp,
-            BackendResponse::ReadOk {
-                material: Some(b"ghp_test".as_slice().into())
-            }
-        );
-
-        let resp = process_request(
-            &BackendRequest::Write {
-                secret_id: "github/user".to_string(),
-                material: b"octocat".as_slice().into(),
-            },
-            &store,
-        )
-        .await;
-        assert_eq!(resp, BackendResponse::WriteOk);
-
-        let resp = process_request(
-            &BackendRequest::List {
-                prefix: "github".to_string(),
-            },
-            &store,
-        )
-        .await;
-        assert_eq!(
-            resp,
-            BackendResponse::ListOk {
-                ids: vec!["github/token".to_string(), "github/user".to_string()]
-            }
-        );
-
-        let resp = process_request(
-            &BackendRequest::Delete {
-                secret_id: "github/token".to_string(),
-            },
-            &store,
-        )
-        .await;
-        assert_eq!(resp, BackendResponse::DeleteOk { existed: true });
-
-        let resp = process_request(&BackendRequest::Status, &store).await;
-        assert_eq!(resp, BackendResponse::StatusOk);
-    }
-
-    #[tokio::test]
-    async fn process_request_maps_storage_errors() {
-        for (op, request) in [
-            (
-                "read",
-                BackendRequest::Read {
-                    secret_id: "github/token".to_string(),
-                },
-            ),
-            (
-                "write",
-                BackendRequest::Write {
-                    secret_id: "github/token".to_string(),
-                    material: b"value".as_slice().into(),
-                },
-            ),
-            (
-                "list",
-                BackendRequest::List {
-                    prefix: "github".to_string(),
-                },
-            ),
-            (
-                "delete",
-                BackendRequest::Delete {
-                    secret_id: "github/token".to_string(),
-                },
-            ),
-        ] {
-            let store = TestStore::new();
-            store.fail(op);
-
-            let resp = process_request(&request, &store).await;
-            match resp {
-                BackendResponse::Error { code, message } => {
-                    assert_eq!(code, BackendErrorCode::Internal);
-                    assert!(message.contains("storage error"));
-                    assert!(message.contains(op));
-                }
-                other => panic!("expected Error, got {other:?}"),
-            }
         }
     }
 

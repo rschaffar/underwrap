@@ -1,27 +1,23 @@
 //! Storage backend trait and built-in implementations for underwrap.
 //!
-//! Built-in backends:
+//! Built-in backends used inside `underwrap-backendd`:
 //! - [`PlainBackend`]: plaintext files in a directory
 //! - [`EncryptedBackend`]: ChaCha20-Poly1305 encrypted files with a master key
 //!
-//! The [`StorageBackend`] trait is intentionally simple so that future
-//! backends (e.g. exec-based providers for libsecret, 1Password, Vault)
-//! can implement it without coupling to filesystem details.
+//! The frontend daemon `underwrapd` talks to a central backend over HTTPS
+//! via [`ServiceBackend`].
 
 mod encrypted;
 mod path;
 mod plain;
-mod remote;
 mod service;
 
 pub use encrypted::EncryptedBackend;
 pub use plain::PlainBackend;
-pub use remote::RemoteBackend;
-pub use remote::RemoteBackend as UnixSocketBackend;
 pub use service::ServiceBackend;
 
 use anyhow::Result;
-use underwrap_protocol::config::{BackendMode, BackendSocketConfig, StorageConfig};
+use underwrap_protocol::config::{BackendServiceConfig, StorageConfig};
 use underwrap_protocol::message::SecretBytes;
 
 /// The storage backend trait.
@@ -48,23 +44,21 @@ pub trait StorageBackend: Send + Sync {
     fn delete(&self, secret_id: &str) -> Result<bool>;
 }
 
-/// Open a storage backend from a [`StorageConfig`].
+/// Open a storage backend from a [`StorageConfig`]. Used by
+/// `underwrap-backendd` to open the stores it owns.
 pub fn open(config: &StorageConfig) -> Result<Box<dyn StorageBackend>> {
     match config {
         StorageConfig::Plain { dir } => Ok(Box::new(PlainBackend::open(dir)?)),
         StorageConfig::Encrypted { dir, key_file } => {
             Ok(Box::new(EncryptedBackend::open(dir, key_file)?))
         }
-        StorageConfig::Remote { socket } => Ok(Box::new(RemoteBackend::open(socket)?)),
     }
 }
 
 /// Open the frontend backend client from daemon backend configuration.
-pub fn open_backend_client(config: &BackendSocketConfig) -> Result<Box<dyn StorageBackend>> {
-    match config.mode {
-        BackendMode::UnixSocket => Ok(Box::new(UnixSocketBackend::open(&config.socket)?)),
-        BackendMode::Service => Ok(Box::new(ServiceBackend::open(config)?)),
-    }
+/// The frontend only ever talks to a central backend over HTTPS.
+pub fn open_backend_client(config: &BackendServiceConfig) -> Result<Box<dyn StorageBackend>> {
+    Ok(Box::new(ServiceBackend::open(config)?))
 }
 
 #[cfg(test)]
@@ -100,43 +94,16 @@ mod tests {
     }
 
     #[test]
-    fn open_dispatches_to_remote_backend() {
-        let backend = open(&StorageConfig::Remote {
-            socket: "/tmp/nonexistent-underwrap-backend.sock".into(),
-        })
-        .unwrap();
-        let err = backend.read("github/token").unwrap_err();
-        assert!(err.to_string().contains("connecting to backend at"));
-    }
-
-    #[test]
-    fn open_backend_client_dispatches_to_unix_socket_mode() {
-        let backend = open_backend_client(&BackendSocketConfig {
-            mode: BackendMode::UnixSocket,
-            socket: "/tmp/nonexistent-underwrap-backend.sock".into(),
-            url: None,
-            ca_file: None,
-            client_cert_file: None,
-            client_key_file: None,
-        })
-        .unwrap();
-        let err = backend.read("github/token").unwrap_err();
-        assert!(err.to_string().contains("connecting to backend at"));
-    }
-
-    #[test]
     fn open_backend_client_rejects_missing_service_tls_settings() {
-        let err = match open_backend_client(&BackendSocketConfig {
-            mode: BackendMode::Service,
-            socket: "/tmp/ignored.sock".into(),
-            url: Some("https://backend.example.internal".to_string()),
+        let err = match open_backend_client(&BackendServiceConfig {
+            url: "https://backend.example.internal".to_string(),
             ca_file: None,
             client_cert_file: None,
             client_key_file: None,
         }) {
-            Ok(_) => panic!("expected service backend mode to be rejected"),
+            Ok(_) => panic!("expected open to fail without TLS material"),
             Err(err) => err,
         };
-        assert!(err.to_string().contains("backend.ca_file"));
+        assert!(err.to_string().contains("ca_file"));
     }
 }

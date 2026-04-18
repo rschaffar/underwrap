@@ -185,11 +185,8 @@ async fn daemon_config_error(
     let backend_url = "https://127.0.0.1:65535".to_string();
 
     let config = underwrap_protocol::config::DaemonConfig {
-        sockets: underwrap_protocol::config::SocketConfig::default(),
-        backend: underwrap_protocol::config::BackendSocketConfig {
-            mode: underwrap_protocol::config::BackendMode::Service,
-            socket: "/tmp/unused.sock".into(),
-            url: Some(backend_url),
+        backend: underwrap_protocol::config::BackendServiceConfig {
+            url: backend_url,
             ca_file: Some(base.join("ca.pem")),
             client_cert_file: Some(base.join("client.pem")),
             client_key_file: Some(base.join("client.key")),

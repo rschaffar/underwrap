@@ -91,25 +91,3 @@ impl WireDecode for DirectoryErrorCode {
         }
     }
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum BackendErrorCode {
-    Internal,
-}
-
-impl WireEncode for BackendErrorCode {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        match self {
-            Self::Internal => 0u8.encode(out),
-        }
-    }
-}
-
-impl WireDecode for BackendErrorCode {
-    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
-        match u8::decode(reader)? {
-            0 => Ok(Self::Internal),
-            other => Err(anyhow!("invalid backend error code discriminant: {other}")),
-        }
-    }
-}

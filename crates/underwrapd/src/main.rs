@@ -75,6 +75,11 @@ mod tests {
     fn parse_daemon_config_parses_minimal_yaml() {
         let config = parse_daemon_config(
             r#"
+backend:
+  url: https://backend.example.internal:8443
+  ca_file: /etc/underwrap/ca.pem
+  client_cert_file: /etc/underwrap/client.pem
+  client_key_file: /etc/underwrap/client.key
 credentials: {}
 wrappers: {}
 "#,
@@ -82,5 +87,6 @@ wrappers: {}
         .unwrap();
         assert!(config.credentials.is_empty());
         assert!(config.wrappers.is_empty());
+        assert_eq!(config.backend.url, "https://backend.example.internal:8443");
     }
 }

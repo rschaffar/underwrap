@@ -217,7 +217,7 @@ in {
       local = {
         allowedUsers = [ "testuser" ];
         backend = {
-          mode = "service";
+
           url = "https://127.0.0.1:18443";
           caFile = testCaPem;
           clientCertFile = testLocalClientPem;
@@ -308,7 +308,7 @@ in {
       tunnel = {
         allowedUsers = [ "testuser" ];
         backend = {
-          mode = "service";
+
           url = "https://127.0.0.1:18444";
           caFile = testCaPem;
           clientCertFile = testTunnelClientPem;

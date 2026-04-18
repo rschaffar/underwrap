@@ -8,7 +8,7 @@ use reqwest::header::CONTENT_TYPE;
 use std::fs;
 use std::sync::mpsc;
 
-use underwrap_protocol::config::BackendSocketConfig;
+use underwrap_protocol::config::BackendServiceConfig;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::service::{
     ServiceDeleteRequest, ServiceDeleteResponse, ServiceErrorResponse, ServiceListRequest,
@@ -46,23 +46,20 @@ pub struct ServiceBackend {
 }
 
 impl ServiceBackend {
-    pub fn open(config: &BackendSocketConfig) -> Result<Self> {
-        let base_url = config
-            .url
-            .clone()
-            .context("backend service mode requires backend.url")?;
+    pub fn open(config: &BackendServiceConfig) -> Result<Self> {
+        let base_url = config.url.clone();
         let ca_path = config
             .ca_file
             .as_ref()
-            .context("backend service mode requires backend.ca_file")?;
+            .context("backend requires ca_file")?;
         let cert_path = config
             .client_cert_file
             .as_ref()
-            .context("backend service mode requires backend.client_cert_file")?;
+            .context("backend requires client_cert_file")?;
         let key_path = config
             .client_key_file
             .as_ref()
-            .context("backend service mode requires backend.client_key_file")?;
+            .context("backend requires client_key_file")?;
 
         let ca_pem = fs::read(ca_path)
             .with_context(|| format!("reading backend ca file {}", ca_path.display()))?;

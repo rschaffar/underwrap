@@ -3,7 +3,7 @@ use tokio::net::UnixListener;
 use tokio::task::JoinSet;
 use tracing::info;
 
-use underwrap_protocol::config::{AccessMode, BackendMode, CredentialMode, DaemonConfig};
+use underwrap_protocol::config::{AccessMode, CredentialMode, DaemonConfig};
 
 /// Build a wrapper-name → GID lookup table.
 /// Resolves group names to GIDs via libc getgrnam at startup.
@@ -64,37 +64,19 @@ pub(crate) fn build_allowed_user_uids(
 
 /// Validate configuration at load time.
 pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
-    match config.backend.mode {
-        BackendMode::UnixSocket => {
-            anyhow::ensure!(
-                config.backend.socket.is_absolute(),
-                "backend unix socket must be an absolute path, got '{}'",
-                config.backend.socket.display(),
-            );
-        }
-        BackendMode::Service => {
-            anyhow::ensure!(
-                config
-                    .backend
-                    .url
-                    .as_deref()
-                    .is_some_and(|url| !url.is_empty()),
-                "backend mode=service requires backend.url"
-            );
-            anyhow::ensure!(
-                config.backend.ca_file.is_some(),
-                "backend mode=service requires backend.ca_file"
-            );
-            anyhow::ensure!(
-                config.backend.client_cert_file.is_some(),
-                "backend mode=service requires backend.client_cert_file"
-            );
-            anyhow::ensure!(
-                config.backend.client_key_file.is_some(),
-                "backend mode=service requires backend.client_key_file"
-            );
-        }
-    }
+    anyhow::ensure!(!config.backend.url.is_empty(), "backend.url must be set");
+    anyhow::ensure!(
+        config.backend.ca_file.is_some(),
+        "backend.ca_file is required"
+    );
+    anyhow::ensure!(
+        config.backend.client_cert_file.is_some(),
+        "backend.client_cert_file is required"
+    );
+    anyhow::ensure!(
+        config.backend.client_key_file.is_some(),
+        "backend.client_key_file is required"
+    );
 
     for (cred_ref, credential) in &config.credentials {
         if let CredentialMode::Directory { path } = &credential.mode {

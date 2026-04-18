@@ -621,8 +621,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use underwrap_protocol::config::{
-        AccessMode, BackendSocketConfig, CredentialDef, CredentialMode, CredentialUse,
-        DaemonConfig, SocketConfig, WrapperDef,
+        AccessMode, BackendServiceConfig, CredentialDef, CredentialMode, CredentialUse,
+        DaemonConfig, WrapperDef,
     };
     use underwrap_protocol::message::SecretBytes;
 
@@ -697,11 +697,7 @@ mod tests {
     fn state_with_store(store: Arc<dyn underwrap_store::StorageBackend>) -> State {
         State {
             config: DaemonConfig {
-                sockets: SocketConfig::default(),
-                backend: BackendSocketConfig {
-                    socket: PathBuf::from("/tmp/backend.sock"),
-                    ..Default::default()
-                },
+                backend: BackendServiceConfig::default(),
                 allowed_users: Vec::new(),
                 credentials: HashMap::from([
                     (

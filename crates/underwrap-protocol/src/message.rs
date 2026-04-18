@@ -2,8 +2,6 @@
 //!
 //! All messages use the binary framing/codec defined in [`crate::ipc`].
 
-#[path = "message/backend.rs"]
-mod backend;
 #[path = "message/common.rs"]
 mod common;
 #[path = "message/directory.rs"]
@@ -15,10 +13,9 @@ mod secretsd;
 #[path = "message/wrapper.rs"]
 mod wrapper;
 
-pub use backend::{BackendRequest, BackendResponse};
 pub use common::SecretBytes;
 pub use directory::{DirectoryRequest, DirectoryResponse};
-pub use errors::{BackendErrorCode, DirectoryErrorCode, ErrorCode, SecretsdErrorCode};
+pub use errors::{DirectoryErrorCode, ErrorCode, SecretsdErrorCode};
 pub use secretsd::{SecretsdRequest, SecretsdResponse};
 pub use wrapper::{ReadDirectoryBinding, WrapperRequest, WrapperResponse};
 
@@ -46,17 +43,6 @@ mod tests {
         let encoded = encode_to_vec(&resp).unwrap();
         let parsed: WrapperResponse = decode_from_slice(&encoded).unwrap();
         assert_eq!(parsed, resp);
-    }
-
-    #[test]
-    fn backend_write_roundtrip() {
-        let req = BackendRequest::Write {
-            secret_id: "github/token".to_string(),
-            material: "ghp_test".into(),
-        };
-        let encoded = encode_to_vec(&req).unwrap();
-        let parsed: BackendRequest = decode_from_slice(&encoded).unwrap();
-        assert_eq!(parsed, req);
     }
 
     #[test]

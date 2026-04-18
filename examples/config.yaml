@@ -4,12 +4,11 @@
 # On NixOS, the module generates this automatically.
 # On other systems, write this by hand.
 
-sockets:
-  control: /run/underwrap/control.sock
-  control_mode: "0600"
-
 backend:
-  socket: /run/underwrap/backend.sock
+  url: https://backend.example.internal:8443
+  ca_file: /etc/underwrap/backend-ca.pem
+  client_cert_file: /etc/underwrap/client.pem
+  client_key_file: /etc/underwrap/client.key
 
 credentials:
   # A reusable env-injected token.
