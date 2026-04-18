@@ -18,11 +18,12 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
+use tokio::time::{Duration, interval};
 use tokio_rustls::TlsAcceptor;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use underwrap_protocol::config::StorageConfig;
-use underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID;
+use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument, WrapperApprovalMode};
 
 #[cfg(test)]
 use underwrap_protocol::message::{BackendErrorCode, BackendRequest, BackendResponse};
@@ -99,6 +100,8 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
         info!(listen = %admin_config.listen, stores = admin_state.stores.len(), "backend admin HTTP listening");
         tasks.spawn(admin_accept_loop(admin_listener, admin_state));
     }
+
+    tasks.spawn(expiry_sweeper_loop(stores.clone()));
 
     match shutdown {
         Some(notify) => {
@@ -537,6 +540,62 @@ fn admin_store<'a>(
         .stores
         .get(store)
         .with_context(|| format!("unknown store '{store}'"))
+}
+
+/// How often the expiry sweeper checks for expired `Unlocked { until }` windows.
+const EXPIRY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+async fn expiry_sweeper_loop(stores: HashMap<String, Arc<dyn StorageBackend>>) -> Result<()> {
+    let mut ticker = interval(EXPIRY_SWEEP_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        for (name, store) in &stores {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            match sweep_expired_unlocks(store.as_ref(), now_epoch) {
+                Ok(0) => {}
+                Ok(n) => info!(store = %name, expired = n, "swept expired wrapper unlocks"),
+                Err(e) => warn!(store = %name, err = %e, "expiry sweep failed"),
+            }
+        }
+    }
+}
+
+/// Walk the policy document in `store`, flip every wrapper whose
+/// `Unlocked { until_epoch }` has elapsed to `Locked`, and persist.
+/// Returns the count of wrappers transitioned.
+fn sweep_expired_unlocks(store: &dyn StorageBackend, now_epoch: u64) -> Result<usize> {
+    let Some(material) = store.read(POLICY_DOCUMENT_SECRET_ID)? else {
+        return Ok(0);
+    };
+    let mut doc: PolicyDocument = serde_json::from_slice(material.as_ref())
+        .context("parsing policy document during expiry sweep")?;
+
+    let mut changed = 0usize;
+    for entry in doc.wrappers.iter_mut() {
+        if let WrapperApprovalMode::Unlocked {
+            until_epoch: Some(until),
+        } = entry.mode
+            && now_epoch > until
+        {
+            entry.mode = WrapperApprovalMode::Locked;
+            entry.reason = Some(format!(
+                "auto-locked: unlocked window expired at epoch {until}"
+            ));
+            changed += 1;
+        }
+    }
+
+    if changed > 0 {
+        store.write(
+            POLICY_DOCUMENT_SECRET_ID,
+            serde_json::to_vec(&doc)?.as_slice(),
+        )?;
+    }
+    Ok(changed)
 }
 
 async fn handle_admin_request(
@@ -1026,7 +1085,7 @@ mod tests {
             Arc::new(TestStore::new()) as Arc<dyn StorageBackend>,
         )]);
 
-        let json = r#"{"wrappers":[{"wrapper":"gh-comment","enabled":true}],"rules":[{"id":"r1","wrapper":"gh-comment","resource":"secret:github/token","operation":"secret.read","effect":"allow"}]}"#;
+        let json = r#"{"wrappers":[{"wrapper":"gh-comment","mode":{"kind":"unlocked"}}],"rules":[{"id":"r1","wrapper":"gh-comment","resource":"secret:github/token","operation":"secret.read","effect":"allow"}],"grants":[]}"#;
         put_policy_document(&stores, "work", json).unwrap();
         let stored = get_policy_document(&stores, "work").unwrap();
         assert_eq!(stored.as_deref(), Some(json));
@@ -1041,5 +1100,83 @@ mod tests {
 
         let err = put_policy_document(&stores, "work", "not-json").unwrap_err();
         assert!(err.to_string().contains("parsing policy document json"));
+    }
+
+    fn write_policy(store: &TestStore, doc: &PolicyDocument) {
+        store
+            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(doc).unwrap())
+            .unwrap();
+    }
+
+    fn read_policy(store: &TestStore) -> PolicyDocument {
+        let bytes = store.read(POLICY_DOCUMENT_SECRET_ID).unwrap().unwrap();
+        serde_json::from_slice(bytes.as_ref()).unwrap()
+    }
+
+    #[test]
+    fn sweep_expired_unlocks_is_a_no_op_when_nothing_expired() {
+        let store = TestStore::new();
+        let doc = PolicyDocument {
+            wrappers: vec![underwrap_protocol::policy::WrapperPolicyState {
+                wrapper: "gh".to_string(),
+                mode: WrapperApprovalMode::Unlocked {
+                    until_epoch: Some(1000),
+                },
+                reason: None,
+            }],
+            rules: Vec::new(),
+            grants: Vec::new(),
+        };
+        write_policy(&store, &doc);
+
+        assert_eq!(sweep_expired_unlocks(&store, 500).unwrap(), 0);
+        assert_eq!(read_policy(&store), doc);
+    }
+
+    #[test]
+    fn sweep_expired_unlocks_locks_expired_wrapper_and_records_reason() {
+        let store = TestStore::new();
+        let doc = PolicyDocument {
+            wrappers: vec![
+                underwrap_protocol::policy::WrapperPolicyState {
+                    wrapper: "gh".to_string(),
+                    mode: WrapperApprovalMode::Unlocked {
+                        until_epoch: Some(100),
+                    },
+                    reason: None,
+                },
+                underwrap_protocol::policy::WrapperPolicyState {
+                    wrapper: "jira".to_string(),
+                    mode: WrapperApprovalMode::Unlocked { until_epoch: None },
+                    reason: None,
+                },
+            ],
+            rules: Vec::new(),
+            grants: Vec::new(),
+        };
+        write_policy(&store, &doc);
+
+        assert_eq!(sweep_expired_unlocks(&store, 200).unwrap(), 1);
+
+        let after = read_policy(&store);
+        assert_eq!(after.wrappers[0].mode, WrapperApprovalMode::Locked);
+        assert!(
+            after.wrappers[0]
+                .reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("auto-locked")
+        );
+        // Wrapper without expiry untouched.
+        assert_eq!(
+            after.wrappers[1].mode,
+            WrapperApprovalMode::Unlocked { until_epoch: None }
+        );
+    }
+
+    #[test]
+    fn sweep_expired_unlocks_is_noop_when_no_policy_document_exists() {
+        let store = TestStore::new();
+        assert_eq!(sweep_expired_unlocks(&store, 1000).unwrap(), 0);
     }
 }
