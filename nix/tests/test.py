@@ -119,6 +119,13 @@ def boot_and_service_checks():
     assert admin_api(ADMIN_LOCAL, "/v1/admin/stores", None, method="GET")["stores"] == ["local"]
     assert admin_api(ADMIN_REMOTE, "/v1/admin/stores", None, method="GET")["stores"] == ["remote"]
 
+    # services.underwrap.hardenTargetHost defaults true; the module pins
+    # kernel.yama.ptrace_scope=2 so a same-UID caller cannot inspect the
+    # wrapper chain or the target process state. Confirm it took effect.
+    scope = machine.succeed("cat /proc/sys/kernel/yama/ptrace_scope").strip()
+    assert scope == "2", f"expected ptrace_scope=2 from hardenTargetHost, got {scope}"
+    machine.log("PASS: kernel.yama.ptrace_scope=2 enforced by hardenTargetHost")
+
 
 def local_socket_permissions():
     # ============================================================
@@ -390,10 +397,11 @@ def local_ancestor_attack():
     # LOCAL INSTANCE: adversarial ancestor attack (CRITICAL TEST)
     # ============================================================
     # This tests whether a PARENT process that spawns the wrapper can
-    # inspect its descendant target and recover the secret. Under Yama
-    # ptrace_scope=1, ancestor→descendant tracing is normally allowed.
-    # This test determines whether the underwrap architecture actually
-    # protects against a malicious invoker.
+    # inspect its descendant target and recover the secret. With
+    # services.underwrap.hardenTargetHost = true (default), the module
+    # pins ptrace_scope=2 so even an ancestor needs CAP_SYS_PTRACE to
+    # ptrace or read /proc/<pid>/{environ,mem}. This test confirms the
+    # adversarial caller really cannot recover the token.
 
     ANCESTOR_SCRIPT = os.environ.get("ANCESTOR_ATTACK_SCRIPT", "/dev/null")
     attack_output = machine.succeed(

@@ -278,6 +278,21 @@ let
     };
   };
 
+  # Environment-variable names that must never appear in envPassthrough or
+  # envSet, because allowing the caller (or the configuration) to control
+  # them re-introduces dynamic-linker redirection against the target. The
+  # wrapper chain already enforces NO_NEW_PRIVS + env_clear(); this assertion
+  # prevents an operator from undoing it by accident.
+  linkerLikeEnvPrefix = name:
+    name == "LD_PRELOAD" || name == "LD_LIBRARY_PATH" || name == "LD_AUDIT"
+    || lib.hasPrefix "LD_" name;
+
+  swapDevicesAreHardened =
+    lib.all (dev:
+      (dev.randomEncryption.enable or false)
+      || (dev.encrypted.enable or false)
+    ) config.swapDevices;
+
 in {
   options.services.underwrap = {
     enable = lib.mkEnableOption "underwrap secret broker";
@@ -285,6 +300,28 @@ in {
     package = lib.mkOption {
       type = lib.types.package;
       description = "The underwrap package.";
+    };
+
+    hardenTargetHost = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Apply the target-host hardening posture that underwrap's strong
+        non-caller-inspection claim depends on. When enabled:
+
+        - `kernel.yama.ptrace_scope` is set to `2`, so only processes with
+          `CAP_SYS_PTRACE` can ptrace or read `/proc/<pid>/{environ,mem}`.
+          This blocks a same-UID caller from inspecting the wrapper chain
+          or the target, at the cost of breaking `strace`/`gdb` from
+          normal users.
+        - The build asserts that every configured swap device is
+          encrypted (random-key or LUKS), so a token paged out of the
+          target's memory cannot later surface as plaintext on disk. If
+          you deliberately run without swap, this is satisfied trivially.
+
+        Leave enabled unless you are certain the deployment does not
+        need this posture.
+      '';
     };
 
     instances = lib.mkOption {
@@ -314,7 +351,21 @@ in {
             message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: directory credential target paths must not overlap";
           }
         ) inst.wrappers)
+        ++ (lib.mapAttrsToList (wrapperName: wrapper: {
+          assertion = !(lib.any linkerLikeEnvPrefix wrapper.envPassthrough);
+          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envPassthrough: LD_* environment variables must not be passed through — they would let the caller redirect dynamic linking in the target process and defeat the NO_NEW_PRIVS + env_clear() hardening";
+        }) inst.wrappers)
+        ++ (lib.mapAttrsToList (wrapperName: wrapper: {
+          assertion = !(lib.any linkerLikeEnvPrefix (builtins.attrNames wrapper.envSet));
+          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: LD_* environment variables must not be set on the target — they defeat the dynamic-linker hardening";
+        }) inst.wrappers)
       ) cfg.instances))
+      ++ lib.optionals cfg.hardenTargetHost [
+        {
+          assertion = swapDevicesAreHardened;
+          message = "services.underwrap.hardenTargetHost is enabled but at least one swapDevice is not encrypted. Tokens paged out of a wrapped target's memory would surface as plaintext on disk. Enable randomEncryption or LUKS on every swapDevice, remove swap, or set services.underwrap.hardenTargetHost = false (and accept the weaker claim).";
+        }
+      ]
       ;
 
     # Merge all instance users.
@@ -344,5 +395,14 @@ in {
 
     # SSH settings.
     services.openssh.settings = lib.mkMerge (lib.mapAttrsToList (_: i: i.sshSettings) instances);
+
+    # Target-host hardening: pin kernel.yama.ptrace_scope=2 so that a
+    # same-UID caller cannot ptrace, strace, or read /proc/<pid>/{environ,mem}
+    # on any process in the wrapper chain. mkDefault so operators who
+    # genuinely need scope=1 for debugging workflows can lower it
+    # explicitly, but every underwrap deployment defaults to 2.
+    boot.kernel.sysctl = lib.mkIf cfg.hardenTargetHost {
+      "kernel.yama.ptrace_scope" = lib.mkDefault 2;
+    };
   };
 }

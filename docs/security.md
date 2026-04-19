@@ -78,6 +78,42 @@ A reasonable short summary is:
 
 That is a meaningful security improvement even when it is not absolute.
 
+## The strong claim, and what it costs
+
+When all of the following hold:
+
+- The target runs on NixOS with `services.underwrap.hardenTargetHost = true`
+  (the default). This pins `kernel.yama.ptrace_scope = 2`.
+- Swap is encrypted or absent (the module asserts this when
+  `hardenTargetHost` is on).
+- Wrappers expose only narrow helpers that do not emit the token to
+  stdout/stderr, do not persist it to a path the caller can read, and
+  do not accept attacker-controlled flags that cause it to be written
+  anywhere the caller can read.
+- The mTLS client cert/key, the backend admin token, and the admin UI
+  session key are at their default ownership and mode.
+
+Then there is **no known kernel-mediated path** for a non-root local
+attacker — including a hostile caller — to read the raw token value.
+
+Remaining residual risk is:
+
+- **Bug class.** Kernel, TLS stack, ssh-key, underwrap itself.
+  "No known path" is not "no path."
+- **Root compromise on the target host.** Standard exclusion.
+
+That is the strongest claim we are willing to make, and it is
+defensible from the code. It is not "airtight" — security claims that
+absolute rarely survive scrutiny — but it is materially stronger than
+"reduces easy same-user inspection."
+
+The cost of the default posture is that ordinary debuggers
+(`strace`, `gdb`, `perf`) no longer work on user processes without
+root. Operators who genuinely need that workflow can lower
+`kernel.yama.ptrace_scope` explicitly (the module sets it via
+`mkDefault`); doing so weakens the claim to "non-ancestor same-UID
+processes are blocked; the caller is not."
+
 ---
 
 ## Design invariants
@@ -332,47 +368,92 @@ So the final target process needs protection from a different combination of mec
 
 ### What currently helps protect the target
 
-Two mechanisms are important here.
+Three mechanisms together cover the same-UID inspection surface.
 
-#### 1. Yama LSM (`ptrace_scope=1`)
+#### 1. Yama LSM, pinned to `ptrace_scope=2`
 
-On NixOS, the default Yama setting blocks same-UID access to sensitive `/proc` state unless the caller is an allowed descendant.
-
-This matters for reads like:
+`services.underwrap.hardenTargetHost` defaults to `true`. The module
+sets `kernel.yama.ptrace_scope=2` on the target host. At that level,
+`ptrace_may_access()` rejects every tracer that does not hold
+`CAP_SYS_PTRACE`. That blocks every same-UID access path that goes
+through that check:
 
 - `/proc/<pid>/environ`
 - `/proc/<pid>/mem`
+- `/proc/<pid>/fd/*` content
+- `ptrace(PTRACE_ATTACH)`, `strace`, `gdb`, `perf`
 
-So a same-UID process that is merely "nearby" on the host is not automatically allowed to inspect the target.
+The check does not distinguish "an ancestor of the target" from
+"another process under the same UID" once scope is 2 — neither has
+`CAP_SYS_PTRACE`, so neither passes. This is the difference from the
+distro-default `scope=1`, where ancestors are allowed; under `2`, a
+hostile caller has no privileged inspection of the wrapper chain
+either.
+
+The cost is that ordinary debuggers no longer work on user processes
+without root. Operators who genuinely need that workflow can lower
+scope explicitly (the sysctl is set with `mkDefault`), at which point
+the strong claim degrades to "non-ancestor same-UID processes are
+blocked; the caller can read the target's environ."
 
 #### 2. Credential transitions in the wrapper chain
 
-The target descended from a process tree that included:
+The target descends from a process tree that included:
 
 - an exec of a setgid binary (`underwrap-exec`)
 - an exec of a capability-bearing binary (`underwrap-ns`)
 
-Those privilege-affecting exec transitions matter for ptrace eligibility and help prevent straightforward tracing from the original ancestor process.
+Those privilege-affecting exec transitions matter for ptrace
+eligibility and help prevent straightforward tracing from the
+original ancestor process even when scope is lowered.
 
-`underwrap-ns` also carries `cap_setpcap` and attempts to prune the capability bounding set before the target execs. More importantly, it sets `PR_SET_NO_NEW_PRIVS=1` before the final target exec so the target and its descendants cannot gain privilege later through setuid/setgid binaries or file capabilities. The target should therefore run with zero effective, permitted, inheritable, and ambient capabilities, and it should not be able to acquire new ones on later execs even if the kernel refuses bounding-set pruning.
+`underwrap-ns` also carries `cap_setpcap` and prunes the capability
+bounding set before the target execs. It sets `PR_SET_NO_NEW_PRIVS=1`
+before the final target exec so the target and its descendants cannot
+gain privilege later through setuid/setgid binaries or file
+capabilities. The target should therefore run with zero effective,
+permitted, inheritable, and ambient capabilities and cannot acquire
+new ones on later execs even if the kernel refuses bounding-set
+pruning.
+
+#### 3. Caller-controlled environment is cleared
+
+The target is launched with `env_clear()` and only the keys allowed by
+the wrapper config are reintroduced. The NixOS module additionally
+asserts at build time that no wrapper's `envPassthrough` or `envSet`
+contains an `LD_*` variable, so an operator cannot accidentally
+re-introduce dynamic-linker redirection.
 
 ### What the PID namespace contributes
 
-The PID namespace is still useful, but it is better described as **defense in depth** than as the sole protection for target secrecy.
+The PID namespace is still useful, but it is **defense in depth**, not
+the sole protection for target secrecy.
 
 It helps by:
 
 - giving the target a separate PID space
-- making process discovery less direct
+- making process discovery less direct from inside the namespace
 - combining well with a fresh `/proc` mount in libsecret mode
 
-### Important caveat
+### Important caveats
 
-This means underwrap's target protection depends partly on kernel policy and system defaults, not just on one explicit setting inside the wrapper.
+The target's secret material is in its environ, in cleartext, while
+the target runs. That's how env-injection has to work. The strong
+claim above rests on:
 
-Systems that disable or weaken the relevant Yama behavior lose one important layer.
+1. **`ptrace_scope=2`**, which the module pins by default.
+2. **Encrypted (or absent) swap**, which the module asserts when
+   `hardenTargetHost = true` so a token paged out of the target's
+   memory cannot surface as plaintext on disk.
+3. **Narrow wrappers** that don't print, log, persist, or otherwise
+   exfiltrate the token. Underwrap cannot enforce this in code; it
+   relies on the wrapper author. Where this guarantee can't be made
+   about the target tool, use libsecret or directory-credential mode
+   so the raw value never enters the target's environ.
 
-That dependence is real and should not be hidden.
+If any of those preconditions slips, the claim degrades. The module
+defaults are aligned with the strong shape; loosening them is an
+explicit decision.
 
 ---
 

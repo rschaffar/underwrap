@@ -17,6 +17,23 @@ unlock CLI is historical and no longer supported by the code.
 
 ## NixOS module
 
+### Top-level options
+
+| Option | Type | Default | Notes |
+|---|---|---|---|
+| `enable` | bool | `false` | Enables the multi-instance daemon machinery |
+| `package` | derivation | — | The underwrap package |
+| `hardenTargetHost` | bool | `true` | Pins `kernel.yama.ptrace_scope=2` on the target host (via `mkDefault`) and asserts that every configured swap device is encrypted. This is the posture the strong same-UID protection claim depends on. Lower at your own risk. |
+| `instances.<name>` | submodule | `{}` | Per-instance configuration |
+
+The build also rejects any wrapper whose `envPassthrough` or `envSet`
+contains an `LD_*` variable (e.g. `LD_PRELOAD`, `LD_LIBRARY_PATH`).
+Allowing those would let the caller redirect dynamic linking inside
+the target and defeat the `NO_NEW_PRIVS` + `env_clear()` hardening.
+This assertion is unconditional, not gated on `hardenTargetHost`.
+
+### Per-instance options
+
 ```nix
 services.underwrap = {
   enable = true;
