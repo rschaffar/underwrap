@@ -104,9 +104,11 @@ fn load_master_key(path: &Path) -> Result<MasterKey> {
         .trim();
     if hex_str.len() == 64 {
         let mut key = [0u8; 32];
-        for (i, chunk) in hex_str.as_bytes().chunks(2).enumerate() {
-            let s = std::str::from_utf8(chunk).unwrap();
-            key[i] = u8::from_str_radix(s, 16)
+        for (i, byte) in key.iter_mut().enumerate() {
+            let s = hex_str
+                .get(i * 2..i * 2 + 2)
+                .with_context(|| format!("invalid hex in master key at position {}", i * 2))?;
+            *byte = u8::from_str_radix(s, 16)
                 .with_context(|| format!("invalid hex in master key at position {}", i * 2))?;
         }
         raw.zeroize();

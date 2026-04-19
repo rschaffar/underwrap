@@ -46,7 +46,9 @@ impl SecretService {
         let path = ObjectPath::try_from(session_path.clone())
             .map_err(|e| fdo::Error::Failed(format!("invalid path: {e}")))?;
 
-        let _ = object_server.at(&path, SessionInterface).await;
+        if let Err(e) = object_server.at(&path, SessionInterface).await {
+            tracing::warn!(%path, error = %e, "registering session interface failed");
+        }
 
         Ok(("".into(), path))
     }
@@ -75,7 +77,9 @@ impl SecretService {
 
         let path = collection_path(&col_id)?;
         let col = CollectionInterface::new(col_id, self.store.clone(), self.channel.clone());
-        let _ = object_server.at(&path, col).await;
+        if let Err(e) = object_server.at(&path, col).await {
+            tracing::warn!(%path, error = %e, "registering collection interface failed");
+        }
 
         Ok((path, empty_path()))
     }

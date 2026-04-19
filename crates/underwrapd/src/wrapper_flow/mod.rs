@@ -1,0 +1,100 @@
+use anyhow::Result;
+use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
+use tokio::net::UnixStream;
+use tracing::info;
+
+use underwrap_protocol::ipc::write_frame_async;
+use underwrap_protocol::message::{ErrorCode, WrapperRequest, WrapperResponse};
+
+use crate::peer_auth::PeerCred;
+use crate::server::State;
+
+mod approval_round;
+mod channels;
+mod intake;
+mod read;
+
+use approval_round::{ApprovalOutcome, ModeGate, check_wrapper_mode, run_approval_round};
+use channels::establish_scoped_channels;
+use intake::{authorize_wrapper_peer, read_initial_wrapper_request};
+use read::process_read_for;
+
+pub(crate) async fn handle_wrapper(
+    mut stream: UnixStream,
+    state: Arc<State>,
+    wrapper_name: &str,
+    expected_gid: u32,
+) -> Result<()> {
+    let (peer, peer_uid) =
+        match authorize_wrapper_peer(&mut stream, &state, wrapper_name, expected_gid).await? {
+            Some(auth) => auth,
+            None => return Ok(()),
+        };
+
+    let request =
+        match read_initial_wrapper_request(&mut stream, wrapper_name, peer.as_ref(), peer_uid)
+            .await?
+        {
+            Some(request) => request,
+            None => return Ok(()),
+        };
+
+    let scope = match &request {
+        WrapperRequest::Read { scope } => scope.clone(),
+        WrapperRequest::ApprovalProof { .. } => {
+            write_frame_async(
+                &mut stream,
+                &WrapperResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: "first frame must be Read".to_string(),
+                },
+            )
+            .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
+
+    let response = complete_read(
+        &mut stream,
+        scope.as_deref(),
+        wrapper_name,
+        peer.as_ref(),
+        peer_uid,
+        &state,
+    )
+    .await?;
+    write_frame_async(&mut stream, &response).await?;
+
+    establish_scoped_channels(&stream, &response, wrapper_name, &state).await;
+
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// Run the full read flow, including a per-call approval round-trip when
+/// backend policy demands one.
+async fn complete_read(
+    stream: &mut UnixStream,
+    scope: Option<&str>,
+    wrapper_name: &str,
+    peer: Option<&PeerCred>,
+    peer_uid: u32,
+    state: &State,
+) -> Result<WrapperResponse> {
+    info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
+
+    let approval_satisfied = match check_wrapper_mode(wrapper_name, state) {
+        Ok(ModeGate::Proceed) => false,
+        Ok(ModeGate::NeedApproval(approval_key)) => {
+            match run_approval_round(stream, wrapper_name, &approval_key, peer_uid, state).await? {
+                ApprovalOutcome::Approved => true,
+                ApprovalOutcome::Rejected(response) => return Ok(response),
+            }
+        }
+        Err(response) => return Ok(response),
+    };
+
+    Ok(process_read_for(wrapper_name, scope, state, peer_uid, approval_satisfied).await)
+}

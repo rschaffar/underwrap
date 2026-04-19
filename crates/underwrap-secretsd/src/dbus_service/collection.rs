@@ -122,7 +122,9 @@ impl CollectionInterface {
                 self.store.clone(),
                 self.channel.clone(),
             );
-            let _ = object_server.at(&item_path, item).await;
+            if let Err(e) = object_server.at(&item_path, item).await {
+                tracing::warn!(path = %item_path, error = %e, "registering item interface failed");
+            }
         }
 
         Ok((item_path, empty_path()))

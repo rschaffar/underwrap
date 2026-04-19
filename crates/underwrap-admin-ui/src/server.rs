@@ -8,7 +8,6 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use cookie::{Cookie, SameSite};
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
@@ -478,11 +477,4 @@ async fn delete_grant(
         return error_page(&session.operator, &format!("delete grant: {e}"));
     }
     Redirect::to(&format!("/t/{target}?store={store}")).into_response()
-}
-
-// Suppress dead_code for currently-unused form variants while we wire the
-// admin UI. These stay referenced through axum extractors.
-#[allow(dead_code)]
-fn _keep_form_types_alive() -> HashMap<&'static str, &'static str> {
-    HashMap::new()
 }

@@ -135,8 +135,13 @@ async fn main() -> Result<()> {
                 channel.clone(),
             );
             let path = format!("{BASE_PATH}/collection/{col_id}");
-            if let Ok(path) = zbus::zvariant::ObjectPath::try_from(path.clone()) {
-                let _ = connection.object_server().at(path, col).await;
+            match zbus::zvariant::ObjectPath::try_from(path.clone()) {
+                Ok(path) => {
+                    if let Err(e) = connection.object_server().at(&path, col).await {
+                        tracing::warn!(%path, error = %e, "registering collection failed");
+                    }
+                }
+                Err(e) => tracing::warn!(path, error = %e, "invalid collection object path"),
             }
 
             // Register items.
@@ -148,8 +153,13 @@ async fn main() -> Result<()> {
                     channel.clone(),
                 );
                 let item_path = format!("{BASE_PATH}/collection/{col_id}/{item_id}");
-                if let Ok(path) = zbus::zvariant::ObjectPath::try_from(item_path) {
-                    let _ = connection.object_server().at(path, item).await;
+                match zbus::zvariant::ObjectPath::try_from(item_path.clone()) {
+                    Ok(path) => {
+                        if let Err(e) = connection.object_server().at(&path, item).await {
+                            tracing::warn!(%path, error = %e, "registering item failed");
+                        }
+                    }
+                    Err(e) => tracing::warn!(item_path, error = %e, "invalid item object path"),
                 }
             }
         }
@@ -162,8 +172,13 @@ async fn main() -> Result<()> {
                 channel.clone(),
             );
             let alias_path = format!("{BASE_PATH}/aliases/{alias}");
-            if let Ok(path) = zbus::zvariant::ObjectPath::try_from(alias_path) {
-                let _ = connection.object_server().at(path, col).await;
+            match zbus::zvariant::ObjectPath::try_from(alias_path.clone()) {
+                Ok(path) => {
+                    if let Err(e) = connection.object_server().at(&path, col).await {
+                        tracing::warn!(%path, error = %e, "registering alias failed");
+                    }
+                }
+                Err(e) => tracing::warn!(alias_path, error = %e, "invalid alias object path"),
             }
         }
     }
