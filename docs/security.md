@@ -78,41 +78,52 @@ A reasonable short summary is:
 
 That is a meaningful security improvement even when it is not absolute.
 
-## The strong claim, and what it costs
+## Guarantee under the hardened posture
 
-When all of the following hold:
+### Preconditions
 
-- The target runs on NixOS with `services.underwrap.hardenTargetHost = true`
-  (the default). This pins `kernel.yama.ptrace_scope = 2`.
-- Swap is encrypted or absent (the module asserts this when
-  `hardenTargetHost` is on).
-- Wrappers expose only narrow helpers that do not emit the token to
-  stdout/stderr, do not persist it to a path the caller can read, and
-  do not accept attacker-controlled flags that cause it to be written
-  anywhere the caller can read.
-- The mTLS client cert/key, the backend admin token, and the admin UI
-  session key are at their default ownership and mode.
+The guarantee below applies when all of the following hold:
 
-Then there is **no known kernel-mediated path** for a non-root local
-attacker — including a hostile caller — to read the raw token value.
+- The target runs on NixOS with
+  `services.underwrap.hardenTargetHost = true` (the default). This
+  pins `kernel.yama.ptrace_scope = 2`.
+- Every configured swap device is encrypted, or the system has no
+  swap. The module asserts this at build time when `hardenTargetHost`
+  is enabled.
+- Wrappers expose narrow helpers only. A narrow helper, in this
+  context, is a program that:
+  - does not emit the token on `stdout` or `stderr`,
+  - does not persist the token to any path readable by the caller,
+  - does not accept attacker-controlled flags or configuration that
+    cause it to write the token anywhere the caller can read.
+- The mTLS client cert and key, the backend admin token, and the
+  admin UI session key retain their default ownership and mode
+  (readable only by the daemon user that needs them).
 
-Remaining residual risk is:
+### Guarantee
 
-- **Bug class.** Kernel, TLS stack, ssh-key, underwrap itself.
-  "No known path" is not "no path."
-- **Root compromise on the target host.** Standard exclusion.
+Under those preconditions, there is no known kernel-mediated path by
+which a non-root local attacker — including the caller itself — can
+read the raw token value on the target host.
 
-That is the strongest claim we are willing to make, and it is
-defensible from the code. It is not "airtight" — security claims that
-absolute rarely survive scrutiny — but it is materially stronger than
-"reduces easy same-user inspection."
+### Residual risk
 
-The cost of the default posture is that ordinary debuggers
-(`strace`, `gdb`, `perf`) no longer work on user processes without
-root. Operators who genuinely need that workflow can lower
-`kernel.yama.ptrace_scope` explicitly (the module sets it via
-`mkDefault`); doing so weakens the claim to "non-ancestor same-UID
-processes are blocked; the caller is not."
+- **Implementation defects** in the kernel, in the TLS or SSH
+  libraries, or in underwrap itself. Absence of a known path is not a
+  proof of absence.
+- **Root compromise on the target host.** Standard exclusion; `root`
+  can read process memory directly.
+
+### Operational trade-off
+
+Pinning `kernel.yama.ptrace_scope = 2` disables unprivileged use of
+`strace`, `gdb`, and `perf` against user processes. Deployments that
+require these tools for normal operation can lower
+`kernel.yama.ptrace_scope` explicitly; the module sets the value with
+`mkDefault`, so an overriding entry in
+`boot.kernel.sysctl` takes precedence. Lowering the value weakens the
+guarantee above to "non-ancestor same-UID processes cannot read the
+wrapper or target state; an ancestor process (the caller) can."
 
 ---
 
@@ -375,26 +386,28 @@ Three mechanisms together cover the same-UID inspection surface.
 `services.underwrap.hardenTargetHost` defaults to `true`. The module
 sets `kernel.yama.ptrace_scope=2` on the target host. At that level,
 `ptrace_may_access()` rejects every tracer that does not hold
-`CAP_SYS_PTRACE`. That blocks every same-UID access path that goes
-through that check:
+`CAP_SYS_PTRACE`, which in turn blocks every same-UID access path
+that goes through that check:
 
 - `/proc/<pid>/environ`
 - `/proc/<pid>/mem`
 - `/proc/<pid>/fd/*` content
 - `ptrace(PTRACE_ATTACH)`, `strace`, `gdb`, `perf`
 
-The check does not distinguish "an ancestor of the target" from
-"another process under the same UID" once scope is 2 — neither has
-`CAP_SYS_PTRACE`, so neither passes. This is the difference from the
-distro-default `scope=1`, where ancestors are allowed; under `2`, a
-hostile caller has no privileged inspection of the wrapper chain
-either.
+Under `scope=2` the check does not distinguish between an ancestor of
+the target and an unrelated same-UID process. Neither holds
+`CAP_SYS_PTRACE` and neither passes. This is the difference from the
+distribution default `scope=1`, where ancestors are exempted and a
+caller process can therefore read `/proc/<pid>/environ` on its own
+wrapper descendants.
 
-The cost is that ordinary debuggers no longer work on user processes
-without root. Operators who genuinely need that workflow can lower
-scope explicitly (the sysctl is set with `mkDefault`), at which point
-the strong claim degrades to "non-ancestor same-UID processes are
-blocked; the caller can read the target's environ."
+Unprivileged use of `strace`, `gdb`, and `perf` against user
+processes is disabled by `scope=2`. Deployments that require these
+tools can lower the value explicitly; the sysctl is declared with
+`mkDefault`, so an overriding entry takes precedence. With
+`scope=1`, the protection narrows to non-ancestor same-UID processes;
+a caller process remains able to read its descendant target's
+environment.
 
 #### 2. Credential transitions in the wrapper chain
 
@@ -437,23 +450,24 @@ It helps by:
 
 ### Important caveats
 
-The target's secret material is in its environ, in cleartext, while
-the target runs. That's how env-injection has to work. The strong
-claim above rests on:
+The secret sits in the target's environ, in cleartext, for the
+target's lifetime. Env-injection requires this. The guarantee stated
+in [Guarantee under the hardened posture](#guarantee-under-the-hardened-posture)
+therefore rests on three preconditions:
 
-1. **`ptrace_scope=2`**, which the module pins by default.
-2. **Encrypted (or absent) swap**, which the module asserts when
-   `hardenTargetHost = true` so a token paged out of the target's
-   memory cannot surface as plaintext on disk.
-3. **Narrow wrappers** that don't print, log, persist, or otherwise
-   exfiltrate the token. Underwrap cannot enforce this in code; it
-   relies on the wrapper author. Where this guarantee can't be made
-   about the target tool, use libsecret or directory-credential mode
-   so the raw value never enters the target's environ.
+1. **`ptrace_scope=2`.** Pinned by the module.
+2. **Encrypted or absent swap.** Asserted by the module when
+   `hardenTargetHost = true` so that a token paged out of the
+   target's memory cannot surface as plaintext on disk.
+3. **Narrow wrappers.** The wrapper author is responsible for
+   ensuring the target does not print, log, persist, or otherwise
+   exfiltrate the token. Where that responsibility cannot be
+   discharged for a given target tool, use libsecret or
+   directory-credential mode so the raw value never enters the
+   target's environ.
 
-If any of those preconditions slips, the claim degrades. The module
-defaults are aligned with the strong shape; loosening them is an
-explicit decision.
+Loosening any of these preconditions narrows the guarantee
+correspondingly.
 
 ---
 

@@ -63,12 +63,13 @@ underwrap is trying to combine a few things that are rarely available together:
 - **clean target environments** — the target does not inherit the caller's full shell environment
 - **process-isolated delivery** — under the default hardened posture
   (`services.underwrap.hardenTargetHost = true`, which pins
-  `kernel.yama.ptrace_scope=2`), no same-UID process — including the
-  caller — has a known kernel-mediated path to read the wrapper or
-  target's environ, memory, or fds. What the target program itself does
-  with the secret (its output streams, its own file writes, its own
-  network behavior) is out of underwrap's reach — that is what narrow
-  helpers and libsecret/directory modes are for
+  `kernel.yama.ptrace_scope=2`), no non-root same-UID process — including
+  the caller — has a known kernel-mediated path to read the wrapper or
+  target's environ, memory, or file descriptors. What the target program
+  itself does with the secret (its output streams, its own file writes,
+  its own network behavior) remains the responsibility of the wrapper
+  author; libsecret and directory-credential modes exist for targets
+  where that responsibility cannot be met
 - **mutable credential workflows** — useful for libsecret-backed tools and app-managed state
 - **central-backend deployment** — secrets can stay on your workstation
   or a central server, reachable only via authenticated mTLS
