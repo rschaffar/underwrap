@@ -113,6 +113,8 @@ fn write_utf8(channel: &(impl ChannelOps + ?Sized), secret_id: &str, material: &
 pub fn load_initial_state(channel: &(impl ChannelOps + ?Sized)) -> Result<SecretStore> {
     let aliases_json = read_utf8(channel, "_aliases")?;
     let mut store = SecretStore::new_default();
+    store.collections.clear();
+    store.aliases.clear();
 
     if let Some(aliases_str) = aliases_json {
         let aliases: std::collections::HashMap<String, String> =
@@ -138,6 +140,26 @@ pub fn load_initial_state(channel: &(impl ChannelOps + ?Sized)) -> Result<Secret
             }
             store.aliases.insert(alias.clone(), col_id.clone());
         }
+    }
+
+    // Ensure a "default" collection exists (required by the Secret Service spec).
+    if !store.collections.contains_key("default") {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        store.collections.insert(
+            "default".to_string(),
+            underwrap_secretsd_store::Collection {
+                label: "Default".to_string(),
+                items: std::collections::HashMap::new(),
+                created: now,
+                modified: now,
+            },
+        );
+    }
+    if !store.aliases.contains_key("default") {
+        store.aliases.insert("default".to_string(), "default".to_string());
     }
 
     let col_ids: Vec<String> = store.collections.keys().cloned().collect();
@@ -386,6 +408,31 @@ mod tests {
             modified: 1,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn load_initial_state_preserves_daemon_metadata_for_default_collection() {
+        let col_meta = serde_json::to_vec(&CollectionMeta {
+            label: "My Keychain".to_string(),
+            created: 1000,
+            modified: 2000,
+        })
+        .unwrap();
+        let aliases = serde_json::to_string(&HashMap::from([(
+            "default".to_string(),
+            "default".to_string(),
+        )]))
+        .unwrap();
+        let mut data = HashMap::new();
+        data.insert("_aliases".to_string(), aliases.into_bytes());
+        data.insert("default/_meta".to_string(), col_meta);
+        let channel = FakeChannel::new(data);
+
+        let store = load_initial_state(&channel).unwrap();
+        let col = store.collections.get("default").unwrap();
+        assert_eq!(col.label, "My Keychain");
+        assert_eq!(col.created, 1000);
+        assert_eq!(col.modified, 2000);
     }
 
     #[test]
