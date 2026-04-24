@@ -533,6 +533,7 @@ fn authenticate_admin(
     state: &AdminRuntimeState,
     headers: &hyper::HeaderMap,
 ) -> std::result::Result<String, &'static str> {
+    use sha2::{Digest, Sha256};
     use subtle::ConstantTimeEq;
 
     let header = headers
@@ -548,13 +549,12 @@ fn authenticate_admin(
         return Err("empty bearer token");
     }
 
+    let token_hash = Sha256::digest(token.as_bytes());
     let mut matched: Option<String> = None;
     for (name, candidate) in &state.tokens {
-        // Constant-time compare; match only when lengths and bytes agree.
-        let lengths_equal = token.len() == candidate.len();
-        let bytes_equal: bool =
-            lengths_equal && token.as_bytes().ct_eq(candidate.as_bytes()).into();
-        if bytes_equal && matched.is_none() {
+        let candidate_hash = Sha256::digest(candidate.as_bytes());
+        let is_match: bool = token_hash.ct_eq(&candidate_hash).into();
+        if is_match && matched.is_none() {
             matched = Some(name.clone());
         }
     }
