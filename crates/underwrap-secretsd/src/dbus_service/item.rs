@@ -81,7 +81,17 @@ impl ItemInterface {
     }
 
     async fn set_secret(&self, secret: Secret) -> fdo::Result<()> {
-        let store = self.store.read().await;
+        let mut store = self.store.write().await;
+        if let Some(item) = store
+            .collections
+            .get_mut(&self.collection_id)
+            .and_then(|c| c.items.get_mut(&self.id))
+        {
+            item.modified = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+        }
         channel::save_item_with_secret(
             &*self.channel,
             &self.collection_id,
@@ -194,5 +204,57 @@ mod tests {
                 .list_items("default")
                 .contains(&item_id.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn set_secret_bumps_modified_timestamp() {
+        let mut store = SecretStore::new_default();
+        let item_id = store
+            .create_item(
+                "default",
+                "Item",
+                &HashMap::new(),
+                b"original",
+                "text/plain",
+                false,
+            )
+            .unwrap()
+            .0;
+        // Force an old timestamp so we can detect the bump.
+        store
+            .collections
+            .get_mut("default")
+            .unwrap()
+            .items
+            .get_mut(&item_id)
+            .unwrap()
+            .modified = 1;
+
+        let channel: Arc<dyn ChannelOps> = Arc::new(FakeChannel::new(HashMap::from([
+            (format!("default/{item_id}.meta"), item_meta_json()),
+            (format!("default/{item_id}.secret"), b"original".to_vec()),
+        ])));
+        let store = Arc::new(RwLock::new(store));
+        let item = ItemInterface::new(
+            item_id.clone(),
+            "default".to_string(),
+            store.clone(),
+            channel,
+        );
+
+        let secret = super::super::Secret {
+            session: ObjectPath::try_from("/").unwrap().into(),
+            parameters: vec![],
+            value: b"updated".to_vec(),
+            content_type: "text/plain".to_string(),
+        };
+        item.set_secret(secret).await.unwrap();
+
+        let modified = store
+            .read()
+            .await
+            .get_modified("default", &item_id)
+            .unwrap();
+        assert!(modified > 1, "modified timestamp was not bumped: {modified}");
     }
 }
