@@ -623,10 +623,10 @@ This is not the most glamorous security feature either, but it matters when immu
 The daemon emits structured audit events for security-relevant operations such as:
 
 - granted and denied reads
-- stores
-- unlock and lock actions
-- authentication denials
-- libsecret channel operations
+- stores and denied stores
+- per-call approval verifications
+- authentication denials at the socket layer
+- libsecret channel reads, writes, and deletes
 
 The design goal is:
 
@@ -798,22 +798,76 @@ In practice, the normal modern session-bus setup on NixOS is path-based and the 
 
 ---
 
-## Unlock model
+## Approval and policy gating model
 
-underwrap supports locked wrappers that require an explicit unlock before reads.
+Whether a wrapper can serve a request is decided by the backend-owned
+**policy document**. Operators edit it through the admin HTTP API or
+the admin UI; wrappers never see or control it. The document lives
+under a reserved key in the same `StorageBackend` that holds the
+wrapper's secrets, so policy and secret material share one trust
+model.
 
-Conceptually, unlock grants are keyed by wrapper, optional scope, and UID.
+A request succeeds only if both layers below accept it.
 
-This is meant to support:
+### Mode gate (per wrapper)
 
-- time-limited grants
-- per-user grants
-- scoped grants
-- administrative grants that cover broader use
+Each wrapper has one of three modes:
 
-The protocol also supports SSH-agent-backed challenge-response unlocks when an `unlock_key` is configured at the daemon-config level.
+- **`Locked`** — every request is denied. The admin UI uses this as
+  the "off switch" for a wrapper.
+- **`Unlocked { until_epoch? }`** — requests are subject to the
+  rule/grant layer below. An optional `until_epoch` flips the mode
+  back to `Locked` automatically; a backend sweeper runs every 30 s
+  and drops expired entries.
+- **`PerCallApproval { approval_key }`** — each individual request
+  must be accompanied by a fresh SSH-agent signature. There is no
+  persistent "unlocked" state in this mode; a prior success does not
+  carry over to the next call.
 
-The current NixOS module focuses on the main deployment knobs first; lower-level protocol features may be exposed more directly in manual or future configuration paths.
+Wrappers with no explicit entry default to `Unlocked` with no
+expiry.
+
+### Per-call SSH-agent approval
+
+When a wrapper is in `PerCallApproval`, the flow is:
+
+1. The daemon issues a challenge: a random 32-byte nonce and a
+   short-lived challenge ID, valid for 60 seconds. The
+   `approval_key` bound to the wrapper (an OpenSSH public key) is
+   returned so the caller knows which key to sign with.
+2. `underwrap-exec` asks the caller's SSH agent to sign the nonce
+   with the matching private key.
+3. The daemon verifies the returned signature against the stored
+   `approval_key`. Ed25519 and RSA keys are accepted; other SSH key
+   types are rejected. The challenge is consumed whether or not the
+   signature verifies — each nonce is single-use.
+
+The only thing the caller needs to hold is access to the SSH agent
+loaded with the approved key. The private key never touches the
+daemon or the wrapper.
+
+### Rule/grant layer
+
+Once the mode gate passes (or a per-call approval verifies), the
+policy document is evaluated against the `(wrapper, resource,
+operation)` tuple derived from the request. The document carries:
+
+- **`PolicyRule`** — permanent allow/deny for a
+  `(wrapper, resource, operation)` tuple.
+- **`PolicyGrant`** — the same shape plus optional
+  `starts_at_epoch` / `expires_at_epoch` bounds. Grants are the
+  mechanism operators use for time-limited allowances without
+  editing the baseline rule set.
+
+Rules and grants are keyed by the resource and operation the
+request targets — not by caller UID. Identity is already established
+at the socket layer by the setgid/egid mechanism described earlier;
+the policy layer decides *what* that wrapper may do, not *who* is
+allowed to invoke it.
+
+If both layers accept, the daemon serves the request and emits the
+matching audit event; otherwise it refuses and emits a denial event
+carrying the reason.
 
 ---
 
