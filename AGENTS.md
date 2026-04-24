@@ -69,7 +69,17 @@ nix/
   tests/spoof.py         # Socket spoofing test helper
 docs/                    # Documentation (backend, admin UI, security, etc.)
 examples/config.yaml     # Annotated example frontend config
+tickets/                 # Kanban-style ticket system (see "Ticket system" below)
 ```
+
+## Ticket system
+
+Work items are tracked as markdown files under `tickets/`, organized as a
+simple kanban board. Move a ticket file between folders to reflect its state:
+
+- `tickets/01_todo/`       — queued work
+- `tickets/02_inprogress/` — currently being worked on
+- `tickets/03_done/`       — completed work
 
 ## Key files to understand first
 
