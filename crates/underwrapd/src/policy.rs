@@ -60,59 +60,10 @@ pub(crate) fn directory_resource(credential_ref: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    use underwrap_protocol::message::SecretBytes;
+    use crate::test_support::MemStore;
     use underwrap_protocol::policy::{
         PolicyEffect, PolicyRule, WrapperApprovalMode, WrapperPolicyState,
     };
-
-    struct MemStore {
-        data: Mutex<HashMap<String, Vec<u8>>>,
-    }
-
-    impl MemStore {
-        fn with_policy(document: Option<PolicyDocument>) -> Self {
-            let mut data = HashMap::new();
-            if let Some(document) = document {
-                data.insert(
-                    POLICY_DOCUMENT_SECRET_ID.to_string(),
-                    serde_json::to_vec(&document).unwrap(),
-                );
-            }
-            Self {
-                data: Mutex::new(data),
-            }
-        }
-    }
-
-    impl StorageBackend for MemStore {
-        fn read(&self, secret_id: &str) -> anyhow::Result<Option<SecretBytes>> {
-            Ok(self
-                .data
-                .lock()
-                .unwrap()
-                .get(secret_id)
-                .cloned()
-                .map(Into::into))
-        }
-
-        fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
-            self.data
-                .lock()
-                .unwrap()
-                .insert(secret_id.to_string(), material.to_vec());
-            Ok(())
-        }
-
-        fn list(&self, _prefix: &str) -> anyhow::Result<Vec<String>> {
-            Ok(Vec::new())
-        }
-
-        fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
-            Ok(self.data.lock().unwrap().remove(secret_id).is_some())
-        }
-    }
 
     #[test]
     fn authorize_operation_allows_when_no_policy_document_exists() {

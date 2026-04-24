@@ -187,58 +187,8 @@ fn scoped_file_id(prefix: &str, path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
     use super::*;
-    use underwrap_protocol::message::SecretBytes;
-
-    struct MemStore {
-        data: Mutex<HashMap<String, Vec<u8>>>,
-    }
-
-    impl MemStore {
-        fn new() -> Self {
-            Self {
-                data: Mutex::new(HashMap::new()),
-            }
-        }
-    }
-
-    impl StorageBackend for MemStore {
-        fn read(&self, secret_id: &str) -> anyhow::Result<Option<SecretBytes>> {
-            Ok(self
-                .data
-                .lock()
-                .unwrap()
-                .get(secret_id)
-                .cloned()
-                .map(Into::into))
-        }
-
-        fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
-            self.data
-                .lock()
-                .unwrap()
-                .insert(secret_id.to_string(), material.to_vec());
-            Ok(())
-        }
-
-        fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
-            let data = self.data.lock().unwrap();
-            let mut ids: Vec<_> = data
-                .keys()
-                .filter(|id| id.starts_with(prefix))
-                .cloned()
-                .collect();
-            ids.sort();
-            Ok(ids)
-        }
-
-        fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
-            Ok(self.data.lock().unwrap().remove(secret_id).is_some())
-        }
-    }
+    use crate::test_support::MemStore;
 
     const PREFIX: &str = "gws/state/files";
     const REF: &str = "gws/state";

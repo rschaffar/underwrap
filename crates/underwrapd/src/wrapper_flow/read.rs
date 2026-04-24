@@ -165,82 +165,15 @@ pub(super) fn process_read_for(
 mod tests {
     use super::*;
     use crate::approval;
+    use crate::test_support::MemStore;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use underwrap_protocol::config::{
         AccessMode, BackendServiceConfig, CredentialDef, CredentialMode, CredentialUse,
         DaemonConfig, WrapperDef,
     };
     use underwrap_protocol::message::SecretBytes;
-
-    struct MemStore {
-        data: Mutex<HashMap<String, Vec<u8>>>,
-    }
-
-    impl MemStore {
-        fn with_entries(entries: &[(&str, &[u8])]) -> Self {
-            Self {
-                data: Mutex::new(
-                    entries
-                        .iter()
-                        .map(|(k, v)| ((*k).to_string(), v.to_vec()))
-                        .collect(),
-                ),
-            }
-        }
-
-        fn with_policy(
-            entries: &[(&str, &[u8])],
-            document: underwrap_protocol::policy::PolicyDocument,
-        ) -> Self {
-            let mut data: HashMap<String, Vec<u8>> = entries
-                .iter()
-                .map(|(k, v)| ((*k).to_string(), v.to_vec()))
-                .collect();
-            data.insert(
-                underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID.to_string(),
-                serde_json::to_vec(&document).unwrap(),
-            );
-            Self {
-                data: Mutex::new(data),
-            }
-        }
-    }
-
-    impl underwrap_store::StorageBackend for MemStore {
-        fn read(&self, secret_id: &str) -> anyhow::Result<Option<SecretBytes>> {
-            Ok(self
-                .data
-                .lock()
-                .unwrap()
-                .get(secret_id)
-                .cloned()
-                .map(Into::into))
-        }
-        fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
-            self.data
-                .lock()
-                .unwrap()
-                .insert(secret_id.to_string(), material.to_vec());
-            Ok(())
-        }
-        fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
-            let mut ids: Vec<_> = self
-                .data
-                .lock()
-                .unwrap()
-                .keys()
-                .filter(|id| id.starts_with(prefix))
-                .cloned()
-                .collect();
-            ids.sort();
-            Ok(ids)
-        }
-        fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
-            Ok(self.data.lock().unwrap().remove(secret_id).is_some())
-        }
-    }
 
     fn state_with_store(store: Arc<dyn underwrap_store::StorageBackend>) -> State {
         State {
@@ -313,7 +246,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_read_for_denies_when_backend_policy_lacks_required_rule() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_policy(
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries_and_policy(
             &[("github/token", b"ghp_test")],
             underwrap_protocol::policy::PolicyDocument::default(),
         ));
@@ -330,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_read_for_allows_when_backend_policy_has_required_rules() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_policy(
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries_and_policy(
             &[("github/token", b"ghp_test")],
             underwrap_protocol::policy::PolicyDocument {
                 wrappers: Vec::new(),
@@ -366,7 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_read_for_requires_per_call_approval_when_mode_demands() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_policy(
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries_and_policy(
             &[("github/token", b"ghp_test")],
             underwrap_protocol::policy::PolicyDocument {
                 wrappers: vec![underwrap_protocol::policy::WrapperPolicyState {

@@ -11,6 +11,9 @@ pub(crate) mod wrapper_bindings;
 pub(crate) mod wrapper_flow;
 
 #[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
