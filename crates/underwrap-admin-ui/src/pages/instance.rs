@@ -1,6 +1,6 @@
 use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, WrapperApprovalMode};
 
-use super::{attr, h, layout};
+use super::{attr, h, layout, url_path};
 
 pub struct InstancePageData<'a> {
     pub operator: &'a str,
@@ -72,7 +72,7 @@ fn render_store_switcher(target: &str, store: &str, stores: &[String]) -> String
   </div>
   <noscript><button type="submit">Switch</button></noscript>
 </form>"#,
-        target = attr(target),
+        target = url_path(target),
     )
 }
 
@@ -145,9 +145,9 @@ fn render_wrappers(target: &str, store: &str, policy: &PolicyDocument, csrf: &st
 </form>
 </td></tr>"#,
                 name = h(&w.wrapper),
-                name_attr = attr(&w.wrapper),
-                target = attr(target),
-                store = attr(store),
+                name_attr = url_path(&w.wrapper),
+                target = url_path(target),
+                store = url_path(store),
                 csrf = attr(csrf),
                 reason = h(reason),
                 tag_label = h(&tag_label),
@@ -187,13 +187,13 @@ fn render_rules(target: &str, store: &str, policy: &PolicyDocument, csrf: &str) 
   </td>
 </tr>"#,
                 id = h(&r.id),
-                id_attr = attr(&r.id),
+                id_attr = url_path(&r.id),
                 wrapper = h(&r.wrapper),
                 resource = h(&r.resource),
                 operation = h(&r.operation),
                 effect = render_effect(&r.effect),
-                target = attr(target),
-                store = attr(store),
+                target = url_path(target),
+                store = url_path(store),
                 csrf = attr(csrf),
             )
         })
@@ -222,8 +222,8 @@ fn render_rules(target: &str, store: &str, policy: &PolicyDocument, csrf: &str) 
   <button type="submit">Add rule</button>
 </form>"#,
         rows = rows.join("\n"),
-        target = attr(target),
-        store = attr(store),
+        target = url_path(target),
+        store = url_path(store),
         csrf = attr(csrf),
     )
 }
@@ -258,14 +258,14 @@ fn render_grants(target: &str, store: &str, policy: &PolicyDocument, csrf: &str)
   </td>
 </tr>"#,
                 id = h(&g.id),
-                id_attr = attr(&g.id),
+                id_attr = url_path(&g.id),
                 wrapper = h(&g.wrapper),
                 resource = h(&g.resource),
                 operation = h(&g.operation),
                 effect = render_effect(&g.effect),
                 window = h(&window),
-                target = attr(target),
-                store = attr(store),
+                target = url_path(target),
+                store = url_path(store),
                 csrf = attr(csrf),
             )
         })
@@ -297,8 +297,8 @@ fn render_grants(target: &str, store: &str, policy: &PolicyDocument, csrf: &str)
   <button type="submit">Add grant</button>
 </form>"#,
         rows = rows.join("\n"),
-        target = attr(target),
-        store = attr(store),
+        target = url_path(target),
+        store = url_path(store),
         csrf = attr(csrf),
     )
 }

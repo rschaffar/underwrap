@@ -36,6 +36,11 @@ pub fn attr(s: &str) -> String {
     h(s)
 }
 
+/// Percent-encode a string for use in a URL path segment.
+pub fn url_path(s: &str) -> String {
+    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
 /// Shared chrome wrapping every page.
 pub fn layout(title: &str, operator: Option<&str>, body: &str) -> String {
     let title_html = h(&format!("{title} — underwrap admin"));
@@ -94,5 +99,13 @@ mod tests {
     fn layout_without_operator_shows_no_logout() {
         let out = layout("Login", None, "<p>hi</p>");
         assert!(!out.contains("log out"));
+    }
+
+    #[test]
+    fn url_path_encodes_special_characters() {
+        assert_eq!(url_path("hello world"), "hello%20world");
+        assert_eq!(url_path("a/b"), "a%2Fb");
+        assert_eq!(url_path("q?k=v"), "q%3Fk%3Dv");
+        assert_eq!(url_path("plain"), "plain");
     }
 }

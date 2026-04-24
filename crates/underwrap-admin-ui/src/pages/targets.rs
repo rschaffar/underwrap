@@ -1,4 +1,4 @@
-use super::{attr, h, layout};
+use super::{h, layout, url_path};
 
 pub fn targets_page(operator: &str, targets: &[String]) -> String {
     let rows = if targets.is_empty() {
@@ -12,7 +12,7 @@ pub fn targets_page(operator: &str, targets: &[String]) -> String {
                 format!(
                     r#"<tr><td class="mono">{name}</td><td><a class="button" href="/t/{url}">Open</a></td></tr>"#,
                     name = h(t),
-                    url = attr(t),
+                    url = url_path(t),
                 )
             })
             .collect::<Vec<_>>()
@@ -47,6 +47,12 @@ mod tests {
         let out = targets_page("alice", &["<evil>".to_string()]);
         assert!(out.contains("&lt;evil&gt;"));
         assert!(!out.contains("href=\"/t/<evil>"));
+    }
+
+    #[test]
+    fn targets_page_percent_encodes_url_paths() {
+        let out = targets_page("alice", &["my target".to_string()]);
+        assert!(out.contains("href=\"/t/my%20target\""));
     }
 
     #[test]
