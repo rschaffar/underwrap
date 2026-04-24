@@ -13,7 +13,9 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
-use underwrap_protocol::policy::{PolicyEffect, PolicyGrant, PolicyRule, WrapperApprovalMode};
+use underwrap_protocol::policy::{
+    OP_STORE_WRITE, PolicyEffect, PolicyGrant, PolicyRule, WrapperApprovalMode, credential_resource,
+};
 
 use crate::auth::{SESSION_COOKIE, Session, csrf_token_matches, verify_password};
 use crate::backend_client::BackendClient;
@@ -21,6 +23,15 @@ use crate::config::LoadedConfig;
 use crate::pages::{
     InstancePageData, instance_page, login_page, login_page_with_error, targets_page,
 };
+
+/// Deterministic id used for mutation-allowance grants created via the admin UI.
+///
+/// Stable per (wrapper, secret_id) so the "enable mutation" action upserts
+/// the same grant the "revoke" action deletes, regardless of how many times
+/// the operator toggles.
+fn mutation_grant_id(wrapper: &str, secret_id: &str) -> String {
+    format!("mutation:{wrapper}:{secret_id}")
+}
 
 pub struct AppState {
     pub config: LoadedConfig,
@@ -64,6 +75,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/t/{target}/s/{store}/grant/{id}/delete",
             post(delete_grant),
+        )
+        .route(
+            "/t/{target}/s/{store}/mutation/enable",
+            post(enable_mutation),
+        )
+        .route(
+            "/t/{target}/s/{store}/mutation/revoke",
+            post(revoke_mutation),
+        )
+        .route(
+            "/t/{target}/s/{store}/credential/write",
+            post(write_credential),
         )
         .with_state(state)
 }
@@ -491,5 +514,189 @@ async fn delete_grant(
     if let Err(e) = client.delete_grant(&store, &id).await {
         return error_page(&session.operator, &format!("delete grant: {e}"));
     }
+    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EnableMutationForm {
+    csrf_token: String,
+    wrapper: String,
+    secret_id: String,
+    /// One of `10m`, `30m`, `2h`, `permanent`.
+    duration: String,
+    reason: Option<String>,
+    /// Must be `yes` when `duration == permanent`.
+    confirm_permanent: Option<String>,
+}
+
+/// Parse a duration token from the enable-mutation form.
+///
+/// Returns `Ok(Some(seconds))` for a bounded window, `Ok(None)` for
+/// "permanent" (no expiry), or `Err` on unknown tokens.
+fn parse_mutation_duration(token: &str) -> Result<Option<u64>, String> {
+    match token {
+        "10m" => Ok(Some(600)),
+        "30m" => Ok(Some(1800)),
+        "2h" => Ok(Some(7200)),
+        "permanent" => Ok(None),
+        other => Err(other.to_string()),
+    }
+}
+
+async fn enable_mutation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target, store)): Path<(String, String)>,
+    Form(form): Form<EnableMutationForm>,
+) -> Response {
+    let Some(session) = get_session(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    if let Some(r) = check_csrf(&session, &form.csrf_token) {
+        return r;
+    }
+    let Some(client) = state.backend(&target) else {
+        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
+    };
+
+    let wrapper = form.wrapper.trim().to_string();
+    let secret_id = form.secret_id.trim().to_string();
+    if wrapper.is_empty() || secret_id.is_empty() {
+        return error_page(&session.operator, "wrapper and secret_id are required");
+    }
+
+    let duration = match parse_mutation_duration(&form.duration) {
+        Ok(d) => d,
+        Err(bad) => return error_page(&session.operator, &format!("bad duration '{bad}'")),
+    };
+    if duration.is_none()
+        && form.confirm_permanent.as_deref().unwrap_or("") != "yes"
+    {
+        return error_page(
+            &session.operator,
+            "permanent allow-grants require the confirmation checkbox",
+        );
+    }
+
+    let expires_at_epoch = duration.map(|seconds| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            + seconds
+    });
+
+    let grant = PolicyGrant {
+        id: mutation_grant_id(&wrapper, &secret_id),
+        wrapper: wrapper.clone(),
+        resource: credential_resource(&secret_id),
+        operation: OP_STORE_WRITE.to_string(),
+        effect: PolicyEffect::Allow,
+        starts_at_epoch: None,
+        expires_at_epoch,
+        reason: form
+            .reason
+            .filter(|s: &String| !s.trim().is_empty())
+            .or_else(|| Some("allowed via admin UI".to_string())),
+    };
+
+    if let Err(e) = client.upsert_grant(&store, grant).await {
+        return error_page(&session.operator, &format!("enable mutation: {e}"));
+    }
+    info!(
+        operator = %session.operator,
+        target = %target,
+        store = %store,
+        wrapper = %wrapper,
+        secret_id = %secret_id,
+        seconds = duration.unwrap_or(0),
+        "mutation allowed",
+    );
+    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RevokeMutationForm {
+    csrf_token: String,
+    /// The existing grant id carried from the rendered "Active mutation
+    /// windows" row. Used as-is so we revoke exactly what was shown.
+    grant_id: String,
+    wrapper: Option<String>,
+    secret_id: Option<String>,
+}
+
+async fn revoke_mutation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target, store)): Path<(String, String)>,
+    Form(form): Form<RevokeMutationForm>,
+) -> Response {
+    let Some(session) = get_session(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    if let Some(r) = check_csrf(&session, &form.csrf_token) {
+        return r;
+    }
+    let Some(client) = state.backend(&target) else {
+        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
+    };
+    if let Err(e) = client.delete_grant(&store, &form.grant_id).await {
+        return error_page(&session.operator, &format!("revoke mutation: {e}"));
+    }
+    info!(
+        operator = %session.operator,
+        target = %target,
+        store = %store,
+        wrapper = form.wrapper.as_deref().unwrap_or(""),
+        secret_id = form.secret_id.as_deref().unwrap_or(""),
+        grant_id = %form.grant_id,
+        "mutation revoked",
+    );
+    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WriteCredentialForm {
+    csrf_token: String,
+    wrapper: String,
+    secret_id: String,
+    value: String,
+}
+
+async fn write_credential(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target, store)): Path<(String, String)>,
+    Form(form): Form<WriteCredentialForm>,
+) -> Response {
+    let Some(session) = get_session(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    if let Some(r) = check_csrf(&session, &form.csrf_token) {
+        return r;
+    }
+    let Some(client) = state.backend(&target) else {
+        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
+    };
+    let wrapper = form.wrapper.trim().to_string();
+    let secret_id = form.secret_id.trim().to_string();
+    if wrapper.is_empty() || secret_id.is_empty() {
+        return error_page(&session.operator, "wrapper and secret_id are required");
+    }
+    if let Err(e) = client
+        .write_secret(&store, &wrapper, &secret_id, form.value.as_bytes())
+        .await
+    {
+        return error_page(&session.operator, &format!("write credential: {e}"));
+    }
+    info!(
+        operator = %session.operator,
+        target = %target,
+        store = %store,
+        wrapper = %wrapper,
+        secret_id = %secret_id,
+        bytes = form.value.as_bytes().len(),
+        "credential value written",
+    );
     Redirect::to(&format!("/t/{target}?store={store}")).into_response()
 }

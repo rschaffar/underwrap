@@ -1,12 +1,13 @@
 //! Thin wrapper around the backendd admin HTTP API.
 
 use anyhow::{Context, Result, bail};
+use base64::Engine;
 use reqwest::Client;
 use underwrap_protocol::policy::{PolicyDocument, PolicyGrant, PolicyRule, WrapperApprovalMode};
 use underwrap_protocol::service::{
     AdminGrantDeleteRequest, AdminGrantUpsertRequest, AdminPolicyGetRequest,
-    AdminPolicyGetResponse, AdminRuleDeleteRequest, AdminRuleUpsertRequest, AdminStoresResponse,
-    AdminWrapperModeRequest,
+    AdminPolicyGetResponse, AdminRuleDeleteRequest, AdminRuleUpsertRequest,
+    AdminSecretWriteRequest, AdminStoresResponse, AdminWrapperModeRequest,
 };
 
 /// One backend target as seen by the UI.
@@ -154,6 +155,30 @@ impl BackendClient {
                 &AdminGrantDeleteRequest {
                     store: store.to_string(),
                     id: id.to_string(),
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Write a credential value. The backend gates this on
+    /// `(wrapper, cred:<secret_id>, store.write)`; see docs/security.md
+    /// "Mutation gating".
+    pub async fn write_secret(
+        &self,
+        store: &str,
+        wrapper: &str,
+        secret_id: &str,
+        material: &[u8],
+    ) -> Result<()> {
+        let _: serde_json::Value = self
+            .post_json(
+                "/v1/admin/secret/write",
+                &AdminSecretWriteRequest {
+                    store: store.to_string(),
+                    wrapper: wrapper.to_string(),
+                    secret_id: secret_id.to_string(),
+                    material_b64: base64::engine::general_purpose::STANDARD.encode(material),
                 },
             )
             .await?;

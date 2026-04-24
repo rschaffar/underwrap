@@ -1,4 +1,6 @@
-use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, WrapperApprovalMode};
+use underwrap_protocol::policy::{
+    OP_STORE_WRITE, PolicyDocument, PolicyEffect, PolicyGrant, WrapperApprovalMode,
+};
 
 use super::{attr, h, layout, url_path};
 
@@ -19,6 +21,7 @@ pub fn instance_page(data: InstancePageData<'_>) -> String {
     let wrappers = render_wrappers(data.target, data.store, data.policy, data.csrf_token);
     let rules = render_rules(data.target, data.store, data.policy, data.csrf_token);
     let grants = render_grants(data.target, data.store, data.policy, data.csrf_token);
+    let credentials = render_credentials(data.target, data.store, data.policy, data.csrf_token);
 
     let body = format!(
         r#"{banners}
@@ -27,6 +30,9 @@ pub fn instance_page(data: InstancePageData<'_>) -> String {
 
 <h2>Wrappers</h2>
 {wrappers}
+
+<h2>Credentials</h2>
+{credentials}
 
 <h2>Rules</h2>
 {rules}
@@ -303,6 +309,124 @@ fn render_grants(target: &str, store: &str, policy: &PolicyDocument, csrf: &str)
     )
 }
 
+fn render_credentials(target: &str, store: &str, policy: &PolicyDocument, csrf: &str) -> String {
+    let active_rows = render_active_mutation_windows(target, store, policy, csrf);
+    let enable_form = format!(
+        r#"<form method="post" action="/t/{target}/s/{store}/mutation/enable" class="card">
+  <input type="hidden" name="csrf_token" value="{csrf}"/>
+  <h3>Allow mutation</h3>
+  <p class="muted">Creates a time-bounded allow grant for <span class="mono">store.write</span> on <span class="mono">cred:&lt;secret_id&gt;</span> for the named wrapper. A <span class="mono">/v1/admin/secret/write</span> for that tuple succeeds while the grant is active.</p>
+  <div class="field"><label>wrapper</label><input name="wrapper" required/></div>
+  <div class="field"><label>secret_id (e.g. github/token)</label><input name="secret_id" required/></div>
+  <div class="field">
+    <label>duration</label>
+    <select name="duration">
+      <option value="30m">30 minutes (default)</option>
+      <option value="10m">10 minutes</option>
+      <option value="2h">2 hours</option>
+      <option value="permanent">permanent (requires confirmation)</option>
+    </select>
+  </div>
+  <div class="field"><label>reason (optional, shown in grants)</label><input name="reason"/></div>
+  <div class="field">
+    <label>
+      <input type="checkbox" name="confirm_permanent" value="yes"/>
+      I understand: permanent allow-grants are operationally equivalent to <span class="mono">mutable: true</span>.
+    </label>
+  </div>
+  <button type="submit">Allow mutation</button>
+</form>"#,
+        target = url_path(target),
+        store = url_path(store),
+        csrf = attr(csrf),
+    );
+    let write_form = format!(
+        r#"<form method="post" action="/t/{target}/s/{store}/credential/write" class="card">
+  <input type="hidden" name="csrf_token" value="{csrf}"/>
+  <h3>Set credential value</h3>
+  <p class="muted">Succeeds only while an allow grant for <span class="mono">(wrapper, cred:&lt;secret_id&gt;, store.write)</span> is active.</p>
+  <div class="field"><label>wrapper</label><input name="wrapper" required/></div>
+  <div class="field"><label>secret_id</label><input name="secret_id" required/></div>
+  <div class="field"><label>value (raw, not base64)</label><textarea name="value" rows="3" required></textarea></div>
+  <button type="submit">Write value</button>
+</form>"#,
+        target = url_path(target),
+        store = url_path(store),
+        csrf = attr(csrf),
+    );
+    format!("{active_rows}\n{enable_form}\n{write_form}")
+}
+
+fn render_active_mutation_windows(
+    target: &str,
+    store: &str,
+    policy: &PolicyDocument,
+    csrf: &str,
+) -> String {
+    let windows: Vec<&PolicyGrant> = policy
+        .grants
+        .iter()
+        .filter(|g| g.operation == OP_STORE_WRITE && g.effect == PolicyEffect::Allow)
+        .collect();
+    if windows.is_empty() {
+        return r#"<p class="muted">No active mutation windows. Use the form below to allow writes to a credential for a bounded time.</p>"#
+            .to_string();
+    }
+    let rows: Vec<String> = windows
+        .iter()
+        .map(|g| {
+            let secret_id = g.resource.strip_prefix("cred:").unwrap_or(&g.resource);
+            let window = match (g.starts_at_epoch, g.expires_at_epoch) {
+                (Some(s), Some(e)) => format!("{s} → {e}"),
+                (None, Some(e)) => format!("until {e}"),
+                (Some(s), None) => format!("from {s} (permanent)"),
+                _ => "permanent".to_string(),
+            };
+            let reason = g
+                .reason
+                .as_deref()
+                .map(|r| format!(" — {}", h(r)))
+                .unwrap_or_default();
+            format!(
+                r#"<tr>
+  <td class="mono">{wrapper}</td>
+  <td class="mono">{secret_id}</td>
+  <td class="muted">{window}{reason}</td>
+  <td>
+    <form method="post" action="/t/{target}/s/{store}/mutation/revoke" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{csrf}"/>
+      <input type="hidden" name="wrapper" value="{wrapper_attr}"/>
+      <input type="hidden" name="secret_id" value="{secret_id_attr}"/>
+      <input type="hidden" name="grant_id" value="{grant_id_attr}"/>
+      <button type="submit" class="danger">revoke</button>
+    </form>
+  </td>
+</tr>"#,
+                wrapper = h(&g.wrapper),
+                wrapper_attr = attr(&g.wrapper),
+                secret_id = h(secret_id),
+                secret_id_attr = attr(secret_id),
+                grant_id_attr = attr(&g.id),
+                window = h(&window),
+                reason = reason,
+                target = url_path(target),
+                store = url_path(store),
+                csrf = attr(csrf),
+            )
+        })
+        .collect();
+    format!(
+        r#"<h3>Active mutation windows</h3>
+<table>
+<thead><tr><th>wrapper</th><th>secret_id</th><th>window</th><th></th></tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table>"#,
+        rows = rows.join("\n"),
+    )
+}
+
 fn render_effect(effect: &PolicyEffect) -> String {
     match effect {
         PolicyEffect::Allow => r#"<span class="tag unlocked">allow</span>"#.to_string(),
@@ -373,6 +497,77 @@ mod tests {
         assert!(html.contains(r#"<div class="banner ok">saved</div>"#));
         // Store selector has the current store marked selected.
         assert!(html.contains(r#"<option value="work" selected>"#));
+    }
+
+    #[test]
+    fn credentials_section_renders_forms_and_active_windows() {
+        let policy = PolicyDocument {
+            wrappers: Vec::new(),
+            rules: Vec::new(),
+            grants: vec![PolicyGrant {
+                id: "mutation:gh-authorized:github/token".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                resource: "cred:github/token".to_string(),
+                operation: OP_STORE_WRITE.to_string(),
+                effect: PolicyEffect::Allow,
+                starts_at_epoch: None,
+                expires_at_epoch: Some(1_700_000_000),
+                reason: Some("ticket IT-42".to_string()),
+            }],
+        };
+        let html = instance_page(InstancePageData {
+            operator: "alice",
+            target: "corp",
+            store: "work",
+            stores: &["work".to_string()],
+            policy: &policy,
+            csrf_token: "CSRF",
+            banner_ok: None,
+            banner_error: None,
+        });
+
+        // Section header + both forms are present.
+        assert!(html.contains("<h2>Credentials</h2>"), "header missing");
+        assert!(
+            html.contains(r#"action="/t/corp/s/work/mutation/enable""#),
+            "enable form missing",
+        );
+        assert!(
+            html.contains(r#"action="/t/corp/s/work/credential/write""#),
+            "write form missing",
+        );
+        assert!(
+            html.contains(r#"action="/t/corp/s/work/mutation/revoke""#),
+            "revoke form missing in active windows row",
+        );
+        // The existing mutation grant surfaces in the "Active mutation windows" table
+        // with the secret_id stripped from the `cred:` prefix.
+        assert!(html.contains("Active mutation windows"));
+        assert!(html.contains(">github/token<"));
+        assert!(html.contains("until 1700000000"));
+        assert!(html.contains("ticket IT-42"));
+        // Confirmation checkbox is rendered for permanent grants.
+        assert!(html.contains(r#"name="confirm_permanent""#));
+    }
+
+    #[test]
+    fn credentials_section_shows_placeholder_when_no_mutation_grants() {
+        let policy = PolicyDocument::default();
+        let html = instance_page(InstancePageData {
+            operator: "alice",
+            target: "corp",
+            store: "work",
+            stores: &["work".to_string()],
+            policy: &policy,
+            csrf_token: "CSRF",
+            banner_ok: None,
+            banner_error: None,
+        });
+        assert!(html.contains("No active mutation windows"));
+        assert!(
+            !html.contains("Active mutation windows"),
+            "header only shows when there are rows",
+        );
     }
 
     #[test]
