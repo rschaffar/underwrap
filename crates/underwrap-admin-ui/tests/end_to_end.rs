@@ -102,7 +102,7 @@ impl Harness {
             )]),
         };
         let loaded = LoadedConfig::load(&ui_config)?;
-        let ui_state = Arc::new(AppState { config: loaded });
+        let ui_state = Arc::new(AppState::new(loaded));
         let ui_shutdown = Arc::new(Notify::new());
         let ui_shutdown_clone = Arc::clone(&ui_shutdown);
         let ui_task = tokio::spawn(async move { run_ui(ui_state, Some(ui_shutdown_clone)).await });

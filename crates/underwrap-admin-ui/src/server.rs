@@ -24,12 +24,27 @@ use crate::pages::{
 
 pub struct AppState {
     pub config: LoadedConfig,
+    backends: std::collections::HashMap<String, BackendClient>,
 }
 
 impl AppState {
-    fn backend(&self, name: &str) -> Option<BackendClient> {
-        let t = self.config.backends.get(name)?;
-        Some(BackendClient::new(&t.admin_url, &t.token))
+    pub fn new(config: LoadedConfig) -> Self {
+        let http = reqwest::Client::new();
+        let backends = config
+            .backends
+            .iter()
+            .map(|(name, target)| {
+                (
+                    name.clone(),
+                    BackendClient::new(&target.admin_url, &target.token, http.clone()),
+                )
+            })
+            .collect();
+        Self { config, backends }
+    }
+
+    fn backend(&self, name: &str) -> Option<&BackendClient> {
+        self.backends.get(name)
     }
 }
 

@@ -17,11 +17,11 @@ pub struct BackendClient {
 }
 
 impl BackendClient {
-    pub fn new(admin_url: &str, token: &str) -> Self {
+    pub fn new(admin_url: &str, token: &str, http: Client) -> Self {
         Self {
             admin_url: admin_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
-            http: Client::new(),
+            http,
         }
     }
 

@@ -39,6 +39,6 @@ async fn main() -> Result<()> {
         backends = loaded.backends.len(),
         "admin UI starting"
     );
-    let state = Arc::new(AppState { config: loaded });
+    let state = Arc::new(AppState::new(loaded));
     run(state, None).await
 }
