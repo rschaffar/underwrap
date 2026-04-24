@@ -70,21 +70,22 @@ impl ServiceBackend {
         let mut identity_pem = cert_pem;
         identity_pem.extend_from_slice(&key_pem);
 
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .add_root_certificate(
+                Certificate::from_pem(&ca_pem).context("parsing backend CA PEM")?,
+            )
+            .identity(Identity::from_pem(&identity_pem).context("parsing backend identity PEM")?)
+            .build()
+            .context("building backend HTTPS client")?;
+
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = rustls::crypto::ring::default_provider().install_default();
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("building service backend runtime");
-            let client = reqwest::Client::builder()
-                .use_rustls_tls()
-                .add_root_certificate(
-                    Certificate::from_pem(&ca_pem).expect("parsing backend CA PEM"),
-                )
-                .identity(Identity::from_pem(&identity_pem).expect("parsing backend identity PEM"))
-                .build()
-                .expect("building backend HTTPS client");
 
             for command in rx {
                 match command {
@@ -312,5 +313,46 @@ impl ServiceBackend {
             return false;
         }
         rx.recv().unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn open_fails_immediately_on_bad_ca() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("ca.pem");
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        std::fs::File::create(&ca)
+            .unwrap()
+            .write_all(b"not-a-cert")
+            .unwrap();
+        std::fs::File::create(&cert)
+            .unwrap()
+            .write_all(b"not-a-cert")
+            .unwrap();
+        std::fs::File::create(&key)
+            .unwrap()
+            .write_all(b"not-a-key")
+            .unwrap();
+
+        let config = BackendServiceConfig {
+            url: "https://localhost:0".to_string(),
+            ca_file: Some(ca),
+            client_cert_file: Some(cert),
+            client_key_file: Some(key),
+        };
+        let result = ServiceBackend::open(&config);
+        assert!(result.is_err(), "should fail on bad CA");
+        let err = result.err().unwrap();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("parsing backend CA PEM") || msg.contains("parsing backend identity PEM"),
+            "unexpected error: {msg}"
+        );
     }
 }
