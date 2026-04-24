@@ -193,9 +193,12 @@ async fn main() -> Result<()> {
 
     // Signal readiness to underwrap-ns.
     if let Some(ready_fd) = args.ready_fd {
-        unsafe {
-            libc::write(ready_fd, b"R".as_ptr() as *const libc::c_void, 1);
-            libc::close(ready_fd);
+        use std::io::Write;
+        use std::os::unix::io::FromRawFd;
+        let mut ready_file = unsafe { std::fs::File::from_raw_fd(ready_fd) };
+        if let Err(e) = ready_file.write_all(b"R") {
+            eprintln!("underwrap-secretsd: failed to signal readiness: {e}");
+            std::process::exit(1);
         }
     }
 
