@@ -86,7 +86,7 @@ async fn wrapper_read_is_denied_when_policy_document_has_no_matching_rule() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     daemon
-        .store_secret("test", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
     daemon
@@ -112,7 +112,7 @@ async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     daemon
-        .store_secret("test", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
     daemon
@@ -145,7 +145,7 @@ async fn locked_wrapper_is_denied_even_with_allow_rule() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     daemon
-        .store_secret("test", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
     daemon

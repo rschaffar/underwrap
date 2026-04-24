@@ -208,11 +208,23 @@ impl TestDaemon {
     }
 
     /// Write a secret through the backend admin API.
-    pub async fn store_secret(&self, store: &str, secret_id: &str, material: &str) -> Result<()> {
+    ///
+    /// Tests typically run against a fresh store with no policy document, so
+    /// the admin write gate auto-allows. The `wrapper` parameter is required
+    /// by the request shape but is only consulted when a policy document
+    /// exists; pass any wrapper name from the test fixture.
+    pub async fn store_secret(
+        &self,
+        store: &str,
+        wrapper: &str,
+        secret_id: &str,
+        material: &str,
+    ) -> Result<()> {
         let response = self
             .admin_request(reqwest::Method::POST, "/v1/admin/secret/write")
             .json(&underwrap_protocol::service::AdminSecretWriteRequest {
                 store: store.to_string(),
+                wrapper: wrapper.to_string(),
                 secret_id: secret_id.to_string(),
                 material_b64: base64::engine::general_purpose::STANDARD.encode(material.as_bytes()),
             })

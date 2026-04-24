@@ -28,7 +28,7 @@ pub(super) async fn establish_scoped_channels(
     if let Some((credential_ref, access)) =
         wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
     {
-        match setup_secretsd_channel(stream, credential_ref, access, state).await {
+        match setup_secretsd_channel(stream, wrapper_name, credential_ref, access, state).await {
             Ok(()) => {
                 info!(wrapper = %wrapper_name, credential = %credential_ref, "secretsd channel established");
             }
@@ -39,7 +39,14 @@ pub(super) async fn establish_scoped_channels(
     }
 
     for binding in wrapper_directory_bindings(wrapper_def, &state.config.credentials) {
-        match setup_directory_channel(stream, &binding.credential_ref, binding.access, state).await
+        match setup_directory_channel(
+            stream,
+            wrapper_name,
+            &binding.credential_ref,
+            binding.access,
+            state,
+        )
+        .await
         {
             Ok(()) => {
                 info!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, "directory channel established");
@@ -76,16 +83,26 @@ async fn setup_scoped_channel(
 
 async fn setup_secretsd_channel(
     stream: &UnixStream,
+    wrapper_name: &str,
     credential_ref: &str,
     access: AccessMode,
     state: &State,
 ) -> Result<()> {
     let prefix = credential_ref.to_string();
     let store = state.store_arc();
-    let name = credential_ref.to_string();
+    let wrapper = wrapper_name.to_string();
+    let credential = credential_ref.to_string();
     setup_scoped_channel(stream, "secretsd channel fd", move |daemon_stream| {
         tokio::spawn(async move {
-            crate::secretsd_channel::run_channel(daemon_stream, store, prefix, name, access).await;
+            crate::secretsd_channel::run_channel(
+                daemon_stream,
+                store,
+                prefix,
+                wrapper,
+                credential,
+                access,
+            )
+            .await;
         });
     })
     .await
@@ -93,17 +110,26 @@ async fn setup_secretsd_channel(
 
 async fn setup_directory_channel(
     stream: &UnixStream,
+    wrapper_name: &str,
     credential_ref: &str,
     access: AccessMode,
     state: &State,
 ) -> Result<()> {
     let prefix = format!("{credential_ref}/files");
     let store = state.store_arc();
+    let wrapper = wrapper_name.to_string();
     let credential = credential_ref.to_string();
     setup_scoped_channel(stream, "directory channel fd", move |daemon_stream| {
         tokio::spawn(async move {
-            crate::directory_channel::run_channel(daemon_stream, store, prefix, credential, access)
-                .await;
+            crate::directory_channel::run_channel(
+                daemon_stream,
+                store,
+                prefix,
+                wrapper,
+                credential,
+                access,
+            )
+            .await;
         });
     })
     .await

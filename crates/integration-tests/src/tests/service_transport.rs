@@ -9,7 +9,7 @@ async fn service_mode_roundtrip_reads_secret() {
         .unwrap();
 
     daemon
-        .store_secret("test", "github/token", "ghp_service")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_service")
         .await
         .unwrap();
     daemon

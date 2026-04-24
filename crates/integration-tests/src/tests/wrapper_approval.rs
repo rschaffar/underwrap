@@ -33,7 +33,7 @@ async fn per_call_approval_succeeds_with_valid_ed25519_signature() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
     daemon
-        .store_secret("test", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
     daemon
@@ -110,7 +110,7 @@ async fn per_call_approval_rejects_wrong_signature() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
     daemon
-        .store_secret("test", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
     daemon
@@ -190,7 +190,7 @@ async fn per_call_approval_denies_without_matching_rule() {
     let (wrappers, secrets) = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
     daemon
-        .store_secret("test", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
     // Policy allows per-call approval but has no read rule. After the

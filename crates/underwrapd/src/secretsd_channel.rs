@@ -14,14 +14,18 @@ use tracing::{debug, error, info, warn};
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::{SecretsdErrorCode, SecretsdRequest, SecretsdResponse};
+use underwrap_protocol::policy::PolicyDecision;
 use underwrap_store::StorageBackend;
+
+use crate::policy::{
+    OP_STORE_WRITE, credential_resource, evaluate_after_approval_with, load_policy_document,
+};
 
 /// Run the secretsd channel handler loop on the daemon's end of the socketpair.
 ///
 /// All operations are scoped to `{prefix}` which is set to
-/// `<wrapper-name>/libsecret/` at creation time. The secretsd process
-/// sends relative IDs; this handler prepends the prefix before calling
-/// the StorageBackend.
+/// `<credential-ref>` at creation time. The secretsd process sends relative
+/// IDs; this handler prepends the prefix before calling the StorageBackend.
 ///
 /// Returns when the channel is closed (secretsd exited / namespace died).
 pub async fn run_channel(
@@ -29,11 +33,19 @@ pub async fn run_channel(
     store: Arc<dyn StorageBackend>,
     prefix: String,
     wrapper_name: String,
+    credential_ref: String,
     access: AccessMode,
 ) {
-    info!(wrapper = %wrapper_name, prefix = %prefix, "secretsd channel opened");
+    info!(
+        wrapper = %wrapper_name,
+        credential = %credential_ref,
+        prefix = %prefix,
+        "secretsd channel opened",
+    );
 
-    if let Err(e) = channel_loop(stream, store, &prefix, &wrapper_name, access).await {
+    if let Err(e) =
+        channel_loop(stream, store, &prefix, &wrapper_name, &credential_ref, access).await
+    {
         debug!(wrapper = %wrapper_name, err = %e, "secretsd channel closed");
     }
 
@@ -45,6 +57,7 @@ async fn channel_loop(
     store: Arc<dyn StorageBackend>,
     prefix: &str,
     wrapper_name: &str,
+    credential_ref: &str,
     access: AccessMode,
 ) -> Result<()> {
     loop {
@@ -62,7 +75,8 @@ async fn channel_loop(
             }
         };
 
-        let response = process_request(&request, &*store, prefix, wrapper_name, access);
+        let response =
+            process_request(&request, &*store, prefix, wrapper_name, credential_ref, access);
         write_frame_async(&mut stream, &response).await?;
     }
 }
@@ -72,6 +86,7 @@ fn process_request(
     store: &dyn StorageBackend,
     prefix: &str,
     wrapper_name: &str,
+    credential_ref: &str,
     access: AccessMode,
 ) -> SecretsdResponse {
     match request {
@@ -108,6 +123,14 @@ fn process_request(
                 return SecretsdResponse::Error {
                     code: SecretsdErrorCode::Unauthorized,
                     message: "credential is read-only".to_string(),
+                };
+            }
+            if let Err(message) =
+                check_store_write_policy(store, wrapper_name, credential_ref, secret_id, "libsecret")
+            {
+                return SecretsdResponse::Error {
+                    code: SecretsdErrorCode::Unauthorized,
+                    message,
                 };
             }
             let Some(full_id) = scoped_id(prefix, secret_id) else {
@@ -175,6 +198,14 @@ fn process_request(
                     message: "credential is read-only".to_string(),
                 };
             }
+            if let Err(message) =
+                check_store_write_policy(store, wrapper_name, credential_ref, secret_id, "libsecret")
+            {
+                return SecretsdResponse::Error {
+                    code: SecretsdErrorCode::Unauthorized,
+                    message,
+                };
+            }
             let Some(full_id) = scoped_id(prefix, secret_id) else {
                 warn!(wrapper = %wrapper_name, id = %secret_id, "rejected invalid secretsd delete");
                 return SecretsdResponse::Error {
@@ -197,6 +228,45 @@ fn process_request(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Evaluate the `store.write` policy gate for a wrapper-initiated mutation
+/// against the credential the channel was opened for. Returns Ok if the
+/// write is permitted, otherwise an Err carrying the message to surface to
+/// the secretsd peer (the same string is also logged via audit).
+///
+/// The channel was authenticated when the wrapper request opened it, so the
+/// mode gate is bypassed (`evaluate_after_approval_with`). Only the rule and
+/// grant layer applies.
+fn check_store_write_policy(
+    store: &dyn StorageBackend,
+    wrapper_name: &str,
+    credential_ref: &str,
+    item: &str,
+    kind: &str,
+) -> std::result::Result<(), String> {
+    let document = match load_policy_document(store) {
+        Ok(doc) => doc,
+        Err(e) => {
+            error!(wrapper = %wrapper_name, err = %e, "failed to load policy document for store.write gate");
+            return Err("internal policy error".to_string());
+        }
+    };
+    let resource = credential_resource(credential_ref);
+    match evaluate_after_approval_with(&document, wrapper_name, &resource, OP_STORE_WRITE) {
+        PolicyDecision::Allow => Ok(()),
+        PolicyDecision::Deny { reason } => {
+            crate::audit::wrapper_write_denied(kind, wrapper_name, credential_ref, item, &reason);
+            Err(reason)
+        }
+        PolicyDecision::NeedsApproval { .. } => {
+            // Channel was authenticated at creation; per-call approval cannot
+            // be solved on a long-lived helper channel. Treat as deny.
+            let reason = "per-call approval is not applicable to wrapper channels".to_string();
+            crate::audit::wrapper_write_denied(kind, wrapper_name, credential_ref, item, &reason);
+            Err(reason)
         }
     }
 }
@@ -224,6 +294,7 @@ mod tests {
 
     const PREFIX: &str = "test-wrapper/libsecret";
     const WRAPPER: &str = "test-wrapper";
+    const CREDENTIAL: &str = "test-wrapper/libsecret";
 
     #[test]
     fn scoped_read_write() {
@@ -237,6 +308,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::WriteOk));
@@ -253,6 +325,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         match resp {
@@ -286,6 +359,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         match resp {
@@ -305,6 +379,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         match resp {
@@ -329,6 +404,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         match resp {
@@ -356,6 +432,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
@@ -367,6 +444,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
@@ -378,6 +456,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
@@ -389,6 +468,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
@@ -400,6 +480,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));
@@ -419,6 +500,7 @@ mod tests {
             &store,
             PREFIX,
             WRAPPER,
+            CREDENTIAL,
             AccessMode::ReadWrite,
         );
         assert!(matches!(resp, SecretsdResponse::Error { .. }));

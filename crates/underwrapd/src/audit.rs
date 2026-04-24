@@ -89,6 +89,28 @@ pub fn secretsd_delete(wrapper: &str, item: &str) {
     info!(audit = "secretsd_delete", wrapper = wrapper, item = item,);
 }
 
+/// Audit event for a denied wrapper-initiated write (secretsd or directory).
+///
+/// Emitted when the policy gate refuses a `store.write` for the given
+/// wrapper/credential. `kind` is `"libsecret"` or `"directory"`, `item` is
+/// the relative item id or file path requested by the wrapper.
+pub fn wrapper_write_denied(
+    kind: &str,
+    wrapper: &str,
+    credential: &str,
+    item: &str,
+    reason: &str,
+) {
+    warn!(
+        audit = "store_denied",
+        kind = kind,
+        wrapper = wrapper,
+        credential = credential,
+        item = item,
+        reason = reason,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

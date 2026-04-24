@@ -74,6 +74,11 @@ pub struct AdminSecretReadResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminSecretWriteRequest {
     pub store: String,
+    /// The wrapper context the operator is editing under. Required: the
+    /// backend gates writes against `(wrapper, cred:<secret_id>, store.write)`
+    /// in the policy document, so a write only succeeds when the operator
+    /// has an active allow rule or grant for that tuple.
+    pub wrapper: String,
     pub secret_id: String,
     pub material_b64: String,
 }

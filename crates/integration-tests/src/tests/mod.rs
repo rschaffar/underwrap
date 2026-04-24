@@ -149,7 +149,7 @@ fn one_wrapper_config() -> (
         wrapper("/usr/bin/gh", "github/token", "GH_TOKEN"),
     );
     let mut secrets = HashMap::new();
-    secrets.insert("github/token".to_string(), secret(false));
+    secrets.insert("github/token".to_string(), secret());
     (wrappers, secrets)
 }
 

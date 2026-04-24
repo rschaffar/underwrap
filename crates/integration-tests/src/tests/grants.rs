@@ -7,7 +7,7 @@ async fn active_allow_grant_allows_read_without_baseline_rule() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     daemon
-        .store_secret("test", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
     daemon
@@ -48,7 +48,7 @@ async fn expired_grant_is_not_honored() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     daemon
-        .store_secret("test", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
     daemon
@@ -95,7 +95,7 @@ async fn deleting_grant_revokes_future_reads() {
     let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
 
     daemon
-        .store_secret("test", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
     daemon

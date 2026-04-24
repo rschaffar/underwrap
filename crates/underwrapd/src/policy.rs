@@ -57,6 +57,8 @@ pub(crate) fn directory_resource(credential_ref: &str) -> String {
     format!("directory:{credential_ref}")
 }
 
+pub(crate) use underwrap_protocol::policy::{OP_STORE_WRITE, credential_resource};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +163,6 @@ mod tests {
         assert_eq!(env_resource("github/token"), "secret:github/token");
         assert_eq!(libsecret_resource("gh/default"), "libsecret:gh/default");
         assert_eq!(directory_resource("gws/state"), "directory:gws/state");
+        assert_eq!(credential_resource("github/token"), "cred:github/token");
     }
 }

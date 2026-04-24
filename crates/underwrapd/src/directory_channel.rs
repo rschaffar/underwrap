@@ -14,18 +14,31 @@ use tracing::{debug, error, info, warn};
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::{DirectoryErrorCode, DirectoryRequest, DirectoryResponse};
+use underwrap_protocol::policy::PolicyDecision;
 use underwrap_store::StorageBackend;
+
+use crate::policy::{
+    OP_STORE_WRITE, credential_resource, evaluate_after_approval_with, load_policy_document,
+};
 
 pub async fn run_channel(
     stream: UnixStream,
     store: Arc<dyn StorageBackend>,
     prefix: String,
+    wrapper_name: String,
     credential_ref: String,
     access: AccessMode,
 ) {
-    info!(credential = %credential_ref, prefix = %prefix, "directory channel opened");
+    info!(
+        wrapper = %wrapper_name,
+        credential = %credential_ref,
+        prefix = %prefix,
+        "directory channel opened",
+    );
 
-    if let Err(e) = channel_loop(stream, store, &prefix, &credential_ref, access).await {
+    if let Err(e) =
+        channel_loop(stream, store, &prefix, &wrapper_name, &credential_ref, access).await
+    {
         debug!(credential = %credential_ref, err = %e, "directory channel closed");
     }
 
@@ -36,6 +49,7 @@ async fn channel_loop(
     mut stream: UnixStream,
     store: Arc<dyn StorageBackend>,
     prefix: &str,
+    wrapper_name: &str,
     credential_ref: &str,
     access: AccessMode,
 ) -> Result<()> {
@@ -54,7 +68,8 @@ async fn channel_loop(
             }
         };
 
-        let response = process_request(&request, &*store, prefix, credential_ref, access);
+        let response =
+            process_request(&request, &*store, prefix, wrapper_name, credential_ref, access);
         write_frame_async(&mut stream, &response).await?;
     }
 }
@@ -63,6 +78,7 @@ fn process_request(
     request: &DirectoryRequest,
     store: &dyn StorageBackend,
     prefix: &str,
+    wrapper_name: &str,
     credential_ref: &str,
     access: AccessMode,
 ) -> DirectoryResponse {
@@ -118,6 +134,14 @@ fn process_request(
                     message: "credential is read-only".to_string(),
                 };
             }
+            if let Err(message) =
+                check_store_write_policy(store, wrapper_name, credential_ref, path)
+            {
+                return DirectoryResponse::Error {
+                    code: DirectoryErrorCode::Unauthorized,
+                    message,
+                };
+            }
             let Some(full_id) = scoped_file_id(prefix, path) else {
                 warn!(credential = %credential_ref, path = %path, "rejected invalid directory write");
                 return DirectoryResponse::Error {
@@ -147,6 +171,14 @@ fn process_request(
                     message: "credential is read-only".to_string(),
                 };
             }
+            if let Err(message) =
+                check_store_write_policy(store, wrapper_name, credential_ref, path)
+            {
+                return DirectoryResponse::Error {
+                    code: DirectoryErrorCode::Unauthorized,
+                    message,
+                };
+            }
             let Some(full_id) = scoped_file_id(prefix, path) else {
                 warn!(credential = %credential_ref, path = %path, "rejected invalid directory delete");
                 return DirectoryResponse::Error {
@@ -172,6 +204,46 @@ fn process_request(
     }
 }
 
+fn check_store_write_policy(
+    store: &dyn StorageBackend,
+    wrapper_name: &str,
+    credential_ref: &str,
+    path: &str,
+) -> std::result::Result<(), String> {
+    let document = match load_policy_document(store) {
+        Ok(doc) => doc,
+        Err(e) => {
+            error!(wrapper = %wrapper_name, err = %e, "failed to load policy document for store.write gate");
+            return Err("internal policy error".to_string());
+        }
+    };
+    let resource = credential_resource(credential_ref);
+    match evaluate_after_approval_with(&document, wrapper_name, &resource, OP_STORE_WRITE) {
+        PolicyDecision::Allow => Ok(()),
+        PolicyDecision::Deny { reason } => {
+            crate::audit::wrapper_write_denied(
+                "directory",
+                wrapper_name,
+                credential_ref,
+                path,
+                &reason,
+            );
+            Err(reason)
+        }
+        PolicyDecision::NeedsApproval { .. } => {
+            let reason = "per-call approval is not applicable to wrapper channels".to_string();
+            crate::audit::wrapper_write_denied(
+                "directory",
+                wrapper_name,
+                credential_ref,
+                path,
+                &reason,
+            );
+            Err(reason)
+        }
+    }
+}
+
 fn scoped_file_id(prefix: &str, path: &str) -> Option<String> {
     if path.is_empty()
         || path.starts_with('/')
@@ -191,6 +263,7 @@ mod tests {
     use crate::test_support::MemStore;
 
     const PREFIX: &str = "gws/state/files";
+    const WRAPPER: &str = "gws-wrapper";
     const REF: &str = "gws/state";
 
     #[test]
@@ -203,6 +276,7 @@ mod tests {
             },
             &store,
             PREFIX,
+            WRAPPER,
             REF,
             AccessMode::ReadWrite,
         );
@@ -213,6 +287,7 @@ mod tests {
             },
             &store,
             PREFIX,
+            WRAPPER,
             REF,
             AccessMode::ReadWrite,
         );
@@ -221,6 +296,7 @@ mod tests {
             &DirectoryRequest::ListFiles,
             &store,
             PREFIX,
+            WRAPPER,
             REF,
             AccessMode::ReadWrite,
         );
@@ -237,6 +313,7 @@ mod tests {
             },
             &store,
             PREFIX,
+            WRAPPER,
             REF,
             AccessMode::ReadWrite,
         );
@@ -253,6 +330,7 @@ mod tests {
             },
             &store,
             PREFIX,
+            WRAPPER,
             REF,
             AccessMode::ReadWrite,
         );
@@ -272,6 +350,7 @@ mod tests {
                 },
                 &store,
                 PREFIX,
+                WRAPPER,
                 REF,
                 AccessMode::ReadWrite,
             );
@@ -295,6 +374,7 @@ mod tests {
             },
             &store,
             PREFIX,
+            WRAPPER,
             REF,
             AccessMode::ReadOnly,
         );

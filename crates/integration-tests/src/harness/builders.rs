@@ -36,7 +36,7 @@ pub fn wrapper(target: &str, secret: &str, _env_var: &str) -> WrapperDef {
 }
 
 /// Create a simple env credential def for testing.
-pub fn secret(_mutable: bool) -> CredentialDef {
+pub fn secret() -> CredentialDef {
     CredentialDef {
         mode: CredentialMode::Env {
             variable: "UNDERWRAP_SECRET".to_string(),
@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn secret_builder_creates_env_credential() {
-        let credential = secret(false);
+        let credential = secret();
         match credential.mode {
             CredentialMode::Env { variable } => assert_eq!(variable, "UNDERWRAP_SECRET"),
             other => panic!("expected env credential, got {other:?}"),

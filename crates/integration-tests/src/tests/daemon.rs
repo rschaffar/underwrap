@@ -150,7 +150,7 @@ async fn underwrapd_binary_start_and_read() {
         allowed_users: Vec::new(),
         credentials: {
             let mut m = HashMap::new();
-            m.insert("s/t".to_string(), secret(false));
+            m.insert("s/t".to_string(), secret());
             m
         },
         wrappers: {
@@ -189,6 +189,7 @@ async fn underwrapd_binary_start_and_read() {
         .bearer_auth(admin_token)
         .json(&underwrap_protocol::service::AdminSecretWriteRequest {
             store: "test".to_string(),
+            wrapper: "w".to_string(),
             secret_id: "s/t".to_string(),
             material_b64: base64::engine::general_purpose::STANDARD.encode("value"),
         })

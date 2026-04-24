@@ -608,13 +608,73 @@ target host only needs outbound mTLS access to the backend.
 
 ---
 
-## Immutability enforcement
+## Mutation gating
 
-Secrets marked `mutable: false` should behave like write-once values.
+Credentials are operator-managed; there is no per-secret schema flag
+that marks a value as write-once. Instead, **every write to a
+credential is gated by the policy document** — the same backend-owned
+document that gates reads, lock state, and per-call approval.
 
-To avoid trivial time-of-check/time-of-use races during first write, underwrap serializes writes per secret so two concurrent writers cannot both observe "absent" and both win.
+The shape of the gate is uniform across the three places writes can
+originate:
 
-This is not the most glamorous security feature either, but it matters when immutability is being used as part of an operational trust model.
+- the admin HTTP endpoint `POST /v1/admin/secret/write`
+- the wrapper-initiated libsecret channel (target writes a Secret
+  Service item back into the store)
+- the wrapper-initiated directory credential channel (target syncs
+  files in a managed directory back into the store)
+
+Each of these evaluates the tuple `(wrapper, cred:<credential-ref>,
+store.write)` against the policy. The decision is one of:
+
+- **Allow** — the write proceeds and is audited as `secret_stored`
+  (admin) or `secretsd_write` / `secretsd_delete` (libsecret).
+- **Deny** — the write is rejected with `403`/`Unauthorized` and
+  audited as `store_denied`. The previous value is preserved.
+
+The default for an established policy document is **deny**: an
+operator must add a matching rule or grant before any write is
+permitted. As an explicit bootstrap allowance, a store with no policy
+document at all auto-allows writes so first-time provisioning works
+without setup. The first `policy/put` flips the store into the
+default-deny posture.
+
+### Operator workflow
+
+To edit a credential, an operator opens the admin UI, enables a
+short-lived "allow mutation" grant against the (wrapper, credential)
+pair (default expiry: 30 minutes), submits the new value, and lets
+the grant expire. Permanent allow-grants are possible but require a
+deliberate confirmation step, because a permanent grant is
+operationally indistinguishable from "this credential is mutable
+forever."
+
+### Trust model implication
+
+Mutation immutability is now an **operator-discipline property**, not
+a schema invariant. A permanent `store.write` allow-grant behaves
+exactly like the old `mutable: true`. If a future requirement calls
+for true tamper-evidence ("this value was never overwritten"), it has
+to come from a different mechanism — append-only storage, audit
+attestations — not from the policy layer, since policy itself is
+operator-mutable.
+
+### Reserved keys
+
+`/v1/admin/secret/write` refuses outright to write to the reserved
+policy-document secret id. Policy edits go through
+`/v1/admin/policy/put`, which is itself authenticated by the bearer
+token but not gated by the policy document (otherwise the operator
+could lock themselves out).
+
+### Concurrency
+
+The previous design intended to serialize writes per secret to avoid
+TOCTOU on first write. That serialization was never implemented and
+is not part of the current model — the policy gate is the only
+contract. In practice, concurrent admin writes to the same secret
+are rare; the wrapper-initiated channels are single-writer by
+construction (one channel per wrapper instance).
 
 ---
 
