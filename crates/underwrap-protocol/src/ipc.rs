@@ -67,6 +67,10 @@ impl<'a> WireReader<'a> {
         ))
     }
 
+    pub fn remaining(&self) -> usize {
+        self.buf.len() - self.pos
+    }
+
     pub fn read_u64(&mut self) -> Result<u64> {
         let bytes = self.read_exact(8)?;
         Ok(u64::from_be_bytes(
@@ -162,7 +166,11 @@ impl WireEncode for String {
 
 impl WireEncode for &str {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        self.to_string().encode(out)
+        let bytes = self.as_bytes();
+        ensure!(bytes.len() <= u32::MAX as usize, "string too large");
+        (bytes.len() as u32).encode(out)?;
+        out.extend_from_slice(bytes);
+        Ok(())
     }
 }
 
@@ -208,7 +216,7 @@ impl<T: WireEncode> WireEncode for Vec<T> {
 impl<T: WireDecode> WireDecode for Vec<T> {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         let len = reader.read_u32()? as usize;
-        let mut out = Vec::with_capacity(len);
+        let mut out = Vec::with_capacity(len.min(reader.remaining()));
         for _ in 0..len {
             out.push(T::decode(reader)?);
         }
@@ -233,7 +241,7 @@ impl<T: WireEncode> WireEncode for HashMap<String, T> {
 impl<T: WireDecode> WireDecode for HashMap<String, T> {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         let len = reader.read_u32()? as usize;
-        let mut out = HashMap::with_capacity(len);
+        let mut out = HashMap::with_capacity(len.min(reader.remaining()));
         for _ in 0..len {
             let key = String::decode(reader)?;
             let value = T::decode(reader)?;
@@ -393,5 +401,21 @@ mod tests {
     fn decode_rejects_invalid_bool() {
         let err = decode_from_slice::<bool>(&[2]).unwrap_err();
         assert!(err.to_string().contains("invalid bool discriminant"));
+    }
+
+    #[test]
+    fn inflated_vec_length_does_not_oom() {
+        let mut payload = Vec::new();
+        0xFFFF_FFFFu32.encode(&mut payload).unwrap();
+        let err = decode_from_slice::<Vec<u8>>(&payload).unwrap_err();
+        assert!(err.to_string().contains("truncated payload"));
+    }
+
+    #[test]
+    fn inflated_map_length_does_not_oom() {
+        let mut payload = Vec::new();
+        0xFFFF_FFFFu32.encode(&mut payload).unwrap();
+        let err = decode_from_slice::<HashMap<String, u8>>(&payload).unwrap_err();
+        assert!(err.to_string().contains("truncated payload"));
     }
 }
