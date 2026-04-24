@@ -123,17 +123,15 @@ impl LoadedConfig {
 fn load_session_key(path: &Path) -> Result<[u8; 32]> {
     let raw = std::fs::read(path)
         .with_context(|| format!("reading session key file {}", path.display()))?;
-    let bytes = if raw.len() >= 32 {
-        raw[..32].to_vec()
-    } else {
+    if raw.len() != 32 {
         return Err(anyhow!(
-            "session key file {} must contain at least 32 bytes (got {})",
+            "session key file {} must contain exactly 32 bytes (got {})",
             path.display(),
             raw.len()
         ));
-    };
+    }
     let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes);
+    out.copy_from_slice(&raw);
     Ok(out)
 }
 
@@ -197,7 +195,7 @@ mod tests {
     fn loads_valid_config_and_trims_files() {
         let dir = tempfile::TempDir::new().unwrap();
         let key = dir.path().join("key");
-        std::fs::write(&key, [7u8; 64]).unwrap();
+        std::fs::write(&key, [7u8; 32]).unwrap();
 
         let hash_path = dir.path().join("h");
         // A valid PHC prefix; we only check shape at load time, not password.
@@ -228,5 +226,23 @@ mod tests {
         assert_eq!(loaded.session_key, [7u8; 32]);
         assert_eq!(loaded.backends["b"].token, "the-token");
         assert!(loaded.operators["alice"].starts_with("$argon2id$"));
+    }
+
+    #[test]
+    fn rejects_session_key_too_short() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let key = dir.path().join("key");
+        std::fs::write(&key, [0u8; 16]).unwrap();
+        let err = load_session_key(&key).unwrap_err();
+        assert!(err.to_string().contains("exactly 32 bytes"));
+    }
+
+    #[test]
+    fn rejects_session_key_too_long() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let key = dir.path().join("key");
+        std::fs::write(&key, [0u8; 64]).unwrap();
+        let err = load_session_key(&key).unwrap_err();
+        assert!(err.to_string().contains("exactly 32 bytes"));
     }
 }

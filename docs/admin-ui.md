@@ -42,7 +42,7 @@ backends:
     token_file: /run/keys/underwrap-admin-personal
 ```
 
-- `session_key_file` holds at least 32 random bytes. Generate once and
+- `session_key_file` holds exactly 32 random bytes. Generate once and
   keep stable — all existing sessions invalidate when this changes.
 - Each operator's `password_hash_file` contains an Argon2 PHC-encoded
   hash. Create one with:

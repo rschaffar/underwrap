@@ -78,7 +78,7 @@ impl Harness {
         std::fs::write(&hash_path, &hash)?;
 
         let session_key_path = base.join("session.key");
-        std::fs::write(&session_key_path, [7u8; 64])?;
+        std::fs::write(&session_key_path, [7u8; 32])?;
 
         let ui_port = pick_port()?;
         let ui_listen = format!("127.0.0.1:{ui_port}");

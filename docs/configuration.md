@@ -178,7 +178,7 @@ backends:
     token_file: /run/keys/underwrap-admin-corp
 ```
 
-- `session_key_file` must contain at least 32 random bytes; they sign
+- `session_key_file` must contain exactly 32 random bytes; they sign
   the session cookie. Rotating this key invalidates all existing
   sessions.
 - Each `password_hash_file` is an Argon2 PHC-encoded string (starts
