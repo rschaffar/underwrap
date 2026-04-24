@@ -126,7 +126,6 @@ pub(crate) fn setup_libsecret(
     unsafe { libc::close(ready_write) };
 
     let mut ready_buf = [0u8; 1];
-    let mut waited = 0;
     loop {
         let n = unsafe { libc::read(ready_read, ready_buf.as_mut_ptr() as *mut libc::c_void, 1) };
         if n > 0 {
@@ -135,18 +134,11 @@ pub(crate) fn setup_libsecret(
         if n == 0 {
             return Err("secretsd exited before signaling readiness".to_string());
         }
-        if n < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(format!("reading secretsd readiness: {err}"));
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
         }
-        waited += 1;
-        if waited > 50 {
-            return Err("secretsd did not become ready within 5 seconds".to_string());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        return Err(format!("reading secretsd readiness: {err}"));
     }
     unsafe { libc::close(ready_read) };
 
