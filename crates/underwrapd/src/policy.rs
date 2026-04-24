@@ -17,23 +17,31 @@ pub(crate) fn authorize_operation(
     resource: &str,
     operation: &str,
 ) -> Result<PolicyDecision> {
-    match load_policy_document(store)? {
-        Some(document) => Ok(document.evaluate(wrapper, resource, operation)),
-        None => Ok(PolicyDecision::Allow),
-    }
+    let document = load_policy_document(store)?;
+    Ok(evaluate_with(&document, wrapper, resource, operation))
 }
 
-/// Like [`authorize_operation`] but skips the per-wrapper mode gate. Used after
-/// the caller has already satisfied a per-call approval challenge.
-pub(crate) fn authorize_after_approval(
-    store: &dyn StorageBackend,
+pub(crate) fn evaluate_with(
+    document: &Option<PolicyDocument>,
     wrapper: &str,
     resource: &str,
     operation: &str,
-) -> Result<PolicyDecision> {
-    match load_policy_document(store)? {
-        Some(document) => Ok(document.evaluate_after_approval(wrapper, resource, operation)),
-        None => Ok(PolicyDecision::Allow),
+) -> PolicyDecision {
+    match document {
+        Some(document) => document.evaluate(wrapper, resource, operation),
+        None => PolicyDecision::Allow,
+    }
+}
+
+pub(crate) fn evaluate_after_approval_with(
+    document: &Option<PolicyDocument>,
+    wrapper: &str,
+    resource: &str,
+    operation: &str,
+) -> PolicyDecision {
+    match document {
+        Some(document) => document.evaluate_after_approval(wrapper, resource, operation),
+        None => PolicyDecision::Allow,
     }
 }
 

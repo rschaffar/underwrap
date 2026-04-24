@@ -4,12 +4,13 @@ use tracing::{error, info};
 
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::message::WrapperResponse;
-use underwrap_protocol::policy::PolicyDecision;
 
-use crate::policy::{authorize_after_approval, directory_resource, libsecret_resource};
 use crate::server::State;
 use crate::wrapper_bindings::{wrapper_directory_bindings, wrapper_libsecret_binding};
 
+/// Set up scoped channels for credentials that were already authorized
+/// in [`super::read::process_read_for`]. Only called when the response
+/// is `ReadOk`, so no re-authorization is needed.
 pub(super) async fn establish_scoped_channels(
     stream: &UnixStream,
     response: &WrapperResponse,
@@ -27,26 +28,6 @@ pub(super) async fn establish_scoped_channels(
     if let Some((credential_ref, access)) =
         wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
     {
-        let resource = libsecret_resource(credential_ref);
-        let operation = match access {
-            AccessMode::ReadOnly => "libsecret.read",
-            AccessMode::ReadWrite => "libsecret.readwrite",
-        };
-        match authorize_after_approval(&*state.store, wrapper_name, &resource, operation) {
-            Ok(PolicyDecision::Allow) => {}
-            Ok(PolicyDecision::Deny { reason }) => {
-                error!(wrapper = %wrapper_name, credential = %credential_ref, reason = %reason, "backend policy denied libsecret channel");
-                return;
-            }
-            Ok(PolicyDecision::NeedsApproval { .. }) => {
-                error!(wrapper = %wrapper_name, credential = %credential_ref, "libsecret channel unexpectedly required approval after read");
-                return;
-            }
-            Err(e) => {
-                error!(wrapper = %wrapper_name, credential = %credential_ref, err = %e, "backend policy lookup failed for libsecret channel");
-                return;
-            }
-        }
         match setup_secretsd_channel(stream, credential_ref, access, state).await {
             Ok(()) => {
                 info!(wrapper = %wrapper_name, credential = %credential_ref, "secretsd channel established");
@@ -58,26 +39,6 @@ pub(super) async fn establish_scoped_channels(
     }
 
     for binding in wrapper_directory_bindings(wrapper_def, &state.config.credentials) {
-        let resource = directory_resource(&binding.credential_ref);
-        let operation = match binding.access {
-            AccessMode::ReadOnly => "directory.read",
-            AccessMode::ReadWrite => "directory.readwrite",
-        };
-        match authorize_after_approval(&*state.store, wrapper_name, &resource, operation) {
-            Ok(PolicyDecision::Allow) => {}
-            Ok(PolicyDecision::Deny { reason }) => {
-                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, reason = %reason, "backend policy denied directory channel");
-                continue;
-            }
-            Ok(PolicyDecision::NeedsApproval { .. }) => {
-                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, "directory channel unexpectedly required approval after read");
-                continue;
-            }
-            Err(e) => {
-                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, err = %e, "backend policy lookup failed for directory channel");
-                continue;
-            }
-        }
         match setup_directory_channel(stream, &binding.credential_ref, binding.access, state).await
         {
             Ok(()) => {

@@ -96,5 +96,5 @@ async fn complete_read(
         Err(response) => return Ok(response),
     };
 
-    Ok(process_read_for(wrapper_name, scope, state, peer_uid, approval_satisfied).await)
+    Ok(process_read_for(wrapper_name, scope, state, peer_uid, approval_satisfied))
 }

@@ -6,8 +6,8 @@ use underwrap_protocol::policy::PolicyDecision;
 
 use crate::audit;
 use crate::policy::{
-    authorize_after_approval, authorize_operation, directory_resource, env_resource,
-    libsecret_resource,
+    directory_resource, env_resource, evaluate_after_approval_with, evaluate_with,
+    libsecret_resource, load_policy_document,
 };
 use crate::server::State;
 use crate::wrapper_bindings::{
@@ -17,7 +17,7 @@ use crate::wrapper_bindings::{
 /// Run the post-gate read: rule/grant authorization for each credential
 /// and fetch of any env-bound secret material. When `approval_satisfied`
 /// is true, mode gating is bypassed (the caller just proved presence).
-pub(super) async fn process_read_for(
+pub(super) fn process_read_for(
     wrapper_name: &str,
     scope: Option<&str>,
     state: &State,
@@ -35,11 +35,22 @@ pub(super) async fn process_read_for(
         }
     };
 
-    let authorize = |resource: &str, operation: &str| {
+    let policy = match load_policy_document(&*state.store) {
+        Ok(doc) => doc,
+        Err(e) => {
+            error!(wrapper = %wrapper_name, err = %e, "failed to load policy document");
+            return WrapperResponse::Error {
+                code: ErrorCode::Internal,
+                message: "internal policy error".to_string(),
+            };
+        }
+    };
+
+    let authorize = |resource: &str, operation: &str| -> PolicyDecision {
         if approval_satisfied {
-            authorize_after_approval(&*state.store, wrapper_name, resource, operation)
+            evaluate_after_approval_with(&policy, wrapper_name, resource, operation)
         } else {
-            authorize_operation(&*state.store, wrapper_name, resource, operation)
+            evaluate_with(&policy, wrapper_name, resource, operation)
         }
     };
 
@@ -52,29 +63,22 @@ pub(super) async fn process_read_for(
             AccessMode::ReadWrite => "libsecret.readwrite",
         };
         match authorize(&resource, operation) {
-            Ok(PolicyDecision::Allow) => {
+            PolicyDecision::Allow => {
                 audit::read_granted(wrapper_name, credential_ref, Some(peer_uid), scope);
             }
-            Ok(PolicyDecision::Deny { reason }) => {
+            PolicyDecision::Deny { reason } => {
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: reason,
                 };
             }
-            Ok(PolicyDecision::NeedsApproval { .. }) => {
+            PolicyDecision::NeedsApproval { .. } => {
                 let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: reason,
-                };
-            }
-            Err(e) => {
-                error!(credential = %credential_ref, err = %e, "policy lookup error");
-                return WrapperResponse::Error {
-                    code: ErrorCode::Internal,
-                    message: "internal policy error".to_string(),
                 };
             }
         }
@@ -84,27 +88,20 @@ pub(super) async fn process_read_for(
     for (cred_ref, variable) in wrapper_env_credentials(wrapper_def, &state.config.credentials) {
         let resource = env_resource(cred_ref);
         match authorize(&resource, "secret.read") {
-            Ok(PolicyDecision::Allow) => {}
-            Ok(PolicyDecision::Deny { reason }) => {
+            PolicyDecision::Allow => {}
+            PolicyDecision::Deny { reason } => {
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: reason,
                 };
             }
-            Ok(PolicyDecision::NeedsApproval { .. }) => {
+            PolicyDecision::NeedsApproval { .. } => {
                 let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: reason,
-                };
-            }
-            Err(e) => {
-                error!(credential = %cred_ref, err = %e, "policy lookup error");
-                return WrapperResponse::Error {
-                    code: ErrorCode::Internal,
-                    message: "internal policy error".to_string(),
                 };
             }
         }
@@ -139,30 +136,23 @@ pub(super) async fn process_read_for(
             AccessMode::ReadWrite => "directory.readwrite",
         };
         match authorize(&resource, operation) {
-            Ok(PolicyDecision::Allow) => {
+            PolicyDecision::Allow => {
                 audit::read_granted(wrapper_name, &binding.credential_ref, Some(peer_uid), scope);
                 directories.push(binding);
             }
-            Ok(PolicyDecision::Deny { reason }) => {
+            PolicyDecision::Deny { reason } => {
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: reason,
                 };
             }
-            Ok(PolicyDecision::NeedsApproval { .. }) => {
+            PolicyDecision::NeedsApproval { .. } => {
                 let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
                 audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
                 return WrapperResponse::Error {
                     code: ErrorCode::Unauthorized,
                     message: reason,
-                };
-            }
-            Err(e) => {
-                error!(credential = %binding.credential_ref, err = %e, "policy lookup error");
-                return WrapperResponse::Error {
-                    code: ErrorCode::Internal,
-                    message: "internal policy error".to_string(),
                 };
             }
         }
@@ -310,7 +300,7 @@ mod tests {
             "github/token",
             b"ghp_test",
         )])));
-        let resp = process_read_for("gh-authorized", None, &state, 1000, true).await;
+        let resp = process_read_for("gh-authorized", None, &state, 1000, true);
         match resp {
             WrapperResponse::ReadOk { env, directories } => {
                 assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
@@ -328,7 +318,7 @@ mod tests {
             underwrap_protocol::policy::PolicyDocument::default(),
         ));
         let state = state_with_store(store);
-        let resp = process_read_for("gh-authorized", None, &state, 1000, false).await;
+        let resp = process_read_for("gh-authorized", None, &state, 1000, false);
         match resp {
             WrapperResponse::Error { code, message } => {
                 assert!(matches!(code, ErrorCode::Unauthorized));
@@ -364,7 +354,7 @@ mod tests {
             },
         ));
         let state = state_with_store(store);
-        let resp = process_read_for("gh-authorized", None, &state, 1000, false).await;
+        let resp = process_read_for("gh-authorized", None, &state, 1000, false);
         match resp {
             WrapperResponse::ReadOk { env, directories } => {
                 assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
@@ -409,11 +399,11 @@ mod tests {
 
         // Without the approval marker, authorization bubbles the NeedsApproval
         // shape back as an Unauthorized error.
-        let resp = process_read_for("gh-authorized", None, &state, 1000, false).await;
+        let resp = process_read_for("gh-authorized", None, &state, 1000, false);
         assert!(matches!(resp, WrapperResponse::Error { .. }));
 
         // With approval satisfied, the same request succeeds.
-        let resp = process_read_for("gh-authorized", None, &state, 1000, true).await;
+        let resp = process_read_for("gh-authorized", None, &state, 1000, true);
         assert!(matches!(resp, WrapperResponse::ReadOk { .. }));
     }
 }
