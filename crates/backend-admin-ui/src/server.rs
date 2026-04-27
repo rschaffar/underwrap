@@ -695,7 +695,7 @@ async fn write_credential(
         store = %store,
         wrapper = %wrapper,
         secret_id = %secret_id,
-        bytes = form.value.as_bytes().len(),
+        bytes = form.value.len(),
         "credential value written",
     );
     Redirect::to(&format!("/t/{target}?store={store}")).into_response()
