@@ -27,8 +27,16 @@
 
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-          # Common source filtering — only include Rust/Cargo files.
-          src = craneLib.cleanCargoSource ./.;
+          # Common source filtering — Rust/Cargo files plus per-crate src/assets/
+          # so admin-ui's bundled CSS (and any future static assets) survive
+          # the sandboxed build.
+          src = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter = path: type:
+              (craneLib.filterCargoSources path type)
+              || (pkgs.lib.hasInfix "/src/assets/" path);
+            name = "source";
+          };
 
           # RustSec advisory database for cargo-audit.
           advisoryDb = pkgs.fetchzip {

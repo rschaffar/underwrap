@@ -211,7 +211,7 @@ in {
       RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
       NoNewPrivileges = true;
       LimitCORE = 0;
-      ReadWritePaths = [ "/run/underwrap-local/backend" "/var/lib/underwrap-backend-local" ];
+      ReadWritePaths = [ "/var/lib/underwrap-backend-local" ];
     };
   };
 

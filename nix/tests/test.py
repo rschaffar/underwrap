@@ -28,12 +28,13 @@ def admin_api(url, path, payload=None, method="POST"):
     return json.loads(out) if out.strip() else None
 
 
-def admin_write_secret(url, store, secret_id, value):
+def admin_write_secret(url, store, wrapper, secret_id, value):
     return admin_api(
         url,
         "/v1/admin/secret/write",
         {
             "store": store,
+            "wrapper": wrapper,
             "secret_id": secret_id,
             "material_b64": base64.b64encode(value.encode()).decode(),
         },
@@ -162,16 +163,16 @@ def local_store_and_basic_ops():
     # LOCAL INSTANCE: store secrets + basic operations
     # ============================================================
 
-    admin_write_secret(ADMIN_LOCAL, "local", "test/token", "ghp_testvmtoken")
-    admin_write_secret(ADMIN_LOCAL, "local", "test/other", "other_secret_val")
-    admin_write_secret(ADMIN_LOCAL, "local", "test/locked-tok", "locked_secret")
-    admin_write_secret(ADMIN_LOCAL, "local", "test/dumpable-tok", "dumpable_test_secret")
-    admin_write_secret(ADMIN_LOCAL, "local", "test/crash-tok", "crash_secret_value")
-    admin_write_secret(ADMIN_LOCAL, "local", "test/caps-tok", "caps_test_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token", "ghp_testvmtoken")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-echo2", "test/other", "other_secret_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-locked", "test/locked-tok", "locked_secret")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-sleep", "test/dumpable-tok", "dumpable_test_secret")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-crash", "test/crash-tok", "crash_secret_value")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-caps", "test/caps-tok", "caps_test_val")
 
     # Admin writes may update operator-managed credential refs centrally.
-    admin_write_secret(ADMIN_LOCAL, "local", "test/token", "overwrite")
-    admin_write_secret(ADMIN_LOCAL, "local", "test/other", "updated_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token", "overwrite")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-echo2", "test/other", "updated_val")
 
 
 def local_unprivileged_wrapper_invocation():
@@ -728,7 +729,7 @@ def remote_service_lifecycle():
     # ============================================================
 
     # Store secret in backend through the admin API.
-    admin_write_secret(ADMIN_REMOTE, "remote", "remote/token", "secret_via_service")
+    admin_write_secret(ADMIN_REMOTE, "remote", "remote-echo", "remote/token", "secret_via_service")
 
     # With backend service up: succeed.
     output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
