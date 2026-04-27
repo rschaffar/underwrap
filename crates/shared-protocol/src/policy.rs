@@ -162,7 +162,7 @@ impl PolicyDocument {
             return false;
         }
         if let Some(expires_at_epoch) = grant.expires_at_epoch
-            && now_epoch > expires_at_epoch
+            && now_epoch >= expires_at_epoch
         {
             return false;
         }
@@ -417,6 +417,11 @@ mod tests {
             doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 150),
             PolicyDecision::Allow
         );
+        // Expiry is exclusive: the grant is denied at exactly expires_at_epoch.
+        assert!(matches!(
+            doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 200),
+            PolicyDecision::Deny { .. }
+        ));
         assert!(matches!(
             doc.evaluate_at("gh-comment", "secret:github/token", "secret.read", 201),
             PolicyDecision::Deny { .. }
