@@ -1,9 +1,13 @@
 [package]
-name = "underwrap-protocol"
+name = "shared-protocol"
 description = "Shared protocol types, config schema, and policy model for underwrap"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[lib]
+name = "underwrap_protocol"
+path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }

@@ -1,5 +1,5 @@
 [package]
-name = "underwrap-secretsd"
+name = "frontend-secretsd"
 description = "D-Bus Secret Service provider for underwrap libsecret mode"
 version.workspace = true
 edition.workspace = true
@@ -10,8 +10,8 @@ name = "underwrap-secretsd"
 path = "src/main.rs"
 
 [dependencies]
-underwrap-protocol = { workspace = true }
-underwrap-secretsd-store = { path = "../underwrap-secretsd-store" }
+shared-protocol = { workspace = true }
+shared-secretsd-store = { path = "../shared-secretsd-store" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

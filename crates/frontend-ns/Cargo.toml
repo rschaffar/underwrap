@@ -1,5 +1,5 @@
 [package]
-name = "underwrap-ns"
+name = "frontend-ns"
 description = "PID namespace wrapper — reads secret from fd, isolates target in new PID namespace"
 version.workspace = true
 edition.workspace = true
@@ -10,5 +10,5 @@ name = "underwrap-ns"
 path = "src/main.rs"
 
 [dependencies]
-underwrap-protocol = { workspace = true }
+shared-protocol = { workspace = true }
 libc = { workspace = true }

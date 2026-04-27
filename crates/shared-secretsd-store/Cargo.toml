@@ -1,9 +1,13 @@
 [package]
-name = "underwrap-secretsd-store"
+name = "shared-secretsd-store"
 description = "In-memory Secret Service state with JSON envelope serialization for underwrap"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[lib]
+name = "underwrap_secretsd_store"
+path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }

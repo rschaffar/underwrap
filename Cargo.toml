@@ -1,15 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/underwrap-protocol",
-    "crates/underwrap-store",
-    "crates/underwrapd",
-    "crates/underwrap-backendd",
-    "crates/underwrap-exec",
-    "crates/underwrap-ns",
-    "crates/underwrap-secretsd-store",
-    "crates/underwrap-secretsd",
-    "crates/underwrap-admin-ui",
+    "crates/shared-protocol",
+    "crates/shared-store",
+    "crates/shared-secretsd-store",
+    "crates/frontend-underwrapd",
+    "crates/frontend-exec",
+    "crates/frontend-ns",
+    "crates/frontend-secretsd",
+    "crates/backend-backendd",
+    "crates/backend-admin-ui",
     "crates/integration-tests",
 ]
 
@@ -20,8 +20,8 @@ license = "MIT"
 repository = "https://github.com/example/underwrap"
 
 [workspace.dependencies]
-underwrap-protocol = { path = "crates/underwrap-protocol" }
-underwrap-store = { path = "crates/underwrap-store" }
+shared-protocol = { path = "crates/shared-protocol" }
+shared-store = { path = "crates/shared-store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

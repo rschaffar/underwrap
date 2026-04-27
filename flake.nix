@@ -63,11 +63,11 @@
         in {
           packages = {
             default = workspace;
-            underwrapd = mkCrate "underwrapd";
-            underwrap-exec = mkCrate "underwrap-exec";
-            underwrap-ns = mkCrate "underwrap-ns";
-            underwrap-backendd = mkCrate "underwrap-backendd";
-            underwrap-secretsd = mkCrate "underwrap-secretsd";
+            underwrapd = mkCrate "frontend-underwrapd";
+            underwrap-exec = mkCrate "frontend-exec";
+            underwrap-ns = mkCrate "frontend-ns";
+            underwrap-backendd = mkCrate "backend-backendd";
+            underwrap-secretsd = mkCrate "frontend-secretsd";
           };
 
           checks = {

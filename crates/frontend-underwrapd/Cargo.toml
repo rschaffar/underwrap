@@ -1,9 +1,13 @@
 [package]
-name = "underwrapd"
+name = "frontend-underwrapd"
 description = "The underwrap daemon — secret broker with Unix socket IPC"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[lib]
+name = "underwrapd"
+path = "src/lib.rs"
 
 [[bin]]
 name = "underwrapd"
@@ -11,8 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 zeroize = { workspace = true }
-underwrap-protocol = { workspace = true }
-underwrap-store = { workspace = true }
+shared-protocol = { workspace = true }
+shared-store = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

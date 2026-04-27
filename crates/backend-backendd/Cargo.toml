@@ -1,5 +1,5 @@
 [package]
-name = "underwrap-backendd"
+name = "backend-backendd"
 description = "underwrap backend daemon — holds secrets, serves them over Unix socket (for SSH tunnel)"
 version.workspace = true
 edition.workspace = true
@@ -15,8 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 libc = { workspace = true }
-underwrap-protocol = { workspace = true }
-underwrap-store = { workspace = true }
+shared-protocol = { workspace = true }
+shared-store = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

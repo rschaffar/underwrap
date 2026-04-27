@@ -1,5 +1,5 @@
 [package]
-name = "underwrap-exec"
+name = "frontend-exec"
 description = "Execution wrapper — obtains secret from daemon, injects, drops privilege, execs target"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ name = "underwrap-exec"
 path = "src/main.rs"
 
 [dependencies]
-underwrap-protocol = { workspace = true }
+shared-protocol = { workspace = true }
 anyhow = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true }

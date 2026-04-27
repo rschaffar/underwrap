@@ -67,8 +67,8 @@ wrappers:
 
 #[tokio::test]
 async fn underwrapd_binary_start_and_read() {
-    ensure_package_built("underwrapd");
-    ensure_package_built("underwrap-backendd");
+    ensure_package_built("frontend-underwrapd");
+    ensure_package_built("backend-backendd");
 
     let daemon_bin = require_bin!("underwrapd");
     let backend_bin = require_bin!("underwrap-backendd");
