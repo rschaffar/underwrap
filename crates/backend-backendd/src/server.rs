@@ -24,8 +24,7 @@ use tracing::{error, info, warn};
 
 use underwrap_protocol::config::StorageConfig;
 use underwrap_protocol::policy::{
-    OP_STORE_WRITE, POLICY_DOCUMENT_SECRET_ID, PolicyDecision, PolicyDocument, WrapperApprovalMode,
-    credential_resource,
+    POLICY_DOCUMENT_SECRET_ID, PolicyDocument, WrapperApprovalMode,
 };
 
 use underwrap_store::StorageBackend;
@@ -432,6 +431,39 @@ async fn handle_service_request(
                 Err(response) => response,
             }
         }
+        (&Method::POST, "/v1/read-prefixes") => {
+            match parse_json_body::<underwrap_protocol::service::ServiceReadPrefixesRequest>(
+                request,
+            )
+            .await
+            {
+                Ok(body) => match store.read_prefixes(&body.prefixes) {
+                    Ok(entries) => {
+                        let mut entries: Vec<_> = entries
+                            .into_iter()
+                            .map(|(id, material)| {
+                                underwrap_protocol::service::ServiceBundleEntry {
+                                    id,
+                                    material_b64: base64::engine::general_purpose::STANDARD
+                                        .encode(material.as_ref()),
+                                }
+                            })
+                            .collect();
+                        entries.sort_by(|a, b| a.id.cmp(&b.id));
+                        json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::ServiceReadPrefixesResponse { entries },
+                        )
+                    }
+                    Err(e) => error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &format!("storage error: {e}"),
+                    ),
+                },
+                Err(response) => response,
+            }
+        }
         (&Method::POST, "/v1/delete") => {
             match parse_json_body::<underwrap_protocol::service::ServiceDeleteRequest>(request)
                 .await
@@ -508,14 +540,6 @@ fn handle_admin_secret_write(
             "policy document is reserved; use /v1/admin/policy/put",
         );
     }
-    if body.wrapper.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "wrapper is required",
-        );
-    }
-
     let material = match base64::engine::general_purpose::STANDARD.decode(&body.material_b64) {
         Ok(material) => material,
         Err(e) => {
@@ -532,66 +556,21 @@ fn handle_admin_secret_write(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     };
 
-    match evaluate_admin_store_write(&**store, &body.wrapper, &body.secret_id) {
-        Ok(PolicyDecision::Allow) => match store.write(&body.secret_id, &material) {
-            Ok(()) => {
-                info!(
-                    audit = "secret_stored",
-                    operator = %operator,
-                    store = %body.store,
-                    wrapper = %body.wrapper,
-                    secret = %body.secret_id,
-                );
-                json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminOkResponse { ok: true },
-                )
-            }
-            Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-        },
-        Ok(PolicyDecision::Deny { reason }) => {
+    match store.write(&body.secret_id, &material) {
+        Ok(()) => {
             info!(
-                audit = "store_denied",
+                audit = "secret_stored",
                 operator = %operator,
                 store = %body.store,
-                wrapper = %body.wrapper,
                 secret = %body.secret_id,
-                reason = %reason,
             );
-            error_response(StatusCode::FORBIDDEN, "denied", &reason)
-        }
-        Ok(PolicyDecision::NeedsApproval { .. }) => {
-            // PerCallApproval is a wrapper-side mechanism; admin auth is the
-            // bearer token. evaluate_admin_store_write skips the mode gate
-            // precisely so this branch should never fire — defend in depth.
-            error_response(
-                StatusCode::FORBIDDEN,
-                "denied",
-                "per-call approval is not applicable to admin writes",
+            json_response(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminOkResponse { ok: true },
             )
         }
         Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     }
-}
-
-/// Load the policy document from `store` and evaluate the admin write gate.
-///
-/// Admin writes skip the wrapper-mode gate (Locked / Unlocked / PerCallApproval
-/// is about wrapper-side reads); only the rule/grant layer applies. When no
-/// policy document is present at all, the store has not been provisioned yet
-/// and the write is allowed so first-time bootstrap works.
-fn evaluate_admin_store_write(
-    store: &dyn StorageBackend,
-    wrapper: &str,
-    secret_id: &str,
-) -> Result<PolicyDecision> {
-    let Some(material) = store.read(POLICY_DOCUMENT_SECRET_ID)? else {
-        return Ok(PolicyDecision::Allow);
-    };
-    let document: PolicyDocument = serde_json::from_slice(material.as_ref())
-        .context("parsing backend policy document")?;
-    let resource = credential_resource(secret_id);
-    Ok(document.evaluate_after_approval(wrapper, &resource, OP_STORE_WRITE))
 }
 
 fn admin_store<'a>(

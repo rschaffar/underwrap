@@ -45,19 +45,9 @@ pub(crate) fn evaluate_after_approval_with(
     }
 }
 
-pub(crate) fn env_resource(credential_ref: &str) -> String {
-    format!("secret:{credential_ref}")
-}
-
-pub(crate) fn libsecret_resource(credential_ref: &str) -> String {
-    format!("libsecret:{credential_ref}")
-}
-
-pub(crate) fn directory_resource(credential_ref: &str) -> String {
-    format!("directory:{credential_ref}")
-}
-
-pub(crate) use underwrap_protocol::policy::{OP_STORE_WRITE, credential_resource};
+pub(crate) use underwrap_protocol::policy::{
+    OP_ENV_READ, OP_FILES_READ, OP_FILES_WRITE, OP_LIBSECRET_READ, OP_LIBSECRET_WRITE,
+};
 
 #[cfg(test)]
 mod tests {

@@ -5,20 +5,19 @@ use serde::{Deserialize, Serialize};
 /// Reserved secret id used to persist the policy document inside a backend store.
 pub const POLICY_DOCUMENT_SECRET_ID: &str = "__underwrap/policy/document";
 
-/// Operation name for any write to credential material in the StorageBackend.
-///
-/// Covers the admin `/v1/admin/secret/write` endpoint and wrapper-initiated
-/// writes that come back through the libsecret and directory channels. Reads
-/// are gated separately by `secret.read` / `libsecret.read*` /
-/// `directory.read*`.
+/// Operation names for resource-slot access.
+pub const OP_ENV_READ: &str = "env.read";
+pub const OP_FILES_READ: &str = "files.read";
+pub const OP_FILES_WRITE: &str = "files.write";
+pub const OP_LIBSECRET_READ: &str = "libsecret.read";
+pub const OP_LIBSECRET_WRITE: &str = "libsecret.write";
+
+/// Legacy mutation operation retained while the admin UI migration is in
+/// flight. New resource-slot policy should use `env.*`, `files.*`, and
+/// `libsecret.*` operations instead.
 pub const OP_STORE_WRITE: &str = "store.write";
 
-/// Resource identifier used by the [`OP_STORE_WRITE`] gate.
-///
-/// Mutation is one toggle per credential regardless of how the credential is
-/// consumed (env, libsecret, directory). The `cred:` prefix keeps it disjoint
-/// from the existing `secret:` / `libsecret:` / `directory:` resource spaces
-/// so a read-allow rule can never accidentally permit a write.
+/// Legacy resource helper retained while the admin UI migration is in flight.
 pub fn credential_resource(credential_ref: &str) -> String {
     format!("cred:{credential_ref}")
 }

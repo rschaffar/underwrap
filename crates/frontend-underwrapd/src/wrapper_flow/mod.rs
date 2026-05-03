@@ -56,7 +56,7 @@ pub(crate) async fn handle_wrapper(
         }
     };
 
-    let response = complete_read(
+    let result = complete_read(
         &mut stream,
         scope.as_deref(),
         wrapper_name,
@@ -65,9 +65,9 @@ pub(crate) async fn handle_wrapper(
         &state,
     )
     .await?;
-    write_frame_async(&mut stream, &response).await?;
+    write_frame_async(&mut stream, &result.response).await?;
 
-    establish_scoped_channels(&stream, &response, wrapper_name, &state).await;
+    establish_scoped_channels(&stream, &result.response, wrapper_name, &state, &result.snapshot).await;
 
     stream.shutdown().await?;
     Ok(())
@@ -82,7 +82,7 @@ async fn complete_read(
     peer: Option<&PeerCred>,
     peer_uid: u32,
     state: &State,
-) -> Result<WrapperResponse> {
+) -> Result<read::ReadResult> {
     info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
 
     let approval_satisfied = match check_wrapper_mode(wrapper_name, state) {
@@ -90,10 +90,20 @@ async fn complete_read(
         Ok(ModeGate::NeedApproval(approval_key)) => {
             match run_approval_round(stream, wrapper_name, &approval_key, peer_uid, state).await? {
                 ApprovalOutcome::Approved => true,
-                ApprovalOutcome::Rejected(response) => return Ok(response),
+                ApprovalOutcome::Rejected(response) => {
+                    return Ok(read::ReadResult {
+                        response,
+                        snapshot: read::BundleSnapshot::default(),
+                    });
+                }
             }
         }
-        Err(response) => return Ok(response),
+        Err(response) => {
+            return Ok(read::ReadResult {
+                response,
+                snapshot: read::BundleSnapshot::default(),
+            });
+        }
     };
 
     Ok(process_read_for(wrapper_name, scope, state, peer_uid, approval_satisfied))

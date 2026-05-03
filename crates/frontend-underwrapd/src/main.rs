@@ -51,11 +51,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("reading config from {}", cli.config.display()))?;
     let config = parse_daemon_config(&config_text)?;
 
-    info!(
-        wrappers = config.wrappers.len(),
-        credentials = config.credentials.len(),
-        "loaded configuration"
-    );
+    info!(wrappers = config.wrappers.len(), "loaded configuration");
 
     underwrapd::server::run(config, None).await
 }
@@ -80,12 +76,10 @@ backend:
   ca_file: /etc/underwrap/ca.pem
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
-credentials: {}
 wrappers: {}
 "#,
         )
         .unwrap();
-        assert!(config.credentials.is_empty());
         assert!(config.wrappers.is_empty());
         assert_eq!(config.backend.url, "https://backend.example.internal:8443");
     }

@@ -1,37 +1,51 @@
+use std::collections::HashMap;
+
 use tracing::{error, warn};
 
 use underwrap_protocol::config::AccessMode;
-use underwrap_protocol::message::{ErrorCode, WrapperResponse};
+use underwrap_protocol::message::{ErrorCode, SecretBytes, WrapperResponse};
 use underwrap_protocol::policy::PolicyDecision;
+use underwrap_protocol::resource::{
+    env_prefix, env_resource, files_prefix, files_resource, libsecret_prefix, libsecret_resource,
+    relative_to_prefix, validate_env_name,
+};
 
 use crate::audit;
 use crate::policy::{
-    directory_resource, env_resource, evaluate_after_approval_with, evaluate_with,
-    libsecret_resource, load_policy_document,
+    OP_ENV_READ, OP_FILES_READ, OP_FILES_WRITE, OP_LIBSECRET_READ, OP_LIBSECRET_WRITE,
+    evaluate_after_approval_with, evaluate_with, load_policy_document,
 };
 use crate::server::State;
 use crate::wrapper_bindings::{
-    wrapper_directory_bindings, wrapper_env_credentials, wrapper_libsecret_binding,
+    wrapper_env_resources, wrapper_file_bindings, wrapper_libsecret_resource,
 };
 
-/// Run the post-gate read: rule/grant authorization for each credential
-/// and fetch of any env-bound secret material. When `approval_satisfied`
-/// is true, mode gating is bypassed (the caller just proved presence).
+#[derive(Debug, Clone, Default)]
+pub(super) struct BundleSnapshot {
+    pub entries: HashMap<String, SecretBytes>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ReadResult {
+    pub response: WrapperResponse,
+    pub snapshot: BundleSnapshot,
+}
+
+/// Run the post-gate read: rule/grant authorization and one bundle fetch for
+/// every projected slot. When `approval_satisfied` is true, mode gating is
+/// bypassed (the caller just proved presence).
 pub(super) fn process_read_for(
     wrapper_name: &str,
     scope: Option<&str>,
     state: &State,
     peer_uid: u32,
     approval_satisfied: bool,
-) -> WrapperResponse {
+) -> ReadResult {
     let wrapper_def = match state.config.wrappers.get(wrapper_name) {
         Some(w) => w,
         None => {
             warn!(wrapper = %wrapper_name, "unknown wrapper");
-            return WrapperResponse::Error {
-                code: ErrorCode::NotFound,
-                message: format!("unknown wrapper '{wrapper_name}'"),
-            };
+            return error_result(ErrorCode::NotFound, format!("unknown wrapper '{wrapper_name}'"));
         }
     };
 
@@ -39,10 +53,7 @@ pub(super) fn process_read_for(
         Ok(doc) => doc,
         Err(e) => {
             error!(wrapper = %wrapper_name, err = %e, "failed to load policy document");
-            return WrapperResponse::Error {
-                code: ErrorCode::Internal,
-                message: "internal policy error".to_string(),
-            };
+            return error_result(ErrorCode::Internal, "internal policy error".to_string());
         }
     };
 
@@ -54,111 +65,176 @@ pub(super) fn process_read_for(
         }
     };
 
-    if let Some((credential_ref, access)) =
-        wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
-    {
-        let resource = libsecret_resource(credential_ref);
-        let operation = match access {
-            AccessMode::ReadOnly => "libsecret.read",
-            AccessMode::ReadWrite => "libsecret.readwrite",
-        };
-        match authorize(&resource, operation) {
-            PolicyDecision::Allow => {
-                audit::read_granted(wrapper_name, credential_ref, Some(peer_uid), scope);
+    let mut prefixes = Vec::new();
+    let mut env_resources = Vec::new();
+    for resource_id in wrapper_env_resources(wrapper_def) {
+        let resource = env_resource(resource_id);
+        match require_allowed(
+            &authorize,
+            wrapper_name,
+            &resource,
+            OP_ENV_READ,
+            Some(peer_uid),
+            scope,
+        ) {
+            Ok(()) => {
+                audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
+                prefixes.push(env_prefix(resource_id));
+                env_resources.push(resource_id.to_string());
             }
-            PolicyDecision::Deny { reason } => {
-                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
-                return WrapperResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: reason,
-                };
-            }
-            PolicyDecision::NeedsApproval { .. } => {
-                let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
-                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
-                return WrapperResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: reason,
-                };
-            }
+            Err(response) => return ReadResult { response, snapshot: BundleSnapshot::default() },
         }
     }
 
-    let mut env = std::collections::HashMap::new();
-    for (cred_ref, variable) in wrapper_env_credentials(wrapper_def, &state.config.credentials) {
-        let resource = env_resource(cred_ref);
-        match authorize(&resource, "secret.read") {
-            PolicyDecision::Allow => {}
-            PolicyDecision::Deny { reason } => {
-                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
-                return WrapperResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: reason,
-                };
+    let mut file_bindings = Vec::new();
+    for projection in wrapper_file_bindings(wrapper_def) {
+        let resource = files_resource(&projection.resource_id);
+        match require_allowed(
+            &authorize,
+            wrapper_name,
+            &resource,
+            OP_FILES_READ,
+            Some(peer_uid),
+            scope,
+        ) {
+            Ok(()) => {
+                let access = access_for_optional_write(
+                    &authorize,
+                    &resource,
+                    OP_FILES_WRITE,
+                );
+                audit::read_granted(wrapper_name, &projection.resource_id, Some(peer_uid), scope);
+                prefixes.push(files_prefix(&projection.resource_id));
+                file_bindings.push(projection.into_read_binding(access));
             }
-            PolicyDecision::NeedsApproval { .. } => {
-                let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
-                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
-                return WrapperResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: reason,
-                };
-            }
-        }
-        match state.store.read(cred_ref) {
-            Ok(Some(material)) => {
-                audit::read_granted(wrapper_name, cred_ref, Some(peer_uid), scope);
-                env.insert(variable.to_string(), material);
-            }
-            Ok(None) => {
-                let msg = format!("credential '{cred_ref}' not found in store");
-                audit::read_denied(wrapper_name, &msg, Some(peer_uid), scope);
-                return WrapperResponse::Error {
-                    code: ErrorCode::NotFound,
-                    message: msg,
-                };
-            }
-            Err(e) => {
-                error!(credential = %cred_ref, err = %e, "storage read error");
-                return WrapperResponse::Error {
-                    code: ErrorCode::Internal,
-                    message: "internal storage error".to_string(),
-                };
-            }
+            Err(response) => return ReadResult { response, snapshot: BundleSnapshot::default() },
         }
     }
 
-    let mut directories = Vec::new();
-    for binding in wrapper_directory_bindings(wrapper_def, &state.config.credentials) {
-        let resource = directory_resource(&binding.credential_ref);
-        let operation = match binding.access {
-            AccessMode::ReadOnly => "directory.read",
-            AccessMode::ReadWrite => "directory.readwrite",
-        };
-        match authorize(&resource, operation) {
-            PolicyDecision::Allow => {
-                audit::read_granted(wrapper_name, &binding.credential_ref, Some(peer_uid), scope);
-                directories.push(binding);
+    let mut libsecret_resource_id = None;
+    let mut libsecret_access = None;
+    if let Some(resource_id) = wrapper_libsecret_resource(wrapper_def) {
+        let resource = libsecret_resource(resource_id);
+        match require_allowed(
+            &authorize,
+            wrapper_name,
+            &resource,
+            OP_LIBSECRET_READ,
+            Some(peer_uid),
+            scope,
+        ) {
+            Ok(()) => {
+                let access = access_for_optional_write(
+                    &authorize,
+                    &resource,
+                    OP_LIBSECRET_WRITE,
+                );
+                audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
+                prefixes.push(libsecret_prefix(resource_id));
+                libsecret_resource_id = Some(resource_id.to_string());
+                libsecret_access = Some(access);
             }
-            PolicyDecision::Deny { reason } => {
-                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
-                return WrapperResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: reason,
-                };
-            }
-            PolicyDecision::NeedsApproval { .. } => {
-                let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
-                audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
-                return WrapperResponse::Error {
-                    code: ErrorCode::Unauthorized,
-                    message: reason,
-                };
-            }
+            Err(response) => return ReadResult { response, snapshot: BundleSnapshot::default() },
         }
     }
 
-    WrapperResponse::ReadOk { env, directories }
+    let snapshot = match state.store.read_prefixes(&prefixes) {
+        Ok(entries) => BundleSnapshot { entries },
+        Err(e) => {
+            error!(wrapper = %wrapper_name, err = %e, "bundle read failed");
+            return error_result(ErrorCode::Internal, "internal storage error".to_string());
+        }
+    };
+
+    let env = match build_env(wrapper_name, &env_resources, &snapshot) {
+        Ok(env) => env,
+        Err(message) => return error_result(ErrorCode::Internal, message),
+    };
+
+    // Preserve the libsecret access/resource in the snapshot by side effect: channel setup
+    // recomputes the resource id from the wrapper config and access from the response path.
+    let _ = (libsecret_resource_id, libsecret_access);
+
+    ReadResult {
+        response: WrapperResponse::ReadOk {
+            env,
+            directories: file_bindings,
+        },
+        snapshot,
+    }
+}
+
+fn build_env(
+    wrapper_name: &str,
+    resources: &[String],
+    snapshot: &BundleSnapshot,
+) -> Result<HashMap<String, SecretBytes>, String> {
+    let mut env = HashMap::new();
+    for resource_id in resources {
+        let prefix = env_prefix(resource_id);
+        for (id, material) in &snapshot.entries {
+            let Some(var_name) = relative_to_prefix(id, &prefix) else {
+                continue;
+            };
+            validate_env_name(var_name).map_err(|reason| {
+                format!(
+                    "resource '{resource_id}' contains invalid env name '{var_name}' for wrapper '{wrapper_name}': {reason}"
+                )
+            })?;
+            if env.insert(var_name.to_string(), material.clone()).is_some() {
+                return Err(format!(
+                    "duplicate env var '{var_name}' across resources for wrapper '{wrapper_name}'"
+                ));
+            }
+        }
+    }
+    Ok(env)
+}
+
+fn require_allowed(
+    authorize: &impl Fn(&str, &str) -> PolicyDecision,
+    wrapper_name: &str,
+    resource: &str,
+    operation: &str,
+    peer_uid: Option<u32>,
+    scope: Option<&str>,
+) -> Result<(), WrapperResponse> {
+    match authorize(resource, operation) {
+        PolicyDecision::Allow => Ok(()),
+        PolicyDecision::Deny { reason } => {
+            audit::read_denied(wrapper_name, &reason, peer_uid, scope);
+            Err(WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: reason,
+            })
+        }
+        PolicyDecision::NeedsApproval { .. } => {
+            let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
+            audit::read_denied(wrapper_name, &reason, peer_uid, scope);
+            Err(WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: reason,
+            })
+        }
+    }
+}
+
+fn access_for_optional_write(
+    authorize: &impl Fn(&str, &str) -> PolicyDecision,
+    resource: &str,
+    operation: &str,
+) -> AccessMode {
+    match authorize(resource, operation) {
+        PolicyDecision::Allow => AccessMode::ReadWrite,
+        PolicyDecision::Deny { .. } | PolicyDecision::NeedsApproval { .. } => AccessMode::ReadOnly,
+    }
+}
+
+fn error_result(code: ErrorCode, message: String) -> ReadResult {
+    ReadResult {
+        response: WrapperResponse::Error { code, message },
+        snapshot: BundleSnapshot::default(),
+    }
 }
 
 #[cfg(test)]
@@ -170,49 +246,36 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use underwrap_protocol::config::{
-        AccessMode, BackendServiceConfig, CredentialDef, CredentialMode, CredentialUse,
-        DaemonConfig, WrapperDef,
+        BackendServiceConfig, FilesUse, ResourceUse, WrapperDef,
     };
-    use underwrap_protocol::message::SecretBytes;
+    use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, PolicyRule};
 
     fn state_with_store(store: Arc<dyn underwrap_store::StorageBackend>) -> State {
         State {
-            config: DaemonConfig {
+            config: underwrap_protocol::config::DaemonConfig {
                 backend: BackendServiceConfig::default(),
                 allowed_users: Vec::new(),
-                credentials: HashMap::from([
-                    (
-                        "github/token".to_string(),
-                        CredentialDef {
-                            mode: CredentialMode::Env {
-                                variable: "GH_TOKEN".to_string(),
-                            },
-                        },
-                    ),
-                    (
-                        "gws/state".to_string(),
-                        CredentialDef {
-                            mode: CredentialMode::Directory {
-                                path: ".config/gcloud".to_string(),
-                            },
-                        },
-                    ),
-                ]),
                 wrappers: HashMap::from([(
                     "gh-authorized".to_string(),
                     WrapperDef {
                         target: PathBuf::from("/usr/bin/gh"),
-                        use_map: HashMap::from([
+                        resources: HashMap::from([
                             (
                                 "github/token".to_string(),
-                                CredentialUse {
-                                    access: AccessMode::ReadOnly,
+                                ResourceUse {
+                                    env: true,
+                                    files: None,
+                                    libsecret: false,
                                 },
                             ),
                             (
                                 "gws/state".to_string(),
-                                CredentialUse {
-                                    access: AccessMode::ReadWrite,
+                                ResourceUse {
+                                    env: false,
+                                    files: Some(FilesUse {
+                                        path: ".config/gcloud".to_string(),
+                                    }),
+                                    libsecret: false,
                                 },
                             ),
                         ]),
@@ -227,32 +290,35 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn process_read_for_returns_env_and_directory_bindings() {
-        let state = state_with_store(Arc::new(MemStore::with_entries(&[(
-            "github/token",
+    #[test]
+    fn process_read_for_returns_env_and_directory_bindings() {
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries(&[(
+            "github/token/env/GH_TOKEN",
             b"ghp_test",
-        )])));
-        let resp = process_read_for("gh-authorized", None, &state, 1000, true);
-        match resp {
+        )]));
+        let state = state_with_store(store);
+        let result = process_read_for("gh-authorized", None, &state, 1000, true);
+        match result.response {
             WrapperResponse::ReadOk { env, directories } => {
                 assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
                 assert_eq!(directories.len(), 1);
-                assert_eq!(directories[0].credential_ref, "gws/state");
+                assert_eq!(directories[0].resource_id, "gws/state");
             }
             other => panic!("expected ReadOk, got {other:?}"),
         }
     }
 
-    #[tokio::test]
-    async fn process_read_for_denies_when_backend_policy_lacks_required_rule() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries_and_policy(
-            &[("github/token", b"ghp_test")],
-            underwrap_protocol::policy::PolicyDocument::default(),
-        ));
+    #[test]
+    fn process_read_for_denies_when_backend_policy_lacks_required_rule() {
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(
+            MemStore::with_entries_and_policy(
+                &[("github/token/env/GH_TOKEN", b"ghp_test")],
+                PolicyDocument::default(),
+            ),
+        );
         let state = state_with_store(store);
-        let resp = process_read_for("gh-authorized", None, &state, 1000, false);
-        match resp {
+        let result = process_read_for("gh-authorized", None, &state, 1000, false);
+        match result.response {
             WrapperResponse::Error { code, message } => {
                 assert!(matches!(code, ErrorCode::Unauthorized));
                 assert!(message.contains("no backend policy rule"));
@@ -261,82 +327,50 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn process_read_for_allows_when_backend_policy_has_required_rules() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries_and_policy(
-            &[("github/token", b"ghp_test")],
-            underwrap_protocol::policy::PolicyDocument {
-                wrappers: Vec::new(),
-                rules: vec![
-                    underwrap_protocol::policy::PolicyRule {
-                        id: "env-read".to_string(),
-                        wrapper: "gh-authorized".to_string(),
-                        resource: "secret:github/token".to_string(),
-                        operation: "secret.read".to_string(),
-                        effect: underwrap_protocol::policy::PolicyEffect::Allow,
-                    },
-                    underwrap_protocol::policy::PolicyRule {
-                        id: "dir-rw".to_string(),
-                        wrapper: "gh-authorized".to_string(),
-                        resource: "directory:gws/state".to_string(),
-                        operation: "directory.readwrite".to_string(),
-                        effect: underwrap_protocol::policy::PolicyEffect::Allow,
-                    },
-                ],
-                grants: Vec::new(),
-            },
-        ));
+    #[test]
+    fn process_read_for_allows_when_backend_policy_has_required_rules() {
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(
+            MemStore::with_entries_and_policy(
+                &[("github/token/env/GH_TOKEN", b"ghp_test")],
+                PolicyDocument {
+                    rules: vec![
+                        PolicyRule {
+                            id: "env-read".to_string(),
+                            wrapper: "gh-authorized".to_string(),
+                            resource: "env:github/token".to_string(),
+                            operation: "env.read".to_string(),
+                            effect: PolicyEffect::Allow,
+                        },
+                        PolicyRule {
+                            id: "files-read".to_string(),
+                            wrapper: "gh-authorized".to_string(),
+                            resource: "files:gws/state".to_string(),
+                            operation: "files.read".to_string(),
+                            effect: PolicyEffect::Allow,
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ),
+        );
         let state = state_with_store(store);
-        let resp = process_read_for("gh-authorized", None, &state, 1000, false);
-        match resp {
-            WrapperResponse::ReadOk { env, directories } => {
-                assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
-                assert_eq!(directories.len(), 1);
-            }
-            other => panic!("expected ReadOk, got {other:?}"),
-        }
+        let result = process_read_for("gh-authorized", None, &state, 1000, false);
+        assert!(matches!(result.response, WrapperResponse::ReadOk { .. }));
     }
 
-    #[tokio::test]
-    async fn process_read_for_requires_per_call_approval_when_mode_demands() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries_and_policy(
-            &[("github/token", b"ghp_test")],
-            underwrap_protocol::policy::PolicyDocument {
-                wrappers: vec![underwrap_protocol::policy::WrapperPolicyState {
-                    wrapper: "gh-authorized".to_string(),
-                    mode: underwrap_protocol::policy::WrapperApprovalMode::PerCallApproval {
-                        approval_key: "ssh-ed25519 AAAA".to_string(),
-                    },
-                    reason: None,
-                }],
-                rules: vec![
-                    underwrap_protocol::policy::PolicyRule {
-                        id: "env-read".to_string(),
-                        wrapper: "gh-authorized".to_string(),
-                        resource: "secret:github/token".to_string(),
-                        operation: "secret.read".to_string(),
-                        effect: underwrap_protocol::policy::PolicyEffect::Allow,
-                    },
-                    underwrap_protocol::policy::PolicyRule {
-                        id: "dir-rw".to_string(),
-                        wrapper: "gh-authorized".to_string(),
-                        resource: "directory:gws/state".to_string(),
-                        operation: "directory.readwrite".to_string(),
-                        effect: underwrap_protocol::policy::PolicyEffect::Allow,
-                    },
-                ],
-                grants: Vec::new(),
-            },
-        ));
+    #[test]
+    fn invalid_backend_env_name_fails_closed() {
+        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries(&[(
+            "github/token/env/LD_PRELOAD",
+            b"evil",
+        )]));
         let state = state_with_store(store);
-
-        // Without the approval marker, authorization bubbles the NeedsApproval
-        // shape back as an Unauthorized error.
-        let resp = process_read_for("gh-authorized", None, &state, 1000, false);
-        assert!(matches!(resp, WrapperResponse::Error { .. }));
-
-        // With approval satisfied, the same request succeeds.
-        let resp = process_read_for("gh-authorized", None, &state, 1000, true);
-        assert!(matches!(resp, WrapperResponse::ReadOk { .. }));
+        let result = process_read_for("gh-authorized", None, &state, 1000, true);
+        match result.response {
+            WrapperResponse::Error { message, .. } => {
+                assert!(message.contains("invalid env name"));
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 }

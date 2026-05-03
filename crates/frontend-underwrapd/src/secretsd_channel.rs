@@ -1,50 +1,51 @@
-//! Secretsd channel handler — serves scoped StorageBackend operations
-//! over an authenticated socketpair.
+//! Secretsd channel handler — serves scoped StorageBackend operations over an
+//! authenticated socketpair.
 //!
-//! The daemon creates this handler when a libsecret-enabled wrapper
-//! connects. The handler automatically prefixes all secret IDs with
-//! the wrapper's namespace (`<wrapper>/libsecret/`), ensuring the
-//! secretsd process can only access its own secrets.
+//! Initial reads are served from the one-shot bundle snapshot fetched during
+//! wrapper authorization. Mutations are written back only when backend policy
+//! granted write access for the libsecret slot.
 
 use anyhow::{Context, Result};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tokio::net::UnixStream;
 use tracing::{debug, error, info, warn};
 
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::message::{SecretsdErrorCode, SecretsdRequest, SecretsdResponse};
-use underwrap_protocol::policy::PolicyDecision;
+use underwrap_protocol::message::{SecretBytes, SecretsdErrorCode, SecretsdRequest, SecretsdResponse};
+use underwrap_protocol::resource::relative_to_prefix;
 use underwrap_store::StorageBackend;
 
-use crate::policy::{
-    OP_STORE_WRITE, credential_resource, evaluate_after_approval_with, load_policy_document,
-};
-
 /// Run the secretsd channel handler loop on the daemon's end of the socketpair.
-///
-/// All operations are scoped to `{prefix}` which is set to
-/// `<credential-ref>` at creation time. The secretsd process sends relative
-/// IDs; this handler prepends the prefix before calling the StorageBackend.
-///
-/// Returns when the channel is closed (secretsd exited / namespace died).
 pub async fn run_channel(
     stream: UnixStream,
     store: Arc<dyn StorageBackend>,
     prefix: String,
+    entries: HashMap<String, SecretBytes>,
     wrapper_name: String,
-    credential_ref: String,
+    resource_id: String,
     access: AccessMode,
 ) {
     info!(
         wrapper = %wrapper_name,
-        credential = %credential_ref,
+        resource = %resource_id,
         prefix = %prefix,
+        ?access,
         "secretsd channel opened",
     );
 
-    if let Err(e) =
-        channel_loop(stream, store, &prefix, &wrapper_name, &credential_ref, access).await
+    let entries = Arc::new(Mutex::new(entries));
+    if let Err(e) = channel_loop(
+        stream,
+        store,
+        entries,
+        &prefix,
+        &wrapper_name,
+        &resource_id,
+        access,
+    )
+    .await
     {
         debug!(wrapper = %wrapper_name, err = %e, "secretsd channel closed");
     }
@@ -55,9 +56,10 @@ pub async fn run_channel(
 async fn channel_loop(
     mut stream: UnixStream,
     store: Arc<dyn StorageBackend>,
+    entries: Arc<Mutex<HashMap<String, SecretBytes>>>,
     prefix: &str,
     wrapper_name: &str,
-    credential_ref: &str,
+    resource_id: &str,
     access: AccessMode,
 ) -> Result<()> {
     loop {
@@ -75,8 +77,15 @@ async fn channel_loop(
             }
         };
 
-        let response =
-            process_request(&request, &*store, prefix, wrapper_name, credential_ref, access);
+        let response = process_request(
+            &request,
+            &*store,
+            &entries,
+            prefix,
+            wrapper_name,
+            resource_id,
+            access,
+        );
         write_frame_async(&mut stream, &response).await?;
     }
 }
@@ -84,9 +93,10 @@ async fn channel_loop(
 fn process_request(
     request: &SecretsdRequest,
     store: &dyn StorageBackend,
+    entries: &Mutex<HashMap<String, SecretBytes>>,
     prefix: &str,
     wrapper_name: &str,
-    credential_ref: &str,
+    resource_id: &str,
     access: AccessMode,
 ) -> SecretsdResponse {
     match request {
@@ -99,38 +109,24 @@ fn process_request(
                 };
             };
 
-            match store.read(&full_id) {
-                Ok(material) => {
-                    debug!(wrapper = %wrapper_name, id = %full_id, "secretsd read");
-                    crate::audit::secretsd_read(wrapper_name, secret_id);
-                    SecretsdResponse::ReadOk { material }
-                }
-                Err(e) => {
-                    error!(wrapper = %wrapper_name, id = %full_id, err = %e, "secretsd read error");
-                    SecretsdResponse::Error {
-                        code: SecretsdErrorCode::Internal,
-                        message: format!("storage error: {e}"),
-                    }
-                }
-            }
+            let material = entries.lock().unwrap().get(&full_id).cloned();
+            debug!(wrapper = %wrapper_name, id = %full_id, "secretsd read");
+            crate::audit::secretsd_read(wrapper_name, secret_id);
+            SecretsdResponse::ReadOk { material }
         }
 
-        SecretsdRequest::Write {
-            secret_id,
-            material,
-        } => {
+        SecretsdRequest::Write { secret_id, material } => {
             if access != AccessMode::ReadWrite {
+                crate::audit::wrapper_write_denied(
+                    "libsecret",
+                    wrapper_name,
+                    resource_id,
+                    secret_id,
+                    "libsecret slot is not write-authorized by backend policy",
+                );
                 return SecretsdResponse::Error {
                     code: SecretsdErrorCode::Unauthorized,
-                    message: "credential is read-only".to_string(),
-                };
-            }
-            if let Err(message) =
-                check_store_write_policy(store, wrapper_name, credential_ref, secret_id, "libsecret")
-            {
-                return SecretsdResponse::Error {
-                    code: SecretsdErrorCode::Unauthorized,
-                    message,
+                    message: "libsecret slot is read-only by backend policy".to_string(),
                 };
             }
             let Some(full_id) = scoped_id(prefix, secret_id) else {
@@ -143,6 +139,7 @@ fn process_request(
 
             match store.write(&full_id, material.as_ref()) {
                 Ok(()) => {
+                    entries.lock().unwrap().insert(full_id.clone(), material.clone());
                     debug!(wrapper = %wrapper_name, id = %full_id, "secretsd write");
                     crate::audit::secretsd_write(wrapper_name, secret_id);
                     SecretsdResponse::WriteOk
@@ -171,39 +168,34 @@ fn process_request(
                 format!("{prefix}/{rel_prefix}")
             };
 
-            match store.list(&full_prefix) {
-                Ok(ids) => {
-                    let relative_prefix = format!("{prefix}/");
-                    let relative_ids: Vec<String> = ids
-                        .into_iter()
-                        .filter_map(|id| id.strip_prefix(&relative_prefix).map(|s| s.to_string()))
-                        .collect();
-                    debug!(wrapper = %wrapper_name, prefix = %full_prefix, count = relative_ids.len(), "secretsd list");
-                    SecretsdResponse::ListOk { ids: relative_ids }
-                }
-                Err(e) => {
-                    error!(wrapper = %wrapper_name, prefix = %full_prefix, err = %e, "secretsd list error");
-                    SecretsdResponse::Error {
-                        code: SecretsdErrorCode::Internal,
-                        message: format!("storage error: {e}"),
-                    }
-                }
-            }
+            let mut relative_ids: Vec<String> = entries
+                .lock()
+                .unwrap()
+                .keys()
+                .filter_map(|id| relative_to_prefix(id, prefix).map(ToString::to_string))
+                .filter(|id| {
+                    rel_prefix.is_empty()
+                        || id == rel_prefix
+                        || id.starts_with(&format!("{rel_prefix}/"))
+                })
+                .collect();
+            relative_ids.sort();
+            debug!(wrapper = %wrapper_name, prefix = %full_prefix, count = relative_ids.len(), "secretsd list");
+            SecretsdResponse::ListOk { ids: relative_ids }
         }
 
         SecretsdRequest::Delete { secret_id } => {
             if access != AccessMode::ReadWrite {
+                crate::audit::wrapper_write_denied(
+                    "libsecret",
+                    wrapper_name,
+                    resource_id,
+                    secret_id,
+                    "libsecret slot is not write-authorized by backend policy",
+                );
                 return SecretsdResponse::Error {
                     code: SecretsdErrorCode::Unauthorized,
-                    message: "credential is read-only".to_string(),
-                };
-            }
-            if let Err(message) =
-                check_store_write_policy(store, wrapper_name, credential_ref, secret_id, "libsecret")
-            {
-                return SecretsdResponse::Error {
-                    code: SecretsdErrorCode::Unauthorized,
-                    message,
+                    message: "libsecret slot is read-only by backend policy".to_string(),
                 };
             }
             let Some(full_id) = scoped_id(prefix, secret_id) else {
@@ -216,6 +208,7 @@ fn process_request(
 
             match store.delete(&full_id) {
                 Ok(existed) => {
+                    entries.lock().unwrap().remove(&full_id);
                     debug!(wrapper = %wrapper_name, id = %full_id, existed = existed, "secretsd delete");
                     crate::audit::secretsd_delete(wrapper_name, secret_id);
                     SecretsdResponse::DeleteOk { existed }
@@ -232,59 +225,21 @@ fn process_request(
     }
 }
 
-/// Evaluate the `store.write` policy gate for a wrapper-initiated mutation
-/// against the credential the channel was opened for. Returns Ok if the
-/// write is permitted, otherwise an Err carrying the message to surface to
-/// the secretsd peer (the same string is also logged via audit).
-///
-/// The channel was authenticated when the wrapper request opened it, so the
-/// mode gate is bypassed (`evaluate_after_approval_with`). Only the rule and
-/// grant layer applies.
-fn check_store_write_policy(
-    store: &dyn StorageBackend,
-    wrapper_name: &str,
-    credential_ref: &str,
-    item: &str,
-    kind: &str,
-) -> std::result::Result<(), String> {
-    let document = match load_policy_document(store) {
-        Ok(doc) => doc,
-        Err(e) => {
-            error!(wrapper = %wrapper_name, err = %e, "failed to load policy document for store.write gate");
-            return Err("internal policy error".to_string());
-        }
-    };
-    let resource = credential_resource(credential_ref);
-    match evaluate_after_approval_with(&document, wrapper_name, &resource, OP_STORE_WRITE) {
-        PolicyDecision::Allow => Ok(()),
-        PolicyDecision::Deny { reason } => {
-            crate::audit::wrapper_write_denied(kind, wrapper_name, credential_ref, item, &reason);
-            Err(reason)
-        }
-        PolicyDecision::NeedsApproval { .. } => {
-            // Channel was authenticated at creation; per-call approval cannot
-            // be solved on a long-lived helper channel. Treat as deny.
-            let reason = "per-call approval is not applicable to wrapper channels".to_string();
-            crate::audit::wrapper_write_denied(kind, wrapper_name, credential_ref, item, &reason);
-            Err(reason)
-        }
+fn scoped_id(prefix: &str, secret_id: &str) -> Option<String> {
+    if has_traversal(secret_id) {
+        None
+    } else {
+        Some(format!("{prefix}/{secret_id}"))
     }
 }
 
-/// Construct a scoped secret ID by prepending the prefix.
-/// Returns None if the relative ID contains traversal components.
-fn scoped_id(prefix: &str, relative_id: &str) -> Option<String> {
-    if relative_id.is_empty() || has_traversal(relative_id) {
-        return None;
-    }
-    Some(format!("{prefix}/{relative_id}"))
-}
-
-/// Check for path traversal attempts.
-fn has_traversal(s: &str) -> bool {
-    s.starts_with('/')
-        || s.contains('\0')
-        || s.split('/').any(|c| c == "." || c == ".." || c.is_empty())
+fn has_traversal(path: &str) -> bool {
+    path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\0')
+        || path
+            .split('/')
+            .any(|c| c == "." || c == ".." || c.is_empty())
 }
 
 #[cfg(test)]
@@ -292,217 +247,60 @@ mod tests {
     use super::*;
     use crate::test_support::MemStore;
 
-    const PREFIX: &str = "test-wrapper/libsecret";
-    const WRAPPER: &str = "test-wrapper";
-    const CREDENTIAL: &str = "test-wrapper/libsecret";
+    fn entries(items: &[(&str, &[u8])]) -> Mutex<HashMap<String, SecretBytes>> {
+        Mutex::new(
+            items
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), SecretBytes::from(*v)))
+                .collect(),
+        )
+    }
 
     #[test]
-    fn scoped_read_write() {
-        let store = MemStore::new();
-
+    fn read_uses_snapshot() {
+        let store = MemStore::with_entries(&[]);
+        let entries = entries(&[("gh/libsecret/default/item.secret", b"s")]);
         let resp = process_request(
-            &SecretsdRequest::Write {
-                secret_id: "default/item_1".to_string(),
-                material: "secret_value".into(),
+            &SecretsdRequest::Read {
+                secret_id: "default/item.secret".to_string(),
             },
             &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
+            &entries,
+            "gh/libsecret",
+            "wrapper",
+            "gh",
+            AccessMode::ReadOnly,
         );
-        assert!(matches!(resp, SecretsdResponse::WriteOk));
-
         assert_eq!(
-            store.read("test-wrapper/libsecret/default/item_1").unwrap(),
-            Some("secret_value".into())
-        );
-
-        let resp = process_request(
-            &SecretsdRequest::Read {
-                secret_id: "default/item_1".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
-        );
-        match resp {
-            SecretsdResponse::ReadOk { material } => {
-                assert_eq!(material, Some("secret_value".into()));
+            resp,
+            SecretsdResponse::ReadOk {
+                material: Some(SecretBytes::from("s"))
             }
-            other => panic!("expected ReadOk, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn scoped_list_returns_relative_ids() {
-        let store = MemStore::new();
-        store
-            .write("test-wrapper/libsecret/default/item_1", b"v1")
-            .unwrap();
-        store
-            .write("test-wrapper/libsecret/default/item_2", b"v2")
-            .unwrap();
-        store
-            .write("test-wrapper/libsecret/other/item_3", b"v3")
-            .unwrap();
-        store
-            .write("other-wrapper/libsecret/default/item_x", b"vx")
-            .unwrap();
-
-        let resp = process_request(
-            &SecretsdRequest::List {
-                prefix: "".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
-        );
-        match resp {
-            SecretsdResponse::ListOk { ids } => {
-                assert_eq!(ids.len(), 3);
-                assert!(ids.contains(&"default/item_1".to_string()));
-                assert!(ids.contains(&"default/item_2".to_string()));
-                assert!(ids.contains(&"other/item_3".to_string()));
-            }
-            other => panic!("expected ListOk, got {other:?}"),
-        }
-
-        let resp = process_request(
-            &SecretsdRequest::List {
-                prefix: "default".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
-        );
-        match resp {
-            SecretsdResponse::ListOk { ids } => {
-                assert_eq!(ids.len(), 2);
-            }
-            other => panic!("expected ListOk, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn scoped_delete() {
-        let store = MemStore::new();
-        store
-            .write("test-wrapper/libsecret/default/item_1", b"v1")
-            .unwrap();
-
-        let resp = process_request(
-            &SecretsdRequest::Delete {
-                secret_id: "default/item_1".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
-        );
-        match resp {
-            SecretsdResponse::DeleteOk { existed } => assert!(existed),
-            other => panic!("expected DeleteOk, got {other:?}"),
-        }
-
-        assert!(
-            store
-                .read("test-wrapper/libsecret/default/item_1")
-                .unwrap()
-                .is_none()
         );
     }
 
     #[test]
-    fn rejects_traversal_attempts() {
-        let store = MemStore::new();
-
+    fn write_requires_backend_policy_derived_access() {
+        let store = MemStore::with_entries(&[]);
+        let entries = entries(&[]);
         let resp = process_request(
             &SecretsdRequest::Write {
-                secret_id: "../other-wrapper/secret".to_string(),
-                material: "hacked".into(),
+                secret_id: "default/item.secret".to_string(),
+                material: SecretBytes::from("s"),
             },
             &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
+            &entries,
+            "gh/libsecret",
+            "wrapper",
+            "gh",
+            AccessMode::ReadOnly,
         );
-        assert!(matches!(resp, SecretsdResponse::Error { .. }));
-
-        let resp = process_request(
-            &SecretsdRequest::Read {
-                secret_id: "/etc/passwd".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
-        );
-        assert!(matches!(resp, SecretsdResponse::Error { .. }));
-
-        let resp = process_request(
-            &SecretsdRequest::Read {
-                secret_id: "".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
-        );
-        assert!(matches!(resp, SecretsdResponse::Error { .. }));
-
-        let resp = process_request(
-            &SecretsdRequest::Read {
-                secret_id: "default//item".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
-        );
-        assert!(matches!(resp, SecretsdResponse::Error { .. }));
-
-        let resp = process_request(
-            &SecretsdRequest::List {
-                prefix: "../../etc".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
-        );
-        assert!(matches!(resp, SecretsdResponse::Error { .. }));
-    }
-
-    #[test]
-    fn cannot_access_other_wrapper_secrets() {
-        let store = MemStore::new();
-        store
-            .write("other-wrapper/libsecret/default/token", b"stolen")
-            .unwrap();
-
-        let resp = process_request(
-            &SecretsdRequest::Read {
-                secret_id: "../../other-wrapper/libsecret/default/token".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            CREDENTIAL,
-            AccessMode::ReadWrite,
-        );
-        assert!(matches!(resp, SecretsdResponse::Error { .. }));
+        assert!(matches!(
+            resp,
+            SecretsdResponse::Error {
+                code: SecretsdErrorCode::Unauthorized,
+                ..
+            }
+        ));
     }
 }

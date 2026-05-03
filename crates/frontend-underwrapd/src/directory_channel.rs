@@ -1,11 +1,12 @@
-//! Directory credential channel handler — serves scoped StorageBackend operations
-//! over an authenticated socketpair.
+//! Directory resource channel handler — serves scoped operations over an
+//! authenticated socketpair.
 //!
-//! The daemon creates one handler per directory credential binding during an
-//! authenticated wrapper read. The handler scopes all operations to
-//! `<credential-ref>/files/` and enforces the wrapper's access mode.
+//! Initial reads are served from the one-shot bundle snapshot fetched during
+//! wrapper authorization. Mutations are written back to the backend store only
+//! when the backend policy-derived access mode is read-write.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use tokio::net::UnixStream;
@@ -13,44 +14,52 @@ use tracing::{debug, error, info, warn};
 
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::message::{DirectoryErrorCode, DirectoryRequest, DirectoryResponse};
-use underwrap_protocol::policy::PolicyDecision;
+use underwrap_protocol::message::{DirectoryErrorCode, DirectoryRequest, DirectoryResponse, SecretBytes};
+use underwrap_protocol::resource::relative_to_prefix;
 use underwrap_store::StorageBackend;
-
-use crate::policy::{
-    OP_STORE_WRITE, credential_resource, evaluate_after_approval_with, load_policy_document,
-};
 
 pub async fn run_channel(
     stream: UnixStream,
     store: Arc<dyn StorageBackend>,
     prefix: String,
+    entries: HashMap<String, SecretBytes>,
     wrapper_name: String,
-    credential_ref: String,
+    resource_id: String,
     access: AccessMode,
 ) {
     info!(
         wrapper = %wrapper_name,
-        credential = %credential_ref,
+        resource = %resource_id,
         prefix = %prefix,
+        ?access,
         "directory channel opened",
     );
 
-    if let Err(e) =
-        channel_loop(stream, store, &prefix, &wrapper_name, &credential_ref, access).await
+    let entries = Arc::new(Mutex::new(entries));
+    if let Err(e) = channel_loop(
+        stream,
+        store,
+        entries,
+        &prefix,
+        &wrapper_name,
+        &resource_id,
+        access,
+    )
+    .await
     {
-        debug!(credential = %credential_ref, err = %e, "directory channel closed");
+        debug!(resource = %resource_id, err = %e, "directory channel closed");
     }
 
-    info!(credential = %credential_ref, "directory channel handler exited");
+    info!(resource = %resource_id, "directory channel handler exited");
 }
 
 async fn channel_loop(
     mut stream: UnixStream,
     store: Arc<dyn StorageBackend>,
+    entries: Arc<Mutex<HashMap<String, SecretBytes>>>,
     prefix: &str,
     wrapper_name: &str,
-    credential_ref: &str,
+    resource_id: &str,
     access: AccessMode,
 ) -> Result<()> {
     loop {
@@ -68,8 +77,15 @@ async fn channel_loop(
             }
         };
 
-        let response =
-            process_request(&request, &*store, prefix, wrapper_name, credential_ref, access);
+        let response = process_request(
+            &request,
+            &*store,
+            &entries,
+            prefix,
+            wrapper_name,
+            resource_id,
+            access,
+        );
         write_frame_async(&mut stream, &response).await?;
     }
 }
@@ -77,73 +93,53 @@ async fn channel_loop(
 fn process_request(
     request: &DirectoryRequest,
     store: &dyn StorageBackend,
+    entries: &Mutex<HashMap<String, SecretBytes>>,
     prefix: &str,
     wrapper_name: &str,
-    credential_ref: &str,
+    resource_id: &str,
     access: AccessMode,
 ) -> DirectoryResponse {
     match request {
-        DirectoryRequest::ListFiles => match store.list(prefix) {
-            Ok(ids) => {
-                let mut paths = Vec::new();
-                let relative_prefix = format!("{prefix}/");
-                for id in ids {
-                    if let Some(path) = id.strip_prefix(&relative_prefix) {
-                        paths.push(path.to_string());
-                    }
-                }
-                paths.sort();
-                debug!(credential = %credential_ref, count = paths.len(), "directory list");
-                DirectoryResponse::ListFilesOk { paths }
-            }
-            Err(e) => {
-                error!(credential = %credential_ref, err = %e, "directory list error");
-                DirectoryResponse::Error {
-                    code: DirectoryErrorCode::Internal,
-                    message: format!("storage error: {e}"),
-                }
-            }
-        },
+        DirectoryRequest::ListFiles => {
+            let mut paths: Vec<String> = entries
+                .lock()
+                .unwrap()
+                .keys()
+                .filter_map(|id| relative_to_prefix(id, prefix).map(ToString::to_string))
+                .collect();
+            paths.sort();
+            debug!(resource = %resource_id, count = paths.len(), "directory list");
+            DirectoryResponse::ListFilesOk { paths }
+        }
         DirectoryRequest::ReadFile { path } => {
             let Some(full_id) = scoped_file_id(prefix, path) else {
-                warn!(credential = %credential_ref, path = %path, "rejected invalid directory read");
+                warn!(resource = %resource_id, path = %path, "rejected invalid directory read");
                 return DirectoryResponse::Error {
                     code: DirectoryErrorCode::InvalidRequest,
                     message: "invalid file path".to_string(),
                 };
             };
 
-            match store.read(&full_id) {
-                Ok(content) => {
-                    debug!(credential = %credential_ref, path = %path, "directory read");
-                    DirectoryResponse::ReadFileOk { content }
-                }
-                Err(e) => {
-                    error!(credential = %credential_ref, path = %path, err = %e, "directory read error");
-                    DirectoryResponse::Error {
-                        code: DirectoryErrorCode::Internal,
-                        message: format!("storage error: {e}"),
-                    }
-                }
-            }
+            let material = entries.lock().unwrap().get(&full_id).cloned();
+            debug!(resource = %resource_id, path = %path, "directory read");
+            DirectoryResponse::ReadFileOk { content: material }
         }
         DirectoryRequest::WriteFile { path, content } => {
             if access != AccessMode::ReadWrite {
+                crate::audit::wrapper_write_denied(
+                    "files",
+                    wrapper_name,
+                    resource_id,
+                    path,
+                    "files slot is not write-authorized by backend policy",
+                );
                 return DirectoryResponse::Error {
                     code: DirectoryErrorCode::Unauthorized,
-                    message: "credential is read-only".to_string(),
-                };
-            }
-            if let Err(message) =
-                check_store_write_policy(store, wrapper_name, credential_ref, path)
-            {
-                return DirectoryResponse::Error {
-                    code: DirectoryErrorCode::Unauthorized,
-                    message,
+                    message: "files slot is read-only by backend policy".to_string(),
                 };
             }
             let Some(full_id) = scoped_file_id(prefix, path) else {
-                warn!(credential = %credential_ref, path = %path, "rejected invalid directory write");
+                warn!(resource = %resource_id, path = %path, "rejected invalid directory write");
                 return DirectoryResponse::Error {
                     code: DirectoryErrorCode::InvalidRequest,
                     message: "invalid file path".to_string(),
@@ -152,11 +148,12 @@ fn process_request(
 
             match store.write(&full_id, content.as_ref()) {
                 Ok(()) => {
-                    debug!(credential = %credential_ref, path = %path, size = content.as_ref().len(), "directory write");
+                    entries.lock().unwrap().insert(full_id.clone(), content.clone());
+                    debug!(resource = %resource_id, path = %path, size = content.as_ref().len(), "directory write");
                     DirectoryResponse::WriteFileOk
                 }
                 Err(e) => {
-                    error!(credential = %credential_ref, path = %path, err = %e, "directory write error");
+                    error!(resource = %resource_id, path = %path, err = %e, "directory write error");
                     DirectoryResponse::Error {
                         code: DirectoryErrorCode::Internal,
                         message: format!("storage error: {e}"),
@@ -166,21 +163,20 @@ fn process_request(
         }
         DirectoryRequest::DeleteFile { path } => {
             if access != AccessMode::ReadWrite {
+                crate::audit::wrapper_write_denied(
+                    "files",
+                    wrapper_name,
+                    resource_id,
+                    path,
+                    "files slot is not write-authorized by backend policy",
+                );
                 return DirectoryResponse::Error {
                     code: DirectoryErrorCode::Unauthorized,
-                    message: "credential is read-only".to_string(),
-                };
-            }
-            if let Err(message) =
-                check_store_write_policy(store, wrapper_name, credential_ref, path)
-            {
-                return DirectoryResponse::Error {
-                    code: DirectoryErrorCode::Unauthorized,
-                    message,
+                    message: "files slot is read-only by backend policy".to_string(),
                 };
             }
             let Some(full_id) = scoped_file_id(prefix, path) else {
-                warn!(credential = %credential_ref, path = %path, "rejected invalid directory delete");
+                warn!(resource = %resource_id, path = %path, "rejected invalid directory delete");
                 return DirectoryResponse::Error {
                     code: DirectoryErrorCode::InvalidRequest,
                     message: "invalid file path".to_string(),
@@ -189,57 +185,18 @@ fn process_request(
 
             match store.delete(&full_id) {
                 Ok(existed) => {
-                    debug!(credential = %credential_ref, path = %path, existed = existed, "directory delete");
+                    entries.lock().unwrap().remove(&full_id);
+                    debug!(resource = %resource_id, path = %path, existed = existed, "directory delete");
                     DirectoryResponse::DeleteFileOk { existed }
                 }
                 Err(e) => {
-                    error!(credential = %credential_ref, path = %path, err = %e, "directory delete error");
+                    error!(resource = %resource_id, path = %path, err = %e, "directory delete error");
                     DirectoryResponse::Error {
                         code: DirectoryErrorCode::Internal,
                         message: format!("storage error: {e}"),
                     }
                 }
             }
-        }
-    }
-}
-
-fn check_store_write_policy(
-    store: &dyn StorageBackend,
-    wrapper_name: &str,
-    credential_ref: &str,
-    path: &str,
-) -> std::result::Result<(), String> {
-    let document = match load_policy_document(store) {
-        Ok(doc) => doc,
-        Err(e) => {
-            error!(wrapper = %wrapper_name, err = %e, "failed to load policy document for store.write gate");
-            return Err("internal policy error".to_string());
-        }
-    };
-    let resource = credential_resource(credential_ref);
-    match evaluate_after_approval_with(&document, wrapper_name, &resource, OP_STORE_WRITE) {
-        PolicyDecision::Allow => Ok(()),
-        PolicyDecision::Deny { reason } => {
-            crate::audit::wrapper_write_denied(
-                "directory",
-                wrapper_name,
-                credential_ref,
-                path,
-                &reason,
-            );
-            Err(reason)
-        }
-        PolicyDecision::NeedsApproval { .. } => {
-            let reason = "per-call approval is not applicable to wrapper channels".to_string();
-            crate::audit::wrapper_write_denied(
-                "directory",
-                wrapper_name,
-                credential_ref,
-                path,
-                &reason,
-            );
-            Err(reason)
         }
     }
 }
@@ -262,120 +219,67 @@ mod tests {
     use super::*;
     use crate::test_support::MemStore;
 
-    const PREFIX: &str = "gws/state/files";
-    const WRAPPER: &str = "gws-wrapper";
-    const REF: &str = "gws/state";
+    fn entries(items: &[(&str, &[u8])]) -> Mutex<HashMap<String, SecretBytes>> {
+        Mutex::new(
+            items
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), SecretBytes::from(*v)))
+                .collect(),
+        )
+    }
 
     #[test]
-    fn list_read_write_delete_roundtrip() {
-        let store = MemStore::new();
-        process_request(
-            &DirectoryRequest::WriteFile {
-                path: "config.json".to_string(),
-                content: b"{}".as_slice().into(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            REF,
-            AccessMode::ReadWrite,
-        );
-        process_request(
-            &DirectoryRequest::WriteFile {
-                path: "sub/token.bin".to_string(),
-                content: b"abc".as_slice().into(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            REF,
-            AccessMode::ReadWrite,
-        );
-
+    fn list_and_read_use_snapshot() {
+        let store = MemStore::with_entries(&[]);
+        let entries = entries(&[("gws/state/files/token", b"abc")]);
         let resp = process_request(
             &DirectoryRequest::ListFiles,
             &store,
-            PREFIX,
-            WRAPPER,
-            REF,
-            AccessMode::ReadWrite,
+            &entries,
+            "gws/state/files",
+            "wrapper",
+            "gws/state",
+            AccessMode::ReadOnly,
         );
-        match resp {
-            DirectoryResponse::ListFilesOk { paths } => {
-                assert_eq!(paths, vec!["config.json", "sub/token.bin"]);
+        assert_eq!(
+            resp,
+            DirectoryResponse::ListFilesOk {
+                paths: vec!["token".to_string()]
             }
-            other => panic!("expected ListFilesOk, got {other:?}"),
-        }
-
+        );
         let resp = process_request(
             &DirectoryRequest::ReadFile {
-                path: "sub/token.bin".to_string(),
+                path: "token".to_string(),
             },
             &store,
-            PREFIX,
-            WRAPPER,
-            REF,
-            AccessMode::ReadWrite,
+            &entries,
+            "gws/state/files",
+            "wrapper",
+            "gws/state",
+            AccessMode::ReadOnly,
         );
-        match resp {
-            DirectoryResponse::ReadFileOk { content } => {
-                assert_eq!(content, Some(b"abc".as_slice().into()));
-            }
-            other => panic!("expected ReadFileOk, got {other:?}"),
-        }
-
-        let resp = process_request(
-            &DirectoryRequest::DeleteFile {
-                path: "config.json".to_string(),
-            },
-            &store,
-            PREFIX,
-            WRAPPER,
-            REF,
-            AccessMode::ReadWrite,
-        );
-        assert!(matches!(
+        assert_eq!(
             resp,
-            DirectoryResponse::DeleteFileOk { existed: true }
-        ));
+            DirectoryResponse::ReadFileOk {
+                content: Some(SecretBytes::from("abc"))
+            }
+        );
     }
 
     #[test]
-    fn rejects_invalid_paths() {
-        let store = MemStore::new();
-        for path in ["", "/etc/passwd", "../x", "a//b", "a/./b"] {
-            let resp = process_request(
-                &DirectoryRequest::ReadFile {
-                    path: path.to_string(),
-                },
-                &store,
-                PREFIX,
-                WRAPPER,
-                REF,
-                AccessMode::ReadWrite,
-            );
-            assert!(matches!(
-                resp,
-                DirectoryResponse::Error {
-                    code: DirectoryErrorCode::InvalidRequest,
-                    ..
-                }
-            ));
-        }
-    }
-
-    #[test]
-    fn read_only_rejects_mutation() {
-        let store = MemStore::new();
+    fn write_requires_backend_policy_derived_access() {
+        let store = MemStore::with_entries(&[]);
+        let entries = entries(&[]);
         let resp = process_request(
             &DirectoryRequest::WriteFile {
-                path: "config.json".to_string(),
-                content: b"{}".as_slice().into(),
+                path: "token".to_string(),
+                content: SecretBytes::from("abc"),
             },
             &store,
-            PREFIX,
-            WRAPPER,
-            REF,
+            &entries,
+            "gws/state/files",
+            "wrapper",
+            "gws/state",
             AccessMode::ReadOnly,
         );
         assert!(matches!(

@@ -40,6 +40,22 @@ pub struct ServiceListResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceReadPrefixesRequest {
+    pub prefixes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceBundleEntry {
+    pub id: String,
+    pub material_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceReadPrefixesResponse {
+    pub entries: Vec<ServiceBundleEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceDeleteRequest {
     pub secret_id: String,
 }

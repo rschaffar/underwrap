@@ -59,14 +59,14 @@ impl WireDecode for WrapperRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadDirectoryBinding {
-    pub credential_ref: String,
+    pub resource_id: String,
     pub target_path: String,
     pub access: AccessMode,
 }
 
 impl WireEncode for ReadDirectoryBinding {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        self.credential_ref.encode(out)?;
+        self.resource_id.encode(out)?;
         self.target_path.encode(out)?;
         self.access.encode(out)
     }
@@ -75,7 +75,7 @@ impl WireEncode for ReadDirectoryBinding {
 impl WireDecode for ReadDirectoryBinding {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         Ok(Self {
-            credential_ref: String::decode(reader)?,
+            resource_id: String::decode(reader)?,
             target_path: String::decode(reader)?,
             access: AccessMode::decode(reader)?,
         })

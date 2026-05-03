@@ -119,7 +119,7 @@ fn exec_via_ns(
         .iter()
         .enumerate()
         .map(|(index, binding)| ExecDirectoryBinding {
-            credential_ref: binding.metadata.credential_ref.clone(),
+            resource_id: binding.metadata.resource_id.clone(),
             target_path: binding.metadata.target_path.clone(),
             access: binding.metadata.access,
             channel_fd: (FIRST_DIRECTORY_CHANNEL_FD + index as i32) as u32,
@@ -420,7 +420,7 @@ fn request_secret(socket_path: &str, libsecret: bool) -> Result<ReadSecretResult
         let fd = underwrap_protocol::scm_rights::recv_fd(&stream).with_context(|| {
             format!(
                 "failed to receive directory channel fd for credential '{}'",
-                metadata.credential_ref
+                metadata.resource_id
             )
         })?;
         directory_bindings.push(ReceivedDirectoryBinding {

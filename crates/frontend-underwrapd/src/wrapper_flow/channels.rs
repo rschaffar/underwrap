@@ -4,58 +4,80 @@ use tracing::{error, info};
 
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::message::WrapperResponse;
+use underwrap_protocol::resource::{files_prefix, libsecret_prefix};
 
 use crate::server::State;
-use crate::wrapper_bindings::{wrapper_directory_bindings, wrapper_libsecret_binding};
+use crate::wrapper_bindings::{wrapper_file_bindings, wrapper_libsecret_resource};
 
-/// Set up scoped channels for credentials that were already authorized
-/// in [`super::read::process_read_for`]. Only called when the response
-/// is `ReadOk`, so no re-authorization is needed.
+use super::read::BundleSnapshot;
+
+/// Set up scoped channels for resource slots that were already authorized in
+/// [`super::read::process_read_for`]. Only called when the response is
+/// `ReadOk`, so no re-authorization is needed for initial reads. Write policy
+/// remains enforced by each channel's access mode, derived from backend policy.
 pub(super) async fn establish_scoped_channels(
     stream: &UnixStream,
     response: &WrapperResponse,
     wrapper_name: &str,
     state: &State,
+    snapshot: &BundleSnapshot,
 ) {
-    if !matches!(response, WrapperResponse::ReadOk { .. }) {
+    let WrapperResponse::ReadOk { directories, .. } = response else {
         return;
-    }
+    };
 
     let Some(wrapper_def) = state.config.wrappers.get(wrapper_name) else {
         return;
     };
 
-    if let Some((credential_ref, access)) =
-        wrapper_libsecret_binding(wrapper_def, &state.config.credentials)
-    {
-        match setup_secretsd_channel(stream, wrapper_name, credential_ref, access, state).await {
+    if let Some(resource_id) = wrapper_libsecret_resource(wrapper_def) {
+        let access = access_for_resource(directories, resource_id).unwrap_or(AccessMode::ReadOnly);
+        match setup_secretsd_channel(stream, wrapper_name, resource_id, access, state, snapshot)
+            .await
+        {
             Ok(()) => {
-                info!(wrapper = %wrapper_name, credential = %credential_ref, "secretsd channel established");
+                info!(wrapper = %wrapper_name, resource = %resource_id, "secretsd channel established");
             }
             Err(e) => {
-                error!(wrapper = %wrapper_name, credential = %credential_ref, err = %e, "failed to setup secretsd channel");
+                error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "failed to setup secretsd channel");
             }
         }
     }
 
-    for binding in wrapper_directory_bindings(wrapper_def, &state.config.credentials) {
+    for projection in wrapper_file_bindings(wrapper_def) {
+        let access = directories
+            .iter()
+            .find(|binding| binding.resource_id == projection.resource_id)
+            .map(|binding| binding.access)
+            .unwrap_or(AccessMode::ReadOnly);
         match setup_directory_channel(
             stream,
             wrapper_name,
-            &binding.credential_ref,
-            binding.access,
+            &projection.resource_id,
+            access,
             state,
+            snapshot,
         )
         .await
         {
             Ok(()) => {
-                info!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, "directory channel established");
+                info!(wrapper = %wrapper_name, resource = %projection.resource_id, path = %projection.target_path, "directory channel established");
             }
             Err(e) => {
-                error!(wrapper = %wrapper_name, credential = %binding.credential_ref, path = %binding.target_path, err = %e, "failed to setup directory channel");
+                error!(wrapper = %wrapper_name, resource = %projection.resource_id, path = %projection.target_path, err = %e, "failed to setup directory channel");
             }
         }
     }
+}
+
+fn access_for_resource(
+    directories: &[underwrap_protocol::message::ReadDirectoryBinding],
+    resource_id: &str,
+) -> Option<AccessMode> {
+    directories
+        .iter()
+        .find(|binding| binding.resource_id == resource_id)
+        .map(|binding| binding.access)
 }
 
 async fn setup_scoped_channel(
@@ -84,22 +106,25 @@ async fn setup_scoped_channel(
 async fn setup_secretsd_channel(
     stream: &UnixStream,
     wrapper_name: &str,
-    credential_ref: &str,
+    resource_id: &str,
     access: AccessMode,
     state: &State,
+    snapshot: &BundleSnapshot,
 ) -> Result<()> {
-    let prefix = credential_ref.to_string();
+    let prefix = libsecret_prefix(resource_id);
+    let entries = snapshot.entries.clone();
     let store = state.store_arc();
     let wrapper = wrapper_name.to_string();
-    let credential = credential_ref.to_string();
+    let resource = resource_id.to_string();
     setup_scoped_channel(stream, "secretsd channel fd", move |daemon_stream| {
         tokio::spawn(async move {
             crate::secretsd_channel::run_channel(
                 daemon_stream,
                 store,
                 prefix,
+                entries,
                 wrapper,
-                credential,
+                resource,
                 access,
             )
             .await;
@@ -111,22 +136,25 @@ async fn setup_secretsd_channel(
 async fn setup_directory_channel(
     stream: &UnixStream,
     wrapper_name: &str,
-    credential_ref: &str,
+    resource_id: &str,
     access: AccessMode,
     state: &State,
+    snapshot: &BundleSnapshot,
 ) -> Result<()> {
-    let prefix = format!("{credential_ref}/files");
+    let prefix = files_prefix(resource_id);
+    let entries = snapshot.entries.clone();
     let store = state.store_arc();
     let wrapper = wrapper_name.to_string();
-    let credential = credential_ref.to_string();
+    let resource = resource_id.to_string();
     setup_scoped_channel(stream, "directory channel fd", move |daemon_stream| {
         tokio::spawn(async move {
             crate::directory_channel::run_channel(
                 daemon_stream,
                 store,
                 prefix,
+                entries,
                 wrapper,
-                credential,
+                resource,
                 access,
             )
             .await;

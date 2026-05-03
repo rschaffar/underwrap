@@ -1,57 +1,63 @@
-use underwrap_protocol::config::{AccessMode, CredentialMode, WrapperDef};
+use underwrap_protocol::config::{FilesUse, ResourceUse, WrapperDef};
 use underwrap_protocol::message::ReadDirectoryBinding;
 
-pub(crate) fn wrapper_libsecret_binding<'a>(
-    wrapper: &'a WrapperDef,
-    credentials: &'a std::collections::HashMap<String, underwrap_protocol::config::CredentialDef>,
-) -> Option<(&'a str, AccessMode)> {
-    wrapper.use_map.iter().find_map(|(cred_ref, usage)| {
-        match credentials.get(cred_ref).map(|c| &c.mode) {
-            Some(CredentialMode::Libsecret {}) => Some((cred_ref.as_str(), usage.access)),
-            _ => None,
-        }
+pub(crate) fn wrapper_libsecret_resource(wrapper: &WrapperDef) -> Option<&str> {
+    wrapper.resources.iter().find_map(|(resource_id, usage)| {
+        usage
+            .libsecret
+            .then_some(resource_id.as_str())
     })
 }
 
-pub(crate) fn wrapper_env_credentials<'a>(
-    wrapper: &'a WrapperDef,
-    credentials: &'a std::collections::HashMap<String, underwrap_protocol::config::CredentialDef>,
-) -> Vec<(&'a str, &'a str)> {
-    let mut out = Vec::new();
-    for cred_ref in wrapper.use_map.keys() {
-        if let Some(underwrap_protocol::config::CredentialDef {
-            mode: CredentialMode::Env { variable },
-        }) = credentials.get(cred_ref)
-        {
-            out.push((cred_ref.as_str(), variable.as_str()));
-        }
-    }
+pub(crate) fn wrapper_env_resources(wrapper: &WrapperDef) -> Vec<&str> {
+    let mut out: Vec<&str> = wrapper
+        .resources
+        .iter()
+        .filter_map(|(resource_id, usage)| usage.env.then_some(resource_id.as_str()))
+        .collect();
+    out.sort();
     out
 }
 
-pub(crate) fn wrapper_directory_bindings(
-    wrapper: &WrapperDef,
-    credentials: &std::collections::HashMap<String, underwrap_protocol::config::CredentialDef>,
-) -> Vec<ReadDirectoryBinding> {
+pub(crate) fn wrapper_file_bindings(wrapper: &WrapperDef) -> Vec<FileProjection> {
     let mut out = Vec::new();
-    for (cred_ref, usage) in &wrapper.use_map {
-        if let Some(underwrap_protocol::config::CredentialDef {
-            mode: CredentialMode::Directory { path },
-        }) = credentials.get(cred_ref)
-        {
-            out.push(ReadDirectoryBinding {
-                credential_ref: cred_ref.clone(),
+    for (resource_id, usage) in &wrapper.resources {
+        if let Some(FilesUse { path }) = &usage.files {
+            out.push(FileProjection {
+                resource_id: resource_id.clone(),
                 target_path: path.clone(),
-                access: usage.access,
             });
         }
     }
     out.sort_by(|a, b| {
         a.target_path
             .cmp(&b.target_path)
-            .then(a.credential_ref.cmp(&b.credential_ref))
+            .then(a.resource_id.cmp(&b.resource_id))
     });
     out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileProjection {
+    pub resource_id: String,
+    pub target_path: String,
+}
+
+impl FileProjection {
+    pub(crate) fn into_read_binding(
+        self,
+        access: underwrap_protocol::config::AccessMode,
+    ) -> ReadDirectoryBinding {
+        ReadDirectoryBinding {
+            resource_id: self.resource_id,
+            target_path: self.target_path,
+            access,
+        }
+    }
+}
+
+pub(crate) fn resource_has_projection(usage: &ResourceUse) -> bool {
+    usage.env || usage.files.is_some() || usage.libsecret
 }
 
 #[cfg(test)]
@@ -59,89 +65,61 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use underwrap_protocol::config::{CredentialDef, CredentialUse};
+    use underwrap_protocol::config::{FilesUse, ResourceUse};
 
-    fn env_credential(variable: &str) -> CredentialDef {
-        CredentialDef {
-            mode: CredentialMode::Env {
-                variable: variable.to_string(),
-            },
-        }
-    }
-
-    fn libsecret_credential() -> CredentialDef {
-        CredentialDef {
-            mode: CredentialMode::Libsecret {},
-        }
-    }
-
-    fn directory_credential(path: &str) -> CredentialDef {
-        CredentialDef {
-            mode: CredentialMode::Directory {
-                path: path.to_string(),
-            },
-        }
-    }
-
-    fn wrapper_with_uses(uses: &[(&str, CredentialUse)]) -> WrapperDef {
+    fn wrapper_with_resources(resources: &[(&str, ResourceUse)]) -> WrapperDef {
         WrapperDef {
             target: PathBuf::from("/usr/bin/true"),
-            use_map: uses
+            resources: resources
                 .iter()
                 .map(|(name, usage)| ((*name).to_string(), usage.clone()))
-                .collect(),
+                .collect::<HashMap<_, _>>(),
             socket: PathBuf::new(),
             group: "test-group".to_string(),
         }
     }
 
     #[test]
-    fn wrapper_binding_helpers_select_expected_credentials() {
-        let credentials = HashMap::from([
-            ("github/token".to_string(), env_credential("GH_TOKEN")),
-            ("libsecret/default".to_string(), libsecret_credential()),
+    fn wrapper_binding_helpers_select_expected_resources() {
+        let wrapper = wrapper_with_resources(&[
             (
-                "gws/state".to_string(),
-                directory_credential(".config/gcloud"),
-            ),
-        ]);
-        let wrapper = wrapper_with_uses(&[
-            (
-                "libsecret/default",
-                CredentialUse {
-                    access: AccessMode::ReadWrite,
+                "github/token",
+                ResourceUse {
+                    env: true,
+                    files: None,
+                    libsecret: false,
                 },
             ),
             (
-                "github/token",
-                CredentialUse {
-                    access: AccessMode::ReadOnly,
+                "libsecret/default",
+                ResourceUse {
+                    env: false,
+                    files: None,
+                    libsecret: true,
                 },
             ),
             (
                 "gws/state",
-                CredentialUse {
-                    access: AccessMode::ReadWrite,
+                ResourceUse {
+                    env: false,
+                    files: Some(FilesUse {
+                        path: ".config/gcloud".to_string(),
+                    }),
+                    libsecret: false,
                 },
             ),
         ]);
 
         assert_eq!(
-            wrapper_libsecret_binding(&wrapper, &credentials),
-            Some(("libsecret/default", AccessMode::ReadWrite))
+            wrapper_libsecret_resource(&wrapper),
+            Some("libsecret/default")
         );
-
+        assert_eq!(wrapper_env_resources(&wrapper), vec!["github/token"]);
         assert_eq!(
-            wrapper_env_credentials(&wrapper, &credentials),
-            vec![("github/token", "GH_TOKEN")]
-        );
-
-        assert_eq!(
-            wrapper_directory_bindings(&wrapper, &credentials),
-            vec![ReadDirectoryBinding {
-                credential_ref: "gws/state".to_string(),
+            wrapper_file_bindings(&wrapper),
+            vec![FileProjection {
+                resource_id: "gws/state".to_string(),
                 target_path: ".config/gcloud".to_string(),
-                access: AccessMode::ReadWrite,
             }]
         );
     }

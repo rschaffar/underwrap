@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecDirectoryBinding {
-    pub credential_ref: String,
+    pub resource_id: String,
     pub target_path: String,
     pub access: AccessMode,
     pub channel_fd: u32,
@@ -14,7 +14,7 @@ pub struct ExecDirectoryBinding {
 
 impl WireEncode for ExecDirectoryBinding {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        self.credential_ref.encode(out)?;
+        self.resource_id.encode(out)?;
         self.target_path.encode(out)?;
         self.access.encode(out)?;
         self.channel_fd.encode(out)
@@ -24,7 +24,7 @@ impl WireEncode for ExecDirectoryBinding {
 impl WireDecode for ExecDirectoryBinding {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         Ok(Self {
-            credential_ref: String::decode(reader)?,
+            resource_id: String::decode(reader)?,
             target_path: String::decode(reader)?,
             access: AccessMode::decode(reader)?,
             channel_fd: u32::decode(reader)?,
@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn exec_directory_binding_roundtrip() {
         let binding = ExecDirectoryBinding {
-            credential_ref: "gws/state".to_string(),
+            resource_id: "gws/state".to_string(),
             target_path: ".config/gh".to_string(),
             access: AccessMode::ReadWrite,
             channel_fd: 12,
@@ -110,13 +110,13 @@ mod tests {
             ]),
             directories: vec![
                 ExecDirectoryBinding {
-                    credential_ref: "gws/state".to_string(),
+                    resource_id: "gws/state".to_string(),
                     target_path: ".config/gh".to_string(),
                     access: AccessMode::ReadWrite,
                     channel_fd: 10,
                 },
                 ExecDirectoryBinding {
-                    credential_ref: "aws/cache".to_string(),
+                    resource_id: "aws/cache".to_string(),
                     target_path: ".aws/sso/cache".to_string(),
                     access: AccessMode::ReadOnly,
                     channel_fd: 11,

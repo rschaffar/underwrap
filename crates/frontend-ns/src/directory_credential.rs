@@ -9,7 +9,7 @@ use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{DirectoryRequest, DirectoryResponse};
 
 pub struct MountedDirectory {
-    pub credential_ref: String,
+    pub resource_id: String,
     pub access: AccessMode,
     pub channel_fd: i32,
     pub target_mount_path: PathBuf,
@@ -44,7 +44,7 @@ pub fn prepare_directory_mounts(
             let content = channel.read_file(&relative_path)?.ok_or_else(|| {
                 format!(
                     "directory credential '{}' listed file '{}' but read returned no content",
-                    binding.credential_ref, relative_path
+                    binding.resource_id, relative_path
                 )
             })?;
             materialize_file(&staging_path, &relative_path, &content)?;
@@ -60,7 +60,7 @@ pub fn prepare_directory_mounts(
         )?;
 
         mounted.push(MountedDirectory {
-            credential_ref: binding.credential_ref.clone(),
+            resource_id: binding.resource_id.clone(),
             access: binding.access,
             channel_fd: binding.channel_fd as i32,
             target_mount_path,
@@ -217,7 +217,7 @@ fn sync_directory(directory: &MountedDirectory) -> Result<(), String> {
             format!(
                 "reading staged file {} for sync of '{}': {e}",
                 directory.staging_path.join(relative_path).display(),
-                directory.credential_ref,
+                directory.resource_id,
             )
         })?;
         channel.write_file(relative_path, &bytes)?;

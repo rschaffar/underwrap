@@ -5,6 +5,7 @@ use base64::Engine;
 use reqwest::Certificate;
 use reqwest::Identity;
 use reqwest::header::CONTENT_TYPE;
+use std::collections::HashMap;
 use std::fs;
 use std::sync::mpsc;
 
@@ -12,8 +13,9 @@ use underwrap_protocol::config::BackendServiceConfig;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::service::{
     ServiceDeleteRequest, ServiceDeleteResponse, ServiceErrorResponse, ServiceListRequest,
-    ServiceListResponse, ServiceReadRequest, ServiceReadResponse, ServiceStatusResponse,
-    ServiceWriteRequest, ServiceWriteResponse,
+    ServiceListResponse, ServiceReadPrefixesRequest, ServiceReadPrefixesResponse,
+    ServiceReadRequest, ServiceReadResponse, ServiceStatusResponse, ServiceWriteRequest,
+    ServiceWriteResponse,
 };
 
 use crate::StorageBackend;
@@ -31,6 +33,10 @@ enum Command {
     List {
         prefix: String,
         reply: mpsc::Sender<Result<Vec<String>>>,
+    },
+    ReadPrefixes {
+        prefixes: Vec<String>,
+        reply: mpsc::Sender<Result<HashMap<String, SecretBytes>>>,
     },
     Delete {
         secret_id: String,
@@ -106,6 +112,13 @@ impl ServiceBackend {
                     Command::List { prefix, reply } => {
                         let _ =
                             reply.send(runtime.block_on(list_request(&client, &base_url, &prefix)));
+                    }
+                    Command::ReadPrefixes { prefixes, reply } => {
+                        let _ = reply.send(runtime.block_on(read_prefixes_request(
+                            &client,
+                            &base_url,
+                            &prefixes,
+                        )));
                     }
                     Command::Delete { secret_id, reply } => {
                         let _ = reply
@@ -199,6 +212,37 @@ async fn list_request(
         .await
         .context("decoding backend list response")?;
     Ok(body.ids)
+}
+
+async fn read_prefixes_request(
+    client: &reqwest::Client,
+    base_url: &str,
+    prefixes: &[String],
+) -> Result<HashMap<String, SecretBytes>> {
+    let response = client
+        .post(endpoint(base_url, "/v1/read-prefixes"))
+        .header(CONTENT_TYPE, "application/json")
+        .json(&ServiceReadPrefixesRequest {
+            prefixes: prefixes.to_vec(),
+        })
+        .send()
+        .await
+        .context("sending backend read-prefixes request")?;
+    if !response.status().is_success() {
+        bail!(parse_error(response).await);
+    }
+    let body: ServiceReadPrefixesResponse = response
+        .json()
+        .await
+        .context("decoding backend read-prefixes response")?;
+    let mut out = HashMap::new();
+    for entry in body.entries {
+        let material = base64::engine::general_purpose::STANDARD
+            .decode(entry.material_b64)
+            .with_context(|| format!("decoding backend bundle payload for {}", entry.id))?;
+        out.insert(entry.id, material.into());
+    }
+    Ok(out)
 }
 
 async fn delete_request(client: &reqwest::Client, base_url: &str, secret_id: &str) -> Result<bool> {
@@ -303,6 +347,18 @@ impl StorageBackend for ServiceBackend {
             .context("sending delete command to service backend worker")?;
         rx.recv()
             .context("receiving delete response from service backend worker")?
+    }
+
+    fn read_prefixes(&self, prefixes: &[String]) -> Result<HashMap<String, SecretBytes>> {
+        let (tx, rx) = mpsc::channel();
+        self.sender
+            .send(Command::ReadPrefixes {
+                prefixes: prefixes.to_vec(),
+                reply: tx,
+            })
+            .context("sending read-prefixes command to service backend worker")?;
+        rx.recv()
+            .context("receiving read-prefixes response from service backend worker")?
     }
 }
 

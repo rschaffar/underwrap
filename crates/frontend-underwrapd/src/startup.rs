@@ -3,7 +3,7 @@ use tokio::net::UnixListener;
 use tokio::task::JoinSet;
 use tracing::info;
 
-use underwrap_protocol::config::{AccessMode, CredentialMode, DaemonConfig};
+use underwrap_protocol::config::DaemonConfig;
 
 /// Build a wrapper-name → GID lookup table.
 /// Resolves group names to GIDs via libc getgrnam at startup.
@@ -78,13 +78,6 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
         "backend.client_key_file is required"
     );
 
-    for (cred_ref, credential) in &config.credentials {
-        if let CredentialMode::Directory { path } = &credential.mode {
-            validate_relative_credential_path(path)
-                .with_context(|| format!("credential '{cred_ref}' has invalid directory path"))?;
-        }
-    }
-
     let mut sockets = std::collections::HashSet::new();
     for (name, wrapper) in &config.wrappers {
         anyhow::ensure!(
@@ -100,49 +93,37 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
             wrapper.socket.display(),
         );
         anyhow::ensure!(
-            !wrapper.use_map.is_empty(),
-            "wrapper '{}' must use at least one credential",
+            !wrapper.resources.is_empty(),
+            "wrapper '{}' must project at least one resource slot",
             name
         );
 
-        let mut env_vars = std::collections::HashSet::new();
         let mut libsecret_count = 0usize;
         let mut directory_paths: Vec<String> = Vec::new();
-        for (cred_ref, usage) in &wrapper.use_map {
-            let credential = config.credentials.get(cred_ref).with_context(|| {
-                format!("wrapper '{name}' references undeclared credential '{cred_ref}'")
-            })?;
-            match &credential.mode {
-                CredentialMode::Env { variable } => {
-                    anyhow::ensure!(
-                        usage.access == AccessMode::ReadOnly,
-                        "wrapper '{}' uses env credential '{}' with read-write access; env credentials must be read-only",
-                        name,
-                        cred_ref,
-                    );
-                    anyhow::ensure!(
-                        env_vars.insert(variable.clone()),
-                        "wrapper '{}' uses multiple env credentials that map to variable '{}'",
-                        name,
-                        variable,
-                    );
-                }
-                CredentialMode::Libsecret {} => {
-                    libsecret_count += 1;
-                }
-                CredentialMode::Directory { path } => {
-                    validate_relative_credential_path(path).with_context(|| {
-                        format!("wrapper '{name}' uses directory credential '{cred_ref}' with invalid path")
-                    })?;
-                    directory_paths.push(path.clone());
-                }
+        for (resource_id, usage) in &wrapper.resources {
+            anyhow::ensure!(
+                crate::wrapper_bindings::resource_has_projection(usage),
+                "wrapper '{}' resource '{}' does not project any slot",
+                name,
+                resource_id,
+            );
+            if usage.libsecret {
+                libsecret_count += 1;
+            }
+            if let Some(files) = &usage.files {
+                validate_relative_credential_path(&files.path).with_context(|| {
+                    format!(
+                        "wrapper '{name}' projects resource '{resource_id}' files slot with invalid path"
+                    )
+                })?;
+                directory_paths.push(files.path.clone());
             }
         }
         for (i, left) in directory_paths.iter().enumerate() {
             for right in directory_paths.iter().skip(i + 1) {
                 anyhow::ensure!(
                     !paths_overlap(left, right),
-                    "wrapper '{}' uses overlapping directory credential paths '{}' and '{}'",
+                    "wrapper '{}' uses overlapping directory resource paths '{}' and '{}'",
                     name,
                     left,
                     right,
@@ -151,7 +132,7 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
         }
         anyhow::ensure!(
             libsecret_count <= 1,
-            "wrapper '{}' may use at most one libsecret credential",
+            "wrapper '{}' may project at most one libsecret slot",
             name,
         );
     }
@@ -219,9 +200,10 @@ pub(crate) fn bind_socket(
     Ok(listener)
 }
 
+/// Wait for the next listener task result; used by the main server loop.
 pub(crate) async fn next_listener_result(tasks: &mut JoinSet<Result<()>>) -> Result<()> {
     match tasks.join_next().await {
-        Some(r) => r.context("listener task panicked")?,
+        Some(result) => result.context("socket listener task panicked")?,
         None => Ok(()),
     }
 }
@@ -231,27 +213,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validate_relative_credential_path_accepts_clean_relative_paths() {
-        assert!(validate_relative_credential_path(".config/gh").is_ok());
-        assert!(validate_relative_credential_path("dir/subdir/file").is_ok());
-    }
-
-    #[test]
-    fn validate_relative_credential_path_rejects_bad_inputs() {
-        for bad in ["", "/abs", ".", "..", "a//b", "a/./b", "a/../b", "a\0b"] {
-            assert!(
-                validate_relative_credential_path(bad).is_err(),
-                "expected rejection for {bad:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn paths_overlap_detects_identical_and_nested_paths() {
-        assert!(paths_overlap("a/b", "a/b"));
-        assert!(paths_overlap("a", "a/b"));
-        assert!(paths_overlap("a/b", "a"));
-        assert!(!paths_overlap("a/b", "a-b"));
-        assert!(!paths_overlap("a/b", "a/c"));
+    fn paths_overlap_detects_parent_child_and_equal() {
+        assert!(paths_overlap(".config/gws", ".config/gws"));
+        assert!(paths_overlap(".config/gws", ".config/gws/session"));
+        assert!(paths_overlap(".config/gws/session", ".config/gws"));
+        assert!(!paths_overlap(".config/gws", ".config/gws2"));
+        assert!(!paths_overlap(".config/a", ".local/a"));
     }
 }

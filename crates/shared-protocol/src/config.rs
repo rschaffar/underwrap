@@ -15,10 +15,6 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub allowed_users: Vec<String>,
 
-    /// Reusable credentials, keyed by credential reference.
-    #[serde(default)]
-    pub credentials: HashMap<String, CredentialDef>,
-
     /// Wrapper definitions, keyed by wrapper name.
     #[serde(default)]
     pub wrappers: HashMap<String, WrapperDef>,
@@ -85,37 +81,20 @@ pub struct BackendServiceConfig {
     pub client_key_file: Option<PathBuf>,
 }
 
-/// A reusable credential definition, keyed by credential reference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CredentialDef {
-    #[serde(flatten)]
-    pub mode: CredentialMode,
-}
-
-/// How a credential is exposed to the wrapped target.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode", deny_unknown_fields)]
-pub enum CredentialMode {
-    /// Inject as an environment variable.
-    #[serde(rename = "env")]
-    Env { variable: String },
-    /// Expose as a private Secret Service namespace.
-    #[serde(rename = "libsecret")]
-    Libsecret {},
-    /// Expose as a private directory mounted into the target home view.
-    #[serde(rename = "directory")]
-    Directory { path: String },
-}
-
 /// A wrapper definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WrapperDef {
     /// Absolute path to the target binary to exec.
     pub target: PathBuf,
 
-    /// Credential usage bindings for this wrapper, keyed by credential ref.
-    #[serde(rename = "use", default)]
-    pub use_map: HashMap<String, CredentialUse>,
+    /// Resource projections for this wrapper, keyed by backend resource id.
+    ///
+    /// A resource always has all three backend slots (`env`, `files`,
+    /// `libsecret`). This map only decides which slots the frontend projects
+    /// into the wrapped process. Read/write authority is decided solely by the
+    /// backend policy document.
+    #[serde(default)]
+    pub resources: HashMap<String, ResourceUse>,
 
     /// Unix socket path for this wrapper's authenticated daemon channel.
     pub socket: PathBuf,
@@ -124,11 +103,33 @@ pub struct WrapperDef {
     pub group: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CredentialUse {
-    pub access: AccessMode,
+/// Frontend projection of one backend resource into a wrapper invocation.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceUse {
+    /// Project every variable configured in `<resource>/env/*` into the
+    /// target environment.
+    #[serde(default)]
+    pub env: bool,
+
+    /// Project `<resource>/files/*` as a namespace-private directory mounted
+    /// at `path` relative to the target user's home.
+    #[serde(default)]
+    pub files: Option<FilesUse>,
+
+    /// Project `<resource>/libsecret/*` through a private Secret Service.
+    #[serde(default)]
+    pub libsecret: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FilesUse {
+    /// Target-home-relative path for the files slot.
+    pub path: String,
+}
+
+/// Local capability derived from backend policy for a projected mutable slot.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AccessMode {
     #[serde(rename = "read-only")]
@@ -152,7 +153,6 @@ backend:
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.wrappers.is_empty());
-        assert!(config.credentials.is_empty());
         assert_eq!(config.backend.url, "https://backend.example.internal:8443");
         assert_eq!(
             config.backend.ca_file,
@@ -176,117 +176,69 @@ backend:
   ca_file: /etc/underwrap/ca.pem
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
-credentials:
-  github/token:
-    mode: env
-    variable: GH_TOKEN
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
-    use:
+    resources:
       github/token:
-        access: read-only
+        env: true
+      gws/state:
+        files:
+          path: .config/gws
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.wrappers.len(), 1);
-        assert_eq!(config.credentials.len(), 1);
         let w = &config.wrappers["gh-authorized"];
         assert_eq!(w.target, PathBuf::from("/usr/bin/gh"));
-        assert_eq!(w.use_map.len(), 1);
-        match &config.credentials["github/token"].mode {
-            CredentialMode::Env { variable } => assert_eq!(variable, "GH_TOKEN"),
-            other => panic!("expected env credential, got {other:?}"),
-        }
+        assert_eq!(w.resources.len(), 2);
+        assert!(w.resources["github/token"].env);
+        assert_eq!(
+            w.resources["gws/state"].files.as_ref().unwrap().path,
+            ".config/gws"
+        );
     }
 
     #[test]
-    fn directory_credential_parses() {
-        let yaml = r#"
-backend:
-  url: https://backend.example.internal
-  ca_file: /x
-  client_cert_file: /y
-  client_key_file: /z
-credentials:
-  gws/state:
-    mode: directory
-    path: .config/gws
-"#;
-        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        match &config.credentials["gws/state"].mode {
-            CredentialMode::Directory { path } => assert_eq!(path, ".config/gws"),
-            other => panic!("expected directory credential, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn directory_credential_requires_path() {
+    fn resource_use_rejects_unknown_fields() {
         let yaml = r#"
 backend:
   url: https://x
   ca_file: /x
   client_cert_file: /y
   client_key_file: /z
-credentials:
-  gws/state:
-    mode: directory
-"#;
-        let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
-        assert!(err.to_string().contains("missing field `path`"));
-    }
-
-    #[test]
-    fn env_credential_rejects_path_field() {
-        let yaml = r#"
-backend:
-  url: https://x
-  ca_file: /x
-  client_cert_file: /y
-  client_key_file: /z
-credentials:
-  jira/api-token:
-    mode: env
-    variable: JIRA_API_TOKEN
-    path: .config/jira
-"#;
-        let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field `path`"));
-    }
-
-    #[test]
-    fn directory_credential_rejects_variable_field() {
-        let yaml = r#"
-backend:
-  url: https://x
-  ca_file: /x
-  client_cert_file: /y
-  client_key_file: /z
-credentials:
-  gws/state:
-    mode: directory
-    path: .config/gws
-    variable: SHOULD_NOT_EXIST
+wrappers:
+  bad:
+    target: /usr/bin/true
+    socket: /run/x.sock
+    group: g
+    resources:
+      github/token:
+        variable: GH_TOKEN
 "#;
         let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field `variable`"));
     }
 
     #[test]
-    fn libsecret_credential_rejects_path_field() {
+    fn files_projection_requires_path() {
         let yaml = r#"
 backend:
   url: https://x
   ca_file: /x
   client_cert_file: /y
   client_key_file: /z
-credentials:
-  github/gh:
-    mode: libsecret
-    path: .config/gh
+wrappers:
+  bad:
+    target: /usr/bin/true
+    socket: /run/x.sock
+    group: g
+    resources:
+      gws/state:
+        files: {}
 "#;
         let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field `path`"));
+        assert!(err.to_string().contains("missing field `path`"));
     }
 }
