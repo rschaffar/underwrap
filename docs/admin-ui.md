@@ -4,9 +4,9 @@
 backend's admin API in a form-based UI.
 
 Operators log in with a username + password, pick a backend target, and
-manage wrapper modes, rules, and grants. The UI holds the backend's
-admin bearer token internally and signs session cookies with its own
-session key.
+manage resource state, wrapper modes, rules, and grants. The UI holds
+the backend's admin bearer token internally and signs session cookies
+with its own session key.
 
 ## Deployment shape
 
@@ -65,10 +65,19 @@ backends:
 - **`/login`** — username + password form. Submits via `POST /login`.
 - **`/`** — logged-in landing page listing the configured backend
   targets.
-- **`/t/<target>`** — store switcher and the three editors below.
+- **`/t/<target>`** — store switcher and the editors below.
 
 Inside one store view:
 
+- **Resources** — grouped by backend resource id. Each resource always
+  has three visible slots:
+  - `env`
+  - `files`
+  - `libsecret`
+
+  The page lists existing entries for each slot and provides forms to
+  write new env variables, file entries, and libsecret entries, plus a
+  delete action for any stored entry.
 - **Wrappers** table — shows each wrapper's current mode with a color-
   coded tag. Below each row, an inline form changes the mode to
   `locked`, `unlocked` (permanent), `unlocked_until` (with an epoch

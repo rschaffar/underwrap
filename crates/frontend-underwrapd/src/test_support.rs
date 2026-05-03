@@ -10,12 +10,6 @@ pub(crate) struct MemStore {
 }
 
 impl MemStore {
-    pub fn new() -> Self {
-        Self {
-            data: Mutex::new(HashMap::new()),
-        }
-    }
-
     pub fn with_entries(entries: &[(&str, &[u8])]) -> Self {
         Self {
             data: Mutex::new(
@@ -40,10 +34,7 @@ impl MemStore {
         }
     }
 
-    pub fn with_entries_and_policy(
-        entries: &[(&str, &[u8])],
-        document: PolicyDocument,
-    ) -> Self {
+    pub fn with_entries_and_policy(entries: &[(&str, &[u8])], document: PolicyDocument) -> Self {
         let mut data: HashMap<String, Vec<u8>> = entries
             .iter()
             .map(|(k, v)| ((*k).to_string(), v.to_vec()))

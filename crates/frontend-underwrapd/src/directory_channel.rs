@@ -14,7 +14,9 @@ use tracing::{debug, error, info, warn};
 
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::message::{DirectoryErrorCode, DirectoryRequest, DirectoryResponse, SecretBytes};
+use underwrap_protocol::message::{
+    DirectoryErrorCode, DirectoryRequest, DirectoryResponse, SecretBytes,
+};
 use underwrap_protocol::resource::relative_to_prefix;
 use underwrap_store::StorageBackend;
 
@@ -148,7 +150,10 @@ fn process_request(
 
             match store.write(&full_id, content.as_ref()) {
                 Ok(()) => {
-                    entries.lock().unwrap().insert(full_id.clone(), content.clone());
+                    entries
+                        .lock()
+                        .unwrap()
+                        .insert(full_id.clone(), content.clone());
                     debug!(resource = %resource_id, path = %path, size = content.as_ref().len(), "directory write");
                     DirectoryResponse::WriteFileOk
                 }

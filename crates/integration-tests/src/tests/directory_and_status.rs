@@ -6,36 +6,18 @@ async fn overlapping_directory_paths_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let mut credentials = HashMap::new();
-    credentials.insert("gws/state".to_string(), directory_credential(".config/gws"));
-    credentials.insert(
-        "gws/state-nested".to_string(),
-        directory_credential(".config/gws/session"),
-    );
-
-    let mut use_map = HashMap::new();
-    use_map.insert(
-        "gws/state".to_string(),
-        underwrap_protocol::config::CredentialUse {
-            access: underwrap_protocol::config::AccessMode::ReadWrite,
-        },
-    );
-    use_map.insert(
-        "gws/state-nested".to_string(),
-        underwrap_protocol::config::CredentialUse {
-            access: underwrap_protocol::config::AccessMode::ReadWrite,
-        },
-    );
-
-    let mut wrapper_def = wrapper("/usr/bin/true", "gws/state", "IGNORED");
-    wrapper_def.use_map = use_map;
+    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
+    wrapper_def.resources = HashMap::from([
+        ("gws/state".to_string(), files_resource(".config/gws")),
+        (
+            "gws/state-nested".to_string(),
+            files_resource(".config/gws/session"),
+        ),
+    ]);
     wrapper_def.socket = wrapper_socket;
 
-    let err = daemon_config_error(credentials, wrapper_def).await;
-    assert!(
-        err.to_string()
-            .contains("overlapping directory credential paths")
-    );
+    let err = daemon_config_error(wrapper_def).await;
+    assert!(err.contains("overlapping directory resource paths"));
 }
 
 #[tokio::test]
@@ -44,32 +26,15 @@ async fn duplicate_directory_paths_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let mut credentials = HashMap::new();
-    credentials.insert(
-        "gws/state-a".to_string(),
-        directory_credential(".config/gws"),
-    );
-    credentials.insert(
-        "gws/state-b".to_string(),
-        directory_credential(".config/gws"),
-    );
-
-    let mut use_map = HashMap::new();
-    for cred in ["gws/state-a", "gws/state-b"] {
-        use_map.insert(
-            cred.to_string(),
-            underwrap_protocol::config::CredentialUse {
-                access: underwrap_protocol::config::AccessMode::ReadWrite,
-            },
-        );
-    }
-
-    let mut wrapper_def = wrapper("/usr/bin/true", "gws/state-a", "IGNORED");
-    wrapper_def.use_map = use_map;
+    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
+    wrapper_def.resources = HashMap::from([
+        ("gws/state-a".to_string(), files_resource(".config/gws")),
+        ("gws/state-b".to_string(), files_resource(".config/gws")),
+    ]);
     wrapper_def.socket = wrapper_socket;
 
-    let err = daemon_config_error(credentials, wrapper_def).await;
-    assert!(err.contains("overlapping directory credential paths"));
+    let err = daemon_config_error(wrapper_def).await;
+    assert!(err.contains("overlapping directory resource paths"));
 }
 
 #[tokio::test]
@@ -78,19 +43,12 @@ async fn absolute_directory_path_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let credentials = HashMap::from([("gws/state".to_string(), directory_credential("/etc/gws"))]);
-
-    let mut wrapper_def = wrapper("/usr/bin/true", "gws/state", "IGNORED");
-    wrapper_def.use_map.insert(
-        "gws/state".to_string(),
-        underwrap_protocol::config::CredentialUse {
-            access: underwrap_protocol::config::AccessMode::ReadWrite,
-        },
-    );
+    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
+    wrapper_def.resources = HashMap::from([("gws/state".to_string(), files_resource("/etc/gws"))]);
     wrapper_def.socket = wrapper_socket;
 
-    let err = daemon_config_error(credentials, wrapper_def).await;
-    assert!(err.contains("invalid directory path") || err.contains("path must be relative"));
+    let err = daemon_config_error(wrapper_def).await;
+    assert!(err.contains("invalid path") || err.contains("path must be relative"));
 }
 
 #[tokio::test]
@@ -99,22 +57,13 @@ async fn traversal_directory_path_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let credentials = HashMap::from([(
-        "gws/state".to_string(),
-        directory_credential(".config/../gws"),
-    )]);
-
-    let mut wrapper_def = wrapper("/usr/bin/true", "gws/state", "IGNORED");
-    wrapper_def.use_map.insert(
-        "gws/state".to_string(),
-        underwrap_protocol::config::CredentialUse {
-            access: underwrap_protocol::config::AccessMode::ReadWrite,
-        },
-    );
+    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
+    wrapper_def.resources =
+        HashMap::from([("gws/state".to_string(), files_resource(".config/../gws"))]);
     wrapper_def.socket = wrapper_socket;
 
-    let err = daemon_config_error(credentials, wrapper_def).await;
-    assert!(err.contains("invalid directory path") || err.contains("path must be clean"));
+    let err = daemon_config_error(wrapper_def).await;
+    assert!(err.contains("invalid path") || err.contains("path must be clean"));
 }
 
 #[tokio::test]
@@ -123,56 +72,29 @@ async fn empty_segment_directory_path_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let credentials = HashMap::from([(
-        "gws/state".to_string(),
-        directory_credential(".config//gws"),
-    )]);
-
-    let mut wrapper_def = wrapper("/usr/bin/true", "gws/state", "IGNORED");
-    wrapper_def.use_map.insert(
-        "gws/state".to_string(),
-        underwrap_protocol::config::CredentialUse {
-            access: underwrap_protocol::config::AccessMode::ReadWrite,
-        },
-    );
+    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
+    wrapper_def.resources =
+        HashMap::from([("gws/state".to_string(), files_resource(".config//gws"))]);
     wrapper_def.socket = wrapper_socket;
 
-    let err = daemon_config_error(credentials, wrapper_def).await;
-    assert!(err.contains("invalid directory path") || err.contains("empty segments"));
+    let err = daemon_config_error(wrapper_def).await;
+    assert!(err.contains("invalid path") || err.contains("empty segments"));
 }
 
 #[tokio::test]
 async fn directory_bindings_are_returned_on_read() {
     let mut wrappers = HashMap::new();
-    let mut use_map = HashMap::new();
-    use_map.insert(
-        "gws/state-a".to_string(),
-        underwrap_protocol::config::CredentialUse {
-            access: underwrap_protocol::config::AccessMode::ReadOnly,
-        },
-    );
-    use_map.insert(
-        "gws/state-b".to_string(),
-        underwrap_protocol::config::CredentialUse {
-            access: underwrap_protocol::config::AccessMode::ReadWrite,
-        },
-    );
-    let mut wrapper_def = wrapper("/usr/bin/true", "gws/state-a", "IGNORED");
-    wrapper_def.use_map = use_map;
-    wrappers.insert("dir-w".to_string(), wrapper_def);
-
-    let credentials = HashMap::from([
-        (
-            "gws/state-a".to_string(),
-            directory_credential(".config/gws-a"),
-        ),
+    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
+    wrapper_def.resources = HashMap::from([
+        ("gws/state-a".to_string(), files_resource(".config/gws-a")),
         (
             "gws/state-b".to_string(),
-            directory_credential(".local/share/gws-b"),
+            files_resource(".local/share/gws-b"),
         ),
     ]);
+    wrappers.insert("dir-w".to_string(), wrapper_def);
 
-    let daemon = TestDaemon::start(wrappers, credentials).await.unwrap();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
     let resp = daemon.read_request("dir-w").await.unwrap();
     match resp {
         WrapperResponse::ReadOk { env, directories } => {

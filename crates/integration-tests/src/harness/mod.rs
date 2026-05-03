@@ -19,7 +19,7 @@ mod builders;
 mod pki;
 mod readiness;
 
-pub use builders::{secret, wrapper};
+pub use builders::{files_resource, wrapper};
 pub(crate) use pki::{
     TEST_CA_PEM, TEST_CLIENT_LOCAL_KEY, TEST_CLIENT_LOCAL_PEM, TEST_SERVER_KEY, TEST_SERVER_PEM,
 };
@@ -41,19 +41,25 @@ pub struct TestDaemon {
     handle: tokio::task::JoinHandle<Result<()>>,
 }
 
+fn env_secret_id(resource_id: &str) -> String {
+    if resource_id.contains("/env/")
+        || resource_id == underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID
+    {
+        resource_id.to_string()
+    } else {
+        format!("{resource_id}/env/TEST_TOKEN")
+    }
+}
+
 impl TestDaemon {
-    /// Start a daemon with the given wrapper and credential definitions.
-    pub async fn start(
-        wrappers: HashMap<String, WrapperDef>,
-        credentials: HashMap<String, CredentialDef>,
-    ) -> Result<Self> {
-        Self::start_service_mode(wrappers, credentials, "local", "underwrap-local").await
+    /// Start a daemon with the given wrapper definitions.
+    pub async fn start(wrappers: HashMap<String, WrapperDef>) -> Result<Self> {
+        Self::start_service_mode(wrappers, "local", "underwrap-local").await
     }
 
     /// Start a daemon against backend HTTPS service mode.
     pub async fn start_service_mode(
         mut wrappers: HashMap<String, WrapperDef>,
-        credentials: HashMap<String, CredentialDef>,
         client_name: &str,
         accepted_principal: &str,
     ) -> Result<Self> {
@@ -137,7 +143,6 @@ impl TestDaemon {
                 client_key_file: Some(pki.client_key.clone()),
             },
             allowed_users: Vec::new(),
-            credentials,
             wrappers,
         };
 
@@ -225,7 +230,7 @@ impl TestDaemon {
             .json(&underwrap_protocol::service::AdminSecretWriteRequest {
                 store: store.to_string(),
                 wrapper: wrapper.to_string(),
-                secret_id: secret_id.to_string(),
+                secret_id: env_secret_id(secret_id),
                 material_b64: base64::engine::general_purpose::STANDARD.encode(material.as_bytes()),
             })
             .send()

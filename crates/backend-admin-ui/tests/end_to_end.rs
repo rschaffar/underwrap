@@ -19,10 +19,7 @@ use underwrap_admin_ui::config::{
     AdminUiConfig, BackendTargetConfig, LoadedConfig, OperatorConfig,
 };
 use underwrap_admin_ui::server::{AppState, run as run_ui};
-use underwrap_protocol::policy::{
-    OP_STORE_WRITE, PolicyDocument, PolicyEffect, WrapperApprovalMode, WrapperPolicyState,
-    credential_resource,
-};
+use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPolicyState};
 
 struct Harness {
     ui_url: String,
@@ -344,16 +341,10 @@ async fn wrapper_mode_editor_updates_backend_policy() {
 /// 5. Revoke mutation via the UI.
 /// 6. Subsequent write fails again.
 #[tokio::test]
-async fn mutation_toggle_gates_credential_writes_end_to_end() {
+async fn resource_secret_management_roundtrips_end_to_end() {
     let h = Harness::start("alice", "hunter2").await.unwrap();
-
-    // Seed an empty-but-present policy document so the default-deny posture
-    // is in effect. Without a document, admin writes auto-allow for bootstrap.
-    h.put_policy(PolicyDocument::default()).await.unwrap();
-
     let client = Harness::client();
 
-    // Log in.
     let login_resp = client
         .post(format!("{}/login", h.ui_url))
         .form(&[("username", "alice"), ("password", "hunter2")])
@@ -375,75 +366,54 @@ async fn mutation_toggle_gates_credential_writes_end_to_end() {
     let csrf = session.csrf_token.clone();
     let cookie_header = format!("{SESSION_COOKIE}={session_cookie}");
 
-    // Without a grant, the write form round-trip ends on the error page.
-    let write_attempt = client
-        .post(format!("{}/t/corp/s/work/credential/write", h.ui_url))
+    let write_env = client
+        .post(format!("{}/t/corp/s/work/secret/write-env", h.ui_url))
         .header(reqwest::header::COOKIE, &cookie_header)
         .form(&[
             ("csrf_token", csrf.as_str()),
-            ("wrapper", "gh-authorized"),
-            ("secret_id", "github/token"),
-            ("value", "v1"),
-        ])
-        .send()
-        .await
-        .unwrap();
-    // The server renders the backend's error as a 502 page.
-    assert_eq!(write_attempt.status(), StatusCode::BAD_GATEWAY);
-    let body = write_attempt.text().await.unwrap();
-    assert!(body.contains("denied"), "expected denial, got: {body}");
-
-    // Enable mutation for 30 minutes.
-    let enable = client
-        .post(format!("{}/t/corp/s/work/mutation/enable", h.ui_url))
-        .header(reqwest::header::COOKIE, &cookie_header)
-        .form(&[
-            ("csrf_token", csrf.as_str()),
-            ("wrapper", "gh-authorized"),
-            ("secret_id", "github/token"),
-            ("duration", "30m"),
-            ("reason", "test mutation window"),
-        ])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(enable.status(), StatusCode::SEE_OTHER);
-
-    // The grant shows up in the backend policy doc with the deterministic id.
-    let doc = h.get_policy().await.unwrap();
-    let grant = doc
-        .grants
-        .iter()
-        .find(|g| g.id == "mutation:gh-authorized:github/token")
-        .expect("mutation grant persisted");
-    assert_eq!(grant.wrapper, "gh-authorized");
-    assert_eq!(grant.resource, credential_resource("github/token"));
-    assert_eq!(grant.operation, OP_STORE_WRITE);
-    assert_eq!(grant.effect, PolicyEffect::Allow);
-    assert!(grant.expires_at_epoch.is_some());
-
-    // Now the write succeeds.
-    let write_ok = client
-        .post(format!("{}/t/corp/s/work/credential/write", h.ui_url))
-        .header(reqwest::header::COOKIE, &cookie_header)
-        .form(&[
-            ("csrf_token", csrf.as_str()),
-            ("wrapper", "gh-authorized"),
-            ("secret_id", "github/token"),
+            ("resource_id", "github/token"),
+            ("var_name", "GH_TOKEN"),
             ("value", "ghp_written_by_admin_ui"),
         ])
         .send()
         .await
         .unwrap();
-    assert_eq!(write_ok.status(), StatusCode::SEE_OTHER);
+    assert_eq!(write_env.status(), StatusCode::SEE_OTHER);
 
-    // Confirm the stored value.
-    let read_resp: underwrap_protocol::service::AdminSecretReadResponse = Client::new()
+    let write_file = client
+        .post(format!("{}/t/corp/s/work/secret/write-file", h.ui_url))
+        .header(reqwest::header::COOKIE, &cookie_header)
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("resource_id", "gws/castlabs"),
+            ("path", "accounts.json"),
+            ("value", "{}"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(write_file.status(), StatusCode::SEE_OTHER);
+
+    let write_libsecret = client
+        .post(format!("{}/t/corp/s/work/secret/write-libsecret", h.ui_url))
+        .header(reqwest::header::COOKIE, &cookie_header)
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("resource_id", "gh/session"),
+            ("item_id", "default/item_1"),
+            ("value", "serialized-item"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(write_libsecret.status(), StatusCode::SEE_OTHER);
+
+    let read_env: underwrap_protocol::service::AdminSecretReadResponse = Client::new()
         .post(format!("{}/v1/admin/secret/read", h.backend_admin_url))
         .bearer_auth(&h.backend_admin_token)
         .json(&underwrap_protocol::service::AdminSecretReadRequest {
             store: "work".to_string(),
-            secret_id: "github/token".to_string(),
+            secret_id: "github/token/env/GH_TOKEN".to_string(),
         })
         .send()
         .await
@@ -451,67 +421,66 @@ async fn mutation_toggle_gates_credential_writes_end_to_end() {
         .json()
         .await
         .unwrap();
-    let material_b64 = read_resp.material_b64.expect("secret present");
     let material = base64::engine::general_purpose::STANDARD
-        .decode(&material_b64)
+        .decode(read_env.material_b64.unwrap())
         .unwrap();
     assert_eq!(material, b"ghp_written_by_admin_ui");
 
-    // Permanent allow without confirmation is rejected.
-    let permanent_no_confirm = client
-        .post(format!("{}/t/corp/s/work/mutation/enable", h.ui_url))
-        .header(reqwest::header::COOKIE, &cookie_header)
-        .form(&[
-            ("csrf_token", csrf.as_str()),
-            ("wrapper", "gh-authorized"),
-            ("secret_id", "github/token"),
-            ("duration", "permanent"),
-            ("reason", ""),
-        ])
+    let list_resp: underwrap_protocol::service::AdminSecretListResponse = Client::new()
+        .post(format!("{}/v1/admin/secret/list", h.backend_admin_url))
+        .bearer_auth(&h.backend_admin_token)
+        .json(&underwrap_protocol::service::AdminSecretListRequest {
+            store: "work".to_string(),
+            prefix: "".to_string(),
+        })
         .send()
         .await
-        .unwrap();
-    assert_eq!(permanent_no_confirm.status(), StatusCode::BAD_GATEWAY);
-    let body = permanent_no_confirm.text().await.unwrap();
-    assert!(body.contains("confirmation"), "{body}");
-
-    // Revoke.
-    let revoke = client
-        .post(format!("{}/t/corp/s/work/mutation/revoke", h.ui_url))
-        .header(reqwest::header::COOKIE, &cookie_header)
-        .form(&[
-            ("csrf_token", csrf.as_str()),
-            ("grant_id", "mutation:gh-authorized:github/token"),
-            ("wrapper", "gh-authorized"),
-            ("secret_id", "github/token"),
-        ])
-        .send()
+        .unwrap()
+        .json()
         .await
         .unwrap();
-    assert_eq!(revoke.status(), StatusCode::SEE_OTHER);
-    let doc = h.get_policy().await.unwrap();
     assert!(
-        doc.grants
-            .iter()
-            .all(|g| g.id != "mutation:gh-authorized:github/token"),
-        "grant should be gone after revoke, got grants: {:?}",
-        doc.grants,
+        list_resp
+            .ids
+            .contains(&"github/token/env/GH_TOKEN".to_string())
+    );
+    assert!(
+        list_resp
+            .ids
+            .contains(&"gws/castlabs/files/accounts.json".to_string())
+    );
+    assert!(
+        list_resp
+            .ids
+            .contains(&"gh/session/libsecret/default/item_1".to_string())
     );
 
-    // And subsequent writes fail again.
-    let write_after_revoke = client
-        .post(format!("{}/t/corp/s/work/credential/write", h.ui_url))
+    let delete_resp = client
+        .post(format!("{}/t/corp/s/work/secret/delete", h.ui_url))
         .header(reqwest::header::COOKIE, &cookie_header)
         .form(&[
             ("csrf_token", csrf.as_str()),
-            ("wrapper", "gh-authorized"),
-            ("secret_id", "github/token"),
-            ("value", "v3"),
+            ("secret_id", "github/token/env/GH_TOKEN"),
         ])
         .send()
         .await
         .unwrap();
-    assert_eq!(write_after_revoke.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(delete_resp.status(), StatusCode::SEE_OTHER);
+
+    let read_deleted: underwrap_protocol::service::AdminSecretReadResponse = Client::new()
+        .post(format!("{}/v1/admin/secret/read", h.backend_admin_url))
+        .bearer_auth(&h.backend_admin_token)
+        .json(&underwrap_protocol::service::AdminSecretReadRequest {
+            store: "work".to_string(),
+            secret_id: "github/token/env/GH_TOKEN".to_string(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(read_deleted.material_b64.is_none());
 
     h.stop().await.unwrap();
 }

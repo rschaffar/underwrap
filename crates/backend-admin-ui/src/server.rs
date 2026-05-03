@@ -13,9 +13,8 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
-use underwrap_protocol::policy::{
-    OP_STORE_WRITE, PolicyEffect, PolicyGrant, PolicyRule, WrapperApprovalMode, credential_resource,
-};
+use underwrap_protocol::policy::{PolicyEffect, PolicyGrant, PolicyRule, WrapperApprovalMode};
+use underwrap_protocol::resource::validate_env_name;
 
 use crate::auth::{SESSION_COOKIE, Session, csrf_token_matches, verify_password};
 use crate::backend_client::BackendClient;
@@ -23,15 +22,6 @@ use crate::config::LoadedConfig;
 use crate::pages::{
     InstancePageData, instance_page, login_page, login_page_with_error, targets_page,
 };
-
-/// Deterministic id used for mutation-allowance grants created via the admin UI.
-///
-/// Stable per (wrapper, secret_id) so the "enable mutation" action upserts
-/// the same grant the "revoke" action deletes, regardless of how many times
-/// the operator toggles.
-fn mutation_grant_id(wrapper: &str, secret_id: &str) -> String {
-    format!("mutation:{wrapper}:{secret_id}")
-}
 
 pub struct AppState {
     pub config: LoadedConfig,
@@ -77,17 +67,18 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(delete_grant),
         )
         .route(
-            "/t/{target}/s/{store}/mutation/enable",
-            post(enable_mutation),
+            "/t/{target}/s/{store}/secret/write-env",
+            post(write_env_secret),
         )
         .route(
-            "/t/{target}/s/{store}/mutation/revoke",
-            post(revoke_mutation),
+            "/t/{target}/s/{store}/secret/write-file",
+            post(write_file_secret),
         )
         .route(
-            "/t/{target}/s/{store}/credential/write",
-            post(write_credential),
+            "/t/{target}/s/{store}/secret/write-libsecret",
+            post(write_libsecret_secret),
         )
+        .route("/t/{target}/s/{store}/secret/delete", post(delete_secret))
         .with_state(state)
 }
 
@@ -253,6 +244,10 @@ async fn instance_view(
         Ok(p) => p,
         Err(e) => return error_page(&session.operator, &format!("loading policy: {e}")),
     };
+    let secret_ids = match client.list_secrets(&store, "").await {
+        Ok(ids) => ids,
+        Err(e) => return error_page(&session.operator, &format!("listing secrets: {e}")),
+    };
 
     html(instance_page(InstancePageData {
         operator: &session.operator,
@@ -260,6 +255,7 @@ async fn instance_view(
         store: &store,
         stores: &stores,
         policy: &policy,
+        secret_ids: &secret_ids,
         csrf_token: &session.csrf_token,
         banner_ok: None,
         banner_error: None,
@@ -518,156 +514,53 @@ async fn delete_grant(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct EnableMutationForm {
+pub struct WriteEnvSecretForm {
     csrf_token: String,
-    wrapper: String,
-    secret_id: String,
-    /// One of `10m`, `30m`, `2h`, `permanent`.
-    duration: String,
-    reason: Option<String>,
-    /// Must be `yes` when `duration == permanent`.
-    confirm_permanent: Option<String>,
-}
-
-/// Parse a duration token from the enable-mutation form.
-///
-/// Returns `Ok(Some(seconds))` for a bounded window, `Ok(None)` for
-/// "permanent" (no expiry), or `Err` on unknown tokens.
-fn parse_mutation_duration(token: &str) -> Result<Option<u64>, String> {
-    match token {
-        "10m" => Ok(Some(600)),
-        "30m" => Ok(Some(1800)),
-        "2h" => Ok(Some(7200)),
-        "permanent" => Ok(None),
-        other => Err(other.to_string()),
-    }
-}
-
-async fn enable_mutation(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path((target, store)): Path<(String, String)>,
-    Form(form): Form<EnableMutationForm>,
-) -> Response {
-    let Some(session) = get_session(&state, &headers) else {
-        return Redirect::to("/login").into_response();
-    };
-    if let Some(r) = check_csrf(&session, &form.csrf_token) {
-        return r;
-    }
-    let Some(client) = state.backend(&target) else {
-        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
-    };
-
-    let wrapper = form.wrapper.trim().to_string();
-    let secret_id = form.secret_id.trim().to_string();
-    if wrapper.is_empty() || secret_id.is_empty() {
-        return error_page(&session.operator, "wrapper and secret_id are required");
-    }
-
-    let duration = match parse_mutation_duration(&form.duration) {
-        Ok(d) => d,
-        Err(bad) => return error_page(&session.operator, &format!("bad duration '{bad}'")),
-    };
-    if duration.is_none()
-        && form.confirm_permanent.as_deref().unwrap_or("") != "yes"
-    {
-        return error_page(
-            &session.operator,
-            "permanent allow-grants require the confirmation checkbox",
-        );
-    }
-
-    let expires_at_epoch = duration.map(|seconds| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            + seconds
-    });
-
-    let grant = PolicyGrant {
-        id: mutation_grant_id(&wrapper, &secret_id),
-        wrapper: wrapper.clone(),
-        resource: credential_resource(&secret_id),
-        operation: OP_STORE_WRITE.to_string(),
-        effect: PolicyEffect::Allow,
-        starts_at_epoch: None,
-        expires_at_epoch,
-        reason: form
-            .reason
-            .filter(|s: &String| !s.trim().is_empty())
-            .or_else(|| Some("allowed via admin UI".to_string())),
-    };
-
-    if let Err(e) = client.upsert_grant(&store, grant).await {
-        return error_page(&session.operator, &format!("enable mutation: {e}"));
-    }
-    info!(
-        operator = %session.operator,
-        target = %target,
-        store = %store,
-        wrapper = %wrapper,
-        secret_id = %secret_id,
-        seconds = duration.unwrap_or(0),
-        "mutation allowed",
-    );
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RevokeMutationForm {
-    csrf_token: String,
-    /// The existing grant id carried from the rendered "Active mutation
-    /// windows" row. Used as-is so we revoke exactly what was shown.
-    grant_id: String,
-    wrapper: Option<String>,
-    secret_id: Option<String>,
-}
-
-async fn revoke_mutation(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path((target, store)): Path<(String, String)>,
-    Form(form): Form<RevokeMutationForm>,
-) -> Response {
-    let Some(session) = get_session(&state, &headers) else {
-        return Redirect::to("/login").into_response();
-    };
-    if let Some(r) = check_csrf(&session, &form.csrf_token) {
-        return r;
-    }
-    let Some(client) = state.backend(&target) else {
-        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
-    };
-    if let Err(e) = client.delete_grant(&store, &form.grant_id).await {
-        return error_page(&session.operator, &format!("revoke mutation: {e}"));
-    }
-    info!(
-        operator = %session.operator,
-        target = %target,
-        store = %store,
-        wrapper = form.wrapper.as_deref().unwrap_or(""),
-        secret_id = form.secret_id.as_deref().unwrap_or(""),
-        grant_id = %form.grant_id,
-        "mutation revoked",
-    );
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WriteCredentialForm {
-    csrf_token: String,
-    wrapper: String,
-    secret_id: String,
+    resource_id: String,
+    var_name: String,
     value: String,
 }
 
-async fn write_credential(
+#[derive(Debug, Deserialize)]
+pub struct WriteFileSecretForm {
+    csrf_token: String,
+    resource_id: String,
+    path: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WriteLibsecretSecretForm {
+    csrf_token: String,
+    resource_id: String,
+    item_id: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteSecretForm {
+    csrf_token: String,
+    secret_id: String,
+}
+
+fn validate_relative_item_path(path: &str) -> std::result::Result<(), &'static str> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\0') {
+        return Err("path must be a non-empty relative path");
+    }
+    if path
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err("path must be clean and must not contain empty segments");
+    }
+    Ok(())
+}
+
+async fn write_env_secret(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((target, store)): Path<(String, String)>,
-    Form(form): Form<WriteCredentialForm>,
+    Form(form): Form<WriteEnvSecretForm>,
 ) -> Response {
     let Some(session) = get_session(&state, &headers) else {
         return Redirect::to("/login").into_response();
@@ -678,25 +571,114 @@ async fn write_credential(
     let Some(client) = state.backend(&target) else {
         return (StatusCode::NOT_FOUND, "unknown backend").into_response();
     };
-    let wrapper = form.wrapper.trim().to_string();
-    let secret_id = form.secret_id.trim().to_string();
-    if wrapper.is_empty() || secret_id.is_empty() {
-        return error_page(&session.operator, "wrapper and secret_id are required");
+    let resource_id = form.resource_id.trim();
+    let var_name = form.var_name.trim();
+    if resource_id.is_empty() || var_name.is_empty() {
+        return error_page(
+            &session.operator,
+            "resource_id and env var name are required",
+        );
     }
+    if let Err(reason) = validate_env_name(var_name) {
+        return error_page(&session.operator, reason);
+    }
+    let secret_id = format!("{resource_id}/env/{var_name}");
     if let Err(e) = client
-        .write_secret(&store, &wrapper, &secret_id, form.value.as_bytes())
+        .write_secret(&store, "admin-ui", &secret_id, form.value.as_bytes())
         .await
     {
-        return error_page(&session.operator, &format!("write credential: {e}"));
+        return error_page(&session.operator, &format!("write env secret: {e}"));
     }
-    info!(
-        operator = %session.operator,
-        target = %target,
-        store = %store,
-        wrapper = %wrapper,
-        secret_id = %secret_id,
-        bytes = form.value.len(),
-        "credential value written",
-    );
+    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+}
+
+async fn write_file_secret(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target, store)): Path<(String, String)>,
+    Form(form): Form<WriteFileSecretForm>,
+) -> Response {
+    let Some(session) = get_session(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    if let Some(r) = check_csrf(&session, &form.csrf_token) {
+        return r;
+    }
+    let Some(client) = state.backend(&target) else {
+        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
+    };
+    let resource_id = form.resource_id.trim();
+    let path = form.path.trim();
+    if resource_id.is_empty() || path.is_empty() {
+        return error_page(&session.operator, "resource_id and file path are required");
+    }
+    if let Err(reason) = validate_relative_item_path(path) {
+        return error_page(&session.operator, reason);
+    }
+    let secret_id = format!("{resource_id}/files/{path}");
+    if let Err(e) = client
+        .write_secret(&store, "admin-ui", &secret_id, form.value.as_bytes())
+        .await
+    {
+        return error_page(&session.operator, &format!("write file secret: {e}"));
+    }
+    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+}
+
+async fn write_libsecret_secret(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target, store)): Path<(String, String)>,
+    Form(form): Form<WriteLibsecretSecretForm>,
+) -> Response {
+    let Some(session) = get_session(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    if let Some(r) = check_csrf(&session, &form.csrf_token) {
+        return r;
+    }
+    let Some(client) = state.backend(&target) else {
+        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
+    };
+    let resource_id = form.resource_id.trim();
+    let item_id = form.item_id.trim();
+    if resource_id.is_empty() || item_id.is_empty() {
+        return error_page(&session.operator, "resource_id and item id are required");
+    }
+    if let Err(reason) = validate_relative_item_path(item_id) {
+        return error_page(&session.operator, reason);
+    }
+    let secret_id = format!("{resource_id}/libsecret/{item_id}");
+    if let Err(e) = client
+        .write_secret(&store, "admin-ui", &secret_id, form.value.as_bytes())
+        .await
+    {
+        return error_page(&session.operator, &format!("write libsecret secret: {e}"));
+    }
+    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+}
+
+async fn delete_secret(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target, store)): Path<(String, String)>,
+    Form(form): Form<DeleteSecretForm>,
+) -> Response {
+    let Some(session) = get_session(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    if let Some(r) = check_csrf(&session, &form.csrf_token) {
+        return r;
+    }
+    let Some(client) = state.backend(&target) else {
+        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
+    };
+    let secret_id = form.secret_id.trim();
+    if secret_id.is_empty() {
+        return error_page(&session.operator, "secret_id is required");
+    }
+    if let Err(e) = client.delete_secret(&store, secret_id).await {
+        return error_page(&session.operator, &format!("delete secret: {e}"));
+    }
     Redirect::to(&format!("/t/{target}?store={store}")).into_response()
 }

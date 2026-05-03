@@ -67,7 +67,15 @@ pub(crate) async fn handle_wrapper(
     .await?;
     write_frame_async(&mut stream, &result.response).await?;
 
-    establish_scoped_channels(&stream, &result.response, wrapper_name, &state, &result.snapshot).await;
+    establish_scoped_channels(
+        &stream,
+        &result.response,
+        wrapper_name,
+        &state,
+        &result.snapshot,
+        result.libsecret_access.as_ref(),
+    )
+    .await;
 
     stream.shutdown().await?;
     Ok(())
@@ -94,6 +102,7 @@ async fn complete_read(
                     return Ok(read::ReadResult {
                         response,
                         snapshot: read::BundleSnapshot::default(),
+                        libsecret_access: None,
                     });
                 }
             }
@@ -102,9 +111,16 @@ async fn complete_read(
             return Ok(read::ReadResult {
                 response,
                 snapshot: read::BundleSnapshot::default(),
+                libsecret_access: None,
             });
         }
     };
 
-    Ok(process_read_for(wrapper_name, scope, state, peer_uid, approval_satisfied))
+    Ok(process_read_for(
+        wrapper_name,
+        scope,
+        state,
+        peer_uid,
+        approval_satisfied,
+    ))
 }

@@ -255,6 +255,9 @@ mod tests {
             .await
             .get_modified("default", &item_id)
             .unwrap();
-        assert!(modified > 1, "modified timestamp was not bumped: {modified}");
+        assert!(
+            modified > 1,
+            "modified timestamp was not bumped: {modified}"
+        );
     }
 }

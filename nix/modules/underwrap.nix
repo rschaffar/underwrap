@@ -15,10 +15,10 @@ let
     || lib.hasPrefix (left + "/") right
     || lib.hasPrefix (right + "/") left;
 
-  wrapperDirectoryPaths = inst: wrapper:
-    map (ref: inst.credentials.${ref}.path)
-      (lib.filter (ref: inst.credentials.${ref}.mode == "directory")
-        (builtins.attrNames wrapper.use));
+  wrapperDirectoryPaths = wrapper:
+    lib.filter (path: path != null)
+      (lib.mapAttrsToList (_resource: use: if use.files == null then null else use.files.path)
+        wrapper.resources);
 
   # Per-instance helper functions. All names are prefixed with the instance name
   # to ensure full isolation between instances.
@@ -39,21 +39,15 @@ let
         client_key_file = inst.backend.clientKeyFile;
       };
       allowed_users = inst.allowedUsers;
-      credentials = lib.mapAttrs (_ref: c:
-        if c.mode == "env" then {
-          mode = "env";
-          inherit (c) variable;
-        } else if c.mode == "directory" then {
-          mode = "directory";
-          inherit (c) path;
-        } else {
-          mode = "libsecret";
-        }
-      ) inst.credentials;
       wrappers = lib.mapAttrs' (name: w:
         lib.nameValuePair "${instName}-${name}" {
           target = w.target;
-          use = w.use;
+          resources = lib.mapAttrs (_resource: use:
+            ({ inherit (use) env libsecret; }
+              // lib.optionalAttrs (use.files != null) {
+                files = { inherit (use.files) path; };
+              })
+          ) w.resources;
           socket = wrapperSocketPath name;
           group = wrapperGroupName name;
         }
@@ -67,8 +61,7 @@ let
 
     wrapperConfigs = lib.mapAttrs (name: w:
       let
-        usesLibsecret = lib.any (ref: inst.credentials.${ref}.mode == "libsecret")
-          (builtins.attrNames w.use);
+        usesLibsecret = lib.any (use: use.libsecret) (lib.attrValues w.resources);
       in pkgs.writeText "${instName}-${name}.yaml" (builtins.toJSON ({
         target = w.target;
         wrapper_socket = wrapperSocketPath name;
@@ -173,29 +166,31 @@ let
   instances = lib.mapAttrs mkInstance cfg.instances;
 
   # Submodule types.
-  credentialSubmodule = lib.types.submodule {
+  filesUseSubmodule = lib.types.submodule {
     options = {
-      mode = lib.mkOption {
-        type = lib.types.enum [ "env" "libsecret" "directory" ];
-      };
-      variable = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Environment variable name for env credentials.";
-      };
       path = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Target-home-relative path for directory credentials.";
+        type = lib.types.str;
+        description = "Target-home-relative mount path for the resource files slot.";
       };
     };
   };
 
-  credentialUseSubmodule = lib.types.submodule {
+  resourceUseSubmodule = lib.types.submodule {
     options = {
-      access = lib.mkOption {
-        type = lib.types.enum [ "read-only" "read-write" ];
-        default = "read-only";
+      env = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Inject all backend-configured env variables from this resource.";
+      };
+      files = lib.mkOption {
+        type = lib.types.nullOr filesUseSubmodule;
+        default = null;
+        description = "Mount this resource's files slot at the given target-home-relative path.";
+      };
+      libsecret = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Expose this resource's libsecret slot through a private Secret Service.";
       };
     };
   };
@@ -206,10 +201,14 @@ let
         type = lib.types.str;
         description = "Absolute path to the target binary.";
       };
-      use = lib.mkOption {
-        type = lib.types.attrsOf credentialUseSubmodule;
+      resources = lib.mkOption {
+        type = lib.types.attrsOf resourceUseSubmodule;
         default = {};
-        description = "Credential usage bindings for this wrapper.";
+        description = ''
+          Resource slot projections for this wrapper. Backend policy, not
+          NixOS config, decides whether projected mutable slots are read-only
+          or read-write for a particular invocation.
+        '';
       };
       envPassthrough = lib.mkOption {
         type = lib.types.listOf lib.types.str;
@@ -220,7 +219,7 @@ let
           safe whitelist (HOME, USER, TERM, LANG, etc.). PATH is intentionally
           not inherited; set envSet.PATH explicitly if needed.
         '';
-        example = [ "GITHUB_TOKEN" "EDITOR" ];
+        example = [ "EDITOR" ];
       };
       envSet = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
@@ -266,10 +265,6 @@ let
         type = backendSubmodule;
         default = {};
         description = "Frontend backend client configuration for this instance.";
-      };
-      credentials = lib.mkOption {
-        type = lib.types.attrsOf credentialSubmodule;
-        default = {};
       };
       wrappers = lib.mkOption {
         type = lib.types.attrsOf wrapperSubmodule;
@@ -334,23 +329,29 @@ in {
   config = lib.mkIf cfg.enable {
     assertions =
       (lib.flatten (lib.mapAttrsToList (instName: inst:
-        (lib.mapAttrsToList (ref: c: {
-          assertion = if c.mode == "env" then c.variable != null && c.path == null else if c.mode == "directory" then c.path != null && c.variable == null && isCleanRelativePath c.path else c.variable == null && c.path == null;
-          message = if c.mode == "env" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": env credentials require variable and must not set path" else if c.mode == "directory" then "services.underwrap.instances.${instName}.credentials.\"${ref}\": directory credentials require a clean relative path and must not set variable" else "services.underwrap.instances.${instName}.credentials.\"${ref}\": libsecret credentials must not set variable or path";
-        }) inst.credentials)
-        ++ (lib.mapAttrsToList (wrapperName: wrapper:
+        (lib.mapAttrsToList (wrapperName: wrapper:
           let
-            paths = wrapperDirectoryPaths inst wrapper;
+            paths = wrapperDirectoryPaths wrapper;
             pairs = lib.concatMap (left:
               map (right: { inherit left right; })
                 (lib.filter (right: right != left) paths)
             ) paths;
+            projections = lib.mapAttrsToList (_resource: use:
+              use.env || use.files != null || use.libsecret
+            ) wrapper.resources;
           in {
-            assertion = lib.length paths == lib.length (lib.unique paths)
+            assertion = wrapper.resources != {}
+              && lib.all (v: v) projections
+              && lib.length paths == lib.length (lib.unique paths)
+              && lib.all (path: isCleanRelativePath path) paths
               && lib.all (pair: !pathsOverlap pair.left pair.right) pairs;
-            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: directory credential target paths must not overlap";
+            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: resources must project at least one slot and files target paths must be clean, unique, and non-overlapping";
           }
         ) inst.wrappers)
+        ++ (lib.mapAttrsToList (wrapperName: wrapper: {
+          assertion = lib.length (lib.filter (use: use.libsecret) (lib.attrValues wrapper.resources)) <= 1;
+          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: at most one libsecret slot may be projected";
+        }) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: wrapper: {
           assertion = !(lib.any linkerLikeEnvPrefix wrapper.envPassthrough);
           message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envPassthrough: LD_* environment variables must not be passed through — they would let the caller redirect dynamic linking in the target process and defeat the NO_NEW_PRIVS + env_clear() hardening";
@@ -365,8 +366,7 @@ in {
           assertion = swapDevicesAreHardened;
           message = "services.underwrap.hardenTargetHost is enabled but at least one swapDevice is not encrypted. Tokens paged out of a wrapped target's memory would surface as plaintext on disk. Enable randomEncryption or LUKS on every swapDevice, remove swap, or set services.underwrap.hardenTargetHost = false (and accept the weaker claim).";
         }
-      ]
-      ;
+      ];
 
     # Merge all instance users.
     users.users = lib.mkMerge (lib.mapAttrsToList (_: i: i.users) instances);

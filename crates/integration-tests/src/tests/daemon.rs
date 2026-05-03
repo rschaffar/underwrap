@@ -1,6 +1,14 @@
 use super::*;
 use base64::Engine;
 
+fn pick_unused_port_local() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 #[tokio::test]
 async fn parse_example_config() {
     // Inline a representative config matching the structure of examples/config.yaml.
@@ -11,54 +19,38 @@ backend:
   ca_file: /etc/underwrap/ca.pem
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
-credentials:
-  github/token:
-    mode: env
-    variable: GH_TOKEN
-  slack/xoxp:
-    mode: env
-    variable: SLACK_TOKEN
-  github/gh:
-    mode: libsecret
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
-    use:
+    resources:
       github/token:
-        access: read-only
+        env: true
   agent-slack:
     target: /usr/bin/slack-cli
     socket: /run/underwrap/agent-slack.sock
     group: underwrap-agent-slack
-    use:
+    resources:
       slack/xoxp:
-        access: read-only
+        env: true
   gh-libsecret:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-libsecret.sock
     group: underwrap-gh-libsecret
-    use:
+    resources:
       github/gh:
-        access: read-write
+        libsecret: true
 "#;
     let config: underwrap_protocol::config::DaemonConfig = serde_yaml::from_str(text).unwrap();
 
     assert_eq!(config.wrappers.len(), 3);
-    assert_eq!(config.credentials.len(), 3);
     assert!(config.wrappers.contains_key("gh-authorized"));
     assert!(config.wrappers.contains_key("agent-slack"));
     assert!(config.wrappers.contains_key("gh-libsecret"));
 
     let gh = &config.wrappers["gh-authorized"];
-    assert!(gh.use_map.contains_key("github/token"));
-    match &config.credentials["github/token"].mode {
-        underwrap_protocol::config::CredentialMode::Env { variable } => {
-            assert_eq!(variable, "GH_TOKEN");
-        }
-        other => panic!("expected env credential, got {other:?}"),
-    }
+    assert!(gh.resources["github/token"].env);
 }
 
 // ===========================================================================
@@ -72,9 +64,10 @@ async fn underwrapd_binary_start_and_read() {
 
     let daemon_bin = require_bin!("underwrapd");
     let backend_bin = require_bin!("underwrap-backendd");
-    let admin_port = 18446u16;
+    let admin_port = pick_unused_port_local();
+    let service_port = pick_unused_port_local();
     let admin_url = format!("http://127.0.0.1:{admin_port}");
-    let service_url = "https://127.0.0.1:18447".to_string();
+    let service_url = format!("https://127.0.0.1:{service_port}");
 
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
@@ -99,7 +92,7 @@ async fn underwrapd_binary_start_and_read() {
             },
         )]),
         service: Some(underwrap_backendd::server::ServiceConfig {
-            listen: "127.0.0.1:18447".to_string(),
+            listen: format!("127.0.0.1:{service_port}"),
             tls: underwrap_backendd::server::ServiceTlsConfig {
                 cert_file: server_cert.clone(),
                 key_file: server_key.clone(),
@@ -138,7 +131,22 @@ async fn underwrapd_binary_start_and_read() {
         .spawn()
         .unwrap();
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let client = reqwest::Client::new();
+    let mut backend_ready = false;
+    for _ in 0..100 {
+        if let Ok(resp) = client
+            .get(format!("{admin_url}/v1/admin/stores"))
+            .bearer_auth(admin_token)
+            .send()
+            .await
+            && resp.status().is_success()
+        {
+            backend_ready = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(backend_ready, "backend admin listener never became ready");
 
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
         backend: underwrap_protocol::config::BackendServiceConfig {
@@ -148,11 +156,6 @@ async fn underwrapd_binary_start_and_read() {
             client_key_file: Some(client_key.clone()),
         },
         allowed_users: Vec::new(),
-        credentials: {
-            let mut m = HashMap::new();
-            m.insert("s/t".to_string(), secret());
-            m
-        },
         wrappers: {
             let mut m = HashMap::new();
             let echo = which_echo().unwrap_or_else(|| "/bin/true".to_string());
@@ -183,14 +186,13 @@ async fn underwrapd_binary_start_and_read() {
     }
     assert!(wrapper_sock.exists(), "wrapper socket never appeared");
 
-    let client = reqwest::Client::new();
     let write_resp = client
         .post(format!("{admin_url}/v1/admin/secret/write"))
         .bearer_auth(admin_token)
         .json(&underwrap_protocol::service::AdminSecretWriteRequest {
             store: "test".to_string(),
             wrapper: "w".to_string(),
-            secret_id: "s/t".to_string(),
+            secret_id: "s/t/env/TEST_TOKEN".to_string(),
             material_b64: base64::engine::general_purpose::STANDARD.encode("value"),
         })
         .send()
@@ -208,8 +210,8 @@ async fn underwrapd_binary_start_and_read() {
                 rules: vec![underwrap_protocol::policy::PolicyRule {
                     id: "allow-read".to_string(),
                     wrapper: "w".to_string(),
-                    resource: "secret:s/t".to_string(),
-                    operation: "secret.read".to_string(),
+                    resource: "env:s/t".to_string(),
+                    operation: "env.read".to_string(),
                     effect: underwrap_protocol::policy::PolicyEffect::Allow,
                 }],
                 grants: Vec::new(),

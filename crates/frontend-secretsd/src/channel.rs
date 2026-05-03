@@ -159,7 +159,9 @@ pub fn load_initial_state(channel: &(impl ChannelOps + ?Sized)) -> Result<Secret
         );
     }
     if !store.aliases.contains_key("default") {
-        store.aliases.insert("default".to_string(), "default".to_string());
+        store
+            .aliases
+            .insert("default".to_string(), "default".to_string());
     }
 
     let col_ids: Vec<String> = store.collections.keys().cloned().collect();

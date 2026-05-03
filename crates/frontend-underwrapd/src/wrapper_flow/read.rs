@@ -29,6 +29,7 @@ pub(super) struct BundleSnapshot {
 pub(super) struct ReadResult {
     pub response: WrapperResponse,
     pub snapshot: BundleSnapshot,
+    pub libsecret_access: Option<(String, AccessMode)>,
 }
 
 /// Run the post-gate read: rule/grant authorization and one bundle fetch for
@@ -45,7 +46,10 @@ pub(super) fn process_read_for(
         Some(w) => w,
         None => {
             warn!(wrapper = %wrapper_name, "unknown wrapper");
-            return error_result(ErrorCode::NotFound, format!("unknown wrapper '{wrapper_name}'"));
+            return error_result(
+                ErrorCode::NotFound,
+                format!("unknown wrapper '{wrapper_name}'"),
+            );
         }
     };
 
@@ -82,7 +86,13 @@ pub(super) fn process_read_for(
                 prefixes.push(env_prefix(resource_id));
                 env_resources.push(resource_id.to_string());
             }
-            Err(response) => return ReadResult { response, snapshot: BundleSnapshot::default() },
+            Err(response) => {
+                return ReadResult {
+                    response,
+                    snapshot: BundleSnapshot::default(),
+                    libsecret_access: None,
+                };
+            }
         }
     }
 
@@ -98,20 +108,21 @@ pub(super) fn process_read_for(
             scope,
         ) {
             Ok(()) => {
-                let access = access_for_optional_write(
-                    &authorize,
-                    &resource,
-                    OP_FILES_WRITE,
-                );
+                let access = access_for_optional_write(&authorize, &resource, OP_FILES_WRITE);
                 audit::read_granted(wrapper_name, &projection.resource_id, Some(peer_uid), scope);
                 prefixes.push(files_prefix(&projection.resource_id));
                 file_bindings.push(projection.into_read_binding(access));
             }
-            Err(response) => return ReadResult { response, snapshot: BundleSnapshot::default() },
+            Err(response) => {
+                return ReadResult {
+                    response,
+                    snapshot: BundleSnapshot::default(),
+                    libsecret_access: None,
+                };
+            }
         }
     }
 
-    let mut libsecret_resource_id = None;
     let mut libsecret_access = None;
     if let Some(resource_id) = wrapper_libsecret_resource(wrapper_def) {
         let resource = libsecret_resource(resource_id);
@@ -124,17 +135,18 @@ pub(super) fn process_read_for(
             scope,
         ) {
             Ok(()) => {
-                let access = access_for_optional_write(
-                    &authorize,
-                    &resource,
-                    OP_LIBSECRET_WRITE,
-                );
+                let access = access_for_optional_write(&authorize, &resource, OP_LIBSECRET_WRITE);
                 audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
                 prefixes.push(libsecret_prefix(resource_id));
-                libsecret_resource_id = Some(resource_id.to_string());
-                libsecret_access = Some(access);
+                libsecret_access = Some((resource_id.to_string(), access));
             }
-            Err(response) => return ReadResult { response, snapshot: BundleSnapshot::default() },
+            Err(response) => {
+                return ReadResult {
+                    response,
+                    snapshot: BundleSnapshot::default(),
+                    libsecret_access: None,
+                };
+            }
         }
     }
 
@@ -151,16 +163,13 @@ pub(super) fn process_read_for(
         Err(message) => return error_result(ErrorCode::Internal, message),
     };
 
-    // Preserve the libsecret access/resource in the snapshot by side effect: channel setup
-    // recomputes the resource id from the wrapper config and access from the response path.
-    let _ = (libsecret_resource_id, libsecret_access);
-
     ReadResult {
         response: WrapperResponse::ReadOk {
             env,
             directories: file_bindings,
         },
         snapshot,
+        libsecret_access,
     }
 }
 
@@ -234,6 +243,7 @@ fn error_result(code: ErrorCode, message: String) -> ReadResult {
     ReadResult {
         response: WrapperResponse::Error { code, message },
         snapshot: BundleSnapshot::default(),
+        libsecret_access: None,
     }
 }
 
@@ -245,9 +255,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use underwrap_protocol::config::{
-        BackendServiceConfig, FilesUse, ResourceUse, WrapperDef,
-    };
+    use underwrap_protocol::config::{BackendServiceConfig, FilesUse, ResourceUse, WrapperDef};
     use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, PolicyRule};
 
     fn state_with_store(store: Arc<dyn underwrap_store::StorageBackend>) -> State {
@@ -292,10 +300,11 @@ mod tests {
 
     #[test]
     fn process_read_for_returns_env_and_directory_bindings() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries(&[(
-            "github/token/env/GH_TOKEN",
-            b"ghp_test",
-        )]));
+        let store: Arc<dyn underwrap_store::StorageBackend> =
+            Arc::new(MemStore::with_entries(&[(
+                "github/token/env/GH_TOKEN",
+                b"ghp_test",
+            )]));
         let state = state_with_store(store);
         let result = process_read_for("gh-authorized", None, &state, 1000, true);
         match result.response {
@@ -310,12 +319,11 @@ mod tests {
 
     #[test]
     fn process_read_for_denies_when_backend_policy_lacks_required_rule() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(
-            MemStore::with_entries_and_policy(
+        let store: Arc<dyn underwrap_store::StorageBackend> =
+            Arc::new(MemStore::with_entries_and_policy(
                 &[("github/token/env/GH_TOKEN", b"ghp_test")],
                 PolicyDocument::default(),
-            ),
-        );
+            ));
         let state = state_with_store(store);
         let result = process_read_for("gh-authorized", None, &state, 1000, false);
         match result.response {
@@ -329,8 +337,8 @@ mod tests {
 
     #[test]
     fn process_read_for_allows_when_backend_policy_has_required_rules() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(
-            MemStore::with_entries_and_policy(
+        let store: Arc<dyn underwrap_store::StorageBackend> =
+            Arc::new(MemStore::with_entries_and_policy(
                 &[("github/token/env/GH_TOKEN", b"ghp_test")],
                 PolicyDocument {
                     rules: vec![
@@ -351,8 +359,7 @@ mod tests {
                     ],
                     ..Default::default()
                 },
-            ),
-        );
+            ));
         let state = state_with_store(store);
         let result = process_read_for("gh-authorized", None, &state, 1000, false);
         assert!(matches!(result.response, WrapperResponse::ReadOk { .. }));
@@ -360,10 +367,11 @@ mod tests {
 
     #[test]
     fn invalid_backend_env_name_fails_closed() {
-        let store: Arc<dyn underwrap_store::StorageBackend> = Arc::new(MemStore::with_entries(&[(
-            "github/token/env/LD_PRELOAD",
-            b"evil",
-        )]));
+        let store: Arc<dyn underwrap_store::StorageBackend> =
+            Arc::new(MemStore::with_entries(&[(
+                "github/token/env/LD_PRELOAD",
+                b"evil",
+            )]));
         let state = state_with_store(store);
         let result = process_read_for("gh-authorized", None, &state, 1000, true);
         match result.response {

@@ -139,18 +139,13 @@ fn ensure_package_built(package: &'static str) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn one_wrapper_config() -> (
-    HashMap<String, underwrap_protocol::config::WrapperDef>,
-    HashMap<String, underwrap_protocol::config::CredentialDef>,
-) {
+fn one_wrapper_config() -> HashMap<String, underwrap_protocol::config::WrapperDef> {
     let mut wrappers = HashMap::new();
     wrappers.insert(
         "gh-authorized".to_string(),
         wrapper("/usr/bin/gh", "github/token", "GH_TOKEN"),
     );
-    let mut secrets = HashMap::new();
-    secrets.insert("github/token".to_string(), secret());
-    (wrappers, secrets)
+    wrappers
 }
 
 fn expect_single_env_bytes(resp: WrapperResponse) -> Vec<u8> {
@@ -168,18 +163,7 @@ fn expect_single_env_string(resp: WrapperResponse) -> String {
     String::from_utf8(expect_single_env_bytes(resp)).unwrap()
 }
 
-fn directory_credential(path: &str) -> underwrap_protocol::config::CredentialDef {
-    underwrap_protocol::config::CredentialDef {
-        mode: underwrap_protocol::config::CredentialMode::Directory {
-            path: path.to_string(),
-        },
-    }
-}
-
-async fn daemon_config_error(
-    credentials: HashMap<String, underwrap_protocol::config::CredentialDef>,
-    wrapper_def: underwrap_protocol::config::WrapperDef,
-) -> String {
+async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef) -> String {
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
     let backend_url = "https://127.0.0.1:65535".to_string();
@@ -192,7 +176,6 @@ async fn daemon_config_error(
             client_key_file: Some(base.join("client.key")),
         },
         allowed_users: Vec::new(),
-        credentials,
         wrappers: HashMap::from([("dir-wrapper".to_string(), wrapper_def)]),
     };
 

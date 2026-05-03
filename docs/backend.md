@@ -189,14 +189,25 @@ Rules and grants share the authorization tuple:
 - **Grants** layer on top with `starts_at_epoch` / `expires_at_epoch`.
 
 Resources are strings. Underwrap uses the prefix convention
-`<kind>:<id>`:
+`<slot>:<resource>`:
 
-- `secret:github/token` — an env-injected secret
-- `libsecret:gh/default` — a libsecret namespace
-- `directory:gws/state` — a directory-credential tree
+- `env:github/token` — the env slot of resource `github/token`
+- `files:gws/state` — the files slot of resource `gws/state`
+- `libsecret:gh/default` — the libsecret slot of resource `gh/default`
 
-Operations mirror: `secret.read`, `libsecret.read|write|readwrite`,
-`directory.read|write|readwrite`.
+Every backend resource always has all three slots in storage:
+
+- `<resource>/env/<VAR>`
+- `<resource>/files/<relative-path>`
+- `<resource>/libsecret/<relative-id>`
+
+Operations mirror the slots:
+
+- `env.read`
+- `files.read`
+- `files.write`
+- `libsecret.read`
+- `libsecret.write`
 
 ### Evaluation order
 

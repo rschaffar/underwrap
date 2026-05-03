@@ -9,6 +9,17 @@ underwrap is configured in three places:
 - **Admin UI YAML** (`/etc/underwrap/admin-ui.yaml`) — what the operator
   web service needs to serve.
 
+A useful mental model for the current design:
+
+- a **backend resource** always has three slots:
+  - `env`
+  - `files`
+  - `libsecret`
+- the **frontend wrapper config** decides which slots to project into the
+  target process
+- the **backend policy** decides whether a projected slot is readable and,
+  for mutable slots, whether it is writable
+
 The shipped design expects exactly one transport: the frontend always
 talks to the backend over HTTPS with mTLS; the admin UI always talks to
 the backend over HTTP with a bearer token. Anything older that mentions
@@ -50,20 +61,18 @@ services.underwrap = {
       clientKeyFile = "/etc/underwrap/client-work.key";
     };
 
-    credentials = {
-      "github/token" = { mode = "env"; variable = "GH_TOKEN"; };
-      "github/gh"    = { mode = "libsecret"; };
-      "gws/state"    = { mode = "directory"; path = ".config/gws"; };
-    };
-
     wrappers = {
       work-gh = {
         target = "${pkgs.gh}/bin/gh";
-        use."github/token".access = "read-only";
+        resources."github/token".env = true;
       };
       work-gh-auth = {
         target = "${pkgs.gh}/bin/gh";
-        use."github/gh".access = "read-write";
+        resources."github/gh".libsecret = true;
+      };
+      work-gws = {
+        target = "${pkgs.gws}/bin/gws";
+        resources."gws/state".files.path = ".config/gws";
       };
     };
   };
@@ -84,25 +93,33 @@ Key points:
   backend's policy document and is set through the admin UI or admin
   API (see [Admin UI](admin-ui.md)).
 
-### Credential modes
+### Resource slots
 
-| Mode | Extra fields | Notes |
+Every backend resource always has three slots:
+
+| Slot | What it stores | How wrappers project it |
 |---|---|---|
-| `env` | `variable` | Injected as an env var in the target |
-| `libsecret` | — | Exposed via a private Secret Service inside the namespace |
-| `directory` | `path` (relative to the target's `$HOME`) | Materialized in a namespace-private staging dir, bind-mounted into place |
+| `env` | named env vars as individual entries under `<resource>/env/<VAR>` | `resources."<resource>".env = true` |
+| `files` | a directory tree under `<resource>/files/*` | `resources."<resource>".files.path = ...` |
+| `libsecret` | Secret Service items under `<resource>/libsecret/*` | `resources."<resource>".libsecret = true` |
+
+For env projection, the wrapper does **not** predeclare individual variable
+names. It receives every env entry currently stored in that resource's env
+slot. Dangerous names such as `LD_*`, `PATH`, `HOME`, and `UNDERWRAP_*` are
+rejected at runtime.
 
 ### Wrapper options
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
 | `target` | str | — | Absolute path to the binary to exec |
-| `use` | attrs | `{}` | Credential bindings, `use."<cred>".access` is `read-only` or `read-write` |
+| `resources` | attrs | `{}` | Resource-slot projections for this wrapper |
 | `envPassthrough` | `[str]` | `[]` | Extra env vars to let through (PATH is intentionally excluded — use `envSet.PATH`) |
 | `envSet` | `{str: str}` | `{}` | Fixed env vars to inject |
 
-There is intentionally no `approval` or `approvalKey` option. Approval
-lives centrally.
+There is intentionally no local `read-write` option and no local `approval`
+option. Read/write authority and approval mode both live centrally in the
+backend policy.
 
 ## Backend YAML
 

@@ -7,7 +7,7 @@ use underwrap_protocol::message::WrapperResponse;
 use underwrap_protocol::resource::{files_prefix, libsecret_prefix};
 
 use crate::server::State;
-use crate::wrapper_bindings::{wrapper_file_bindings, wrapper_libsecret_resource};
+use crate::wrapper_bindings::wrapper_file_bindings;
 
 use super::read::BundleSnapshot;
 
@@ -21,6 +21,7 @@ pub(super) async fn establish_scoped_channels(
     wrapper_name: &str,
     state: &State,
     snapshot: &BundleSnapshot,
+    libsecret_access: Option<&(String, AccessMode)>,
 ) {
     let WrapperResponse::ReadOk { directories, .. } = response else {
         return;
@@ -30,9 +31,8 @@ pub(super) async fn establish_scoped_channels(
         return;
     };
 
-    if let Some(resource_id) = wrapper_libsecret_resource(wrapper_def) {
-        let access = access_for_resource(directories, resource_id).unwrap_or(AccessMode::ReadOnly);
-        match setup_secretsd_channel(stream, wrapper_name, resource_id, access, state, snapshot)
+    if let Some((resource_id, access)) = libsecret_access {
+        match setup_secretsd_channel(stream, wrapper_name, resource_id, *access, state, snapshot)
             .await
         {
             Ok(()) => {
@@ -68,16 +68,6 @@ pub(super) async fn establish_scoped_channels(
             }
         }
     }
-}
-
-fn access_for_resource(
-    directories: &[underwrap_protocol::message::ReadDirectoryBinding],
-    resource_id: &str,
-) -> Option<AccessMode> {
-    directories
-        .iter()
-        .find(|binding| binding.resource_id == resource_id)
-        .map(|binding| binding.access)
 }
 
 async fn setup_scoped_channel(

@@ -30,8 +30,8 @@ async fn per_call_approval_succeeds_with_valid_ed25519_signature() {
     let public_key_blob = public_key.to_bytes().unwrap();
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&keypair.private.to_bytes());
 
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
@@ -50,8 +50,8 @@ async fn per_call_approval_succeeds_with_valid_ed25519_signature() {
                 rules: vec![PolicyRule {
                     id: "allow-read".to_string(),
                     wrapper: "gh-authorized".to_string(),
-                    resource: "secret:github/token".to_string(),
-                    operation: "secret.read".to_string(),
+                    resource: "env:github/token".to_string(),
+                    operation: "env.read".to_string(),
                     effect: PolicyEffect::Allow,
                 }],
                 grants: Vec::new(),
@@ -107,8 +107,8 @@ async fn per_call_approval_rejects_wrong_signature() {
     let other_pubkey_blob = other_priv.public_key().to_bytes().unwrap();
     let other_signing = ed25519_dalek::SigningKey::from_bytes(&other.private.to_bytes());
 
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
@@ -127,8 +127,8 @@ async fn per_call_approval_rejects_wrong_signature() {
                 rules: vec![PolicyRule {
                     id: "allow-read".to_string(),
                     wrapper: "gh-authorized".to_string(),
-                    resource: "secret:github/token".to_string(),
-                    operation: "secret.read".to_string(),
+                    resource: "env:github/token".to_string(),
+                    operation: "env.read".to_string(),
                     effect: PolicyEffect::Allow,
                 }],
                 grants: Vec::new(),
@@ -187,8 +187,8 @@ async fn per_call_approval_denies_without_matching_rule() {
     let pubkey_blob = private_key.public_key().to_bytes().unwrap();
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&keypair.private.to_bytes());
 
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await

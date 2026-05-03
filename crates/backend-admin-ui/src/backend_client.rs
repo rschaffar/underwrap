@@ -7,6 +7,8 @@ use underwrap_protocol::policy::{PolicyDocument, PolicyGrant, PolicyRule, Wrappe
 use underwrap_protocol::service::{
     AdminGrantDeleteRequest, AdminGrantUpsertRequest, AdminPolicyGetRequest,
     AdminPolicyGetResponse, AdminRuleDeleteRequest, AdminRuleUpsertRequest,
+    AdminSecretDeleteRequest, AdminSecretDeleteResponse, AdminSecretListRequest,
+    AdminSecretListResponse, AdminSecretReadRequest, AdminSecretReadResponse,
     AdminSecretWriteRequest, AdminStoresResponse, AdminWrapperModeRequest,
 };
 
@@ -74,6 +76,49 @@ impl BackendClient {
     pub async fn list_stores(&self) -> Result<Vec<String>> {
         let response: AdminStoresResponse = self.get_json("/v1/admin/stores").await?;
         Ok(response.stores)
+    }
+
+    pub async fn list_secrets(&self, store: &str, prefix: &str) -> Result<Vec<String>> {
+        let response: AdminSecretListResponse = self
+            .post_json(
+                "/v1/admin/secret/list",
+                &AdminSecretListRequest {
+                    store: store.to_string(),
+                    prefix: prefix.to_string(),
+                },
+            )
+            .await?;
+        Ok(response.ids)
+    }
+
+    pub async fn read_secret(&self, store: &str, secret_id: &str) -> Result<Option<Vec<u8>>> {
+        let response: AdminSecretReadResponse = self
+            .post_json(
+                "/v1/admin/secret/read",
+                &AdminSecretReadRequest {
+                    store: store.to_string(),
+                    secret_id: secret_id.to_string(),
+                },
+            )
+            .await?;
+        response
+            .material_b64
+            .map(|material| base64::engine::general_purpose::STANDARD.decode(material))
+            .transpose()
+            .context("decoding secret payload")
+    }
+
+    pub async fn delete_secret(&self, store: &str, secret_id: &str) -> Result<bool> {
+        let response: AdminSecretDeleteResponse = self
+            .post_json(
+                "/v1/admin/secret/delete",
+                &AdminSecretDeleteRequest {
+                    store: store.to_string(),
+                    secret_id: secret_id.to_string(),
+                },
+            )
+            .await?;
+        Ok(response.existed)
     }
 
     pub async fn get_policy(&self, store: &str) -> Result<PolicyDocument> {
@@ -161,9 +206,6 @@ impl BackendClient {
         Ok(())
     }
 
-    /// Write a credential value. The backend gates this on
-    /// `(wrapper, cred:<secret_id>, store.write)`; see docs/security.md
-    /// "Mutation gating".
     pub async fn write_secret(
         &self,
         store: &str,

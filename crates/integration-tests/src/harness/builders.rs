@@ -1,11 +1,9 @@
-//! Builder helpers for common wrapper and credential test configs.
+//! Builder helpers for common wrapper and resource test configs.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use underwrap_protocol::config::{
-    AccessMode, CredentialDef, CredentialMode, CredentialUse, WrapperDef,
-};
+use underwrap_protocol::config::{FilesUse, ResourceUse, WrapperDef};
 
 /// Get the current process's primary group name (for test wrappers).
 fn current_group_name() -> String {
@@ -18,29 +16,30 @@ fn current_group_name() -> String {
     name.to_string_lossy().to_string()
 }
 
-/// Create a simple wrapper def for testing.
-pub fn wrapper(target: &str, secret: &str, _env_var: &str) -> WrapperDef {
-    let mut use_map = HashMap::new();
-    use_map.insert(
-        secret.to_string(),
-        CredentialUse {
-            access: AccessMode::ReadOnly,
-        },
-    );
+/// Create a simple env-projecting wrapper def for testing.
+pub fn wrapper(target: &str, resource_id: &str, _env_var: &str) -> WrapperDef {
     WrapperDef {
         target: PathBuf::from(target),
-        use_map,
+        resources: HashMap::from([(
+            resource_id.to_string(),
+            ResourceUse {
+                env: true,
+                files: None,
+                libsecret: false,
+            },
+        )]),
         socket: PathBuf::new(),
         group: current_group_name(),
     }
 }
 
-/// Create a simple env credential def for testing.
-pub fn secret() -> CredentialDef {
-    CredentialDef {
-        mode: CredentialMode::Env {
-            variable: "UNDERWRAP_SECRET".to_string(),
-        },
+pub fn files_resource(path: &str) -> ResourceUse {
+    ResourceUse {
+        env: false,
+        files: Some(FilesUse {
+            path: path.to_string(),
+        }),
+        libsecret: false,
     }
 }
 
@@ -49,22 +48,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wrapper_builder_creates_read_only_usage() {
+    fn wrapper_builder_creates_env_projection() {
         let wrapper = wrapper("/usr/bin/gh", "github/token", "GH_TOKEN");
         assert_eq!(wrapper.target, PathBuf::from("/usr/bin/gh"));
-        assert_eq!(wrapper.use_map.len(), 1);
-        assert_eq!(
-            wrapper.use_map.get("github/token").unwrap().access,
-            AccessMode::ReadOnly
-        );
+        assert_eq!(wrapper.resources.len(), 1);
+        assert!(wrapper.resources.get("github/token").unwrap().env);
     }
 
     #[test]
-    fn secret_builder_creates_env_credential() {
-        let credential = secret();
-        match credential.mode {
-            CredentialMode::Env { variable } => assert_eq!(variable, "UNDERWRAP_SECRET"),
-            other => panic!("expected env credential, got {other:?}"),
-        }
+    fn files_resource_builder_sets_path() {
+        let usage = files_resource(".config/gws");
+        assert_eq!(usage.files.unwrap().path, ".config/gws");
     }
 }

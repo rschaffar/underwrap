@@ -5,8 +5,8 @@ use underwrap_protocol::policy::{
 
 #[tokio::test]
 async fn admin_api_rejects_missing_or_wrong_bearer_token() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
 
     let client = reqwest::Client::new();
 
@@ -49,8 +49,8 @@ async fn admin_api_rejects_missing_or_wrong_bearer_token() {
 
 #[tokio::test]
 async fn backend_policy_roundtrip_over_admin_api() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
 
     assert_eq!(
         daemon.get_policy("test").await.unwrap(),
@@ -66,8 +66,8 @@ async fn backend_policy_roundtrip_over_admin_api() {
         rules: vec![PolicyRule {
             id: "allow-read".to_string(),
             wrapper: "gh-authorized".to_string(),
-            resource: "secret:github/token".to_string(),
-            operation: "secret.read".to_string(),
+            resource: "env:github/token".to_string(),
+            operation: "env.read".to_string(),
             effect: PolicyEffect::Allow,
         }],
         grants: Vec::new(),
@@ -82,8 +82,8 @@ async fn backend_policy_roundtrip_over_admin_api() {
 
 #[tokio::test]
 async fn wrapper_read_is_denied_when_policy_document_has_no_matching_rule() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
 
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
@@ -108,8 +108,8 @@ async fn wrapper_read_is_denied_when_policy_document_has_no_matching_rule() {
 
 #[tokio::test]
 async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
 
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
@@ -123,8 +123,8 @@ async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
                 rules: vec![PolicyRule {
                     id: "allow-read".to_string(),
                     wrapper: "gh-authorized".to_string(),
-                    resource: "secret:github/token".to_string(),
-                    operation: "secret.read".to_string(),
+                    resource: "env:github/token".to_string(),
+                    operation: "env.read".to_string(),
                     effect: PolicyEffect::Allow,
                 }],
                 grants: Vec::new(),
@@ -141,8 +141,8 @@ async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
 
 #[tokio::test]
 async fn locked_wrapper_is_denied_even_with_allow_rule() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
 
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
@@ -160,8 +160,8 @@ async fn locked_wrapper_is_denied_even_with_allow_rule() {
                 rules: vec![PolicyRule {
                     id: "allow-read".to_string(),
                     wrapper: "gh-authorized".to_string(),
-                    resource: "secret:github/token".to_string(),
-                    operation: "secret.read".to_string(),
+                    resource: "env:github/token".to_string(),
+                    operation: "env.read".to_string(),
                     effect: PolicyEffect::Allow,
                 }],
                 grants: Vec::new(),

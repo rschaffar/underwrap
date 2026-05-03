@@ -3,8 +3,8 @@ use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, PolicyGrant};
 
 #[tokio::test]
 async fn active_allow_grant_allows_read_without_baseline_rule() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
 
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
@@ -25,8 +25,8 @@ async fn active_allow_grant_allows_read_without_baseline_rule() {
             &PolicyGrant {
                 id: "g-allow".to_string(),
                 wrapper: "gh-authorized".to_string(),
-                resource: "secret:github/token".to_string(),
-                operation: "secret.read".to_string(),
+                resource: "env:github/token".to_string(),
+                operation: "env.read".to_string(),
                 effect: PolicyEffect::Allow,
                 starts_at_epoch: Some(now.saturating_sub(1)),
                 expires_at_epoch: Some(now + 60),
@@ -44,8 +44,8 @@ async fn active_allow_grant_allows_read_without_baseline_rule() {
 
 #[tokio::test]
 async fn expired_grant_is_not_honored() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
 
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
@@ -66,8 +66,8 @@ async fn expired_grant_is_not_honored() {
             &PolicyGrant {
                 id: "g-expired".to_string(),
                 wrapper: "gh-authorized".to_string(),
-                resource: "secret:github/token".to_string(),
-                operation: "secret.read".to_string(),
+                resource: "env:github/token".to_string(),
+                operation: "env.read".to_string(),
                 effect: PolicyEffect::Allow,
                 starts_at_epoch: Some(now.saturating_sub(120)),
                 expires_at_epoch: Some(now.saturating_sub(60)),
@@ -91,8 +91,8 @@ async fn expired_grant_is_not_honored() {
 
 #[tokio::test]
 async fn deleting_grant_revokes_future_reads() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers, secrets).await.unwrap();
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
 
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
@@ -113,8 +113,8 @@ async fn deleting_grant_revokes_future_reads() {
             &PolicyGrant {
                 id: "g-delete".to_string(),
                 wrapper: "gh-authorized".to_string(),
-                resource: "secret:github/token".to_string(),
-                operation: "secret.read".to_string(),
+                resource: "env:github/token".to_string(),
+                operation: "env.read".to_string(),
                 effect: PolicyEffect::Allow,
                 starts_at_epoch: Some(now.saturating_sub(1)),
                 expires_at_epoch: Some(now + 60),

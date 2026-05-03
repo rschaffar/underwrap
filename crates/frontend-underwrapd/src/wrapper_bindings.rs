@@ -2,11 +2,10 @@ use underwrap_protocol::config::{FilesUse, ResourceUse, WrapperDef};
 use underwrap_protocol::message::ReadDirectoryBinding;
 
 pub(crate) fn wrapper_libsecret_resource(wrapper: &WrapperDef) -> Option<&str> {
-    wrapper.resources.iter().find_map(|(resource_id, usage)| {
-        usage
-            .libsecret
-            .then_some(resource_id.as_str())
-    })
+    wrapper
+        .resources
+        .iter()
+        .find_map(|(resource_id, usage)| usage.libsecret.then_some(resource_id.as_str()))
 }
 
 pub(crate) fn wrapper_env_resources(wrapper: &WrapperDef) -> Vec<&str> {

@@ -150,9 +150,17 @@ mod tests {
 
     #[test]
     fn resource_helpers_prefix_expected_kind() {
-        assert_eq!(env_resource("github/token"), "secret:github/token");
-        assert_eq!(libsecret_resource("gh/default"), "libsecret:gh/default");
-        assert_eq!(directory_resource("gws/state"), "directory:gws/state");
-        assert_eq!(credential_resource("github/token"), "cred:github/token");
+        assert_eq!(
+            underwrap_protocol::resource::env_resource("github/token"),
+            "env:github/token"
+        );
+        assert_eq!(
+            underwrap_protocol::resource::libsecret_resource("gh/default"),
+            "libsecret:gh/default"
+        );
+        assert_eq!(
+            underwrap_protocol::resource::files_resource("gws/state"),
+            "files:gws/state"
+        );
     }
 }

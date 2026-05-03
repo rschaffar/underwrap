@@ -1,6 +1,6 @@
-use underwrap_protocol::policy::{
-    OP_STORE_WRITE, PolicyDocument, PolicyEffect, PolicyGrant, WrapperApprovalMode,
-};
+use std::collections::BTreeMap;
+
+use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, WrapperApprovalMode};
 
 use super::{attr, h, layout, url_path};
 
@@ -10,6 +10,7 @@ pub struct InstancePageData<'a> {
     pub store: &'a str,
     pub stores: &'a [String],
     pub policy: &'a PolicyDocument,
+    pub secret_ids: &'a [String],
     pub csrf_token: &'a str,
     pub banner_ok: Option<&'a str>,
     pub banner_error: Option<&'a str>,
@@ -18,21 +19,21 @@ pub struct InstancePageData<'a> {
 pub fn instance_page(data: InstancePageData<'_>) -> String {
     let banners = render_banners(data.banner_ok, data.banner_error);
     let store_switcher = render_store_switcher(data.target, data.store, data.stores);
+    let resources = render_resources(data.target, data.store, data.secret_ids, data.csrf_token);
     let wrappers = render_wrappers(data.target, data.store, data.policy, data.csrf_token);
     let rules = render_rules(data.target, data.store, data.policy, data.csrf_token);
     let grants = render_grants(data.target, data.store, data.policy, data.csrf_token);
-    let credentials = render_credentials(data.target, data.store, data.policy, data.csrf_token);
 
     let body = format!(
         r#"{banners}
 <h1>Backend: {target}</h1>
 {store_switcher}
 
+<h2>Resources</h2>
+{resources}
+
 <h2>Wrappers</h2>
 {wrappers}
-
-<h2>Credentials</h2>
-{credentials}
 
 <h2>Rules</h2>
 {rules}
@@ -82,13 +83,189 @@ fn render_store_switcher(target: &str, store: &str, stores: &[String]) -> String
     )
 }
 
+#[derive(Default)]
+struct ResourceView {
+    env_vars: Vec<String>,
+    files: Vec<String>,
+    libsecret_items: Vec<String>,
+}
+
+fn split_resource_id(secret_id: &str) -> Option<(&str, &str, &str)> {
+    for slot in ["/env/", "/files/", "/libsecret/"] {
+        if let Some((resource, rest)) = secret_id.split_once(slot) {
+            let slot_name = &slot[1..slot.len() - 1];
+            return Some((resource, slot_name, rest));
+        }
+    }
+    None
+}
+
+fn render_resources(target: &str, store: &str, secret_ids: &[String], csrf: &str) -> String {
+    let mut resources: BTreeMap<String, ResourceView> = BTreeMap::new();
+    for secret_id in secret_ids {
+        if let Some((resource_id, slot, item)) = split_resource_id(secret_id) {
+            let entry = resources.entry(resource_id.to_string()).or_default();
+            match slot {
+                "env" => entry.env_vars.push(item.to_string()),
+                "files" => entry.files.push(item.to_string()),
+                "libsecret" => entry.libsecret_items.push(item.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    let cards: String = resources
+        .iter()
+        .map(|(resource_id, view)| render_resource_card(target, store, resource_id, view, csrf))
+        .collect();
+
+    format!(
+        r#"<p class="muted">Every backend resource always has three slots: <span class="mono">env</span>, <span class="mono">files</span>, and <span class="mono">libsecret</span>. Seed whichever slots a wrapper projects.</p>
+{cards}
+<div class="grid two">
+  {env_form}
+  {files_form}
+</div>
+<div class="grid one">
+  {libsecret_form}
+</div>"#,
+        cards = if cards.is_empty() {
+            r#"<p class="muted">No resource state stored yet.</p>"#.to_string()
+        } else {
+            cards
+        },
+        env_form = render_env_write_form(target, store, csrf),
+        files_form = render_files_write_form(target, store, csrf),
+        libsecret_form = render_libsecret_write_form(target, store, csrf),
+    )
+}
+
+fn render_resource_card(
+    target: &str,
+    store: &str,
+    resource_id: &str,
+    view: &ResourceView,
+    csrf: &str,
+) -> String {
+    let env_rows = render_slot_rows(target, store, resource_id, "env", &view.env_vars, csrf);
+    let file_rows = render_slot_rows(target, store, resource_id, "files", &view.files, csrf);
+    let libsecret_rows = render_slot_rows(
+        target,
+        store,
+        resource_id,
+        "libsecret",
+        &view.libsecret_items,
+        csrf,
+    );
+    format!(
+        r#"<div class="card">
+  <h3 class="mono">{resource}</h3>
+  <div class="grid three">
+    <div>
+      <h4>env</h4>
+      {env_rows}
+    </div>
+    <div>
+      <h4>files</h4>
+      {file_rows}
+    </div>
+    <div>
+      <h4>libsecret</h4>
+      {libsecret_rows}
+    </div>
+  </div>
+</div>"#,
+        resource = h(resource_id),
+        env_rows = env_rows,
+        file_rows = file_rows,
+        libsecret_rows = libsecret_rows,
+    )
+}
+
+fn render_slot_rows(
+    target: &str,
+    store: &str,
+    resource_id: &str,
+    slot: &str,
+    items: &[String],
+    csrf: &str,
+) -> String {
+    if items.is_empty() {
+        return r#"<p class="muted">empty</p>"#.to_string();
+    }
+    let rows: Vec<String> = items
+        .iter()
+        .map(|item| {
+            let secret_id = format!("{resource_id}/{slot}/{item}");
+            format!(
+                r#"<div class="row between"><span class="mono">{item}</span>
+<form method="post" action="/t/{target}/s/{store}/secret/delete" class="inline-form">
+  <input type="hidden" name="csrf_token" value="{csrf}"/>
+  <input type="hidden" name="secret_id" value="{secret_id_attr}"/>
+  <button type="submit" class="danger">delete</button>
+</form></div>"#,
+                item = h(item),
+                target = url_path(target),
+                store = url_path(store),
+                csrf = attr(csrf),
+                secret_id_attr = attr(&secret_id),
+            )
+        })
+        .collect();
+    rows.join("\n")
+}
+
+fn render_env_write_form(target: &str, store: &str, csrf: &str) -> String {
+    format!(
+        r#"<form method="post" action="/t/{target}/s/{store}/secret/write-env" class="card">
+  <input type="hidden" name="csrf_token" value="{csrf}"/>
+  <h3>Set env slot</h3>
+  <div class="field"><label>resource_id</label><input name="resource_id" required/></div>
+  <div class="field"><label>env var name</label><input name="var_name" required/></div>
+  <div class="field"><label>value</label><textarea name="value" rows="3" required></textarea></div>
+  <button type="submit">Write env value</button>
+</form>"#,
+        target = url_path(target),
+        store = url_path(store),
+        csrf = attr(csrf),
+    )
+}
+
+fn render_files_write_form(target: &str, store: &str, csrf: &str) -> String {
+    format!(
+        r#"<form method="post" action="/t/{target}/s/{store}/secret/write-file" class="card">
+  <input type="hidden" name="csrf_token" value="{csrf}"/>
+  <h3>Set files slot entry</h3>
+  <div class="field"><label>resource_id</label><input name="resource_id" required/></div>
+  <div class="field"><label>relative file path</label><input name="path" required/></div>
+  <div class="field"><label>content</label><textarea name="value" rows="6" required></textarea></div>
+  <button type="submit">Write file entry</button>
+</form>"#,
+        target = url_path(target),
+        store = url_path(store),
+        csrf = attr(csrf),
+    )
+}
+
+fn render_libsecret_write_form(target: &str, store: &str, csrf: &str) -> String {
+    format!(
+        r#"<form method="post" action="/t/{target}/s/{store}/secret/write-libsecret" class="card">
+  <input type="hidden" name="csrf_token" value="{csrf}"/>
+  <h3>Set libsecret slot entry</h3>
+  <div class="field"><label>resource_id</label><input name="resource_id" required/></div>
+  <div class="field"><label>item id</label><input name="item_id" required/></div>
+  <div class="field"><label>serialized value</label><textarea name="value" rows="6" required></textarea></div>
+  <button type="submit">Write libsecret entry</button>
+</form>"#,
+        target = url_path(target),
+        store = url_path(store),
+        csrf = attr(csrf),
+    )
+}
+
 fn render_wrappers(target: &str, store: &str, policy: &PolicyDocument, csrf: &str) -> String {
     if policy.wrappers.is_empty() {
-        return r#"<p class="muted">No wrapper states yet. Set one with the form below any new wrapper.</p>
-<form method="post" action="" class="card muted">
-  <p>Add a wrapper state by setting a rule or using the CLI; the wrapper mode editor appears once a wrapper state exists.</p>
-</form>"#
-            .to_string();
+        return r#"<p class="muted">No wrapper states yet.</p>"#.to_string();
     }
     let rows: Vec<String> = policy
         .wrappers
@@ -213,11 +390,11 @@ fn render_rules(target: &str, store: &str, policy: &PolicyDocument, csrf: &str) 
 </table>
 <form method="post" action="/t/{target}/s/{store}/rule/upsert" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
-  <h2>Add rule</h2>
+  <h3>Add rule</h3>
   <div class="field"><label>id</label><input name="id" required/></div>
   <div class="field"><label>wrapper</label><input name="wrapper" required/></div>
-  <div class="field"><label>resource (e.g. secret:github/token)</label><input name="resource" required/></div>
-  <div class="field"><label>operation (e.g. secret.read)</label><input name="operation" required/></div>
+  <div class="field"><label>resource (e.g. env:github/token)</label><input name="resource" required/></div>
+  <div class="field"><label>operation (e.g. env.read)</label><input name="operation" required/></div>
   <div class="field">
     <label>effect</label>
     <select name="effect">
@@ -285,7 +462,7 @@ fn render_grants(target: &str, store: &str, policy: &PolicyDocument, csrf: &str)
 </table>
 <form method="post" action="/t/{target}/s/{store}/grant/upsert" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
-  <h2>Add grant</h2>
+  <h3>Add grant</h3>
   <div class="field"><label>id</label><input name="id" required/></div>
   <div class="field"><label>wrapper</label><input name="wrapper" required/></div>
   <div class="field"><label>resource</label><input name="resource" required/></div>
@@ -306,124 +483,6 @@ fn render_grants(target: &str, store: &str, policy: &PolicyDocument, csrf: &str)
         target = url_path(target),
         store = url_path(store),
         csrf = attr(csrf),
-    )
-}
-
-fn render_credentials(target: &str, store: &str, policy: &PolicyDocument, csrf: &str) -> String {
-    let active_rows = render_active_mutation_windows(target, store, policy, csrf);
-    let enable_form = format!(
-        r#"<form method="post" action="/t/{target}/s/{store}/mutation/enable" class="card">
-  <input type="hidden" name="csrf_token" value="{csrf}"/>
-  <h3>Allow mutation</h3>
-  <p class="muted">Creates a time-bounded allow grant for <span class="mono">store.write</span> on <span class="mono">cred:&lt;secret_id&gt;</span> for the named wrapper. A <span class="mono">/v1/admin/secret/write</span> for that tuple succeeds while the grant is active.</p>
-  <div class="field"><label>wrapper</label><input name="wrapper" required/></div>
-  <div class="field"><label>secret_id (e.g. github/token)</label><input name="secret_id" required/></div>
-  <div class="field">
-    <label>duration</label>
-    <select name="duration">
-      <option value="30m">30 minutes (default)</option>
-      <option value="10m">10 minutes</option>
-      <option value="2h">2 hours</option>
-      <option value="permanent">permanent (requires confirmation)</option>
-    </select>
-  </div>
-  <div class="field"><label>reason (optional, shown in grants)</label><input name="reason"/></div>
-  <div class="field">
-    <label>
-      <input type="checkbox" name="confirm_permanent" value="yes"/>
-      I understand: permanent allow-grants are operationally equivalent to <span class="mono">mutable: true</span>.
-    </label>
-  </div>
-  <button type="submit">Allow mutation</button>
-</form>"#,
-        target = url_path(target),
-        store = url_path(store),
-        csrf = attr(csrf),
-    );
-    let write_form = format!(
-        r#"<form method="post" action="/t/{target}/s/{store}/credential/write" class="card">
-  <input type="hidden" name="csrf_token" value="{csrf}"/>
-  <h3>Set credential value</h3>
-  <p class="muted">Succeeds only while an allow grant for <span class="mono">(wrapper, cred:&lt;secret_id&gt;, store.write)</span> is active.</p>
-  <div class="field"><label>wrapper</label><input name="wrapper" required/></div>
-  <div class="field"><label>secret_id</label><input name="secret_id" required/></div>
-  <div class="field"><label>value (raw, not base64)</label><textarea name="value" rows="3" required></textarea></div>
-  <button type="submit">Write value</button>
-</form>"#,
-        target = url_path(target),
-        store = url_path(store),
-        csrf = attr(csrf),
-    );
-    format!("{active_rows}\n{enable_form}\n{write_form}")
-}
-
-fn render_active_mutation_windows(
-    target: &str,
-    store: &str,
-    policy: &PolicyDocument,
-    csrf: &str,
-) -> String {
-    let windows: Vec<&PolicyGrant> = policy
-        .grants
-        .iter()
-        .filter(|g| g.operation == OP_STORE_WRITE && g.effect == PolicyEffect::Allow)
-        .collect();
-    if windows.is_empty() {
-        return r#"<p class="muted">No active mutation windows. Use the form below to allow writes to a credential for a bounded time.</p>"#
-            .to_string();
-    }
-    let rows: Vec<String> = windows
-        .iter()
-        .map(|g| {
-            let secret_id = g.resource.strip_prefix("cred:").unwrap_or(&g.resource);
-            let window = match (g.starts_at_epoch, g.expires_at_epoch) {
-                (Some(s), Some(e)) => format!("{s} → {e}"),
-                (None, Some(e)) => format!("until {e}"),
-                (Some(s), None) => format!("from {s} (permanent)"),
-                _ => "permanent".to_string(),
-            };
-            let reason = g
-                .reason
-                .as_deref()
-                .map(|r| format!(" — {}", h(r)))
-                .unwrap_or_default();
-            format!(
-                r#"<tr>
-  <td class="mono">{wrapper}</td>
-  <td class="mono">{secret_id}</td>
-  <td class="muted">{window}{reason}</td>
-  <td>
-    <form method="post" action="/t/{target}/s/{store}/mutation/revoke" class="inline-form">
-      <input type="hidden" name="csrf_token" value="{csrf}"/>
-      <input type="hidden" name="wrapper" value="{wrapper_attr}"/>
-      <input type="hidden" name="secret_id" value="{secret_id_attr}"/>
-      <input type="hidden" name="grant_id" value="{grant_id_attr}"/>
-      <button type="submit" class="danger">revoke</button>
-    </form>
-  </td>
-</tr>"#,
-                wrapper = h(&g.wrapper),
-                wrapper_attr = attr(&g.wrapper),
-                secret_id = h(secret_id),
-                secret_id_attr = attr(secret_id),
-                grant_id_attr = attr(&g.id),
-                window = h(&window),
-                reason = reason,
-                target = url_path(target),
-                store = url_path(store),
-                csrf = attr(csrf),
-            )
-        })
-        .collect();
-    format!(
-        r#"<h3>Active mutation windows</h3>
-<table>
-<thead><tr><th>wrapper</th><th>secret_id</th><th>window</th><th></th></tr></thead>
-<tbody>
-{rows}
-</tbody>
-</table>"#,
-        rows = rows.join("\n"),
     )
 }
 
@@ -458,15 +517,15 @@ mod tests {
             rules: vec![PolicyRule {
                 id: "r1".to_string(),
                 wrapper: "gh-authorized".to_string(),
-                resource: "secret:github/token".to_string(),
-                operation: "secret.read".to_string(),
+                resource: "env:github/token".to_string(),
+                operation: "env.read".to_string(),
                 effect: PolicyEffect::Allow,
             }],
             grants: vec![PolicyGrant {
                 id: "g1".to_string(),
                 wrapper: "aws-prod".to_string(),
-                resource: "secret:aws/prod".to_string(),
-                operation: "secret.read".to_string(),
+                resource: "env:aws/prod".to_string(),
+                operation: "env.read".to_string(),
                 effect: PolicyEffect::Allow,
                 starts_at_epoch: Some(10),
                 expires_at_epoch: Some(20),
@@ -478,12 +537,17 @@ mod tests {
     #[test]
     fn instance_page_shows_wrapper_rule_and_grant_rows() {
         let policy = sample_policy();
+        let secret_ids = vec![
+            "github/token/env/GH_TOKEN".to_string(),
+            "gws/castlabs/files/credentials.json".to_string(),
+        ];
         let html = instance_page(InstancePageData {
             operator: "alice",
             target: "corp",
             store: "work",
             stores: &["work".to_string(), "personal".to_string()],
             policy: &policy,
+            secret_ids: &secret_ids,
             csrf_token: "CSRF123",
             banner_ok: Some("saved"),
             banner_error: None,
@@ -491,95 +555,53 @@ mod tests {
         assert!(html.contains("gh-authorized"));
         assert!(html.contains("aws-prod"));
         assert!(html.contains("per-call approval"));
-        assert!(html.contains("secret:github/token"));
+        assert!(html.contains("env:github/token"));
         assert!(html.contains("one-time deploy"));
+        assert!(html.contains("GH_TOKEN"));
+        assert!(html.contains("credentials.json"));
         assert!(html.contains("CSRF123"));
         assert!(html.contains(r#"<div class="banner ok">saved</div>"#));
-        // Store selector has the current store marked selected.
         assert!(html.contains(r#"<option value="work" selected>"#));
     }
 
     #[test]
-    fn credentials_section_renders_forms_and_active_windows() {
-        let policy = PolicyDocument {
-            wrappers: Vec::new(),
-            rules: Vec::new(),
-            grants: vec![PolicyGrant {
-                id: "mutation:gh-authorized:github/token".to_string(),
-                wrapper: "gh-authorized".to_string(),
-                resource: "cred:github/token".to_string(),
-                operation: OP_STORE_WRITE.to_string(),
-                effect: PolicyEffect::Allow,
-                starts_at_epoch: None,
-                expires_at_epoch: Some(1_700_000_000),
-                reason: Some("ticket IT-42".to_string()),
-            }],
-        };
+    fn resources_section_renders_forms_and_slot_groups() {
         let html = instance_page(InstancePageData {
             operator: "alice",
             target: "corp",
             store: "work",
             stores: &["work".to_string()],
-            policy: &policy,
+            policy: &PolicyDocument::default(),
+            secret_ids: &[
+                "gh-authorized/env/GH_TOKEN".to_string(),
+                "gws/castlabs/files/accounts.json".to_string(),
+                "gh/libsecret/default/item_1".to_string(),
+            ],
             csrf_token: "CSRF",
             banner_ok: None,
             banner_error: None,
         });
 
-        // Section header + both forms are present.
-        assert!(html.contains("<h2>Credentials</h2>"), "header missing");
-        assert!(
-            html.contains(r#"action="/t/corp/s/work/mutation/enable""#),
-            "enable form missing",
-        );
-        assert!(
-            html.contains(r#"action="/t/corp/s/work/credential/write""#),
-            "write form missing",
-        );
-        assert!(
-            html.contains(r#"action="/t/corp/s/work/mutation/revoke""#),
-            "revoke form missing in active windows row",
-        );
-        // The existing mutation grant surfaces in the "Active mutation windows" table
-        // with the secret_id stripped from the `cred:` prefix.
-        assert!(html.contains("Active mutation windows"));
-        assert!(html.contains(">github/token<"));
-        assert!(html.contains("until 1700000000"));
-        assert!(html.contains("ticket IT-42"));
-        // Confirmation checkbox is rendered for permanent grants.
-        assert!(html.contains(r#"name="confirm_permanent""#));
-    }
-
-    #[test]
-    fn credentials_section_shows_placeholder_when_no_mutation_grants() {
-        let policy = PolicyDocument::default();
-        let html = instance_page(InstancePageData {
-            operator: "alice",
-            target: "corp",
-            store: "work",
-            stores: &["work".to_string()],
-            policy: &policy,
-            csrf_token: "CSRF",
-            banner_ok: None,
-            banner_error: None,
-        });
-        assert!(html.contains("No active mutation windows"));
-        assert!(
-            !html.contains("Active mutation windows"),
-            "header only shows when there are rows",
-        );
+        assert!(html.contains("Every backend resource always has three slots"));
+        assert!(html.contains(r#"action="/t/corp/s/work/secret/write-env""#));
+        assert!(html.contains(r#"action="/t/corp/s/work/secret/write-file""#));
+        assert!(html.contains(r#"action="/t/corp/s/work/secret/write-libsecret""#));
+        assert!(html.contains(r#"action="/t/corp/s/work/secret/delete""#));
+        assert!(html.contains("GH_TOKEN"));
+        assert!(html.contains("accounts.json"));
+        assert!(html.contains("item_1"));
     }
 
     #[test]
     fn instance_page_escapes_policy_content() {
         let policy = PolicyDocument {
             wrappers: vec![WrapperPolicyState {
-                wrapper: "<script>".to_string(),
+                wrapper: "<wrap>".to_string(),
                 mode: WrapperApprovalMode::Locked,
-                reason: Some("oops \"injected\"".to_string()),
+                reason: Some("<reason>".to_string()),
             }],
-            rules: Vec::new(),
-            grants: Vec::new(),
+            rules: vec![],
+            grants: vec![],
         };
         let html = instance_page(InstancePageData {
             operator: "alice",
@@ -587,12 +609,12 @@ mod tests {
             store: "work",
             stores: &["work".to_string()],
             policy: &policy,
+            secret_ids: &[],
             csrf_token: "CSRF",
             banner_ok: None,
             banner_error: None,
         });
-        assert!(!html.contains("<script>"));
-        assert!(html.contains("&lt;script&gt;"));
-        assert!(html.contains("&quot;injected&quot;"));
+        assert!(html.contains("&lt;wrap&gt;"));
+        assert!(html.contains("&lt;reason&gt;"));
     }
 }

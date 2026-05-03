@@ -13,7 +13,9 @@ use tracing::{debug, error, info, warn};
 
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::message::{SecretBytes, SecretsdErrorCode, SecretsdRequest, SecretsdResponse};
+use underwrap_protocol::message::{
+    SecretBytes, SecretsdErrorCode, SecretsdRequest, SecretsdResponse,
+};
 use underwrap_protocol::resource::relative_to_prefix;
 use underwrap_store::StorageBackend;
 
@@ -115,7 +117,10 @@ fn process_request(
             SecretsdResponse::ReadOk { material }
         }
 
-        SecretsdRequest::Write { secret_id, material } => {
+        SecretsdRequest::Write {
+            secret_id,
+            material,
+        } => {
             if access != AccessMode::ReadWrite {
                 crate::audit::wrapper_write_denied(
                     "libsecret",
@@ -139,7 +144,10 @@ fn process_request(
 
             match store.write(&full_id, material.as_ref()) {
                 Ok(()) => {
-                    entries.lock().unwrap().insert(full_id.clone(), material.clone());
+                    entries
+                        .lock()
+                        .unwrap()
+                        .insert(full_id.clone(), material.clone());
                     debug!(wrapper = %wrapper_name, id = %full_id, "secretsd write");
                     crate::audit::secretsd_write(wrapper_name, secret_id);
                     SecretsdResponse::WriteOk

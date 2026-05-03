@@ -163,16 +163,16 @@ def local_store_and_basic_ops():
     # LOCAL INSTANCE: store secrets + basic operations
     # ============================================================
 
-    admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token", "ghp_testvmtoken")
-    admin_write_secret(ADMIN_LOCAL, "local", "test-echo2", "test/other", "other_secret_val")
-    admin_write_secret(ADMIN_LOCAL, "local", "test-locked", "test/locked-tok", "locked_secret")
-    admin_write_secret(ADMIN_LOCAL, "local", "test-sleep", "test/dumpable-tok", "dumpable_test_secret")
-    admin_write_secret(ADMIN_LOCAL, "local", "test-crash", "test/crash-tok", "crash_secret_value")
-    admin_write_secret(ADMIN_LOCAL, "local", "test-caps", "test/caps-tok", "caps_test_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token/env/MY_TOKEN", "ghp_testvmtoken")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-echo2", "test/other/env/OTHER_SECRET", "other_secret_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-locked", "test/locked-tok/env/LOCKED_TOKEN", "locked_secret")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-sleep", "test/dumpable-tok/env/DUMPABLE_SECRET", "dumpable_test_secret")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-crash", "test/crash-tok/env/CRASH_SECRET", "crash_secret_value")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-caps", "test/caps-tok/env/CAPS_SECRET", "caps_test_val")
 
     # Admin writes may update operator-managed credential refs centrally.
-    admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token", "overwrite")
-    admin_write_secret(ADMIN_LOCAL, "local", "test-echo2", "test/other", "updated_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token/env/MY_TOKEN", "overwrite")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-echo2", "test/other/env/OTHER_SECRET", "updated_val")
 
 
 def local_unprivileged_wrapper_invocation():
@@ -615,6 +615,25 @@ def local_directory_credentials():
     # LOCAL INSTANCE: directory credentials
     # ============================================================
 
+    # Once any backend policy document exists, writes are granted only by
+    # explicit files.write rules. Install the directory rules this section
+    # expects so read-only wrappers stay read-only under the central model.
+    for rule in [
+        ("dir-write-a-read", "local-test-dir-write", "files:test/dir-a", "files.read"),
+        ("dir-write-a-write", "local-test-dir-write", "files:test/dir-a", "files.write"),
+        ("dir-write-b-read", "local-test-dir-write", "files:test/dir-b", "files.read"),
+        ("dir-write-b-write", "local-test-dir-write", "files:test/dir-b", "files.write"),
+        ("dir-read-a", "local-test-dir-read", "files:test/dir-a", "files.read"),
+        ("dir-read-b", "local-test-dir-read", "files:test/dir-b", "files.read"),
+        ("dir-readonly-a", "local-test-dir-readonly-write", "files:test/dir-a", "files.read"),
+        ("dir-readonly-b", "local-test-dir-readonly-write", "files:test/dir-b", "files.read"),
+        ("dir-sleep-a", "local-test-dir-sleep", "files:test/dir-a", "files.read"),
+        ("dir-sleep-b", "local-test-dir-sleep", "files:test/dir-b", "files.read"),
+        ("dir-symlink-a-read", "local-test-dir-symlink", "files:test/dir-a", "files.read"),
+        ("dir-symlink-a-write", "local-test-dir-symlink", "files:test/dir-a", "files.write"),
+    ]:
+        admin_upsert_rule(ADMIN_LOCAL, "local", rule[0], rule[1], rule[2], rule[3], "allow")
+
     # Seed two directory credentials through a read-write wrapper.
     machine.succeed(su("/run/wrappers/bin/local-test-dir-write seed"))
     machine.log("PASS: directory credential seed wrapper succeeded")
@@ -729,7 +748,7 @@ def remote_service_lifecycle():
     # ============================================================
 
     # Store secret in backend through the admin API.
-    admin_write_secret(ADMIN_REMOTE, "remote", "remote-echo", "remote/token", "secret_via_service")
+    admin_write_secret(ADMIN_REMOTE, "remote", "remote-echo", "remote/token/env/REMOTE_TOKEN", "secret_via_service")
 
     # With backend service up: succeed.
     output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
@@ -772,8 +791,8 @@ def local_backend_managed_grants():
         "local",
         "grant-echo2",
         "local-test-echo2",
-        "secret:test/other",
-        "secret.read",
+        "env:test/other",
+        "env.read",
         "allow",
         starts_at_epoch=now - 1,
         expires_at_epoch=now + 30,
@@ -792,8 +811,8 @@ def local_backend_managed_grants():
         "local",
         "grant-expired",
         "local-test-echo2",
-        "secret:test/other",
-        "secret.read",
+        "env:test/other",
+        "env.read",
         "allow",
         starts_at_epoch=now - 60,
         expires_at_epoch=now - 1,
@@ -820,8 +839,8 @@ def local_backend_policy_control_center():
         "local",
         "allow-echo",
         "local-test-echo",
-        "secret:test/token",
-        "secret.read",
+        "env:test/token",
+        "env.read",
         "allow",
     )
     output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
@@ -845,8 +864,8 @@ def local_backend_policy_control_center():
         "local",
         "allow-locked",
         "local-test-locked",
-        "secret:test/locked-tok",
-        "secret.read",
+        "env:test/locked-tok",
+        "env.read",
         "allow",
     )
     output = machine.succeed(su("/run/wrappers/bin/local-test-locked"))
@@ -863,8 +882,22 @@ def instance_isolation():
 
     # local-test-echo wrapper cannot reach tunnel instance secrets.
     # (The wrapper's GID maps to the local instance, not tunnel.)
+    admin_upsert_rule(
+        ADMIN_LOCAL,
+        "local",
+        "temp-instance-isolation-echo",
+        "local-test-echo",
+        "env:test/token",
+        "env.read",
+        "allow",
+    )
     output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
     assert "REMOTE_TOKEN" not in output
+    admin_api(
+        ADMIN_LOCAL,
+        "/v1/admin/rule/delete",
+        {"store": "local", "id": "temp-instance-isolation-echo"},
+    )
     machine.log("PASS: local wrapper does not leak remote secrets")
 
 

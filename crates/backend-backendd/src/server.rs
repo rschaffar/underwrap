@@ -23,9 +23,7 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
 use underwrap_protocol::config::StorageConfig;
-use underwrap_protocol::policy::{
-    POLICY_DOCUMENT_SECRET_ID, PolicyDocument, WrapperApprovalMode,
-};
+use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument, WrapperApprovalMode};
 
 use underwrap_store::StorageBackend;
 
@@ -441,13 +439,13 @@ async fn handle_service_request(
                     Ok(entries) => {
                         let mut entries: Vec<_> = entries
                             .into_iter()
-                            .map(|(id, material)| {
-                                underwrap_protocol::service::ServiceBundleEntry {
+                            .map(
+                                |(id, material)| underwrap_protocol::service::ServiceBundleEntry {
                                     id,
                                     material_b64: base64::engine::general_purpose::STANDARD
                                         .encode(material.as_ref()),
-                                }
-                            })
+                                },
+                            )
                             .collect();
                         entries.sort_by(|a, b| a.id.cmp(&b.id));
                         json_response(

@@ -232,83 +232,64 @@ in {
           clientCertFile = testLocalClientPem;
           clientKeyFile = testLocalClientKey;
         };
-        credentials = {
-          "test/token" = { mode = "env"; variable = "MY_TOKEN"; };
-          "test/other" = { mode = "env"; variable = "OTHER_SECRET"; };
-          "test/locked-tok" = { mode = "env"; variable = "LOCKED_TOKEN"; };
-          "test/dumpable-tok" = { mode = "env"; variable = "DUMPABLE_SECRET"; };
-          "test/crash-tok" = { mode = "env"; variable = "CRASH_SECRET"; };
-          "test/caps-tok" = { mode = "env"; variable = "CAPS_SECRET"; };
-          "test/libsecret-store" = { mode = "libsecret"; };
-          "test/ns-pids-store" = { mode = "libsecret"; };
-          "test/dir-a" = {
-            mode = "directory";
-            path = ".config/underwrap-dir-a";
-          };
-          "test/dir-b" = {
-            mode = "directory";
-            path = ".local/share/underwrap-dir-b";
-          };
-        };
-
         wrappers = {
           test-echo = {
             target = "${pkgs.coreutils}/bin/env";
-            use."test/token".access = "read-only";
+            resources."test/token".env = true;
           };
           test-echo2 = {
             target = "${pkgs.coreutils}/bin/echo";
-            use."test/other".access = "read-only";
+            resources."test/other".env = true;
           };
           test-locked = {
             target = "${pkgs.coreutils}/bin/env";
-            use."test/locked-tok".access = "read-only";
+            resources."test/locked-tok".env = true;
           };
           test-sleep = {
             target = "${pkgs.coreutils}/bin/sleep";
-            use."test/dumpable-tok".access = "read-only";
+            resources."test/dumpable-tok".env = true;
           };
           test-crash = {
             target = "${crashScript}";
-            use."test/crash-tok".access = "read-only";
+            resources."test/crash-tok".env = true;
           };
           test-libsecret = {
             target = "${pkgs.libsecret}/bin/secret-tool";
-            use."test/libsecret-store".access = "read-write";
+            resources."test/libsecret-store".libsecret = true;
           };
           test-ns-pids = {
             target = "${listPidsScript}";
-            use."test/ns-pids-store".access = "read-only";
+            resources."test/ns-pids-store".libsecret = true;
             envSet.PATH = pkgs.lib.makeBinPath [ pkgs.coreutils ];
           };
           test-caps = {
             target = "${capsScript}";
-            use."test/caps-tok".access = "read-only";
+            resources."test/caps-tok".env = true;
             envSet.PATH = pkgs.lib.makeBinPath [ pkgs.gnugrep ];
           };
           test-dir-write = {
             target = "${dirWriteScript}";
-            use."test/dir-a".access = "read-write";
-            use."test/dir-b".access = "read-write";
+            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
+            resources."test/dir-b".files.path = ".local/share/underwrap-dir-b";
           };
           test-dir-read = {
             target = "${dirReadScript}";
-            use."test/dir-a".access = "read-only";
-            use."test/dir-b".access = "read-only";
+            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
+            resources."test/dir-b".files.path = ".local/share/underwrap-dir-b";
           };
           test-dir-readonly-write = {
             target = "${dirWriteScript}";
-            use."test/dir-a".access = "read-only";
-            use."test/dir-b".access = "read-only";
+            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
+            resources."test/dir-b".files.path = ".local/share/underwrap-dir-b";
           };
           test-dir-sleep = {
             target = "${dirSleepScript}";
-            use."test/dir-a".access = "read-only";
-            use."test/dir-b".access = "read-only";
+            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
+            resources."test/dir-b".files.path = ".local/share/underwrap-dir-b";
           };
           test-dir-symlink = {
             target = "${dirSymlinkScript}";
-            use."test/dir-a".access = "read-write";
+            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
           };
         };
       };
@@ -324,14 +305,9 @@ in {
           clientKeyFile = testTunnelClientKey;
         };
 
-        credentials."remote/token" = {
-          mode = "env";
-          variable = "REMOTE_TOKEN";
-        };
-
         wrappers.remote-echo = {
           target = "${pkgs.coreutils}/bin/env";
-          use."remote/token".access = "read-only";
+          resources."remote/token".env = true;
         };
       };
     };

@@ -94,13 +94,7 @@ pub fn secretsd_delete(wrapper: &str, item: &str) {
 /// Emitted when the policy gate refuses a `store.write` for the given
 /// wrapper/credential. `kind` is `"libsecret"` or `"directory"`, `item` is
 /// the relative item id or file path requested by the wrapper.
-pub fn wrapper_write_denied(
-    kind: &str,
-    wrapper: &str,
-    credential: &str,
-    item: &str,
-    reason: &str,
-) {
+pub fn wrapper_write_denied(kind: &str, wrapper: &str, credential: &str, item: &str, reason: &str) {
     warn!(
         audit = "store_denied",
         kind = kind,

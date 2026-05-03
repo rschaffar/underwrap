@@ -106,14 +106,9 @@ services.underwrap = {
       clientKeyFile = "/etc/underwrap/client-work.key";
     };
 
-    credentials."github/token" = {
-      mode = "env";
-      variable = "GH_TOKEN";
-    };
-
     wrappers.work-gh = {
       target = "${pkgs.gh}/bin/gh";
-      use."github/token".access = "read-only";
+      resources."github/token".env = true;
     };
   };
 };
@@ -143,7 +138,7 @@ The short way:
 # from the backend host
 TOKEN=$(cat /run/keys/underwrap-admin-ops)
 
-# Create an allow rule so work-gh can read github/token.
+# Create an allow rule so work-gh can read the env slot of github/token.
 curl -sS -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -152,18 +147,18 @@ curl -sS -X POST \
         "rule": {
           "id": "gh-token-read",
           "wrapper": "work-gh",
-          "resource": "secret:github/token",
-          "operation": "secret.read",
+          "resource": "env:github/token",
+          "operation": "env.read",
           "effect": "allow"
         }
       }' \
   http://127.0.0.1:19443/v1/admin/rule/upsert
 
-# Store the actual secret value.
+# Store the actual env slot value.
 curl -sS -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"store":"work","secret_id":"github/token",
+  -d '{"store":"work","secret_id":"github/token/env/GH_TOKEN",
        "material_b64":"'"$(printf 'ghp_…' | base64)"'"}' \
   http://127.0.0.1:19443/v1/admin/secret/write
 ```

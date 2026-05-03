@@ -10,37 +10,25 @@ backend:
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
 
-credentials:
-  # A reusable env-injected token.
-  github/token:
-    mode: env
-    variable: GH_TOKEN
-
-  # A reusable libsecret namespace.
-  github/gh:
-    mode: libsecret
-
-  slack/xoxp:
-    mode: env
-    variable: SLACK_TOKEN
-
-  # A reusable directory credential rooted at $HOME/.config/gws.
-  gws/state:
-    mode: directory
-    path: .config/gws
-
 wrappers:
   # Each wrapper entry defines one underwrap-facing command.
   # The socket and group together form the authenticated wrapper identity:
   # the socket selects the expected wrapper, and the peer's effective GID
   # must match the configured group for that socket.
+  #
+  # Every backend resource always has three slots:
+  #   <resource>/env/*
+  #   <resource>/files/*
+  #   <resource>/libsecret/*
+  #
+  # The wrapper config only decides which slots to project into the target.
   gh-authorized:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
-    use:
+    resources:
       github/token:
-        access: read-only
+        env: true
 
   # Agent-facing pattern: point underwrap at your own narrow wrapper in the
   # Nix store, not directly at the full gh CLI. That wrapper can hardcode the
@@ -49,41 +37,41 @@ wrappers:
     target: /nix/store/...-agent-gh-comment/bin/agent-gh-comment
     socket: /run/underwrap/agent-gh-comment.sock
     group: underwrap-agent-gh-comment
-    use:
+    resources:
       github/token:
-        access: read-only
+        env: true
 
   agent-slack:
     target: /usr/bin/slack-cli
     socket: /run/underwrap/agent-slack.sock
     group: underwrap-agent-slack
-    use:
+    resources:
       slack/xoxp:
-        access: read-only
+        env: true
 
-  # Libsecret-backed gh wrappers can share one credential namespace while
-  # receiving different permissions.
+  # Libsecret-backed gh wrappers can share one backend resource.
   gh-auth:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-auth.sock
     group: underwrap-gh-auth
-    use:
+    resources:
       github/gh:
-        access: read-write
+        libsecret: true
 
   gh-pr:
     target: /nix/store/...-gh-pr-helper/bin/gh-pr-helper
     socket: /run/underwrap/gh-pr.sock
     group: underwrap-gh-pr
-    use:
+    resources:
       github/gh:
-        access: read-only
+        libsecret: true
 
   # A tool that persists backend-managed credential state in a directory tree.
   gws-auth:
     target: /usr/bin/gws
     socket: /run/underwrap/gws-auth.sock
     group: underwrap-gws-auth
-    use:
+    resources:
       gws/state:
-        access: read-write
+        files:
+          path: .config/gws

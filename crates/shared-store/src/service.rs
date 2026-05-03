@@ -79,9 +79,7 @@ impl ServiceBackend {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::builder()
             .use_rustls_tls()
-            .add_root_certificate(
-                Certificate::from_pem(&ca_pem).context("parsing backend CA PEM")?,
-            )
+            .add_root_certificate(Certificate::from_pem(&ca_pem).context("parsing backend CA PEM")?)
             .identity(Identity::from_pem(&identity_pem).context("parsing backend identity PEM")?)
             .build()
             .context("building backend HTTPS client")?;
@@ -114,11 +112,11 @@ impl ServiceBackend {
                             reply.send(runtime.block_on(list_request(&client, &base_url, &prefix)));
                     }
                     Command::ReadPrefixes { prefixes, reply } => {
-                        let _ = reply.send(runtime.block_on(read_prefixes_request(
-                            &client,
-                            &base_url,
-                            &prefixes,
-                        )));
+                        let _ =
+                            reply
+                                .send(runtime.block_on(read_prefixes_request(
+                                    &client, &base_url, &prefixes,
+                                )));
                     }
                     Command::Delete { secret_id, reply } => {
                         let _ = reply

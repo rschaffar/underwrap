@@ -3,8 +3,8 @@ use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, PolicyRule};
 
 #[tokio::test]
 async fn service_mode_roundtrip_reads_secret() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start_service_mode(wrappers, secrets, "local", "underwrap-local")
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start_service_mode(wrappers, "local", "underwrap-local")
         .await
         .unwrap();
 
@@ -20,8 +20,8 @@ async fn service_mode_roundtrip_reads_secret() {
                 rules: vec![PolicyRule {
                     id: "allow-read".to_string(),
                     wrapper: "gh-authorized".to_string(),
-                    resource: "secret:github/token".to_string(),
-                    operation: "secret.read".to_string(),
+                    resource: "env:github/token".to_string(),
+                    operation: "env.read".to_string(),
                     effect: PolicyEffect::Allow,
                 }],
                 grants: Vec::new(),
@@ -38,8 +38,8 @@ async fn service_mode_roundtrip_reads_secret() {
 
 #[tokio::test]
 async fn service_mode_rejects_unmapped_client_principal() {
-    let (wrappers, secrets) = one_wrapper_config();
-    let daemon = TestDaemon::start_service_mode(wrappers, secrets, "tunnel", "underwrap-local")
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start_service_mode(wrappers, "tunnel", "underwrap-local")
         .await
         .unwrap();
 
