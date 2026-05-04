@@ -109,11 +109,11 @@ fn render_store_switcher(target: &str, store: &str, stores: &[String]) -> String
         r#"<form method="get" action="/t/{target}" class="card">
   <div class="field">
     <label>Store</label>
-    <select name="store" onchange="this.form.submit()">
+    <select name="store">
 {options}
     </select>
   </div>
-  <noscript><button type="submit">Switch</button></noscript>
+  <button type="submit">Switch store</button>
 </form>"#,
         target = url_path(target),
     )
@@ -171,11 +171,11 @@ fn render_resource_selector(
   </div>
   <div class="field">
     <label>Resource</label>
-    <select name="resource" onchange="this.form.submit()">
+    <select name="resource">
 {options}
     </select>
   </div>
-  <noscript><button type="submit">Open resource</button></noscript>
+  <button type="submit">Open resource</button>
 </form>"#,
         target = url_path(target),
         store_options = store_options,
