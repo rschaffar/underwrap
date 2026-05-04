@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, WrapperApprovalMode};
+use underwrap_protocol::service::CatalogEntry;
 
 use super::{attr, h, layout, url_path};
 
@@ -10,19 +11,56 @@ pub struct InstancePageData<'a> {
     pub store: &'a str,
     pub stores: &'a [String],
     pub policy: &'a PolicyDocument,
+    pub catalog: &'a [CatalogEntry],
     pub secret_ids: &'a [String],
+    pub selected_resource: Option<&'a str>,
     pub csrf_token: &'a str,
     pub banner_ok: Option<&'a str>,
     pub banner_error: Option<&'a str>,
 }
 
+const OPERATIONS: [&str; 5] = [
+    "env.read",
+    "files.read",
+    "files.write",
+    "libsecret.read",
+    "libsecret.write",
+];
+
 pub fn instance_page(data: InstancePageData<'_>) -> String {
     let banners = render_banners(data.banner_ok, data.banner_error);
     let store_switcher = render_store_switcher(data.target, data.store, data.stores);
-    let resources = render_resources(data.target, data.store, data.secret_ids, data.csrf_token);
+
+    let resources = collect_resources(data.catalog, data.secret_ids);
+    let selected_resource = data
+        .selected_resource
+        .filter(|r| resources.contains(&r.to_string()))
+        .map(ToString::to_string)
+        .or_else(|| resources.first().cloned());
+
+    let resource_selector = render_resource_selector(
+        data.target,
+        data.store,
+        data.stores,
+        &resources,
+        selected_resource.as_deref(),
+    );
+    let resource_editor = render_resource_editor(
+        data.target,
+        data.store,
+        data.secret_ids,
+        selected_resource.as_deref(),
+        data.csrf_token,
+    );
+    let matrix = render_access_matrix(
+        data.target,
+        data.store,
+        data.policy,
+        data.catalog,
+        selected_resource.as_deref(),
+        data.csrf_token,
+    );
     let wrappers = render_wrappers(data.target, data.store, data.policy, data.csrf_token);
-    let rules = render_rules(data.target, data.store, data.policy, data.csrf_token);
-    let grants = render_grants(data.target, data.store, data.policy, data.csrf_token);
 
     let body = format!(
         r#"{banners}
@@ -30,16 +68,14 @@ pub fn instance_page(data: InstancePageData<'_>) -> String {
 {store_switcher}
 
 <h2>Resources</h2>
-{resources}
+{resource_selector}
+{resource_editor}
+
+<h2>Access matrix</h2>
+{matrix}
 
 <h2>Wrappers</h2>
-{wrappers}
-
-<h2>Rules</h2>
-{rules}
-
-<h2>Grants</h2>
-{grants}"#,
+{wrappers}"#,
         target = h(data.target),
     );
 
@@ -83,6 +119,74 @@ fn render_store_switcher(target: &str, store: &str, stores: &[String]) -> String
     )
 }
 
+fn collect_resources(catalog: &[CatalogEntry], secret_ids: &[String]) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    for entry in catalog {
+        out.insert(entry.resource.clone());
+    }
+    for secret_id in secret_ids {
+        if let Some((resource, _, _)) = split_resource_id(secret_id) {
+            out.insert(resource.to_string());
+        }
+    }
+    out.into_iter().collect()
+}
+
+fn render_resource_selector(
+    target: &str,
+    store: &str,
+    stores: &[String],
+    resources: &[String],
+    selected_resource: Option<&str>,
+) -> String {
+    let options: String = resources
+        .iter()
+        .map(|resource| {
+            let selected = if selected_resource == Some(resource.as_str()) {
+                " selected"
+            } else {
+                ""
+            };
+            format!(
+                r#"<option value="{}"{selected}>{}</option>"#,
+                attr(resource),
+                h(resource)
+            )
+        })
+        .collect();
+    let store_options: String = stores
+        .iter()
+        .map(|s| {
+            let selected = if s == store { " selected" } else { "" };
+            format!(r#"<option value="{}"{selected}>{}</option>"#, attr(s), h(s))
+        })
+        .collect();
+    format!(
+        r#"<form method="get" action="/t/{target}" class="card">
+  <div class="field">
+    <label>Store</label>
+    <select name="store">
+{store_options}
+    </select>
+  </div>
+  <div class="field">
+    <label>Resource</label>
+    <select name="resource" onchange="this.form.submit()">
+{options}
+    </select>
+  </div>
+  <noscript><button type="submit">Open resource</button></noscript>
+</form>"#,
+        target = url_path(target),
+        store_options = store_options,
+        options = if resources.is_empty() {
+            r#"      <option value="">(no resources registered yet)</option>"#.to_string()
+        } else {
+            options
+        },
+    )
+}
+
 #[derive(Default)]
 struct ResourceView {
     env_vars: Vec<String>,
@@ -100,7 +204,16 @@ fn split_resource_id(secret_id: &str) -> Option<(&str, &str, &str)> {
     None
 }
 
-fn render_resources(target: &str, store: &str, secret_ids: &[String], csrf: &str) -> String {
+fn render_resource_editor(
+    target: &str,
+    store: &str,
+    secret_ids: &[String],
+    selected_resource: Option<&str>,
+    csrf: &str,
+) -> String {
+    let Some(selected_resource) = selected_resource else {
+        return r#"<p class="muted">No registered resources yet. Restart a frontend service to register wrapper/resource combinations.</p>"#.to_string();
+    };
     let mut resources: BTreeMap<String, ResourceView> = BTreeMap::new();
     for secret_id in secret_ids {
         if let Some((resource_id, slot, item)) = split_resource_id(secret_id) {
@@ -113,50 +226,7 @@ fn render_resources(target: &str, store: &str, secret_ids: &[String], csrf: &str
             }
         }
     }
-
-    let cards: String = resources
-        .iter()
-        .map(|(resource_id, view)| render_resource_card(target, store, resource_id, view, csrf))
-        .collect();
-
-    format!(
-        r#"<p class="muted">Every backend resource always has three slots: <span class="mono">env</span>, <span class="mono">files</span>, and <span class="mono">libsecret</span>. Seed whichever slots a wrapper projects.</p>
-{cards}
-<div class="grid two">
-  {env_form}
-  {files_form}
-</div>
-<div class="grid one">
-  {libsecret_form}
-</div>"#,
-        cards = if cards.is_empty() {
-            r#"<p class="muted">No resource state stored yet.</p>"#.to_string()
-        } else {
-            cards
-        },
-        env_form = render_env_write_form(target, store, csrf),
-        files_form = render_files_write_form(target, store, csrf),
-        libsecret_form = render_libsecret_write_form(target, store, csrf),
-    )
-}
-
-fn render_resource_card(
-    target: &str,
-    store: &str,
-    resource_id: &str,
-    view: &ResourceView,
-    csrf: &str,
-) -> String {
-    let env_rows = render_slot_rows(target, store, resource_id, "env", &view.env_vars, csrf);
-    let file_rows = render_slot_rows(target, store, resource_id, "files", &view.files, csrf);
-    let libsecret_rows = render_slot_rows(
-        target,
-        store,
-        resource_id,
-        "libsecret",
-        &view.libsecret_items,
-        csrf,
-    );
+    let view = resources.remove(selected_resource).unwrap_or_default();
     format!(
         r#"<div class="card">
   <h3 class="mono">{resource}</h3>
@@ -174,11 +244,21 @@ fn render_resource_card(
       {libsecret_rows}
     </div>
   </div>
+</div>
+<div class="grid two">
+  {env_form}
+  {files_form}
+</div>
+<div class="grid one">
+  {libsecret_form}
 </div>"#,
-        resource = h(resource_id),
-        env_rows = env_rows,
-        file_rows = file_rows,
-        libsecret_rows = libsecret_rows,
+        resource = h(selected_resource),
+        env_rows = render_slot_rows(target, store, selected_resource, "env", &view.env_vars, csrf),
+        file_rows = render_slot_rows(target, store, selected_resource, "files", &view.files, csrf),
+        libsecret_rows = render_slot_rows(target, store, selected_resource, "libsecret", &view.libsecret_items, csrf),
+        env_form = render_env_write_form(target, store, selected_resource, csrf),
+        files_form = render_files_write_form(target, store, selected_resource, csrf),
+        libsecret_form = render_libsecret_write_form(target, store, selected_resource, csrf),
     )
 }
 
@@ -215,12 +295,12 @@ fn render_slot_rows(
     rows.join("\n")
 }
 
-fn render_env_write_form(target: &str, store: &str, csrf: &str) -> String {
+fn render_env_write_form(target: &str, store: &str, resource_id: &str, csrf: &str) -> String {
     format!(
         r#"<form method="post" action="/t/{target}/s/{store}/secret/write-env" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
+  <input type="hidden" name="resource_id" value="{resource_attr}"/>
   <h3>Set env slot</h3>
-  <div class="field"><label>resource_id</label><input name="resource_id" required/></div>
   <div class="field"><label>env var name</label><input name="var_name" required/></div>
   <div class="field"><label>value</label><textarea name="value" rows="3" required></textarea></div>
   <button type="submit">Write env value</button>
@@ -228,15 +308,16 @@ fn render_env_write_form(target: &str, store: &str, csrf: &str) -> String {
         target = url_path(target),
         store = url_path(store),
         csrf = attr(csrf),
+        resource_attr = attr(resource_id),
     )
 }
 
-fn render_files_write_form(target: &str, store: &str, csrf: &str) -> String {
+fn render_files_write_form(target: &str, store: &str, resource_id: &str, csrf: &str) -> String {
     format!(
         r#"<form method="post" action="/t/{target}/s/{store}/secret/write-file" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
+  <input type="hidden" name="resource_id" value="{resource_attr}"/>
   <h3>Set files slot entry</h3>
-  <div class="field"><label>resource_id</label><input name="resource_id" required/></div>
   <div class="field"><label>relative file path</label><input name="path" required/></div>
   <div class="field"><label>content</label><textarea name="value" rows="6" required></textarea></div>
   <button type="submit">Write file entry</button>
@@ -244,15 +325,21 @@ fn render_files_write_form(target: &str, store: &str, csrf: &str) -> String {
         target = url_path(target),
         store = url_path(store),
         csrf = attr(csrf),
+        resource_attr = attr(resource_id),
     )
 }
 
-fn render_libsecret_write_form(target: &str, store: &str, csrf: &str) -> String {
+fn render_libsecret_write_form(
+    target: &str,
+    store: &str,
+    resource_id: &str,
+    csrf: &str,
+) -> String {
     format!(
         r#"<form method="post" action="/t/{target}/s/{store}/secret/write-libsecret" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
+  <input type="hidden" name="resource_id" value="{resource_attr}"/>
   <h3>Set libsecret slot entry</h3>
-  <div class="field"><label>resource_id</label><input name="resource_id" required/></div>
   <div class="field"><label>item id</label><input name="item_id" required/></div>
   <div class="field"><label>serialized value</label><textarea name="value" rows="6" required></textarea></div>
   <button type="submit">Write libsecret entry</button>
@@ -260,6 +347,105 @@ fn render_libsecret_write_form(target: &str, store: &str, csrf: &str) -> String 
         target = url_path(target),
         store = url_path(store),
         csrf = attr(csrf),
+        resource_attr = attr(resource_id),
+    )
+}
+
+fn render_access_matrix(
+    target: &str,
+    store: &str,
+    policy: &PolicyDocument,
+    catalog: &[CatalogEntry],
+    selected_resource: Option<&str>,
+    csrf: &str,
+) -> String {
+    let Some(selected_resource) = selected_resource else {
+        return r#"<p class="muted">Select a resource to edit access.</p>"#.to_string();
+    };
+
+    let rows: Vec<&CatalogEntry> = catalog
+        .iter()
+        .filter(|entry| entry.resource == selected_resource)
+        .collect();
+    if rows.is_empty() {
+        return r#"<p class="muted">No frontend has registered this resource yet.</p>"#.to_string();
+    }
+
+    let body_rows: Vec<String> = rows
+        .iter()
+        .map(|entry| {
+            let cells: String = OPERATIONS
+                .iter()
+                .map(|operation| render_matrix_cell(target, store, policy, entry, operation, csrf))
+                .collect();
+            format!(
+                r#"<tr>
+  <td class="mono">{host}</td>
+  <td class="mono">{user}</td>
+  <td class="mono">{wrapper}</td>
+  {cells}
+</tr>"#,
+                host = h(&entry.host),
+                user = h(&entry.user),
+                wrapper = h(&entry.wrapper),
+                cells = cells,
+            )
+        })
+        .collect();
+
+    let headers: String = OPERATIONS
+        .iter()
+        .map(|op| format!("<th class=\"mono\">{}</th>", h(op)))
+        .collect();
+
+    format!(
+        r#"<p class="muted">Rows are auto-registered when a frontend daemon starts. Toggle permanent allow rules for the selected resource.</p>
+<table>
+<thead><tr><th>host</th><th>user</th><th>wrapper</th>{headers}</tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table>"#,
+        headers = headers,
+        rows = body_rows.join("\n"),
+    )
+}
+
+fn render_matrix_cell(
+    target: &str,
+    store: &str,
+    policy: &PolicyDocument,
+    entry: &CatalogEntry,
+    operation: &str,
+    csrf: &str,
+) -> String {
+    let enabled = policy.rules.iter().any(|rule| {
+        rule.wrapper == entry.wrapper
+            && rule.resource == format!("{}:{}", operation.split('.').next().unwrap_or("env"), entry.resource)
+            && rule.operation == operation
+            && rule.effect == PolicyEffect::Allow
+    });
+    let resource_kind = operation.split('.').next().unwrap_or("env");
+    let resource = format!("{resource_kind}:{}", entry.resource);
+    format!(
+        r#"<td>
+  <form method="post" action="/t/{target}/s/{store}/matrix/toggle" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{csrf}"/>
+    <input type="hidden" name="wrapper" value="{wrapper}"/>
+    <input type="hidden" name="resource" value="{resource_attr}"/>
+    <input type="hidden" name="operation" value="{operation_attr}"/>
+    <input type="hidden" name="enabled" value="{enabled_value}"/>
+    <button type="submit">{label}</button>
+  </form>
+</td>"#,
+        target = url_path(target),
+        store = url_path(store),
+        csrf = attr(csrf),
+        wrapper = attr(&entry.wrapper),
+        resource_attr = attr(&resource),
+        operation_attr = attr(operation),
+        enabled_value = if enabled { "off" } else { "on" },
+        label = if enabled { "✓" } else { "·" },
     )
 }
 
@@ -350,245 +536,69 @@ fn render_wrappers(target: &str, store: &str, policy: &PolicyDocument, csrf: &st
     )
 }
 
-fn render_rules(target: &str, store: &str, policy: &PolicyDocument, csrf: &str) -> String {
-    let rows: Vec<String> = policy
-        .rules
-        .iter()
-        .map(|r| {
-            format!(
-                r#"<tr>
-  <td class="mono">{id}</td>
-  <td class="mono">{wrapper}</td>
-  <td class="mono">{resource}</td>
-  <td class="mono">{operation}</td>
-  <td>{effect}</td>
-  <td>
-    <form method="post" action="/t/{target}/s/{store}/rule/{id_attr}/delete" class="inline-form">
-      <input type="hidden" name="csrf_token" value="{csrf}"/>
-      <button type="submit" class="danger">delete</button>
-    </form>
-  </td>
-</tr>"#,
-                id = h(&r.id),
-                id_attr = url_path(&r.id),
-                wrapper = h(&r.wrapper),
-                resource = h(&r.resource),
-                operation = h(&r.operation),
-                effect = render_effect(&r.effect),
-                target = url_path(target),
-                store = url_path(store),
-                csrf = attr(csrf),
-            )
-        })
-        .collect();
-    format!(
-        r#"<table>
-<thead><tr><th>id</th><th>wrapper</th><th>resource</th><th>operation</th><th>effect</th><th></th></tr></thead>
-<tbody>
-{rows}
-</tbody>
-</table>
-<form method="post" action="/t/{target}/s/{store}/rule/upsert" class="card">
-  <input type="hidden" name="csrf_token" value="{csrf}"/>
-  <h3>Add rule</h3>
-  <div class="field"><label>id</label><input name="id" required/></div>
-  <div class="field"><label>wrapper</label><input name="wrapper" required/></div>
-  <div class="field"><label>resource (e.g. env:github/token)</label><input name="resource" required/></div>
-  <div class="field"><label>operation (e.g. env.read)</label><input name="operation" required/></div>
-  <div class="field">
-    <label>effect</label>
-    <select name="effect">
-      <option value="allow">allow</option>
-      <option value="deny">deny</option>
-    </select>
-  </div>
-  <button type="submit">Add rule</button>
-</form>"#,
-        rows = rows.join("\n"),
-        target = url_path(target),
-        store = url_path(store),
-        csrf = attr(csrf),
-    )
-}
-
-fn render_grants(target: &str, store: &str, policy: &PolicyDocument, csrf: &str) -> String {
-    let rows: Vec<String> = policy
-        .grants
-        .iter()
-        .map(|g| {
-            let mut window = match (g.starts_at_epoch, g.expires_at_epoch) {
-                (Some(s), Some(e)) => format!("{s} → {e}"),
-                (None, Some(e)) => format!("until {e}"),
-                (Some(s), None) => format!("from {s}"),
-                _ => "always".to_string(),
-            };
-            if let Some(reason) = &g.reason {
-                window.push_str(&format!(" — {reason}"));
-            }
-            format!(
-                r#"<tr>
-  <td class="mono">{id}</td>
-  <td class="mono">{wrapper}</td>
-  <td class="mono">{resource}</td>
-  <td class="mono">{operation}</td>
-  <td>{effect}</td>
-  <td class="muted">{window}</td>
-  <td>
-    <form method="post" action="/t/{target}/s/{store}/grant/{id_attr}/delete" class="inline-form">
-      <input type="hidden" name="csrf_token" value="{csrf}"/>
-      <button type="submit" class="danger">delete</button>
-    </form>
-  </td>
-</tr>"#,
-                id = h(&g.id),
-                id_attr = url_path(&g.id),
-                wrapper = h(&g.wrapper),
-                resource = h(&g.resource),
-                operation = h(&g.operation),
-                effect = render_effect(&g.effect),
-                window = h(&window),
-                target = url_path(target),
-                store = url_path(store),
-                csrf = attr(csrf),
-            )
-        })
-        .collect();
-    format!(
-        r#"<table>
-<thead><tr><th>id</th><th>wrapper</th><th>resource</th><th>operation</th><th>effect</th><th>window</th><th></th></tr></thead>
-<tbody>
-{rows}
-</tbody>
-</table>
-<form method="post" action="/t/{target}/s/{store}/grant/upsert" class="card">
-  <input type="hidden" name="csrf_token" value="{csrf}"/>
-  <h3>Add grant</h3>
-  <div class="field"><label>id</label><input name="id" required/></div>
-  <div class="field"><label>wrapper</label><input name="wrapper" required/></div>
-  <div class="field"><label>resource</label><input name="resource" required/></div>
-  <div class="field"><label>operation</label><input name="operation" required/></div>
-  <div class="field">
-    <label>effect</label>
-    <select name="effect">
-      <option value="allow">allow</option>
-      <option value="deny">deny</option>
-    </select>
-  </div>
-  <div class="field"><label>starts_at_epoch (optional)</label><input name="starts_at_epoch"/></div>
-  <div class="field"><label>expires_at_epoch (optional)</label><input name="expires_at_epoch"/></div>
-  <div class="field"><label>reason (optional)</label><input name="reason"/></div>
-  <button type="submit">Add grant</button>
-</form>"#,
-        rows = rows.join("\n"),
-        target = url_path(target),
-        store = url_path(store),
-        csrf = attr(csrf),
-    )
-}
-
-fn render_effect(effect: &PolicyEffect) -> String {
-    match effect {
-        PolicyEffect::Allow => r#"<span class="tag unlocked">allow</span>"#.to_string(),
-        PolicyEffect::Deny => r#"<span class="tag locked">deny</span>"#.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use underwrap_protocol::policy::{PolicyGrant, PolicyRule, WrapperPolicyState};
+    use underwrap_protocol::policy::{PolicyRule, WrapperPolicyState};
 
     fn sample_policy() -> PolicyDocument {
         PolicyDocument {
-            wrappers: vec![
-                WrapperPolicyState {
-                    wrapper: "gh-authorized".to_string(),
-                    mode: WrapperApprovalMode::Unlocked { until_epoch: None },
-                    reason: None,
-                },
-                WrapperPolicyState {
-                    wrapper: "aws-prod".to_string(),
-                    mode: WrapperApprovalMode::PerCallApproval {
-                        approval_key: "ssh-ed25519 AAAA".to_string(),
-                    },
-                    reason: Some("ops approval required".to_string()),
-                },
-            ],
+            wrappers: vec![WrapperPolicyState {
+                wrapper: "robert-gh-authorized".to_string(),
+                mode: WrapperApprovalMode::Unlocked { until_epoch: None },
+                reason: None,
+            }],
             rules: vec![PolicyRule {
                 id: "r1".to_string(),
-                wrapper: "gh-authorized".to_string(),
-                resource: "env:github/token".to_string(),
+                wrapper: "robert-gh-authorized".to_string(),
+                resource: "env:gh/main".to_string(),
                 operation: "env.read".to_string(),
                 effect: PolicyEffect::Allow,
             }],
-            grants: vec![PolicyGrant {
-                id: "g1".to_string(),
-                wrapper: "aws-prod".to_string(),
-                resource: "env:aws/prod".to_string(),
-                operation: "env.read".to_string(),
-                effect: PolicyEffect::Allow,
-                starts_at_epoch: Some(10),
-                expires_at_epoch: Some(20),
-                reason: Some("one-time deploy".to_string()),
-            }],
+            grants: vec![],
         }
     }
 
     #[test]
-    fn instance_page_shows_wrapper_rule_and_grant_rows() {
+    fn instance_page_renders_resource_selector_and_matrix() {
         let policy = sample_policy();
+        let catalog = vec![
+            CatalogEntry {
+                host: "deepthought".to_string(),
+                user: "robert".to_string(),
+                wrapper: "robert-gh-authorized".to_string(),
+                resource: "gh/main".to_string(),
+            },
+            CatalogEntry {
+                host: "smallthought".to_string(),
+                user: "robert".to_string(),
+                wrapper: "robert-gh-authorized".to_string(),
+                resource: "gh/main".to_string(),
+            },
+        ];
         let secret_ids = vec![
-            "github/token/env/GH_TOKEN".to_string(),
-            "gws/castlabs/files/credentials.json".to_string(),
+            "gh/main/files/hosts.yml".to_string(),
+            "gh/main/libsecret/default/item_1".to_string(),
         ];
         let html = instance_page(InstancePageData {
             operator: "alice",
             target: "corp",
             store: "work",
-            stores: &["work".to_string(), "personal".to_string()],
+            stores: &["work".to_string()],
             policy: &policy,
+            catalog: &catalog,
             secret_ids: &secret_ids,
+            selected_resource: Some("gh/main"),
             csrf_token: "CSRF123",
             banner_ok: Some("saved"),
             banner_error: None,
         });
-        assert!(html.contains("gh-authorized"));
-        assert!(html.contains("aws-prod"));
-        assert!(html.contains("per-call approval"));
-        assert!(html.contains("env:github/token"));
-        assert!(html.contains("one-time deploy"));
-        assert!(html.contains("GH_TOKEN"));
-        assert!(html.contains("credentials.json"));
-        assert!(html.contains("CSRF123"));
-        assert!(html.contains(r#"<div class="banner ok">saved</div>"#));
-        assert!(html.contains(r#"<option value="work" selected>"#));
-    }
-
-    #[test]
-    fn resources_section_renders_forms_and_slot_groups() {
-        let html = instance_page(InstancePageData {
-            operator: "alice",
-            target: "corp",
-            store: "work",
-            stores: &["work".to_string()],
-            policy: &PolicyDocument::default(),
-            secret_ids: &[
-                "gh-authorized/env/GH_TOKEN".to_string(),
-                "gws/castlabs/files/accounts.json".to_string(),
-                "gh/libsecret/default/item_1".to_string(),
-            ],
-            csrf_token: "CSRF",
-            banner_ok: None,
-            banner_error: None,
-        });
-
-        assert!(html.contains("Every backend resource always has three slots"));
-        assert!(html.contains(r#"action="/t/corp/s/work/secret/write-env""#));
-        assert!(html.contains(r#"action="/t/corp/s/work/secret/write-file""#));
-        assert!(html.contains(r#"action="/t/corp/s/work/secret/write-libsecret""#));
-        assert!(html.contains(r#"action="/t/corp/s/work/secret/delete""#));
-        assert!(html.contains("GH_TOKEN"));
-        assert!(html.contains("accounts.json"));
+        assert!(html.contains("Access matrix"));
+        assert!(html.contains("deepthought"));
+        assert!(html.contains("smallthought"));
+        assert!(html.contains("env.read"));
+        assert!(html.contains("/matrix/toggle"));
+        assert!(html.contains("hosts.yml"));
         assert!(html.contains("item_1"));
     }
 
@@ -609,7 +619,9 @@ mod tests {
             store: "work",
             stores: &["work".to_string()],
             policy: &policy,
+            catalog: &[],
             secret_ids: &[],
+            selected_resource: None,
             csrf_token: "CSRF",
             banner_ok: None,
             banner_error: None,

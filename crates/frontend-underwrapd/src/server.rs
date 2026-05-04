@@ -7,9 +7,10 @@ use std::sync::Arc;
 use tokio::net::UnixListener;
 use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use underwrap_protocol::config::DaemonConfig;
+use underwrap_protocol::service::CatalogEntry;
 
 use crate::approval::PendingApprovals;
 use crate::startup::{
@@ -37,6 +38,29 @@ impl State {
     }
 }
 
+fn register_catalog(store: &dyn StorageBackend, config: &DaemonConfig) -> Result<()> {
+    let users: Vec<String> = if config.allowed_users.is_empty() {
+        vec!["*".to_string()]
+    } else {
+        config.allowed_users.clone()
+    };
+
+    let mut entries = Vec::new();
+    for (wrapper_name, wrapper) in &config.wrappers {
+        for resource in wrapper.resources.keys() {
+            for user in &users {
+                entries.push(CatalogEntry {
+                    host: config.catalog_host.clone(),
+                    user: user.clone(),
+                    wrapper: wrapper_name.clone(),
+                    resource: resource.clone(),
+                });
+            }
+        }
+    }
+    store.register_catalog(&entries)
+}
+
 /// Run the daemon until `shutdown` is notified (or forever if `None`).
 pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     // Validate config at startup: every wrapper.secret must reference a declared secret.
@@ -48,6 +72,10 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
     let allowed_user_uids = build_allowed_user_uids(&config)?;
+    if let Err(e) = register_catalog(&*store, &config) {
+        warn!(err = %e, "catalog registration failed; continuing without backend catalog refresh");
+    }
+
     let state = Arc::new(State {
         config: config.clone(),
         store,

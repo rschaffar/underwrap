@@ -142,6 +142,7 @@ impl TestDaemon {
                 client_cert_file: Some(pki.client_cert.clone()),
                 client_key_file: Some(pki.client_key.clone()),
             },
+            catalog_host: client_name.to_string(),
             allowed_users: Vec::new(),
             wrappers,
         };

@@ -262,6 +262,7 @@ mod tests {
         State {
             config: underwrap_protocol::config::DaemonConfig {
                 backend: BackendServiceConfig::default(),
+                catalog_host: "test-host".to_string(),
                 allowed_users: Vec::new(),
                 wrappers: HashMap::from([(
                     "gh-authorized".to_string(),

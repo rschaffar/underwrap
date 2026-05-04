@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use underwrap_protocol::config::{BackendServiceConfig, StorageConfig};
 use underwrap_protocol::message::SecretBytes;
+use underwrap_protocol::service::CatalogEntry;
 
 /// The storage backend trait.
 ///
@@ -65,6 +66,11 @@ pub trait StorageBackend: Send + Sync {
             }
         }
         Ok(out)
+    }
+
+    /// Publish the frontend's wrapper/resource catalog to the backend.
+    fn register_catalog(&self, _entries: &[CatalogEntry]) -> Result<()> {
+        Ok(())
     }
 }
 

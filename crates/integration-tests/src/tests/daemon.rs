@@ -155,6 +155,7 @@ async fn underwrapd_binary_start_and_read() {
             client_cert_file: Some(client_cert.clone()),
             client_key_file: Some(client_key.clone()),
         },
+        catalog_host: "binary-test".to_string(),
         allowed_users: Vec::new(),
         wrappers: {
             let mut m = HashMap::new();

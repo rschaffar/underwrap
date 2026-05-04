@@ -112,9 +112,11 @@ The HTTPS service exposes the small surface `underwrapd` needs, all over
 
 - `GET /v1/status` — server liveness and the authenticated principal
 - `POST /v1/read` — `{secret_id}` → `{material_b64 | null}`
+- `POST /v1/read-prefixes` — one-shot bundle read for all leaves below a set of prefixes
 - `POST /v1/write` — `{secret_id, material_b64}`
 - `POST /v1/list` — `{prefix}` → `{ids}`
 - `POST /v1/delete` — `{secret_id}` → `{existed}`
+- `POST /v1/catalog/put` — frontend auto-registration of `(host, user, wrapper, resource)` rows for UI use
 
 Store selection is implicit in the authenticated principal. There is no
 store name in the request body.

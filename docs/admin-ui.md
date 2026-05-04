@@ -4,9 +4,9 @@
 backend's admin API in a form-based UI.
 
 Operators log in with a username + password, pick a backend target, and
-manage resource state, wrapper modes, rules, and grants. The UI holds
-the backend's admin bearer token internally and signs session cookies
-with its own session key.
+manage resource state, wrapper modes, and per-resource access matrices.
+The UI holds the backend's admin bearer token internally and signs
+session cookies with its own session key.
 
 ## Deployment shape
 
@@ -69,8 +69,12 @@ backends:
 
 Inside one store view:
 
-- **Resources** — grouped by backend resource id. Each resource always
-  has three visible slots:
+- **Resource selector** — the backend shows the union of:
+  - resource ids currently stored in backend state
+  - resource ids auto-registered by frontend daemons at startup
+
+- **Resources** — for the selected resource, the page shows the three
+  backend slots:
   - `env`
   - `files`
   - `libsecret`
@@ -78,15 +82,24 @@ Inside one store view:
   The page lists existing entries for each slot and provides forms to
   write new env variables, file entries, and libsecret entries, plus a
   delete action for any stored entry.
+
+- **Access matrix** — after selecting one resource, the UI renders rows
+  of `(host, user, wrapper)` combinations that frontends auto-registered
+  on daemon startup. Columns are the standard operations:
+  - `env.read`
+  - `files.read`
+  - `files.write`
+  - `libsecret.read`
+  - `libsecret.write`
+
+  Toggling a cell adds or removes the corresponding permanent allow rule.
+  This replaces the old free-form rule entry workflow for normal use.
+
 - **Wrappers** table — shows each wrapper's current mode with a color-
   coded tag. Below each row, an inline form changes the mode to
   `locked`, `unlocked` (permanent), `unlocked_until` (with an epoch
   timestamp), or `per_call_approval` (with the OpenSSH public key the
   operator's ssh-agent must sign with).
-- **Rules** table + "Add rule" form — id, wrapper, resource, operation,
-  allow/deny.
-- **Grants** table + "Add grant" form — same tuple plus optional
-  start/expire epochs and a reason.
 
 Every state-changing form carries the session's CSRF token in a hidden
 input and is rejected with `403` if the token doesn't match.

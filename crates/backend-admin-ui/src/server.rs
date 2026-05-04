@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
-use underwrap_protocol::policy::{PolicyEffect, PolicyGrant, PolicyRule, WrapperApprovalMode};
+use underwrap_protocol::policy::{PolicyEffect, PolicyRule, WrapperApprovalMode};
 use underwrap_protocol::resource::validate_env_name;
 
 use crate::auth::{SESSION_COOKIE, Session, csrf_token_matches, verify_password};
@@ -59,13 +59,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/t/{target}/s/{store}/wrapper/{wrapper}/mode",
             post(set_wrapper_mode),
         )
-        .route("/t/{target}/s/{store}/rule/upsert", post(upsert_rule))
-        .route("/t/{target}/s/{store}/rule/{id}/delete", post(delete_rule))
-        .route("/t/{target}/s/{store}/grant/upsert", post(upsert_grant))
-        .route(
-            "/t/{target}/s/{store}/grant/{id}/delete",
-            post(delete_grant),
-        )
+        .route("/t/{target}/s/{store}/matrix/toggle", post(toggle_matrix_rule))
         .route(
             "/t/{target}/s/{store}/secret/write-env",
             post(write_env_secret),
@@ -214,6 +208,7 @@ async fn logout() -> Response {
 #[derive(Debug, Deserialize)]
 pub struct StoreQuery {
     store: Option<String>,
+    resource: Option<String>,
 }
 
 async fn instance_view(
@@ -244,6 +239,10 @@ async fn instance_view(
         Ok(p) => p,
         Err(e) => return error_page(&session.operator, &format!("loading policy: {e}")),
     };
+    let catalog = match client.get_catalog(&store).await {
+        Ok(c) => c,
+        Err(e) => return error_page(&session.operator, &format!("loading catalog: {e}")),
+    };
     let secret_ids = match client.list_secrets(&store, "").await {
         Ok(ids) => ids,
         Err(e) => return error_page(&session.operator, &format!("listing secrets: {e}")),
@@ -255,7 +254,9 @@ async fn instance_view(
         store: &store,
         stores: &stores,
         policy: &policy,
+        catalog: &catalog,
         secret_ids: &secret_ids,
+        selected_resource: q.resource.as_deref(),
         csrf_token: &session.csrf_token,
         banner_ok: None,
         banner_error: None,
@@ -356,29 +357,24 @@ async fn set_wrapper_mode(
     Redirect::to(&format!("/t/{target}?store={store}")).into_response()
 }
 
-fn parse_effect(raw: &str) -> Option<PolicyEffect> {
-    match raw {
-        "allow" => Some(PolicyEffect::Allow),
-        "deny" => Some(PolicyEffect::Deny),
-        _ => None,
-    }
+fn matrix_rule_id(wrapper: &str, resource: &str, operation: &str) -> String {
+    format!("matrix:{wrapper}:{resource}:{operation}")
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RuleForm {
+pub struct MatrixToggleForm {
     csrf_token: String,
-    id: String,
     wrapper: String,
     resource: String,
     operation: String,
-    effect: String,
+    enabled: String,
 }
 
-async fn upsert_rule(
+async fn toggle_matrix_rule(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((target, store)): Path<(String, String)>,
-    Form(form): Form<RuleForm>,
+    Form(form): Form<MatrixToggleForm>,
 ) -> Response {
     let Some(session) = get_session(&state, &headers) else {
         return Redirect::to("/login").into_response();
@@ -389,126 +385,25 @@ async fn upsert_rule(
     let Some(client) = state.backend(&target) else {
         return (StatusCode::NOT_FOUND, "unknown backend").into_response();
     };
-    let Some(effect) = parse_effect(&form.effect) else {
-        return error_page(&session.operator, "bad effect (must be allow or deny)");
+    let id = matrix_rule_id(&form.wrapper, &form.resource, &form.operation);
+    let result = if form.enabled == "on" {
+        client
+            .upsert_rule(
+                &store,
+                PolicyRule {
+                    id,
+                    wrapper: form.wrapper,
+                    resource: form.resource,
+                    operation: form.operation,
+                    effect: PolicyEffect::Allow,
+                },
+            )
+            .await
+    } else {
+        client.delete_rule(&store, &id).await
     };
-    let rule = PolicyRule {
-        id: form.id,
-        wrapper: form.wrapper,
-        resource: form.resource,
-        operation: form.operation,
-        effect,
-    };
-    if let Err(e) = client.upsert_rule(&store, rule).await {
-        return error_page(&session.operator, &format!("upsert rule: {e}"));
-    }
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DeleteForm {
-    csrf_token: String,
-}
-
-async fn delete_rule(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path((target, store, id)): Path<(String, String, String)>,
-    Form(form): Form<DeleteForm>,
-) -> Response {
-    let Some(session) = get_session(&state, &headers) else {
-        return Redirect::to("/login").into_response();
-    };
-    if let Some(r) = check_csrf(&session, &form.csrf_token) {
-        return r;
-    }
-    let Some(client) = state.backend(&target) else {
-        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
-    };
-    if let Err(e) = client.delete_rule(&store, &id).await {
-        return error_page(&session.operator, &format!("delete rule: {e}"));
-    }
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GrantForm {
-    csrf_token: String,
-    id: String,
-    wrapper: String,
-    resource: String,
-    operation: String,
-    effect: String,
-    starts_at_epoch: Option<String>,
-    expires_at_epoch: Option<String>,
-    reason: Option<String>,
-}
-
-async fn upsert_grant(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path((target, store)): Path<(String, String)>,
-    Form(form): Form<GrantForm>,
-) -> Response {
-    let Some(session) = get_session(&state, &headers) else {
-        return Redirect::to("/login").into_response();
-    };
-    if let Some(r) = check_csrf(&session, &form.csrf_token) {
-        return r;
-    }
-    let Some(client) = state.backend(&target) else {
-        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
-    };
-    let Some(effect) = parse_effect(&form.effect) else {
-        return error_page(&session.operator, "bad effect");
-    };
-    let parse_epoch = |raw: &Option<String>| -> std::result::Result<Option<u64>, String> {
-        match raw.as_deref().map(str::trim) {
-            Some("") | None => Ok(None),
-            Some(s) => s.parse::<u64>().map(Some).map_err(|_| s.to_string()),
-        }
-    };
-    let starts_at_epoch = match parse_epoch(&form.starts_at_epoch) {
-        Ok(v) => v,
-        Err(bad) => return error_page(&session.operator, &format!("bad starts_at_epoch '{bad}'")),
-    };
-    let expires_at_epoch = match parse_epoch(&form.expires_at_epoch) {
-        Ok(v) => v,
-        Err(bad) => return error_page(&session.operator, &format!("bad expires_at_epoch '{bad}'")),
-    };
-    let grant = PolicyGrant {
-        id: form.id,
-        wrapper: form.wrapper,
-        resource: form.resource,
-        operation: form.operation,
-        effect,
-        starts_at_epoch,
-        expires_at_epoch,
-        reason: form.reason.filter(|s: &String| !s.trim().is_empty()),
-    };
-    if let Err(e) = client.upsert_grant(&store, grant).await {
-        return error_page(&session.operator, &format!("upsert grant: {e}"));
-    }
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
-}
-
-async fn delete_grant(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path((target, store, id)): Path<(String, String, String)>,
-    Form(form): Form<DeleteForm>,
-) -> Response {
-    let Some(session) = get_session(&state, &headers) else {
-        return Redirect::to("/login").into_response();
-    };
-    if let Some(r) = check_csrf(&session, &form.csrf_token) {
-        return r;
-    }
-    let Some(client) = state.backend(&target) else {
-        return (StatusCode::NOT_FOUND, "unknown backend").into_response();
-    };
-    if let Err(e) = client.delete_grant(&store, &id).await {
-        return error_page(&session.operator, &format!("delete grant: {e}"));
+    if let Err(e) = result {
+        return error_page(&session.operator, &format!("toggle matrix rule: {e}"));
     }
     Redirect::to(&format!("/t/{target}?store={store}")).into_response()
 }

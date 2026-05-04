@@ -175,6 +175,7 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
             client_cert_file: Some(base.join("client.pem")),
             client_key_file: Some(base.join("client.key")),
         },
+        catalog_host: "test-host".to_string(),
         allowed_users: Vec::new(),
         wrappers: HashMap::from([("dir-wrapper".to_string(), wrapper_def)]),
     };

@@ -10,6 +10,10 @@ pub struct DaemonConfig {
     /// Backend service the frontend talks to.
     pub backend: BackendServiceConfig,
 
+    /// Host label published into the backend catalog for this frontend.
+    #[serde(default = "default_catalog_host")]
+    pub catalog_host: String,
+
     /// Usernames allowed to execute wrappers in this instance.
     /// Empty = allow all local users.
     #[serde(default)]
@@ -61,6 +65,10 @@ impl StorageConfig {
 
 fn default_storage_dir() -> PathBuf {
     PathBuf::from("/var/lib/underwrap/secrets")
+}
+
+fn default_catalog_host() -> String {
+    "unknown-host".to_string()
 }
 
 /// Frontend backend-client configuration.
@@ -153,6 +161,7 @@ backend:
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.wrappers.is_empty());
+        assert_eq!(config.catalog_host, "unknown-host");
         assert_eq!(config.backend.url, "https://backend.example.internal:8443");
         assert_eq!(
             config.backend.ca_file,
@@ -176,6 +185,7 @@ backend:
   ca_file: /etc/underwrap/ca.pem
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
+catalog_host: workstation-01
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
@@ -190,6 +200,7 @@ wrappers:
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.wrappers.len(), 1);
+        assert_eq!(config.catalog_host, "workstation-01");
         let w = &config.wrappers["gh-authorized"];
         assert_eq!(w.target, PathBuf::from("/usr/bin/gh"));
         assert_eq!(w.resources.len(), 2);

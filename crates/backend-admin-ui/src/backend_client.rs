@@ -5,11 +5,12 @@ use base64::Engine;
 use reqwest::Client;
 use underwrap_protocol::policy::{PolicyDocument, PolicyGrant, PolicyRule, WrapperApprovalMode};
 use underwrap_protocol::service::{
-    AdminGrantDeleteRequest, AdminGrantUpsertRequest, AdminPolicyGetRequest,
-    AdminPolicyGetResponse, AdminRuleDeleteRequest, AdminRuleUpsertRequest,
-    AdminSecretDeleteRequest, AdminSecretDeleteResponse, AdminSecretListRequest,
-    AdminSecretListResponse, AdminSecretReadRequest, AdminSecretReadResponse,
-    AdminSecretWriteRequest, AdminStoresResponse, AdminWrapperModeRequest,
+    AdminCatalogGetRequest, AdminCatalogGetResponse, AdminGrantDeleteRequest,
+    AdminGrantUpsertRequest, AdminPolicyGetRequest, AdminPolicyGetResponse,
+    AdminRuleDeleteRequest, AdminRuleUpsertRequest, AdminSecretDeleteRequest,
+    AdminSecretDeleteResponse, AdminSecretListRequest, AdminSecretListResponse,
+    AdminSecretReadRequest, AdminSecretReadResponse, AdminSecretWriteRequest,
+    AdminStoresResponse, CatalogEntry, AdminWrapperModeRequest,
 };
 
 /// One backend target as seen by the UI.
@@ -119,6 +120,18 @@ impl BackendClient {
             )
             .await?;
         Ok(response.existed)
+    }
+
+    pub async fn get_catalog(&self, store: &str) -> Result<Vec<CatalogEntry>> {
+        let response: AdminCatalogGetResponse = self
+            .post_json(
+                "/v1/admin/catalog/get",
+                &AdminCatalogGetRequest {
+                    store: store.to_string(),
+                },
+            )
+            .await?;
+        Ok(response.entries)
     }
 
     pub async fn get_policy(&self, store: &str) -> Result<PolicyDocument> {

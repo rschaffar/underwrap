@@ -40,6 +40,24 @@ pub struct ServiceListResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CatalogEntry {
+    pub host: String,
+    pub user: String,
+    pub wrapper: String,
+    pub resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceCatalogPutRequest {
+    pub entries: Vec<CatalogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceCatalogPutResponse {
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceReadPrefixesRequest {
     pub prefixes: Vec<String>,
 }
@@ -119,6 +137,16 @@ pub struct AdminSecretDeleteRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminSecretDeleteResponse {
     pub existed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminCatalogGetRequest {
+    pub store: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminCatalogGetResponse {
+    pub entries: Vec<CatalogEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

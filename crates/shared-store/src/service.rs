@@ -12,10 +12,10 @@ use std::sync::mpsc;
 use underwrap_protocol::config::BackendServiceConfig;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::service::{
-    ServiceDeleteRequest, ServiceDeleteResponse, ServiceErrorResponse, ServiceListRequest,
-    ServiceListResponse, ServiceReadPrefixesRequest, ServiceReadPrefixesResponse,
-    ServiceReadRequest, ServiceReadResponse, ServiceStatusResponse, ServiceWriteRequest,
-    ServiceWriteResponse,
+    CatalogEntry, ServiceCatalogPutRequest, ServiceCatalogPutResponse, ServiceDeleteRequest,
+    ServiceDeleteResponse, ServiceErrorResponse, ServiceListRequest, ServiceListResponse,
+    ServiceReadPrefixesRequest, ServiceReadPrefixesResponse, ServiceReadRequest,
+    ServiceReadResponse, ServiceStatusResponse, ServiceWriteRequest, ServiceWriteResponse,
 };
 
 use crate::StorageBackend;
@@ -37,6 +37,10 @@ enum Command {
     ReadPrefixes {
         prefixes: Vec<String>,
         reply: mpsc::Sender<Result<HashMap<String, SecretBytes>>>,
+    },
+    RegisterCatalog {
+        entries: Vec<CatalogEntry>,
+        reply: mpsc::Sender<Result<()>>,
     },
     Delete {
         secret_id: String,
@@ -117,6 +121,13 @@ impl ServiceBackend {
                                 .send(runtime.block_on(read_prefixes_request(
                                     &client, &base_url, &prefixes,
                                 )));
+                    }
+                    Command::RegisterCatalog { entries, reply } => {
+                        let _ = reply.send(runtime.block_on(register_catalog_request(
+                            &client,
+                            &base_url,
+                            &entries,
+                        )));
                     }
                     Command::Delete { secret_id, reply } => {
                         let _ = reply
@@ -243,6 +254,30 @@ async fn read_prefixes_request(
     Ok(out)
 }
 
+async fn register_catalog_request(
+    client: &reqwest::Client,
+    base_url: &str,
+    entries: &[CatalogEntry],
+) -> Result<()> {
+    let response = client
+        .post(endpoint(base_url, "/v1/catalog/put"))
+        .header(CONTENT_TYPE, "application/json")
+        .json(&ServiceCatalogPutRequest {
+            entries: entries.to_vec(),
+        })
+        .send()
+        .await
+        .context("sending backend catalog registration request")?;
+    if !response.status().is_success() {
+        bail!(parse_error(response).await);
+    }
+    let _: ServiceCatalogPutResponse = response
+        .json()
+        .await
+        .context("decoding backend catalog registration response")?;
+    Ok(())
+}
+
 async fn delete_request(client: &reqwest::Client, base_url: &str, secret_id: &str) -> Result<bool> {
     let response = client
         .post(endpoint(base_url, "/v1/delete"))
@@ -357,6 +392,18 @@ impl StorageBackend for ServiceBackend {
             .context("sending read-prefixes command to service backend worker")?;
         rx.recv()
             .context("receiving read-prefixes response from service backend worker")?
+    }
+
+    fn register_catalog(&self, entries: &[CatalogEntry]) -> Result<()> {
+        let (tx, rx) = mpsc::channel();
+        self.sender
+            .send(Command::RegisterCatalog {
+                entries: entries.to_vec(),
+                reply: tx,
+            })
+            .context("sending register-catalog command to service backend worker")?;
+        rx.recv()
+            .context("receiving register-catalog response from service backend worker")?
     }
 }
 

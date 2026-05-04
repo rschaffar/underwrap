@@ -83,6 +83,17 @@ struct AdminRuntimeState {
     tokens: HashMap<String, String>,
 }
 
+const CATALOG_DOCUMENT_SECRET_ID: &str = "__underwrap/catalog/document";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct StoredCatalogEntry {
+    principal: String,
+    host: String,
+    user: String,
+    wrapper: String,
+    resource: String,
+}
+
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores = open_stores(&config.stores)?;
 
@@ -462,6 +473,24 @@ async fn handle_service_request(
                 Err(response) => response,
             }
         }
+        (&Method::POST, "/v1/catalog/put") => match parse_json_body::<
+            underwrap_protocol::service::ServiceCatalogPutRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match replace_catalog_entries_for_principal(&*store, &principal, &body.entries) {
+                Ok(()) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::ServiceCatalogPutResponse { ok: true },
+                ),
+                Err(e) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &format!("catalog storage error: {e}"),
+                ),
+            },
+            Err(response) => response,
+        },
         (&Method::POST, "/v1/delete") => {
             match parse_json_body::<underwrap_protocol::service::ServiceDeleteRequest>(request)
                 .await
@@ -569,6 +598,45 @@ fn handle_admin_secret_write(
         }
         Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     }
+}
+
+fn load_catalog_document(store: &dyn StorageBackend) -> Result<Vec<StoredCatalogEntry>> {
+    let Some(material) = store.read(CATALOG_DOCUMENT_SECRET_ID)? else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_slice(material.as_ref()).context("parsing backend catalog document")
+}
+
+fn store_catalog_document(store: &dyn StorageBackend, entries: &[StoredCatalogEntry]) -> Result<()> {
+    store.write(CATALOG_DOCUMENT_SECRET_ID, serde_json::to_vec(entries)?.as_slice())
+}
+
+fn replace_catalog_entries_for_principal(
+    store: &dyn StorageBackend,
+    principal: &str,
+    entries: &[underwrap_protocol::service::CatalogEntry],
+) -> Result<()> {
+    let mut existing = load_catalog_document(store)?;
+    existing.retain(|entry| entry.principal != principal);
+    for entry in entries {
+        existing.push(StoredCatalogEntry {
+            principal: principal.to_string(),
+            host: entry.host.clone(),
+            user: entry.user.clone(),
+            wrapper: entry.wrapper.clone(),
+            resource: entry.resource.clone(),
+        });
+    }
+    existing.sort_by(|a, b| {
+        a.resource
+            .cmp(&b.resource)
+            .then(a.host.cmp(&b.host))
+            .then(a.user.cmp(&b.user))
+            .then(a.wrapper.cmp(&b.wrapper))
+            .then(a.principal.cmp(&b.principal))
+    });
+    existing.dedup();
+    store_catalog_document(store, &existing)
 }
 
 fn admin_store<'a>(
@@ -781,6 +849,30 @@ async fn handle_admin_request(
                 Ok(existed) => json_response(
                     StatusCode::OK,
                     &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
+                ),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/catalog/get") => match parse_json_body::<
+            underwrap_protocol::service::AdminCatalogGetRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store).and_then(|store| load_catalog_document(&**store)) {
+                Ok(entries) => json_response(
+                    StatusCode::OK,
+                    &underwrap_protocol::service::AdminCatalogGetResponse {
+                        entries: entries
+                            .into_iter()
+                            .map(|entry| underwrap_protocol::service::CatalogEntry {
+                                host: entry.host,
+                                user: entry.user,
+                                wrapper: entry.wrapper,
+                                resource: entry.resource,
+                            })
+                            .collect(),
+                    },
                 ),
                 Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
             },

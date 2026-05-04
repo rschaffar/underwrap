@@ -76,6 +76,7 @@
             underwrap-ns = mkCrate "frontend-ns";
             underwrap-backendd = mkCrate "backend-backendd";
             underwrap-secretsd = mkCrate "frontend-secretsd";
+            underwrap-admin-ui = mkCrate "backend-admin-ui";
           };
 
           checks = {

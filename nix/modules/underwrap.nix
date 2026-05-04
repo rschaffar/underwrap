@@ -38,6 +38,7 @@ let
         client_cert_file = inst.backend.clientCertFile;
         client_key_file = inst.backend.clientKeyFile;
       };
+      catalog_host = config.networking.hostName;
       allowed_users = inst.allowedUsers;
       wrappers = lib.mapAttrs' (name: w:
         lib.nameValuePair "${instName}-${name}" {
