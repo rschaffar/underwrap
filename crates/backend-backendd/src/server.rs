@@ -1255,6 +1255,58 @@ mod tests {
         assert_eq!(sweep_expired_unlocks(&store, 1000).unwrap(), 0);
     }
 
+    #[test]
+    fn replace_catalog_entries_replaces_only_one_principal_slice() {
+        let store = TestStore::new();
+        replace_catalog_entries_for_principal(
+            &store,
+            "principal-a",
+            &[
+                underwrap_protocol::service::CatalogEntry {
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    wrapper: "robert-gh-authorized".to_string(),
+                    resource: "gh/main".to_string(),
+                },
+                underwrap_protocol::service::CatalogEntry {
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    wrapper: "robert-gws-castlabs".to_string(),
+                    resource: "gws/castlabs".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+        replace_catalog_entries_for_principal(
+            &store,
+            "principal-b",
+            &[underwrap_protocol::service::CatalogEntry {
+                host: "smallthought".to_string(),
+                user: "robert".to_string(),
+                wrapper: "robert-gh-authorized".to_string(),
+                resource: "gh/main".to_string(),
+            }],
+        )
+        .unwrap();
+        replace_catalog_entries_for_principal(
+            &store,
+            "principal-a",
+            &[underwrap_protocol::service::CatalogEntry {
+                host: "deepthought".to_string(),
+                user: "robert".to_string(),
+                wrapper: "robert-confluence".to_string(),
+                resource: "confluence/main".to_string(),
+            }],
+        )
+        .unwrap();
+
+        let entries = load_catalog_document(&store).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|e| e.principal == "principal-a" && e.wrapper == "robert-confluence"));
+        assert!(entries.iter().any(|e| e.principal == "principal-b" && e.wrapper == "robert-gh-authorized"));
+        assert!(!entries.iter().any(|e| e.principal == "principal-a" && e.wrapper == "robert-gh-authorized"));
+    }
+
     fn admin_state_with_tokens(tokens: &[(&str, &str)]) -> AdminRuntimeState {
         AdminRuntimeState {
             stores: HashMap::new(),

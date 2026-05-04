@@ -37,6 +37,24 @@ async fn service_mode_roundtrip_reads_secret() {
 }
 
 #[tokio::test]
+async fn service_mode_registers_catalog_entries_on_startup() {
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start_service_mode(wrappers, "local", "underwrap-local")
+        .await
+        .unwrap();
+
+    let entries = daemon.get_catalog("test").await.unwrap();
+    assert!(entries.iter().any(|e|
+        e.host == "local"
+            && e.user == "*"
+            && e.wrapper == "gh-authorized"
+            && e.resource == "github/token"
+    ));
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn service_mode_rejects_unmapped_client_principal() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start_service_mode(wrappers, "tunnel", "underwrap-local")

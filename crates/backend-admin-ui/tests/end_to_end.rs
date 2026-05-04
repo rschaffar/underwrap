@@ -25,6 +25,7 @@ struct Harness {
     ui_url: String,
     backend_admin_url: String,
     backend_admin_token: String,
+    secrets_dir: std::path::PathBuf,
     ui_shutdown: Arc<Notify>,
     backend_shutdown: Arc<Notify>,
     ui_task: tokio::task::JoinHandle<anyhow::Result<()>>,
@@ -114,6 +115,7 @@ impl Harness {
             ui_url,
             backend_admin_url,
             backend_admin_token,
+            secrets_dir: base.join("secrets"),
             ui_shutdown,
             backend_shutdown,
             ui_task,
@@ -147,6 +149,34 @@ impl Harness {
             .json()
             .await?;
         Ok(body.document)
+    }
+
+    fn put_catalog(&self, entries: &[underwrap_protocol::service::CatalogEntry]) -> anyhow::Result<()> {
+        #[derive(serde::Serialize)]
+        struct StoredCatalogEntry<'a> {
+            principal: &'a str,
+            host: &'a str,
+            user: &'a str,
+            wrapper: &'a str,
+            resource: &'a str,
+        }
+
+        let path = self.secrets_dir.join("__underwrap/catalog/document");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let stored: Vec<_> = entries
+            .iter()
+            .map(|entry| StoredCatalogEntry {
+                principal: "test-principal",
+                host: &entry.host,
+                user: &entry.user,
+                wrapper: &entry.wrapper,
+                resource: &entry.resource,
+            })
+            .collect();
+        std::fs::write(path, serde_json::to_vec(&stored)?)?;
+        Ok(())
     }
 
     async fn put_policy(&self, doc: PolicyDocument) -> anyhow::Result<()> {
@@ -340,6 +370,58 @@ async fn wrapper_mode_editor_updates_backend_policy() {
 /// 4. Write attempt succeeds and the backend stores the new value.
 /// 5. Revoke mutation via the UI.
 /// 6. Subsequent write fails again.
+#[tokio::test]
+async fn resource_selector_renders_catalog_matrix_rows() {
+    let h = Harness::start("alice", "hunter2").await.unwrap();
+    h.put_catalog(&[
+        underwrap_protocol::service::CatalogEntry {
+            host: "deepthought".to_string(),
+            user: "robert".to_string(),
+            wrapper: "robert-gh-authorized".to_string(),
+            resource: "gh/main".to_string(),
+        },
+        underwrap_protocol::service::CatalogEntry {
+            host: "smallthought".to_string(),
+            user: "robert".to_string(),
+            wrapper: "robert-gh-authorized".to_string(),
+            resource: "gh/main".to_string(),
+        },
+    ]).unwrap();
+
+    let client = Harness::client();
+    let login_resp = client
+        .post(format!("{}/login", h.ui_url))
+        .form(&[("username", "alice"), ("password", "hunter2")])
+        .send()
+        .await
+        .unwrap();
+    let cookie = login_resp
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .find_map(|v| v.to_str().ok())
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .get(format!("{}/t/corp?store=work&resource=gh%2Fmain", h.ui_url))
+        .header(reqwest::header::COOKIE, cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("deepthought"));
+    assert!(body.contains("smallthought"));
+    assert!(body.contains("robert-gh-authorized"));
+    assert!(body.contains("env.read"));
+
+    h.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn resource_secret_management_roundtrips_end_to_end() {
     let h = Harness::start("alice", "hunter2").await.unwrap();

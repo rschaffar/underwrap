@@ -14,6 +14,7 @@ use underwrap_protocol::config::*;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 use underwrap_protocol::policy::{PolicyDocument, PolicyGrant};
+use underwrap_protocol::service::CatalogEntry;
 
 mod builders;
 mod pki;
@@ -242,6 +243,23 @@ impl TestDaemon {
             response.status()
         );
         Ok(())
+    }
+
+    pub async fn get_catalog(&self, store: &str) -> Result<Vec<CatalogEntry>> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/catalog/get")
+            .json(&underwrap_protocol::service::AdminCatalogGetRequest {
+                store: store.to_string(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        let body: underwrap_protocol::service::AdminCatalogGetResponse = response.json().await?;
+        Ok(body.entries)
     }
 
     pub async fn get_policy(&self, store: &str) -> Result<Option<PolicyDocument>> {
