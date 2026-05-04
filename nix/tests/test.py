@@ -120,6 +120,29 @@ def boot_and_service_checks():
     assert admin_api(ADMIN_LOCAL, "/v1/admin/stores", None, method="GET")["stores"] == ["local"]
     assert admin_api(ADMIN_REMOTE, "/v1/admin/stores", None, method="GET")["stores"] == ["remote"]
 
+    # Frontends auto-register catalog rows on daemon startup. The backend must
+    # see instance separately from wrapper so the UI matrix does not need to
+    # infer it from a prefixed wrapper string.
+    local_catalog = admin_api(ADMIN_LOCAL, "/v1/admin/catalog/get", {"store": "local"})["entries"]
+    remote_catalog = admin_api(ADMIN_REMOTE, "/v1/admin/catalog/get", {"store": "remote"})["entries"]
+    assert any(
+        entry["host"] == "machine"
+        and entry["user"] == "testuser"
+        and entry["instance"] == "local"
+        and entry["wrapper"] == "test-echo"
+        and entry["resource"] == "test/token"
+        for entry in local_catalog
+    ), f"missing local catalog row with separate instance/wrapper fields: {local_catalog}"
+    assert any(
+        entry["host"] == "machine"
+        and entry["user"] == "testuser"
+        and entry["instance"] == "tunnel"
+        and entry["wrapper"] == "remote-echo"
+        and entry["resource"] == "remote/token"
+        for entry in remote_catalog
+    ), f"missing remote catalog row with separate instance/wrapper fields: {remote_catalog}"
+    machine.log("PASS: frontend catalog rows register host/user/instance/wrapper/resource separately")
+
     # services.underwrap.hardenTargetHost defaults true; the module pins
     # kernel.yama.ptrace_scope=2 so a same-UID caller cannot inspect the
     # wrapper chain or the target process state. Confirm it took effect.

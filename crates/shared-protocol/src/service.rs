@@ -43,6 +43,7 @@ pub struct ServiceListResponse {
 pub struct CatalogEntry {
     pub host: String,
     pub user: String,
+    pub instance: String,
     pub wrapper: String,
     pub resource: String,
 }

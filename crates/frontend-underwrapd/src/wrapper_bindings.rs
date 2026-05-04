@@ -69,6 +69,7 @@ mod tests {
     fn wrapper_with_resources(resources: &[(&str, ResourceUse)]) -> WrapperDef {
         WrapperDef {
             target: PathBuf::from("/usr/bin/true"),
+            logical_name: None,
             resources: resources
                 .iter()
                 .map(|(name, usage)| ((*name).to_string(), usage.clone()))

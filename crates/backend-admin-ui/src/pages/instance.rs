@@ -60,7 +60,13 @@ pub fn instance_page(data: InstancePageData<'_>) -> String {
         selected_resource.as_deref(),
         data.csrf_token,
     );
-    let wrappers = render_wrappers(data.target, data.store, data.policy, data.csrf_token);
+    let wrappers = render_wrappers(
+        data.target,
+        data.store,
+        data.policy,
+        selected_resource.as_deref(),
+        data.csrf_token,
+    );
 
     let body = format!(
         r#"{banners}
@@ -282,6 +288,7 @@ fn render_slot_rows(
 <form method="post" action="/t/{target}/s/{store}/secret/delete" class="inline-form">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
   <input type="hidden" name="secret_id" value="{secret_id_attr}"/>
+  <input type="hidden" name="current_resource" value="{resource_attr}"/>
   <button type="submit" class="danger">delete</button>
 </form></div>"#,
                 item = h(item),
@@ -289,6 +296,7 @@ fn render_slot_rows(
                 store = url_path(store),
                 csrf = attr(csrf),
                 secret_id_attr = attr(&secret_id),
+                resource_attr = attr(resource_id),
             )
         })
         .collect();
@@ -300,6 +308,7 @@ fn render_env_write_form(target: &str, store: &str, resource_id: &str, csrf: &st
         r#"<form method="post" action="/t/{target}/s/{store}/secret/write-env" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
   <input type="hidden" name="resource_id" value="{resource_attr}"/>
+  <input type="hidden" name="current_resource" value="{resource_attr}"/>
   <h3>Set env slot</h3>
   <div class="field"><label>env var name</label><input name="var_name" required/></div>
   <div class="field"><label>value</label><textarea name="value" rows="3" required></textarea></div>
@@ -317,6 +326,7 @@ fn render_files_write_form(target: &str, store: &str, resource_id: &str, csrf: &
         r#"<form method="post" action="/t/{target}/s/{store}/secret/write-file" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
   <input type="hidden" name="resource_id" value="{resource_attr}"/>
+  <input type="hidden" name="current_resource" value="{resource_attr}"/>
   <h3>Set files slot entry</h3>
   <div class="field"><label>relative file path</label><input name="path" required/></div>
   <div class="field"><label>content</label><textarea name="value" rows="6" required></textarea></div>
@@ -339,6 +349,7 @@ fn render_libsecret_write_form(
         r#"<form method="post" action="/t/{target}/s/{store}/secret/write-libsecret" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
   <input type="hidden" name="resource_id" value="{resource_attr}"/>
+  <input type="hidden" name="current_resource" value="{resource_attr}"/>
   <h3>Set libsecret slot entry</h3>
   <div class="field"><label>item id</label><input name="item_id" required/></div>
   <div class="field"><label>serialized value</label><textarea name="value" rows="6" required></textarea></div>
@@ -376,17 +387,19 @@ fn render_access_matrix(
         .map(|entry| {
             let cells: String = OPERATIONS
                 .iter()
-                .map(|operation| render_matrix_cell(target, store, policy, entry, operation, csrf))
+                .map(|operation| render_matrix_cell(target, store, policy, entry, operation, selected_resource, csrf))
                 .collect();
             format!(
                 r#"<tr>
   <td class="mono">{host}</td>
   <td class="mono">{user}</td>
+  <td class="mono">{instance}</td>
   <td class="mono">{wrapper}</td>
   {cells}
 </tr>"#,
                 host = h(&entry.host),
                 user = h(&entry.user),
+                instance = h(&entry.instance),
                 wrapper = h(&entry.wrapper),
                 cells = cells,
             )
@@ -401,7 +414,7 @@ fn render_access_matrix(
     format!(
         r#"<p class="muted">Rows are auto-registered when a frontend daemon starts. Toggle permanent allow rules for the selected resource.</p>
 <table>
-<thead><tr><th>host</th><th>user</th><th>wrapper</th>{headers}</tr></thead>
+<thead><tr><th>host</th><th>user</th><th>instance</th><th>wrapper</th>{headers}</tr></thead>
 <tbody>
 {rows}
 </tbody>
@@ -417,10 +430,16 @@ fn render_matrix_cell(
     policy: &PolicyDocument,
     entry: &CatalogEntry,
     operation: &str,
+    current_resource: &str,
     csrf: &str,
 ) -> String {
+    let policy_wrapper = if entry.instance.is_empty() {
+        entry.wrapper.clone()
+    } else {
+        format!("{}-{}", entry.instance, entry.wrapper)
+    };
     let enabled = policy.rules.iter().any(|rule| {
-        rule.wrapper == entry.wrapper
+        rule.wrapper == policy_wrapper
             && rule.resource == format!("{}:{}", operation.split('.').next().unwrap_or("env"), entry.resource)
             && rule.operation == operation
             && rule.effect == PolicyEffect::Allow
@@ -435,21 +454,29 @@ fn render_matrix_cell(
     <input type="hidden" name="resource" value="{resource_attr}"/>
     <input type="hidden" name="operation" value="{operation_attr}"/>
     <input type="hidden" name="enabled" value="{enabled_value}"/>
+    <input type="hidden" name="current_resource" value="{current_resource_attr}"/>
     <button type="submit">{label}</button>
   </form>
 </td>"#,
         target = url_path(target),
         store = url_path(store),
         csrf = attr(csrf),
-        wrapper = attr(&entry.wrapper),
+        wrapper = attr(&policy_wrapper),
         resource_attr = attr(&resource),
         operation_attr = attr(operation),
         enabled_value = if enabled { "off" } else { "on" },
         label = if enabled { "✓" } else { "·" },
+        current_resource_attr = attr(current_resource),
     )
 }
 
-fn render_wrappers(target: &str, store: &str, policy: &PolicyDocument, csrf: &str) -> String {
+fn render_wrappers(
+    target: &str,
+    store: &str,
+    policy: &PolicyDocument,
+    current_resource: Option<&str>,
+    csrf: &str,
+) -> String {
     if policy.wrappers.is_empty() {
         return r#"<p class="muted">No wrapper states yet.</p>"#.to_string();
     }
@@ -489,6 +516,7 @@ fn render_wrappers(target: &str, store: &str, policy: &PolicyDocument, csrf: &st
 <tr><td colspan="3">
 <form method="post" action="/t/{target}/s/{store}/wrapper/{name_attr}/mode" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
+  {current_resource_input}
   <div class="field">
     <label>Change mode</label>
     <select name="mode">
@@ -522,6 +550,9 @@ fn render_wrappers(target: &str, store: &str, policy: &PolicyDocument, csrf: &st
                 tag_label = h(&tag_label),
                 until_value = attr(&until_value),
                 approval_key = h(approval_key_value),
+                current_resource_input = current_resource
+                    .map(|r| format!(r#"<input type="hidden" name="current_resource" value="{}"/>"#, attr(r)))
+                    .unwrap_or_default(),
             )
         })
         .collect();
@@ -566,13 +597,15 @@ mod tests {
             CatalogEntry {
                 host: "deepthought".to_string(),
                 user: "robert".to_string(),
-                wrapper: "robert-gh-authorized".to_string(),
+                instance: "robert".to_string(),
+                wrapper: "gh-authorized".to_string(),
                 resource: "gh/main".to_string(),
             },
             CatalogEntry {
                 host: "smallthought".to_string(),
                 user: "robert".to_string(),
-                wrapper: "robert-gh-authorized".to_string(),
+                instance: "robert".to_string(),
+                wrapper: "gh-authorized".to_string(),
                 resource: "gh/main".to_string(),
             },
         ];

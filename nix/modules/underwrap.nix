@@ -39,10 +39,12 @@ let
         client_key_file = inst.backend.clientKeyFile;
       };
       catalog_host = config.networking.hostName;
+      catalog_instance = instName;
       allowed_users = inst.allowedUsers;
       wrappers = lib.mapAttrs' (name: w:
         lib.nameValuePair "${instName}-${name}" {
           target = w.target;
+          logical_name = name;
           resources = lib.mapAttrs (_resource: use:
             ({ inherit (use) env libsecret; }
               // lib.optionalAttrs (use.files != null) {

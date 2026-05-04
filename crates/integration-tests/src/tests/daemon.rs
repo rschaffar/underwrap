@@ -156,6 +156,7 @@ async fn underwrapd_binary_start_and_read() {
             client_key_file: Some(client_key.clone()),
         },
         catalog_host: "binary-test".to_string(),
+        catalog_instance: String::new(),
         allowed_users: Vec::new(),
         wrappers: {
             let mut m = HashMap::new();

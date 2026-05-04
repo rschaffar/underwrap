@@ -20,6 +20,7 @@ fn current_group_name() -> String {
 pub fn wrapper(target: &str, resource_id: &str, _env_var: &str) -> WrapperDef {
     WrapperDef {
         target: PathBuf::from(target),
+        logical_name: None,
         resources: HashMap::from([(
             resource_id.to_string(),
             ResourceUse {

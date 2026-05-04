@@ -157,6 +157,7 @@ impl Harness {
             principal: &'a str,
             host: &'a str,
             user: &'a str,
+            instance: &'a str,
             wrapper: &'a str,
             resource: &'a str,
         }
@@ -171,6 +172,7 @@ impl Harness {
                 principal: "test-principal",
                 host: &entry.host,
                 user: &entry.user,
+                instance: &entry.instance,
                 wrapper: &entry.wrapper,
                 resource: &entry.resource,
             })
@@ -377,13 +379,15 @@ async fn resource_selector_renders_catalog_matrix_rows() {
         underwrap_protocol::service::CatalogEntry {
             host: "deepthought".to_string(),
             user: "robert".to_string(),
-            wrapper: "robert-gh-authorized".to_string(),
+            instance: "robert".to_string(),
+            wrapper: "gh-authorized".to_string(),
             resource: "gh/main".to_string(),
         },
         underwrap_protocol::service::CatalogEntry {
             host: "smallthought".to_string(),
             user: "robert".to_string(),
-            wrapper: "robert-gh-authorized".to_string(),
+            instance: "robert".to_string(),
+            wrapper: "gh-authorized".to_string(),
             resource: "gh/main".to_string(),
         },
     ]).unwrap();

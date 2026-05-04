@@ -14,6 +14,10 @@ pub struct DaemonConfig {
     #[serde(default = "default_catalog_host")]
     pub catalog_host: String,
 
+    /// Frontend instance label published into the backend catalog.
+    #[serde(default)]
+    pub catalog_instance: String,
+
     /// Usernames allowed to execute wrappers in this instance.
     /// Empty = allow all local users.
     #[serde(default)]
@@ -95,6 +99,11 @@ pub struct WrapperDef {
     /// Absolute path to the target binary to exec.
     pub target: PathBuf,
 
+    /// Human-facing wrapper name used for backend catalog registration.
+    /// Defaults to the wrapper map key when omitted.
+    #[serde(default)]
+    pub logical_name: Option<String>,
+
     /// Resource projections for this wrapper, keyed by backend resource id.
     ///
     /// A resource always has all three backend slots (`env`, `files`,
@@ -162,6 +171,7 @@ backend:
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.wrappers.is_empty());
         assert_eq!(config.catalog_host, "unknown-host");
+        assert_eq!(config.catalog_instance, "");
         assert_eq!(config.backend.url, "https://backend.example.internal:8443");
         assert_eq!(
             config.backend.ca_file,
@@ -186,6 +196,7 @@ backend:
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
 catalog_host: workstation-01
+catalog_instance: robert
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
@@ -201,6 +212,7 @@ wrappers:
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.wrappers.len(), 1);
         assert_eq!(config.catalog_host, "workstation-01");
+        assert_eq!(config.catalog_instance, "robert");
         let w = &config.wrappers["gh-authorized"];
         assert_eq!(w.target, PathBuf::from("/usr/bin/gh"));
         assert_eq!(w.resources.len(), 2);

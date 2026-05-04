@@ -90,6 +90,7 @@ struct StoredCatalogEntry {
     principal: String,
     host: String,
     user: String,
+    instance: String,
     wrapper: String,
     resource: String,
 }
@@ -623,6 +624,7 @@ fn replace_catalog_entries_for_principal(
             principal: principal.to_string(),
             host: entry.host.clone(),
             user: entry.user.clone(),
+            instance: entry.instance.clone(),
             wrapper: entry.wrapper.clone(),
             resource: entry.resource.clone(),
         });
@@ -632,6 +634,7 @@ fn replace_catalog_entries_for_principal(
             .cmp(&b.resource)
             .then(a.host.cmp(&b.host))
             .then(a.user.cmp(&b.user))
+            .then(a.instance.cmp(&b.instance))
             .then(a.wrapper.cmp(&b.wrapper))
             .then(a.principal.cmp(&b.principal))
     });
@@ -868,6 +871,7 @@ async fn handle_admin_request(
                             .map(|entry| underwrap_protocol::service::CatalogEntry {
                                 host: entry.host,
                                 user: entry.user,
+                                instance: entry.instance,
                                 wrapper: entry.wrapper,
                                 resource: entry.resource,
                             })
@@ -1265,13 +1269,15 @@ mod tests {
                 underwrap_protocol::service::CatalogEntry {
                     host: "deepthought".to_string(),
                     user: "robert".to_string(),
-                    wrapper: "robert-gh-authorized".to_string(),
+                    instance: "robert".to_string(),
+                    wrapper: "gh-authorized".to_string(),
                     resource: "gh/main".to_string(),
                 },
                 underwrap_protocol::service::CatalogEntry {
                     host: "deepthought".to_string(),
                     user: "robert".to_string(),
-                    wrapper: "robert-gws-castlabs".to_string(),
+                    instance: "robert".to_string(),
+                    wrapper: "gws-castlabs".to_string(),
                     resource: "gws/castlabs".to_string(),
                 },
             ],
@@ -1283,7 +1289,8 @@ mod tests {
             &[underwrap_protocol::service::CatalogEntry {
                 host: "smallthought".to_string(),
                 user: "robert".to_string(),
-                wrapper: "robert-gh-authorized".to_string(),
+                instance: "robert".to_string(),
+                wrapper: "gh-authorized".to_string(),
                 resource: "gh/main".to_string(),
             }],
         )
@@ -1294,7 +1301,8 @@ mod tests {
             &[underwrap_protocol::service::CatalogEntry {
                 host: "deepthought".to_string(),
                 user: "robert".to_string(),
-                wrapper: "robert-confluence".to_string(),
+                instance: "robert".to_string(),
+                wrapper: "confluence".to_string(),
                 resource: "confluence/main".to_string(),
             }],
         )
@@ -1302,9 +1310,9 @@ mod tests {
 
         let entries = load_catalog_document(&store).unwrap();
         assert_eq!(entries.len(), 2);
-        assert!(entries.iter().any(|e| e.principal == "principal-a" && e.wrapper == "robert-confluence"));
-        assert!(entries.iter().any(|e| e.principal == "principal-b" && e.wrapper == "robert-gh-authorized"));
-        assert!(!entries.iter().any(|e| e.principal == "principal-a" && e.wrapper == "robert-gh-authorized"));
+        assert!(entries.iter().any(|e| e.principal == "principal-a" && e.instance == "robert" && e.wrapper == "confluence"));
+        assert!(entries.iter().any(|e| e.principal == "principal-b" && e.instance == "robert" && e.wrapper == "gh-authorized"));
+        assert!(!entries.iter().any(|e| e.principal == "principal-a" && e.wrapper == "gh-authorized"));
     }
 
     fn admin_state_with_tokens(tokens: &[(&str, &str)]) -> AdminRuntimeState {

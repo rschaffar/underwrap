@@ -263,6 +263,15 @@ async fn instance_view(
     }))
 }
 
+fn redirect_to_target(target: &str, store: &str, current_resource: Option<&str>) -> Response {
+    let mut location = format!("/t/{target}?store={store}");
+    if let Some(resource) = current_resource.filter(|r| !r.is_empty()) {
+        location.push_str("&resource=");
+        location.push_str(&crate::pages::url_path(resource));
+    }
+    Redirect::to(&location).into_response()
+}
+
 fn error_page(operator: &str, message: &str) -> Response {
     let body = format!(
         r#"<h1>Error</h1><div class="banner error">{}</div>"#,
@@ -284,6 +293,7 @@ fn check_csrf(session: &Session, given: &str) -> Option<Response> {
 #[derive(Debug, Deserialize)]
 pub struct WrapperModeForm {
     csrf_token: String,
+    current_resource: Option<String>,
     mode: String,
     until_epoch: Option<String>,
     approval_key: Option<String>,
@@ -354,7 +364,7 @@ async fn set_wrapper_mode(
         }
         Err(e) => return error_page(&session.operator, &format!("setting mode: {e}")),
     }
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+    redirect_to_target(&target, &store, form.current_resource.as_deref())
 }
 
 fn matrix_rule_id(wrapper: &str, resource: &str, operation: &str) -> String {
@@ -364,6 +374,7 @@ fn matrix_rule_id(wrapper: &str, resource: &str, operation: &str) -> String {
 #[derive(Debug, Deserialize)]
 pub struct MatrixToggleForm {
     csrf_token: String,
+    current_resource: Option<String>,
     wrapper: String,
     resource: String,
     operation: String,
@@ -405,12 +416,13 @@ async fn toggle_matrix_rule(
     if let Err(e) = result {
         return error_page(&session.operator, &format!("toggle matrix rule: {e}"));
     }
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+    redirect_to_target(&target, &store, form.current_resource.as_deref())
 }
 
 #[derive(Debug, Deserialize)]
 pub struct WriteEnvSecretForm {
     csrf_token: String,
+    current_resource: Option<String>,
     resource_id: String,
     var_name: String,
     value: String,
@@ -419,6 +431,7 @@ pub struct WriteEnvSecretForm {
 #[derive(Debug, Deserialize)]
 pub struct WriteFileSecretForm {
     csrf_token: String,
+    current_resource: Option<String>,
     resource_id: String,
     path: String,
     value: String,
@@ -427,6 +440,7 @@ pub struct WriteFileSecretForm {
 #[derive(Debug, Deserialize)]
 pub struct WriteLibsecretSecretForm {
     csrf_token: String,
+    current_resource: Option<String>,
     resource_id: String,
     item_id: String,
     value: String,
@@ -435,6 +449,7 @@ pub struct WriteLibsecretSecretForm {
 #[derive(Debug, Deserialize)]
 pub struct DeleteSecretForm {
     csrf_token: String,
+    current_resource: Option<String>,
     secret_id: String,
 }
 
@@ -484,7 +499,7 @@ async fn write_env_secret(
     {
         return error_page(&session.operator, &format!("write env secret: {e}"));
     }
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+    redirect_to_target(&target, &store, form.current_resource.as_deref())
 }
 
 async fn write_file_secret(
@@ -517,7 +532,7 @@ async fn write_file_secret(
     {
         return error_page(&session.operator, &format!("write file secret: {e}"));
     }
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+    redirect_to_target(&target, &store, form.current_resource.as_deref())
 }
 
 async fn write_libsecret_secret(
@@ -550,7 +565,7 @@ async fn write_libsecret_secret(
     {
         return error_page(&session.operator, &format!("write libsecret secret: {e}"));
     }
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+    redirect_to_target(&target, &store, form.current_resource.as_deref())
 }
 
 async fn delete_secret(
@@ -575,5 +590,5 @@ async fn delete_secret(
     if let Err(e) = client.delete_secret(&store, secret_id).await {
         return error_page(&session.operator, &format!("delete secret: {e}"));
     }
-    Redirect::to(&format!("/t/{target}?store={store}")).into_response()
+    redirect_to_target(&target, &store, form.current_resource.as_deref())
 }

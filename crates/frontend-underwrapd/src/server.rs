@@ -47,12 +47,17 @@ fn register_catalog(store: &dyn StorageBackend, config: &DaemonConfig) -> Result
 
     let mut entries = Vec::new();
     for (wrapper_name, wrapper) in &config.wrappers {
+        let logical_name = wrapper
+            .logical_name
+            .clone()
+            .unwrap_or_else(|| wrapper_name.clone());
         for resource in wrapper.resources.keys() {
             for user in &users {
                 entries.push(CatalogEntry {
                     host: config.catalog_host.clone(),
                     user: user.clone(),
-                    wrapper: wrapper_name.clone(),
+                    instance: config.catalog_instance.clone(),
+                    wrapper: logical_name.clone(),
                     resource: resource.clone(),
                 });
             }

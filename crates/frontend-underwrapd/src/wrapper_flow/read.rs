@@ -263,11 +263,13 @@ mod tests {
             config: underwrap_protocol::config::DaemonConfig {
                 backend: BackendServiceConfig::default(),
                 catalog_host: "test-host".to_string(),
+                catalog_instance: "test-instance".to_string(),
                 allowed_users: Vec::new(),
                 wrappers: HashMap::from([(
                     "gh-authorized".to_string(),
                     WrapperDef {
                         target: PathBuf::from("/usr/bin/gh"),
+                        logical_name: None,
                         resources: HashMap::from([
                             (
                                 "github/token".to_string(),
