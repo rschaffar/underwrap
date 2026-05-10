@@ -168,6 +168,38 @@ let
   # Build all instance configs.
   instances = lib.mapAttrs mkInstance cfg.instances;
 
+  # Per-user wrapper namespace.
+  #
+  # `security.wrappers` is system-wide: every entry lands in /run/wrappers/bin
+  # with a globally-unique name. We keep the instance-prefixed entries for
+  # isolation, then layer per-user PATH integration on top so authorized users
+  # can invoke wrappers by their bare attribute name without each operator
+  # wiring up a parallel security.wrappers alias list.
+  #
+  # Each authorized user gets a derivation in their `users.users.<u>.packages`
+  # whose `bin/` contains bare-named symlinks pointing at the prefixed setgid
+  # binaries. NixOS's standard per-user profile machinery puts
+  # /etc/profiles/per-user/<u>/bin on that user's PATH automatically.
+  allAuthorizedUsers =
+    lib.unique (lib.concatMap (i: i.allowedUsers) (lib.attrValues cfg.instances));
+
+  # For each authorized user: the list of {instance, wrapper} entries that
+  # should appear (bare-named) on their PATH.
+  userBareEntries = lib.genAttrs allAuthorizedUsers (user:
+    lib.concatMap (instName:
+      let inst = cfg.instances.${instName}; in
+      if lib.elem user inst.allowedUsers
+      then lib.mapAttrsToList (wn: _: { instance = instName; wrapper = wn; })
+             inst.wrappers
+      else []
+    ) (builtins.attrNames cfg.instances));
+
+  mkUserBin = user: entries:
+    pkgs.linkFarm "underwrap-userbin-${user}" (map (e: {
+      name = "bin/${e.wrapper}";
+      path = "/run/wrappers/bin/${e.instance}-${e.wrapper}";
+    }) entries);
+
   # Submodule types.
   filesUseSubmodule = lib.types.submodule {
     options = {
@@ -364,6 +396,22 @@ in {
           message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: LD_* environment variables must not be set on the target — they defeat the dynamic-linker hardening";
         }) inst.wrappers)
       ) cfg.instances))
+      ++ (lib.mapAttrsToList (user: entries:
+        let
+          byWrapper = lib.foldl' (acc: e:
+            acc // { ${e.wrapper} = (acc.${e.wrapper} or []) ++ [ e.instance ]; }
+          ) {} entries;
+          collisions = lib.filterAttrs (_: insts: lib.length insts > 1) byWrapper;
+        in {
+          assertion = collisions == {};
+          message = "services.underwrap: user '${user}' is authorized in multiple "
+            + "instances that define the same wrapper name: "
+            + lib.concatStringsSep "; " (lib.mapAttrsToList (wn: insts:
+                "'${wn}' (in ${lib.concatStringsSep ", " insts})"
+              ) collisions)
+            + ". Rename one of the wrappers, or remove the user from one of the instances.";
+        }
+      ) userBareEntries)
       ++ lib.optionals cfg.hardenTargetHost [
         {
           assertion = swapDevicesAreHardened;
@@ -371,8 +419,14 @@ in {
         }
       ];
 
-    # Merge all instance users.
-    users.users = lib.mkMerge (lib.mapAttrsToList (_: i: i.users) instances);
+    # Merge all instance users, plus per-user wrapper bin packages.
+    users.users = lib.mkMerge (
+      (lib.mapAttrsToList (_: i: i.users) instances)
+      ++ (lib.mapAttrsToList (user: entries:
+        if entries == [] then {}
+        else { ${user}.packages = [ (mkUserBin user entries) ]; }
+      ) userBareEntries)
+    );
     users.groups = lib.mkMerge (lib.mapAttrsToList (_: i: i.groups) instances);
 
     # Shared underwrap-ns (one binary, all instances use it).

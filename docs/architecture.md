@@ -37,12 +37,26 @@ The split exists because NixOS `security.wrappers` cannot cleanly carry
 both the setgid identity story and the capability-based namespace
 story on one binary.
 
+## Per-user PATH integration
+
+`security.wrappers` is system-wide, so the canonical setgid binaries live
+under instance-prefixed names like `/run/wrappers/bin/work-jira`. On top
+of those, the NixOS module installs bare-named symlinks into each
+authorized user's profile directory — `/etc/profiles/per-user/<user>/bin/jira`
+points at `/run/wrappers/bin/work-jira` for any user listed in the
+instance's `allowedUsers`. NixOS places per-user profile bins on each
+user's `PATH`, so users invoke wrappers by their bare attribute name
+without conflicting with other users on the same host. The bare-name
+layer is a pure UX shim: kernel identity, setgid group, and sidecar
+config all come from the prefixed binary the link resolves to.
+
 ## End-to-end request flow
 
 For a normal env-var wrapper:
 
 ```text
-user runs work-jira issue list
+user runs jira issue list
+  -> /etc/profiles/per-user/<user>/bin/jira            (per-user symlink)
   -> /run/wrappers/bin/work-jira                       (underwrap-exec, setgid)
   -> connect to /run/underwrap-work/wrapper-jira.sock
   -> underwrapd verifies the peer's effective GID matches that wrapper socket

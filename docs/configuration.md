@@ -85,7 +85,17 @@ Key points:
   clientCertFile; clientKeyFile; }`. The module asserts this at build
   time.
 - Each wrapper ends up at `/run/wrappers/bin/<instance>-<wrapper>`
-  installed setgid to a per-wrapper group.
+  installed setgid to a per-wrapper group. This is the canonical entry
+  point and is the path NixOS guarantees by virtue of the setgid bit.
+- For every user listed in `allowedUsers`, the module also installs a
+  bare-named symlink at `/etc/profiles/per-user/<user>/bin/<wrapper>`
+  pointing at the prefixed setgid binary above. NixOS already places
+  per-user profile bins on each user's `PATH`, so authorized users can
+  invoke wrappers by their bare attribute name (`gh`, `bx`, ...) instead
+  of typing the instance prefix. The setgid identity, group, and
+  sidecar config still come from the prefixed binary the link resolves
+  to. If two instances try to expose the same bare name to the same
+  user, the build fails at evaluation with a clear collision error.
 - `allowedUsers` is enforced by `underwrapd`; the wrapper setgid bit
   makes the wrapper work at all, but the UID check rejects peers not in
   the list.

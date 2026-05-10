@@ -221,6 +221,46 @@ def local_unprivileged_wrapper_invocation():
     machine.log("PASS: daemon resolved identity for unprivileged user")
 
 
+def per_user_bare_name_path():
+    # ============================================================
+    # PER-USER PATH INTEGRATION: bare-named wrappers
+    # ============================================================
+    # The instance-prefixed setgid binaries in /run/wrappers/bin are the real
+    # entry points; the module additionally installs bare-named symlinks into
+    # each authorized user's profile bin via users.users.<u>.packages, so that
+    # users invoke wrappers by their bare attribute name without each
+    # operator wiring up a parallel security.wrappers list.
+    profile_bin = "/etc/profiles/per-user/testuser/bin"
+    machine.succeed(f"test -d {profile_bin}")
+    machine.log(f"PASS: per-user profile bin exists at {profile_bin}")
+
+    target = machine.succeed(f"readlink {profile_bin}/test-echo").strip()
+    assert target == "/run/wrappers/bin/local-test-echo", \
+        f"expected local-test-echo target, got: {target}"
+    target = machine.succeed(f"readlink {profile_bin}/remote-echo").strip()
+    assert target == "/run/wrappers/bin/tunnel-remote-echo", \
+        f"expected tunnel-remote-echo target, got: {target}"
+    machine.log("PASS: per-user bin contains bare-named symlinks across both instances")
+
+    # The per-user dir is a bare-name namespace: it must not also expose the
+    # instance-prefixed names. Those remain available through /run/wrappers/bin.
+    rc = machine.execute(f"test -e {profile_bin}/local-test-echo")[0]
+    assert rc != 0, "per-user bin unexpectedly contains prefixed name"
+    machine.log("PASS: per-user bin does not duplicate prefixed names")
+
+    # Login shell for testuser must resolve the bare name through this dir.
+    which_out = machine.succeed("su -l testuser -c 'command -v test-echo'").strip()
+    assert which_out == f"{profile_bin}/test-echo", \
+        f"expected bare 'test-echo' to resolve via per-user bin, got: {which_out}"
+    machine.log(f"PASS: bare 'test-echo' resolves to {which_out} in login shell")
+
+    # And bare-name invocation actually works end-to-end.
+    output = machine.succeed("su -l testuser -c 'test-echo'")
+    assert "MY_TOKEN=overwrite" in output, \
+        f"expected MY_TOKEN via bare-name invocation: {output}"
+    machine.log("PASS: bare-name wrapper invocation through login shell works")
+
+
 def local_verify_capabilities_dropped():
     # ============================================================
     # LOCAL INSTANCE: verify capabilities are dropped for target
@@ -947,6 +987,7 @@ boot_and_service_checks()
 local_socket_permissions()
 local_store_and_basic_ops()
 local_unprivileged_wrapper_invocation()
+per_user_bare_name_path()
 local_verify_capabilities_dropped()
 local_isolation()
 local_spoofing_resistance()
