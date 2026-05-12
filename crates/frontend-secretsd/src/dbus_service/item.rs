@@ -63,7 +63,7 @@ impl ItemInterface {
         Ok(empty_path())
     }
 
-    async fn get_secret(&self, session: ObjectPath<'_>) -> fdo::Result<Secret> {
+    async fn get_secret(&self, session: ObjectPath<'_>) -> fdo::Result<(Secret,)> {
         let secret = channel::read_item_secret(&*self.channel, &self.collection_id, &self.id)
             .map_err(|e| fdo::Error::Failed(format!("read error: {e}")))?;
         let secret = secret.ok_or_else(|| fdo::Error::Failed("item not found".into()))?;
@@ -83,12 +83,12 @@ impl ItemInterface {
             );
         }
 
-        Ok(Secret {
+        Ok((Secret {
             session: session.to_owned().into(),
             parameters: vec![],
             value: secret,
             content_type: content_type.to_string(),
-        })
+        },))
     }
 
     async fn set_secret(&self, secret: Secret) -> fdo::Result<()> {
