@@ -70,6 +70,7 @@ let
             UNDERWRAP_DEBUG_LOGICAL_WRAPPER = name;
             UNDERWRAP_DEBUG_WRAPPER = fullWrapperName name;
             UNDERWRAP_DEBUG_ORIGINAL_TARGET = w.target;
+            UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA = "1";
           };
         };
       }) inst.wrappers);

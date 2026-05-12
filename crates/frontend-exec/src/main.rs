@@ -188,6 +188,11 @@ fn exec_via_ns(
         cmd.env_remove("UNDERWRAP_LIBSECRET");
         cmd.env_remove("UNDERWRAP_DBUS_DAEMON");
         cmd.env_remove("UNDERWRAP_SECRETSD");
+        cmd.env_remove("UNDERWRAP_DEBUG_INSTANCE");
+        cmd.env_remove("UNDERWRAP_DEBUG_LOGICAL_WRAPPER");
+        cmd.env_remove("UNDERWRAP_DEBUG_WRAPPER");
+        cmd.env_remove("UNDERWRAP_DEBUG_ORIGINAL_TARGET");
+        cmd.env_remove("UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA");
         if config.libsecret {
             // channel_fd is guaranteed Some here — we bail above if recv_fd fails.
             cmd.env("UNDERWRAP_LIBSECRET", "1");
@@ -196,6 +201,18 @@ fn exec_via_ns(
             }
             if let Some(ref bin) = config.secretsd_binary {
                 cmd.env("UNDERWRAP_SECRETSD", bin);
+            }
+        }
+
+        for key in [
+            "UNDERWRAP_DEBUG_INSTANCE",
+            "UNDERWRAP_DEBUG_LOGICAL_WRAPPER",
+            "UNDERWRAP_DEBUG_WRAPPER",
+            "UNDERWRAP_DEBUG_ORIGINAL_TARGET",
+            "UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA",
+        ] {
+            if let Some(value) = config.env_set.get(key) {
+                cmd.env(key, value);
             }
         }
 

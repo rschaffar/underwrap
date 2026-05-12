@@ -11,6 +11,7 @@ use underwrap_secretsd_store::SecretStore;
 
 use crate::BASE_PATH;
 use crate::channel::{self, ChannelOps};
+use crate::metadata_trace_enabled;
 
 use super::{
     CollectionInterface, Secret, SessionInterface, collection_path, empty_path, item_path,
@@ -65,6 +66,14 @@ impl SecretService {
 
         let alias = if alias.is_empty() { None } else { Some(alias) };
 
+        if metadata_trace_enabled() {
+            tracing::info!(
+                label = label.as_deref().unwrap_or(""),
+                alias = alias.unwrap_or(""),
+                "secretsd CreateCollection"
+            );
+        }
+
         let col_id = {
             let mut store = self.store.write().await;
             let id = store.create_collection(label.as_deref(), alias);
@@ -98,6 +107,13 @@ impl SecretService {
                 }
             }
         }
+        if metadata_trace_enabled() {
+            tracing::info!(
+                ?attributes,
+                result_count = paths.len(),
+                "secretsd Service.SearchItems"
+            );
+        }
         Ok((paths, vec![]))
     }
 
@@ -130,6 +146,15 @@ impl SecretService {
                 let content_type = store
                     .get_content_type(col_id, item_id)
                     .unwrap_or("text/plain");
+                if metadata_trace_enabled() {
+                    tracing::info!(
+                        collection = col_id,
+                        item = item_id,
+                        content_type,
+                        secret_len = secret.len(),
+                        "secretsd Service.GetSecrets item"
+                    );
+                }
                 results.insert(
                     item_path.into(),
                     Secret {
@@ -142,16 +167,24 @@ impl SecretService {
             }
         }
 
+        if metadata_trace_enabled() {
+            tracing::info!(result_count = results.len(), "secretsd Service.GetSecrets");
+        }
+
         Ok(results)
     }
 
     async fn read_alias(&self, name: &str) -> fdo::Result<ObjectPath<'_>> {
         let store = self.store.read().await;
-        if let Some(col_id) = store.get_alias(name) {
-            collection_path(col_id)
+        let path = if let Some(col_id) = store.get_alias(name) {
+            collection_path(col_id)?
         } else {
-            Ok(empty_path())
+            empty_path()
+        };
+        if metadata_trace_enabled() {
+            tracing::info!(alias = name, path = %path, "secretsd Service.ReadAlias");
         }
+        Ok(path)
     }
 
     async fn set_alias(&self, name: &str, collection: ObjectPath<'_>) -> fdo::Result<()> {
@@ -166,6 +199,13 @@ impl SecretService {
 
         let mut store = self.store.write().await;
         store.set_alias(name, col_id.as_deref());
+        if metadata_trace_enabled() {
+            tracing::info!(
+                alias = name,
+                collection = col_id.as_deref().unwrap_or(""),
+                "secretsd Service.SetAlias"
+            );
+        }
         channel::save_aliases(&*self.channel, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
         Ok(())

@@ -7,6 +7,7 @@ use zbus::{fdo, interface, zvariant::ObjectPath};
 use underwrap_secretsd_store::SecretStore;
 
 use crate::channel::{self, ChannelOps};
+use crate::metadata_trace_enabled;
 
 use super::{Secret, empty_path};
 
@@ -72,6 +73,16 @@ impl ItemInterface {
             .get_content_type(&self.collection_id, &self.id)
             .unwrap_or("text/plain");
 
+        if metadata_trace_enabled() {
+            tracing::info!(
+                collection = %self.collection_id,
+                item = %self.id,
+                content_type,
+                secret_len = secret.len(),
+                "secretsd Item.GetSecret"
+            );
+        }
+
         Ok(Secret {
             session: session.to_owned().into(),
             parameters: vec![],
@@ -100,6 +111,15 @@ impl ItemInterface {
             &secret.value,
         )
         .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
+        if metadata_trace_enabled() {
+            tracing::info!(
+                collection = %self.collection_id,
+                item = %self.id,
+                content_type = %secret.content_type,
+                secret_len = secret.value.len(),
+                "secretsd Item.SetSecret"
+            );
+        }
         Ok(())
     }
 
@@ -111,18 +131,35 @@ impl ItemInterface {
     #[zbus(property)]
     async fn attributes(&self) -> fdo::Result<HashMap<String, String>> {
         let store = self.store.read().await;
-        Ok(store
+        let attributes = store
             .get_attributes(&self.collection_id, &self.id)
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if metadata_trace_enabled() {
+            tracing::info!(
+                collection = %self.collection_id,
+                item = %self.id,
+                ?attributes,
+                "secretsd Item.Attributes"
+            );
+        }
+        Ok(attributes)
     }
 
     #[zbus(property)]
     async fn set_attributes(&mut self, attributes: HashMap<String, String>) -> fdo::Result<()> {
         let mut store = self.store.write().await;
-        store.set_attributes(&self.collection_id, &self.id, attributes);
+        store.set_attributes(&self.collection_id, &self.id, attributes.clone());
         channel::save_item_metadata(&*self.channel, &self.collection_id, &self.id, &store)
             .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
+        if metadata_trace_enabled() {
+            tracing::info!(
+                collection = %self.collection_id,
+                item = %self.id,
+                ?attributes,
+                "secretsd Item.SetAttributes"
+            );
+        }
         Ok(())
     }
 

@@ -10,6 +10,7 @@ use zbus::{
 use underwrap_secretsd_store::SecretStore;
 
 use crate::channel::{self, ChannelOps};
+use crate::metadata_trace_enabled;
 
 use super::{ItemInterface, Secret, empty_path, item_path};
 
@@ -73,10 +74,19 @@ impl CollectionInterface {
     ) -> fdo::Result<Vec<ObjectPath<'_>>> {
         let store = self.store.read().await;
         let matches = store.search(&self.id, &attributes);
-        Ok(matches
+        let paths: Vec<ObjectPath<'_>> = matches
             .into_iter()
             .filter_map(|item_id| item_path(&self.id, item_id))
-            .collect())
+            .collect();
+        if metadata_trace_enabled() {
+            tracing::info!(
+                collection = %self.id,
+                ?attributes,
+                result_count = paths.len(),
+                "secretsd Collection.SearchItems"
+            );
+        }
+        Ok(paths)
     }
 
     async fn create_item(
@@ -99,6 +109,8 @@ impl CollectionInterface {
             })
             .unwrap_or_default();
 
+        let secret_len = secret.value.len();
+        let content_type = secret.content_type.clone();
         let (item_id, replaced) = {
             let mut store = self.store.write().await;
             let (id, replaced) = store
@@ -111,6 +123,20 @@ impl CollectionInterface {
                 .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
             (id, replaced)
         };
+
+        if metadata_trace_enabled() {
+            tracing::info!(
+                collection = %self.id,
+                item = %item_id,
+                label,
+                ?attrs,
+                replace,
+                replaced,
+                content_type,
+                secret_len,
+                "secretsd Collection.CreateItem"
+            );
+        }
 
         let item_path = item_path(&self.id, &item_id)
             .ok_or_else(|| fdo::Error::Failed("invalid item path".into()))?;

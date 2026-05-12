@@ -10,7 +10,7 @@
 use anyhow::{Context, Result, bail};
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream as StdUnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 mod channel;
@@ -18,6 +18,12 @@ mod dbus_service;
 
 const WELL_KNOWN_NAME: &str = "org.freedesktop.secrets";
 const BASE_PATH: &str = "/org/freedesktop/secrets";
+const METADATA_TRACE_ENV: &str = "UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA";
+
+pub(crate) fn metadata_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os(METADATA_TRACE_ENV).is_some())
+}
 
 #[derive(Clone, Debug)]
 struct Args {
@@ -94,6 +100,13 @@ async fn main() -> Result<()> {
     }
 
     let args = parse_args()?;
+
+    if metadata_trace_enabled() {
+        tracing::info!(
+            env_var = METADATA_TRACE_ENV,
+            "Secret Service metadata tracing enabled"
+        );
+    }
 
     // Open the channel to the daemon.
     let channel_stream = unsafe { StdUnixStream::from_raw_fd(args.channel_fd) };
