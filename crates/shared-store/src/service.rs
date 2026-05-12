@@ -123,11 +123,10 @@ impl ServiceBackend {
                                 )));
                     }
                     Command::RegisterCatalog { entries, reply } => {
-                        let _ = reply.send(runtime.block_on(register_catalog_request(
-                            &client,
-                            &base_url,
-                            &entries,
-                        )));
+                        let _ = reply.send(
+                            runtime
+                                .block_on(register_catalog_request(&client, &base_url, &entries)),
+                        );
                     }
                     Command::Delete { secret_id, reply } => {
                         let _ = reply

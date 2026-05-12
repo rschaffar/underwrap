@@ -59,7 +59,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/t/{target}/s/{store}/wrapper/{wrapper}/mode",
             post(set_wrapper_mode),
         )
-        .route("/t/{target}/s/{store}/matrix/toggle", post(toggle_matrix_rule))
+        .route(
+            "/t/{target}/s/{store}/matrix/toggle",
+            post(toggle_matrix_rule),
+        )
         .route(
             "/t/{target}/s/{store}/secret/write-env",
             post(write_env_secret),

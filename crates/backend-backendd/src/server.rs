@@ -479,17 +479,19 @@ async fn handle_service_request(
         >(request)
         .await
         {
-            Ok(body) => match replace_catalog_entries_for_principal(&*store, &principal, &body.entries) {
-                Ok(()) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::ServiceCatalogPutResponse { ok: true },
-                ),
-                Err(e) => error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &format!("catalog storage error: {e}"),
-                ),
-            },
+            Ok(body) => {
+                match replace_catalog_entries_for_principal(&*store, &principal, &body.entries) {
+                    Ok(()) => json_response(
+                        StatusCode::OK,
+                        &underwrap_protocol::service::ServiceCatalogPutResponse { ok: true },
+                    ),
+                    Err(e) => error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &format!("catalog storage error: {e}"),
+                    ),
+                }
+            }
             Err(response) => response,
         },
         (&Method::POST, "/v1/delete") => {
@@ -608,8 +610,14 @@ fn load_catalog_document(store: &dyn StorageBackend) -> Result<Vec<StoredCatalog
     serde_json::from_slice(material.as_ref()).context("parsing backend catalog document")
 }
 
-fn store_catalog_document(store: &dyn StorageBackend, entries: &[StoredCatalogEntry]) -> Result<()> {
-    store.write(CATALOG_DOCUMENT_SECRET_ID, serde_json::to_vec(entries)?.as_slice())
+fn store_catalog_document(
+    store: &dyn StorageBackend,
+    entries: &[StoredCatalogEntry],
+) -> Result<()> {
+    store.write(
+        CATALOG_DOCUMENT_SECRET_ID,
+        serde_json::to_vec(entries)?.as_slice(),
+    )
 }
 
 fn replace_catalog_entries_for_principal(
@@ -862,7 +870,9 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store(&state, &body.store).and_then(|store| load_catalog_document(&**store)) {
+            Ok(body) => match admin_store(&state, &body.store)
+                .and_then(|store| load_catalog_document(&**store))
+            {
                 Ok(entries) => json_response(
                     StatusCode::OK,
                     &underwrap_protocol::service::AdminCatalogGetResponse {
@@ -1310,9 +1320,17 @@ mod tests {
 
         let entries = load_catalog_document(&store).unwrap();
         assert_eq!(entries.len(), 2);
-        assert!(entries.iter().any(|e| e.principal == "principal-a" && e.instance == "robert" && e.wrapper == "confluence"));
-        assert!(entries.iter().any(|e| e.principal == "principal-b" && e.instance == "robert" && e.wrapper == "gh-authorized"));
-        assert!(!entries.iter().any(|e| e.principal == "principal-a" && e.wrapper == "gh-authorized"));
+        assert!(entries.iter().any(|e| e.principal == "principal-a"
+            && e.instance == "robert"
+            && e.wrapper == "confluence"));
+        assert!(entries.iter().any(|e| e.principal == "principal-b"
+            && e.instance == "robert"
+            && e.wrapper == "gh-authorized"));
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.principal == "principal-a" && e.wrapper == "gh-authorized")
+        );
     }
 
     fn admin_state_with_tokens(tokens: &[(&str, &str)]) -> AdminRuntimeState {

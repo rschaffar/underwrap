@@ -259,9 +259,23 @@ fn render_resource_editor(
   {libsecret_form}
 </div>"#,
         resource = h(selected_resource),
-        env_rows = render_slot_rows(target, store, selected_resource, "env", &view.env_vars, csrf),
+        env_rows = render_slot_rows(
+            target,
+            store,
+            selected_resource,
+            "env",
+            &view.env_vars,
+            csrf
+        ),
         file_rows = render_slot_rows(target, store, selected_resource, "files", &view.files, csrf),
-        libsecret_rows = render_slot_rows(target, store, selected_resource, "libsecret", &view.libsecret_items, csrf),
+        libsecret_rows = render_slot_rows(
+            target,
+            store,
+            selected_resource,
+            "libsecret",
+            &view.libsecret_items,
+            csrf
+        ),
         env_form = render_env_write_form(target, store, selected_resource, csrf),
         files_form = render_files_write_form(target, store, selected_resource, csrf),
         libsecret_form = render_libsecret_write_form(target, store, selected_resource, csrf),
@@ -339,12 +353,7 @@ fn render_files_write_form(target: &str, store: &str, resource_id: &str, csrf: &
     )
 }
 
-fn render_libsecret_write_form(
-    target: &str,
-    store: &str,
-    resource_id: &str,
-    csrf: &str,
-) -> String {
+fn render_libsecret_write_form(target: &str, store: &str, resource_id: &str, csrf: &str) -> String {
     format!(
         r#"<form method="post" action="/t/{target}/s/{store}/secret/write-libsecret" class="card">
   <input type="hidden" name="csrf_token" value="{csrf}"/>
@@ -387,7 +396,17 @@ fn render_access_matrix(
         .map(|entry| {
             let cells: String = OPERATIONS
                 .iter()
-                .map(|operation| render_matrix_cell(target, store, policy, entry, operation, selected_resource, csrf))
+                .map(|operation| {
+                    render_matrix_cell(
+                        target,
+                        store,
+                        policy,
+                        entry,
+                        operation,
+                        selected_resource,
+                        csrf,
+                    )
+                })
                 .collect();
             format!(
                 r#"<tr>
@@ -440,7 +459,12 @@ fn render_matrix_cell(
     };
     let enabled = policy.rules.iter().any(|rule| {
         rule.wrapper == policy_wrapper
-            && rule.resource == format!("{}:{}", operation.split('.').next().unwrap_or("env"), entry.resource)
+            && rule.resource
+                == format!(
+                    "{}:{}",
+                    operation.split('.').next().unwrap_or("env"),
+                    entry.resource
+                )
             && rule.operation == operation
             && rule.effect == PolicyEffect::Allow
     });
@@ -551,7 +575,10 @@ fn render_wrappers(
                 until_value = attr(&until_value),
                 approval_key = h(approval_key_value),
                 current_resource_input = current_resource
-                    .map(|r| format!(r#"<input type="hidden" name="current_resource" value="{}"/>"#, attr(r)))
+                    .map(|r| format!(
+                        r#"<input type="hidden" name="current_resource" value="{}"/>"#,
+                        attr(r)
+                    ))
                     .unwrap_or_default(),
             )
         })

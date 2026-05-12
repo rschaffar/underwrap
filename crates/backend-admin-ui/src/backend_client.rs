@@ -6,11 +6,11 @@ use reqwest::Client;
 use underwrap_protocol::policy::{PolicyDocument, PolicyGrant, PolicyRule, WrapperApprovalMode};
 use underwrap_protocol::service::{
     AdminCatalogGetRequest, AdminCatalogGetResponse, AdminGrantDeleteRequest,
-    AdminGrantUpsertRequest, AdminPolicyGetRequest, AdminPolicyGetResponse,
-    AdminRuleDeleteRequest, AdminRuleUpsertRequest, AdminSecretDeleteRequest,
-    AdminSecretDeleteResponse, AdminSecretListRequest, AdminSecretListResponse,
-    AdminSecretReadRequest, AdminSecretReadResponse, AdminSecretWriteRequest,
-    AdminStoresResponse, CatalogEntry, AdminWrapperModeRequest,
+    AdminGrantUpsertRequest, AdminPolicyGetRequest, AdminPolicyGetResponse, AdminRuleDeleteRequest,
+    AdminRuleUpsertRequest, AdminSecretDeleteRequest, AdminSecretDeleteResponse,
+    AdminSecretListRequest, AdminSecretListResponse, AdminSecretReadRequest,
+    AdminSecretReadResponse, AdminSecretWriteRequest, AdminStoresResponse, AdminWrapperModeRequest,
+    CatalogEntry,
 };
 
 /// One backend target as seen by the UI.

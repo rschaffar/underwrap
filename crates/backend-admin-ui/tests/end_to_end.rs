@@ -151,7 +151,10 @@ impl Harness {
         Ok(body.document)
     }
 
-    fn put_catalog(&self, entries: &[underwrap_protocol::service::CatalogEntry]) -> anyhow::Result<()> {
+    fn put_catalog(
+        &self,
+        entries: &[underwrap_protocol::service::CatalogEntry],
+    ) -> anyhow::Result<()> {
         #[derive(serde::Serialize)]
         struct StoredCatalogEntry<'a> {
             principal: &'a str,
@@ -390,7 +393,8 @@ async fn resource_selector_renders_catalog_matrix_rows() {
             wrapper: "gh-authorized".to_string(),
             resource: "gh/main".to_string(),
         },
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let client = Harness::client();
     let login_resp = client

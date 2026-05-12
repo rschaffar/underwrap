@@ -44,12 +44,10 @@ async fn service_mode_registers_catalog_entries_on_startup() {
         .unwrap();
 
     let entries = daemon.get_catalog("test").await.unwrap();
-    assert!(entries.iter().any(|e|
-        e.host == "local"
-            && e.user == "*"
-            && e.wrapper == "gh-authorized"
-            && e.resource == "github/token"
-    ));
+    assert!(entries.iter().any(|e| e.host == "local"
+        && e.user == "*"
+        && e.wrapper == "gh-authorized"
+        && e.resource == "github/token"));
 
     daemon.stop().await.unwrap();
 }
