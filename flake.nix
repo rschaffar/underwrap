@@ -34,7 +34,8 @@
             src = ./.;
             filter = path: type:
               (craneLib.filterCargoSources path type)
-              || (pkgs.lib.hasInfix "/src/assets/" path);
+              || (pkgs.lib.hasInfix "/src/assets/" path)
+              || (pkgs.lib.hasInfix "/crates/frontend-keyring-probe" path);
             name = "source";
           };
 
@@ -75,6 +76,7 @@
             underwrap-exec = mkCrate "frontend-exec";
             underwrap-ns = mkCrate "frontend-ns";
             underwrap-debug-tool = mkCrate "frontend-debug-tool";
+            underwrap-keyring-probe = mkCrate "frontend-keyring-probe";
             underwrap-backendd = mkCrate "backend-backendd";
             underwrap-secretsd = mkCrate "frontend-secretsd";
             underwrap-admin-ui = mkCrate "backend-admin-ui";

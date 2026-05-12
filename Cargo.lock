@@ -917,6 +917,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "frontend-keyring-probe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "frontend-ns"
 version = "0.1.0"
 dependencies = [

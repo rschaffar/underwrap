@@ -257,6 +257,10 @@ in {
             target = "${pkgs.libsecret}/bin/secret-tool";
             resources."test/libsecret-store".libsecret = true;
           };
+          test-keyring-probe = {
+            target = "${underwrapPackage}/bin/underwrap-keyring-probe";
+            resources."test/libsecret-store".libsecret = true;
+          };
           test-ns-pids = {
             target = "${listPidsScript}";
             resources."test/ns-pids-store".libsecret = true;

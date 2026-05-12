@@ -673,6 +673,30 @@ def local_libsecret_mode():
     machine.log("PASS: no secret material leaked outside backend")
 
 
+def local_go_keyring_compatibility():
+    # ============================================================
+    # LOCAL INSTANCE: go-keyring-compatible Secret Service flow
+    # ============================================================
+
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.secret', delete=False) as f:
+        f.write('keyring_roundtrip_value')
+        secret_file = f.name
+    machine.copy_from_host(secret_file, "/tmp/.keyring-probe-secret")
+    os.unlink(secret_file)
+    machine.succeed("chmod 600 /tmp/.keyring-probe-secret && chown testuser /tmp/.keyring-probe-secret")
+    output = machine.succeed(
+        'su testuser -s /bin/sh -c "'
+        'cat /tmp/.keyring-probe-secret | '
+        '/run/wrappers/bin/local-test-keyring-probe gh-login-sequence '
+        '--service gh:github.com --user rschaffar --secret-stdin"'
+    ).strip()
+    machine.succeed("rm -f /tmp/.keyring-probe-secret")
+    assert "user-slot=ok" in output, output
+    assert "active-slot=ok" in output, output
+    machine.log("PASS: go-keyring-compatible Secret Service sequence works")
+
+
 def local_directory_credentials():
     # ============================================================
     # LOCAL INSTANCE: directory credentials
@@ -979,6 +1003,7 @@ def audit_and_no_secret_leaks():
     assert "locked_secret" not in logs, "secret leaked!"
     assert "secret_via_service" not in logs, "secret leaked!"
     assert "my_gh_token_value" not in logs, "libsecret secret leaked!"
+    assert "keyring_roundtrip_value" not in logs, "keyring probe secret leaked!"
     machine.log("PASS: audit events present, no secrets in logs")
 
     machine.log("ALL TESTS PASSED")
@@ -998,6 +1023,7 @@ local_core_dump_protection()
 local_symlink_confused_deputy_attack()
 local_proc_isolation_libsecret_mode()
 local_libsecret_mode()
+local_go_keyring_compatibility()
 local_directory_credentials()
 remote_service_lifecycle()
 instance_isolation()
