@@ -77,6 +77,12 @@
             underwrap-ns = mkCrate "frontend-ns";
             underwrap-debug-tool = mkCrate "frontend-debug-tool";
             underwrap-keyring-probe = mkCrate "frontend-keyring-probe";
+            underwrap-go-keyring-probe = pkgs.buildGoModule {
+              pname = "underwrap-go-keyring-probe";
+              version = "0.1.0";
+              src = ./nix/tests/go-keyring-probe;
+              vendorHash = "sha256-4MyeW7s/AEDkNMcFWie5mWS9F47OtFSX7QBpcTktrrc=";
+            };
             underwrap-backendd = mkCrate "backend-backendd";
             underwrap-secretsd = mkCrate "frontend-secretsd";
             underwrap-admin-ui = mkCrate "backend-admin-ui";
@@ -182,6 +188,7 @@
               nodes.machine = { pkgs, ... }: import ./nix/tests/node.nix {
                 inherit pkgs;
                 underwrapPackage = perSystem.packages.${system}.default;
+                goKeyringProbePackage = perSystem.packages.${system}.underwrap-go-keyring-probe;
                 nixosModule = self.nixosModules.default;
               };
 
