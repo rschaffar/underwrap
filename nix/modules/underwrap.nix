@@ -26,10 +26,70 @@ let
     daemonUser = "underwrap-${instName}";
     daemonGroup = "underwrap-${instName}";
     tunnelUser = "underwrap-${instName}-tunnel";
+    fullWrapperName = name: "${instName}-${name}";
+    fullDebugWrapperName = name: "debug-${fullWrapperName name}";
     wrapperGroupName = name: "underwrap-${instName}-${name}";
     wrapperSocketPath = name: "${runDir}/wrapper-${name}.sock";
     runDir = "/run/underwrap-${instName}";
     stateDir = "/var/lib/underwrap-${instName}";
+    nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
+    debugToolTarget = "${cfg.package}/bin/underwrap-debug-tool";
+
+    wrapperUsesLibsecret = w:
+      lib.any (use: use.libsecret) (lib.attrValues w.resources);
+
+    mkWrapperConfig = { configName, target, wrapperName, wrapper, envSet ? wrapper.envSet }:
+      pkgs.writeText "${configName}.yaml" (builtins.toJSON ({
+        inherit target;
+        wrapper_socket = wrapperSocketPath wrapperName;
+        ns_binary = nsBinaryPath;
+        env_passthrough = wrapper.envPassthrough;
+        env_set = envSet;
+      } // lib.optionalAttrs (wrapperUsesLibsecret wrapper) {
+        libsecret = true;
+        dbus_daemon_binary = "${pkgs.dbus}/bin/dbus-daemon";
+        secretsd_binary = "${cfg.package}/bin/underwrap-secretsd";
+      }));
+
+    wrapperConfigs =
+      lib.foldl' lib.recursiveUpdate {} (lib.mapAttrsToList (name: w: {
+        "${fullWrapperName name}" = mkWrapperConfig {
+          configName = fullWrapperName name;
+          target = w.target;
+          wrapperName = name;
+          wrapper = w;
+        };
+      } // lib.optionalAttrs w.addUnsafeDebugTool {
+        "${fullDebugWrapperName name}" = mkWrapperConfig {
+          configName = fullDebugWrapperName name;
+          target = debugToolTarget;
+          wrapperName = name;
+          wrapper = w;
+          envSet = w.envSet // {
+            UNDERWRAP_DEBUG_INSTANCE = instName;
+            UNDERWRAP_DEBUG_LOGICAL_WRAPPER = name;
+            UNDERWRAP_DEBUG_WRAPPER = fullWrapperName name;
+            UNDERWRAP_DEBUG_ORIGINAL_TARGET = w.target;
+          };
+        };
+      }) inst.wrappers);
+
+    wrapperBinaries = pkgs.runCommand "underwrap-${instName}-wrappers" {} (
+      "mkdir -p $out/bin\n" +
+      lib.concatStringsSep "\n" (lib.concatLists (lib.mapAttrsToList (name: w:
+        [
+          "cp ${cfg.package}/bin/underwrap-exec $out/bin/${fullWrapperName name}"
+        ] ++ lib.optional w.addUnsafeDebugTool
+          "cp ${cfg.package}/bin/underwrap-exec $out/bin/${fullDebugWrapperName name}"
+      ) inst.wrappers))
+    );
+
+    mkSecurityWrapper = executableName: groupName: {
+      source = "${wrapperBinaries}/bin/${executableName}";
+      owner = "root";
+      setgid = true;
+      group = groupName;
+    };
 
     runtimeConfig = {
       backend = {
@@ -42,7 +102,7 @@ let
       catalog_instance = instName;
       allowed_users = inst.allowedUsers;
       wrappers = lib.mapAttrs' (name: w:
-        lib.nameValuePair "${instName}-${name}" {
+        lib.nameValuePair (fullWrapperName name) {
           target = w.target;
           logical_name = name;
           resources = lib.mapAttrs (_resource: use:
@@ -59,31 +119,6 @@ let
 
     configFile = pkgs.writeText "underwrap-${instName}-config.yaml"
       (builtins.toJSON runtimeConfig);
-
-    nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
-
-    wrapperConfigs = lib.mapAttrs (name: w:
-      let
-        usesLibsecret = lib.any (use: use.libsecret) (lib.attrValues w.resources);
-      in pkgs.writeText "${instName}-${name}.yaml" (builtins.toJSON ({
-        target = w.target;
-        wrapper_socket = wrapperSocketPath name;
-        ns_binary = nsBinaryPath;
-        env_passthrough = w.envPassthrough;
-        env_set = w.envSet;
-      } // lib.optionalAttrs usesLibsecret {
-        libsecret = true;
-        dbus_daemon_binary = "${pkgs.dbus}/bin/dbus-daemon";
-        secretsd_binary = "${cfg.package}/bin/underwrap-secretsd";
-      }))
-    ) inst.wrappers;
-
-    wrapperBinaries = pkgs.runCommand "underwrap-${instName}-wrappers" {} (
-      "mkdir -p $out/bin\n" +
-      lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _w:
-        "cp ${cfg.package}/bin/underwrap-exec $out/bin/${instName}-${name}"
-      ) inst.wrappers)
-    );
 
   in {
     users = {
@@ -107,20 +142,23 @@ let
       lib.nameValuePair (wrapperGroupName name) {}
     ) inst.wrappers;
 
-    securityWrappers = lib.mapAttrs' (name: _w:
-      lib.nameValuePair "${instName}-${name}" {
-        source = "${wrapperBinaries}/bin/${instName}-${name}";
-        owner = "root";
-        setgid = true;
-        group = wrapperGroupName name;
-      }
-    ) inst.wrappers;
+    securityWrappers =
+      lib.mapAttrs' (name: _w:
+        lib.nameValuePair (fullWrapperName name)
+          (mkSecurityWrapper (fullWrapperName name) (wrapperGroupName name))
+      ) inst.wrappers
+      // lib.foldl' lib.recursiveUpdate {} (lib.mapAttrsToList (name: w:
+        lib.optionalAttrs w.addUnsafeDebugTool {
+          "${fullDebugWrapperName name}" =
+            mkSecurityWrapper (fullDebugWrapperName name) (wrapperGroupName name);
+        }
+      ) inst.wrappers);
 
-    etcFiles = lib.mapAttrs' (name: _w:
-      lib.nameValuePair "underwrap/wrappers/${instName}-${name}.yaml" {
-        source = wrapperConfigs.${name};
+    etcFiles = lib.mapAttrs' (configName: source:
+      lib.nameValuePair "underwrap/wrappers/${configName}.yaml" {
+        inherit source;
       }
-    ) inst.wrappers;
+    ) wrapperConfigs;
 
     tmpfiles = [
       "d ${runDir} 0755 ${daemonUser} ${daemonGroup} -"
@@ -183,21 +221,33 @@ let
   allAuthorizedUsers =
     lib.unique (lib.concatMap (i: i.allowedUsers) (lib.attrValues cfg.instances));
 
-  # For each authorized user: the list of {instance, wrapper} entries that
-  # should appear (bare-named) on their PATH.
+  # For each authorized user: the list of commands that should appear on
+  # their PATH. Normal wrappers are exposed as `<wrapper>` and opted-in unsafe
+  # debug wrappers as `debug-<wrapper>`.
   userBareEntries = lib.genAttrs allAuthorizedUsers (user:
     lib.concatMap (instName:
       let inst = cfg.instances.${instName}; in
       if lib.elem user inst.allowedUsers
-      then lib.mapAttrsToList (wn: _: { instance = instName; wrapper = wn; })
-             inst.wrappers
+      then lib.concatLists (lib.mapAttrsToList (wn: w:
+        [
+          {
+            alias = wn;
+            fullName = "${instName}-${wn}";
+            instance = instName;
+          }
+        ] ++ lib.optional w.addUnsafeDebugTool {
+          alias = "debug-${wn}";
+          fullName = "debug-${instName}-${wn}";
+          instance = instName;
+        }
+      ) inst.wrappers)
       else []
     ) (builtins.attrNames cfg.instances));
 
   mkUserBin = user: entries:
     pkgs.linkFarm "underwrap-userbin-${user}" (map (e: {
-      name = "bin/${e.wrapper}";
-      path = "/run/wrappers/bin/${e.instance}-${e.wrapper}";
+      name = "bin/${e.alias}";
+      path = "/run/wrappers/bin/${e.fullName}";
     }) entries);
 
   # Submodule types.
@@ -264,6 +314,18 @@ let
           These override any inherited values.
         '';
         example = { NO_COLOR = "1"; };
+      };
+      addUnsafeDebugTool = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Install an additional wrapper named `debug-<instance>-<wrapper>`
+          plus a per-user `debug-<wrapper>` PATH alias. It reuses the real
+          wrapper's GID and resource projections but replaces the target with
+          `underwrap-debug-tool`, which can print secrets, spawn shells, and
+          otherwise inspect the wrapped environment. Use only for local
+          development.
+        '';
       };
     };
   };
@@ -398,18 +460,18 @@ in {
       ) cfg.instances))
       ++ (lib.mapAttrsToList (user: entries:
         let
-          byWrapper = lib.foldl' (acc: e:
-            acc // { ${e.wrapper} = (acc.${e.wrapper} or []) ++ [ e.instance ]; }
+          byAlias = lib.foldl' (acc: e:
+            acc // { ${e.alias} = (acc.${e.alias} or []) ++ [ e.instance ]; }
           ) {} entries;
-          collisions = lib.filterAttrs (_: insts: lib.length insts > 1) byWrapper;
+          collisions = lib.filterAttrs (_: insts: lib.length insts > 1) byAlias;
         in {
           assertion = collisions == {};
           message = "services.underwrap: user '${user}' is authorized in multiple "
-            + "instances that define the same wrapper name: "
-            + lib.concatStringsSep "; " (lib.mapAttrsToList (wn: insts:
-                "'${wn}' (in ${lib.concatStringsSep ", " insts})"
+            + "instances that expose the same command name: "
+            + lib.concatStringsSep "; " (lib.mapAttrsToList (alias: insts:
+                "'${alias}' (in ${lib.concatStringsSep ", " insts})"
               ) collisions)
-            + ". Rename one of the wrappers, or remove the user from one of the instances.";
+            + ". Rename one of the wrappers, disable one debug alias, or remove the user from one of the instances.";
         }
       ) userBareEntries)
       ++ lib.optionals cfg.hardenTargetHost [

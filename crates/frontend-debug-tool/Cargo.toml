@@ -1,0 +1,15 @@
+[package]
+name = "frontend-debug-tool"
+description = "Unsafe developer inspection tool for underwrap wrapped environments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "underwrap-debug-tool"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }

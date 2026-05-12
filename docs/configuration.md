@@ -87,15 +87,21 @@ Key points:
 - Each wrapper ends up at `/run/wrappers/bin/<instance>-<wrapper>`
   installed setgid to a per-wrapper group. This is the canonical entry
   point and is the path NixOS guarantees by virtue of the setgid bit.
-- For every user listed in `allowedUsers`, the module also installs a
-  bare-named symlink at `/etc/profiles/per-user/<user>/bin/<wrapper>`
-  pointing at the prefixed setgid binary above. NixOS already places
+- If `addUnsafeDebugTool = true;` is set on a wrapper, the module also
+  installs `/run/wrappers/bin/debug-<instance>-<wrapper>`. It reuses the
+  real wrapper's GID and resource projections but swaps the target for
+  `underwrap-debug-tool`, which can print secrets and spawn shells inside
+  the wrapped environment. This is intentionally unsafe and should only
+  be enabled for local development.
+- For every user listed in `allowedUsers`, the module also installs
+  per-user symlinks at `/etc/profiles/per-user/<user>/bin/<wrapper>` and,
+  for opted-in debug wrappers, `/etc/profiles/per-user/<user>/bin/debug-<wrapper>`.
+  These point at the prefixed setgid binaries above. NixOS already places
   per-user profile bins on each user's `PATH`, so authorized users can
   invoke wrappers by their bare attribute name (`gh`, `bx`, ...) instead
-  of typing the instance prefix. The setgid identity, group, and
-  sidecar config still come from the prefixed binary the link resolves
-  to. If two instances try to expose the same bare name to the same
-  user, the build fails at evaluation with a clear collision error.
+  of typing the instance prefix. If two instances try to expose the same
+  command name to the same user, the build fails at evaluation with a
+  clear collision error.
 - `allowedUsers` is enforced by `underwrapd`; the wrapper setgid bit
   makes the wrapper work at all, but the UID check rejects peers not in
   the list.
@@ -126,10 +132,16 @@ rejected at runtime.
 | `resources` | attrs | `{}` | Resource-slot projections for this wrapper |
 | `envPassthrough` | `[str]` | `[]` | Extra env vars to let through (PATH is intentionally excluded — use `envSet.PATH`) |
 | `envSet` | `{str: str}` | `{}` | Fixed env vars to inject |
+| `addUnsafeDebugTool` | `bool` | `false` | Also install a `debug-...` wrapper that runs `underwrap-debug-tool` with the same wrapper identity and projections |
 
 There is intentionally no local `read-write` option and no local `approval`
 option. Read/write authority and approval mode both live centrally in the
 backend policy.
+
+`addUnsafeDebugTool` is the explicit exception for development ergonomics:
+its whole purpose is to bypass the usual narrow-target shape and let a
+developer inspect the wrapped environment from the inside. Keep it off in
+normal deployments.
 
 ## Backend YAML
 

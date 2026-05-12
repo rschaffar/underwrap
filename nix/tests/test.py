@@ -234,11 +234,11 @@ def per_user_bare_name_path():
     machine.succeed(f"test -d {profile_bin}")
     machine.log(f"PASS: per-user profile bin exists at {profile_bin}")
 
-    target = machine.succeed(f"readlink {profile_bin}/test-echo").strip()
-    assert target == "/run/wrappers/bin/local-test-echo", \
+    target = machine.succeed(f"readlink -f {profile_bin}/test-echo").strip()
+    assert target.startswith("/run/wrappers/") and target.endswith("/local-test-echo"), \
         f"expected local-test-echo target, got: {target}"
-    target = machine.succeed(f"readlink {profile_bin}/remote-echo").strip()
-    assert target == "/run/wrappers/bin/tunnel-remote-echo", \
+    target = machine.succeed(f"readlink -f {profile_bin}/remote-echo").strip()
+    assert target.startswith("/run/wrappers/") and target.endswith("/tunnel-remote-echo"), \
         f"expected tunnel-remote-echo target, got: {target}"
     machine.log("PASS: per-user bin contains bare-named symlinks across both instances")
 

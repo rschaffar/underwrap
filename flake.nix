@@ -74,6 +74,7 @@
             underwrapd = mkCrate "frontend-underwrapd";
             underwrap-exec = mkCrate "frontend-exec";
             underwrap-ns = mkCrate "frontend-ns";
+            underwrap-debug-tool = mkCrate "frontend-debug-tool";
             underwrap-backendd = mkCrate "backend-backendd";
             underwrap-secretsd = mkCrate "frontend-secretsd";
             underwrap-admin-ui = mkCrate "backend-admin-ui";

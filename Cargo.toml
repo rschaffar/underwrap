@@ -8,6 +8,7 @@ members = [
     "crates/frontend-exec",
     "crates/frontend-ns",
     "crates/frontend-secretsd",
+    "crates/frontend-debug-tool",
     "crates/backend-backendd",
     "crates/backend-admin-ui",
     "crates/integration-tests",

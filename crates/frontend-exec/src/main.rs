@@ -2,8 +2,8 @@
 //!
 //! Installed via NixOS security.wrappers with setgid for GID-based identity.
 //!
-//! 1. Derives wrapper name from effective GID (not argv[0])
-//! 2. Loads sidecar config from trusted path
+//! 1. Verifies wrapper identity from effective GID (not argv[0])
+//! 2. Loads sidecar config by trusted executable basename
 //! 3. Connects to the wrapper socket, gets secret (daemon verifies egid)
 //! 4. Drops all elevated privileges
 //! 5. Forks: parent writes secret to pipe, child execs underwrap-ns
@@ -44,13 +44,16 @@ type ReadSecretResult = (
 );
 
 fn main() -> Result<()> {
-    // Derive wrapper identity from the kernel-assigned effective GID,
-    // NOT from argv[0]. This prevents symlink confused-deputy attacks
-    // where argv[0] could name a different wrapper's sidecar config.
-    let wrapper_name = detect_wrapper_name_from_egid()?;
+    // Wrapper identity still comes exclusively from the kernel-assigned
+    // effective GID, never from argv[0]. The executable basename is used
+    // only to select the trusted sidecar config, which allows distinct
+    // root-managed wrapper filenames (for example unsafe debug variants)
+    // to share the same wrapper GID and daemon-facing identity.
+    ensure_underwrap_group_from_egid()?;
+    let config_name = detect_wrapper_config_name_from_executable()?;
     let all_args: Vec<String> = std::env::args().skip(1).collect();
 
-    let wrapper_config = load_wrapper_config(&wrapper_name)?;
+    let wrapper_config = load_wrapper_config(&config_name)?;
 
     // Request secret from daemon (while still setgid — daemon checks egid).
     // If libsecret mode, also receive the secretsd channel fd.
@@ -256,27 +259,46 @@ fn exec_via_ns(
 /// The prefix used by the NixOS module for wrapper group names.
 const GROUP_PREFIX: &str = "underwrap-";
 
-/// Derive wrapper name from the kernel-assigned effective GID.
-/// This is the ONLY trusted source of wrapper identity. argv[0] is
-/// user-controlled and could name a different wrapper (symlink attack).
-fn detect_wrapper_name_from_egid() -> Result<String> {
+/// Verify that the kernel-assigned effective GID belongs to an underwrap
+/// wrapper group. This is the ONLY trusted source of wrapper identity.
+fn ensure_underwrap_group_from_egid() -> Result<()> {
     let egid = unsafe { libc::getegid() };
     let group_name = resolve_gid_name(egid)
         .with_context(|| format!("cannot resolve effective GID {egid} to a group name"))?;
 
-    // Strip the "underwrap-" prefix to get the wrapper name.
-    // The NixOS module creates groups as "underwrap-<instance>-<wrapper>".
-    let wrapper_name = group_name
-        .strip_prefix(GROUP_PREFIX)
-        .with_context(|| {
-            format!(
-                "effective GID group '{group_name}' does not start with '{GROUP_PREFIX}' — \
-                 not an underwrap wrapper group"
-            )
-        })?
-        .to_string();
+    group_name.strip_prefix(GROUP_PREFIX).with_context(|| {
+        format!(
+            "effective GID group '{group_name}' does not start with '{GROUP_PREFIX}' — \
+             not an underwrap wrapper group"
+        )
+    })?;
 
-    Ok(wrapper_name)
+    Ok(())
+}
+
+/// Derive the sidecar config name from the actual executed wrapper binary.
+/// `/proc/self/exe` is kernel-provided and refers to the real file that was
+/// executed, unlike argv[0] which is user-controlled.
+fn detect_wrapper_config_name_from_executable() -> Result<String> {
+    let exe_path = std::fs::read_link("/proc/self/exe")
+        .context("reading /proc/self/exe for wrapper config")?;
+    config_name_from_exe_path(&exe_path)
+}
+
+fn config_name_from_exe_path(path: &std::path::Path) -> Result<String> {
+    let file_name = path.file_name().with_context(|| {
+        format!(
+            "wrapper executable path '{}' has no final path component",
+            path.display()
+        )
+    })?;
+    let file_name = file_name
+        .to_str()
+        .context("wrapper executable name is not valid UTF-8")?;
+    if file_name.is_empty() {
+        bail!("wrapper executable name must not be empty");
+    }
+    Ok(file_name.to_string())
 }
 
 /// Resolve a GID to a group name via getgrgid.
@@ -315,9 +337,9 @@ fn config_dir() -> String {
     TRUSTED_CONFIG_DIR.to_string()
 }
 
-fn load_wrapper_config(wrapper_name: &str) -> Result<WrapperExecConfig> {
+fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
     let dir = config_dir();
-    let path = format!("{dir}/{wrapper_name}.yaml");
+    let path = format!("{dir}/{config_name}.yaml");
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading wrapper config {path}"))?;
 
@@ -461,4 +483,26 @@ fn drop_privilege() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_name_from_exe_path;
+
+    #[test]
+    fn config_name_uses_executable_basename() {
+        let name = config_name_from_exe_path(std::path::Path::new(
+            "/run/wrappers/bin/debug-robert-gh-authorized",
+        ))
+        .unwrap();
+        assert_eq!(name, "debug-robert-gh-authorized");
+    }
+
+    #[test]
+    fn config_name_rejects_missing_basename() {
+        let err = config_name_from_exe_path(std::path::Path::new("/"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no final path component"));
+    }
 }
