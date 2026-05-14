@@ -1,4 +1,9 @@
 import { getConfiguredBackend, listConfiguredTargets } from './config.ts';
+import type {
+  UiOverviewResponse,
+  UiResourceGetResponse,
+  UiResourcesQueryResponse,
+} from './ui-types.ts';
 
 export class BackendApiError extends Error {
   constructor(
@@ -57,6 +62,28 @@ export class BackendClient {
   async listStores(): Promise<string[]> {
     const body = await this.getJson<{ stores: string[] }>('/v1/admin/stores');
     return body.stores;
+  }
+
+  async getOverview(): Promise<UiOverviewResponse> {
+    return this.getJson('/v1/admin/ui/overview');
+  }
+
+  async queryResources(store: string, query: { q?: string; slot?: string }): Promise<UiResourcesQueryResponse> {
+    return this.postJson('/v1/admin/ui/resources/query', {
+      store,
+      query: query.q ?? '',
+      slot: query.slot ?? null,
+      mutation_state: 'any',
+      page: 1,
+      page_size: 100,
+    });
+  }
+
+  async getResourceDetail(store: string, resource: string): Promise<UiResourceGetResponse> {
+    return this.postJson('/v1/admin/ui/resource/get', {
+      store,
+      resource,
+    });
   }
 }
 

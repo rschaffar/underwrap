@@ -1,8 +1,9 @@
 import Link from 'next/link';
 import { ReactNode } from 'react';
 
-import { NavSection, getTarget, getTargets } from '../lib/mock-data';
+import { NavSection } from '../lib/mock-data';
 import { requireSession } from '../lib/auth-session.ts';
+import { loadNavigation } from '../lib/server/navigation.ts';
 
 type ShellProps = {
   children: ReactNode;
@@ -40,9 +41,9 @@ function StatusPill({ reachable }: { reachable: boolean }) {
 }
 
 export async function Shell({ children, title, description, section, target, store }: ShellProps) {
-  const session = await requireSession();
-  const targets = getTargets();
-  const selectedTarget = target ? getTarget(target) : undefined;
+  const [session, navigation] = await Promise.all([requireSession(), loadNavigation(target)]);
+  const targets = navigation.targets;
+  const selectedTarget = navigation.activeTarget;
   const stores = selectedTarget?.stores ?? [];
 
   return (
@@ -101,16 +102,16 @@ export async function Shell({ children, title, description, section, target, sto
                 <div className="flex flex-wrap gap-2">
                   {stores.length > 0 ? (
                     stores.map((entry) => {
-                      const active = entry.store === store;
+                      const active = entry === store;
                       return (
                         <Link
-                          key={entry.store}
-                          href={`/t/${selectedTarget?.slug}/s/${entry.store}/resources`}
+                          key={entry}
+                          href={`/t/${selectedTarget?.slug}/s/${entry}/resources`}
                           className={active
                             ? 'rounded-xl border border-fuchsia-400/50 bg-fuchsia-400/15 px-3 py-2 text-sm font-medium text-fuchsia-100'
                             : 'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-[var(--fg)] transition hover:border-fuchsia-400/30 hover:bg-fuchsia-400/10 hover:text-fuchsia-100'}
                         >
-                          {entry.store}
+                          {entry}
                         </Link>
                       );
                     })
@@ -129,7 +130,7 @@ export async function Shell({ children, title, description, section, target, sto
                 return (
                   <Link
                     key={entry}
-                    href={sectionHref(selectedTarget?.slug ?? targets[0].slug, store, entry)}
+                    href={sectionHref(selectedTarget?.slug ?? targets[0]?.slug ?? '', store, entry)}
                     className={active
                       ? 'rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-black/20'
                       : 'rounded-xl border border-white/8 bg-white/5 px-4 py-2 text-sm text-[var(--muted)] transition hover:border-white/15 hover:bg-white/8 hover:text-white'}
