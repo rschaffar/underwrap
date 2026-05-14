@@ -27,7 +27,20 @@ export function expectedOriginForRequest(request: Request) {
 }
 
 export function requestHasAllowedOrigin(request: Request) {
-  const requestOrigin = normalizeOriginCandidate(request.headers.get('origin'));
   const expectedOrigin = expectedOriginForRequest(request);
-  return requestOrigin !== null && expectedOrigin !== null && requestOrigin === expectedOrigin;
+  if (expectedOrigin === null) {
+    return false;
+  }
+
+  const requestOrigin = normalizeOriginCandidate(request.headers.get('origin'));
+  if (requestOrigin !== null) {
+    return requestOrigin === expectedOrigin;
+  }
+
+  const refererOrigin = normalizeOriginCandidate(request.headers.get('referer'));
+  if (refererOrigin !== null) {
+    return refererOrigin === expectedOrigin;
+  }
+
+  return request.headers.get('sec-fetch-site') === 'same-origin';
 }

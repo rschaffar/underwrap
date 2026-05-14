@@ -74,7 +74,7 @@
             pname = "underwrap-admin-ui-nextjs";
             version = "0.1.0";
             src = ./apps/admin-ui;
-            npmDepsHash = "sha256-pXTl4BG+rqOzHW4ikEcgSpfFosehl/BW5yvQ2raRJ2k=";
+            npmDepsHash = "sha256-NlCgdX3iSJxWROPyrIYLHQv2NYgL8V9Va8XNn+OjIIM=";
             nativeBuildInputs = [ pkgs.makeWrapper ];
             npmBuildScript = "build";
 
