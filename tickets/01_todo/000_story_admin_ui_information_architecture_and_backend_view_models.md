@@ -16,32 +16,35 @@ complexity.
 
 ## Scope
 
-- Define the page map and primary operator workflows.
+- Define the page map and primary operator workflows, including first-class
+  multi-admin target switching and a read-only audit/history page.
 - Define the frontend-facing backend API/read models needed for:
   - dashboard / overview
   - resource search / listing
   - resource detail
   - wrapper list / detail
   - access matrix view
+  - audit history view
   - secret reveal
   - mutation state visibility
 - Decide whether these endpoints live under a dedicated namespace such
   as `/v1/admin/ui/*` or another equivalent shape.
 - Define filtering, sorting, pagination, and response payload rules.
-- Define secret reveal semantics for:
+- Define secret reveal and file transfer semantics for:
   - UTF-8 text
   - binary / non-UTF-8 material
-  - large file entries
+  - real file upload/download
+  - a 1 MiB per-file limit in v1
 - Document the contract in markdown before implementation starts.
 
 ## Acceptance criteria
 
 - [ ] A written API/UX design document exists in `docs/`.
 - [ ] Primary pages and workflows are named and scoped.
-- [ ] Required backend view-model endpoints are listed with request and
-      response shapes.
-- [ ] Reveal semantics are explicitly defined for text vs. binary
-      material.
+- [ ] Required backend view-model and audit endpoints are listed with
+      request and response shapes.
+- [ ] Reveal/upload/download semantics are explicitly defined for text
+      vs. binary material and the 1 MiB file cap.
 - [ ] The design avoids direct browser calls to `backend-backendd`.
 - [ ] The design is good enough to let implementation tickets proceed
       without page-model ambiguity.

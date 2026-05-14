@@ -17,6 +17,10 @@ and stronger security boundaries where the redesign makes them clearer.
 - Replace the current Rust UI with a **Next.js + TypeScript** web app.
 - Keep **username/password** operator authentication for now.
 - The new UI **must support revealing secret values**.
+- Support **real file upload/download** for file-backed secrets in v1.
+- Treat **multi-admin target switching** as a first-class workflow.
+- The visual target is a **dark, high-contrast ops console**.
+- Ship a **first-class NixOS integration path** immediately.
 - This is a **full UX rethink**, not a parity-only reskin.
 - We will follow **Option B**: improve or add backend admin API surfaces
   as needed so the UI is built on clean view-model endpoints instead of
@@ -42,6 +46,7 @@ and stronger security boundaries where the redesign makes them clearer.
 - Secret values are never placed in URLs.
 - Secret values are never written to localStorage/sessionStorage.
 - Secret reveal is operator-initiated and masked by default.
+- UI reveal/download actions are explicitly audited by the backend.
 - Session cookies remain `HttpOnly`; state-changing requests require
   CSRF protection and/or same-origin enforcement.
 - Audit remains backend-owned; the UI does not become the system of
@@ -73,6 +78,7 @@ and stronger security boundaries where the redesign makes them clearer.
 - Resource explorer and secret reveal/edit flows
 - Wrapper mode management UX
 - Access matrix UX
+- Read-only, filterable audit history UX
 - Security hardening, end-to-end tests, docs, and cutover
 
 ## Out of scope
@@ -90,6 +96,7 @@ and stronger security boundaries where the redesign makes them clearer.
 - `tickets/01_todo/030_story_admin_ui_password_auth_sessions_and_csrf.md`
 - `tickets/01_todo/090_story_resource_explorer_secret_reveal_and_mutation_flow.md`
 - `tickets/01_todo/110_story_wrapper_modes_and_access_matrix_console.md`
+- `tickets/01_todo/115_story_admin_ui_audit_history_console.md`
 - `tickets/01_todo/120_story_admin_ui_hardening_e2e_and_cutover.md`
 
 ## Recommended execution order
@@ -99,7 +106,8 @@ and stronger security boundaries where the redesign makes them clearer.
 3. `030_story_admin_ui_password_auth_sessions_and_csrf.md`
 4. `090_story_resource_explorer_secret_reveal_and_mutation_flow.md`
 5. `110_story_wrapper_modes_and_access_matrix_console.md`
-6. `120_story_admin_ui_hardening_e2e_and_cutover.md`
+6. `115_story_admin_ui_audit_history_console.md`
+7. `120_story_admin_ui_hardening_e2e_and_cutover.md`
 
 Within those stories, execute the numbered `NNN_task_...` tickets in ascending
 order unless a later ticket is explicitly pulled forward for parallel work.
@@ -112,15 +120,18 @@ order unless a later ticket is explicitly pulled forward for parallel work.
       tokens stay server-side.
 - [ ] Username/password auth remains supported using file-backed Argon2
       hashes.
-- [ ] Operators can reveal, edit, and delete secret values through a
-      deliberate flow that avoids URL leakage and handles binary data
-      safely.
+- [ ] Operators can reveal, edit, delete, upload, and download secret
+      values through a deliberate flow that avoids URL leakage, handles
+      binary data safely, and enforces a 1 MiB per-file limit in v1.
 - [ ] Wrapper mode management and access-matrix management are materially
       better UX than the current Rust UI.
-- [ ] Backend admin API includes the read/write shapes needed for a
-      clean frontend architecture.
-- [ ] Nix packaging and deployment docs exist for the new app.
-- [ ] End-to-end tests cover login, secret reveal, mutation enable/write,
-      wrapper mode changes, access matrix changes, and CSRF/security
-      rejection paths.
+- [ ] A read-only, filterable audit/history page exists in the new UI.
+- [ ] Backend admin API includes the read/write/audit shapes needed for a
+      clean frontend architecture, including explicit audit events for UI
+      reveal/download actions.
+- [ ] Nix packaging, NixOS integration, and deployment docs exist for the
+      new app.
+- [ ] End-to-end tests cover login, secret reveal, binary upload/download,
+      mutation enable/write, wrapper mode changes, access matrix changes,
+      audit history, and CSRF/security rejection paths.
 - [ ] The old Rust UI implementation is removed after cutover.

@@ -5,9 +5,11 @@ Epic: `epic_nextjs_admin_ui_replatform.md`
 
 ## Scope
 
-- Build backend/store/resource navigation.
+- Build backend/store/resource navigation with first-class multi-admin
+  target switching.
 - Add resource search/list UX.
 - Build resource detail views for env, files, and libsecret slots.
+- Make file-backed secrets feel like real file resources, not textareas in disguise.
 - Make the UI task-oriented rather than form-oriented.
 
 ## Acceptance criteria
@@ -15,4 +17,5 @@ Epic: `epic_nextjs_admin_ui_replatform.md`
 - [ ] Operators can browse targets, stores, and resources easily.
 - [ ] Resource search/listing is fast and understandable.
 - [ ] Resource detail pages exist for env, files, and libsecret.
+- [ ] The target-switching workflow is first-class rather than bolted on.
 - [ ] The flow is clearly better UX than the current Rust UI.

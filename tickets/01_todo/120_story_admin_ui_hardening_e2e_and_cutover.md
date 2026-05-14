@@ -10,7 +10,8 @@ that makes the new UI real rather than experimental.
 
 ## Scope
 
-- Add end-to-end browser tests for the primary operator flows.
+- Add end-to-end browser tests for the primary operator flows, including
+  audit history and binary upload/download.
 - Add security regression tests for session/auth/CSRF and secret reveal
   handling.
 - Set a production CSP strategy appropriate for a Next.js app.
@@ -21,8 +22,9 @@ that makes the new UI real rather than experimental.
 
 ## Acceptance criteria
 
-- [ ] End-to-end tests cover login, resource reveal, mutation write,
-      wrapper mode edit, and access-matrix edit.
+- [ ] End-to-end tests cover login, resource reveal, binary upload/download,
+      mutation write, wrapper mode edit, access-matrix edit, and audit
+      history.
 - [ ] The new UI has an explicit CSP and documented deployment shape.
 - [ ] The new UI does not persist secrets in browser storage.
 - [ ] Docs under `docs/` describe the new app rather than the removed

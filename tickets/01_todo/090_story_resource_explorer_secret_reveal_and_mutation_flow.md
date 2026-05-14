@@ -11,16 +11,19 @@ current form set.
 
 ## Scope
 
-- Build the target/store/resource browsing flow.
+- Build the target/store/resource browsing flow with first-class
+  multi-admin target switching.
 - Add resource search and selection UX.
 - Build resource detail views for:
   - env entries
   - files entries
   - libsecret entries
-- Add masked-by-default secret reveal flows.
+- Add masked-by-default secret reveal flows with simple reveal/copy UX.
 - Ensure reveal actions never place secret values in URLs.
 - Handle non-UTF-8 material safely, e.g. text preview when valid UTF-8,
   base64/download flow otherwise.
+- Support real file upload/download for file-backed secrets with a 1 MiB
+  per-file limit in v1.
 - Integrate mutation-gate workflows:
   - show current mutation state
   - enable short-lived mutation window
@@ -32,10 +35,12 @@ current form set.
 
 - [ ] Operators can navigate to a resource and inspect its slots.
 - [ ] Operators can reveal a secret value through an explicit action.
-- [ ] Revealed secrets are masked by default before the reveal action.
+- [ ] Revealed secrets are masked by default before the reveal action and
+      support simple reveal/copy UX.
 - [ ] Reveal flows do not leak values into URLs.
 - [ ] Non-UTF-8 values are handled safely instead of being corrupted or
       assumed to be text.
+- [ ] File-backed secrets support real upload/download with a 1 MiB cap.
 - [ ] Operators can perform the enable-mutation -> write -> revoke flow
       from the new UI.
 - [ ] Automated tests cover reveal, write, and mutation-gate rejection

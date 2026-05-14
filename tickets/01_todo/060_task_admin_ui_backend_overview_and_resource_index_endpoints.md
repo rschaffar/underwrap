@@ -6,7 +6,7 @@ Epic: `epic_nextjs_admin_ui_replatform.md`
 ## Scope
 
 - Add frontend-oriented admin API endpoints for:
-  - backend/store overview
+  - multi-target/backend/store overview
   - resource listing/search
   - high-level counts/status needed by the UI shell
 - Prefer a dedicated UI namespace instead of overloading the current

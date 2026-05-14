@@ -5,7 +5,7 @@ Epic: `epic_nextjs_admin_ui_replatform.md`
 
 ## Scope
 
-- Build a filterable wrappers table and detail/edit flow.
+- Build a filterable wrappers table and detail/edit flow within the multi-target admin console.
 - Support locked, unlocked, unlocked-until, and per-call-approval modes.
 - Replace raw epoch editing with real date/time UX.
 - Build a clearer access-matrix UI with filtering and toggles.
