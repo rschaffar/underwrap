@@ -1311,6 +1311,112 @@ fn admin_ui_mutation_get(
     Ok(underwrap_protocol::service::AdminUiMutationGetResponse { wrappers: states })
 }
 
+fn handle_admin_ui_wrapper_set_mode(
+    state: &AdminRuntimeState,
+    operator: &str,
+    body: underwrap_protocol::service::AdminUiWrapperSetModeRequest,
+) -> Response<Full<Bytes>> {
+    match admin_store(state, &body.store).and_then(|store| {
+        let mut doc = load_policy_document(store.as_ref())?;
+        if let Some(entry) = doc
+            .wrappers
+            .iter_mut()
+            .find(|entry| entry.wrapper == body.wrapper)
+        {
+            entry.mode = body.mode.clone();
+            entry.reason = body.reason.clone();
+        } else {
+            doc.wrappers.push(underwrap_protocol::policy::WrapperPolicyState {
+                wrapper: body.wrapper.clone(),
+                mode: body.mode.clone(),
+                reason: body.reason.clone(),
+            });
+        }
+        doc.wrappers.sort_by(|a, b| a.wrapper.cmp(&b.wrapper));
+        store.write(
+            POLICY_DOCUMENT_SECRET_ID,
+            serde_json::to_vec(&doc)?.as_slice(),
+        )
+    }) {
+        Ok(()) => {
+            info!(audit = "wrapper_mode_updated", operator = %operator, store = %body.store, wrapper = %body.wrapper, mode = ?body.mode);
+            json_response_no_store(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminUiWrapperSetModeResponse {
+                    wrapper: body.wrapper,
+                    mode: body.mode,
+                    reason: body.reason,
+                },
+            )
+        }
+        Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    }
+}
+
+fn admin_ui_matrix_rule_id(wrapper: &str, resource: &str, operation: &str) -> String {
+    format!("matrix:{wrapper}:{resource}:{operation}")
+}
+
+fn admin_ui_matrix_rule_resource(resource: &str, operation: &str) -> Result<String> {
+    match operation {
+        underwrap_protocol::policy::OP_ENV_READ => Ok(format!("env:{resource}")),
+        underwrap_protocol::policy::OP_FILES_READ | underwrap_protocol::policy::OP_FILES_WRITE => {
+            Ok(format!("files:{resource}"))
+        }
+        underwrap_protocol::policy::OP_LIBSECRET_READ
+        | underwrap_protocol::policy::OP_LIBSECRET_WRITE => Ok(format!("libsecret:{resource}")),
+        other => anyhow::bail!("unknown matrix operation '{other}'"),
+    }
+}
+
+fn handle_admin_ui_matrix_set_cell(
+    state: &AdminRuntimeState,
+    operator: &str,
+    body: underwrap_protocol::service::AdminUiMatrixSetCellRequest,
+) -> Response<Full<Bytes>> {
+    let resource_key = match admin_ui_matrix_rule_resource(&body.resource, &body.operation) {
+        Ok(resource_key) => resource_key,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string()),
+    };
+    let rule_id = admin_ui_matrix_rule_id(&body.wrapper, &body.resource, &body.operation);
+
+    match admin_store(state, &body.store).and_then(|store| {
+        let mut doc = load_policy_document(store.as_ref())?;
+        if body.enabled {
+            let rule = underwrap_protocol::policy::PolicyRule {
+                id: rule_id.clone(),
+                wrapper: body.wrapper.clone(),
+                resource: resource_key,
+                operation: body.operation.clone(),
+                effect: underwrap_protocol::policy::PolicyEffect::Allow,
+            };
+            if let Some(existing) = doc.rules.iter_mut().find(|existing| existing.id == rule.id) {
+                *existing = rule;
+            } else {
+                doc.rules.push(rule);
+            }
+            doc.rules.sort_by(|a, b| a.id.cmp(&b.id));
+        } else {
+            doc.rules.retain(|rule| rule.id != rule_id);
+        }
+        store.write(
+            POLICY_DOCUMENT_SECRET_ID,
+            serde_json::to_vec(&doc)?.as_slice(),
+        )
+    }) {
+        Ok(()) => {
+            info!(audit = if body.enabled { "matrix_cell_enabled" } else { "matrix_cell_disabled" }, operator = %operator, store = %body.store, wrapper = %body.wrapper, resource = %body.resource, operation = %body.operation);
+            json_response_no_store(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminUiMatrixSetCellResponse {
+                    enabled: body.enabled,
+                },
+            )
+        }
+        Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    }
+}
+
 fn admin_ui_wrappers_query(
     store: &dyn StorageBackend,
     request: &underwrap_protocol::service::AdminUiWrappersQueryRequest,
@@ -1845,6 +1951,14 @@ async fn handle_admin_request(
             },
             Err(response) => response,
         },
+        (&Method::POST, "/v1/admin/ui/wrapper/set-mode") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiWrapperSetModeRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_ui_wrapper_set_mode(&state, &operator, body),
+            Err(response) => response,
+        },
         (&Method::POST, "/v1/admin/ui/matrix/query") => match parse_json_body::<
             underwrap_protocol::service::AdminUiMatrixQueryRequest,
         >(request)
@@ -1862,6 +1976,14 @@ async fn handle_admin_request(
                     Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
                 }
             }
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/matrix/set-cell") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiMatrixSetCellRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_ui_matrix_set_cell(&state, &operator, body),
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/secret/read") => match parse_json_body::<
@@ -2820,6 +2942,48 @@ mod tests {
         assert_eq!(response.items[0].reason.as_deref(), Some("ops approval"));
     }
 
+    #[tokio::test]
+    async fn admin_ui_wrapper_set_mode_updates_policy_state() {
+        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
+        let raw_store = Arc::new(TestStore::new());
+        let store: Arc<dyn StorageBackend> = raw_store.clone();
+        stores.insert("work".to_string(), Arc::clone(&store));
+        let state = AdminRuntimeState {
+            stores,
+            tokens: HashMap::new(),
+        };
+
+        let response = handle_admin_ui_wrapper_set_mode(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiWrapperSetModeRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                mode: WrapperApprovalMode::Unlocked {
+                    until_epoch: Some(1_760_000_000),
+                },
+                reason: Some("maintenance window".to_string()),
+            },
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: underwrap_protocol::service::AdminUiWrapperSetModeResponse =
+            serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload.wrapper, "gh-authorized");
+        assert_eq!(payload.reason.as_deref(), Some("maintenance window"));
+
+        let policy = read_policy(&raw_store);
+        assert_eq!(policy.wrappers.len(), 1);
+        assert_eq!(policy.wrappers[0].wrapper, "gh-authorized");
+        assert_eq!(policy.wrappers[0].reason.as_deref(), Some("maintenance window"));
+        assert_eq!(
+            policy.wrappers[0].mode,
+            WrapperApprovalMode::Unlocked {
+                until_epoch: Some(1_760_000_000),
+            }
+        );
+    }
+
     #[test]
     fn admin_ui_matrix_query_returns_catalog_rows_and_policy_cells() {
         let store = TestStore::new();
@@ -2877,6 +3041,51 @@ mod tests {
         assert_eq!(response.rows[0].wrapper, "gh-authorized");
         assert_eq!(response.rows[0].cells[underwrap_protocol::policy::OP_ENV_READ], true);
         assert_eq!(response.rows[0].cells[underwrap_protocol::policy::OP_FILES_READ], false);
+    }
+
+    #[tokio::test]
+    async fn admin_ui_matrix_set_cell_upserts_and_deletes_allow_rule() {
+        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
+        let raw_store = Arc::new(TestStore::new());
+        write_policy(&raw_store, &PolicyDocument::default());
+        let store: Arc<dyn StorageBackend> = raw_store.clone();
+        stores.insert("work".to_string(), Arc::clone(&store));
+        let state = AdminRuntimeState {
+            stores,
+            tokens: HashMap::new(),
+        };
+
+        let enabled = handle_admin_ui_matrix_set_cell(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiMatrixSetCellRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                resource: "gh/main".to_string(),
+                operation: underwrap_protocol::policy::OP_ENV_READ.to_string(),
+                enabled: true,
+            },
+        );
+        assert_eq!(enabled.status(), StatusCode::OK);
+        let policy = read_policy(&raw_store);
+        assert_eq!(policy.rules.len(), 1);
+        assert_eq!(policy.rules[0].wrapper, "gh-authorized");
+        assert_eq!(policy.rules[0].resource, "env:gh/main");
+        assert_eq!(policy.rules[0].operation, underwrap_protocol::policy::OP_ENV_READ);
+
+        let disabled = handle_admin_ui_matrix_set_cell(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiMatrixSetCellRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                resource: "gh/main".to_string(),
+                operation: underwrap_protocol::policy::OP_ENV_READ.to_string(),
+                enabled: false,
+            },
+        );
+        assert_eq!(disabled.status(), StatusCode::OK);
+        assert!(read_policy(&raw_store).rules.is_empty());
     }
 
     #[tokio::test]

@@ -320,6 +320,23 @@ pub struct AdminUiWrappersQueryResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiWrapperSetModeRequest {
+    pub store: String,
+    pub wrapper: String,
+    pub mode: WrapperApprovalMode,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiWrapperSetModeResponse {
+    pub wrapper: String,
+    pub mode: WrapperApprovalMode,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminUiMatrixQueryRequest {
     pub store: String,
     #[serde(default)]
@@ -344,6 +361,20 @@ pub struct AdminUiMatrixRow {
 pub struct AdminUiMatrixQueryResponse {
     pub operations: Vec<String>,
     pub rows: Vec<AdminUiMatrixRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMatrixSetCellRequest {
+    pub store: String,
+    pub wrapper: String,
+    pub resource: String,
+    pub operation: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMatrixSetCellResponse {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -75,3 +75,39 @@ export type UiMutationWrapperState = {
 export type UiMutationGetResponse = {
   wrappers: UiMutationWrapperState[];
 };
+
+export type UiWrapperApprovalMode =
+  | {
+      kind: 'locked';
+    }
+  | {
+      kind: 'unlocked';
+      until_epoch?: number | null;
+    }
+  | {
+      kind: 'per-call-approval';
+      approval_key: string;
+    };
+
+export type UiWrapperListItem = {
+  wrapper: string;
+  mode: UiWrapperApprovalMode;
+  reason?: string | null;
+  resource_count: number;
+};
+
+export type UiWrappersQueryResponse = {
+  items: UiWrapperListItem[];
+};
+
+export type UiMatrixRow = {
+  host: string;
+  user: string;
+  wrapper: string;
+  cells: Record<string, boolean>;
+};
+
+export type UiMatrixQueryResponse = {
+  operations: string[];
+  rows: UiMatrixRow[];
+};

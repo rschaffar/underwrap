@@ -1,10 +1,12 @@
 import { getConfiguredBackend, listConfiguredTargets } from './config.ts';
 import type {
+  UiMatrixQueryResponse,
   UiMutationGetResponse,
   UiOverviewResponse,
   UiResourceGetResponse,
   UiResourceRevealResponse,
   UiResourcesQueryResponse,
+  UiWrappersQueryResponse,
 } from './ui-types.ts';
 
 export class BackendApiError extends Error {
@@ -153,6 +155,46 @@ export class BackendClient {
       store,
       wrapper,
       secret_id: secretId,
+    });
+  }
+
+  async queryWrappers(store: string, query: { q?: string; mode?: string }): Promise<UiWrappersQueryResponse> {
+    return this.postJson('/v1/admin/ui/wrappers/query', {
+      store,
+      query: query.q ?? '',
+      mode: query.mode && query.mode !== 'any' ? query.mode : null,
+    });
+  }
+
+  async setWrapperMode(store: string, wrapper: string, mode: Record<string, unknown>, reason?: string) {
+    return this.postJson('/v1/admin/ui/wrapper/set-mode', {
+      store,
+      wrapper,
+      mode,
+      reason: reason?.trim() ? reason.trim() : null,
+    });
+  }
+
+  async queryMatrix(
+    store: string,
+    query: { resource?: string; host?: string; user?: string; wrapper?: string },
+  ): Promise<UiMatrixQueryResponse> {
+    return this.postJson('/v1/admin/ui/matrix/query', {
+      store,
+      resource: query.resource?.trim() ? query.resource.trim() : null,
+      host: query.host?.trim() ? query.host.trim() : null,
+      user: query.user?.trim() ? query.user.trim() : null,
+      wrapper: query.wrapper?.trim() ? query.wrapper.trim() : null,
+    });
+  }
+
+  async setMatrixCell(store: string, wrapper: string, resource: string, operation: string, enabled: boolean) {
+    return this.postJson('/v1/admin/ui/matrix/set-cell', {
+      store,
+      wrapper,
+      resource,
+      operation,
+      enabled,
     });
   }
 }
