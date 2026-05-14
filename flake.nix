@@ -26,6 +26,7 @@
           };
 
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+          nodejs = pkgs.nodejs_22;
 
           # Common source filtering — Rust/Cargo files plus per-crate src/assets/
           # so admin-ui's bundled CSS (and any future static assets) survive
@@ -69,6 +70,35 @@
             cargoExtraArgs = "--package ${name}";
           });
 
+          underwrapAdminUiNextjs = pkgs.buildNpmPackage {
+            pname = "underwrap-admin-ui-nextjs";
+            version = "0.1.0";
+            src = ./apps/admin-ui;
+            npmDepsHash = "sha256-icrk4PkjUcuQ8+V0jcvIW+dbTag2bmuZ9eCLHJOQp74=";
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            npmBuildScript = "build";
+
+            installPhase = ''
+              runHook preInstall
+
+              mkdir -p $out/libexec/underwrap-admin-ui $out/bin
+              cp -r .next/standalone/. $out/libexec/underwrap-admin-ui/
+              mkdir -p $out/libexec/underwrap-admin-ui/.next
+              cp -r .next/static $out/libexec/underwrap-admin-ui/.next/static
+              if [ -d public ]; then
+                cp -r public $out/libexec/underwrap-admin-ui/public
+              fi
+
+              makeWrapper ${nodejs}/bin/node $out/bin/underwrap-admin-ui \
+                --chdir $out/libexec/underwrap-admin-ui \
+                --set-default HOSTNAME 127.0.0.1 \
+                --set-default PORT 3000 \
+                --add-flags server.js
+
+              runHook postInstall
+            '';
+          };
+
         in {
           packages = {
             default = workspace;
@@ -86,6 +116,7 @@
             underwrap-backendd = mkCrate "backend-backendd";
             underwrap-secretsd = mkCrate "frontend-secretsd";
             underwrap-admin-ui = mkCrate "backend-admin-ui";
+            underwrap-admin-ui-nextjs = underwrapAdminUiNextjs;
           };
 
           checks = {
@@ -155,6 +186,7 @@
               cargo-deny
               cargo-udeps
               cargo-mutants
+              nodejs
             ];
           };
         }
@@ -162,8 +194,9 @@
 
       # System-independent outputs.
       systemIndependent = {
-        # NixOS module.
+        # NixOS modules.
         nixosModules.default = ./nix/modules/underwrap.nix;
+        nixosModules.admin-ui = ./nix/modules/admin-ui-nextjs.nix;
       };
 
       # NixOS VM test (x86_64-linux only since it needs KVM).
