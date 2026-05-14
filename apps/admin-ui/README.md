@@ -1,11 +1,15 @@
-# underwrap-admin-ui (Next.js scaffold)
+# underwrap-admin-ui
 
-This app is the new operator-console implementation for the underwrap
-admin UI redesign.
+This app is the supported operator console for underwrap.
+
+It is a Next.js server-side BFF:
+
+- browser talks only to this app
+- backend bearer tokens stay server-side
+- operator auth uses Argon2 password hashes + signed HttpOnly sessions
+- state-changing routes enforce same-origin + CSRF checks
 
 ## Local development
-
-From the repo root:
 
 ```bash
 cd apps/admin-ui
@@ -15,35 +19,31 @@ npm run dev
 
 Then open <http://127.0.0.1:3000>.
 
-By default the app loads `dev-fixtures/admin-ui.yaml`. In production,
-set `UNDERWRAP_ADMIN_UI_CONFIG` to the real runtime config file.
+By default the app loads `dev-fixtures/admin-ui.yaml`. In production, set
+`UNDERWRAP_ADMIN_UI_CONFIG` to the real runtime config file.
 
-The local fixture credentials are:
+Local fixture credentials:
 
 - username: `alice`
 - password: `hunter2`
 
-## Production build check
+## Checks
 
 ```bash
 cd apps/admin-ui
+npm test
 npm run build
+npm run test:e2e
 ```
 
-## Current scope
+`npm run test:e2e` builds the app, starts a local browser-driven test stack,
+and runs Playwright regressions against the Next.js UI.
 
-This scaffold establishes:
+## Runtime model
 
-- Next.js App Router + TypeScript
-- dark, high-contrast ops-console shell
-- multi-target / multi-store navigation placeholders
-- placeholder routes for login, overview, resources, wrappers, and audit
+The app binds through the normal Next.js `HOSTNAME` / `PORT` environment
+variables and reads backend/operator configuration from
+`UNDERWRAP_ADMIN_UI_CONFIG`.
 
-Later tickets add:
-
-- auth/session handling
-- backend API client wiring
-- reveal/upload/download flows
-- wrapper and matrix mutations
-- audit history data
-- NixOS deployment cutover
+For NixOS deployments, use `nix/modules/admin-ui-nextjs.nix` through the flake's
+`nixosModules.admin-ui` export.

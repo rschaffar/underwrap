@@ -57,9 +57,9 @@ Shipped as of this plan:
   `underwrap-backendd`. Operator login via password + session cookie.
   Internally, the UI holds an admin API bearer token and acts as the backend's
   admin client.
-- **UI stack**: Leptos, because the UI is first-class product surface and we
-  want shared Rust types (`PolicyDocument`, `WrapperApprovalMode`, etc.)
-  between the UI service and the frontend it serves.
+- **UI stack**: the shipped operator console is the separate Next.js app in
+  `apps/admin-ui`, acting as a server-side BFF in front of the backend admin
+  API.
 - **Docs**: collapse the three `backend-v2-*.md` drafts into one
   `docs/backend.md` describing the shipped design; rewrite the other docs
   to match.
@@ -159,48 +159,28 @@ Tests:
 - Integration tests: existing admin harness asserts 401 without a token,
   succeeds with the right one.
 
-### M4 — `underwrap-admin-ui` crate (Leptos)
+### M4 — `underwrap-admin-ui` Next.js operator console
 
-- New crate `underwrap-admin-ui`. Rust SSR + client-side Leptos using
-  `cargo-leptos` + `axum`. Shared Rust types from `underwrap-protocol`.
-- Config file schema:
-  - listener address
-  - session secret (loaded from file)
-  - operator accounts: username → argon2 hash, loaded from file
-  - backend targets: name → `{ admin_url, bearer_token_file }`
-- Pages:
-  - `/login`, `/logout`
-  - `/` — instance / backend target picker
-  - `/t/<target>` — overview of all instances (principals) and wrapper
-    counts
-  - `/t/<target>/i/<instance>` — detail view with policy document,
-    wrappers, rules, grants
-  - wrapper mode editor (Locked / Unlocked with optional datetime / per-call
-    with OpenSSH pubkey field)
-  - rule editor (wrapper / resource / operation / effect)
-  - grant editor (same + start/expire datetime + reason)
-  - audit feed (once the backend exposes one; for M4 show the backend's
-    live tail endpoint that we'll add alongside this milestone)
-- Security:
-  - argon2id password hashing
-  - session cookie `httponly`, `secure`, `samesite=lax`
-  - CSRF tokens on every state-changing form
-  - rate-limit login attempts (simple in-memory budget)
-- systemd unit + NixOS module wiring for deployment alongside backendd.
+This milestone shipped as the Next.js app in `apps/admin-ui/`, not as a Rust
+SSR crate.
+
+Delivered scope:
+
+- server-side BFF architecture in front of `underwrap-backendd`
+- username/password operator auth with signed `HttpOnly` sessions
+- resource explorer with reveal, upload/download, write, delete, and mutation
+  flows
+- wrapper mode console and access matrix console
+- read-only audit history console
+- systemd + NixOS module wiring for deployment alongside backendd
 
 Tests:
 
-- Unit tests for auth helpers (hash verification, CSRF generator, session
-  store), config parsing, and per-page server-side handlers.
-- Integration tests for the admin-ui crate that boot a real backendd +
-  admin-ui together and exercise the flows over HTTP (login → set wrapper
-  mode → observe change via backend admin API).
-- UI tests: headless-browser tests using `fantoccini` (Rust WebDriver client)
-  against a chromedriver subprocess that we spawn from the harness. Cover:
-  - login happy path and wrong-password path
-  - session expiry
-  - set each wrapper mode type and confirm visible state in the DOM
-  - CSRF rejection for forged POSTs
+- frontend unit tests for auth/session/CSRF helpers and route-adjacent logic
+- backend tests for the UI-oriented admin API surface
+- Playwright browser regressions covering protected-route/session failures,
+  CSRF rejection, reveal/download no-store behavior, mutation/upload/delete,
+  wrapper-mode changes, matrix toggles, and audit filtering
 
 ### M5 — Docs rewrite
 
@@ -223,9 +203,8 @@ Testing is part of each milestone, not a trailing phase:
 - Unit tests live next to the code they cover.
 - Integration tests extend `crates/integration-tests` so they share the
   backendd + underwrapd harness.
-- UI tests live in `crates/underwrap-admin-ui` and skip cleanly when a
-  chromedriver binary is not available (matching the VM / sandbox
-  skip-gracefully pattern used elsewhere).
+- browser/UI tests live under `apps/admin-ui/tests/e2e` and use Playwright
+  against a local test stack.
 - Full gate on every milestone:
 
   ```bash

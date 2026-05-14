@@ -200,11 +200,12 @@ reverse proxy when exposed beyond localhost.
   bearer token for that operator. Tokens are trimmed at load time and
   compared constant-time on every request.
 
-## Admin UI YAML
+## Admin UI runtime YAML
+
+The Next.js admin UI reads its runtime config from the file pointed to by
+`UNDERWRAP_ADMIN_UI_CONFIG`.
 
 ```yaml
-listen: 127.0.0.1:8080
-
 session_key_file: /run/keys/underwrap-admin-ui.session
 
 operators:
@@ -221,9 +222,11 @@ backends:
   the session cookie. Rotating this key invalidates all existing
   sessions.
 - Each `password_hash_file` is an Argon2 PHC-encoded string (starts
-  with `$argon2`). See [Admin UI](admin-ui.md) for generation.
+  with `$argon2`). See [Admin UI](admin-ui.md).
 - Each `backends.*.token_file` is the matching bearer token declared on
   the backend host.
+- Listener address and port are not part of this YAML; the packaged
+  Next.js server binds through `HOSTNAME` and `PORT`.
 
 ## Where to look next
 

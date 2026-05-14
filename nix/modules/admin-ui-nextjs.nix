@@ -14,7 +14,7 @@ in
       description = ''
         Package providing the `underwrap-admin-ui` standalone Next.js server.
         When using the project flake, set this to
-        `self.packages.${pkgs.system}.underwrap-admin-ui-nextjs`.
+        `self.packages.${pkgs.system}.underwrap-admin-ui`.
       '';
     };
 

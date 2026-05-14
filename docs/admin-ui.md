@@ -1,12 +1,15 @@
 # Admin UI
 
-`underwrap-admin-ui` is the operator-facing web service that wraps the
-backend's admin API in a form-based UI.
+`underwrap-admin-ui` is the supported operator-facing web service for the
+central backend.
 
-Operators log in with a username + password, pick a backend target, and
-manage resource state, wrapper modes, and per-resource access matrices.
-The UI holds the backend's admin bearer token internally and signs
-session cookies with its own session key.
+The implementation is the Next.js app in `apps/admin-ui/`. It acts as a
+server-side BFF in front of `underwrap-backendd`:
+
+- the browser never talks to `underwrap-backendd` directly
+- backend bearer tokens remain server-side only
+- operator auth uses Argon2 password hashes, signed `HttpOnly` sessions,
+  same-origin checks, and CSRF validation on state-changing routes
 
 ## Deployment shape
 
@@ -14,17 +17,15 @@ session cookies with its own session key.
 browser ──TLS──► reverse proxy ──HTTP──► underwrap-admin-ui ──HTTP bearer──► underwrap-backendd admin
 ```
 
-The UI itself serves plain HTTP. Production deployments should put a
-TLS-terminating reverse proxy (nginx, Caddy, systemd's
-`ProtectHostname=` front, …) in front of it. The session cookie is
-`httponly; SameSite=Lax`, and CSRF tokens protect every state-changing
-form.
+The app itself serves plain HTTP. Put it behind a TLS-terminating reverse proxy
+when exposed beyond localhost.
 
-## Configuration
+## Runtime configuration
+
+The Next.js server reads its runtime config from `UNDERWRAP_ADMIN_UI_CONFIG`.
+That YAML file contains:
 
 ```yaml
-listen: 127.0.0.1:8080
-
 session_key_file: /run/keys/underwrap-admin-ui.session
 
 operators:
@@ -42,81 +43,73 @@ backends:
     token_file: /run/keys/underwrap-admin-personal
 ```
 
-- `session_key_file` holds exactly 32 random bytes. Generate once and
-  keep stable — all existing sessions invalidate when this changes.
-- Each operator's `password_hash_file` contains an Argon2 PHC-encoded
-  hash. Create one with:
+- `session_key_file` must contain exactly 32 random bytes
+- each `password_hash_file` must contain an Argon2 PHC string
+- each `backends.*.token_file` must match a configured
+  `underwrap-backendd` admin bearer token
 
-  ```bash
-  cargo run -p underwrap-admin-ui --bin gen-password  # (TODO helper)
-  ```
+The server binds through the normal Next.js environment variables:
 
-  Until the helper ships, any `argon2` CLI works:
+- `HOSTNAME`
+- `PORT`
+- `UNDERWRAP_ADMIN_UI_CONFIG`
 
-  ```bash
-  echo -n "$PASSWORD" | argon2 "$(openssl rand -base64 16)" -id -e > alice.phc
-  ```
+## NixOS deployment
 
-- Each `backends.*.token_file` is a file containing the bearer token
-  declared in the matching `underwrap-backendd` `admin.tokens` entry.
+Use the flake's admin UI module export:
 
-## Pages
+```nix
+{
+  imports = [ underwrap.nixosModules.admin-ui ];
 
-- **`/login`** — username + password form. Submits via `POST /login`.
-- **`/`** — logged-in landing page listing the configured backend
-  targets.
-- **`/t/<target>`** — store switcher and the editors below.
+  services.underwrap-admin-ui = {
+    enable = true;
+    package = underwrap.packages.${pkgs.system}.underwrap-admin-ui;
+    configFile = /run/keys/underwrap-admin-ui.yaml;
+    listenAddress = "127.0.0.1";
+    port = 3000;
+  };
+}
+```
 
-Inside one store view:
+The module wires:
 
-- **Resource selector** — the backend shows the union of:
-  - resource ids currently stored in backend state
-  - resource ids auto-registered by frontend daemons at startup
+- the `underwrap-admin-ui` systemd service
+- `HOSTNAME`, `PORT`, and `UNDERWRAP_ADMIN_UI_CONFIG`
+- the packaged standalone Next.js server
 
-- **Resources** — for the selected resource, the page shows the three
-  backend slots:
-  - `env`
-  - `files`
-  - `libsecret`
+## Main operator workflows
 
-  The page lists existing entries for each slot and provides forms to
-  write new env variables, file entries, and libsecret entries, plus a
-  delete action for any stored entry.
+- log in as an operator
+- choose backend target and store
+- browse resources
+- explicitly reveal or download secret material
+- enable mutation, write/upload/delete, then revoke mutation
+- manage wrapper modes
+- toggle access-matrix allow cells
+- inspect the read-only audit history feed
 
-- **Access matrix** — after selecting one resource, the UI renders rows
-  of `(host, user, wrapper)` combinations that frontends auto-registered
-  on daemon startup. Columns are the standard operations:
-  - `env.read`
-  - `files.read`
-  - `files.write`
-  - `libsecret.read`
-  - `libsecret.write`
+## Security notes
 
-  Toggling a cell adds or removes the corresponding permanent allow rule.
-  This replaces the old free-form rule entry workflow for normal use.
-
-- **Wrappers** table — shows each wrapper's current mode with a color-
-  coded tag. Below each row, an inline form changes the mode to
-  `locked`, `unlocked` (permanent), `unlocked_until` (with an epoch
-  timestamp), or `per_call_approval` (with the OpenSSH public key the
-  operator's ssh-agent must sign with).
-
-Every state-changing form carries the session's CSRF token in a hidden
-input and is rejected with `403` if the token doesn't match.
-
-## Audit
-
-Every successful admin request ends up in `underwrap-backendd`'s audit
-log with the operator name from the authenticated bearer token. The UI
-does not forward free-form comments today; the `reason` fields on the
-wrapper state and grant forms are the operator-visible notes.
+- secret values are never placed in URLs
+- reveal/download responses are `Cache-Control: no-store`
+- secret values and backend tokens are not written to browser storage
+- audit remains backend-owned; the UI only reads the backend feed
 
 ## Testing
 
-- Unit tests cover session cookie sign/verify, CSRF match, password
-  verification, and HTML escaping on every template.
-- An end-to-end test (`tests/end_to_end.rs`) boots a real
-  `underwrap-backendd` + the UI in-process, drives the full
-  login → wrapper-mode-edit → backend-policy-changed loop over HTTP,
-  and asserts that CSRF rejection returns `403` and wrong-password
-  returns `401`.
+Frontend checks live in `apps/admin-ui/`:
+
+```bash
+cd apps/admin-ui
+npm test
+npm run build
+npm run test:e2e
+```
+
+The browser regression suite uses Playwright and covers:
+
+- protected-route/session failures
+- CSRF rejection
+- reveal/download no-store behavior
+- mutation, upload, delete, wrapper-mode, matrix, and audit flows

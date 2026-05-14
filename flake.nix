@@ -71,7 +71,7 @@
           });
 
           underwrapAdminUiNextjs = pkgs.buildNpmPackage {
-            pname = "underwrap-admin-ui-nextjs";
+            pname = "underwrap-admin-ui";
             version = "0.1.0";
             src = ./apps/admin-ui;
             npmDepsHash = "sha256-NlCgdX3iSJxWROPyrIYLHQv2NYgL8V9Va8XNn+OjIIM=";
@@ -115,7 +115,7 @@
             };
             underwrap-backendd = mkCrate "backend-backendd";
             underwrap-secretsd = mkCrate "frontend-secretsd";
-            underwrap-admin-ui = mkCrate "backend-admin-ui";
+            underwrap-admin-ui = underwrapAdminUiNextjs;
             underwrap-admin-ui-nextjs = underwrapAdminUiNextjs;
           };
 

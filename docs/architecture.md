@@ -11,7 +11,7 @@ surface in depth, see [The underwrap backend](backend.md).
 | `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/<instance>-<wrapper>` |
 | `underwrap-ns` | Stage 2 wrapper: create namespace, exec target | `/run/wrappers/bin/underwrap-ns` |
 | `underwrap-backendd` | Central service: holds secrets + policy, authenticates `underwrapd` instances over mTLS | operator workstation or central server |
-| `underwrap-admin-ui` | Operator web UI in front of the backend admin API | next to `underwrap-backendd` or on a jump host |
+| `underwrap-admin-ui` | Operator web UI in front of the backend admin API (Next.js server/BFF) | next to `underwrap-backendd` or on a jump host |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
 
 The implementation deliberately splits process flow, authorization,
@@ -162,12 +162,13 @@ crates/
   underwrap-store           storage trait + backend implementations + mTLS HTTPS client
   underwrapd                frontend daemon on the target host
   underwrap-backendd        central authenticated HTTPS service
-  underwrap-admin-ui        operator web UI in front of the admin API
-  underwrap-exec            stage 1 wrapper (setgid)
-  underwrap-ns              stage 2 wrapper (namespace setup)
-  underwrap-secretsd-store  in-memory Secret Service data model
-  underwrap-secretsd        Secret Service implementation for libsecret mode
+  frontend-exec             stage 1 wrapper (setgid)
+  frontend-ns               stage 2 wrapper (namespace setup)
+  frontend-secretsd         Secret Service implementation for libsecret mode
+  shared-secretsd-store     in-memory Secret Service data model
   integration-tests         cross-component tests
+apps/
+  admin-ui                  supported Next.js operator console
 ```
 
 ### `underwrapd` internals
