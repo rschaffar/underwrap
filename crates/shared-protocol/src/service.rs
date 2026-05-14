@@ -159,6 +159,66 @@ pub struct AdminUiResourcesQueryResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceGetRequest {
+    pub store: String,
+    pub resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceEntrySummary {
+    pub entry: String,
+    pub secret_id: String,
+    pub size_bytes: usize,
+    pub is_utf8: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256_hex: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AdminUiResourceSlotsDetail {
+    #[serde(default)]
+    pub env: Vec<AdminUiResourceEntrySummary>,
+    #[serde(default)]
+    pub files: Vec<AdminUiResourceEntrySummary>,
+    #[serde(default)]
+    pub libsecret: Vec<AdminUiResourceEntrySummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceGetResponse {
+    pub resource: String,
+    pub slots: AdminUiResourceSlotsDetail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceRevealRequest {
+    pub store: String,
+    pub secret_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AdminUiResourceRevealResponse {
+    Utf8 {
+        text: String,
+        size_bytes: usize,
+        copy_allowed: bool,
+    },
+    Binary {
+        base64: String,
+        size_bytes: usize,
+        copy_allowed: bool,
+        download_recommended: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceDownloadRequest {
+    pub store: String,
+    pub secret_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminSecretReadRequest {
     pub store: String,
     pub secret_id: String,

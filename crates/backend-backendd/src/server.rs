@@ -548,6 +548,8 @@ fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Response<
         .expect("building HTTP response")
 }
 
+const ADMIN_UI_MAX_FILE_BYTES: usize = 1024 * 1024;
+
 fn error_response(status: StatusCode, code: &str, message: &str) -> Response<Full<Bytes>> {
     json_response(
         status,
@@ -625,6 +627,14 @@ fn split_resource_id(secret_id: &str) -> Option<(&str, &str, &str)> {
         }
     }
     None
+}
+
+fn looks_like_utf8_text(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    text.chars()
+        .all(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
 }
 
 fn resource_query_matches(item: &underwrap_protocol::service::AdminUiResourceListItem, query: &str) -> bool {
@@ -731,6 +741,167 @@ fn admin_ui_overview_for_store(
         active_mutation_windows: active_mutation_targets(&policy, now_epoch).len(),
         recent_audit_events: 0,
     })
+}
+
+fn admin_ui_resource_detail(
+    store: &dyn StorageBackend,
+    resource: &str,
+) -> Result<underwrap_protocol::service::AdminUiResourceGetResponse> {
+    let secret_ids = store.list("")?;
+    let catalog = load_catalog_document(store)?;
+    let resource_known_in_catalog = catalog.iter().any(|entry| entry.resource == resource);
+    let mut slots = underwrap_protocol::service::AdminUiResourceSlotsDetail::default();
+
+    for secret_id in secret_ids {
+        if secret_id == POLICY_DOCUMENT_SECRET_ID || secret_id == CATALOG_DOCUMENT_SECRET_ID {
+            continue;
+        }
+        let Some((secret_resource, slot, entry)) = split_resource_id(&secret_id) else {
+            continue;
+        };
+        if secret_resource != resource {
+            continue;
+        }
+        let material = store
+            .read(&secret_id)?
+            .with_context(|| format!("secret id '{secret_id}' disappeared during detail load"))?;
+        let material_ref = material.as_ref();
+        let summary = underwrap_protocol::service::AdminUiResourceEntrySummary {
+            entry: entry.to_string(),
+            secret_id: secret_id.clone(),
+            size_bytes: material_ref.len(),
+            is_utf8: looks_like_utf8_text(material_ref),
+            sha256_hex: (slot == "files").then(|| {
+                use sha2::{Digest, Sha256};
+                hex::encode(Sha256::digest(material_ref))
+            }),
+        };
+        match slot {
+            "env" => slots.env.push(summary),
+            "files" => slots.files.push(summary),
+            "libsecret" => slots.libsecret.push(summary),
+            _ => {}
+        }
+    }
+
+    if slots.env.is_empty()
+        && slots.files.is_empty()
+        && slots.libsecret.is_empty()
+        && !resource_known_in_catalog
+    {
+        anyhow::bail!("unknown resource '{resource}'");
+    }
+
+    slots.env.sort_by(|a, b| a.entry.cmp(&b.entry));
+    slots.files.sort_by(|a, b| a.entry.cmp(&b.entry));
+    slots.libsecret.sort_by(|a, b| a.entry.cmp(&b.entry));
+
+    Ok(underwrap_protocol::service::AdminUiResourceGetResponse {
+        resource: resource.to_string(),
+        slots,
+    })
+}
+
+fn resource_filename(secret_id: &str) -> &str {
+    secret_id.rsplit('/').next().unwrap_or("download")
+}
+
+fn json_response_no_store<T: Serialize>(status: StatusCode, body: &T) -> Response<Full<Bytes>> {
+    let mut response = json_response(status, body);
+    response.headers_mut().insert(
+        hyper::header::CACHE_CONTROL,
+        hyper::header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+fn handle_admin_ui_resource_reveal(
+    state: &AdminRuntimeState,
+    operator: &str,
+    body: underwrap_protocol::service::AdminUiResourceRevealRequest,
+) -> Response<Full<Bytes>> {
+    let store = match admin_store(state, &body.store) {
+        Ok(store) => store,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    let material = match store.read(&body.secret_id) {
+        Ok(Some(material)) => material,
+        Ok(None) => {
+            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown secret_id")
+        }
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    let material_ref = material.as_ref();
+    if material_ref.len() > ADMIN_UI_MAX_FILE_BYTES {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "secret exceeds the 1 MiB admin UI reveal/download limit",
+        );
+    }
+
+    info!(audit = "secret_revealed", operator = %operator, store = %body.store, secret = %body.secret_id);
+
+    if looks_like_utf8_text(material_ref) {
+        let text = std::str::from_utf8(material_ref).expect("text classification already verified");
+        json_response_no_store(
+            StatusCode::OK,
+            &underwrap_protocol::service::AdminUiResourceRevealResponse::Utf8 {
+                text: text.to_string(),
+                size_bytes: material_ref.len(),
+                copy_allowed: true,
+            },
+        )
+    } else {
+        json_response_no_store(
+            StatusCode::OK,
+            &underwrap_protocol::service::AdminUiResourceRevealResponse::Binary {
+                base64: base64::engine::general_purpose::STANDARD.encode(material_ref),
+                size_bytes: material_ref.len(),
+                copy_allowed: false,
+                download_recommended: true,
+            },
+        )
+    }
+}
+
+fn handle_admin_ui_resource_download(
+    state: &AdminRuntimeState,
+    operator: &str,
+    body: underwrap_protocol::service::AdminUiResourceDownloadRequest,
+) -> Response<Full<Bytes>> {
+    let store = match admin_store(state, &body.store) {
+        Ok(store) => store,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    let material = match store.read(&body.secret_id) {
+        Ok(Some(material)) => material,
+        Ok(None) => {
+            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown secret_id")
+        }
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    let material_ref = material.as_ref();
+    if material_ref.len() > ADMIN_UI_MAX_FILE_BYTES {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "secret exceeds the 1 MiB admin UI reveal/download limit",
+        );
+    }
+
+    info!(audit = "secret_downloaded", operator = %operator, store = %body.store, secret = %body.secret_id);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(hyper::header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            hyper::header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", resource_filename(&body.secret_id)),
+        )
+        .header(hyper::header::CACHE_CONTROL, "no-store")
+        .body(Full::new(Bytes::copy_from_slice(material_ref)))
+        .expect("building admin UI download response")
 }
 
 fn admin_ui_resources_query(
@@ -1047,6 +1218,35 @@ async fn handle_admin_request(
                     }
                 }
             }
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/resource/get") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiResourceGetRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store)
+                .and_then(|store| admin_ui_resource_detail(store.as_ref(), &body.resource))
+            {
+                Ok(response) => json_response(StatusCode::OK, &response),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/resource/reveal") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiResourceRevealRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_ui_resource_reveal(&state, &operator, body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/resource/download") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiResourceDownloadRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_ui_resource_download(&state, &operator, body),
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/secret/read") => match parse_json_body::<
@@ -1743,6 +1943,143 @@ mod tests {
         assert!(!item.slots.libsecret);
         assert_eq!(item.catalog_wrappers, vec!["gh-authorized".to_string()]);
         assert!(item.mutation.active);
+    }
+
+    #[test]
+    fn admin_ui_resource_detail_reports_slot_metadata() {
+        let store = TestStore::new();
+        store
+            .write("gh/main/env/GH_TOKEN", b"gh-token")
+            .unwrap();
+        store
+            .write("gh/main/files/hosts.json", b"{}")
+            .unwrap();
+        store
+            .write("gh/main/libsecret/default/item_1", &[0_u8, 1_u8, 2_u8])
+            .unwrap();
+
+        let response = admin_ui_resource_detail(&store, "gh/main").unwrap();
+        assert_eq!(response.resource, "gh/main");
+        assert_eq!(response.slots.env.len(), 1);
+        assert_eq!(response.slots.files.len(), 1);
+        assert_eq!(response.slots.libsecret.len(), 1);
+        assert_eq!(response.slots.env[0].entry, "GH_TOKEN");
+        assert!(response.slots.env[0].is_utf8);
+        assert_eq!(response.slots.files[0].entry, "hosts.json");
+        assert_eq!(
+            response.slots.files[0].sha256_hex.as_deref(),
+            Some("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a")
+        );
+        assert_eq!(response.slots.libsecret[0].entry, "default/item_1");
+        assert!(!response.slots.libsecret[0].is_utf8);
+    }
+
+    #[tokio::test]
+    async fn admin_ui_resource_reveal_returns_utf8_and_binary_payloads() {
+        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
+        let store: Arc<dyn StorageBackend> = Arc::new(TestStore::new());
+        store.write("gh/main/env/GH_TOKEN", b"gh-token").unwrap();
+        store
+            .write("gh/main/libsecret/default/item_1", &[0_u8, 1_u8, 2_u8])
+            .unwrap();
+        stores.insert("work".to_string(), Arc::clone(&store));
+        let state = AdminRuntimeState {
+            stores,
+            tokens: HashMap::new(),
+        };
+
+        let utf8 = handle_admin_ui_resource_reveal(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceRevealRequest {
+                store: "work".to_string(),
+                secret_id: "gh/main/env/GH_TOKEN".to_string(),
+            },
+        );
+        assert_eq!(utf8.status(), StatusCode::OK);
+        assert_eq!(
+            utf8.headers().get(hyper::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let utf8_body = utf8.into_body().collect().await.unwrap().to_bytes();
+        let utf8_payload: underwrap_protocol::service::AdminUiResourceRevealResponse =
+            serde_json::from_slice(&utf8_body).unwrap();
+        assert_eq!(
+            utf8_payload,
+            underwrap_protocol::service::AdminUiResourceRevealResponse::Utf8 {
+                text: "gh-token".to_string(),
+                size_bytes: 8,
+                copy_allowed: true,
+            }
+        );
+
+        let binary = handle_admin_ui_resource_reveal(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceRevealRequest {
+                store: "work".to_string(),
+                secret_id: "gh/main/libsecret/default/item_1".to_string(),
+            },
+        );
+        let binary_body = binary.into_body().collect().await.unwrap().to_bytes();
+        let binary_payload: underwrap_protocol::service::AdminUiResourceRevealResponse =
+            serde_json::from_slice(&binary_body).unwrap();
+        assert_eq!(
+            binary_payload,
+            underwrap_protocol::service::AdminUiResourceRevealResponse::Binary {
+                base64: "AAEC".to_string(),
+                size_bytes: 3,
+                copy_allowed: false,
+                download_recommended: true,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_ui_download_rejects_oversized_payloads_and_sets_download_headers() {
+        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
+        let store: Arc<dyn StorageBackend> = Arc::new(TestStore::new());
+        store
+            .write("gh/main/files/hosts.json", b"{}")
+            .unwrap();
+        store
+            .write(
+                "gh/main/files/big.bin",
+                &vec![0_u8; ADMIN_UI_MAX_FILE_BYTES + 1],
+            )
+            .unwrap();
+        stores.insert("work".to_string(), Arc::clone(&store));
+        let state = AdminRuntimeState {
+            stores,
+            tokens: HashMap::new(),
+        };
+
+        let ok = handle_admin_ui_resource_download(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceDownloadRequest {
+                store: "work".to_string(),
+                secret_id: "gh/main/files/hosts.json".to_string(),
+            },
+        );
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(ok.headers().get(hyper::header::CACHE_CONTROL).unwrap(), "no-store");
+        assert_eq!(
+            ok.headers().get(hyper::header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"hosts.json\""
+        );
+        let ok_body = ok.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(ok_body.as_ref(), b"{}");
+
+        let too_large = handle_admin_ui_resource_download(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceDownloadRequest {
+                store: "work".to_string(),
+                secret_id: "gh/main/files/big.bin".to_string(),
+            },
+        );
+        assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     fn admin_state_with_tokens(tokens: &[(&str, &str)]) -> AdminRuntimeState {
