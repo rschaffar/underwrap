@@ -86,6 +86,8 @@ struct AdminRuntimeState {
 }
 
 const CATALOG_DOCUMENT_SECRET_ID: &str = "__underwrap/catalog/document";
+const AUDIT_HISTORY_SECRET_ID: &str = "__underwrap/admin/ui/audit-history";
+const ADMIN_UI_AUDIT_MAX_EVENTS: usize = 2000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct StoredCatalogEntry {
@@ -622,6 +624,75 @@ fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyDocument> {
     }
 }
 
+fn load_audit_history(
+    store: &dyn StorageBackend,
+) -> Result<Vec<underwrap_protocol::service::AdminUiAuditEvent>> {
+    match store.read(AUDIT_HISTORY_SECRET_ID)? {
+        Some(material) => serde_json::from_slice(material.as_ref())
+            .context("parsing backend audit history document"),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn store_audit_history(
+    store: &dyn StorageBackend,
+    events: &[underwrap_protocol::service::AdminUiAuditEvent],
+) -> Result<()> {
+    store.write(AUDIT_HISTORY_SECRET_ID, serde_json::to_vec(events)?.as_slice())?;
+    Ok(())
+}
+
+fn append_audit_history_event(
+    store: &dyn StorageBackend,
+    event: underwrap_protocol::service::AdminUiAuditEvent,
+) -> Result<()> {
+    let mut events = load_audit_history(store)?;
+    events.push(event);
+    if events.len() > ADMIN_UI_AUDIT_MAX_EVENTS {
+        let remove = events.len() - ADMIN_UI_AUDIT_MAX_EVENTS;
+        events.drain(..remove);
+    }
+    store_audit_history(store, &events)
+}
+
+fn admin_ui_audit_query(
+    store: &dyn StorageBackend,
+    request: &underwrap_protocol::service::AdminUiAuditQueryRequest,
+) -> Result<underwrap_protocol::service::AdminUiAuditQueryResponse> {
+    let mut events: Vec<_> = load_audit_history(store)?
+        .into_iter()
+        .filter(|event| {
+            request
+                .operator
+                .as_deref()
+                .is_none_or(|operator| event.operator == operator)
+                && request
+                    .wrapper
+                    .as_deref()
+                    .is_none_or(|wrapper| event.wrapper.as_deref() == Some(wrapper))
+                && request
+                    .resource
+                    .as_deref()
+                    .is_none_or(|resource| event.resource.as_deref() == Some(resource))
+                && request
+                    .action
+                    .as_deref()
+                    .is_none_or(|action| event.action == action)
+                && request.from_epoch.is_none_or(|from| event.ts_epoch >= from)
+                && request.to_epoch.is_none_or(|to| event.ts_epoch <= to)
+        })
+        .collect();
+    events.sort_by(|a, b| b.ts_epoch.cmp(&a.ts_epoch).then(b.action.cmp(&a.action)));
+    let total = events.len();
+    let start = request.page.saturating_sub(1) * request.page_size.max(1);
+    let items = events
+        .into_iter()
+        .skip(start)
+        .take(request.page_size.max(1))
+        .collect();
+    Ok(underwrap_protocol::service::AdminUiAuditQueryResponse { items, total })
+}
+
 fn split_resource_id(secret_id: &str) -> Option<(&str, &str, &str)> {
     for slot in ["/env/", "/files/", "/libsecret/"] {
         if let Some((resource, rest)) = secret_id.split_once(slot) {
@@ -741,7 +812,7 @@ fn admin_ui_overview_for_store(
         resource_count,
         wrapper_counts,
         active_mutation_windows: active_mutation_targets(&policy, now_epoch).len(),
-        recent_audit_events: 0,
+        recent_audit_events: load_audit_history(store)?.len(),
     })
 }
 
@@ -930,6 +1001,22 @@ fn handle_admin_ui_mutation_set(
                 return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
             }
             info!(audit = "mutation_disabled", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id);
+            if let Err(e) = append_audit_history_event(
+                store.as_ref(),
+                underwrap_protocol::service::AdminUiAuditEvent {
+                    ts_epoch: now_epoch,
+                    action: "mutation_disabled".to_string(),
+                    operator: operator.to_string(),
+                    wrapper: Some(body.wrapper.clone()),
+                    resource: split_resource_id(&body.secret_id)
+                        .map(|(resource, _, _)| resource.to_string()),
+                    secret_id: Some(body.secret_id.clone()),
+                    operation: Some(underwrap_protocol::policy::OP_STORE_WRITE.to_string()),
+                    result: "success".to_string(),
+                },
+            ) {
+                warn!(store = %body.store, err = %e, "persisting audit event failed");
+            }
             json_response_no_store(
                 StatusCode::OK,
                 &underwrap_protocol::service::AdminUiMutationSetResponse {
@@ -971,6 +1058,22 @@ fn handle_admin_ui_mutation_set(
                 return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
             }
             info!(audit = "mutation_enabled", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id, expires_at_epoch);
+            if let Err(e) = append_audit_history_event(
+                store.as_ref(),
+                underwrap_protocol::service::AdminUiAuditEvent {
+                    ts_epoch: now_epoch,
+                    action: "mutation_enabled".to_string(),
+                    operator: operator.to_string(),
+                    wrapper: Some(body.wrapper.clone()),
+                    resource: split_resource_id(&body.secret_id)
+                        .map(|(resource, _, _)| resource.to_string()),
+                    secret_id: Some(body.secret_id.clone()),
+                    operation: Some(underwrap_protocol::policy::OP_STORE_WRITE.to_string()),
+                    result: "success".to_string(),
+                },
+            ) {
+                warn!(store = %body.store, err = %e, "persisting audit event failed");
+            }
             json_response_no_store(
                 StatusCode::OK,
                 &underwrap_protocol::service::AdminUiMutationSetResponse {
@@ -1029,6 +1132,22 @@ fn handle_admin_ui_resource_write_text(
         return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
     }
     info!(audit = "secret_stored", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id);
+    if let Err(e) = append_audit_history_event(
+        store.as_ref(),
+        underwrap_protocol::service::AdminUiAuditEvent {
+            ts_epoch: now_epoch,
+            action: "secret_stored".to_string(),
+            operator: operator.to_string(),
+            wrapper: Some(body.wrapper.clone()),
+            resource: split_resource_id(&body.secret_id)
+                .map(|(resource, _, _)| resource.to_string()),
+            secret_id: Some(body.secret_id.clone()),
+            operation: None,
+            result: "success".to_string(),
+        },
+    ) {
+        warn!(store = %body.store, err = %e, "persisting audit event failed");
+    }
     match admin_ui_resource_entry_summary(&body.secret_id, &material) {
         Ok(entry) => json_response_no_store(
             StatusCode::OK,
@@ -1093,6 +1212,22 @@ fn handle_admin_ui_resource_upload_file(
         return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
     }
     info!(audit = "secret_stored", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id);
+    if let Err(e) = append_audit_history_event(
+        store.as_ref(),
+        underwrap_protocol::service::AdminUiAuditEvent {
+            ts_epoch: now_epoch,
+            action: "secret_stored".to_string(),
+            operator: operator.to_string(),
+            wrapper: Some(body.wrapper.clone()),
+            resource: split_resource_id(&body.secret_id)
+                .map(|(resource, _, _)| resource.to_string()),
+            secret_id: Some(body.secret_id.clone()),
+            operation: None,
+            result: "success".to_string(),
+        },
+    ) {
+        warn!(store = %body.store, err = %e, "persisting audit event failed");
+    }
     match admin_ui_resource_entry_summary(&body.secret_id, &material) {
         Ok(entry) => json_response_no_store(
             StatusCode::OK,
@@ -1133,6 +1268,22 @@ fn handle_admin_ui_resource_delete_entry(
         Ok(existed) => {
             if existed {
                 info!(audit = "secret_deleted", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id);
+                if let Err(e) = append_audit_history_event(
+                    store.as_ref(),
+                    underwrap_protocol::service::AdminUiAuditEvent {
+                        ts_epoch: now_epoch,
+                        action: "secret_deleted".to_string(),
+                        operator: operator.to_string(),
+                        wrapper: Some(body.wrapper.clone()),
+                        resource: split_resource_id(&body.secret_id)
+                            .map(|(resource, _, _)| resource.to_string()),
+                        secret_id: Some(body.secret_id.clone()),
+                        operation: None,
+                        result: "success".to_string(),
+                    },
+                ) {
+                    warn!(store = %body.store, err = %e, "persisting audit event failed");
+                }
             }
             json_response_no_store(
                 StatusCode::OK,
@@ -1169,6 +1320,26 @@ fn handle_admin_ui_resource_reveal(
     }
 
     info!(audit = "secret_revealed", operator = %operator, store = %body.store, secret = %body.secret_id);
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    if let Err(e) = append_audit_history_event(
+        store.as_ref(),
+        underwrap_protocol::service::AdminUiAuditEvent {
+            ts_epoch: now_epoch,
+            action: "secret_revealed".to_string(),
+            operator: operator.to_string(),
+            wrapper: None,
+            resource: split_resource_id(&body.secret_id)
+                .map(|(resource, _, _)| resource.to_string()),
+            secret_id: Some(body.secret_id.clone()),
+            operation: None,
+            result: "success".to_string(),
+        },
+    ) {
+        warn!(store = %body.store, err = %e, "persisting audit event failed");
+    }
 
     if looks_like_utf8_text(material_ref) {
         let text = std::str::from_utf8(material_ref).expect("text classification already verified");
@@ -1219,6 +1390,26 @@ fn handle_admin_ui_resource_download(
     }
 
     info!(audit = "secret_downloaded", operator = %operator, store = %body.store, secret = %body.secret_id);
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    if let Err(e) = append_audit_history_event(
+        store.as_ref(),
+        underwrap_protocol::service::AdminUiAuditEvent {
+            ts_epoch: now_epoch,
+            action: "secret_downloaded".to_string(),
+            operator: operator.to_string(),
+            wrapper: None,
+            resource: split_resource_id(&body.secret_id)
+                .map(|(resource, _, _)| resource.to_string()),
+            secret_id: Some(body.secret_id.clone()),
+            operation: None,
+            result: "success".to_string(),
+        },
+    ) {
+        warn!(store = %body.store, err = %e, "persisting audit event failed");
+    }
 
     Response::builder()
         .status(StatusCode::OK)
@@ -1340,6 +1531,25 @@ fn handle_admin_ui_wrapper_set_mode(
     }) {
         Ok(()) => {
             info!(audit = "wrapper_mode_updated", operator = %operator, store = %body.store, wrapper = %body.wrapper, mode = ?body.mode);
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            if let Err(e) = append_audit_history_event(
+                admin_store(state, &body.store).expect("store looked up earlier").as_ref(),
+                underwrap_protocol::service::AdminUiAuditEvent {
+                    ts_epoch: now_epoch,
+                    action: "wrapper_mode_updated".to_string(),
+                    operator: operator.to_string(),
+                    wrapper: Some(body.wrapper.clone()),
+                    resource: None,
+                    secret_id: None,
+                    operation: None,
+                    result: "success".to_string(),
+                },
+            ) {
+                warn!(store = %body.store, err = %e, "persisting audit event failed");
+            }
             json_response_no_store(
                 StatusCode::OK,
                 &underwrap_protocol::service::AdminUiWrapperSetModeResponse {
@@ -1406,6 +1616,29 @@ fn handle_admin_ui_matrix_set_cell(
     }) {
         Ok(()) => {
             info!(audit = if body.enabled { "matrix_cell_enabled" } else { "matrix_cell_disabled" }, operator = %operator, store = %body.store, wrapper = %body.wrapper, resource = %body.resource, operation = %body.operation);
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            if let Err(e) = append_audit_history_event(
+                admin_store(state, &body.store).expect("store looked up earlier").as_ref(),
+                underwrap_protocol::service::AdminUiAuditEvent {
+                    ts_epoch: now_epoch,
+                    action: if body.enabled {
+                        "matrix_cell_enabled".to_string()
+                    } else {
+                        "matrix_cell_disabled".to_string()
+                    },
+                    operator: operator.to_string(),
+                    wrapper: Some(body.wrapper.clone()),
+                    resource: Some(body.resource.clone()),
+                    secret_id: None,
+                    operation: Some(body.operation.clone()),
+                    result: "success".to_string(),
+                },
+            ) {
+                warn!(store = %body.store, err = %e, "persisting audit event failed");
+            }
             json_response_no_store(
                 StatusCode::OK,
                 &underwrap_protocol::service::AdminUiMatrixSetCellResponse {
@@ -1984,6 +2217,19 @@ async fn handle_admin_request(
         .await
         {
             Ok(body) => handle_admin_ui_matrix_set_cell(&state, &operator, body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/audit/query") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiAuditQueryRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store)
+                .and_then(|store| admin_ui_audit_query(store.as_ref(), &body))
+            {
+                Ok(response) => json_response_no_store(StatusCode::OK, &response),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/secret/read") => match parse_json_body::<
@@ -2594,6 +2840,20 @@ mod tests {
         store
             .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
             .unwrap();
+        append_audit_history_event(
+            &store,
+            underwrap_protocol::service::AdminUiAuditEvent {
+                ts_epoch: 140,
+                action: "secret_revealed".to_string(),
+                operator: "alice".to_string(),
+                wrapper: None,
+                resource: Some("gh/main".to_string()),
+                secret_id: Some("gh/main/env/GH_TOKEN".to_string()),
+                operation: None,
+                result: "success".to_string(),
+            },
+        )
+        .unwrap();
 
         let summary = admin_ui_overview_for_store("work", &store, 150).unwrap();
         assert_eq!(summary.store, "work");
@@ -2603,7 +2863,7 @@ mod tests {
         assert_eq!(summary.wrapper_counts.unlocked, 1);
         assert_eq!(summary.wrapper_counts.unlocked_until, 0);
         assert_eq!(summary.active_mutation_windows, 2);
-        assert_eq!(summary.recent_audit_events, 0);
+        assert_eq!(summary.recent_audit_events, 1);
     }
 
     #[test]
@@ -2817,6 +3077,112 @@ mod tests {
             },
         );
         assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn admin_ui_audit_query_filters_and_reveal_download_events_are_queryable() {
+        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
+        let raw_store = Arc::new(TestStore::new());
+        raw_store.write("gh/main/env/GH_TOKEN", b"gh-token").unwrap();
+        raw_store.write("gh/main/files/hosts.json", b"{}").unwrap();
+        let store: Arc<dyn StorageBackend> = raw_store.clone();
+        stores.insert("work".to_string(), Arc::clone(&store));
+        let state = AdminRuntimeState {
+            stores,
+            tokens: HashMap::new(),
+        };
+
+        let reveal = handle_admin_ui_resource_reveal(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceRevealRequest {
+                store: "work".to_string(),
+                secret_id: "gh/main/env/GH_TOKEN".to_string(),
+            },
+        );
+        assert_eq!(reveal.status(), StatusCode::OK);
+
+        let download = handle_admin_ui_resource_download(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceDownloadRequest {
+                store: "work".to_string(),
+                secret_id: "gh/main/files/hosts.json".to_string(),
+            },
+        );
+        assert_eq!(download.status(), StatusCode::OK);
+
+        append_audit_history_event(
+            raw_store.as_ref(),
+            underwrap_protocol::service::AdminUiAuditEvent {
+                ts_epoch: 50,
+                action: "wrapper_mode_updated".to_string(),
+                operator: "bob".to_string(),
+                wrapper: Some("jira-readonly".to_string()),
+                resource: None,
+                secret_id: None,
+                operation: None,
+                result: "success".to_string(),
+            },
+        )
+        .unwrap();
+
+        let all = admin_ui_audit_query(
+            raw_store.as_ref(),
+            &underwrap_protocol::service::AdminUiAuditQueryRequest {
+                store: "work".to_string(),
+                operator: None,
+                wrapper: None,
+                resource: None,
+                action: None,
+                from_epoch: None,
+                to_epoch: None,
+                page: 1,
+                page_size: 50,
+            },
+        )
+        .unwrap();
+        assert_eq!(all.total, 3);
+        assert!(all.items.iter().any(|event| event.action == "secret_revealed"));
+        assert!(all.items.iter().any(|event| event.action == "secret_downloaded"));
+
+        let filtered = admin_ui_audit_query(
+            raw_store.as_ref(),
+            &underwrap_protocol::service::AdminUiAuditQueryRequest {
+                store: "work".to_string(),
+                operator: Some("alice".to_string()),
+                wrapper: None,
+                resource: Some("gh/main".to_string()),
+                action: Some("secret_downloaded".to_string()),
+                from_epoch: None,
+                to_epoch: None,
+                page: 1,
+                page_size: 50,
+            },
+        )
+        .unwrap();
+        assert_eq!(filtered.total, 1);
+        assert_eq!(filtered.items[0].action, "secret_downloaded");
+        assert_eq!(filtered.items[0].operator, "alice");
+        assert_eq!(filtered.items[0].resource.as_deref(), Some("gh/main"));
+
+        let wrapper_filtered = admin_ui_audit_query(
+            raw_store.as_ref(),
+            &underwrap_protocol::service::AdminUiAuditQueryRequest {
+                store: "work".to_string(),
+                operator: Some("bob".to_string()),
+                wrapper: Some("jira-readonly".to_string()),
+                resource: None,
+                action: Some("wrapper_mode_updated".to_string()),
+                from_epoch: Some(1),
+                to_epoch: Some(100),
+                page: 1,
+                page_size: 50,
+            },
+        )
+        .unwrap();
+        assert_eq!(wrapper_filtered.total, 1);
+        assert_eq!(wrapper_filtered.items[0].wrapper.as_deref(), Some("jira-readonly"));
     }
 
     #[test]
