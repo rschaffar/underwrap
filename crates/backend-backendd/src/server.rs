@@ -817,6 +817,332 @@ fn json_response_no_store<T: Serialize>(status: StatusCode, body: &T) -> Respons
     response
 }
 
+fn admin_ui_resource_entry_summary(
+    secret_id: &str,
+    material: &[u8],
+) -> Result<underwrap_protocol::service::AdminUiResourceEntrySummary> {
+    let Some((_, slot, entry)) = split_resource_id(secret_id) else {
+        anyhow::bail!("invalid resource secret id '{secret_id}'")
+    };
+    Ok(underwrap_protocol::service::AdminUiResourceEntrySummary {
+        entry: entry.to_string(),
+        secret_id: secret_id.to_string(),
+        size_bytes: material.len(),
+        is_utf8: looks_like_utf8_text(material),
+        sha256_hex: (slot == "files").then(|| {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(material))
+        }),
+    })
+}
+
+fn load_policy_document_optional(store: &dyn StorageBackend) -> Result<Option<PolicyDocument>> {
+    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+        Some(material) => serde_json::from_slice(material.as_ref())
+            .context("parsing backend policy document")
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
+fn authorize_admin_ui_mutation(
+    store: &dyn StorageBackend,
+    wrapper: &str,
+    secret_id: &str,
+    now_epoch: u64,
+) -> Result<()> {
+    let Some(policy) = load_policy_document_optional(store)? else {
+        return Ok(());
+    };
+    match policy.evaluate_after_approval_at(
+        wrapper,
+        &underwrap_protocol::policy::credential_resource(secret_id),
+        underwrap_protocol::policy::OP_STORE_WRITE,
+        now_epoch,
+    ) {
+        PolicyDecision::Allow => Ok(()),
+        PolicyDecision::Deny { reason } => anyhow::bail!(reason),
+        PolicyDecision::NeedsApproval { .. } => {
+            anyhow::bail!("admin UI mutation does not support per-call approval mode")
+        }
+    }
+}
+
+fn admin_ui_mutation_grant_id(wrapper: &str, secret_id: &str) -> String {
+    format!("ui-mutation:{wrapper}:{secret_id}")
+}
+
+fn handle_admin_ui_mutation_set(
+    state: &AdminRuntimeState,
+    operator: &str,
+    body: underwrap_protocol::service::AdminUiMutationSetRequest,
+    now_epoch: u64,
+) -> Response<Full<Bytes>> {
+    let store = match admin_store(state, &body.store) {
+        Ok(store) => store,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    if body.secret_id == POLICY_DOCUMENT_SECRET_ID {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "policy document is reserved",
+        );
+    }
+    if split_resource_id(&body.secret_id).is_none() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "secret_id must identify an env, files, or libsecret entry",
+        );
+    }
+
+    let grant_id = admin_ui_mutation_grant_id(&body.wrapper, &body.secret_id);
+    let Some(mut policy) = (match load_policy_document_optional(store.as_ref()) {
+        Ok(policy) => policy,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    }) else {
+        let active = matches!(
+            body.mode,
+            underwrap_protocol::service::AdminUiMutationSetMode::Temporary
+        );
+        return json_response_no_store(
+            StatusCode::OK,
+            &underwrap_protocol::service::AdminUiMutationSetResponse {
+                active,
+                expires_at_epoch: body.expires_at_epoch,
+                mode: if active {
+                    "temporary".to_string()
+                } else {
+                    "disabled".to_string()
+                },
+            },
+        );
+    };
+
+    match body.mode {
+        underwrap_protocol::service::AdminUiMutationSetMode::Disabled => {
+            policy.grants.retain(|grant| grant.id != grant_id);
+            if let Err(e) = store.write(
+                POLICY_DOCUMENT_SECRET_ID,
+                &serde_json::to_vec(&policy).expect("serializing policy document"),
+            ) {
+                return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
+            }
+            info!(audit = "mutation_disabled", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id);
+            json_response_no_store(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminUiMutationSetResponse {
+                    active: false,
+                    expires_at_epoch: None,
+                    mode: "disabled".to_string(),
+                },
+            )
+        }
+        underwrap_protocol::service::AdminUiMutationSetMode::Temporary => {
+            let expires_at_epoch = body.expires_at_epoch.unwrap_or(now_epoch + 30 * 60);
+            if expires_at_epoch <= now_epoch {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "expires_at_epoch must be in the future",
+                );
+            }
+            let grant = underwrap_protocol::policy::PolicyGrant {
+                id: grant_id,
+                wrapper: body.wrapper.clone(),
+                resource: underwrap_protocol::policy::credential_resource(&body.secret_id),
+                operation: underwrap_protocol::policy::OP_STORE_WRITE.to_string(),
+                effect: underwrap_protocol::policy::PolicyEffect::Allow,
+                starts_at_epoch: Some(now_epoch),
+                expires_at_epoch: Some(expires_at_epoch),
+                reason: Some("admin-ui mutation window".to_string()),
+            };
+            if let Some(existing) = policy.grants.iter_mut().find(|entry| entry.id == grant.id) {
+                *existing = grant;
+            } else {
+                policy.grants.push(grant);
+            }
+            policy.grants.sort_by(|a, b| a.id.cmp(&b.id));
+            if let Err(e) = store.write(
+                POLICY_DOCUMENT_SECRET_ID,
+                &serde_json::to_vec(&policy).expect("serializing policy document"),
+            ) {
+                return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
+            }
+            info!(audit = "mutation_enabled", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id, expires_at_epoch);
+            json_response_no_store(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminUiMutationSetResponse {
+                    active: true,
+                    expires_at_epoch: Some(expires_at_epoch),
+                    mode: "temporary".to_string(),
+                },
+            )
+        }
+    }
+}
+
+fn handle_admin_ui_resource_write_text(
+    state: &AdminRuntimeState,
+    operator: &str,
+    body: underwrap_protocol::service::AdminUiResourceWriteTextRequest,
+    now_epoch: u64,
+) -> Response<Full<Bytes>> {
+    if body.secret_id == POLICY_DOCUMENT_SECRET_ID {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "policy document is reserved",
+        );
+    }
+    let Some((_, slot, _)) = split_resource_id(&body.secret_id) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "secret_id must identify an env or libsecret entry",
+        );
+    };
+    if slot == "files" {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "file-backed entries must use the upload-file endpoint",
+        );
+    }
+    let store = match admin_store(state, &body.store) {
+        Ok(store) => store,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    if let Err(e) = authorize_admin_ui_mutation(store.as_ref(), &body.wrapper, &body.secret_id, now_epoch) {
+        return error_response(StatusCode::FORBIDDEN, "mutation_denied", &e.to_string());
+    }
+    let material = body.material_utf8.into_bytes();
+    if material.len() > ADMIN_UI_MAX_FILE_BYTES {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "secret exceeds the 1 MiB admin UI upload limit",
+        );
+    }
+    if let Err(e) = store.write(&body.secret_id, &material) {
+        return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
+    }
+    info!(audit = "secret_stored", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id);
+    match admin_ui_resource_entry_summary(&body.secret_id, &material) {
+        Ok(entry) => json_response_no_store(
+            StatusCode::OK,
+            &underwrap_protocol::service::AdminUiResourceWriteResponse { entry },
+        ),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    }
+}
+
+fn handle_admin_ui_resource_upload_file(
+    state: &AdminRuntimeState,
+    operator: &str,
+    body: underwrap_protocol::service::AdminUiResourceUploadFileRequest,
+    now_epoch: u64,
+) -> Response<Full<Bytes>> {
+    if body.secret_id == POLICY_DOCUMENT_SECRET_ID {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "policy document is reserved",
+        );
+    }
+    let Some((_, slot, _)) = split_resource_id(&body.secret_id) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "secret_id must identify a files entry",
+        );
+    };
+    if slot != "files" {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "upload-file only accepts files slot entries",
+        );
+    }
+    let material = match base64::engine::general_purpose::STANDARD.decode(&body.material_b64) {
+        Ok(material) => material,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("invalid base64 payload: {e}"),
+            );
+        }
+    };
+    if material.len() > ADMIN_UI_MAX_FILE_BYTES {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "secret exceeds the 1 MiB admin UI upload limit",
+        );
+    }
+    let store = match admin_store(state, &body.store) {
+        Ok(store) => store,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    if let Err(e) = authorize_admin_ui_mutation(store.as_ref(), &body.wrapper, &body.secret_id, now_epoch) {
+        return error_response(StatusCode::FORBIDDEN, "mutation_denied", &e.to_string());
+    }
+    if let Err(e) = store.write(&body.secret_id, &material) {
+        return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
+    }
+    info!(audit = "secret_stored", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id);
+    match admin_ui_resource_entry_summary(&body.secret_id, &material) {
+        Ok(entry) => json_response_no_store(
+            StatusCode::OK,
+            &underwrap_protocol::service::AdminUiResourceWriteResponse { entry },
+        ),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    }
+}
+
+fn handle_admin_ui_resource_delete_entry(
+    state: &AdminRuntimeState,
+    operator: &str,
+    body: underwrap_protocol::service::AdminUiResourceDeleteEntryRequest,
+    now_epoch: u64,
+) -> Response<Full<Bytes>> {
+    if body.secret_id == POLICY_DOCUMENT_SECRET_ID {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "policy document is reserved",
+        );
+    }
+    if split_resource_id(&body.secret_id).is_none() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "secret_id must identify an env, files, or libsecret entry",
+        );
+    }
+    let store = match admin_store(state, &body.store) {
+        Ok(store) => store,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    if let Err(e) = authorize_admin_ui_mutation(store.as_ref(), &body.wrapper, &body.secret_id, now_epoch) {
+        return error_response(StatusCode::FORBIDDEN, "mutation_denied", &e.to_string());
+    }
+    match store.delete(&body.secret_id) {
+        Ok(existed) => {
+            if existed {
+                info!(audit = "secret_deleted", operator = %operator, store = %body.store, wrapper = %body.wrapper, secret = %body.secret_id);
+            }
+            json_response_no_store(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminUiResourceDeleteEntryResponse { existed },
+            )
+        }
+        Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    }
+}
+
 fn handle_admin_ui_resource_reveal(
     state: &AdminRuntimeState,
     operator: &str,
@@ -1431,6 +1757,48 @@ async fn handle_admin_request(
             Ok(body) => handle_admin_ui_resource_download(&state, &operator, body),
             Err(response) => response,
         },
+        (&Method::POST, "/v1/admin/ui/resource/write-text") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiResourceWriteTextRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => {
+                let now_epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                handle_admin_ui_resource_write_text(&state, &operator, body, now_epoch)
+            }
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/resource/upload-file") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiResourceUploadFileRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => {
+                let now_epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                handle_admin_ui_resource_upload_file(&state, &operator, body, now_epoch)
+            }
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/resource/delete-entry") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiResourceDeleteEntryRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => {
+                let now_epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                handle_admin_ui_resource_delete_entry(&state, &operator, body, now_epoch)
+            }
+            Err(response) => response,
+        },
         (&Method::POST, "/v1/admin/ui/mutation/get") => match parse_json_body::<
             underwrap_protocol::service::AdminUiMutationGetRequest,
         >(request)
@@ -1447,6 +1815,20 @@ async fn handle_admin_request(
                     Ok(response) => json_response(StatusCode::OK, &response),
                     Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
                 }
+            }
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/mutation/set") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiMutationSetRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => {
+                let now_epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                handle_admin_ui_mutation_set(&state, &operator, body, now_epoch)
             }
             Err(response) => response,
         },
@@ -2495,6 +2877,182 @@ mod tests {
         assert_eq!(response.rows[0].wrapper, "gh-authorized");
         assert_eq!(response.rows[0].cells[underwrap_protocol::policy::OP_ENV_READ], true);
         assert_eq!(response.rows[0].cells[underwrap_protocol::policy::OP_FILES_READ], false);
+    }
+
+    #[tokio::test]
+    async fn admin_ui_mutation_set_write_and_disable_roundtrip() {
+        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
+        let raw_store = Arc::new(TestStore::new());
+        write_policy(&raw_store, &PolicyDocument::default());
+        let store: Arc<dyn StorageBackend> = raw_store.clone();
+        stores.insert("work".to_string(), Arc::clone(&store));
+        let state = AdminRuntimeState {
+            stores,
+            tokens: HashMap::new(),
+        };
+
+        let denied = handle_admin_ui_resource_write_text(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceWriteTextRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/env/GH_TOKEN".to_string(),
+                material_utf8: "ghp-before".to_string(),
+            },
+            100,
+        );
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let denied_body = denied.into_body().collect().await.unwrap().to_bytes();
+        let denied_error: underwrap_protocol::service::ServiceErrorResponse =
+            serde_json::from_slice(&denied_body).unwrap();
+        assert_eq!(denied_error.code, "mutation_denied");
+
+        let enabled = handle_admin_ui_mutation_set(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiMutationSetRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/env/GH_TOKEN".to_string(),
+                mode: underwrap_protocol::service::AdminUiMutationSetMode::Temporary,
+                expires_at_epoch: Some(200),
+            },
+            100,
+        );
+        assert_eq!(enabled.status(), StatusCode::OK);
+        let enabled_body = enabled.into_body().collect().await.unwrap().to_bytes();
+        let enabled_payload: underwrap_protocol::service::AdminUiMutationSetResponse =
+            serde_json::from_slice(&enabled_body).unwrap();
+        assert!(enabled_payload.active);
+        assert_eq!(enabled_payload.expires_at_epoch, Some(200));
+
+        let stored = handle_admin_ui_resource_write_text(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceWriteTextRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/env/GH_TOKEN".to_string(),
+                material_utf8: "ghp-after".to_string(),
+            },
+            120,
+        );
+        assert_eq!(stored.status(), StatusCode::OK);
+        assert_eq!(
+            raw_store.read("gh/main/env/GH_TOKEN").unwrap().unwrap().as_ref(),
+            b"ghp-after"
+        );
+
+        let disabled = handle_admin_ui_mutation_set(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiMutationSetRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/env/GH_TOKEN".to_string(),
+                mode: underwrap_protocol::service::AdminUiMutationSetMode::Disabled,
+                expires_at_epoch: None,
+            },
+            130,
+        );
+        assert_eq!(disabled.status(), StatusCode::OK);
+
+        let denied_again = handle_admin_ui_resource_write_text(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceWriteTextRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/env/GH_TOKEN".to_string(),
+                material_utf8: "ghp-final".to_string(),
+            },
+            140,
+        );
+        assert_eq!(denied_again.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_ui_file_upload_and_delete_enforce_mutation_and_size_limit() {
+        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
+        let raw_store = Arc::new(TestStore::new());
+        write_policy(&raw_store, &PolicyDocument::default());
+        let store: Arc<dyn StorageBackend> = raw_store.clone();
+        stores.insert("work".to_string(), Arc::clone(&store));
+        let state = AdminRuntimeState {
+            stores,
+            tokens: HashMap::new(),
+        };
+
+        let denied_upload = handle_admin_ui_resource_upload_file(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceUploadFileRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/files/hosts.json".to_string(),
+                material_b64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
+            },
+            100,
+        );
+        assert_eq!(denied_upload.status(), StatusCode::FORBIDDEN);
+
+        let enabled = handle_admin_ui_mutation_set(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiMutationSetRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/files/hosts.json".to_string(),
+                mode: underwrap_protocol::service::AdminUiMutationSetMode::Temporary,
+                expires_at_epoch: Some(200),
+            },
+            100,
+        );
+        assert_eq!(enabled.status(), StatusCode::OK);
+
+        let uploaded = handle_admin_ui_resource_upload_file(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceUploadFileRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/files/hosts.json".to_string(),
+                material_b64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
+            },
+            110,
+        );
+        assert_eq!(uploaded.status(), StatusCode::OK);
+
+        let deleted = handle_admin_ui_resource_delete_entry(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceDeleteEntryRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/files/hosts.json".to_string(),
+            },
+            120,
+        );
+        assert_eq!(deleted.status(), StatusCode::OK);
+        let deleted_body = deleted.into_body().collect().await.unwrap().to_bytes();
+        let deleted_payload: underwrap_protocol::service::AdminUiResourceDeleteEntryResponse =
+            serde_json::from_slice(&deleted_body).unwrap();
+        assert!(deleted_payload.existed);
+
+        let too_large = handle_admin_ui_resource_upload_file(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminUiResourceUploadFileRequest {
+                store: "work".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                secret_id: "gh/main/files/big.bin".to_string(),
+                material_b64: base64::engine::general_purpose::STANDARD
+                    .encode(vec![0_u8; ADMIN_UI_MAX_FILE_BYTES + 1]),
+            },
+            130,
+        );
+        assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     fn admin_state_with_tokens(tokens: &[(&str, &str)]) -> AdminRuntimeState {

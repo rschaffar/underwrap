@@ -49,3 +49,29 @@ export type UiResourceGetResponse = {
     libsecret: UiResourceEntrySummary[];
   };
 };
+
+export type UiResourceRevealResponse =
+  | {
+      kind: 'utf8';
+      text: string;
+      size_bytes: number;
+      copy_allowed: boolean;
+    }
+  | {
+      kind: 'binary';
+      base64: string;
+      size_bytes: number;
+      copy_allowed: boolean;
+      download_recommended: boolean;
+    };
+
+export type UiMutationWrapperState = {
+  wrapper: string;
+  active: boolean;
+  expires_at_epoch?: number | null;
+  mode: string;
+};
+
+export type UiMutationGetResponse = {
+  wrappers: UiMutationWrapperState[];
+};

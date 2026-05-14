@@ -73,7 +73,7 @@ export default async function HomePage() {
               { label: 'Target switching', value: 'Live', tone: 'good' },
               { label: 'Store summaries', value: 'Live', tone: 'good' },
               { label: 'Resource index', value: 'Live', tone: 'good' },
-              { label: 'Reveal + writes', value: 'Next ticket', tone: 'warn' },
+              { label: 'Reveal + writes', value: 'Live', tone: 'good' },
             ]}
           />
         </Card>

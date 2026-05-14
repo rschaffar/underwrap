@@ -219,6 +219,39 @@ pub struct AdminUiResourceDownloadRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceWriteTextRequest {
+    pub store: String,
+    pub wrapper: String,
+    pub secret_id: String,
+    pub material_utf8: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceUploadFileRequest {
+    pub store: String,
+    pub wrapper: String,
+    pub secret_id: String,
+    pub material_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceWriteResponse {
+    pub entry: AdminUiResourceEntrySummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceDeleteEntryRequest {
+    pub store: String,
+    pub wrapper: String,
+    pub secret_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceDeleteEntryResponse {
+    pub existed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminUiMutationGetRequest {
     pub store: String,
     pub resource: String,
@@ -236,6 +269,31 @@ pub struct AdminUiMutationWrapperState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminUiMutationGetResponse {
     pub wrappers: Vec<AdminUiMutationWrapperState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdminUiMutationSetMode {
+    Disabled,
+    Temporary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMutationSetRequest {
+    pub store: String,
+    pub wrapper: String,
+    pub secret_id: String,
+    pub mode: AdminUiMutationSetMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_epoch: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMutationSetResponse {
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_epoch: Option<u64>,
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

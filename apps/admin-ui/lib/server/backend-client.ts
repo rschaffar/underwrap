@@ -1,7 +1,9 @@
 import { getConfiguredBackend, listConfiguredTargets } from './config.ts';
 import type {
+  UiMutationGetResponse,
   UiOverviewResponse,
   UiResourceGetResponse,
+  UiResourceRevealResponse,
   UiResourcesQueryResponse,
 } from './ui-types.ts';
 
@@ -23,6 +25,19 @@ export class BackendClient {
     private readonly token: string,
   ) {}
 
+  private async request(endpoint: string, init?: RequestInit): Promise<Response> {
+    return fetch(`${this.adminUrl}${endpoint}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        ...(init?.headers ?? {}),
+      },
+      cache: 'no-store',
+    }).catch((error: unknown) => {
+      throw new Error(`request to backend target ${this.target} failed: ${String(error)}`);
+    });
+  }
+
   private async decodeJson<T>(response: Response, endpoint: string): Promise<T> {
     if (!response.ok) {
       throw new BackendApiError(this.target, endpoint, response.status);
@@ -31,29 +46,17 @@ export class BackendClient {
   }
 
   async getJson<T>(endpoint: string): Promise<T> {
-    const response = await fetch(`${this.adminUrl}${endpoint}`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-      },
-      cache: 'no-store',
-    }).catch((error: unknown) => {
-      throw new Error(`request to backend target ${this.target} failed: ${String(error)}`);
-    });
-
+    const response = await this.request(endpoint);
     return this.decodeJson<T>(response, endpoint);
   }
 
   async postJson<T>(endpoint: string, body: unknown): Promise<T> {
-    const response = await fetch(`${this.adminUrl}${endpoint}`, {
+    const response = await this.request(endpoint, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      cache: 'no-store',
-    }).catch((error: unknown) => {
-      throw new Error(`request to backend target ${this.target} failed: ${String(error)}`);
     });
 
     return this.decodeJson<T>(response, endpoint);
@@ -83,6 +86,73 @@ export class BackendClient {
     return this.postJson('/v1/admin/ui/resource/get', {
       store,
       resource,
+    });
+  }
+
+  async revealResource(store: string, secretId: string): Promise<UiResourceRevealResponse> {
+    return this.postJson('/v1/admin/ui/resource/reveal', {
+      store,
+      secret_id: secretId,
+    });
+  }
+
+  async downloadResource(store: string, secretId: string): Promise<Response> {
+    const response = await this.request('/v1/admin/ui/resource/download', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        store,
+        secret_id: secretId,
+      }),
+    });
+    if (!response.ok) {
+      throw new BackendApiError(this.target, '/v1/admin/ui/resource/download', response.status);
+    }
+    return response;
+  }
+
+  async getMutationState(store: string, resource: string): Promise<UiMutationGetResponse> {
+    return this.postJson('/v1/admin/ui/mutation/get', {
+      store,
+      resource,
+    });
+  }
+
+  async setMutation(store: string, wrapper: string, secretId: string, mode: 'temporary' | 'disabled', expiresAtEpoch?: number) {
+    return this.postJson('/v1/admin/ui/mutation/set', {
+      store,
+      wrapper,
+      secret_id: secretId,
+      mode,
+      expires_at_epoch: expiresAtEpoch ?? null,
+    });
+  }
+
+  async writeTextResource(store: string, wrapper: string, secretId: string, materialUtf8: string) {
+    return this.postJson('/v1/admin/ui/resource/write-text', {
+      store,
+      wrapper,
+      secret_id: secretId,
+      material_utf8: materialUtf8,
+    });
+  }
+
+  async uploadFileResource(store: string, wrapper: string, secretId: string, materialBase64: string) {
+    return this.postJson('/v1/admin/ui/resource/upload-file', {
+      store,
+      wrapper,
+      secret_id: secretId,
+      material_b64: materialBase64,
+    });
+  }
+
+  async deleteResourceEntry(store: string, wrapper: string, secretId: string) {
+    return this.postJson('/v1/admin/ui/resource/delete-entry', {
+      store,
+      wrapper,
+      secret_id: secretId,
     });
   }
 }

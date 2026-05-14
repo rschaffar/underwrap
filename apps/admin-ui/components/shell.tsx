@@ -64,7 +64,7 @@ export async function Shell({ children, title, description, section, target, sto
             <div className="flex items-start gap-3 rounded-2xl border border-cyan-400/20 bg-cyan-400/5 px-4 py-3 text-sm text-cyan-100 shadow-lg shadow-cyan-950/30">
               <div>
                 <div className="font-medium">Signed in as {session.operator}</div>
-                <div className="mt-1 text-cyan-100/75">Session handling is active; CSRF protections land in the next ticket.</div>
+                <div className="mt-1 text-cyan-100/75">Session handling, same-origin checks, and CSRF protections are active.</div>
               </div>
               <form method="post" action="/logout" className="ml-auto">
                 <input type="hidden" name="csrf_token" value={session.csrfToken} />
