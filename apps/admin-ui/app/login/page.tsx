@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 
 import { Card } from '../../components/card';
-import { readSession } from '../../lib/auth-session';
+import { readSession } from '../../lib/auth-session.ts';
 
 export default async function LoginPage({
   searchParams,

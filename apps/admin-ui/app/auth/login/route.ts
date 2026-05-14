@@ -2,9 +2,14 @@ import { NextResponse } from 'next/server';
 
 import { authenticateOperator } from '../../../lib/server/auth.ts';
 import { loadRuntimeConfig } from '../../../lib/server/config.ts';
-import { setSessionCookie } from '../../../lib/auth-session';
+import { requestHasAllowedOrigin } from '../../../lib/server/csrf.ts';
+import { setSessionCookie } from '../../../lib/auth-session.ts';
 
 export async function POST(request: Request) {
+  if (!requestHasAllowedOrigin(request)) {
+    return new Response('forbidden', { status: 403 });
+  }
+
   const formData = await request.formData();
   const username = String(formData.get('username') ?? '');
   const password = String(formData.get('password') ?? '');

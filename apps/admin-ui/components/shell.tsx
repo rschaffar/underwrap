@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { ReactNode } from 'react';
 
 import { NavSection, getTarget, getTargets } from '../lib/mock-data';
-import { requireSession } from '../lib/auth-session';
+import { requireSession } from '../lib/auth-session.ts';
 
 type ShellProps = {
   children: ReactNode;
@@ -66,6 +66,7 @@ export async function Shell({ children, title, description, section, target, sto
                 <div className="mt-1 text-cyan-100/75">Session handling is active; CSRF protections land in the next ticket.</div>
               </div>
               <form method="post" action="/logout" className="ml-auto">
+                <input type="hidden" name="csrf_token" value={session.csrfToken} />
                 <button type="submit" className="rounded-xl border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-sm font-medium text-cyan-50 transition hover:bg-cyan-300/15">
                   Sign out
                 </button>

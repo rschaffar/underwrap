@@ -37,14 +37,31 @@ export function clearSessionCookie(response: NextResponse) {
   });
 }
 
-export async function readSession() {
-  const cookieStore = await cookies();
-  const raw = cookieStore.get(SESSION_COOKIE)?.value;
+function cookieValueFromHeader(cookieHeader: string | null, name: string) {
+  if (!cookieHeader) {
+    return null;
+  }
+  for (const part of cookieHeader.split(';')) {
+    const [cookieName, ...valueParts] = part.trim().split('=');
+    if (cookieName === name) {
+      return valueParts.join('=');
+    }
+  }
+  return null;
+}
+
+export async function readSessionFromCookieHeader(cookieHeader: string | null) {
+  const raw = cookieValueFromHeader(cookieHeader, SESSION_COOKIE);
   if (!raw) {
     return null;
   }
   const config = await loadRuntimeConfig();
   return decodeSession(raw, config.sessionKey);
+}
+
+export async function readSession() {
+  const cookieStore = await cookies();
+  return readSessionFromCookieHeader(cookieStore.get(SESSION_COOKIE)?.name ? `${SESSION_COOKIE}=${cookieStore.get(SESSION_COOKIE)?.value}` : null);
 }
 
 export async function requireSession() {
