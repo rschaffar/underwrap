@@ -1,6 +1,6 @@
-import { Card } from '@/components/card';
-import { Shell } from '@/components/shell';
-import { buildResourcePath } from '@/lib/mock-data';
+import { Card } from '../../../../../../../components/card';
+import { Shell } from '../../../../../../../components/shell';
+import { buildResourcePath } from '../../../../../../../lib/mock-data';
 
 function SlotCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (

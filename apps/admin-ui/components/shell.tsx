@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { ReactNode } from 'react';
 
-import { NavSection, getTarget, getTargets } from '@/lib/mock-data';
+import { NavSection, getTarget, getTargets } from '../lib/mock-data';
 
 type ShellProps = {
   children: ReactNode;

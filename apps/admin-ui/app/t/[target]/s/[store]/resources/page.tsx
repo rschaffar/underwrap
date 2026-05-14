@@ -1,8 +1,8 @@
 import Link from 'next/link';
 
-import { Card } from '@/components/card';
-import { Shell } from '@/components/shell';
-import { getStore } from '@/lib/mock-data';
+import { Card } from '../../../../../../components/card';
+import { Shell } from '../../../../../../components/shell';
+import { getStore } from '../../../../../../lib/mock-data';
 
 const resources = [
   { name: 'gh/main', slots: ['env', 'libsecret'], mutation: 'active' },

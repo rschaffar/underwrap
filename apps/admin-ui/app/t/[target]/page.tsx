@@ -1,10 +1,10 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { Card } from '@/components/card';
-import { MetricGrid } from '@/components/metric-grid';
-import { Shell } from '@/components/shell';
-import { getTarget } from '@/lib/mock-data';
+import { Card } from '../../../components/card';
+import { MetricGrid } from '../../../components/metric-grid';
+import { Shell } from '../../../components/shell';
+import { getTarget } from '../../../lib/mock-data';
 
 export default async function TargetPage({ params }: { params: Promise<{ target: string }> }) {
   const { target } = await params;

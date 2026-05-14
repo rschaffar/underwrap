@@ -1,0 +1,13 @@
+session_key_file: ./session.key
+
+operators:
+  alice:
+    password_hash_file: ./alice.phc
+
+backends:
+  corp:
+    admin_url: http://127.0.0.1:19443
+    token_file: ./corp.token
+  personal:
+    admin_url: http://127.0.0.1:19444
+    token_file: ./personal.token

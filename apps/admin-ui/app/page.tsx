@@ -1,9 +1,9 @@
 import Link from 'next/link';
 
-import { Card } from '@/components/card';
-import { MetricGrid } from '@/components/metric-grid';
-import { Shell } from '@/components/shell';
-import { getTargets } from '@/lib/mock-data';
+import { Card } from '../components/card';
+import { MetricGrid } from '../components/metric-grid';
+import { Shell } from '../components/shell';
+import { getTargets } from '../lib/mock-data';
 
 export default function HomePage() {
   const targets = getTargets();

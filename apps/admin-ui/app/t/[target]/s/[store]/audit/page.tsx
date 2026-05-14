@@ -1,5 +1,5 @@
-import { Card } from '@/components/card';
-import { Shell } from '@/components/shell';
+import { Card } from '../../../../../../components/card';
+import { Shell } from '../../../../../../components/shell';
 
 const auditRows = [
   { ts: '2026-05-14 10:14:22Z', action: 'secret_revealed', operator: 'alice', resource: 'gh/main', result: 'allowed' },

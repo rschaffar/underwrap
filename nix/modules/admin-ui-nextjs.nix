@@ -30,17 +30,33 @@ in
       description = "Port the admin UI binds to via PORT.";
     };
 
+    configFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = ''
+        Runtime config file for the Next.js admin UI. This is passed through
+        `UNDERWRAP_ADMIN_UI_CONFIG` and should point at the operator/backends
+        config consumed by the server-side loader.
+      '';
+    };
+
     environment = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
       description = ''
         Extra environment variables to pass to the Next.js server.
-        Future tickets will use this for config paths and related runtime wiring.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.configFile != null;
+        message = "services.underwrap-admin-ui.configFile must be set";
+      }
+    ];
+
     systemd.services.underwrap-admin-ui = {
       description = "underwrap admin UI (Next.js)";
       wantedBy = [ "multi-user.target" ];
@@ -56,6 +72,7 @@ in
         Environment = [
           "HOSTNAME=${cfg.listenAddress}"
           "PORT=${toString cfg.port}"
+          "UNDERWRAP_ADMIN_UI_CONFIG=${cfg.configFile}"
         ] ++ envAssignments;
         NoNewPrivileges = true;
         PrivateTmp = true;

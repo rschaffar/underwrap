@@ -1,5 +1,5 @@
-import { Card } from '@/components/card';
-import { Shell } from '@/components/shell';
+import { Card } from '../../../../../../components/card';
+import { Shell } from '../../../../../../components/shell';
 
 const wrappers = [
   { wrapper: 'gh-authorized', mode: 'per-call approval', reason: 'ops approval required', resources: 2 },
