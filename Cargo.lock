@@ -369,6 +369,7 @@ dependencies = [
  "base64",
  "bytes",
  "clap",
+ "hex",
  "http-body-util",
  "hyper",
  "hyper-util",

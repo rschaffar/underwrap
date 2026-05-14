@@ -219,6 +219,76 @@ pub struct AdminUiResourceDownloadRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMutationGetRequest {
+    pub store: String,
+    pub resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMutationWrapperState {
+    pub wrapper: String,
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_epoch: Option<u64>,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMutationGetResponse {
+    pub wrappers: Vec<AdminUiMutationWrapperState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiWrappersQueryRequest {
+    pub store: String,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiWrapperListItem {
+    pub wrapper: String,
+    pub mode: WrapperApprovalMode,
+    #[serde(default)]
+    pub reason: Option<String>,
+    pub resource_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiWrappersQueryResponse {
+    pub items: Vec<AdminUiWrapperListItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMatrixQueryRequest {
+    pub store: String,
+    #[serde(default)]
+    pub resource: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub wrapper: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMatrixRow {
+    pub host: String,
+    pub user: String,
+    pub wrapper: String,
+    pub cells: std::collections::BTreeMap<String, bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiMatrixQueryResponse {
+    pub operations: Vec<String>,
+    pub rows: Vec<AdminUiMatrixRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminSecretReadRequest {
     pub store: String,
     pub secret_id: String,

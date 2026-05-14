@@ -23,7 +23,9 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
 use underwrap_protocol::config::StorageConfig;
-use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument, WrapperApprovalMode};
+use underwrap_protocol::policy::{
+    POLICY_DOCUMENT_SECRET_ID, PolicyDecision, PolicyDocument, WrapperApprovalMode,
+};
 
 use underwrap_store::StorageBackend;
 
@@ -904,6 +906,186 @@ fn handle_admin_ui_resource_download(
         .expect("building admin UI download response")
 }
 
+fn admin_ui_mutation_get(
+    store: &dyn StorageBackend,
+    resource: &str,
+    now_epoch: u64,
+) -> Result<underwrap_protocol::service::AdminUiMutationGetResponse> {
+    let secret_ids = store.list("")?;
+    let catalog = load_catalog_document(store)?;
+    let policy = load_policy_document(store)?;
+
+    let resource_secret_ids: Vec<String> = secret_ids
+        .into_iter()
+        .filter(|secret_id| secret_id != POLICY_DOCUMENT_SECRET_ID && secret_id != CATALOG_DOCUMENT_SECRET_ID)
+        .filter(|secret_id| matches!(split_resource_id(secret_id), Some((secret_resource, _, _)) if secret_resource == resource))
+        .collect();
+
+    let wrappers: BTreeSet<String> = catalog
+        .iter()
+        .filter(|entry| entry.resource == resource)
+        .map(|entry| entry.wrapper.clone())
+        .collect();
+
+    let active_targets = active_mutation_targets(&policy, now_epoch);
+    let mut states = Vec::new();
+    for wrapper in wrappers {
+        let matching_resources: Vec<String> = resource_secret_ids
+            .iter()
+            .map(|secret_id| underwrap_protocol::policy::credential_resource(secret_id))
+            .collect();
+
+        let permanent = policy.rules.iter().any(|rule| {
+            rule.wrapper == wrapper
+                && rule.operation == underwrap_protocol::policy::OP_STORE_WRITE
+                && rule.effect == underwrap_protocol::policy::PolicyEffect::Allow
+                && matching_resources.iter().any(|resource_key| resource_key == &rule.resource)
+        });
+
+        let active_grants: Vec<&underwrap_protocol::policy::PolicyGrant> = policy
+            .grants
+            .iter()
+            .filter(|grant| {
+                grant.wrapper == wrapper
+                    && grant.operation == underwrap_protocol::policy::OP_STORE_WRITE
+                    && grant.effect == underwrap_protocol::policy::PolicyEffect::Allow
+                    && matching_resources.iter().any(|resource_key| resource_key == &grant.resource)
+                    && grant.starts_at_epoch.is_none_or(|start| now_epoch >= start)
+                    && grant.expires_at_epoch.is_none_or(|end| now_epoch < end)
+            })
+            .collect();
+
+        let active = permanent
+            || matching_resources
+                .iter()
+                .any(|resource_key| active_targets.contains(&(wrapper.clone(), resource_key.clone())));
+
+        let expires_at_epoch = if permanent {
+            None
+        } else {
+            active_grants.iter().filter_map(|grant| grant.expires_at_epoch).min()
+        };
+
+        let mode = if permanent {
+            "permanent"
+        } else if active {
+            "temporary"
+        } else {
+            "disabled"
+        };
+
+        states.push(underwrap_protocol::service::AdminUiMutationWrapperState {
+            wrapper,
+            active,
+            expires_at_epoch,
+            mode: mode.to_string(),
+        });
+    }
+    states.sort_by(|a, b| a.wrapper.cmp(&b.wrapper));
+    Ok(underwrap_protocol::service::AdminUiMutationGetResponse { wrappers: states })
+}
+
+fn admin_ui_wrappers_query(
+    store: &dyn StorageBackend,
+    request: &underwrap_protocol::service::AdminUiWrappersQueryRequest,
+) -> Result<underwrap_protocol::service::AdminUiWrappersQueryResponse> {
+    let catalog = load_catalog_document(store)?;
+    let policy = load_policy_document(store)?;
+
+    let mut wrappers: BTreeSet<String> = catalog.iter().map(|entry| entry.wrapper.clone()).collect();
+    wrappers.extend(policy.wrappers.iter().map(|entry| entry.wrapper.clone()));
+
+    let query = request.query.to_ascii_lowercase();
+    let mut items = Vec::new();
+    for wrapper in wrappers {
+        let mode = policy.wrapper_mode(&wrapper);
+        let reason = policy
+            .wrappers
+            .iter()
+            .find(|entry| entry.wrapper == wrapper)
+            .and_then(|entry| entry.reason.clone());
+        let resource_count = catalog
+            .iter()
+            .filter(|entry| entry.wrapper == wrapper)
+            .map(|entry| entry.resource.clone())
+            .collect::<BTreeSet<_>>()
+            .len();
+
+        let mode_matches = match request.mode.as_deref() {
+            None | Some("any") => true,
+            Some("locked") => matches!(mode, WrapperApprovalMode::Locked),
+            Some("unlocked") => matches!(mode, WrapperApprovalMode::Unlocked { until_epoch: None }),
+            Some("unlocked_until") => matches!(mode, WrapperApprovalMode::Unlocked { until_epoch: Some(_) }),
+            Some("per_call_approval") => matches!(mode, WrapperApprovalMode::PerCallApproval { .. }),
+            Some(other) => anyhow::bail!("unknown mode filter '{other}'"),
+        };
+        let query_matches = query.is_empty() || wrapper.to_ascii_lowercase().contains(&query);
+        if mode_matches && query_matches {
+            items.push(underwrap_protocol::service::AdminUiWrapperListItem {
+                wrapper,
+                mode,
+                reason,
+                resource_count,
+            });
+        }
+    }
+    items.sort_by(|a, b| a.wrapper.cmp(&b.wrapper));
+    Ok(underwrap_protocol::service::AdminUiWrappersQueryResponse { items })
+}
+
+fn admin_ui_matrix_query(
+    store: &dyn StorageBackend,
+    request: &underwrap_protocol::service::AdminUiMatrixQueryRequest,
+    now_epoch: u64,
+) -> Result<underwrap_protocol::service::AdminUiMatrixQueryResponse> {
+    let catalog = load_catalog_document(store)?;
+    let policy = load_policy_document(store)?;
+    let operations = vec![
+        underwrap_protocol::policy::OP_ENV_READ.to_string(),
+        underwrap_protocol::policy::OP_FILES_READ.to_string(),
+        underwrap_protocol::policy::OP_FILES_WRITE.to_string(),
+        underwrap_protocol::policy::OP_LIBSECRET_READ.to_string(),
+        underwrap_protocol::policy::OP_LIBSECRET_WRITE.to_string(),
+    ];
+
+    let mut rows = Vec::new();
+    for entry in catalog.into_iter().filter(|entry| {
+        request.resource.as_deref().is_none_or(|resource| entry.resource == resource)
+            && request.host.as_deref().is_none_or(|host| entry.host == host)
+            && request.user.as_deref().is_none_or(|user| entry.user == user)
+            && request.wrapper.as_deref().is_none_or(|wrapper| entry.wrapper == wrapper)
+    }) {
+        let mut cells = std::collections::BTreeMap::new();
+        for operation in &operations {
+            let resource_key = match operation.as_str() {
+                underwrap_protocol::policy::OP_ENV_READ => format!("env:{}", entry.resource),
+                underwrap_protocol::policy::OP_FILES_READ | underwrap_protocol::policy::OP_FILES_WRITE => format!("files:{}", entry.resource),
+                underwrap_protocol::policy::OP_LIBSECRET_READ | underwrap_protocol::policy::OP_LIBSECRET_WRITE => format!("libsecret:{}", entry.resource),
+                _ => continue,
+            };
+            let allowed = matches!(
+                policy.evaluate_after_approval_at(&entry.wrapper, &resource_key, operation, now_epoch),
+                PolicyDecision::Allow
+            );
+            cells.insert(operation.clone(), allowed);
+        }
+        rows.push(underwrap_protocol::service::AdminUiMatrixRow {
+            host: entry.host,
+            user: entry.user,
+            wrapper: entry.wrapper,
+            cells,
+        });
+    }
+    rows.sort_by(|a, b| {
+        a.host
+            .cmp(&b.host)
+            .then(a.user.cmp(&b.user))
+            .then(a.wrapper.cmp(&b.wrapper))
+    });
+
+    Ok(underwrap_protocol::service::AdminUiMatrixQueryResponse { operations, rows })
+}
+
 fn admin_ui_resources_query(
     store: &dyn StorageBackend,
     request: &underwrap_protocol::service::AdminUiResourcesQueryRequest,
@@ -1247,6 +1429,57 @@ async fn handle_admin_request(
         .await
         {
             Ok(body) => handle_admin_ui_resource_download(&state, &operator, body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/mutation/get") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiMutationGetRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => {
+                let now_epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                match admin_store(&state, &body.store)
+                    .and_then(|store| admin_ui_mutation_get(store.as_ref(), &body.resource, now_epoch))
+                {
+                    Ok(response) => json_response(StatusCode::OK, &response),
+                    Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+                }
+            }
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/wrappers/query") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiWrappersQueryRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => match admin_store(&state, &body.store)
+                .and_then(|store| admin_ui_wrappers_query(store.as_ref(), &body))
+            {
+                Ok(response) => json_response(StatusCode::OK, &response),
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            },
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/ui/matrix/query") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiMatrixQueryRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => {
+                let now_epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                match admin_store(&state, &body.store)
+                    .and_then(|store| admin_ui_matrix_query(store.as_ref(), &body, now_epoch))
+                {
+                    Ok(response) => json_response(StatusCode::OK, &response),
+                    Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+                }
+            }
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/secret/read") => match parse_json_body::<
@@ -2080,6 +2313,188 @@ mod tests {
             },
         );
         assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn admin_ui_mutation_get_groups_resource_state_by_wrapper() {
+        let store = TestStore::new();
+        store.write("gh/main/env/GH_TOKEN", b"gh-token").unwrap();
+        store.write("gh/main/files/hosts.json", b"{}").unwrap();
+        store_catalog_document(
+            &store,
+            &[
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "gh-authorized".to_string(),
+                    resource: "gh/main".to_string(),
+                },
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "jira-readonly".to_string(),
+                    resource: "gh/main".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+        let doc = PolicyDocument {
+            wrappers: Vec::new(),
+            rules: vec![underwrap_protocol::policy::PolicyRule {
+                id: "rule-1".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                resource: underwrap_protocol::policy::credential_resource("gh/main/env/GH_TOKEN"),
+                operation: underwrap_protocol::policy::OP_STORE_WRITE.to_string(),
+                effect: underwrap_protocol::policy::PolicyEffect::Allow,
+            }],
+            grants: vec![underwrap_protocol::policy::PolicyGrant {
+                id: "grant-1".to_string(),
+                wrapper: "jira-readonly".to_string(),
+                resource: underwrap_protocol::policy::credential_resource("gh/main/files/hosts.json"),
+                operation: underwrap_protocol::policy::OP_STORE_WRITE.to_string(),
+                effect: underwrap_protocol::policy::PolicyEffect::Allow,
+                starts_at_epoch: Some(100),
+                expires_at_epoch: Some(200),
+                reason: None,
+            }],
+        };
+        store
+            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .unwrap();
+
+        let response = admin_ui_mutation_get(&store, "gh/main", 150).unwrap();
+        assert_eq!(response.wrappers.len(), 2);
+        assert_eq!(response.wrappers[0].wrapper, "gh-authorized");
+        assert_eq!(response.wrappers[0].mode, "permanent");
+        assert!(response.wrappers[0].active);
+        assert_eq!(response.wrappers[1].wrapper, "jira-readonly");
+        assert_eq!(response.wrappers[1].mode, "temporary");
+        assert_eq!(response.wrappers[1].expires_at_epoch, Some(200));
+    }
+
+    #[test]
+    fn admin_ui_wrappers_query_filters_by_mode_and_query() {
+        let store = TestStore::new();
+        store_catalog_document(
+            &store,
+            &[
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "gh-authorized".to_string(),
+                    resource: "gh/main".to_string(),
+                },
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "jira-readonly".to_string(),
+                    resource: "jira/main".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+        let doc = PolicyDocument {
+            wrappers: vec![
+                underwrap_protocol::policy::WrapperPolicyState {
+                    wrapper: "gh-authorized".to_string(),
+                    mode: WrapperApprovalMode::PerCallApproval {
+                        approval_key: "ssh-ed25519 AAAA".to_string(),
+                    },
+                    reason: Some("ops approval".to_string()),
+                },
+                underwrap_protocol::policy::WrapperPolicyState {
+                    wrapper: "jira-readonly".to_string(),
+                    mode: WrapperApprovalMode::Locked,
+                    reason: Some("freeze".to_string()),
+                },
+            ],
+            rules: Vec::new(),
+            grants: Vec::new(),
+        };
+        store
+            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .unwrap();
+
+        let response = admin_ui_wrappers_query(
+            &store,
+            &underwrap_protocol::service::AdminUiWrappersQueryRequest {
+                store: "work".to_string(),
+                query: "gh".to_string(),
+                mode: Some("per_call_approval".to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(response.items.len(), 1);
+        assert_eq!(response.items[0].wrapper, "gh-authorized");
+        assert_eq!(response.items[0].resource_count, 1);
+        assert_eq!(response.items[0].reason.as_deref(), Some("ops approval"));
+    }
+
+    #[test]
+    fn admin_ui_matrix_query_returns_catalog_rows_and_policy_cells() {
+        let store = TestStore::new();
+        store_catalog_document(
+            &store,
+            &[
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "gh-authorized".to_string(),
+                    resource: "gh/main".to_string(),
+                },
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "smallthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "gh-authorized".to_string(),
+                    resource: "gh/main".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+        let doc = PolicyDocument {
+            wrappers: Vec::new(),
+            rules: vec![underwrap_protocol::policy::PolicyRule {
+                id: "rule-1".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                resource: "env:gh/main".to_string(),
+                operation: underwrap_protocol::policy::OP_ENV_READ.to_string(),
+                effect: underwrap_protocol::policy::PolicyEffect::Allow,
+            }],
+            grants: Vec::new(),
+        };
+        store
+            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .unwrap();
+
+        let response = admin_ui_matrix_query(
+            &store,
+            &underwrap_protocol::service::AdminUiMatrixQueryRequest {
+                store: "work".to_string(),
+                resource: Some("gh/main".to_string()),
+                host: Some("deepthought".to_string()),
+                user: None,
+                wrapper: None,
+            },
+            150,
+        )
+        .unwrap();
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.rows[0].host, "deepthought");
+        assert_eq!(response.rows[0].wrapper, "gh-authorized");
+        assert_eq!(response.rows[0].cells[underwrap_protocol::policy::OP_ENV_READ], true);
+        assert_eq!(response.rows[0].cells[underwrap_protocol::policy::OP_FILES_READ], false);
     }
 
     fn admin_state_with_tokens(tokens: &[(&str, &str)]) -> AdminRuntimeState {
