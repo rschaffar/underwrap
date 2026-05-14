@@ -111,3 +111,19 @@ export type UiMatrixQueryResponse = {
   operations: string[];
   rows: UiMatrixRow[];
 };
+
+export type UiAuditEvent = {
+  ts_epoch: number;
+  action: string;
+  operator: string;
+  wrapper?: string | null;
+  resource?: string | null;
+  secret_id?: string | null;
+  operation?: string | null;
+  result: string;
+};
+
+export type UiAuditQueryResponse = {
+  items: UiAuditEvent[];
+  total: number;
+};

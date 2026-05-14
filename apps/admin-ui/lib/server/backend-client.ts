@@ -1,5 +1,6 @@
 import { getConfiguredBackend, listConfiguredTargets } from './config.ts';
 import type {
+  UiAuditQueryResponse,
   UiMatrixQueryResponse,
   UiMutationGetResponse,
   UiOverviewResponse,
@@ -195,6 +196,30 @@ export class BackendClient {
       resource,
       operation,
       enabled,
+    });
+  }
+
+  async queryAudit(
+    store: string,
+    query: {
+      operator?: string;
+      wrapper?: string;
+      resource?: string;
+      action?: string;
+      from_epoch?: number | null;
+      to_epoch?: number | null;
+    },
+  ): Promise<UiAuditQueryResponse> {
+    return this.postJson('/v1/admin/ui/audit/query', {
+      store,
+      operator: query.operator?.trim() ? query.operator.trim() : null,
+      wrapper: query.wrapper?.trim() ? query.wrapper.trim() : null,
+      resource: query.resource?.trim() ? query.resource.trim() : null,
+      action: query.action?.trim() && query.action !== 'any' ? query.action.trim() : null,
+      from_epoch: query.from_epoch ?? null,
+      to_epoch: query.to_epoch ?? null,
+      page: 1,
+      page_size: 200,
     });
   }
 }
