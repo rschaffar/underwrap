@@ -81,6 +81,17 @@ simple kanban board. Move a ticket file between folders to reflect its state:
 - `tickets/02_inprogress/` — currently being worked on
 - `tickets/03_done/`       — completed work
 
+Naming convention:
+
+- epics: `epic_<short_title>.md`
+- larger child stories: `NNN_story_<short_title>.md`
+- executable task tickets: `NNN_task_<short_title>.md`
+
+Ordered ticket numbers use a zero-padded 3-digit prefix plus underscore, e.g.
+`000_story_...`, `010_task_...`, `020_task_...`. Lower numbers mean earlier
+intended processing order. When breaking down an epic, create or update the
+story tickets and give both story and task tickets these ordered numeric prefixes.
+
 ## Key files to understand first
 
 - `crates/underwrap-exec/src/main.rs` — two-stage wrapper entry point with
