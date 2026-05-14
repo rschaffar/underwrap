@@ -96,6 +96,69 @@ pub struct AdminStoresResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiWrapperCounts {
+    pub locked: usize,
+    pub unlocked: usize,
+    pub unlocked_until: usize,
+    pub per_call_approval: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiOverviewStore {
+    pub store: String,
+    pub resource_count: usize,
+    pub wrapper_counts: AdminUiWrapperCounts,
+    pub active_mutation_windows: usize,
+    pub recent_audit_events: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiOverviewResponse {
+    pub stores: Vec<AdminUiOverviewStore>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourcesQueryRequest {
+    pub store: String,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub slot: Option<String>,
+    #[serde(default)]
+    pub mutation_state: Option<String>,
+    #[serde(default = "default_page")]
+    pub page: usize,
+    #[serde(default = "default_page_size")]
+    pub page_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceSlots {
+    pub env: bool,
+    pub files: bool,
+    pub libsecret: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceMutationSummary {
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourceListItem {
+    pub resource: String,
+    pub slots: AdminUiResourceSlots,
+    pub catalog_wrappers: Vec<String>,
+    pub mutation: AdminUiResourceMutationSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminUiResourcesQueryResponse {
+    pub items: Vec<AdminUiResourceListItem>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminSecretReadRequest {
     pub store: String,
     pub secret_id: String,
@@ -202,6 +265,14 @@ pub struct AdminGrantDeleteRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminOkResponse {
     pub ok: bool,
+}
+
+fn default_page() -> usize {
+    1
+}
+
+fn default_page_size() -> usize {
+    50
 }
 
 #[cfg(test)]

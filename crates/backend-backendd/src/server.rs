@@ -12,7 +12,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -610,6 +610,208 @@ fn load_catalog_document(store: &dyn StorageBackend) -> Result<Vec<StoredCatalog
     serde_json::from_slice(material.as_ref()).context("parsing backend catalog document")
 }
 
+fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyDocument> {
+    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+        Some(material) => serde_json::from_slice(material.as_ref())
+            .context("parsing backend policy document"),
+        None => Ok(PolicyDocument::default()),
+    }
+}
+
+fn split_resource_id(secret_id: &str) -> Option<(&str, &str, &str)> {
+    for slot in ["/env/", "/files/", "/libsecret/"] {
+        if let Some((resource, rest)) = secret_id.split_once(slot) {
+            return Some((resource, &slot[1..slot.len() - 1], rest));
+        }
+    }
+    None
+}
+
+fn resource_query_matches(item: &underwrap_protocol::service::AdminUiResourceListItem, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let query = query.to_ascii_lowercase();
+    item.resource.to_ascii_lowercase().contains(&query)
+        || item
+            .catalog_wrappers
+            .iter()
+            .any(|wrapper| wrapper.to_ascii_lowercase().contains(&query))
+}
+
+fn slot_filter_matches(
+    item: &underwrap_protocol::service::AdminUiResourceListItem,
+    slot: Option<&str>,
+) -> Result<bool> {
+    Ok(match slot {
+        None | Some("any") => true,
+        Some("env") => item.slots.env,
+        Some("files") => item.slots.files,
+        Some("libsecret") => item.slots.libsecret,
+        Some(other) => anyhow::bail!("unknown slot filter '{other}'"),
+    })
+}
+
+fn mutation_filter_matches(
+    item: &underwrap_protocol::service::AdminUiResourceListItem,
+    mutation_state: Option<&str>,
+) -> Result<bool> {
+    Ok(match mutation_state {
+        None | Some("any") => true,
+        Some("active") => item.mutation.active,
+        Some("inactive") => !item.mutation.active,
+        Some(other) => anyhow::bail!("unknown mutation_state filter '{other}'"),
+    })
+}
+
+fn active_mutation_targets(doc: &PolicyDocument, now_epoch: u64) -> HashSet<(String, String)> {
+    let mut out = HashSet::new();
+    for rule in &doc.rules {
+        if rule.operation == underwrap_protocol::policy::OP_STORE_WRITE
+            && rule.effect == underwrap_protocol::policy::PolicyEffect::Allow
+        {
+            out.insert((rule.wrapper.clone(), rule.resource.clone()));
+        }
+    }
+    for grant in &doc.grants {
+        if grant.operation == underwrap_protocol::policy::OP_STORE_WRITE
+            && grant.effect == underwrap_protocol::policy::PolicyEffect::Allow
+        {
+            let starts_ok = grant.starts_at_epoch.is_none_or(|start| now_epoch >= start);
+            let expires_ok = grant.expires_at_epoch.is_none_or(|end| now_epoch < end);
+            if starts_ok && expires_ok {
+                out.insert((grant.wrapper.clone(), grant.resource.clone()));
+            }
+        }
+    }
+    out
+}
+
+fn admin_ui_overview_for_store(
+    store_name: &str,
+    store: &dyn StorageBackend,
+    now_epoch: u64,
+) -> Result<underwrap_protocol::service::AdminUiOverviewStore> {
+    let secret_ids = store.list("")?;
+    let catalog = load_catalog_document(store)?;
+    let policy = load_policy_document(store)?;
+
+    let resource_count = secret_ids
+        .iter()
+        .filter(|id| *id != POLICY_DOCUMENT_SECRET_ID && *id != CATALOG_DOCUMENT_SECRET_ID)
+        .filter_map(|id| split_resource_id(id).map(|(resource, _, _)| resource.to_string()))
+        .chain(catalog.iter().map(|entry| entry.resource.clone()))
+        .collect::<BTreeSet<_>>()
+        .len();
+
+    let mut all_wrappers: BTreeSet<String> = catalog.iter().map(|entry| entry.wrapper.clone()).collect();
+    all_wrappers.extend(policy.wrappers.iter().map(|entry| entry.wrapper.clone()));
+
+    let mut wrapper_counts = underwrap_protocol::service::AdminUiWrapperCounts {
+        locked: 0,
+        unlocked: 0,
+        unlocked_until: 0,
+        per_call_approval: 0,
+    };
+    for wrapper in all_wrappers {
+        match policy.wrapper_mode(&wrapper) {
+            WrapperApprovalMode::Locked => wrapper_counts.locked += 1,
+            WrapperApprovalMode::Unlocked {
+                until_epoch: Some(_),
+            } => wrapper_counts.unlocked_until += 1,
+            WrapperApprovalMode::Unlocked { until_epoch: None } => wrapper_counts.unlocked += 1,
+            WrapperApprovalMode::PerCallApproval { .. } => wrapper_counts.per_call_approval += 1,
+        }
+    }
+
+    Ok(underwrap_protocol::service::AdminUiOverviewStore {
+        store: store_name.to_string(),
+        resource_count,
+        wrapper_counts,
+        active_mutation_windows: active_mutation_targets(&policy, now_epoch).len(),
+        recent_audit_events: 0,
+    })
+}
+
+fn admin_ui_resources_query(
+    store: &dyn StorageBackend,
+    request: &underwrap_protocol::service::AdminUiResourcesQueryRequest,
+    now_epoch: u64,
+) -> Result<underwrap_protocol::service::AdminUiResourcesQueryResponse> {
+    let secret_ids = store.list("")?;
+    let catalog = load_catalog_document(store)?;
+    let policy = load_policy_document(store)?;
+    let mutation_targets = active_mutation_targets(&policy, now_epoch);
+
+    let mut resources = BTreeSet::new();
+    let mut resource_secret_ids: HashMap<String, Vec<String>> = HashMap::new();
+    for secret_id in secret_ids {
+        if secret_id == POLICY_DOCUMENT_SECRET_ID || secret_id == CATALOG_DOCUMENT_SECRET_ID {
+            continue;
+        }
+        if let Some((resource, _, _)) = split_resource_id(&secret_id) {
+            resources.insert(resource.to_string());
+            resource_secret_ids
+                .entry(resource.to_string())
+                .or_default()
+                .push(secret_id);
+        }
+    }
+    for entry in &catalog {
+        resources.insert(entry.resource.clone());
+    }
+
+    let mut items = Vec::new();
+    for resource in resources {
+        let ids = resource_secret_ids.get(&resource).cloned().unwrap_or_default();
+        let slots = underwrap_protocol::service::AdminUiResourceSlots {
+            env: ids.iter().any(|id| matches!(split_resource_id(id), Some((_, "env", _)))),
+            files: ids.iter().any(|id| matches!(split_resource_id(id), Some((_, "files", _)))),
+            libsecret: ids
+                .iter()
+                .any(|id| matches!(split_resource_id(id), Some((_, "libsecret", _)))),
+        };
+        let mut catalog_wrappers: Vec<String> = catalog
+            .iter()
+            .filter(|entry| entry.resource == resource)
+            .map(|entry| entry.wrapper.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        catalog_wrappers.sort();
+
+        let mutation_active = ids.iter().any(|secret_id| {
+            let resource_key = underwrap_protocol::policy::credential_resource(secret_id);
+            catalog_wrappers
+                .iter()
+                .any(|wrapper| mutation_targets.contains(&(wrapper.clone(), resource_key.clone())))
+        });
+
+        let item = underwrap_protocol::service::AdminUiResourceListItem {
+            resource,
+            slots,
+            catalog_wrappers,
+            mutation: underwrap_protocol::service::AdminUiResourceMutationSummary {
+                active: mutation_active,
+            },
+        };
+        if resource_query_matches(&item, &request.query)
+            && slot_filter_matches(&item, request.slot.as_deref())?
+            && mutation_filter_matches(&item, request.mutation_state.as_deref())?
+        {
+            items.push(item);
+        }
+    }
+
+    let total = items.len();
+    let page = request.page.max(1);
+    let page_size = request.page_size.clamp(1, 200);
+    let start = page_size.saturating_mul(page.saturating_sub(1));
+    let items = items.into_iter().skip(start).take(page_size).collect();
+
+    Ok(underwrap_protocol::service::AdminUiResourcesQueryResponse { items, total })
+}
+
 fn store_catalog_document(
     store: &dyn StorageBackend,
     entries: &[StoredCatalogEntry],
@@ -805,6 +1007,48 @@ async fn handle_admin_request(
                 &underwrap_protocol::service::AdminStoresResponse { stores },
             )
         }
+        (&Method::GET, "/v1/admin/ui/overview") => {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            match state
+                .stores
+                .iter()
+                .map(|(name, store)| admin_ui_overview_for_store(name, store.as_ref(), now_epoch))
+                .collect::<Result<Vec<_>>>()
+            {
+                Ok(mut stores) => {
+                    stores.sort_by(|a, b| a.store.cmp(&b.store));
+                    json_response(
+                        StatusCode::OK,
+                        &underwrap_protocol::service::AdminUiOverviewResponse { stores },
+                    )
+                }
+                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            }
+        }
+        (&Method::POST, "/v1/admin/ui/resources/query") => match parse_json_body::<
+            underwrap_protocol::service::AdminUiResourcesQueryRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => {
+                let now_epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                match admin_store(&state, &body.store)
+                    .and_then(|store| admin_ui_resources_query(store.as_ref(), &body, now_epoch))
+                {
+                    Ok(response) => json_response(StatusCode::OK, &response),
+                    Err(e) => {
+                        error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                    }
+                }
+            }
+            Err(response) => response,
+        },
         (&Method::POST, "/v1/admin/secret/read") => match parse_json_body::<
             underwrap_protocol::service::AdminSecretReadRequest,
         >(request)
@@ -1331,6 +1575,174 @@ mod tests {
                 .iter()
                 .any(|e| e.principal == "principal-a" && e.wrapper == "gh-authorized")
         );
+    }
+
+    #[test]
+    fn admin_ui_overview_counts_resources_wrappers_and_mutation_windows() {
+        let store = TestStore::new();
+        store
+            .write("gh/main/env/GH_TOKEN", b"gh-token")
+            .unwrap();
+        store
+            .write("gh/main/files/hosts.json", b"{}")
+            .unwrap();
+        store
+            .write("aws/prod/env/AWS_SECRET", b"aws-secret")
+            .unwrap();
+
+        store_catalog_document(
+            &store,
+            &[
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "gh-authorized".to_string(),
+                    resource: "gh/main".to_string(),
+                },
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "aws-prod".to_string(),
+                    resource: "aws/prod".to_string(),
+                },
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "jira-readonly".to_string(),
+                    resource: "gh/main".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+
+        let doc = PolicyDocument {
+            wrappers: vec![
+                underwrap_protocol::policy::WrapperPolicyState {
+                    wrapper: "gh-authorized".to_string(),
+                    mode: WrapperApprovalMode::Locked,
+                    reason: None,
+                },
+                underwrap_protocol::policy::WrapperPolicyState {
+                    wrapper: "aws-prod".to_string(),
+                    mode: WrapperApprovalMode::PerCallApproval {
+                        approval_key: "ssh-ed25519 AAAA".to_string(),
+                    },
+                    reason: None,
+                },
+            ],
+            rules: vec![underwrap_protocol::policy::PolicyRule {
+                id: "rule-1".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                resource: underwrap_protocol::policy::credential_resource("gh/main/env/GH_TOKEN"),
+                operation: underwrap_protocol::policy::OP_STORE_WRITE.to_string(),
+                effect: underwrap_protocol::policy::PolicyEffect::Allow,
+            }],
+            grants: vec![underwrap_protocol::policy::PolicyGrant {
+                id: "grant-1".to_string(),
+                wrapper: "aws-prod".to_string(),
+                resource: underwrap_protocol::policy::credential_resource("aws/prod/env/AWS_SECRET"),
+                operation: underwrap_protocol::policy::OP_STORE_WRITE.to_string(),
+                effect: underwrap_protocol::policy::PolicyEffect::Allow,
+                starts_at_epoch: Some(100),
+                expires_at_epoch: Some(200),
+                reason: None,
+            }],
+        };
+        store
+            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .unwrap();
+
+        let summary = admin_ui_overview_for_store("work", &store, 150).unwrap();
+        assert_eq!(summary.store, "work");
+        assert_eq!(summary.resource_count, 2);
+        assert_eq!(summary.wrapper_counts.locked, 1);
+        assert_eq!(summary.wrapper_counts.per_call_approval, 1);
+        assert_eq!(summary.wrapper_counts.unlocked, 1);
+        assert_eq!(summary.wrapper_counts.unlocked_until, 0);
+        assert_eq!(summary.active_mutation_windows, 2);
+        assert_eq!(summary.recent_audit_events, 0);
+    }
+
+    #[test]
+    fn admin_ui_resources_query_filters_by_query_slot_and_mutation() {
+        let store = TestStore::new();
+        store
+            .write("gh/main/env/GH_TOKEN", b"gh-token")
+            .unwrap();
+        store
+            .write("gh/main/files/hosts.json", b"{}")
+            .unwrap();
+        store
+            .write("aws/prod/env/AWS_SECRET", b"aws-secret")
+            .unwrap();
+
+        store_catalog_document(
+            &store,
+            &[
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "gh-authorized".to_string(),
+                    resource: "gh/main".to_string(),
+                },
+                StoredCatalogEntry {
+                    principal: "p1".to_string(),
+                    host: "deepthought".to_string(),
+                    user: "robert".to_string(),
+                    instance: "workstation".to_string(),
+                    wrapper: "aws-prod".to_string(),
+                    resource: "aws/prod".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+
+        let doc = PolicyDocument {
+            wrappers: Vec::new(),
+            rules: vec![underwrap_protocol::policy::PolicyRule {
+                id: "rule-1".to_string(),
+                wrapper: "gh-authorized".to_string(),
+                resource: underwrap_protocol::policy::credential_resource("gh/main/env/GH_TOKEN"),
+                operation: underwrap_protocol::policy::OP_STORE_WRITE.to_string(),
+                effect: underwrap_protocol::policy::PolicyEffect::Allow,
+            }],
+            grants: Vec::new(),
+        };
+        store
+            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .unwrap();
+
+        let response = admin_ui_resources_query(
+            &store,
+            &underwrap_protocol::service::AdminUiResourcesQueryRequest {
+                store: "work".to_string(),
+                query: "gh".to_string(),
+                slot: Some("files".to_string()),
+                mutation_state: Some("active".to_string()),
+                page: 1,
+                page_size: 50,
+            },
+            150,
+        )
+        .unwrap();
+
+        assert_eq!(response.total, 1);
+        assert_eq!(response.items.len(), 1);
+        let item = &response.items[0];
+        assert_eq!(item.resource, "gh/main");
+        assert!(item.slots.env);
+        assert!(item.slots.files);
+        assert!(!item.slots.libsecret);
+        assert_eq!(item.catalog_wrappers, vec!["gh-authorized".to_string()]);
+        assert!(item.mutation.active);
     }
 
     fn admin_state_with_tokens(tokens: &[(&str, &str)]) -> AdminRuntimeState {
