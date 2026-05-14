@@ -1,4 +1,4 @@
-import { getConfiguredBackendClients } from './backend-client';
+import { getConfiguredBackendClients } from './backend-client.ts';
 
 export type BackendProbe = {
   name: string;

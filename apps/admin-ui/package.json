@@ -2,12 +2,15 @@
   "name": "underwrap-admin-ui-web",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --test --experimental-strip-types --experimental-specifier-resolution=node ./tests/**/*.test.ts"
   },
   "dependencies": {
+    "@whi/argon2-wasm": "^0.4.0",
     "next": "16.2.6",
     "react": "19.2.0",
     "react-dom": "19.2.0",

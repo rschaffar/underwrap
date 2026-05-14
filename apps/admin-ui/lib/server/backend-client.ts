@@ -1,4 +1,4 @@
-import { getConfiguredBackend, listConfiguredTargets } from './config';
+import { getConfiguredBackend, listConfiguredTargets } from './config.ts';
 
 export class BackendApiError extends Error {
   constructor(

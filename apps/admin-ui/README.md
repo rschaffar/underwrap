@@ -18,6 +18,11 @@ Then open <http://127.0.0.1:3000>.
 By default the app loads `dev-fixtures/admin-ui.yaml`. In production,
 set `UNDERWRAP_ADMIN_UI_CONFIG` to the real runtime config file.
 
+The local fixture credentials are:
+
+- username: `alice`
+- password: `hunter2`
+
 ## Production build check
 
 ```bash

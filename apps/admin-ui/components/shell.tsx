@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { ReactNode } from 'react';
 
 import { NavSection, getTarget, getTargets } from '../lib/mock-data';
+import { requireSession } from '../lib/auth-session';
 
 type ShellProps = {
   children: ReactNode;
@@ -38,7 +39,8 @@ function StatusPill({ reachable }: { reachable: boolean }) {
   );
 }
 
-export function Shell({ children, title, description, section, target, store }: ShellProps) {
+export async function Shell({ children, title, description, section, target, store }: ShellProps) {
+  const session = await requireSession();
   const targets = getTargets();
   const selectedTarget = target ? getTarget(target) : undefined;
   const stores = selectedTarget?.stores ?? [];
@@ -58,9 +60,16 @@ export function Shell({ children, title, description, section, target, store }: 
               </div>
               <p className="mt-2 max-w-3xl text-sm text-[var(--muted)]">{description}</p>
             </div>
-            <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/5 px-4 py-3 text-sm text-cyan-100 shadow-lg shadow-cyan-950/30">
-              <div className="font-medium">Operator shell scaffold</div>
-              <div className="mt-1 text-cyan-100/75">Auth, backend data, and mutations land in later tickets.</div>
+            <div className="flex items-start gap-3 rounded-2xl border border-cyan-400/20 bg-cyan-400/5 px-4 py-3 text-sm text-cyan-100 shadow-lg shadow-cyan-950/30">
+              <div>
+                <div className="font-medium">Signed in as {session.operator}</div>
+                <div className="mt-1 text-cyan-100/75">Session handling is active; CSRF protections land in the next ticket.</div>
+              </div>
+              <form method="post" action="/logout" className="ml-auto">
+                <button type="submit" className="rounded-xl border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-sm font-medium text-cyan-50 transition hover:bg-cyan-300/15">
+                  Sign out
+                </button>
+              </form>
             </div>
           </div>
 
