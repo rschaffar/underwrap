@@ -221,8 +221,10 @@
               nodes.machine = { pkgs, ... }: import ./nix/tests/node.nix {
                 inherit pkgs;
                 underwrapPackage = perSystem.packages.${system}.default;
+                underwrapAdminUiPackage = perSystem.packages.${system}.underwrap-admin-ui;
                 goKeyringProbePackage = perSystem.packages.${system}.underwrap-go-keyring-probe;
                 nixosModule = self.nixosModules.default;
+                adminUiModule = self.nixosModules.admin-ui;
               };
 
               testScript = ''

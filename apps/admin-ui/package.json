@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "test": "node --test --experimental-strip-types --experimental-specifier-resolution=node ./tests/**/*.test.ts",
-    "test:e2e": "npm run build && playwright test"
+    "test:prod": "npm run build && node --test --experimental-strip-types --experimental-specifier-resolution=node ./tests/production-login.test.ts",
+    "test:e2e": "npm run build && node --test --experimental-strip-types --experimental-specifier-resolution=node ./tests/production-login.test.ts && playwright test"
   },
   "dependencies": {
     "@whi/argon2-wasm": "^0.4.0",

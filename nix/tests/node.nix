@@ -1,5 +1,5 @@
 # VM test node: both local and remote instances on one machine.
-{ pkgs, underwrapPackage, goKeyringProbePackage, nixosModule, ... }:
+{ pkgs, underwrapPackage, underwrapAdminUiPackage, goKeyringProbePackage, nixosModule, adminUiModule, ... }:
 
 let
   testCaPem = pkgs.writeText "underwrap-test-ca.pem" (builtins.readFile ../../testdata/pki/ca.pem);
@@ -65,10 +65,27 @@ let
     ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
     exec ${pkgs.coreutils}/bin/ln -s /etc/passwd "$HOME/.config/underwrap-dir-a/evil"
   '';
-in {
-  imports = [ nixosModule ];
+  adminUiPasswordHash = pkgs.writeText "underwrap-admin-ui-alice.phc"
+    (builtins.readFile ../../apps/admin-ui/dev-fixtures/alice.phc);
+  adminUiSessionKey = pkgs.runCommand "underwrap-admin-ui-session.key" {} ''
+    cp ${../../apps/admin-ui/dev-fixtures/session.key} $out
+  '';
+  adminUiConfig = pkgs.writeText "underwrap-admin-ui.yaml" ''
+    session_key_file: ${adminUiSessionKey}
 
-  environment.systemPackages = [ underwrapPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl ];
+    operators:
+      alice:
+        password_hash_file: ${adminUiPasswordHash}
+
+    backends:
+      corp:
+        admin_url: http://127.0.0.1:19443
+        token_file: /etc/underwrap-admin-token
+  '';
+in {
+  imports = [ nixosModule adminUiModule ];
+
+  environment.systemPackages = [ underwrapPackage underwrapAdminUiPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl ];
 
   # Operator bearer token for the backend admin API. World-readable is fine
   # in the VM test; real deployments would ship this via a secrets system.
@@ -154,6 +171,14 @@ in {
     "d /var/lib/underwrap-backend-local 0700 underwrap-local underwrap-local -"
     "d /var/lib/underwrap-backend-local/secrets 0700 underwrap-local underwrap-local -"
   ];
+
+  services.underwrap-admin-ui = {
+    enable = true;
+    package = underwrapAdminUiPackage;
+    listenAddress = "127.0.0.1";
+    port = 3000;
+    configFile = adminUiConfig;
+  };
 
   # SSH server for the tunnel.
   services.openssh = {

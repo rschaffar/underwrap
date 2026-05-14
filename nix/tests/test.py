@@ -4,6 +4,7 @@ import base64
 import json
 import shlex
 import time
+import re
 
 # Helper for running commands as testuser.
 def su(cmd):
@@ -15,6 +16,7 @@ SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PYTHON3 = os.environ.get("PYTHON3", "python3")
 ADMIN_LOCAL = "http://127.0.0.1:19443"
 ADMIN_REMOTE = "http://127.0.0.1:19444"
+ADMIN_UI = "http://127.0.0.1:3000"
 ADMIN_TOKEN = "vm-test-admin-token"
 
 
@@ -112,6 +114,7 @@ def boot_and_service_checks():
     machine.wait_for_unit("underwrapd-tunnel.service")
     machine.wait_for_unit("underwrap-backendd.service")
     machine.wait_for_unit("underwrap-backendd-local.service")
+    machine.wait_for_unit("underwrap-admin-ui.service")
 
     machine.succeed("id testuser")
     machine.succeed("id underwrap-local")
@@ -149,6 +152,53 @@ def boot_and_service_checks():
     scope = machine.succeed("cat /proc/sys/kernel/yama/ptrace_scope").strip()
     assert scope == "2", f"expected ptrace_scope=2 from hardenTargetHost, got {scope}"
     machine.log("PASS: kernel.yama.ptrace_scope=2 enforced by hardenTargetHost")
+
+    login_page = machine.succeed(f"curl -fsS {ADMIN_UI}/login")
+    assert "Operator sign-in" in login_page, login_page
+    machine.log("PASS: admin UI login page loads")
+
+    wrong_login = machine.succeed(
+        "curl -s -D - -o /tmp/underwrap-admin-ui-wrong.out "
+        f"-X POST {ADMIN_UI}/auth/login "
+        "-H 'Origin: http://127.0.0.1:3000' "
+        "-H 'Content-Type: application/x-www-form-urlencoded' "
+        "--data 'username=alice&password=wrong-password'"
+    )
+    assert "303 See Other" in wrong_login, wrong_login
+    assert "/login?error=invalid" in wrong_login, wrong_login
+    machine.log("PASS: admin UI rejects wrong password via normal login flow")
+
+    proxy_login = machine.succeed(
+        "curl -s -D - -o /tmp/underwrap-admin-ui-proxy.out "
+        f"-X POST {ADMIN_UI}/auth/login "
+        "-H 'Host: 127.0.0.1:3000' "
+        "-H 'Origin: https://ui.example.test' "
+        "-H 'X-Forwarded-Host: ui.example.test' "
+        "-H 'X-Forwarded-Proto: https' "
+        "-H 'Content-Type: application/x-www-form-urlencoded' "
+        "--data 'username=alice&password=wrong-password'"
+    )
+    assert "403 Forbidden" not in proxy_login, proxy_login
+    assert "303 See Other" in proxy_login, proxy_login
+    machine.log("PASS: admin UI accepts proxied same-origin login requests when forwarded headers match")
+
+    machine.succeed("rm -f /tmp/underwrap-admin-ui.cookies")
+    good_login = machine.succeed(
+        "curl -s -D - -o /tmp/underwrap-admin-ui-good.out "
+        f"-X POST {ADMIN_UI}/auth/login "
+        "-H 'Origin: http://127.0.0.1:3000' "
+        "-H 'Content-Type: application/x-www-form-urlencoded' "
+        "--data 'username=alice&password=hunter2'"
+    )
+    assert "303 See Other" in good_login, good_login
+    cookie_match = re.search(r"set-cookie: (underwrap_admin_session=[^;]+)", good_login, re.IGNORECASE)
+    assert cookie_match, good_login
+    landing = machine.succeed(
+        f"curl -fsS -H {shlex.quote('Cookie: ' + cookie_match.group(1))} {ADMIN_UI}/"
+    )
+    assert "Operator dashboard" in landing, landing
+    assert "Operator sign-in" not in landing, landing
+    machine.log("PASS: admin UI successful login works on the deployed service path")
 
 
 def local_socket_permissions():

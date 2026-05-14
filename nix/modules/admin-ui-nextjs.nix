@@ -85,7 +85,8 @@ in
         ProtectClock = true;
         ProtectHostname = true;
         LockPersonality = true;
-        MemoryDenyWriteExecute = true;
+        # Node/V8 needs executable writable memory for JIT-compiled code.
+        MemoryDenyWriteExecute = false;
         RestrictSUIDSGID = true;
         RestrictRealtime = true;
         SystemCallArchitectures = "native";
