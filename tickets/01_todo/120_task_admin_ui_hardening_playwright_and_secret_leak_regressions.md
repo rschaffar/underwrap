@@ -10,6 +10,26 @@ Epic: `epic_nextjs_admin_ui_replatform.md`
 - Set CSP and response-cache behavior appropriate for a Next.js app.
 - Verify the UI does not log secrets or expose backend tokens.
 
+## Handoff notes / current repo state
+
+Checks already used successfully during implementation so far:
+
+- `cd apps/admin-ui && npm test && npm run build`
+- `nix build .#underwrap-admin-ui-nextjs --no-link`
+- backend endpoint tickets also ran `cargo test -p backend-backendd`
+
+Current frontend tests are lightweight Node tests in:
+
+- `apps/admin-ui/tests/auth.test.ts`
+- `apps/admin-ui/tests/csrf.test.ts`
+
+This ticket should add the browser/E2E layer on top, not replace those lower-level tests.
+
+Important flake/Nix gotcha to remember while adding new frontend test files:
+
+- if a new file is not git-tracked/staged, the flake source snapshot used by `nix build` will not include it
+- if Nix cannot find a just-created frontend file but local `npm run build` can, check git tracking first
+
 ## Acceptance criteria
 
 - [ ] Browser E2E tests cover the main operator workflows.

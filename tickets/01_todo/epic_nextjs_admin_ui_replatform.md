@@ -112,6 +112,57 @@ and stronger security boundaries where the redesign makes them clearer.
 Within those stories, execute the numbered `NNN_task_...` tickets in ascending
 order unless a later ticket is explicitly pulled forward for parallel work.
 
+## Implementation handoff status
+
+Completed task tickets already landed in the repo and were moved to `tickets/03_done/`:
+
+- `000_task_admin_ui_rfc_page_map_and_endpoint_contract.md`
+- `010_task_admin_ui_nextjs_app_scaffold_and_design_system.md`
+- `020_task_admin_ui_nix_build_runtime_and_dev_shell.md`
+- `030_task_admin_ui_server_config_loader_and_backend_client.md`
+- `040_task_admin_ui_login_sessions_and_route_protection.md`
+- `050_task_admin_ui_csrf_same_origin_and_state_change_guards.md`
+- `060_task_admin_ui_backend_overview_and_resource_index_endpoints.md`
+- `070_task_admin_ui_backend_resource_detail_reveal_and_binary_download_endpoints.md`
+- `080_task_admin_ui_backend_wrapper_matrix_and_mutation_view_endpoints.md`
+- `090_task_admin_ui_resource_explorer_and_navigation.md`
+
+Current repo state to know before continuing:
+
+- The new app lives in `apps/admin-ui/`.
+- It already has:
+  - Next.js App Router scaffold
+  - dark shell and navigation
+  - server-side runtime config loading from `UNDERWRAP_ADMIN_UI_CONFIG`
+  - signed login/session/logout flow
+  - CSRF/same-origin protection helpers
+  - live dashboard + target overview + resource list + resource detail pages
+  - Nix package `underwrap-admin-ui-nextjs`
+  - NixOS module `nixosModules.admin-ui` / `nix/modules/admin-ui-nextjs.nix`
+- Backend UI read-model endpoints already implemented:
+  - `GET /v1/admin/ui/overview`
+  - `POST /v1/admin/ui/resources/query`
+  - `POST /v1/admin/ui/resource/get`
+  - `POST /v1/admin/ui/resource/reveal`
+  - `POST /v1/admin/ui/resource/download`
+  - `POST /v1/admin/ui/mutation/get`
+  - `POST /v1/admin/ui/wrappers/query`
+  - `POST /v1/admin/ui/matrix/query`
+- Backend tests currently cover those read-model endpoints.
+
+Important handoff/gotcha notes:
+
+- When using `nix build` on this flake, newly created frontend files must be
+  **git-tracked/staged** or the flake source snapshot will not include them.
+  If Nix says a module/file cannot be found even though local `npm run build`
+  works, check whether the new files are tracked.
+- Local checks that should remain green after each slice:
+  - `cd apps/admin-ui && npm test && npm run build`
+  - `nix build .#underwrap-admin-ui-nextjs --no-link`
+  - backend-side endpoint tickets should also run the relevant `cargo test -p ...`
+- Next.js currently emits a non-fatal tracing warning because the runtime config
+  loader reads files from disk. Local build and Nix build still pass.
+
 ## Acceptance criteria
 
 - [ ] A Next.js/TypeScript admin app replaces `crates/backend-admin-ui` as

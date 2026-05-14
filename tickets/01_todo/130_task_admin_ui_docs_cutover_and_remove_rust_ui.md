@@ -10,6 +10,23 @@ Epic: `epic_nextjs_admin_ui_replatform.md`
 - Cut over packaging/deployment to the new app.
 - Remove `crates/backend-admin-ui` after the replacement is ready.
 
+## Handoff notes / current repo state
+
+Docs and integration groundwork already present:
+
+- redesign RFC: `docs/admin-ui-nextjs-rfc.md`
+- docs index link added in `docs/index.md`
+- packaged app: `apps/admin-ui/`
+- flake package: `underwrap-admin-ui-nextjs`
+- NixOS module: `nix/modules/admin-ui-nextjs.nix`
+
+This ticket should finish the narrative and cutover by:
+
+1. rewriting operator-facing docs to describe the Next.js app as the primary UI
+2. documenting `UNDERWRAP_ADMIN_UI_CONFIG` and the NixOS module options
+3. removing `crates/backend-admin-ui` once parity is good enough
+4. removing stale references to the Rust HTML UI from docs/flake/module text where appropriate
+
 ## Acceptance criteria
 
 - [ ] Docs describe the new Next.js app rather than the Rust HTML UI.
