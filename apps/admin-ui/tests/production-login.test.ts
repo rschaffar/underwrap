@@ -88,6 +88,19 @@ test('packaged server login route rejects wrong password, accepts correct passwo
     });
     assert.equal(proxiedWrongPassword.status, 303);
 
+    const nullOriginSameSite = await fetch(`${baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: {
+        Origin: 'null',
+        Referer: `${baseUrl}/login`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ username: 'alice', password: 'wrong-password' }),
+      redirect: 'manual',
+    });
+    assert.equal(nullOriginSameSite.status, 303);
+    assert.match(nullOriginSameSite.headers.get('location') ?? '', /\/login\?error=invalid$/);
+
     const correctPassword = await fetch(`${baseUrl}/auth/login`, {
       method: 'POST',
       headers: {
