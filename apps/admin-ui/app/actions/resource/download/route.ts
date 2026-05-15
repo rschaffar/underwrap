@@ -1,4 +1,4 @@
-import { getBackendClient } from '../../../../lib/server/backend-client.ts';
+import { getConfiguredBackendClient } from '../../../../lib/server/backend-client.ts';
 import { requireActionSession } from '../../../../lib/server/resource-action.ts';
 
 export async function POST(request: Request) {
@@ -8,11 +8,7 @@ export async function POST(request: Request) {
     return auth.error;
   }
 
-  const client = await getBackendClient(String(formData.get('target') ?? ''));
-  if (!client) {
-    return new Response('unknown target', { status: 404 });
-  }
-
+  const client = await getConfiguredBackendClient();
   const response = await client.downloadResource(
     String(formData.get('store') ?? ''),
     String(formData.get('secret_id') ?? ''),

@@ -1,4 +1,4 @@
-import { BackendApiError, getBackendClient } from '../../../../lib/server/backend-client.ts';
+import { BackendApiError, getConfiguredBackendClient } from '../../../../lib/server/backend-client.ts';
 import { redirectToResourceDetail, requireActionSession } from '../../../../lib/server/resource-action.ts';
 import { ADMIN_UI_MAX_FILE_BYTES, buildSecretId } from '../../../../lib/server/resource-id.ts';
 
@@ -19,30 +19,26 @@ export async function POST(request: Request) {
     return auth.error;
   }
 
-  const target = String(formData.get('target') ?? '');
   const store = String(formData.get('store') ?? '');
   const resource = String(formData.get('resource') ?? '');
   const wrapper = String(formData.get('wrapper') ?? '');
   const path = String(formData.get('entry') ?? '');
   const file = formData.get('file');
 
-  const client = await getBackendClient(target);
-  if (!client) {
-    return new Response('unknown target', { status: 404 });
-  }
+  const client = await getConfiguredBackendClient();
   if (!(file instanceof File)) {
-    return redirectToResourceDetail(request, target, store, resource, 'upload-failed');
+    return redirectToResourceDetail(request, store, resource, 'upload-failed');
   }
 
   try {
     const bytes = Buffer.from(await file.arrayBuffer());
     if (bytes.length > ADMIN_UI_MAX_FILE_BYTES) {
-      return redirectToResourceDetail(request, target, store, resource, 'payload-too-large');
+      return redirectToResourceDetail(request, store, resource, 'payload-too-large');
     }
     const secretId = buildSecretId(resource, 'files', path);
     await client.uploadFileResource(store, wrapper, secretId, bytes.toString('base64'));
-    return redirectToResourceDetail(request, target, store, resource, 'secret-saved');
+    return redirectToResourceDetail(request, store, resource, 'secret-saved');
   } catch (error) {
-    return redirectToResourceDetail(request, target, store, resource, flashForError(error));
+    return redirectToResourceDetail(request, store, resource, flashForError(error));
   }
 }

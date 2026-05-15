@@ -1,9 +1,9 @@
-import { Card } from '../../../../../../components/card';
-import { Shell } from '../../../../../../components/shell';
-import { WrapperModeForm } from '../../../../../../components/wrapper-mode-form';
-import { requireSession } from '../../../../../../lib/auth-session.ts';
-import { requireBackendClient } from '../../../../../../lib/server/navigation.ts';
-import type { UiMatrixRow, UiWrapperApprovalMode, UiWrapperListItem } from '../../../../../../lib/server/ui-types.ts';
+import { Card } from '../../../../components/card';
+import { Shell } from '../../../../components/shell';
+import { WrapperModeForm } from '../../../../components/wrapper-mode-form';
+import { requireSession } from '../../../../lib/auth-session.ts';
+import { requireBackendClient } from '../../../../lib/server/navigation.ts';
+import type { UiMatrixRow, UiWrapperApprovalMode, UiWrapperListItem } from '../../../../lib/server/ui-types.ts';
 
 function modeLabel(mode: UiWrapperApprovalMode) {
   switch (mode.kind) {
@@ -69,7 +69,6 @@ function FlashCard({ flash }: { flash: ReturnType<typeof flashInfo> }) {
 }
 
 function MatrixCellForm({
-  target,
   store,
   resource,
   row,
@@ -78,7 +77,6 @@ function MatrixCellForm({
   csrfToken,
   query,
 }: {
-  target: string;
   store: string;
   resource: string;
   row: UiMatrixRow;
@@ -89,7 +87,6 @@ function MatrixCellForm({
 }) {
   return (
     <form method="post">
-      <input type="hidden" name="target" value={target} />
       <input type="hidden" name="store" value={store} />
       <input type="hidden" name="resource" value={resource} />
       <input type="hidden" name="wrapper" value={row.wrapper} />
@@ -116,13 +113,11 @@ function MatrixCellForm({
 
 function WrapperRow({
   item,
-  target,
   store,
   csrfToken,
   query,
 }: {
   item: UiWrapperListItem;
-  target: string;
   store: string;
   csrfToken: string;
   query: { q?: string; mode?: string; resource?: string; host?: string; user?: string; matrix_wrapper?: string };
@@ -141,7 +136,6 @@ function WrapperRow({
       </div>
       <div className="mt-4">
         <WrapperModeForm
-          target={target}
           store={store}
           wrapper={item.wrapper}
           csrfToken={csrfToken}
@@ -158,7 +152,7 @@ export default async function WrappersPage({
   params,
   searchParams,
 }: {
-  params: Promise<{ target: string; store: string }>;
+  params: Promise<{ store: string }>;
   searchParams: Promise<{
     q?: string;
     mode?: string;
@@ -169,24 +163,8 @@ export default async function WrappersPage({
     flash?: string;
   }>;
 }) {
-  const [{ target, store }, filters, session] = await Promise.all([params, searchParams, requireSession()]);
-  const client = await requireBackendClient(target);
-
-  if (!client) {
-    return (
-      <Shell
-        title={`Wrappers / ${store}`}
-        description="The selected target is not configured in the runtime backend list."
-        target={target}
-        store={store}
-        section="wrappers"
-      >
-        <Card title="Unknown target" eyebrow="Wrapper console">
-          <p className="text-sm text-[var(--muted)]">Select a configured target to manage wrapper modes and matrix rules.</p>
-        </Card>
-      </Shell>
-    );
-  }
+  const [{ store }, filters, session] = await Promise.all([params, searchParams, requireSession()]);
+  const client = await requireBackendClient();
 
   let wrappersResponse;
   let resourcesResponse;
@@ -200,7 +178,6 @@ export default async function WrappersPage({
       <Shell
         title={`Wrappers / ${store}`}
         description="The wrapper or matrix read models could not be loaded right now."
-        target={target}
         store={store}
         section="wrappers"
       >
@@ -240,7 +217,6 @@ export default async function WrappersPage({
     <Shell
       title={`Wrappers / ${store}`}
       description="Live wrapper mode management plus a filterable access matrix for one selected resource at a time."
-      target={target}
       store={store}
       section="wrappers"
     >
@@ -282,7 +258,6 @@ export default async function WrappersPage({
                 <WrapperRow
                   key={item.wrapper}
                   item={item}
-                  target={target}
                   store={store}
                   csrfToken={session.csrfToken}
                   query={query}
@@ -372,7 +347,6 @@ export default async function WrappersPage({
                       {matrixResponse.operations.map((operation) => (
                         <td key={operation} className="px-4 py-4">
                           <MatrixCellForm
-                            target={target}
                             store={store}
                             resource={selectedResource}
                             row={row}

@@ -10,21 +10,20 @@ type ShellProps = {
   title: string;
   description: string;
   section?: NavSection;
-  target?: string;
   store?: string;
 };
 
-function sectionHref(target: string, store: string | undefined, section: NavSection) {
-  if (!store || section === 'overview') {
-    return `/t/${target}`;
+function sectionHref(store: string | undefined, section: NavSection) {
+  if (section === 'overview' || !store) {
+    return '/';
   }
   switch (section) {
     case 'resources':
-      return `/t/${target}/s/${store}/resources`;
+      return `/s/${store}/resources`;
     case 'wrappers':
-      return `/t/${target}/s/${store}/wrappers`;
+      return `/s/${store}/wrappers`;
     case 'audit':
-      return `/t/${target}/s/${store}/audit`;
+      return `/s/${store}/audit`;
   }
 }
 
@@ -40,11 +39,10 @@ function StatusPill({ reachable }: { reachable: boolean }) {
   );
 }
 
-export async function Shell({ children, title, description, section, target, store }: ShellProps) {
-  const [session, navigation] = await Promise.all([requireSession(), loadNavigation(target)]);
-  const targets = navigation.targets;
-  const selectedTarget = navigation.activeTarget;
-  const stores = selectedTarget?.stores ?? [];
+export async function Shell({ children, title, description, section, store }: ShellProps) {
+  const [session, navigation] = await Promise.all([requireSession(), loadNavigation()]);
+  const stores = navigation.stores;
+  const activeStore = store ?? stores[0];
 
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--fg)]">
@@ -57,7 +55,7 @@ export async function Shell({ children, title, description, section, target, sto
               </div>
               <div className="mt-2 flex items-center gap-3">
                 <h1 className="text-2xl font-semibold tracking-tight text-white">{title}</h1>
-                {selectedTarget ? <StatusPill reachable={selectedTarget.status === 'reachable'} /> : null}
+                <StatusPill reachable={navigation.backend.status === 'reachable'} />
               </div>
               <p className="mt-2 max-w-3xl text-sm text-[var(--muted)]">{description}</p>
             </div>
@@ -78,22 +76,9 @@ export async function Shell({ children, title, description, section, target, sto
           <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <div className="grid gap-4 md:grid-cols-2">
               <div className="rounded-2xl border border-white/8 bg-black/20 p-3">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.25em] text-[var(--muted)]">Target</div>
-                <div className="flex flex-wrap gap-2">
-                  {targets.map((entry) => {
-                    const active = entry.slug === selectedTarget?.slug;
-                    return (
-                      <Link
-                        key={entry.slug}
-                        href={`/t/${entry.slug}`}
-                        className={active
-                          ? 'rounded-xl border border-cyan-400/50 bg-cyan-400/15 px-3 py-2 text-sm font-medium text-cyan-100'
-                          : 'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-[var(--fg)] transition hover:border-cyan-400/30 hover:bg-cyan-400/10 hover:text-cyan-100'}
-                      >
-                        {entry.label}
-                      </Link>
-                    );
-                  })}
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.25em] text-[var(--muted)]">Backend</div>
+                <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/8 px-3 py-2 text-sm font-medium text-cyan-100">
+                  {navigation.backend.label}
                 </div>
               </div>
 
@@ -102,11 +87,11 @@ export async function Shell({ children, title, description, section, target, sto
                 <div className="flex flex-wrap gap-2">
                   {stores.length > 0 ? (
                     stores.map((entry) => {
-                      const active = entry === store;
+                      const active = entry === activeStore;
                       return (
                         <Link
                           key={entry}
-                          href={`/t/${selectedTarget?.slug}/s/${entry}/resources`}
+                          href={`/s/${entry}/resources`}
                           className={active
                             ? 'rounded-xl border border-fuchsia-400/50 bg-fuchsia-400/15 px-3 py-2 text-sm font-medium text-fuchsia-100'
                             : 'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-[var(--fg)] transition hover:border-fuchsia-400/30 hover:bg-fuchsia-400/10 hover:text-fuchsia-100'}
@@ -117,7 +102,7 @@ export async function Shell({ children, title, description, section, target, sto
                     })
                   ) : (
                     <div className="rounded-xl border border-dashed border-white/10 px-3 py-2 text-sm text-[var(--muted)]">
-                      Select a target to see its stores.
+                      No stores are reachable right now.
                     </div>
                   )}
                 </div>
@@ -130,7 +115,7 @@ export async function Shell({ children, title, description, section, target, sto
                 return (
                   <Link
                     key={entry}
-                    href={sectionHref(selectedTarget?.slug ?? targets[0]?.slug ?? '', store, entry)}
+                    href={sectionHref(activeStore, entry)}
                     className={active
                       ? 'rounded-xl border border-white/20 bg-white/12 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-black/20'
                       : 'rounded-xl border border-white/8 bg-white/5 px-4 py-2 text-sm text-[var(--muted)] transition hover:border-white/15 hover:bg-white/8 hover:text-white'}

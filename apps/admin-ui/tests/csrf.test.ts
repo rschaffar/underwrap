@@ -20,7 +20,7 @@ test('requestHasAllowedOrigin accepts same-origin Origin/Referer/fetch-metadata 
   const refererOk = new Request('http://127.0.0.1:3000/logout', {
     method: 'POST',
     headers: {
-      referer: 'http://127.0.0.1:3000/t/corp/s/work/resources/gh/main',
+      referer: 'http://127.0.0.1:3000/s/work/resources/gh/main',
       host: '127.0.0.1:3000',
     },
   });

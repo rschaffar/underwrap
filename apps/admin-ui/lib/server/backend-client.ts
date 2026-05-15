@@ -228,11 +228,3 @@ export async function getConfiguredBackendClient() {
   const backend = await getConfiguredBackend();
   return new BackendClient(backend.label, backend.adminUrl, backend.token);
 }
-
-export async function getBackendClient(target?: string) {
-  const client = await getConfiguredBackendClient();
-  if (target && target !== client.backendLabel) {
-    return null;
-  }
-  return client;
-}

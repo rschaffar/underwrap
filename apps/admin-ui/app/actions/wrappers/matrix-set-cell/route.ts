@@ -1,4 +1,4 @@
-import { BackendApiError, getBackendClient } from '../../../../lib/server/backend-client.ts';
+import { BackendApiError, getConfiguredBackendClient } from '../../../../lib/server/backend-client.ts';
 import { requireActionSession } from '../../../../lib/server/resource-action.ts';
 import { redirectToWrappers } from '../../../../lib/server/wrappers-action.ts';
 
@@ -16,7 +16,6 @@ export async function POST(request: Request) {
     return auth.error;
   }
 
-  const target = String(formData.get('target') ?? '');
   const store = String(formData.get('store') ?? '');
   const resource = String(formData.get('resource') ?? '');
   const wrapper = String(formData.get('wrapper') ?? '');
@@ -31,15 +30,12 @@ export async function POST(request: Request) {
     matrix_wrapper: String(formData.get('matrix_wrapper') ?? ''),
   };
 
-  const client = await getBackendClient(target);
-  if (!client) {
-    return new Response('unknown target', { status: 404 });
-  }
+  const client = await getConfiguredBackendClient();
 
   try {
     await client.setMatrixCell(store, wrapper, resource, operation, enabled);
-    return redirectToWrappers(request, target, store, { ...query, flash: enabled ? 'matrix-cell-enabled' : 'matrix-cell-disabled' });
+    return redirectToWrappers(request, store, { ...query, flash: enabled ? 'matrix-cell-enabled' : 'matrix-cell-disabled' });
   } catch (error) {
-    return redirectToWrappers(request, target, store, { ...query, flash: flashForError(error) });
+    return redirectToWrappers(request, store, { ...query, flash: flashForError(error) });
   }
 }

@@ -1,8 +1,8 @@
-import { AuditFilterForm } from '../../../../../../components/audit-filter-form';
-import { Card } from '../../../../../../components/card';
-import { Shell } from '../../../../../../components/shell';
-import { buildAuditQuery, auditActionTone, parseEpochSearchParam } from '../../../../../../lib/server/audit-filters.ts';
-import { requireBackendClient } from '../../../../../../lib/server/navigation.ts';
+import { AuditFilterForm } from '../../../../components/audit-filter-form';
+import { Card } from '../../../../components/card';
+import { Shell } from '../../../../components/shell';
+import { buildAuditQuery, auditActionTone, parseEpochSearchParam } from '../../../../lib/server/audit-filters.ts';
+import { requireBackendClient } from '../../../../lib/server/navigation.ts';
 
 function formatTimestamp(epoch: number) {
   return new Date(epoch * 1000).toISOString().replace('T', ' ').replace('.000Z', 'Z');
@@ -12,7 +12,7 @@ export default async function AuditPage({
   params,
   searchParams,
 }: {
-  params: Promise<{ target: string; store: string }>;
+  params: Promise<{ store: string }>;
   searchParams: Promise<{
     operator?: string;
     wrapper?: string;
@@ -22,25 +22,8 @@ export default async function AuditPage({
     to_epoch?: string;
   }>;
 }) {
-  const [{ target, store }, filters] = await Promise.all([params, searchParams]);
-  const client = await requireBackendClient(target);
-
-  if (!client) {
-    return (
-      <Shell
-        title={`Audit / ${store}`}
-        description="The selected target is not configured in the runtime backend list."
-        target={target}
-        store={store}
-        section="audit"
-      >
-        <Card title="Unknown target" eyebrow="Audit console">
-          <p className="text-sm text-[var(--muted)]">Select a configured target to browse audit history.</p>
-        </Card>
-      </Shell>
-    );
-  }
-
+  const [{ store }, filters] = await Promise.all([params, searchParams]);
+  const client = await requireBackendClient();
   const query = buildAuditQuery(filters);
 
   let response;
@@ -51,7 +34,6 @@ export default async function AuditPage({
       <Shell
         title={`Audit / ${store}`}
         description="The audit feed could not be loaded right now."
-        target={target}
         store={store}
         section="audit"
       >
@@ -66,7 +48,6 @@ export default async function AuditPage({
     <Shell
       title={`Audit / ${store}`}
       description="Read-only, filterable backend audit history with explicit reveal/download visibility for the new operator console."
-      target={target}
       store={store}
       section="audit"
     >
@@ -87,7 +68,6 @@ export default async function AuditPage({
         <Card title="Audit history" eyebrow="Live data">
           <div className="mb-4 flex flex-wrap gap-4 text-sm text-[var(--muted)]">
             <div>Results: <span className="text-white">{response.total}</span></div>
-            <div>Target: <span className="text-white">{target}</span></div>
             <div>Store: <span className="text-white">{store}</span></div>
           </div>
 

@@ -1,34 +1,18 @@
 import Link from 'next/link';
 
-import { Card } from '../../../../../../components/card';
-import { Shell } from '../../../../../../components/shell';
-import { requireBackendClient } from '../../../../../../lib/server/navigation.ts';
+import { Card } from '../../../../components/card';
+import { Shell } from '../../../../components/shell';
+import { requireBackendClient } from '../../../../lib/server/navigation.ts';
 
 export default async function ResourcesPage({
   params,
   searchParams,
 }: {
-  params: Promise<{ target: string; store: string }>;
+  params: Promise<{ store: string }>;
   searchParams: Promise<{ q?: string; slot?: string }>;
 }) {
-  const [{ target, store }, filters] = await Promise.all([params, searchParams]);
-  const client = await requireBackendClient(target);
-
-  if (!client) {
-    return (
-      <Shell
-        title={`Resources / ${store}`}
-        description="The selected target is not configured in the runtime backend list."
-        target={target}
-        store={store}
-        section="resources"
-      >
-        <Card title="Unknown target" eyebrow="Resource explorer">
-          <p className="text-sm text-[var(--muted)]">Select a configured target to browse resources.</p>
-        </Card>
-      </Shell>
-    );
-  }
+  const [{ store }, filters] = await Promise.all([params, searchParams]);
+  const client = await requireBackendClient();
 
   let response;
   try {
@@ -38,13 +22,12 @@ export default async function ResourcesPage({
       <Shell
         title={`Resources / ${store}`}
         description="The resource index endpoint could not be loaded for this store."
-        target={target}
         store={store}
         section="resources"
       >
         <Card title="Resource index unavailable" eyebrow="Resource explorer">
           <p className="text-sm text-[var(--muted)]">
-            Check that the store exists for this backend target and that the UI read-model endpoints are reachable.
+            Check that the store exists for this backend and that the UI read-model endpoints are reachable.
           </p>
         </Card>
       </Shell>
@@ -55,7 +38,6 @@ export default async function ResourcesPage({
     <Shell
       title={`Resources / ${store}`}
       description="Searchable live resource inventory with slot presence and mutation-state cues from the backend UI read model."
-      target={target}
       store={store}
       section="resources"
     >
@@ -115,7 +97,7 @@ export default async function ResourcesPage({
                     </span>
                   </td>
                   <td className="px-4 py-4">
-                    <Link href={`/t/${target}/s/${store}/resources/${resource.resource}`} className="text-cyan-200 hover:text-cyan-100">
+                    <Link href={`/s/${store}/resources/${resource.resource}`} className="text-cyan-200 hover:text-cyan-100">
                       Open detail
                     </Link>
                   </td>

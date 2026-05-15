@@ -5,14 +5,13 @@ import { useState } from 'react';
 import type { UiResourceRevealResponse } from '../lib/server/ui-types';
 
 type RevealControlProps = {
-  target: string;
   store: string;
   secretId: string;
   csrfToken: string;
   allowDownload?: boolean;
 };
 
-export function RevealControl({ target, store, secretId, csrfToken, allowDownload = false }: RevealControlProps) {
+export function RevealControl({ store, secretId, csrfToken, allowDownload = false }: RevealControlProps) {
   const [result, setResult] = useState<UiResourceRevealResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +28,6 @@ export function RevealControl({ target, store, secretId, csrfToken, allowDownloa
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          target,
           store,
           secret_id: secretId,
           csrf_token: csrfToken,

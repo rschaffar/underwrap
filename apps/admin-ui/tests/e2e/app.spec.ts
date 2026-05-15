@@ -29,7 +29,7 @@ async function seedSession(page: import('@playwright/test').Page) {
 }
 
 async function gotoResourceDetail(page: import('@playwright/test').Page) {
-  await page.goto('/t/corp/s/work/resources/gh/main');
+  await page.goto('/s/work/resources/gh/main');
   await expect(page.getByRole('heading', { name: 'Resource gh/main' })).toBeVisible();
 }
 
@@ -60,7 +60,6 @@ async function enableMutation(
 ) {
   const csrfToken = await currentCsrfToken(page);
   await postFormAction(page, '/actions/resource/mutation', {
-    target: 'corp',
     store: 'work',
     resource: details.resource,
     wrapper: details.wrapper,
@@ -81,7 +80,7 @@ test('protected routes redirect without a valid session and pages carry CSP', as
   const loginResponse = await page.goto('/login');
   expect(loginResponse?.headers()['content-security-policy']).toContain("default-src 'self'");
 
-  await page.goto('/t/corp/s/work/resources/gh/main');
+  await page.goto('/s/work/resources/gh/main');
   await expect(page).toHaveURL(/\/login$/);
 
   await page.context().addCookies([
@@ -94,7 +93,7 @@ test('protected routes redirect without a valid session and pages carry CSP', as
       sameSite: 'Lax',
     },
   ]);
-  await page.goto('/t/corp/s/work/resources/gh/main');
+  await page.goto('/s/work/resources/gh/main');
   await expect(page).toHaveURL(/\/login$/);
 });
 
@@ -103,7 +102,7 @@ test('resource reveal/download flow stays out of storage and uses no-store respo
   page.on('console', (message) => consoleMessages.push(message.text()));
 
   await seedSession(page);
-  await page.goto('/t/corp/s/work/resources/gh/main');
+  await page.goto('/s/work/resources/gh/main');
   const htmlBeforeReveal = await page.content();
   expect(htmlBeforeReveal).not.toContain(secretValue);
   expect(htmlBeforeReveal).not.toContain(backendToken);
@@ -125,8 +124,7 @@ test('resource reveal/download flow stays out of storage and uses no-store respo
   const csrfToken = await currentCsrfToken(page);
   const downloadResponse = await page.context().request.post('/actions/resource/download', {
     form: {
-      target: 'corp',
-      store: 'work',
+        store: 'work',
       resource: 'gh/main',
       secret_id: 'gh/main/files/hosts.json',
       csrf_token: csrfToken,
@@ -161,11 +159,10 @@ test('mutation, file upload/delete, wrapper mode, matrix toggle, audit filtering
     slot: 'env',
     entry: 'GH_TOKEN',
   });
-  await page.goto('/t/corp/s/work/resources/gh/main?flash=mutation-enabled');
+  await page.goto('/s/work/resources/gh/main?flash=mutation-enabled');
   await expect(page.getByText('Mutation window enabled for the selected wrapper and entry.')).toBeVisible();
 
   await postFormAction(page, '/actions/resource/write-text', {
-    target: 'corp',
     store: 'work',
     resource: 'gh/main',
     wrapper: 'gh-authorized',
@@ -174,7 +171,7 @@ test('mutation, file upload/delete, wrapper mode, matrix toggle, audit filtering
     value: 'ghp_replaced_secret',
     csrf_token: await currentCsrfToken(page),
   });
-  await page.goto('/t/corp/s/work/resources/gh/main?flash=secret-saved');
+  await page.goto('/s/work/resources/gh/main?flash=secret-saved');
   await expect(page.getByText('Secret material stored successfully.')).toBeVisible();
 
   await enableMutation(page, {
@@ -183,11 +180,10 @@ test('mutation, file upload/delete, wrapper mode, matrix toggle, audit filtering
     slot: 'files',
     entry: 'new.bin',
   });
-  await page.goto('/t/corp/s/work/resources/gh/main?flash=mutation-enabled');
+  await page.goto('/s/work/resources/gh/main?flash=mutation-enabled');
   const uploadResponse = await page.context().request.post('/actions/resource/upload-file', {
     multipart: {
-      target: 'corp',
-      store: 'work',
+        store: 'work',
       resource: 'gh/main',
       wrapper: 'gh-authorized',
       entry: 'new.bin',
@@ -203,26 +199,24 @@ test('mutation, file upload/delete, wrapper mode, matrix toggle, audit filtering
     },
   });
   expect(uploadResponse.ok()).toBeTruthy();
-  await page.goto('/t/corp/s/work/resources/gh/main?flash=secret-saved');
+  await page.goto('/s/work/resources/gh/main?flash=secret-saved');
   await expect(page.getByText('Secret material stored successfully.')).toBeVisible();
   await expect(page.getByText('new.bin')).toBeVisible();
 
   await postFormAction(page, '/actions/resource/delete', {
-    target: 'corp',
     store: 'work',
     resource: 'gh/main',
     wrapper: 'gh-authorized',
     secret_id: 'gh/main/files/new.bin',
     csrf_token: await currentCsrfToken(page),
   });
-  await page.goto('/t/corp/s/work/resources/gh/main?flash=secret-deleted');
+  await page.goto('/s/work/resources/gh/main?flash=secret-deleted');
   await expect(page.getByText('Stored entry deleted successfully.')).toBeVisible();
   await expect(page.getByText('new.bin')).toHaveCount(0);
 
-  await page.goto('/t/corp/s/work/wrappers');
+  await page.goto('/s/work/wrappers');
   await expect(page.getByRole('heading', { name: 'Wrappers / work' })).toBeVisible();
   await postFormAction(page, '/actions/wrappers/set-mode', {
-    target: 'corp',
     store: 'work',
     wrapper: 'gh-authorized',
     mode_kind: 'unlocked_until',
@@ -237,12 +231,11 @@ test('mutation, file upload/delete, wrapper mode, matrix toggle, audit filtering
     matrix_wrapper: '',
     csrf_token: await currentCsrfToken(page),
   });
-  await page.goto('/t/corp/s/work/wrappers?flash=wrapper-mode-saved&resource=gh%2Fmain');
+  await page.goto('/s/work/wrappers?flash=wrapper-mode-saved&resource=gh%2Fmain');
   await expect(page.getByText('Wrapper mode updated successfully.')).toBeVisible();
   await expect(page.locator('span', { hasText: /unlocked until/ }).first()).toBeVisible();
 
   await postFormAction(page, '/actions/wrappers/set-mode', {
-    target: 'corp',
     store: 'work',
     wrapper: 'gh-authorized',
     mode_kind: 'per_call_approval',
@@ -257,12 +250,11 @@ test('mutation, file upload/delete, wrapper mode, matrix toggle, audit filtering
     matrix_wrapper: '',
     csrf_token: await currentCsrfToken(page),
   });
-  await page.goto('/t/corp/s/work/wrappers?flash=wrapper-mode-saved&resource=gh%2Fmain');
+  await page.goto('/s/work/wrappers?flash=wrapper-mode-saved&resource=gh%2Fmain');
   await expect(page.getByText('Wrapper mode updated successfully.')).toBeVisible();
   await expect(page.locator('span', { hasText: 'per-call approval' }).first()).toBeVisible();
 
   await postFormAction(page, '/actions/wrappers/matrix-set-cell', {
-    target: 'corp',
     store: 'work',
     resource: 'gh/main',
     wrapper: 'gh-authorized',
@@ -275,14 +267,13 @@ test('mutation, file upload/delete, wrapper mode, matrix toggle, audit filtering
     matrix_wrapper: '',
     csrf_token: await currentCsrfToken(page),
   });
-  await page.goto('/t/corp/s/work/wrappers?flash=matrix-cell-enabled&resource=gh%2Fmain');
+  await page.goto('/s/work/wrappers?flash=matrix-cell-enabled&resource=gh%2Fmain');
   await expect(page.getByText('Matrix allow cell enabled.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'allow' }).first()).toBeVisible();
 
   const downloadAuditResponse = await page.context().request.post('/actions/resource/download', {
     form: {
-      target: 'corp',
-      store: 'work',
+        store: 'work',
       resource: 'gh/main',
       secret_id: 'gh/main/files/hosts.json',
       csrf_token: await currentCsrfToken(page),
@@ -293,7 +284,7 @@ test('mutation, file upload/delete, wrapper mode, matrix toggle, audit filtering
   });
   expect(downloadAuditResponse.ok()).toBeTruthy();
 
-  await page.goto('/t/corp/s/work/audit');
+  await page.goto('/s/work/audit');
   await expect(page.getByRole('heading', { name: 'Audit / work' })).toBeVisible();
   await page.selectOption('select[name="action"]', 'secret_downloaded');
   await page.getByPlaceholder('Resource').fill('gh/main');
@@ -303,8 +294,7 @@ test('mutation, file upload/delete, wrapper mode, matrix toggle, audit filtering
   const csrfToken = await currentCsrfToken(page);
   const forbidden = await page.context().request.post('/actions/resource/reveal', {
     data: {
-      target: 'corp',
-      store: 'work',
+        store: 'work',
       secret_id: 'gh/main/env/GH_TOKEN',
       csrf_token: `${csrfToken}-wrong`,
     },

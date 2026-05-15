@@ -1,4 +1,4 @@
-import { BackendApiError, getBackendClient } from '../../../../lib/server/backend-client.ts';
+import { BackendApiError, getConfiguredBackendClient } from '../../../../lib/server/backend-client.ts';
 import { redirectToResourceDetail, requireActionSession } from '../../../../lib/server/resource-action.ts';
 import { buildSecretId } from '../../../../lib/server/resource-id.ts';
 
@@ -16,22 +16,18 @@ export async function POST(request: Request) {
     return auth.error;
   }
 
-  const target = String(formData.get('target') ?? '');
   const store = String(formData.get('store') ?? '');
   const resource = String(formData.get('resource') ?? '');
   const wrapper = String(formData.get('wrapper') ?? '');
   const mode = String(formData.get('mode') ?? 'temporary');
 
-  const client = await getBackendClient(target);
-  if (!client) {
-    return new Response('unknown target', { status: 404 });
-  }
+  const client = await getConfiguredBackendClient();
 
   try {
     const secretId = String(formData.get('secret_id') ?? '') || buildSecretId(resource, String(formData.get('slot') ?? '') as 'env' | 'files' | 'libsecret', String(formData.get('entry') ?? ''));
     await client.setMutation(store, wrapper, secretId, mode === 'disabled' ? 'disabled' : 'temporary');
-    return redirectToResourceDetail(request, target, store, resource, mode === 'disabled' ? 'mutation-disabled' : 'mutation-enabled');
+    return redirectToResourceDetail(request, store, resource, mode === 'disabled' ? 'mutation-disabled' : 'mutation-enabled');
   } catch (error) {
-    return redirectToResourceDetail(request, target, store, resource, flashForError(error));
+    return redirectToResourceDetail(request, store, resource, flashForError(error));
   }
 }

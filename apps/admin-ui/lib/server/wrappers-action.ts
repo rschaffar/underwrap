@@ -10,7 +10,7 @@ export type WrappersPageQuery = {
   flash?: string;
 };
 
-export function wrappersHref(target: string, store: string, query: WrappersPageQuery = {}) {
+export function wrappersHref(store: string, query: WrappersPageQuery = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (typeof value === 'string' && value.trim()) {
@@ -18,10 +18,10 @@ export function wrappersHref(target: string, store: string, query: WrappersPageQ
     }
   }
   const qs = params.toString();
-  const base = `/t/${encodeURIComponent(target)}/s/${encodeURIComponent(store)}/wrappers`;
+  const base = `/s/${encodeURIComponent(store)}/wrappers`;
   return qs ? `${base}?${qs}` : base;
 }
 
-export function redirectToWrappers(request: Request, target: string, store: string, query: WrappersPageQuery = {}) {
-  return NextResponse.redirect(new URL(wrappersHref(target, store, query), request.url), 303);
+export function redirectToWrappers(request: Request, store: string, query: WrappersPageQuery = {}) {
+  return NextResponse.redirect(new URL(wrappersHref(store, query), request.url), 303);
 }

@@ -1,11 +1,11 @@
-import { Card } from '../../../../../../../components/card';
-import { ResourceEntryTable } from '../../../../../../../components/resource-entry-table';
-import { RevealControl } from '../../../../../../../components/reveal-control';
-import { Shell } from '../../../../../../../components/shell';
-import { requireSession } from '../../../../../../../lib/auth-session.ts';
-import { buildResourcePath } from '../../../../../../../lib/mock-data';
-import { requireBackendClient } from '../../../../../../../lib/server/navigation.ts';
-import type { UiMutationWrapperState, UiResourceEntrySummary } from '../../../../../../../lib/server/ui-types.ts';
+import { Card } from '../../../../../components/card';
+import { ResourceEntryTable } from '../../../../../components/resource-entry-table';
+import { RevealControl } from '../../../../../components/reveal-control';
+import { Shell } from '../../../../../components/shell';
+import { requireSession } from '../../../../../lib/auth-session.ts';
+import { buildResourcePath } from '../../../../../lib/mock-data';
+import { requireBackendClient } from '../../../../../lib/server/navigation.ts';
+import type { UiMutationWrapperState, UiResourceEntrySummary } from '../../../../../lib/server/ui-types.ts';
 
 function SidebarCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -63,7 +63,6 @@ function WrapperSelect({ wrappers, name = 'wrapper' }: { wrappers: UiMutationWra
 }
 
 function EntryMutationForm({
-  target,
   store,
   resource,
   csrfToken,
@@ -71,7 +70,6 @@ function EntryMutationForm({
   entry,
   allowDownload = false,
 }: {
-  target: string;
   store: string;
   resource: string;
   csrfToken: string;
@@ -82,7 +80,6 @@ function EntryMutationForm({
   if (wrappers.length === 0) {
     return allowDownload ? (
       <form className="grid gap-2" method="post">
-        <input type="hidden" name="target" value={target} />
         <input type="hidden" name="store" value={store} />
         <input type="hidden" name="resource" value={resource} />
         <input type="hidden" name="secret_id" value={entry.secret_id} />
@@ -102,7 +99,6 @@ function EntryMutationForm({
 
   return (
     <form className="grid gap-2" method="post">
-      <input type="hidden" name="target" value={target} />
       <input type="hidden" name="store" value={store} />
       <input type="hidden" name="resource" value={resource} />
       <input type="hidden" name="secret_id" value={entry.secret_id} />
@@ -150,7 +146,6 @@ function EntryMutationForm({
 
 function TextWriteForm({
   title,
-  target,
   store,
   resource,
   slot,
@@ -160,7 +155,6 @@ function TextWriteForm({
   placeholder,
 }: {
   title: string;
-  target: string;
   store: string;
   resource: string;
   slot: 'env' | 'libsecret';
@@ -175,7 +169,6 @@ function TextWriteForm({
         <p className="text-sm text-[var(--muted)]">No catalog wrappers are associated with this resource yet.</p>
       ) : (
         <form className="grid gap-3" method="post">
-          <input type="hidden" name="target" value={target} />
           <input type="hidden" name="store" value={store} />
           <input type="hidden" name="resource" value={resource} />
           <input type="hidden" name="slot" value={slot} />
@@ -225,13 +218,11 @@ function TextWriteForm({
 }
 
 function FileWriteForm({
-  target,
   store,
   resource,
   wrappers,
   csrfToken,
 }: {
-  target: string;
   store: string;
   resource: string;
   wrappers: UiMutationWrapperState[];
@@ -243,7 +234,6 @@ function FileWriteForm({
         <p className="text-sm text-[var(--muted)]">No catalog wrappers are associated with this resource yet.</p>
       ) : (
         <form className="grid gap-3" method="post" encType="multipart/form-data">
-          <input type="hidden" name="target" value={target} />
           <input type="hidden" name="store" value={store} />
           <input type="hidden" name="resource" value={resource} />
           <input type="hidden" name="slot" value="files" />
@@ -296,28 +286,12 @@ export default async function ResourceDetailPage({
   params,
   searchParams,
 }: {
-  params: Promise<{ target: string; store: string; resource: string[] }>;
+  params: Promise<{ store: string; resource: string[] }>;
   searchParams: Promise<{ flash?: string }>;
 }) {
-  const [{ target, store, resource }, query, session] = await Promise.all([params, searchParams, requireSession()]);
+  const [{ store, resource }, query, session] = await Promise.all([params, searchParams, requireSession()]);
   const resourcePath = buildResourcePath(resource);
-  const client = await requireBackendClient(target);
-
-  if (!client) {
-    return (
-      <Shell
-        title={`Resource ${resourcePath}`}
-        description="The selected target is not configured in the runtime backend list."
-        target={target}
-        store={store}
-        section="resources"
-      >
-        <Card title="Unknown target" eyebrow="Resource detail">
-          <p className="text-sm text-[var(--muted)]">Select a configured target to inspect resource details.</p>
-        </Card>
-      </Shell>
-    );
-  }
+  const client = await requireBackendClient();
 
   let resourceDetail;
   let mutationState;
@@ -331,7 +305,6 @@ export default async function ResourceDetailPage({
       <Shell
         title={`Resource ${resourcePath}`}
         description="The backend resource detail endpoint could not load this resource right now."
-        target={target}
         store={store}
         section="resources"
       >
@@ -350,7 +323,6 @@ export default async function ResourceDetailPage({
     <Shell
       title={`Resource ${resourceDetail.resource}`}
       description="Explicit reveal, file download/upload, and mutation-gated write/delete flows for env, files, and libsecret entries."
-      target={target}
       store={store}
       section="resources"
     >
@@ -376,9 +348,8 @@ export default async function ResourceDetailPage({
             emptyLabel="No env entries stored for this resource."
             actions={(entry) => (
               <div className="grid gap-3">
-                <RevealControl target={target} store={store} secretId={entry.secret_id} csrfToken={session.csrfToken} />
+                <RevealControl store={store} secretId={entry.secret_id} csrfToken={session.csrfToken} />
                 <EntryMutationForm
-                  target={target}
                   store={store}
                   resource={resourceDetail.resource}
                   csrfToken={session.csrfToken}
@@ -391,7 +362,6 @@ export default async function ResourceDetailPage({
 
           <TextWriteForm
             title="env write / replace"
-            target={target}
             store={store}
             resource={resourceDetail.resource}
             slot="env"
@@ -407,9 +377,8 @@ export default async function ResourceDetailPage({
             emptyLabel="No file entries stored for this resource."
             actions={(entry) => (
               <div className="grid gap-3">
-                <RevealControl target={target} store={store} secretId={entry.secret_id} csrfToken={session.csrfToken} allowDownload />
+                <RevealControl store={store} secretId={entry.secret_id} csrfToken={session.csrfToken} allowDownload />
                 <EntryMutationForm
-                  target={target}
                   store={store}
                   resource={resourceDetail.resource}
                   csrfToken={session.csrfToken}
@@ -422,7 +391,6 @@ export default async function ResourceDetailPage({
           />
 
           <FileWriteForm
-            target={target}
             store={store}
             resource={resourceDetail.resource}
             wrappers={mutationState.wrappers}
@@ -435,9 +403,8 @@ export default async function ResourceDetailPage({
             emptyLabel="No libsecret items stored for this resource."
             actions={(entry) => (
               <div className="grid gap-3">
-                <RevealControl target={target} store={store} secretId={entry.secret_id} csrfToken={session.csrfToken} />
+                <RevealControl store={store} secretId={entry.secret_id} csrfToken={session.csrfToken} />
                 <EntryMutationForm
-                  target={target}
                   store={store}
                   resource={resourceDetail.resource}
                   csrfToken={session.csrfToken}
@@ -450,7 +417,6 @@ export default async function ResourceDetailPage({
 
           <TextWriteForm
             title="libsecret write / replace"
-            target={target}
             store={store}
             resource={resourceDetail.resource}
             slot="libsecret"

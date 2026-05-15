@@ -1,4 +1,4 @@
-import { BackendApiError, getBackendClient } from '../../../../lib/server/backend-client.ts';
+import { BackendApiError, getConfiguredBackendClient } from '../../../../lib/server/backend-client.ts';
 import { requireActionSession } from '../../../../lib/server/resource-action.ts';
 import { redirectToWrappers } from '../../../../lib/server/wrappers-action.ts';
 
@@ -16,7 +16,6 @@ export async function POST(request: Request) {
     return auth.error;
   }
 
-  const target = String(formData.get('target') ?? '');
   const store = String(formData.get('store') ?? '');
   const wrapper = String(formData.get('wrapper') ?? '');
   const modeKind = String(formData.get('mode_kind') ?? 'locked');
@@ -30,10 +29,7 @@ export async function POST(request: Request) {
     matrix_wrapper: String(formData.get('matrix_wrapper') ?? ''),
   };
 
-  const client = await getBackendClient(target);
-  if (!client) {
-    return new Response('unknown target', { status: 404 });
-  }
+  const client = await getConfiguredBackendClient();
 
   try {
     let mode: Record<string, unknown>;
@@ -47,7 +43,7 @@ export async function POST(request: Request) {
       case 'unlocked_until': {
         const untilEpoch = Number(formData.get('until_epoch') ?? '0');
         if (!Number.isFinite(untilEpoch) || untilEpoch <= 0) {
-          return redirectToWrappers(request, target, store, { ...query, flash: 'wrapper-mode-invalid-until' });
+          return redirectToWrappers(request, store, { ...query, flash: 'wrapper-mode-invalid-until' });
         }
         mode = { kind: 'unlocked', until_epoch: Math.floor(untilEpoch) };
         break;
@@ -55,18 +51,18 @@ export async function POST(request: Request) {
       case 'per_call_approval': {
         const approvalKey = String(formData.get('approval_key') ?? '').trim();
         if (!approvalKey) {
-          return redirectToWrappers(request, target, store, { ...query, flash: 'wrapper-mode-missing-key' });
+          return redirectToWrappers(request, store, { ...query, flash: 'wrapper-mode-missing-key' });
         }
         mode = { kind: 'per-call-approval', approval_key: approvalKey };
         break;
       }
       default:
-        return redirectToWrappers(request, target, store, { ...query, flash: 'wrapper-mode-invalid' });
+        return redirectToWrappers(request, store, { ...query, flash: 'wrapper-mode-invalid' });
     }
 
     await client.setWrapperMode(store, wrapper, mode, reason);
-    return redirectToWrappers(request, target, store, { ...query, flash: 'wrapper-mode-saved' });
+    return redirectToWrappers(request, store, { ...query, flash: 'wrapper-mode-saved' });
   } catch (error) {
-    return redirectToWrappers(request, target, store, { ...query, flash: flashForError(error) });
+    return redirectToWrappers(request, store, { ...query, flash: flashForError(error) });
   }
 }

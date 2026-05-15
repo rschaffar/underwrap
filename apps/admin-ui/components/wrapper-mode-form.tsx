@@ -5,7 +5,6 @@ import { useMemo, useState } from 'react';
 import type { UiWrapperApprovalMode } from '../lib/server/ui-types';
 
 type WrapperModeFormProps = {
-  target: string;
   store: string;
   wrapper: string;
   csrfToken: string;
@@ -43,7 +42,7 @@ function toDateTimeLocal(epoch?: number | null) {
   return local.toISOString().slice(0, 16);
 }
 
-export function WrapperModeForm({ target, store, wrapper, csrfToken, currentMode, currentReason, query }: WrapperModeFormProps) {
+export function WrapperModeForm({ store, wrapper, csrfToken, currentMode, currentReason, query }: WrapperModeFormProps) {
   const [modeKind, setModeKind] = useState<ModeKind>(modeKindFromMode(currentMode));
   const [untilLocal, setUntilLocal] = useState(
     currentMode.kind === 'unlocked' ? toDateTimeLocal(currentMode.until_epoch ?? null) : '',
@@ -63,7 +62,6 @@ export function WrapperModeForm({ target, store, wrapper, csrfToken, currentMode
 
   return (
     <form method="post" className="grid gap-3 rounded-2xl border border-white/10 bg-black/20 p-4">
-      <input type="hidden" name="target" value={target} />
       <input type="hidden" name="store" value={store} />
       <input type="hidden" name="wrapper" value={wrapper} />
       <input type="hidden" name="csrf_token" value={csrfToken} />
