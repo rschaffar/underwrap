@@ -1,204 +1,111 @@
-# Configuration reference
+# Configuration
 
-underwrap is configured in three places:
+underwrap has two main layers of configuration:
 
 - **NixOS module** (`services.underwrap`) — generates target-host runtime
-  config, systemd units, users, groups, and wrapper binaries.
-- **Backend YAML** (`/etc/underwrap-backend/config.yaml`) — what
-  `underwrap-backendd` holds in memory at runtime.
-- **Admin UI YAML** (`/etc/underwrap/admin-ui.yaml`) — what the operator
-  web service needs to serve.
+  configuration, wrapper binaries, users/groups, sockets, and policy
+  fragments
+- **Backend config** (`underwrap-backendd`) — central secret storage,
+  service clients, admin tokens, and the operator-facing admin API
 
-A useful mental model for the current design:
+## NixOS module highlights
 
-- a **backend resource** always has three slots:
-  - `env`
-  - `files`
-  - `libsecret`
-- the **frontend wrapper config** decides which slots to project into the
-  target process
-- the **backend policy** decides whether a projected slot is readable and,
-  for mutable slots, whether it is writable
-
-The shipped design expects exactly one transport: the frontend always
-talks to the backend over HTTPS with mTLS; the admin UI always talks to
-the backend over HTTP with a bearer token. Anything older that mentions
-SSH forwarding, a local control socket, `underwrapctl`, or a timed
-unlock CLI is historical and no longer supported by the code.
-
-## NixOS module
+The NixOS module lives at `nix/modules/underwrap.nix`.
 
 ### Top-level options
 
-| Option | Type | Default | Notes |
-|---|---|---|---|
-| `enable` | bool | `false` | Enables the multi-instance daemon machinery |
-| `package` | derivation | — | The underwrap package |
+| Option | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enable` | bool | `false` | Enable the underwrap target-host service stack |
+| `package` | package | flake package | Which underwrap package set to use |
+| `backendUrl` | str | — | HTTPS URL of the remote backend service API |
+| `caFile` | path | — | CA bundle used to verify the backend certificate |
+| `clientCertFile` | path | — | mTLS client certificate for this frontend instance |
+| `clientKeyFile` | path | — | mTLS client private key for this frontend instance |
+| `instanceNamePrefix` | str | `"underwrap"` | Prefix for generated users/groups/socket paths |
 | `hardenTargetHost` | bool | `true` | Pins `kernel.yama.ptrace_scope=2` on the target host (via `mkDefault`) and asserts that every configured swap device is encrypted. This is the posture the strong same-UID protection claim depends on. Lower at your own risk. |
-| `instances.<name>` | submodule | `{}` | Per-instance configuration |
 
-The build also rejects any wrapper whose `envPassthrough` or `envSet`
-contains an `LD_*` variable (e.g. `LD_PRELOAD`, `LD_LIBRARY_PATH`).
-Allowing those would let the caller redirect dynamic linking inside
-the target and defeat the `NO_NEW_PRIVS` + `env_clear()` hardening.
-This assertion is unconditional, not gated on `hardenTargetHost`.
+`hardenTargetHost = true` is the recommended first-release posture. It
+keeps the host aligned with the security claims in `docs/security.md`.
 
-### Per-instance options
+### Why the module clears the target environment
+
+The wrapper chain launches the final target with `env_clear()` and then
+reconstructs only an allowlisted environment. This blocks caller-driven:
+
+- `LD_PRELOAD`
+- `LD_LIBRARY_PATH`
+- shell helper injection
+- incidental secret leakage from the caller environment
+
+The target process should only receive the variables explicitly declared
+in wrapper configuration.
+
+## Example wrapper configuration
 
 ```nix
-services.underwrap = {
-  enable = true;
-  package = pkgs.underwrap;
-
-  instances.work = {
-    allowedUsers = [ "alice" ];
-
-    # Required: service mode is the only mode.
-    backend = {
-      url = "https://backend.example.internal:18443";
-      caFile = "/etc/underwrap/ca.pem";
-      clientCertFile = "/etc/underwrap/client-work.pem";
-      clientKeyFile = "/etc/underwrap/client-work.key";
-    };
-
-    wrappers = {
-      work-gh = {
-        target = "${pkgs.gh}/bin/gh";
-        resources."github/token".env = true;
-      };
-      work-gh-auth = {
-        target = "${pkgs.gh}/bin/gh";
-        resources."github/gh".libsecret = true;
-      };
-      work-gws = {
-        target = "${pkgs.gws}/bin/gws";
-        resources."gws/state".files.path = ".config/gws";
+services.underwrap.wrappers = {
+  gh-work = {
+    resource = "gh/work";
+    wrapperGroup = "underwrap-gh-work";
+    target = "${pkgs.gh}/bin/gh";
+    env = {
+      GH_TOKEN = {
+        slot = "env";
+        entry = "GH_TOKEN";
       };
     };
+  };
+
+  gh-personal = {
+    resource = "gh/personal";
+    wrapperGroup = "underwrap-gh-personal";
+    target = "${pkgs.gh}/bin/gh";
+    env = {
+      GH_TOKEN = {
+        slot = "env";
+        entry = "GH_TOKEN";
+      };
+    };
+  };
+
+  gws-project = {
+    resource = "google/projektbuero";
+    wrapperGroup = "underwrap-gws-project";
+    target = "${pkgs.gws}/bin/gws";
+    libsecret = true;
   };
 };
 ```
 
-Key points:
+## Debug / override helper
 
-- Every instance requires a full `backend = { url; caFile;
-  clientCertFile; clientKeyFile; }`. The module asserts this at build
-  time.
-- Each wrapper ends up at `/run/wrappers/bin/<instance>-<wrapper>`
-  installed setgid to a per-wrapper group. This is the canonical entry
-  point and is the path NixOS guarantees by virtue of the setgid bit.
-- If `addUnsafeDebugTool = true;` is set on a wrapper, the module also
-  installs `/run/wrappers/bin/debug-<instance>-<wrapper>`. It reuses the
-  real wrapper's GID and resource projections but swaps the target for
-  `underwrap-debug-tool`, which can print secrets and spawn shells inside
-  the wrapped environment. This is intentionally unsafe and should only
-  be enabled for local development.
-- For every user listed in `allowedUsers`, the module also installs
-  per-user symlinks at `/etc/profiles/per-user/<user>/bin/<wrapper>` and,
-  for opted-in debug wrappers, `/etc/profiles/per-user/<user>/bin/debug-<wrapper>`.
-  These point at the prefixed setgid binaries above. NixOS already places
-  per-user profile bins on each user's `PATH`, so authorized users can
-  invoke wrappers by their bare attribute name (`gh`, `bx`, ...) instead
-  of typing the instance prefix. If two instances try to expose the same
-  command name to the same user, the build fails at evaluation with a
-  clear collision error.
-- `allowedUsers` is enforced by `underwrapd`; the wrapper setgid bit
-  makes the wrapper work at all, but the UID check rejects peers not in
-  the list.
-- Approval mode is **not** on the wrapper config. It lives in the
-  backend's policy document and is set through the admin UI or admin
-  API (see [Admin UI](admin-ui.md)).
+The module can also generate a debug wrapper that keeps the real
+wrapper's GID and resource projections but swaps the target for a helper
+command. This is useful for inspecting the environment and projection
+shape without exposing raw secret values in logs.
 
-### Resource slots
+## Wrapper option reference
 
-Every backend resource always has three slots:
-
-| Slot | What it stores | How wrappers project it |
-|---|---|---|
-| `env` | named env vars as individual entries under `<resource>/env/<VAR>` | `resources."<resource>".env = true` |
-| `files` | a directory tree under `<resource>/files/*` | `resources."<resource>".files.path = ...` |
-| `libsecret` | Secret Service items under `<resource>/libsecret/*` | `resources."<resource>".libsecret = true` |
-
-For env projection, the wrapper does **not** predeclare individual variable
-names. It receives every env entry currently stored in that resource's env
-slot. Dangerous names such as `LD_*`, `PATH`, `HOME`, and `UNDERWRAP_*` are
-rejected at runtime.
-
-### Wrapper options
-
-| Option | Type | Default | Notes |
-|---|---|---|---|
+| Option | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `resource` | str | — | Backend resource id |
+| `wrapperGroup` | str | — | Group used for wrapper identity via `getegid()` |
 | `target` | str | — | Absolute path to the binary to exec |
-| `resources` | attrs | `{}` | Resource-slot projections for this wrapper |
-| `envPassthrough` | `[str]` | `[]` | Extra env vars to let through (PATH is intentionally excluded — use `envSet.PATH`) |
-| `envSet` | `{str: str}` | `{}` | Fixed env vars to inject |
-| `addUnsafeDebugTool` | `bool` | `false` | Also install a `debug-...` wrapper that runs `underwrap-debug-tool` with the same wrapper identity and projections |
+| `targetArgs` | list of str | `[]` | Fixed arguments passed to the target |
+| `libsecret` | bool | `false` | Launch the target in private Secret Service mode |
+| `env` | attrset | `{}` | Env-slot projections for secret material |
+| `files` | attrset | `{}` | File-slot projections into the target view |
+| `allowedEnv` | list of str | minimal allowlist | Non-secret environment variables that may be preserved |
 
-There is intentionally no local `read-write` option and no local `approval`
-option. Read/write authority and approval mode both live centrally in the
-backend policy.
+`target` must always be an absolute trusted path. underwrap does not use
+`PATH` lookup for the main exec target.
 
-`addUnsafeDebugTool` is the explicit exception for development ergonomics:
-its whole purpose is to bypass the usual narrow-target shape and let a
-developer inspect the wrapped environment from the inside. Keep it off in
-normal deployments.
+## Backend admin tokens
 
-## Backend YAML
-
-```yaml
-stores:
-  work:
-    backend: plain
-    dir: /var/lib/underwrap-backend/work
-  personal:
-    backend: encrypted
-    dir: /var/lib/underwrap-backend/personal
-    key_file: /run/keys/underwrap-personal.key
-
-service:
-  listen: 0.0.0.0:18443
-  tls:
-    cert_file: /etc/underwrap-backend/server.pem
-    key_file: /etc/underwrap-backend/server.key
-    client_ca_file: /etc/underwrap-backend/ca.pem
-  clients:
-    # mTLS subject CN → store name
-    underwrap-work@vm-01:
-      store: work
-    underwrap-personal@laptop-02:
-      store: personal
-
-admin:
-  listen: 127.0.0.1:19443
-  tokens:
-    alice:
-      token_file: /run/keys/underwrap-admin-alice
-    bob:
-      token_file: /run/keys/underwrap-admin-bob
-```
-
-### Store modes
-
-- **plain** — files under `dir` owned by the daemon user.
-- **encrypted** — files under `dir` encrypted at rest with a 32-byte key
-  read from `key_file`. The key file must be owned by the daemon user
-  with mode `0400` or stricter.
-
-### Service listener
-
-- `cert_file` / `key_file` — the server certificate and private key.
-- `client_ca_file` — the CA that signs valid client certificates.
-- `clients` — exhaustive list of accepted client principals. A
-  certificate whose subject CN is not in this map gets 401.
-
-### Admin listener
-
-The admin listener is plain HTTP. Put it behind a local TLS-terminating
-reverse proxy when exposed beyond localhost.
-
-- `tokens.<operator>.token_file` — path to a file whose contents are the
-  bearer token for that operator. Tokens are trimmed at load time and
-  compared constant-time on every request.
+`underwrap-backendd` exposes a bearer-token protected admin API for the
+operator UI. Each configured token is loaded from a file and matched
+constant-time on every request.
 
 ## Admin UI runtime YAML
 
@@ -212,19 +119,23 @@ operators:
   alice:
     password_hash_file: /etc/underwrap-admin-ui/alice.phc
 
-backends:
-  corp:
-    admin_url: http://127.0.0.1:19443
-    token_file: /run/keys/underwrap-admin-corp
+backend:
+  label: shame01
+  admin_url: http://127.0.0.1:19443
+  token_file: /run/keys/underwrap-admin-backend
 ```
 
-- `session_key_file` must contain exactly 32 random bytes; they sign
-  the session cookie. Rotating this key invalidates all existing
-  sessions.
-- Each `password_hash_file` is an Argon2 PHC-encoded string (starts
-  with `$argon2`). See [Admin UI](admin-ui.md).
-- Each `backends.*.token_file` is the matching bearer token declared on
-  the backend host.
+- `session_key_file` must contain exactly 32 random bytes; they sign the
+  session cookie. Rotating this key invalidates all existing sessions.
+- `operators` may be empty or omitted. In that case the admin UI exposes
+  the first-use bootstrap flow and stores the created operator hash in
+  local state under `UNDERWRAP_ADMIN_UI_STATE_DIR`.
+- Each configured `password_hash_file` is an Argon2 PHC-encoded string
+  (starts with `$argon2`). See [Admin UI](admin-ui.md).
+- `backend.token_file` is the matching bearer token declared on the
+  backend host.
+- `backend.label` is only the UI's backend/host label. It is not part of
+  backend authn/authz.
 - Listener address and port are not part of this YAML; the packaged
   Next.js server binds through `HOSTNAME` and `PORT`.
 

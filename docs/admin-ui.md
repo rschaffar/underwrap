@@ -1,7 +1,7 @@
 # Admin UI
 
-`underwrap-admin-ui` is the supported operator-facing web service for the
-central backend.
+`underwrap-admin-ui` is the supported operator-facing web service for one
+`underwrap-backendd` instance.
 
 The implementation is the Next.js app in `apps/admin-ui/`. It acts as a
 server-side BFF in front of `underwrap-backendd`:
@@ -31,28 +31,29 @@ session_key_file: /run/keys/underwrap-admin-ui.session
 operators:
   alice:
     password_hash_file: /etc/underwrap-admin-ui/alice.phc
-  bob:
-    password_hash_file: /etc/underwrap-admin-ui/bob.phc
 
-backends:
-  corp:
-    admin_url: http://127.0.0.1:19443
-    token_file: /run/keys/underwrap-admin-corp
-  personal:
-    admin_url: http://127.0.0.1:19444
-    token_file: /run/keys/underwrap-admin-personal
+backend:
+  label: shame01
+  admin_url: http://127.0.0.1:19443
+  token_file: /run/keys/underwrap-admin-backend
 ```
 
 - `session_key_file` must contain exactly 32 random bytes
-- each `password_hash_file` must contain an Argon2 PHC string
-- each `backends.*.token_file` must match a configured
-  `underwrap-backendd` admin bearer token
+- `operators` is optional; if omitted, the UI uses the first-use bootstrap flow
+  and stores the created operator hash in local UI state
+- each configured `password_hash_file` must contain an Argon2 PHC string
+- `backend.token_file` must match a configured `underwrap-backendd` admin
+  bearer token
+- `backend.label` is an operator-facing backend/host label for the one backend
+  this UI instance fronts
 
 The server binds through the normal Next.js environment variables:
 
 - `HOSTNAME`
 - `PORT`
 - `UNDERWRAP_ADMIN_UI_CONFIG`
+- `UNDERWRAP_ADMIN_UI_STATE_DIR`
+- `UNDERWRAP_ADMIN_UI_SECURE_COOKIES`
 
 ## NixOS deployment
 
@@ -75,19 +76,29 @@ Use the flake's admin UI module export:
 The module wires:
 
 - the `underwrap-admin-ui` systemd service
-- `HOSTNAME`, `PORT`, and `UNDERWRAP_ADMIN_UI_CONFIG`
+- `HOSTNAME`, `PORT`, `UNDERWRAP_ADMIN_UI_CONFIG`,
+  `UNDERWRAP_ADMIN_UI_STATE_DIR`, and `UNDERWRAP_ADMIN_UI_SECURE_COOKIES`
 - the packaged standalone Next.js server
 
 ## Main operator workflows
 
 - log in as an operator
-- choose backend target and store
+- bootstrap the first operator if none exists yet
+- choose a store within this backend
 - browse resources
 - explicitly reveal or download secret material
 - enable mutation, write/upload/delete, then revoke mutation
 - manage wrapper modes
 - toggle access-matrix allow cells
 - inspect the read-only audit history feed
+
+Routes are scoped by store, not by a top-level target selector:
+
+- `/`
+- `/s/[store]/resources`
+- `/s/[store]/resources/[...resource]`
+- `/s/[store]/wrappers`
+- `/s/[store]/audit`
 
 ## Security notes
 
