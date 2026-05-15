@@ -1,4 +1,4 @@
-import { getConfiguredBackendClients } from './backend-client.ts';
+import { getConfiguredBackendClient } from './backend-client.ts';
 
 export type BackendProbe = {
   name: string;
@@ -9,28 +9,28 @@ export type BackendProbe = {
 };
 
 export async function probeConfiguredBackends(): Promise<BackendProbe[]> {
-  const clients = await getConfiguredBackendClients();
+  const client = await getConfiguredBackendClient();
 
-  return Promise.all(
-    clients.map(async (client) => {
-      try {
-        const stores = await client.listStores();
-        return {
-          name: client.target,
-          adminUrl: client.adminUrl,
-          reachable: true,
-          storeCount: stores.length,
-          error: null,
-        } satisfies BackendProbe;
-      } catch {
-        return {
-          name: client.target,
-          adminUrl: client.adminUrl,
-          reachable: false,
-          storeCount: null,
-          error: 'Backend unreachable or not yet configured for this environment.',
-        } satisfies BackendProbe;
-      }
-    }),
-  );
+  try {
+    const stores = await client.listStores();
+    return [
+      {
+        name: client.backendLabel,
+        adminUrl: client.adminUrl,
+        reachable: true,
+        storeCount: stores.length,
+        error: null,
+      } satisfies BackendProbe,
+    ];
+  } catch {
+    return [
+      {
+        name: client.backendLabel,
+        adminUrl: client.adminUrl,
+        reachable: false,
+        storeCount: null,
+        error: 'Backend unreachable or not yet configured for this environment.',
+      } satisfies BackendProbe,
+    ];
+  }
 }

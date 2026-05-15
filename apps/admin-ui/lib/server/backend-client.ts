@@ -1,4 +1,4 @@
-import { getConfiguredBackend, listConfiguredTargets } from './config.ts';
+import { getConfiguredBackend } from './config.ts';
 import type {
   UiAuditQueryResponse,
   UiMatrixQueryResponse,
@@ -12,18 +12,18 @@ import type {
 
 export class BackendApiError extends Error {
   constructor(
-    public readonly target: string,
+    public readonly backendLabel: string,
     public readonly endpoint: string,
     public readonly status: number,
     message?: string,
   ) {
-    super(message ?? `backend target ${target} returned ${status} for ${endpoint}`);
+    super(message ?? `backend ${backendLabel} returned ${status} for ${endpoint}`);
   }
 }
 
 export class BackendClient {
   constructor(
-    public readonly target: string,
+    public readonly backendLabel: string,
     public readonly adminUrl: string,
     private readonly token: string,
   ) {}
@@ -37,13 +37,13 @@ export class BackendClient {
       },
       cache: 'no-store',
     }).catch((error: unknown) => {
-      throw new Error(`request to backend target ${this.target} failed: ${String(error)}`);
+      throw new Error(`request to backend ${this.backendLabel} failed: ${String(error)}`);
     });
   }
 
   private async decodeJson<T>(response: Response, endpoint: string): Promise<T> {
     if (!response.ok) {
-      throw new BackendApiError(this.target, endpoint, response.status);
+      throw new BackendApiError(this.backendLabel, endpoint, response.status);
     }
     return (await response.json()) as T;
   }
@@ -111,7 +111,7 @@ export class BackendClient {
       }),
     });
     if (!response.ok) {
-      throw new BackendApiError(this.target, '/v1/admin/ui/resource/download', response.status);
+      throw new BackendApiError(this.backendLabel, '/v1/admin/ui/resource/download', response.status);
     }
     return response;
   }
@@ -224,24 +224,15 @@ export class BackendClient {
   }
 }
 
-export async function getBackendClient(target: string) {
-  const backend = await getConfiguredBackend(target);
-  if (!backend) {
-    return null;
-  }
-  return new BackendClient(target, backend.adminUrl, backend.token);
+export async function getConfiguredBackendClient() {
+  const backend = await getConfiguredBackend();
+  return new BackendClient(backend.label, backend.adminUrl, backend.token);
 }
 
-export async function getConfiguredBackendClients(): Promise<BackendClient[]> {
-  const targets = await listConfiguredTargets();
-  const clients = await Promise.all(
-    targets.map(async (target) => {
-      const backend = await getConfiguredBackend(target.name);
-      if (!backend) {
-        return null;
-      }
-      return new BackendClient(target.name, backend.adminUrl, backend.token);
-    }),
-  );
-  return clients.filter((client): client is BackendClient => client !== null);
+export async function getBackendClient(target?: string) {
+  const client = await getConfiguredBackendClient();
+  if (target && target !== client.backendLabel) {
+    return null;
+  }
+  return client;
 }

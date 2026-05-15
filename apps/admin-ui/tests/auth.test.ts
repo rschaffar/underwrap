@@ -58,10 +58,10 @@ test('bootstrapFirstOperator creates the first operator in local state and enabl
     [
       `session_key_file: ${path.join(root, 'dev-fixtures', 'session.key')}`,
       '',
-      'backends:',
-      '  corp:',
-      `    admin_url: http://127.0.0.1:19443`,
-      `    token_file: ${path.join(root, 'dev-fixtures', 'corp.token')}`,
+      'backend:',
+      '  label: corp',
+      `  admin_url: http://127.0.0.1:19443`,
+      `  token_file: ${path.join(root, 'dev-fixtures', 'corp.token')}`,
       '',
     ].join('\n'),
   );

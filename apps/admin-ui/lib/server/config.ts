@@ -7,7 +7,11 @@ import YAML from 'yaml';
 type RawConfig = {
   session_key_file?: string;
   operators?: Record<string, { password_hash_file?: string }>;
-  backends?: Record<string, { admin_url?: string; token_file?: string }>;
+  backend?: {
+    label?: string;
+    admin_url?: string;
+    token_file?: string;
+  };
 };
 
 type LocalOperatorState = {
@@ -22,7 +26,7 @@ export type LoadedOperator = {
 };
 
 export type LoadedBackend = {
-  name: string;
+  label: string;
   adminUrl: string;
   token: string;
 };
@@ -33,7 +37,7 @@ type LoadedStaticConfig = {
   operatorStatePath: string;
   sessionKey: Buffer;
   configuredOperators: Record<string, LoadedOperator>;
-  backends: Record<string, LoadedBackend>;
+  backend: LoadedBackend;
 };
 
 export type LoadedConfig = {
@@ -42,7 +46,7 @@ export type LoadedConfig = {
   operatorStatePath: string;
   sessionKey: Buffer;
   operators: Record<string, LoadedOperator>;
-  backends: Record<string, LoadedBackend>;
+  backend: LoadedBackend;
 };
 
 function defaultConfigPath() {
@@ -92,12 +96,16 @@ function normalizeOperatorName(name: string) {
   return name.trim();
 }
 
+function normalizeBackendLabel(label: string | undefined) {
+  return label?.trim() || 'backend';
+}
+
 async function loadStaticConfigUnchecked(configPath: string, stateDir: string): Promise<LoadedStaticConfig> {
   const configRaw = await readFile(configPath, 'utf8').catch((error: unknown) => {
     throw new Error(`failed to read admin UI config at ${configPath}: ${String(error)}`);
   });
 
-  const parsed = YAML.parse(configRaw) as RawConfig;
+  const parsed = YAML.parse(configRaw) as RawConfig & { backends?: unknown };
   if (!parsed || typeof parsed !== 'object') {
     throw new Error(`admin UI config at ${configPath} did not parse to an object`);
   }
@@ -106,13 +114,14 @@ async function loadStaticConfigUnchecked(configPath: string, stateDir: string): 
   if (!sessionKeyFile) {
     throw new Error(`admin UI config at ${configPath} is missing session_key_file`);
   }
-
-  const operatorEntries = Object.entries(parsed.operators ?? {});
-  const backendEntries = Object.entries(parsed.backends ?? {});
-  if (backendEntries.length === 0) {
-    throw new Error(`admin UI config at ${configPath} must define at least one backend target`);
+  if ('backends' in parsed) {
+    throw new Error(`admin UI config at ${configPath} still uses the removed backends map; migrate to backend`);
+  }
+  if (!parsed.backend) {
+    throw new Error(`admin UI config at ${configPath} must define backend`);
   }
 
+  const operatorEntries = Object.entries(parsed.operators ?? {});
   const configuredOperators = Object.fromEntries(
     await Promise.all(
       operatorEntries.map(async ([name, operator]) => {
@@ -135,29 +144,26 @@ async function loadStaticConfigUnchecked(configPath: string, stateDir: string): 
     ),
   );
 
-  const backends = Object.fromEntries(
-    await Promise.all(
-      backendEntries.map(async ([name, backend]) => {
-        if (!backend.admin_url) {
-          throw new Error(`backend ${name} is missing admin_url`);
-        }
-        if (!backend.token_file) {
-          throw new Error(`backend ${name} is missing token_file`);
-        }
-        let adminUrl: string;
-        try {
-          adminUrl = new URL(backend.admin_url).toString().replace(/\/$/, '');
-        } catch {
-          throw new Error(`backend ${name} has an invalid admin_url`);
-        }
-        const token = await readTrimmedText(
-          resolveSibling(configPath, backend.token_file),
-          `admin token for backend ${name}`,
-        );
-        return [name, { name, adminUrl, token } satisfies LoadedBackend] as const;
-      }),
-    ),
-  );
+  const backendConfig = parsed.backend;
+  if (!backendConfig.admin_url) {
+    throw new Error('backend is missing admin_url');
+  }
+  if (!backendConfig.token_file) {
+    throw new Error('backend is missing token_file');
+  }
+
+  let adminUrl: string;
+  try {
+    adminUrl = new URL(backendConfig.admin_url).toString().replace(/\/$/, '');
+  } catch {
+    throw new Error('backend has an invalid admin_url');
+  }
+
+  const backend = {
+    label: normalizeBackendLabel(backendConfig.label),
+    adminUrl,
+    token: await readTrimmedText(resolveSibling(configPath, backendConfig.token_file), 'admin token for backend'),
+  } satisfies LoadedBackend;
 
   return {
     sourcePath: configPath,
@@ -165,7 +171,7 @@ async function loadStaticConfigUnchecked(configPath: string, stateDir: string): 
     operatorStatePath: path.join(stateDir, 'operators.json'),
     sessionKey: await readSessionKey(resolveSibling(configPath, sessionKeyFile)),
     configuredOperators,
-    backends,
+    backend,
   } satisfies LoadedStaticConfig;
 }
 
@@ -223,7 +229,7 @@ export async function loadRuntimeConfig(): Promise<LoadedConfig> {
       ...stateOperators,
       ...base.configuredOperators,
     },
-    backends: base.backends,
+    backend: base.backend,
   };
 }
 
@@ -256,15 +262,7 @@ export async function storeBootstrappedOperator(name: string, passwordHash: stri
   });
 }
 
-export async function listConfiguredTargets() {
+export async function getConfiguredBackend() {
   const config = await loadRuntimeConfig();
-  return Object.values(config.backends).map((backend) => ({
-    name: backend.name,
-    adminUrl: backend.adminUrl,
-  }));
-}
-
-export async function getConfiguredBackend(name: string) {
-  const config = await loadRuntimeConfig();
-  return config.backends[name];
+  return config.backend;
 }
