@@ -53,6 +53,25 @@ enum AdminCommand {
         #[arg(long)]
         store: Option<String>,
     },
+    /// Offline recovery: append (or refuse-on-conflict) an admin
+    /// operator directly to the admin-home store. Use when nobody can
+    /// log in to the running daemon. This subcommand intentionally
+    /// does NOT touch the bootstrap-completed sentinel: it's the
+    /// escape hatch for the locked-out case, not a replacement for
+    /// the online bootstrap flow.
+    ///
+    /// Requires physical/file-system access to the store. The password
+    /// is read from stdin to keep it out of the process argv (which
+    /// would otherwise leak to `/proc/<pid>/cmdline`).
+    RecoverOperator {
+        /// Username to add. Will be normalised (trimmed + lowercased).
+        #[arg(long)]
+        username: String,
+        /// Which store in the backend config to write to. Defaults to
+        /// the admin-home store resolved from config.
+        #[arg(long)]
+        store: Option<String>,
+    },
 }
 
 fn parse_backend_config(config_text: &str) -> Result<server::BackendConfig> {
@@ -116,6 +135,28 @@ fn run_admin(cmd: AdminCommand, config: server::BackendConfig) -> Result<()> {
         .as_ref()
         .and_then(|a| a.admin_home_store.as_deref());
     match cmd {
+        AdminCommand::RecoverOperator { username, store } => {
+            let target = match store.as_deref().or(configured_home) {
+                Some(name) => {
+                    let s = stores
+                        .get(name)
+                        .with_context(|| format!("--store '{name}' is not declared in stores"))?;
+                    (name.to_string(), s.clone())
+                }
+                None => {
+                    let (n, s) = operators::resolve_admin_home_store(&stores, None)?;
+                    (n.to_string(), s)
+                }
+            };
+            let mut password = String::new();
+            std::io::stdin()
+                .read_line(&mut password)
+                .context("reading password from stdin")?;
+            let password = password.trim_end_matches(['\r', '\n']).to_string();
+            recover_operator(target.1.as_ref(), &username, &password)?;
+            info!(store = %target.0, username = %username, "recover-operator: admin added");
+            Ok(())
+        }
         AdminCommand::ImportOperatorsFromYaml {
             yaml,
             state_json,
@@ -271,6 +312,45 @@ fn import_operators_from_yaml_files(
     Ok(collection)
 }
 
+/// Add an admin operator to the on-disk collection. Refuses if an
+/// operator with the same username already exists. Doesn't touch the
+/// bootstrap-completed sentinel — recovery is intentionally not a
+/// substitute for the online bootstrap (which is what locks the
+/// endpoint going forward).
+fn recover_operator(
+    store: &dyn underwrap_store::StorageBackend,
+    username: &str,
+    password: &str,
+) -> Result<()> {
+    if password.is_empty() {
+        anyhow::bail!("recover-operator: password must not be empty");
+    }
+    let normalised = operators::normalise_username(username);
+    if normalised.is_empty() {
+        anyhow::bail!("recover-operator: username must not be empty");
+    }
+    let mut collection = operators::load(store)?;
+    if collection.find_by_username(&normalised).is_some() {
+        anyhow::bail!(
+            "recover-operator: operator '{}' already exists; refusing to overwrite",
+            normalised
+        );
+    }
+    let hash = underwrap_backendd::auth::hash_password(password)?;
+    let now = operators::now_epoch_secs();
+    collection.add(operators::OperatorRecord {
+        id: operators::new_operator_id(),
+        username: normalised,
+        password_hash: hash,
+        role: operators::OperatorRole::Admin,
+        granted_stores: Vec::new(),
+        created_at: now,
+        password_changed_at: now,
+    })?;
+    operators::save(store, &collection)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +434,81 @@ stores:
         assert_eq!(coll.len(), 2);
         assert!(coll.find_by_username("alice").is_some());
         assert!(coll.find_by_username("bob").is_some());
+    }
+
+    #[test]
+    fn cli_parses_recover_operator_subcommand() {
+        let cli = Cli::parse_from([
+            "underwrap-backendd",
+            "admin",
+            "recover-operator",
+            "--username",
+            "Alice",
+            "--store",
+            "home",
+        ]);
+        match cli.command {
+            Some(Command::Admin(AdminCommand::RecoverOperator { username, store })) => {
+                assert_eq!(username, "Alice");
+                assert_eq!(store.as_deref(), Some("home"));
+            }
+            _ => panic!(
+                "expected recover-operator subcommand, got {:?}",
+                cli.command
+            ),
+        }
+    }
+
+    #[test]
+    fn recover_operator_writes_admin_to_empty_store() {
+        // Direct disk operation: no running daemon.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store_dir = dir.path().join("store");
+        std::fs::create_dir_all(&store_dir).unwrap();
+        let cfg = underwrap_protocol::config::StorageConfig::Plain {
+            dir: store_dir.clone(),
+        };
+        let backend: Arc<dyn underwrap_store::StorageBackend> =
+            Arc::from(underwrap_store::open(&cfg).unwrap());
+
+        recover_operator(backend.as_ref(), "Alice", "hunter2").unwrap();
+
+        // Read it back: operator landed in the store with admin role
+        // and a verifiable password.
+        let coll = operators::load(backend.as_ref()).unwrap();
+        let op = coll.find_by_username("alice").unwrap();
+        assert_eq!(op.role, operators::OperatorRole::Admin);
+        assert!(underwrap_backendd::auth::verify_password(
+            &op.password_hash,
+            "hunter2"
+        ));
+        // Sentinel is NOT set — recovery deliberately stays "offline".
+        assert!(!operators::bootstrap_completed(backend.as_ref()).unwrap());
+    }
+
+    #[test]
+    fn recover_operator_refuses_existing_username() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store_dir = dir.path().join("store");
+        std::fs::create_dir_all(&store_dir).unwrap();
+        let cfg = underwrap_protocol::config::StorageConfig::Plain { dir: store_dir };
+        let backend: Arc<dyn underwrap_store::StorageBackend> =
+            Arc::from(underwrap_store::open(&cfg).unwrap());
+        recover_operator(backend.as_ref(), "alice", "p1").unwrap();
+        let err = recover_operator(backend.as_ref(), "Alice", "p2").unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn recover_operator_rejects_empty_password() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store_dir = dir.path().join("store");
+        std::fs::create_dir_all(&store_dir).unwrap();
+        let cfg = underwrap_protocol::config::StorageConfig::Plain { dir: store_dir };
+        let backend: Arc<dyn underwrap_store::StorageBackend> =
+            Arc::from(underwrap_store::open(&cfg).unwrap());
+        let err = recover_operator(backend.as_ref(), "alice", "").unwrap_err();
+        assert!(err.to_string().contains("password"));
     }
 
     #[test]

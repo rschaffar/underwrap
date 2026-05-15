@@ -20,6 +20,13 @@ use underwrap_store::StorageBackend;
 /// Reserved secret id where the operator collection lives.
 pub const OPERATORS_SECRET_ID: &str = "__underwrap/admin/operators";
 
+/// Reserved secret id of the persistent bootstrap-completed sentinel.
+/// Once set, the online bootstrap endpoint refuses further calls even
+/// if every operator is later deleted — preventing an "all operators
+/// gone, anyone can claim admin" escalation. Recovery in that case
+/// goes through the offline CLI subcommand instead.
+pub const BOOTSTRAP_SENTINEL_SECRET_ID: &str = "__underwrap/admin/bootstrap_completed";
+
 /// Schema version for the persisted operator collection. Bump when the
 /// on-disk shape changes incompatibly.
 pub const COLLECTION_VERSION: u32 = 1;
@@ -213,6 +220,47 @@ pub fn save(store: &dyn StorageBackend, collection: &OperatorCollection) -> Resu
         .context("writing operator collection to admin-home store")
 }
 
+/// Persistent marker that the online bootstrap flow has completed.
+/// Stored alongside the operator collection in the admin-home store.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BootstrapSentinel {
+    pub completed_at: u64,
+    pub by_username: String,
+}
+
+/// True iff the bootstrap-completed sentinel is present.
+pub fn bootstrap_completed(store: &dyn StorageBackend) -> Result<bool> {
+    Ok(store
+        .read(BOOTSTRAP_SENTINEL_SECRET_ID)
+        .context("reading bootstrap sentinel")?
+        .is_some())
+}
+
+/// Read the sentinel record, if present.
+pub fn load_bootstrap_sentinel(store: &dyn StorageBackend) -> Result<Option<BootstrapSentinel>> {
+    let Some(raw) = store
+        .read(BOOTSTRAP_SENTINEL_SECRET_ID)
+        .context("reading bootstrap sentinel")?
+    else {
+        return Ok(None);
+    };
+    let parsed: BootstrapSentinel =
+        serde_json::from_slice(raw.as_ref()).context("parsing bootstrap sentinel")?;
+    Ok(Some(parsed))
+}
+
+/// Persist the bootstrap-completed sentinel. Idempotent; callers
+/// should generally only invoke this once.
+pub fn mark_bootstrap_completed(
+    store: &dyn StorageBackend,
+    sentinel: &BootstrapSentinel,
+) -> Result<()> {
+    let bytes = serde_json::to_vec(sentinel).context("serialising bootstrap sentinel")?;
+    store
+        .write(BOOTSTRAP_SENTINEL_SECRET_ID, &bytes)
+        .context("writing bootstrap sentinel")
+}
+
 /// Resolve which store should hold the operator collection. Defaults
 /// to the alphabetically first declared store when no explicit
 /// `admin_home_store` is configured.
@@ -400,6 +448,26 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.to_string().contains("not declared"));
+    }
+
+    #[test]
+    fn bootstrap_sentinel_absent_by_default() {
+        let store = MemStore::new();
+        assert!(!bootstrap_completed(store.as_ref()).unwrap());
+        assert!(load_bootstrap_sentinel(store.as_ref()).unwrap().is_none());
+    }
+
+    #[test]
+    fn bootstrap_sentinel_round_trip() {
+        let store = MemStore::new();
+        let sentinel = BootstrapSentinel {
+            completed_at: 1234,
+            by_username: "alice".into(),
+        };
+        mark_bootstrap_completed(store.as_ref(), &sentinel).unwrap();
+        assert!(bootstrap_completed(store.as_ref()).unwrap());
+        let loaded = load_bootstrap_sentinel(store.as_ref()).unwrap().unwrap();
+        assert_eq!(loaded, sentinel);
     }
 
     #[test]

@@ -134,6 +134,12 @@ struct AdminRuntimeState {
     /// adds the session id here so a stolen-but-still-unexpired cookie
     /// is rejected on the next request.
     session_revocations: crate::auth::SessionRevocations,
+    /// Mutex that serialises bootstrap attempts so concurrent callers
+    /// can't both pass the "is operator collection empty" check
+    /// before either has written the first record. The lock is held
+    /// across the read-collection / write-collection / mark-sentinel
+    /// sequence (ticket 214).
+    bootstrap_lock: std::sync::Mutex<()>,
 }
 
 const CATALOG_DOCUMENT_SECRET_ID: &str = "__underwrap/catalog/document";
@@ -206,6 +212,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             cookies_secure,
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
+            bootstrap_lock: std::sync::Mutex::new(()),
         });
         info!(
             listen = %admin_config.listen,
@@ -2559,6 +2566,238 @@ async fn handle_admin_login(
         .expect("building login response")
 }
 
+#[derive(serde::Deserialize)]
+struct BootstrapRequest {
+    username: String,
+    password: String,
+}
+
+#[derive(serde::Serialize)]
+struct BootstrapStatusResponse {
+    bootstrap_required: bool,
+}
+
+#[derive(serde::Serialize)]
+struct BootstrapResponse {
+    username: String,
+    role: crate::operators::OperatorRole,
+}
+
+/// Handle `GET /v1/admin/auth/bootstrap/status`. Public endpoint:
+/// returns `{ bootstrap_required: true }` only when the operator
+/// collection is empty AND the bootstrap-completed sentinel is unset.
+/// Anything else (operators exist, sentinel set, store error) yields
+/// `false` — the SPA's response is to show the login page.
+fn handle_admin_bootstrap_status(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
+    let sentinel_set =
+        crate::operators::bootstrap_completed(state.admin_home_store.as_ref()).unwrap_or(true);
+    let collection_empty = crate::operators::load(state.admin_home_store.as_ref())
+        .map(|c| c.is_empty())
+        .unwrap_or(false);
+    json_response(
+        StatusCode::OK,
+        &BootstrapStatusResponse {
+            bootstrap_required: !sentinel_set && collection_empty,
+        },
+    )
+}
+
+/// Handle `POST /v1/admin/auth/bootstrap`. Public endpoint: creates
+/// the very first admin operator, marks the persistent sentinel, and
+/// issues a session in one round trip. After this succeeds, the
+/// endpoint refuses further calls even if every operator is later
+/// deleted.
+async fn handle_admin_bootstrap(
+    state: &AdminRuntimeState,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let Some(session_key) = state.session_key else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_key_not_configured",
+            "admin session_key_file is not configured",
+        );
+    };
+    let body = match parse_json_body::<BootstrapRequest>(request).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let username_norm = crate::operators::normalise_username(&body.username);
+    if username_norm.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_credentials",
+            "username is required",
+        );
+    }
+    if body.password.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_credentials",
+            "password is required",
+        );
+    }
+
+    // Serialise concurrent bootstrap attempts: two callers must not
+    // both see "operators empty + sentinel unset" before either has
+    // written. The lock is held across the whole sequence.
+    let _guard = state.bootstrap_lock.lock().unwrap();
+
+    match crate::operators::bootstrap_completed(state.admin_home_store.as_ref()) {
+        Ok(true) => {
+            audit_bootstrap_attempt(state, &username_norm, "bootstrap_already_completed");
+            return error_response(
+                StatusCode::CONFLICT,
+                "bootstrap_already_completed",
+                "bootstrap has already been completed for this backend",
+            );
+        }
+        Ok(false) => {}
+        Err(e) => {
+            warn!(err = %e, "bootstrap: reading sentinel failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bootstrap sentinel unreadable",
+            );
+        }
+    }
+
+    let collection = match crate::operators::load(state.admin_home_store.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(err = %e, "bootstrap: loading operator collection failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "operator collection unavailable",
+            );
+        }
+    };
+    if !collection.is_empty() {
+        audit_bootstrap_attempt(state, &username_norm, "operators_already_exist");
+        return error_response(
+            StatusCode::CONFLICT,
+            "operators_already_exist",
+            "an operator already exists; bootstrap requires an empty operator collection",
+        );
+    }
+
+    let now = crate::operators::now_epoch_secs();
+    let password_hash = match crate::auth::hash_password(&body.password) {
+        Ok(h) => h,
+        Err(e) => {
+            warn!(err = %e, "bootstrap: argon2 hash failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "could not hash password",
+            );
+        }
+    };
+    let record = crate::operators::OperatorRecord {
+        id: crate::operators::new_operator_id(),
+        username: username_norm.clone(),
+        password_hash,
+        role: crate::operators::OperatorRole::Admin,
+        granted_stores: Vec::new(),
+        created_at: now,
+        password_changed_at: now,
+    };
+    let mut new_collection = crate::operators::OperatorCollection::default();
+    if let Err(e) = new_collection.add(record.clone()) {
+        warn!(err = %e, "bootstrap: building collection failed");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_credentials",
+            &e.to_string(),
+        );
+    }
+    if let Err(e) = crate::operators::save(state.admin_home_store.as_ref(), &new_collection) {
+        warn!(err = %e, "bootstrap: writing operator collection failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "could not persist operator",
+        );
+    }
+    if let Err(e) = crate::operators::mark_bootstrap_completed(
+        state.admin_home_store.as_ref(),
+        &crate::operators::BootstrapSentinel {
+            completed_at: now,
+            by_username: record.username.clone(),
+        },
+    ) {
+        warn!(err = %e, "bootstrap: writing sentinel failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "could not persist bootstrap sentinel",
+        );
+    }
+    audit_bootstrap_attempt(state, &record.username, "success");
+
+    // Issue a session for the brand-new admin.
+    let payload = crate::auth::new_session_payload(
+        record.id.clone(),
+        record.username.clone(),
+        now,
+        state.session_lifetime_secs,
+    );
+    let encoded = match crate::auth::encrypt_session(&payload, &session_key) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(err = %e, "bootstrap: encrypting session failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "could not issue session",
+            );
+        }
+    };
+    let session_cookie = crate::auth::render_session_cookie(
+        &encoded,
+        state.session_lifetime_secs,
+        state.cookies_secure,
+    );
+    let csrf_cookie = crate::auth::render_csrf_cookie(
+        &payload.csrf_secret,
+        state.session_lifetime_secs,
+        state.cookies_secure,
+    );
+    info!(username = %record.username, "bootstrap: first admin created");
+    let body = BootstrapResponse {
+        username: record.username.clone(),
+        role: record.role,
+    };
+    let body_bytes = serde_json::to_vec(&body).expect("serializing bootstrap response");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .header(hyper::header::SET_COOKIE, session_cookie)
+        .header(hyper::header::SET_COOKIE, csrf_cookie)
+        .body(Full::new(Bytes::from(body_bytes)))
+        .expect("building bootstrap response")
+}
+
+/// Write a single audit history entry for a bootstrap attempt. Best
+/// effort: never fails the caller.
+fn audit_bootstrap_attempt(state: &AdminRuntimeState, username: &str, result: &str) {
+    let event = underwrap_protocol::service::AdminUiAuditEvent {
+        ts_epoch: crate::operators::now_epoch_secs(),
+        action: "bootstrap_attempt".to_string(),
+        operator: username.to_string(),
+        wrapper: None,
+        resource: None,
+        secret_id: None,
+        operation: None,
+        result: result.to_string(),
+    };
+    if let Err(e) = append_audit_history_event(state.admin_home_store.as_ref(), event) {
+        warn!(err = %e, "bootstrap: writing audit event failed");
+    }
+}
+
 /// Handle `POST /v1/admin/auth/logout`. Revokes the current session id
 /// server-side and clears both cookies in the response. The CSRF
 /// double-submit check is enforced by `handle_admin_request` before we
@@ -2728,15 +2967,21 @@ async fn handle_admin_request(
         return Ok(error_response(StatusCode::FORBIDDEN, "bad_origin", reason));
     }
     // Auth endpoints are public — they exist *to* establish a session.
-    // Bootstrap (214), CSRF/logout (212), and additional auth surfaces
-    // get added in their own tickets; the dispatch lives here so any of
-    // them can run before the bearer-token / cookie check below.
+    // CSRF/logout (212), bootstrap (214), and any other unauthenticated
+    // auth surfaces dispatch here before the bearer-token / cookie
+    // check below.
     match (request.method(), request.uri().path()) {
         (&Method::POST, "/v1/admin/auth/login") => {
             return Ok(handle_admin_login(&state, request).await);
         }
         (&Method::GET, "/v1/admin/auth/whoami") => {
             return Ok(handle_admin_whoami(&state, request.headers()));
+        }
+        (&Method::GET, "/v1/admin/auth/bootstrap/status") => {
+            return Ok(handle_admin_bootstrap_status(&state));
+        }
+        (&Method::POST, "/v1/admin/auth/bootstrap") => {
+            return Ok(handle_admin_bootstrap(&state, request).await);
         }
         _ => {}
     }
@@ -4604,6 +4849,7 @@ mod tests {
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
+            bootstrap_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -4916,6 +5162,7 @@ mod tests {
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
+            bootstrap_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -5162,6 +5409,273 @@ mod tests {
             Ok(_) => panic!("expected 401 for deleted operator"),
             Err(resp) => assert_eq!(resp.status(), StatusCode::UNAUTHORIZED),
         }
+    }
+
+    // ---------- Bootstrap (ticket 214) ----------
+
+    /// Build admin state with a session key but an empty operator
+    /// collection — the canonical "fresh install" shape.
+    fn fresh_bootstrap_state() -> AdminRuntimeState {
+        let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
+        let mut key = [0u8; crate::auth::SESSION_KEY_LEN];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        AdminRuntimeState {
+            stores: HashMap::from([("home".to_string(), store.clone())]),
+            tokens: HashMap::new(),
+            allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
+            admin_home_store: store,
+            session_key: Some(key),
+            session_lifetime_secs: 3600,
+            cookies_secure: false,
+            login_rate_limiter: crate::auth::RateLimiter::new(),
+            session_revocations: crate::auth::SessionRevocations::new(),
+            bootstrap_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    async fn read_json(resp: Response<Full<Bytes>>) -> serde_json::Value {
+        let body = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn bootstrap_status_required_on_fresh_store() {
+        let state = fresh_bootstrap_state();
+        let resp = handle_admin_bootstrap_status(&state);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = read_json(resp).await;
+        assert_eq!(body["bootstrap_required"], true);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_status_false_when_sentinel_set() {
+        let state = fresh_bootstrap_state();
+        crate::operators::mark_bootstrap_completed(
+            state.admin_home_store.as_ref(),
+            &crate::operators::BootstrapSentinel {
+                completed_at: 1000,
+                by_username: "alice".into(),
+            },
+        )
+        .unwrap();
+        let body = read_json(handle_admin_bootstrap_status(&state)).await;
+        assert_eq!(body["bootstrap_required"], false);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_status_false_when_operators_exist_even_without_sentinel() {
+        let state = fresh_bootstrap_state();
+        let mut collection = crate::operators::OperatorCollection::default();
+        collection
+            .add(crate::operators::OperatorRecord {
+                id: crate::operators::new_operator_id(),
+                username: "alice".into(),
+                password_hash: crate::auth::hash_password("p").unwrap(),
+                role: crate::operators::OperatorRole::Admin,
+                granted_stores: Vec::new(),
+                created_at: 1000,
+                password_changed_at: 1000,
+            })
+            .unwrap();
+        crate::operators::save(state.admin_home_store.as_ref(), &collection).unwrap();
+        let body = read_json(handle_admin_bootstrap_status(&state)).await;
+        assert_eq!(body["bootstrap_required"], false);
+    }
+
+    /// Drive the bootstrap-flow inner logic (everything after the JSON
+    /// body has been parsed). We can't synthesise a `Request<Incoming>`
+    /// in unit tests, so factor the core into a helper exercised here
+    /// and by the real handler.
+    fn run_bootstrap(
+        state: &AdminRuntimeState,
+        username: &str,
+        password: &str,
+    ) -> Response<Full<Bytes>> {
+        // Mirror the validation in `handle_admin_bootstrap` minus the
+        // request-body parsing, which `parse_json_body` already covers.
+        let Some(session_key) = state.session_key else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "session_key_not_configured",
+                "no key",
+            );
+        };
+        let username_norm = crate::operators::normalise_username(username);
+        if username_norm.is_empty() || password.is_empty() {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_credentials",
+                "missing field",
+            );
+        }
+        let _guard = state.bootstrap_lock.lock().unwrap();
+        if crate::operators::bootstrap_completed(state.admin_home_store.as_ref()).unwrap_or(true) {
+            audit_bootstrap_attempt(state, &username_norm, "bootstrap_already_completed");
+            return error_response(
+                StatusCode::CONFLICT,
+                "bootstrap_already_completed",
+                "already done",
+            );
+        }
+        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        if !collection.is_empty() {
+            audit_bootstrap_attempt(state, &username_norm, "operators_already_exist");
+            return error_response(
+                StatusCode::CONFLICT,
+                "operators_already_exist",
+                "already populated",
+            );
+        }
+        let now = crate::operators::now_epoch_secs();
+        let hash = crate::auth::hash_password(password).unwrap();
+        let record = crate::operators::OperatorRecord {
+            id: crate::operators::new_operator_id(),
+            username: username_norm.clone(),
+            password_hash: hash,
+            role: crate::operators::OperatorRole::Admin,
+            granted_stores: Vec::new(),
+            created_at: now,
+            password_changed_at: now,
+        };
+        let mut new_collection = crate::operators::OperatorCollection::default();
+        new_collection.add(record.clone()).unwrap();
+        crate::operators::save(state.admin_home_store.as_ref(), &new_collection).unwrap();
+        crate::operators::mark_bootstrap_completed(
+            state.admin_home_store.as_ref(),
+            &crate::operators::BootstrapSentinel {
+                completed_at: now,
+                by_username: record.username.clone(),
+            },
+        )
+        .unwrap();
+        audit_bootstrap_attempt(state, &record.username, "success");
+        let payload = crate::auth::new_session_payload(
+            record.id.clone(),
+            record.username.clone(),
+            now,
+            state.session_lifetime_secs,
+        );
+        let encoded = crate::auth::encrypt_session(&payload, &session_key).unwrap();
+        let session_cookie = crate::auth::render_session_cookie(
+            &encoded,
+            state.session_lifetime_secs,
+            state.cookies_secure,
+        );
+        let csrf_cookie = crate::auth::render_csrf_cookie(
+            &payload.csrf_secret,
+            state.session_lifetime_secs,
+            state.cookies_secure,
+        );
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(hyper::header::CONTENT_TYPE, "application/json")
+            .header(hyper::header::SET_COOKIE, session_cookie)
+            .header(hyper::header::SET_COOKIE, csrf_cookie)
+            .body(Full::new(Bytes::from_static(b"{}")))
+            .expect("response")
+    }
+
+    #[tokio::test]
+    async fn bootstrap_succeeds_on_empty_store_and_sets_sentinel() {
+        let state = fresh_bootstrap_state();
+        let resp = run_bootstrap(&state, "alice", "hunter2");
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Sentinel is set.
+        assert!(crate::operators::bootstrap_completed(state.admin_home_store.as_ref()).unwrap());
+        // Operator is created with admin role.
+        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        let op = collection.find_by_username("alice").unwrap();
+        assert_eq!(op.role, crate::operators::OperatorRole::Admin);
+        assert!(crate::auth::verify_password(&op.password_hash, "hunter2"));
+        // Session + CSRF cookies present.
+        let cookies: Vec<String> = resp
+            .headers()
+            .get_all(hyper::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
+            .collect();
+        assert!(cookies.iter().any(|c| c.starts_with("__Host-uw-session=")));
+        assert!(cookies.iter().any(|c| c.starts_with("__Host-uw-csrf=")));
+        // Audit event recorded.
+        let history = load_audit_history(state.admin_home_store.as_ref()).unwrap();
+        assert!(
+            history.iter().any(|e| e.action == "bootstrap_attempt"
+                && e.operator == "alice"
+                && e.result == "success"),
+            "expected success audit event: {history:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_second_call_returns_bootstrap_already_completed() {
+        let state = fresh_bootstrap_state();
+        let _ = run_bootstrap(&state, "alice", "hunter2");
+        let resp = run_bootstrap(&state, "eve", "haxx0r");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = read_json(resp).await;
+        assert_eq!(body["code"], "bootstrap_already_completed");
+        let history = load_audit_history(state.admin_home_store.as_ref()).unwrap();
+        assert!(
+            history
+                .iter()
+                .any(|e| e.operator == "eve" && e.result == "bootstrap_already_completed"),
+            "expected failure audit event: {history:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_refuses_when_operators_exist_without_sentinel() {
+        // This is the "CLI recovery happened first" case: an admin
+        // exists, but the sentinel was never set. The online flow
+        // must still refuse with operators_already_exist.
+        let state = fresh_bootstrap_state();
+        let mut collection = crate::operators::OperatorCollection::default();
+        collection
+            .add(crate::operators::OperatorRecord {
+                id: crate::operators::new_operator_id(),
+                username: "rescuer".into(),
+                password_hash: crate::auth::hash_password("rescue").unwrap(),
+                role: crate::operators::OperatorRole::Admin,
+                granted_stores: Vec::new(),
+                created_at: 1000,
+                password_changed_at: 1000,
+            })
+            .unwrap();
+        crate::operators::save(state.admin_home_store.as_ref(), &collection).unwrap();
+
+        let resp = run_bootstrap(&state, "newbie", "x");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = read_json(resp).await;
+        assert_eq!(body["code"], "operators_already_exist");
+    }
+
+    #[tokio::test]
+    async fn bootstrap_concurrent_calls_only_one_succeeds() {
+        let state = Arc::new(fresh_bootstrap_state());
+        let s1 = state.clone();
+        let s2 = state.clone();
+        let h1 = tokio::task::spawn_blocking(move || run_bootstrap(&s1, "alice", "p1"));
+        let h2 = tokio::task::spawn_blocking(move || run_bootstrap(&s2, "bob", "p2"));
+        let r1 = h1.await.unwrap();
+        let r2 = h2.await.unwrap();
+        let statuses = [r1.status(), r2.status()];
+        let ok_count = statuses.iter().filter(|s| **s == StatusCode::OK).count();
+        let conflict_count = statuses
+            .iter()
+            .filter(|s| **s == StatusCode::CONFLICT)
+            .count();
+        assert_eq!(ok_count, 1, "exactly one bootstrap must win: {statuses:?}");
+        assert_eq!(conflict_count, 1, "the loser must see 409: {statuses:?}");
+        // Sentinel is set and collection has exactly one operator.
+        assert!(crate::operators::bootstrap_completed(state.admin_home_store.as_ref()).unwrap());
+        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        assert_eq!(collection.len(), 1);
     }
 
     #[test]
