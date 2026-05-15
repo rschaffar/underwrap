@@ -1,7 +1,11 @@
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 const EMPTY = new Uint8Array();
 const PHC_PATTERN = /^\$(argon2id|argon2i|argon2d)\$v=(\d+)\$m=(\d+),t=(\d+),p=(\d+)\$([^$]+)\$([^$]+)$/;
+const DEFAULT_MEMORY_KIB = 19_456;
+const DEFAULT_ITERATIONS = 2;
+const DEFAULT_PARALLELISM = 1;
+const DEFAULT_SALT_BYTES = 16;
 
 function decodeBase64(value: string) {
   const normalized = value + '='.repeat((4 - (value.length % 4 || 4)) % 4);
@@ -19,6 +23,34 @@ function hashTypeFor(identifier: string, hashType: { Argon2d: number; Argon2i: n
     default:
       return null;
   }
+}
+
+function encodeBase64Unpadded(input: Uint8Array | Buffer) {
+  return Buffer.from(input).toString('base64').replace(/=+$/g, '');
+}
+
+export async function createPasswordHash(password: string) {
+  const { HashType, argon2 } = await import('@whi/argon2-wasm');
+  const salt = randomBytes(DEFAULT_SALT_BYTES);
+  const hash = Buffer.from(
+    argon2(
+      Buffer.from(password, 'utf8'),
+      salt,
+      EMPTY,
+      EMPTY,
+      DEFAULT_ITERATIONS,
+      DEFAULT_PARALLELISM,
+      DEFAULT_MEMORY_KIB,
+      HashType.Argon2id,
+    ),
+  );
+  const encoded = `$argon2id$v=19$m=${DEFAULT_MEMORY_KIB},t=${DEFAULT_ITERATIONS},p=${DEFAULT_PARALLELISM}$${encodeBase64Unpadded(salt)}$${encodeBase64Unpadded(hash)}`;
+
+  if (!PHC_PATTERN.test(encoded)) {
+    throw new Error('generated password hash is not a valid Argon2 PHC string');
+  }
+
+  return encoded;
 }
 
 export async function verifyPassword(password: string, phcHash: string) {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { randomInt } from 'node:crypto';
+import path from 'node:path';
 
 async function waitFor(url: string, timeoutMs: number) {
   const start = Date.now();
@@ -20,15 +21,20 @@ async function waitFor(url: string, timeoutMs: number) {
   throw new Error(`timed out waiting for ${url}`);
 }
 
-async function withServer(run: (baseUrl: string) => Promise<void>) {
+async function withServer(
+  envOverrides: Record<string, string>,
+  run: (baseUrl: string) => Promise<void>,
+) {
   const port = randomInt(4100, 4900);
+  const root = process.cwd();
   const child = spawn('node', ['.next/standalone/server.js'], {
-    cwd: process.cwd(),
+    cwd: root,
     env: {
       ...process.env,
       HOSTNAME: '127.0.0.1',
       PORT: String(port),
-      UNDERWRAP_ADMIN_UI_CONFIG: './dev-fixtures/admin-ui.yaml',
+      UNDERWRAP_ADMIN_UI_CONFIG: path.join(root, 'dev-fixtures', 'admin-ui.yaml'),
+      ...envOverrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -51,7 +57,7 @@ async function withServer(run: (baseUrl: string) => Promise<void>) {
 }
 
 test('packaged server login route rejects wrong password, accepts correct password, and honors forwarded same-origin headers', async () => {
-  await withServer(async (baseUrl) => {
+  await withServer({}, async (baseUrl) => {
     const loginPage = await fetch(`${baseUrl}/login`);
     assert.equal(loginPage.status, 200);
     assert.match(loginPage.headers.get('content-security-policy') ?? '', /default-src 'self'/);
@@ -97,3 +103,4 @@ test('packaged server login route rejects wrong password, accepts correct passwo
     assert.match(correctPassword.headers.get('location') ?? '', /\/$/);
   });
 });
+

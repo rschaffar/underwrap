@@ -15,11 +15,22 @@ import {
 export { SESSION_COOKIE, SESSION_LIFETIME_SECONDS, createSession, decodeSession, encodeSession };
 export type { Session };
 
+function secureCookiesEnabled() {
+  const override = process.env.UNDERWRAP_ADMIN_UI_SECURE_COOKIES;
+  if (override === 'true') {
+    return true;
+  }
+  if (override === 'false') {
+    return false;
+  }
+  return process.env.NODE_ENV === 'production';
+}
+
 function sessionCookieOptions() {
   return {
     httpOnly: true,
     sameSite: 'lax' as const,
-    secure: process.env.NODE_ENV === 'production',
+    secure: secureCookiesEnabled(),
     path: '/',
     maxAge: SESSION_LIFETIME_SECONDS,
   };

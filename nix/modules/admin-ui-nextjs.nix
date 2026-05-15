@@ -35,8 +35,19 @@ in
       default = null;
       description = ''
         Runtime config file for the Next.js admin UI. This is passed through
-        `UNDERWRAP_ADMIN_UI_CONFIG` and should point at the operator/backends
-        config consumed by the server-side loader.
+        `UNDERWRAP_ADMIN_UI_CONFIG` and should point at the backend/session-key
+        config consumed by the server-side loader. Operator accounts are
+        bootstrapped and stored in the service state directory on first use.
+      '';
+    };
+
+    secureCookies = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Whether the admin UI should mark session cookies as `Secure`.
+        Disable this only for intentionally plain-HTTP internal deployments,
+        such as tailscale-only access.
       '';
     };
 
@@ -69,10 +80,13 @@ in
         Restart = "on-failure";
         RestartSec = "2s";
         WorkingDirectory = "/";
+        StateDirectory = "underwrap-admin-ui";
         Environment = [
           "HOSTNAME=${cfg.listenAddress}"
           "PORT=${toString cfg.port}"
           "UNDERWRAP_ADMIN_UI_CONFIG=${cfg.configFile}"
+          "UNDERWRAP_ADMIN_UI_STATE_DIR=/var/lib/underwrap-admin-ui"
+          "UNDERWRAP_ADMIN_UI_SECURE_COOKIES=${if cfg.secureCookies then "true" else "false"}"
         ] ++ envAssignments;
         NoNewPrivileges = true;
         PrivateTmp = true;

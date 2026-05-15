@@ -65,17 +65,11 @@ let
     ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
     exec ${pkgs.coreutils}/bin/ln -s /etc/passwd "$HOME/.config/underwrap-dir-a/evil"
   '';
-  adminUiPasswordHash = pkgs.writeText "underwrap-admin-ui-alice.phc"
-    (builtins.readFile ../../apps/admin-ui/dev-fixtures/alice.phc);
   adminUiSessionKey = pkgs.runCommand "underwrap-admin-ui-session.key" {} ''
     cp ${../../apps/admin-ui/dev-fixtures/session.key} $out
   '';
   adminUiConfig = pkgs.writeText "underwrap-admin-ui.yaml" ''
     session_key_file: ${adminUiSessionKey}
-
-    operators:
-      alice:
-        password_hash_file: ${adminUiPasswordHash}
 
     backends:
       corp:
@@ -178,6 +172,7 @@ in {
     listenAddress = "127.0.0.1";
     port = 3000;
     configFile = adminUiConfig;
+    secureCookies = false;
   };
 
   # SSH server for the tunnel.

@@ -154,8 +154,20 @@ def boot_and_service_checks():
     machine.log("PASS: kernel.yama.ptrace_scope=2 enforced by hardenTargetHost")
 
     login_page = machine.succeed(f"curl -fsS {ADMIN_UI}/login")
-    assert "Operator sign-in" in login_page, login_page
-    machine.log("PASS: admin UI login page loads")
+    assert "Initialize admin UI" in login_page, login_page
+    machine.log("PASS: admin UI bootstrap page loads on fresh deployment")
+
+    bootstrap = machine.succeed(
+        "curl -s -D - -o /tmp/underwrap-admin-ui-bootstrap.out "
+        f"-X POST {ADMIN_UI}/auth/bootstrap "
+        "-H 'Origin: http://127.0.0.1:3000' "
+        "-H 'Content-Type: application/x-www-form-urlencoded' "
+        "--data 'username=alice&password=hunter2&password_confirm=hunter2'"
+    )
+    assert "303 See Other" in bootstrap, bootstrap
+    bootstrap_cookie = re.search(r"set-cookie: (underwrap_admin_session=[^;]+)", bootstrap, re.IGNORECASE)
+    assert bootstrap_cookie, bootstrap
+    machine.log("PASS: admin UI first-use bootstrap succeeds")
 
     wrong_login = machine.succeed(
         "curl -s -D - -o /tmp/underwrap-admin-ui-wrong.out "

@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
-import { authenticateOperator } from '../lib/server/auth.ts';
+import { adminBootstrapRequired, authenticateOperator, bootstrapFirstOperator } from '../lib/server/auth.ts';
 import { loadRuntimeConfig } from '../lib/server/config.ts';
 import { createSession, decodeSession, encodeSession } from '../lib/server/session-core.ts';
 import { verifyPassword } from '../lib/server/passwords.ts';
@@ -43,4 +46,54 @@ test('decodeSession rejects expired sessions', async () => {
   const encoded = encodeSession(session, config.sessionKey);
   const decoded = decodeSession(encoded, config.sessionKey, session.expiresAtEpoch);
   assert.equal(decoded, null);
+});
+
+test('bootstrapFirstOperator creates the first operator in local state and enables login', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'underwrap-admin-ui-auth-'));
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'underwrap-admin-ui-state-'));
+  const configPath = path.join(tempDir, 'admin-ui.yaml');
+  const root = process.cwd();
+  await writeFile(
+    configPath,
+    [
+      `session_key_file: ${path.join(root, 'dev-fixtures', 'session.key')}`,
+      '',
+      'backends:',
+      '  corp:',
+      `    admin_url: http://127.0.0.1:19443`,
+      `    token_file: ${path.join(root, 'dev-fixtures', 'corp.token')}`,
+      '',
+    ].join('\n'),
+  );
+
+  const previousConfig = process.env.UNDERWRAP_ADMIN_UI_CONFIG;
+  const previousStateDir = process.env.UNDERWRAP_ADMIN_UI_STATE_DIR;
+  try {
+    process.env.UNDERWRAP_ADMIN_UI_CONFIG = configPath;
+    process.env.UNDERWRAP_ADMIN_UI_STATE_DIR = stateDir;
+
+    assert.equal(await adminBootstrapRequired(), true);
+    const session = await bootstrapFirstOperator('robert', 'test-password-123');
+    assert.equal(session.operator, 'robert');
+    assert.equal(await adminBootstrapRequired(), false);
+
+    const stored = await readFile(path.join(stateDir, 'operators.json'), 'utf8');
+    assert.match(stored, /\$argon2id\$/);
+
+    const loginSession = await authenticateOperator('robert', 'test-password-123');
+    assert.ok(loginSession);
+    assert.equal(loginSession?.operator, 'robert');
+    assert.equal(await authenticateOperator('robert', 'wrong-password'), null);
+  } finally {
+    if (previousConfig === undefined) {
+      delete process.env.UNDERWRAP_ADMIN_UI_CONFIG;
+    } else {
+      process.env.UNDERWRAP_ADMIN_UI_CONFIG = previousConfig;
+    }
+    if (previousStateDir === undefined) {
+      delete process.env.UNDERWRAP_ADMIN_UI_STATE_DIR;
+    } else {
+      process.env.UNDERWRAP_ADMIN_UI_STATE_DIR = previousStateDir;
+    }
+  }
 });

@@ -1,6 +1,9 @@
+import path from 'node:path';
+
 import { defineConfig } from '@playwright/test';
 
 const appPort = Number(process.env.ADMIN_UI_E2E_PORT ?? '3100');
+const configPath = process.env.UNDERWRAP_ADMIN_UI_CONFIG || path.join(process.cwd(), 'dev-fixtures', 'e2e-admin-ui.yaml');
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -24,8 +27,7 @@ export default defineConfig({
       ...process.env,
       ADMIN_UI_E2E_PORT: String(appPort),
       ADMIN_UI_E2E_BACKEND_PORT: process.env.ADMIN_UI_E2E_BACKEND_PORT || '4011',
-      UNDERWRAP_ADMIN_UI_CONFIG:
-        process.env.UNDERWRAP_ADMIN_UI_CONFIG || './dev-fixtures/e2e-admin-ui.yaml',
+      UNDERWRAP_ADMIN_UI_CONFIG: configPath,
     },
   },
 });
