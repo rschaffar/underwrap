@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+/* Dark-shell tokens carried over from apps/admin-ui/app/globals.css. */
+@theme {
+  --color-bg: #071018;
+  --color-surface-0: #0c1722;
+  --color-surface-1: #101d2a;
+  --color-surface-2: #172536;
+  --color-fg: #e8f0f8;
+  --color-muted: #92a5b7;
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-accent: #22d3ee;
+}
+
+/* Tailwind v4 picks up class="dark" via the dark variant when we
+ * configure it as class-based here. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light dark;
+}
+
+html.dark {
+  color-scheme: dark;
+  background: radial-gradient(circle at top, #10243a 0%, #071018 50%, #050b11 100%);
+}
+
+html:not(.dark) {
+  color-scheme: light;
+  background: #f5f7fa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  background: transparent;
+  color: var(--color-fg);
+}
+
+html:not(.dark) body {
+  color: #0c1722;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.25);
+}
