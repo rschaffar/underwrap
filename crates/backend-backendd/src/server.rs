@@ -130,6 +130,10 @@ struct AdminRuntimeState {
     cookies_secure: bool,
     /// Per-username login attempt limiter.
     login_rate_limiter: crate::auth::RateLimiter,
+    /// Server-side set of revoked session ids (ticket 212). Logout
+    /// adds the session id here so a stolen-but-still-unexpired cookie
+    /// is rejected on the next request.
+    session_revocations: crate::auth::SessionRevocations,
 }
 
 const CATALOG_DOCUMENT_SECRET_ID: &str = "__underwrap/catalog/document";
@@ -201,6 +205,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             session_lifetime_secs,
             cookies_secure,
             login_rate_limiter: crate::auth::RateLimiter::new(),
+            session_revocations: crate::auth::SessionRevocations::new(),
         });
         info!(
             listen = %admin_config.listen,
@@ -2179,13 +2184,52 @@ fn load_admin_tokens(
     Ok(out)
 }
 
+/// Result of authenticating an admin request. Carries enough context
+/// for the dispatcher to enforce CSRF (session-only) and attach the
+/// CSRF cookie on the way out.
+#[derive(Debug)]
+enum AdminAuth {
+    /// Session-cookie authentication. CSRF + revocation rules apply.
+    Session(crate::auth::SessionPayload),
+    /// Legacy bearer-token authentication. CSRF is not enforced
+    /// because programmatic callers don't run in a browser and can't
+    /// be CSRF'd. We keep this path while operators migrate off it.
+    Bearer { operator: String },
+}
+
+impl AdminAuth {
+    fn operator(&self) -> &str {
+        match self {
+            AdminAuth::Session(p) => &p.username,
+            AdminAuth::Bearer { operator } => operator.as_str(),
+        }
+    }
+
+    fn as_session(&self) -> Option<&crate::auth::SessionPayload> {
+        if let AdminAuth::Session(p) = self {
+            Some(p)
+        } else {
+            None
+        }
+    }
+}
+
+/// Reasons `authenticate_admin` can fail. Mapped to HTTP responses by
+/// the caller — `Revoked` becomes 401 with `session_revoked`, the rest
+/// become 401 with `unauthorized`.
+#[derive(Debug)]
+enum AdminAuthError {
+    Unauthenticated(&'static str),
+    Revoked,
+}
+
 /// Authenticate an admin request via either a session cookie (the new
-/// path, ticket 211) or a bearer token (the legacy path, kept while we
-/// migrate deployments off it). Returns the operator name on success.
+/// path, ticket 211/212) or a bearer token (the legacy path, kept
+/// while we migrate deployments off it).
 fn authenticate_admin(
     state: &AdminRuntimeState,
     headers: &hyper::HeaderMap,
-) -> std::result::Result<String, &'static str> {
+) -> std::result::Result<AdminAuth, AdminAuthError> {
     // 1. Session cookie. When a key is configured and the request
     //    carries the cookie, the cookie is the source of truth.
     if let (Some(key), Some(value)) = (
@@ -2197,8 +2241,17 @@ fn authenticate_admin(
             .map(|d| d.as_secs())
             .unwrap_or(0);
         return match crate::auth::decrypt_session(value, key, now) {
-            Ok(payload) => Ok(payload.username),
-            Err(_) => Err("invalid session cookie"),
+            Ok(payload) => {
+                if state
+                    .session_revocations
+                    .is_revoked(&payload.session_id, now)
+                {
+                    Err(AdminAuthError::Revoked)
+                } else {
+                    Ok(AdminAuth::Session(payload))
+                }
+            }
+            Err(_) => Err(AdminAuthError::Unauthenticated("invalid session cookie")),
         };
     }
 
@@ -2207,15 +2260,19 @@ fn authenticate_admin(
     use subtle::ConstantTimeEq;
     let header = headers
         .get(hyper::header::AUTHORIZATION)
-        .ok_or("missing Authorization header")?
+        .ok_or(AdminAuthError::Unauthenticated(
+            "missing Authorization header",
+        ))?
         .to_str()
-        .map_err(|_| "Authorization header is not valid UTF-8")?;
+        .map_err(|_| AdminAuthError::Unauthenticated("Authorization header is not valid UTF-8"))?;
     let token = header
         .strip_prefix("Bearer ")
-        .ok_or("Authorization header must use the Bearer scheme")?
+        .ok_or(AdminAuthError::Unauthenticated(
+            "Authorization header must use the Bearer scheme",
+        ))?
         .trim();
     if token.is_empty() {
-        return Err("empty bearer token");
+        return Err(AdminAuthError::Unauthenticated("empty bearer token"));
     }
     let token_hash = Sha256::digest(token.as_bytes());
     let mut matched: Option<String> = None;
@@ -2226,7 +2283,55 @@ fn authenticate_admin(
             matched = Some(name.clone());
         }
     }
-    matched.ok_or("no configured operator token matched")
+    matched
+        .map(|operator| AdminAuth::Bearer { operator })
+        .ok_or(AdminAuthError::Unauthenticated(
+            "no configured operator token matched",
+        ))
+}
+
+/// Verify the CSRF double-submit on a state-changing session-authenticated
+/// request. Returns `Ok(())` when the request is safe to dispatch.
+/// `GET/HEAD/OPTIONS` are exempt.
+fn check_csrf(
+    method: &Method,
+    headers: &hyper::HeaderMap,
+    session_csrf_secret: &str,
+) -> std::result::Result<(), (&'static str, &'static str)> {
+    if matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS) {
+        return Ok(());
+    }
+    let header_value = headers
+        .get(crate::auth::CSRF_HEADER_NAME)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let header_value = match header_value {
+        Some(v) => v,
+        None => {
+            return Err((
+                "csrf_required",
+                "missing or empty X-CSRF-Token on state-changing request",
+            ));
+        }
+    };
+    let cookie_value = match crate::auth::extract_csrf_cookie(headers) {
+        Some(v) if !v.is_empty() => v,
+        _ => return Err(("csrf_required", "missing CSRF cookie")),
+    };
+    use subtle::ConstantTimeEq;
+    // Header must match the cookie (double-submit) AND match the value
+    // bound into the session (so substituted cookies don't pass).
+    let header_bytes = header_value.as_bytes();
+    let cookie_bytes = cookie_value.as_bytes();
+    let secret_bytes = session_csrf_secret.as_bytes();
+    if header_bytes.len() != cookie_bytes.len() || !bool::from(header_bytes.ct_eq(cookie_bytes)) {
+        return Err(("csrf_mismatch", "X-CSRF-Token does not match CSRF cookie"));
+    }
+    if header_bytes.len() != secret_bytes.len() || !bool::from(header_bytes.ct_eq(secret_bytes)) {
+        return Err(("csrf_mismatch", "X-CSRF-Token does not match session"));
+    }
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -2344,8 +2449,13 @@ async fn handle_admin_login(
             );
         }
     };
-    let cookie = crate::auth::render_session_cookie(
+    let session_cookie = crate::auth::render_session_cookie(
         &encoded,
+        state.session_lifetime_secs,
+        state.cookies_secure,
+    );
+    let csrf_cookie = crate::auth::render_csrf_cookie(
+        &payload.csrf_secret,
         state.session_lifetime_secs,
         state.cookies_secure,
     );
@@ -2361,13 +2471,46 @@ async fn handle_admin_login(
         username: operator.username.clone(),
         role: operator.role,
     };
-    let payload = serde_json::to_vec(&body).expect("serializing login response");
+    let body_bytes = serde_json::to_vec(&body).expect("serializing login response");
     Response::builder()
         .status(StatusCode::OK)
         .header(hyper::header::CONTENT_TYPE, "application/json")
-        .header(hyper::header::SET_COOKIE, cookie)
-        .body(Full::new(Bytes::from(payload)))
+        .header(hyper::header::SET_COOKIE, session_cookie)
+        .header(hyper::header::SET_COOKIE, csrf_cookie)
+        .body(Full::new(Bytes::from(body_bytes)))
         .expect("building login response")
+}
+
+/// Handle `POST /v1/admin/auth/logout`. Revokes the current session id
+/// server-side and clears both cookies in the response. The CSRF
+/// double-submit check is enforced by `handle_admin_request` before we
+/// get here, so the caller has already proved possession of the
+/// session's csrf_secret.
+fn handle_admin_logout(
+    state: &AdminRuntimeState,
+    session: &crate::auth::SessionPayload,
+) -> Response<Full<Bytes>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    state
+        .session_revocations
+        .revoke(session.session_id.clone(), session.expires_at, now);
+    info!(username = %session.username, "logout: session revoked");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .header(
+            hyper::header::SET_COOKIE,
+            crate::auth::render_session_cookie_clear(state.cookies_secure),
+        )
+        .header(
+            hyper::header::SET_COOKIE,
+            crate::auth::render_csrf_cookie_clear(state.cookies_secure),
+        )
+        .body(Full::new(Bytes::from_static(b"{}")))
+        .expect("building logout response")
 }
 
 fn handle_admin_whoami(
@@ -2519,9 +2662,17 @@ async fn handle_admin_request(
         }
         _ => {}
     }
-    let operator = match authenticate_admin(&state, request.headers()) {
-        Ok(op) => op,
-        Err(reason) => {
+    let auth = match authenticate_admin(&state, request.headers()) {
+        Ok(a) => a,
+        Err(AdminAuthError::Revoked) => {
+            warn!("rejected admin request: session revoked");
+            return Ok(error_response(
+                StatusCode::UNAUTHORIZED,
+                "session_revoked",
+                "session has been revoked",
+            ));
+        }
+        Err(AdminAuthError::Unauthenticated(reason)) => {
             warn!(reason = reason, "rejected admin request");
             return Ok(error_response(
                 StatusCode::UNAUTHORIZED,
@@ -2530,12 +2681,39 @@ async fn handle_admin_request(
             ));
         }
     };
+
+    // CSRF only applies to session-cookie auth: bearer-token callers
+    // are scripts/CLIs, not browsers, so the threat model doesn't
+    // include drive-by cross-site requests carrying their credentials.
+    if let Some(payload) = auth.as_session()
+        && let Err((code, msg)) =
+            check_csrf(request.method(), request.headers(), &payload.csrf_secret)
+    {
+        warn!(reason = msg, code = code, "rejected admin request (csrf)");
+        return Ok(error_response(StatusCode::FORBIDDEN, code, msg));
+    }
+
+    let operator = auth.operator().to_string();
     info!(
         operator = %operator,
         method = %request.method(),
         path = request.uri().path(),
         "admin request"
     );
+
+    // Logout runs *after* auth + CSRF have passed: the caller must have
+    // a valid session AND have proven possession of its csrf_secret to
+    // revoke it. That blocks drive-by logout via cookie-only requests.
+    if request.method() == Method::POST && request.uri().path() == "/v1/admin/auth/logout" {
+        return Ok(match auth.as_session() {
+            Some(payload) => handle_admin_logout(&state, payload),
+            None => error_response(
+                StatusCode::BAD_REQUEST,
+                "no_session",
+                "logout requires a cookie session, not a bearer token",
+            ),
+        });
+    }
 
     let response = match (request.method(), request.uri().path()) {
         (&Method::GET, "/v1/admin/stores") => {
@@ -3047,7 +3225,33 @@ async fn handle_admin_request(
         },
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     };
-    Ok(response)
+    Ok(attach_csrf_cookie(response, &state, &auth))
+}
+
+/// Refresh the CSRF cookie on every session-authenticated response so
+/// the SPA always has a value matching the live session. Bearer-token
+/// responses are not modified.
+fn attach_csrf_cookie(
+    mut response: Response<Full<Bytes>>,
+    state: &AdminRuntimeState,
+    auth: &AdminAuth,
+) -> Response<Full<Bytes>> {
+    if let Some(payload) = auth.as_session() {
+        let cookie = crate::auth::render_csrf_cookie(
+            &payload.csrf_secret,
+            state.session_lifetime_secs,
+            state.cookies_secure,
+        );
+        match hyper::header::HeaderValue::from_str(&cookie) {
+            Ok(v) => {
+                response.headers_mut().append(hyper::header::SET_COOKIE, v);
+            }
+            Err(e) => {
+                warn!(err = %e, "could not append CSRF cookie header");
+            }
+        }
+    }
+    response
 }
 
 #[cfg(test)]
@@ -4202,6 +4406,7 @@ mod tests {
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
+            session_revocations: crate::auth::SessionRevocations::new(),
         }
     }
 
@@ -4272,7 +4477,8 @@ mod tests {
             &headers_with_auth(Some("Bearer secret-bob-token-abcd")),
         )
         .unwrap();
-        assert_eq!(ok, "bob");
+        assert_eq!(ok.operator(), "bob");
+        assert!(matches!(ok, AdminAuth::Bearer { .. }));
 
         assert!(
             authenticate_admin(&state, &headers_with_auth(Some("Bearer unknown-token"))).is_err()
@@ -4512,6 +4718,7 @@ mod tests {
             session_lifetime_secs: 3600,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
+            session_revocations: crate::auth::SessionRevocations::new(),
         }
     }
 
@@ -4595,5 +4802,213 @@ mod tests {
             .to_bytes();
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["authenticated"], false);
+    }
+
+    // ---------- CSRF + logout (ticket 212) ----------
+
+    /// Build a request-shaped header map carrying a freshly-issued
+    /// session cookie plus optional CSRF cookie/header.
+    fn session_headers(
+        state: &AdminRuntimeState,
+        username: &str,
+        with_csrf_cookie: bool,
+        csrf_header: Option<&str>,
+    ) -> (hyper::HeaderMap, crate::auth::SessionPayload) {
+        let key = state.session_key.unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let payload = crate::auth::new_session_payload("op-1".into(), username.into(), now, 3600);
+        let session_cookie = crate::auth::encrypt_session(&payload, &key).unwrap();
+        let mut cookie_parts = vec![format!("__Host-uw-session={session_cookie}")];
+        if with_csrf_cookie {
+            cookie_parts.push(format!("__Host-uw-csrf={}", payload.csrf_secret));
+        }
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::COOKIE,
+            hyper::header::HeaderValue::from_str(&cookie_parts.join("; ")).unwrap(),
+        );
+        if let Some(value) = csrf_header {
+            headers.insert(
+                hyper::header::HeaderName::from_static("x-csrf-token"),
+                hyper::header::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        (headers, payload)
+    }
+
+    #[test]
+    fn authenticate_admin_rejects_revoked_session() {
+        let state = seeded_admin_state("alice", "hunter2");
+        let (headers, payload) = session_headers(&state, "alice", false, None);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        state
+            .session_revocations
+            .revoke(payload.session_id.clone(), payload.expires_at, now);
+        let err = authenticate_admin(&state, &headers).unwrap_err();
+        assert!(matches!(err, AdminAuthError::Revoked));
+    }
+
+    #[test]
+    fn authenticate_admin_accepts_session_when_not_revoked() {
+        let state = seeded_admin_state("alice", "hunter2");
+        let (headers, _payload) = session_headers(&state, "alice", false, None);
+        let auth = authenticate_admin(&state, &headers).unwrap();
+        assert_eq!(auth.operator(), "alice");
+        assert!(auth.as_session().is_some());
+    }
+
+    #[test]
+    fn handle_admin_logout_revokes_and_clears_cookies() {
+        let state = seeded_admin_state("alice", "hunter2");
+        let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
+        let response = handle_admin_logout(&state, &payload);
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookies: Vec<String> = response
+            .headers()
+            .get_all(hyper::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
+            .collect();
+        assert!(
+            cookies
+                .iter()
+                .any(|c| c.starts_with("__Host-uw-session=;") && c.contains("Max-Age=0")),
+            "expected session cookie cleared in {cookies:?}",
+        );
+        assert!(
+            cookies
+                .iter()
+                .any(|c| c.starts_with("__Host-uw-csrf=;") && c.contains("Max-Age=0")),
+            "expected csrf cookie cleared in {cookies:?}",
+        );
+        // Revocation entry visible while still inside the original window.
+        assert!(
+            state
+                .session_revocations
+                .is_revoked(&payload.session_id, 1500)
+        );
+        // ...and naturally frees once the session would have expired anyway.
+        assert!(
+            !state
+                .session_revocations
+                .is_revoked(&payload.session_id, payload.expires_at + 1)
+        );
+    }
+
+    #[test]
+    fn attach_csrf_cookie_refreshes_on_session_auth() {
+        let state = seeded_admin_state("alice", "hunter2");
+        let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
+        let response = json_response(StatusCode::OK, &serde_json::json!({"hello": "world"}));
+        let wrapped = attach_csrf_cookie(response, &state, &AdminAuth::Session(payload.clone()));
+        let cookies: Vec<String> = wrapped
+            .headers()
+            .get_all(hyper::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
+            .collect();
+        assert!(
+            cookies
+                .iter()
+                .any(|c| c.starts_with(&format!("__Host-uw-csrf={}", payload.csrf_secret))),
+            "expected refreshed CSRF cookie in {cookies:?}",
+        );
+    }
+
+    #[test]
+    fn attach_csrf_cookie_is_noop_for_bearer_auth() {
+        let state = seeded_admin_state("alice", "hunter2");
+        let response = json_response(StatusCode::OK, &serde_json::json!({"hello": "world"}));
+        let wrapped = attach_csrf_cookie(
+            response,
+            &state,
+            &AdminAuth::Bearer {
+                operator: "alice".into(),
+            },
+        );
+        assert!(wrapped.headers().get(hyper::header::SET_COOKIE).is_none());
+    }
+
+    #[test]
+    fn check_csrf_passes_safe_methods_without_token() {
+        let headers = hyper::HeaderMap::new();
+        check_csrf(&Method::GET, &headers, "any-secret").unwrap();
+        check_csrf(&Method::HEAD, &headers, "any-secret").unwrap();
+        check_csrf(&Method::OPTIONS, &headers, "any-secret").unwrap();
+    }
+
+    #[test]
+    fn check_csrf_rejects_missing_header_with_csrf_required() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::COOKIE,
+            hyper::header::HeaderValue::from_static("__Host-uw-csrf=the-secret"),
+        );
+        let (code, _msg) = check_csrf(&Method::POST, &headers, "the-secret").unwrap_err();
+        assert_eq!(code, "csrf_required");
+    }
+
+    #[test]
+    fn check_csrf_rejects_missing_cookie_with_csrf_required() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::HeaderName::from_static("x-csrf-token"),
+            hyper::header::HeaderValue::from_static("the-secret"),
+        );
+        let (code, _msg) = check_csrf(&Method::POST, &headers, "the-secret").unwrap_err();
+        assert_eq!(code, "csrf_required");
+    }
+
+    #[test]
+    fn check_csrf_rejects_mismatched_header_with_csrf_mismatch() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::COOKIE,
+            hyper::header::HeaderValue::from_static("__Host-uw-csrf=the-secret"),
+        );
+        headers.insert(
+            hyper::header::HeaderName::from_static("x-csrf-token"),
+            hyper::header::HeaderValue::from_static("a-different-value"),
+        );
+        let (code, _) = check_csrf(&Method::POST, &headers, "the-secret").unwrap_err();
+        assert_eq!(code, "csrf_mismatch");
+    }
+
+    #[test]
+    fn check_csrf_rejects_when_cookie_does_not_match_session() {
+        // Same value in cookie and header, but neither matches the
+        // session's csrf_secret — a cookie-tossing or stale-cookie
+        // scenario must not slip through.
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::COOKIE,
+            hyper::header::HeaderValue::from_static("__Host-uw-csrf=stale-value"),
+        );
+        headers.insert(
+            hyper::header::HeaderName::from_static("x-csrf-token"),
+            hyper::header::HeaderValue::from_static("stale-value"),
+        );
+        let (code, _) = check_csrf(&Method::POST, &headers, "real-session-secret").unwrap_err();
+        assert_eq!(code, "csrf_mismatch");
+    }
+
+    #[test]
+    fn check_csrf_accepts_matching_header_cookie_and_session() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::COOKIE,
+            hyper::header::HeaderValue::from_static("__Host-uw-csrf=the-secret"),
+        );
+        headers.insert(
+            hyper::header::HeaderName::from_static("x-csrf-token"),
+            hyper::header::HeaderValue::from_static("the-secret"),
+        );
+        check_csrf(&Method::POST, &headers, "the-secret").unwrap();
     }
 }

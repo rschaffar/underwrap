@@ -44,6 +44,15 @@ pub const DEFAULT_SESSION_LIFETIME_SECS: u64 = 12 * 60 * 60;
 /// `Domain`, which neutralises subdomain confusion attacks.
 pub const SESSION_COOKIE_NAME: &str = "__Host-uw-session";
 
+/// CSRF cookie name. `__Host-` prefix forces `Secure`, `Path=/`, and no
+/// `Domain`. Not `HttpOnly`: the SPA reads it via JS to echo back in
+/// `X-CSRF-Token` (double-submit pattern).
+pub const CSRF_COOKIE_NAME: &str = "__Host-uw-csrf";
+
+/// Header the SPA sends on state-changing requests, carrying the value
+/// it read from the CSRF cookie.
+pub const CSRF_HEADER_NAME: &str = "X-CSRF-Token";
+
 /// Fixed Argon2id hash used as a constant-time dummy when no operator
 /// matches the presented username. Real verify cost dominates timing,
 /// so doing this work for the unknown-user path closes the enumeration
@@ -59,14 +68,20 @@ pub const LOGIN_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 /// What we serialise inside the encrypted cookie.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionPayload {
+    /// Random 128-bit identifier used by the server-side revocation
+    /// set (ticket 212). Distinct from the AEAD nonce: that protects
+    /// the cookie ciphertext, this names the session for revocation.
+    pub session_id: String,
     pub operator_id: String,
     pub username: String,
     /// Epoch seconds when the session was issued.
     pub issued_at: u64,
     /// Epoch seconds at which the session expires. Checked on decrypt.
     pub expires_at: u64,
-    /// 32 random bytes (hex). Used by ticket 212 for the CSRF
-    /// double-submit token.
+    /// 32 random bytes (hex). Doubles as the CSRF cookie value (the
+    /// SPA reads the cookie via JS and echoes it back in
+    /// `X-CSRF-Token`; the server verifies the header matches this
+    /// secret).
     pub csrf_secret: String,
 }
 
@@ -162,7 +177,10 @@ pub fn new_session_payload(
 ) -> SessionPayload {
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
+    let mut sid = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut sid);
     SessionPayload {
+        session_id: hex::encode(sid),
         operator_id,
         username,
         issued_at: now,
@@ -190,14 +208,59 @@ pub fn render_session_cookie(encoded: &str, lifetime_secs: u64, secure: bool) ->
 
 /// Extract the session cookie value from a `Cookie` header, if present.
 pub fn extract_session_cookie(headers: &hyper::HeaderMap) -> Option<&str> {
+    extract_cookie(headers, SESSION_COOKIE_NAME)
+}
+
+/// Extract the CSRF cookie value from a `Cookie` header, if present.
+pub fn extract_csrf_cookie(headers: &hyper::HeaderMap) -> Option<&str> {
+    extract_cookie(headers, CSRF_COOKIE_NAME)
+}
+
+fn extract_cookie<'a>(headers: &'a hyper::HeaderMap, name: &str) -> Option<&'a str> {
     let header = headers.get(hyper::header::COOKIE)?.to_str().ok()?;
+    let prefix = format!("{name}=");
     for part in header.split(';') {
         let trimmed = part.trim();
-        if let Some(value) = trimmed.strip_prefix(&format!("{SESSION_COOKIE_NAME}=")) {
+        if let Some(value) = trimmed.strip_prefix(&prefix) {
             return Some(value);
         }
     }
     None
+}
+
+/// Render a `Set-Cookie` value for the CSRF cookie. Mirrors the session
+/// cookie's `__Host-` rules but is intentionally NOT `HttpOnly` because
+/// the SPA reads it via JS to populate `X-CSRF-Token`.
+pub fn render_csrf_cookie(secret: &str, lifetime_secs: u64, secure: bool) -> String {
+    let secure_attr = if secure { "Secure; " } else { "" };
+    format!(
+        "{name}={value}; {secure}SameSite=Strict; Path=/; Max-Age={age}",
+        name = CSRF_COOKIE_NAME,
+        value = secret,
+        secure = secure_attr,
+        age = lifetime_secs,
+    )
+}
+
+/// Render a `Set-Cookie` value that immediately clears the session
+/// cookie (Max-Age=0).
+pub fn render_session_cookie_clear(secure: bool) -> String {
+    let secure_attr = if secure { "Secure; " } else { "" };
+    format!(
+        "{name}=; {secure}HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+        name = SESSION_COOKIE_NAME,
+        secure = secure_attr,
+    )
+}
+
+/// Render a `Set-Cookie` value that immediately clears the CSRF cookie.
+pub fn render_csrf_cookie_clear(secure: bool) -> String {
+    let secure_attr = if secure { "Secure; " } else { "" };
+    format!(
+        "{name}=; {secure}SameSite=Strict; Path=/; Max-Age=0",
+        name = CSRF_COOKIE_NAME,
+        secure = secure_attr,
+    )
 }
 
 /// Verify a password against an Argon2id PHC hash. Returns `Ok(true)`
@@ -225,6 +288,54 @@ pub fn hash_password(password: &str) -> Result<String> {
         .hash_password(password.as_bytes(), &salt)
         .map_err(|e| anyhow::anyhow!("argon2 hash failed: {e}"))?;
     Ok(hash.to_string())
+}
+
+/// Server-side set of revoked session ids with their original
+/// expiry. A session id stays in the set until `now > expires_at`,
+/// after which the underlying cookie can no longer pass
+/// [`decrypt_session`] anyway, so the entry is safe to drop.
+#[derive(Default, Debug)]
+pub struct SessionRevocations {
+    inner: Mutex<HashMap<String, u64>>,
+}
+
+impl SessionRevocations {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Mark a session as revoked. Opportunistically drops entries that
+    /// have already passed their original expiry to keep the map small.
+    pub fn revoke(&self, session_id: String, expires_at: u64, now: u64) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.retain(|_, exp| *exp > now);
+        guard.insert(session_id, expires_at);
+    }
+
+    /// Returns true while the session id is in the set AND has not
+    /// passed its original expiry. Entries past their expiry are treated
+    /// as "not revoked" because the cookie itself would fail expiry
+    /// checks on decrypt; this matches the cookie's natural lifetime.
+    pub fn is_revoked(&self, session_id: &str, now: u64) -> bool {
+        let guard = self.inner.lock().unwrap();
+        guard.get(session_id).is_some_and(|exp| *exp > now)
+    }
+
+    /// Drop all entries whose original session expiry has passed.
+    pub fn cleanup(&self, now: u64) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.retain(|_, exp| *exp > now);
+    }
+
+    /// Number of entries currently tracked (after cleanup is applied).
+    pub fn len(&self) -> usize {
+        self.inner.lock().unwrap().len()
+    }
+
+    /// Convenience for tests / health checks.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Per-username login attempt counter. Resets when the window expires.
@@ -427,6 +538,94 @@ mod tests {
         }
         limiter.reset("alice");
         assert!(limiter.check_and_record("alice"));
+    }
+
+    #[test]
+    fn session_payload_includes_session_id() {
+        let p1 = new_session_payload("op".into(), "alice".into(), 1000, 3600);
+        let p2 = new_session_payload("op".into(), "alice".into(), 1000, 3600);
+        assert!(!p1.session_id.is_empty());
+        assert_eq!(p1.session_id.len(), 32, "16 bytes hex = 32 chars");
+        assert_ne!(p1.session_id, p2.session_id, "ids must be random");
+    }
+
+    #[test]
+    fn csrf_cookie_render_is_readable_by_js() {
+        let cookie = render_csrf_cookie("abc123", 600, true);
+        assert!(cookie.starts_with("__Host-uw-csrf=abc123"));
+        assert!(cookie.contains("Secure"));
+        assert!(
+            !cookie.contains("HttpOnly"),
+            "CSRF cookie MUST NOT be HttpOnly: the SPA reads it"
+        );
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Path=/"));
+        assert!(cookie.contains("Max-Age=600"));
+    }
+
+    #[test]
+    fn csrf_cookie_render_omits_secure_for_plain_http() {
+        let cookie = render_csrf_cookie("abc123", 600, false);
+        assert!(!cookie.contains("Secure"));
+    }
+
+    #[test]
+    fn cookie_clear_uses_max_age_zero() {
+        let session = render_session_cookie_clear(true);
+        assert!(session.contains("__Host-uw-session=;"));
+        assert!(session.contains("Max-Age=0"));
+        assert!(session.contains("HttpOnly"));
+        let csrf = render_csrf_cookie_clear(true);
+        assert!(csrf.contains("__Host-uw-csrf=;"));
+        assert!(csrf.contains("Max-Age=0"));
+        assert!(!csrf.contains("HttpOnly"));
+    }
+
+    #[test]
+    fn extract_csrf_cookie_parses_combined_header() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::COOKIE,
+            hyper::header::HeaderValue::from_static(
+                "foo=bar; __Host-uw-session=abc; __Host-uw-csrf=deadbeef; x=y",
+            ),
+        );
+        assert_eq!(extract_csrf_cookie(&headers), Some("deadbeef"));
+        assert_eq!(extract_session_cookie(&headers), Some("abc"));
+    }
+
+    #[test]
+    fn session_revocations_track_until_expiry() {
+        let r = SessionRevocations::new();
+        assert!(!r.is_revoked("sid", 0));
+        r.revoke("sid".into(), 2000, 1000);
+        assert!(r.is_revoked("sid", 1500));
+        // Past the original session expiry, the entry no longer
+        // matters: the cookie itself would fail decrypt_session.
+        assert!(!r.is_revoked("sid", 2500));
+    }
+
+    #[test]
+    fn session_revocations_cleanup_drops_expired_entries() {
+        let r = SessionRevocations::new();
+        r.revoke("a".into(), 1500, 1000);
+        r.revoke("b".into(), 3000, 1000);
+        assert_eq!(r.len(), 2);
+        r.cleanup(2000);
+        assert_eq!(r.len(), 1, "only the still-live entry remains");
+        r.cleanup(4000);
+        assert!(r.is_empty(), "revocation TTL eventually frees the set");
+    }
+
+    #[test]
+    fn session_revocations_revoke_opportunistically_cleans() {
+        let r = SessionRevocations::new();
+        r.revoke("a".into(), 1500, 1000);
+        // Inserting a new entry past the first's expiry should drop it.
+        r.revoke("b".into(), 5000, 2000);
+        assert_eq!(r.len(), 1);
+        assert!(!r.is_revoked("a", 2000));
+        assert!(r.is_revoked("b", 2000));
     }
 
     #[test]
