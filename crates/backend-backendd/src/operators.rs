@@ -64,6 +64,33 @@ pub enum OperatorRole {
     Operator,
 }
 
+/// Resolved identity and authorization context for an admin request.
+/// Derived from either a session cookie (looked up in the operator
+/// collection at request time) or a legacy bearer token. Carries
+/// enough information to gate per-store access without re-reading the
+/// collection on every authorization decision.
+#[derive(Debug, Clone)]
+pub struct Principal {
+    pub id: String,
+    pub username: String,
+    pub role: OperatorRole,
+    pub granted_stores: Vec<String>,
+}
+
+impl Principal {
+    pub fn is_admin(&self) -> bool {
+        matches!(self.role, OperatorRole::Admin)
+    }
+
+    /// Admins can access any store; operators must have an explicit
+    /// grant. We don't distinguish "no grant" from "no such store"
+    /// at the response level — both return 404 to avoid leaking
+    /// store existence to non-admins.
+    pub fn has_store_access(&self, store: &str) -> bool {
+        self.is_admin() || self.granted_stores.iter().any(|s| s == store)
+    }
+}
+
 /// The persisted operator collection. Stored as JSON in the admin-home
 /// store under [`OPERATORS_SECRET_ID`].
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -373,6 +400,32 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.to_string().contains("not declared"));
+    }
+
+    #[test]
+    fn principal_admin_has_access_to_every_store() {
+        let p = Principal {
+            id: "a".into(),
+            username: "alice".into(),
+            role: OperatorRole::Admin,
+            granted_stores: Vec::new(),
+        };
+        assert!(p.is_admin());
+        assert!(p.has_store_access("anything"));
+        assert!(p.has_store_access("else"));
+    }
+
+    #[test]
+    fn principal_operator_requires_explicit_grant() {
+        let p = Principal {
+            id: "b".into(),
+            username: "bob".into(),
+            role: OperatorRole::Operator,
+            granted_stores: vec!["work".into()],
+        };
+        assert!(!p.is_admin());
+        assert!(p.has_store_access("work"));
+        assert!(!p.has_store_access("other"));
     }
 
     #[test]

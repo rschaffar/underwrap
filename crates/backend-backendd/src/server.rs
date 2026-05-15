@@ -2161,6 +2161,79 @@ fn admin_store<'a>(
         .with_context(|| format!("unknown store '{store}'"))
 }
 
+/// Resolve a store reference for an authenticated request. Returns
+/// 404 not_found when either the store doesn't exist or the principal
+/// lacks a grant for it. Collapsing both into the same response code
+/// prevents operators from probing the store catalogue.
+#[allow(clippy::result_large_err)]
+fn admin_store_for_principal<'a>(
+    state: &'a AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    store: &str,
+) -> std::result::Result<&'a Arc<dyn StorageBackend>, Response<Full<Bytes>>> {
+    if !principal.has_store_access(store) {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown store",
+        ));
+    }
+    match state.stores.get(store) {
+        Some(s) => Ok(s),
+        None => Err(error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown store",
+        )),
+    }
+}
+
+/// Build a [`Principal`] from an authenticated request. For
+/// session-cookie auth we re-read the operator collection so role and
+/// grants are always current; for legacy bearer-token auth we
+/// synthesise an admin principal (those tokens predate the multi-user
+/// model and have always carried full access).
+#[allow(clippy::result_large_err)]
+fn resolve_principal(
+    state: &AdminRuntimeState,
+    auth: &AdminAuth,
+) -> std::result::Result<crate::operators::Principal, Response<Full<Bytes>>> {
+    match auth {
+        AdminAuth::Session(payload) => {
+            let collection = match crate::operators::load(state.admin_home_store.as_ref()) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(err = %e, "could not load operator collection");
+                    return Err(error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        "operator collection unavailable",
+                    ));
+                }
+            };
+            match collection.find_by_username(&payload.username) {
+                Some(op) => Ok(crate::operators::Principal {
+                    id: op.id.clone(),
+                    username: op.username.clone(),
+                    role: op.role,
+                    granted_stores: op.granted_stores.clone(),
+                }),
+                None => Err(error_response(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "session refers to an operator that no longer exists",
+                )),
+            }
+        }
+        AdminAuth::Bearer { operator } => Ok(crate::operators::Principal {
+            id: operator.clone(),
+            username: operator.clone(),
+            role: crate::operators::OperatorRole::Admin,
+            granted_stores: Vec::new(),
+        }),
+    }
+}
+
 /// Read each admin token file, trim whitespace, and return the loaded map.
 fn load_admin_tokens(
     configs: &HashMap<String, AdminTokenConfig>,
@@ -2198,6 +2271,11 @@ enum AdminAuth {
 }
 
 impl AdminAuth {
+    /// Operator name carried by this authentication, for the few
+    /// places that need to label the auth itself (e.g. tests). Most
+    /// request handlers should use [`Principal::username`] instead,
+    /// which is the source of truth for audit and authorization.
+    #[cfg(test)]
     fn operator(&self) -> &str {
         match self {
             AdminAuth::Session(p) => &p.username,
@@ -2693,9 +2771,14 @@ async fn handle_admin_request(
         return Ok(error_response(StatusCode::FORBIDDEN, code, msg));
     }
 
-    let operator = auth.operator().to_string();
+    let principal = match resolve_principal(&state, &auth) {
+        Ok(p) => p,
+        Err(resp) => return Ok(resp),
+    };
+    let operator = principal.username.clone();
     info!(
         operator = %operator,
+        role = ?principal.role,
         method = %request.method(),
         path = request.uri().path(),
         "admin request"
@@ -2717,7 +2800,12 @@ async fn handle_admin_request(
 
     let response = match (request.method(), request.uri().path()) {
         (&Method::GET, "/v1/admin/stores") => {
-            let mut stores: Vec<String> = state.stores.keys().cloned().collect();
+            let mut stores: Vec<String> = state
+                .stores
+                .keys()
+                .filter(|name| principal.has_store_access(name))
+                .cloned()
+                .collect();
             stores.sort();
             json_response(
                 StatusCode::OK,
@@ -2732,6 +2820,7 @@ async fn handle_admin_request(
             match state
                 .stores
                 .iter()
+                .filter(|(name, _)| principal.has_store_access(name))
                 .map(|(name, store)| admin_ui_overview_for_store(name, store.as_ref(), now_epoch))
                 .collect::<Result<Vec<_>>>()
             {
@@ -2755,36 +2844,43 @@ async fn handle_admin_request(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|duration| duration.as_secs())
                     .unwrap_or(0);
-                match admin_store(&state, &body.store)
-                    .and_then(|store| admin_ui_resources_query(store.as_ref(), &body, now_epoch))
-                {
-                    Ok(response) => json_response(StatusCode::OK, &response),
-                    Err(e) => {
-                        error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
-                    }
+                match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(store) => match admin_ui_resources_query(store.as_ref(), &body, now_epoch) {
+                        Ok(response) => json_response(StatusCode::OK, &response),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    },
+                    Err(resp) => resp,
                 }
             }
             Err(response) => response,
         },
-        (&Method::POST, "/v1/admin/ui/resource/get") => match parse_json_body::<
-            underwrap_protocol::service::AdminUiResourceGetRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => match admin_store(&state, &body.store)
-                .and_then(|store| admin_ui_resource_detail(store.as_ref(), &body.resource))
+        (&Method::POST, "/v1/admin/ui/resource/get") => {
+            match parse_json_body::<underwrap_protocol::service::AdminUiResourceGetRequest>(request)
+                .await
             {
-                Ok(response) => json_response(StatusCode::OK, &response),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-            },
-            Err(response) => response,
-        },
+                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(store) => match admin_ui_resource_detail(store.as_ref(), &body.resource) {
+                        Ok(response) => json_response(StatusCode::OK, &response),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    },
+                    Err(resp) => resp,
+                },
+                Err(response) => response,
+            }
+        }
         (&Method::POST, "/v1/admin/ui/resource/reveal") => match parse_json_body::<
             underwrap_protocol::service::AdminUiResourceRevealRequest,
         >(request)
         .await
         {
-            Ok(body) => handle_admin_ui_resource_reveal(&state, &operator, body),
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(_) => handle_admin_ui_resource_reveal(&state, &operator, body),
+                Err(resp) => resp,
+            },
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/ui/resource/download") => match parse_json_body::<
@@ -2792,7 +2888,10 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => handle_admin_ui_resource_download(&state, &operator, body),
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(_) => handle_admin_ui_resource_download(&state, &operator, body),
+                Err(resp) => resp,
+            },
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/ui/resource/write-text") => match parse_json_body::<
@@ -2800,13 +2899,16 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => {
-                let now_epoch = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0);
-                handle_admin_ui_resource_write_text(&state, &operator, body, now_epoch)
-            }
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(_) => {
+                    let now_epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0);
+                    handle_admin_ui_resource_write_text(&state, &operator, body, now_epoch)
+                }
+                Err(resp) => resp,
+            },
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/ui/resource/upload-file") => match parse_json_body::<
@@ -2814,13 +2916,16 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => {
-                let now_epoch = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0);
-                handle_admin_ui_resource_upload_file(&state, &operator, body, now_epoch)
-            }
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(_) => {
+                    let now_epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0);
+                    handle_admin_ui_resource_upload_file(&state, &operator, body, now_epoch)
+                }
+                Err(resp) => resp,
+            },
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/ui/resource/delete-entry") => match parse_json_body::<
@@ -2828,13 +2933,16 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => {
-                let now_epoch = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0);
-                handle_admin_ui_resource_delete_entry(&state, &operator, body, now_epoch)
-            }
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(_) => {
+                    let now_epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0);
+                    handle_admin_ui_resource_delete_entry(&state, &operator, body, now_epoch)
+                }
+                Err(resp) => resp,
+            },
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/ui/mutation/get") => {
@@ -2846,13 +2954,18 @@ async fn handle_admin_request(
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|duration| duration.as_secs())
                         .unwrap_or(0);
-                    match admin_store(&state, &body.store).and_then(|store| {
-                        admin_ui_mutation_get(store.as_ref(), &body.resource, now_epoch)
-                    }) {
-                        Ok(response) => json_response(StatusCode::OK, &response),
-                        Err(e) => {
-                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                    match admin_store_for_principal(&state, &principal, &body.store) {
+                        Ok(store) => {
+                            match admin_ui_mutation_get(store.as_ref(), &body.resource, now_epoch) {
+                                Ok(response) => json_response(StatusCode::OK, &response),
+                                Err(e) => error_response(
+                                    StatusCode::BAD_REQUEST,
+                                    "admin_error",
+                                    &e.to_string(),
+                                ),
+                            }
                         }
+                        Err(resp) => resp,
                     }
                 }
                 Err(response) => response,
@@ -2862,13 +2975,16 @@ async fn handle_admin_request(
             match parse_json_body::<underwrap_protocol::service::AdminUiMutationSetRequest>(request)
                 .await
             {
-                Ok(body) => {
-                    let now_epoch = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|duration| duration.as_secs())
-                        .unwrap_or(0);
-                    handle_admin_ui_mutation_set(&state, &operator, body, now_epoch)
-                }
+                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(_) => {
+                        let now_epoch = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|duration| duration.as_secs())
+                            .unwrap_or(0);
+                        handle_admin_ui_mutation_set(&state, &operator, body, now_epoch)
+                    }
+                    Err(resp) => resp,
+                },
                 Err(response) => response,
             }
         }
@@ -2877,11 +2993,14 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store(&state, &body.store)
-                .and_then(|store| admin_ui_wrappers_query(store.as_ref(), &body))
-            {
-                Ok(response) => json_response(StatusCode::OK, &response),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(store) => match admin_ui_wrappers_query(store.as_ref(), &body) {
+                    Ok(response) => json_response(StatusCode::OK, &response),
+                    Err(e) => {
+                        error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                    }
+                },
+                Err(resp) => resp,
             },
             Err(response) => response,
         },
@@ -2890,7 +3009,10 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => handle_admin_ui_wrapper_set_mode(&state, &operator, body),
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(_) => handle_admin_ui_wrapper_set_mode(&state, &operator, body),
+                Err(resp) => resp,
+            },
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/ui/matrix/query") => {
@@ -2902,13 +3024,18 @@ async fn handle_admin_request(
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|duration| duration.as_secs())
                         .unwrap_or(0);
-                    match admin_store(&state, &body.store)
-                        .and_then(|store| admin_ui_matrix_query(store.as_ref(), &body, now_epoch))
-                    {
-                        Ok(response) => json_response(StatusCode::OK, &response),
-                        Err(e) => {
-                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                    match admin_store_for_principal(&state, &principal, &body.store) {
+                        Ok(store) => {
+                            match admin_ui_matrix_query(store.as_ref(), &body, now_epoch) {
+                                Ok(response) => json_response(StatusCode::OK, &response),
+                                Err(e) => error_response(
+                                    StatusCode::BAD_REQUEST,
+                                    "admin_error",
+                                    &e.to_string(),
+                                ),
+                            }
                         }
+                        Err(resp) => resp,
                     }
                 }
                 Err(response) => response,
@@ -2919,39 +3046,48 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => handle_admin_ui_matrix_set_cell(&state, &operator, body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/ui/audit/query") => match parse_json_body::<
-            underwrap_protocol::service::AdminUiAuditQueryRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => match admin_store(&state, &body.store)
-                .and_then(|store| admin_ui_audit_query(store.as_ref(), &body))
-            {
-                Ok(response) => json_response_no_store(StatusCode::OK, &response),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(_) => handle_admin_ui_matrix_set_cell(&state, &operator, body),
+                Err(resp) => resp,
             },
             Err(response) => response,
         },
+        (&Method::POST, "/v1/admin/ui/audit/query") => {
+            match parse_json_body::<underwrap_protocol::service::AdminUiAuditQueryRequest>(request)
+                .await
+            {
+                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(store) => match admin_ui_audit_query(store.as_ref(), &body) {
+                        Ok(response) => json_response_no_store(StatusCode::OK, &response),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    },
+                    Err(resp) => resp,
+                },
+                Err(response) => response,
+            }
+        }
         (&Method::POST, "/v1/admin/secret/read") => match parse_json_body::<
             underwrap_protocol::service::AdminSecretReadRequest,
         >(request)
         .await
         {
-            Ok(body) => match admin_store(&state, &body.store)
-                .and_then(|store| store.read(&body.secret_id))
-            {
-                Ok(material) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminSecretReadResponse {
-                        material_b64: material.map(|material| {
-                            base64::engine::general_purpose::STANDARD.encode(material.as_ref())
-                        }),
-                    },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(store) => match store.read(&body.secret_id) {
+                    Ok(material) => json_response(
+                        StatusCode::OK,
+                        &underwrap_protocol::service::AdminSecretReadResponse {
+                            material_b64: material.map(|material| {
+                                base64::engine::general_purpose::STANDARD.encode(material.as_ref())
+                            }),
+                        },
+                    ),
+                    Err(e) => {
+                        error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                    }
+                },
+                Err(resp) => resp,
             },
             Err(response) => response,
         },
@@ -2959,94 +3095,108 @@ async fn handle_admin_request(
             match parse_json_body::<underwrap_protocol::service::AdminSecretWriteRequest>(request)
                 .await
             {
-                Ok(body) => handle_admin_secret_write(&state, &operator, body),
+                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(_) => handle_admin_secret_write(&state, &operator, body),
+                    Err(resp) => resp,
+                },
                 Err(response) => response,
             }
         }
-        (&Method::POST, "/v1/admin/secret/list") => match parse_json_body::<
-            underwrap_protocol::service::AdminSecretListRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => match admin_store(&state, &body.store)
-                .and_then(|store| store.list(&body.prefix))
+        (&Method::POST, "/v1/admin/secret/list") => {
+            match parse_json_body::<underwrap_protocol::service::AdminSecretListRequest>(request)
+                .await
             {
-                Ok(ids) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminSecretListResponse { ids },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-            },
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/secret/delete") => match parse_json_body::<
-            underwrap_protocol::service::AdminSecretDeleteRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => match admin_store(&state, &body.store)
-                .and_then(|store| store.delete(&body.secret_id))
-            {
-                Ok(existed) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-            },
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/catalog/get") => match parse_json_body::<
-            underwrap_protocol::service::AdminCatalogGetRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => match admin_store(&state, &body.store)
-                .and_then(|store| load_catalog_document(&**store))
-            {
-                Ok(entries) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminCatalogGetResponse {
-                        entries: entries
-                            .into_iter()
-                            .map(|entry| underwrap_protocol::service::CatalogEntry {
-                                host: entry.host,
-                                user: entry.user,
-                                instance: entry.instance,
-                                wrapper: entry.wrapper,
-                                resource: entry.resource,
-                            })
-                            .collect(),
+                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(store) => match store.list(&body.prefix) {
+                        Ok(ids) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminSecretListResponse { ids },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
                     },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-            },
-            Err(response) => response,
-        },
+                    Err(resp) => resp,
+                },
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/admin/secret/delete") => {
+            match parse_json_body::<underwrap_protocol::service::AdminSecretDeleteRequest>(request)
+                .await
+            {
+                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(store) => match store.delete(&body.secret_id) {
+                        Ok(existed) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    },
+                    Err(resp) => resp,
+                },
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/admin/catalog/get") => {
+            match parse_json_body::<underwrap_protocol::service::AdminCatalogGetRequest>(request)
+                .await
+            {
+                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(store) => match load_catalog_document(&**store) {
+                        Ok(entries) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminCatalogGetResponse {
+                                entries: entries
+                                    .into_iter()
+                                    .map(|entry| underwrap_protocol::service::CatalogEntry {
+                                        host: entry.host,
+                                        user: entry.user,
+                                        instance: entry.instance,
+                                        wrapper: entry.wrapper,
+                                        resource: entry.resource,
+                                    })
+                                    .collect(),
+                            },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    },
+                    Err(resp) => resp,
+                },
+                Err(response) => response,
+            }
+        }
         (&Method::POST, "/v1/admin/policy/get") => {
             match parse_json_body::<underwrap_protocol::service::AdminPolicyGetRequest>(request)
                 .await
             {
-                Ok(body) => {
-                    let doc = match admin_store(&state, &body.store).and_then(|store| {
-                        match store.read(POLICY_DOCUMENT_SECRET_ID)? {
-                            Some(material) => Ok(serde_json::from_slice(material.as_ref())?),
-                            None => Ok(underwrap_protocol::policy::PolicyDocument::default()),
-                        }
-                    }) {
-                        Ok(doc) => doc,
-                        Err(e) => {
-                            return Ok(error_response(
+                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(store) => {
+                        let read_result =
+                            store.read(POLICY_DOCUMENT_SECRET_ID).and_then(|m| match m {
+                                Some(material) => Ok(serde_json::from_slice(material.as_ref())?),
+                                None => Ok(underwrap_protocol::policy::PolicyDocument::default()),
+                            });
+                        match read_result {
+                            Ok(doc) => json_response(
+                                StatusCode::OK,
+                                &underwrap_protocol::service::AdminPolicyGetResponse {
+                                    document: doc,
+                                },
+                            ),
+                            Err(e) => error_response(
                                 StatusCode::BAD_REQUEST,
                                 "admin_error",
                                 &e.to_string(),
-                            ));
+                            ),
                         }
-                    };
-                    json_response(
-                        StatusCode::OK,
-                        &underwrap_protocol::service::AdminPolicyGetResponse { document: doc },
-                    )
-                }
+                    }
+                    Err(resp) => resp,
+                },
                 Err(response) => response,
             }
         }
@@ -3055,17 +3205,22 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
-                store.write(
-                    POLICY_DOCUMENT_SECRET_ID,
-                    serde_json::to_vec(&body.document)?.as_slice(),
-                )
-            }) {
-                Ok(()) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminOkResponse { ok: true },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(store) => {
+                    let write_result = serde_json::to_vec(&body.document)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|bytes| store.write(POLICY_DOCUMENT_SECRET_ID, bytes.as_slice()));
+                    match write_result {
+                        Ok(()) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminOkResponse { ok: true },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    }
+                }
+                Err(resp) => resp,
             },
             Err(response) => response,
         },
@@ -3074,38 +3229,46 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
-                let mut doc: underwrap_protocol::policy::PolicyDocument =
-                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
-                        Some(material) => serde_json::from_slice(material.as_ref())?,
-                        None => underwrap_protocol::policy::PolicyDocument::default(),
-                    };
-                if let Some(state) = doc
-                    .wrappers
-                    .iter_mut()
-                    .find(|state| state.wrapper == body.wrapper)
-                {
-                    state.mode = body.mode.clone();
-                    state.reason = body.reason.clone();
-                } else {
-                    doc.wrappers
-                        .push(underwrap_protocol::policy::WrapperPolicyState {
-                            wrapper: body.wrapper.clone(),
-                            mode: body.mode.clone(),
-                            reason: body.reason.clone(),
-                        });
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(store) => {
+                    let update_result = (|| -> Result<()> {
+                        let mut doc: underwrap_protocol::policy::PolicyDocument =
+                            match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                                Some(material) => serde_json::from_slice(material.as_ref())?,
+                                None => underwrap_protocol::policy::PolicyDocument::default(),
+                            };
+                        if let Some(state) = doc
+                            .wrappers
+                            .iter_mut()
+                            .find(|state| state.wrapper == body.wrapper)
+                        {
+                            state.mode = body.mode.clone();
+                            state.reason = body.reason.clone();
+                        } else {
+                            doc.wrappers
+                                .push(underwrap_protocol::policy::WrapperPolicyState {
+                                    wrapper: body.wrapper.clone(),
+                                    mode: body.mode.clone(),
+                                    reason: body.reason.clone(),
+                                });
+                        }
+                        doc.wrappers.sort_by(|a, b| a.wrapper.cmp(&b.wrapper));
+                        store.write(
+                            POLICY_DOCUMENT_SECRET_ID,
+                            serde_json::to_vec(&doc)?.as_slice(),
+                        )
+                    })();
+                    match update_result {
+                        Ok(()) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminOkResponse { ok: true },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    }
                 }
-                doc.wrappers.sort_by(|a, b| a.wrapper.cmp(&b.wrapper));
-                store.write(
-                    POLICY_DOCUMENT_SECRET_ID,
-                    serde_json::to_vec(&doc)?.as_slice(),
-                )
-            }) {
-                Ok(()) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminOkResponse { ok: true },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+                Err(resp) => resp,
             },
             Err(response) => response,
         },
@@ -3114,28 +3277,38 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
-                let mut doc: underwrap_protocol::policy::PolicyDocument =
-                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
-                        Some(material) => serde_json::from_slice(material.as_ref())?,
-                        None => underwrap_protocol::policy::PolicyDocument::default(),
-                    };
-                if let Some(rule) = doc.rules.iter_mut().find(|rule| rule.id == body.rule.id) {
-                    *rule = body.rule.clone();
-                } else {
-                    doc.rules.push(body.rule.clone());
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(store) => {
+                    let update_result = (|| -> Result<()> {
+                        let mut doc: underwrap_protocol::policy::PolicyDocument =
+                            match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                                Some(material) => serde_json::from_slice(material.as_ref())?,
+                                None => underwrap_protocol::policy::PolicyDocument::default(),
+                            };
+                        if let Some(rule) =
+                            doc.rules.iter_mut().find(|rule| rule.id == body.rule.id)
+                        {
+                            *rule = body.rule.clone();
+                        } else {
+                            doc.rules.push(body.rule.clone());
+                        }
+                        doc.rules.sort_by(|a, b| a.id.cmp(&b.id));
+                        store.write(
+                            POLICY_DOCUMENT_SECRET_ID,
+                            serde_json::to_vec(&doc)?.as_slice(),
+                        )
+                    })();
+                    match update_result {
+                        Ok(()) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminOkResponse { ok: true },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    }
                 }
-                doc.rules.sort_by(|a, b| a.id.cmp(&b.id));
-                store.write(
-                    POLICY_DOCUMENT_SECRET_ID,
-                    serde_json::to_vec(&doc)?.as_slice(),
-                )
-            }) {
-                Ok(()) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminOkResponse { ok: true },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+                Err(resp) => resp,
             },
             Err(response) => response,
         },
@@ -3144,23 +3317,31 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
-                let mut doc: underwrap_protocol::policy::PolicyDocument =
-                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
-                        Some(material) => serde_json::from_slice(material.as_ref())?,
-                        None => underwrap_protocol::policy::PolicyDocument::default(),
-                    };
-                doc.rules.retain(|rule| rule.id != body.id);
-                store.write(
-                    POLICY_DOCUMENT_SECRET_ID,
-                    serde_json::to_vec(&doc)?.as_slice(),
-                )
-            }) {
-                Ok(()) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminOkResponse { ok: true },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(store) => {
+                    let update_result = (|| -> Result<()> {
+                        let mut doc: underwrap_protocol::policy::PolicyDocument =
+                            match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                                Some(material) => serde_json::from_slice(material.as_ref())?,
+                                None => underwrap_protocol::policy::PolicyDocument::default(),
+                            };
+                        doc.rules.retain(|rule| rule.id != body.id);
+                        store.write(
+                            POLICY_DOCUMENT_SECRET_ID,
+                            serde_json::to_vec(&doc)?.as_slice(),
+                        )
+                    })();
+                    match update_result {
+                        Ok(()) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminOkResponse { ok: true },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    }
+                }
+                Err(resp) => resp,
             },
             Err(response) => response,
         },
@@ -3169,32 +3350,40 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
-                let mut doc: underwrap_protocol::policy::PolicyDocument =
-                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
-                        Some(material) => serde_json::from_slice(material.as_ref())?,
-                        None => underwrap_protocol::policy::PolicyDocument::default(),
-                    };
-                if let Some(grant) = doc
-                    .grants
-                    .iter_mut()
-                    .find(|grant| grant.id == body.grant.id)
-                {
-                    *grant = body.grant.clone();
-                } else {
-                    doc.grants.push(body.grant.clone());
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(store) => {
+                    let update_result = (|| -> Result<()> {
+                        let mut doc: underwrap_protocol::policy::PolicyDocument =
+                            match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                                Some(material) => serde_json::from_slice(material.as_ref())?,
+                                None => underwrap_protocol::policy::PolicyDocument::default(),
+                            };
+                        if let Some(grant) = doc
+                            .grants
+                            .iter_mut()
+                            .find(|grant| grant.id == body.grant.id)
+                        {
+                            *grant = body.grant.clone();
+                        } else {
+                            doc.grants.push(body.grant.clone());
+                        }
+                        doc.grants.sort_by(|a, b| a.id.cmp(&b.id));
+                        store.write(
+                            POLICY_DOCUMENT_SECRET_ID,
+                            serde_json::to_vec(&doc)?.as_slice(),
+                        )
+                    })();
+                    match update_result {
+                        Ok(()) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminOkResponse { ok: true },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    }
                 }
-                doc.grants.sort_by(|a, b| a.id.cmp(&b.id));
-                store.write(
-                    POLICY_DOCUMENT_SECRET_ID,
-                    serde_json::to_vec(&doc)?.as_slice(),
-                )
-            }) {
-                Ok(()) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminOkResponse { ok: true },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+                Err(resp) => resp,
             },
             Err(response) => response,
         },
@@ -3203,23 +3392,31 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store(&state, &body.store).and_then(|store| {
-                let mut doc: underwrap_protocol::policy::PolicyDocument =
-                    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
-                        Some(material) => serde_json::from_slice(material.as_ref())?,
-                        None => underwrap_protocol::policy::PolicyDocument::default(),
-                    };
-                doc.grants.retain(|grant| grant.id != body.id);
-                store.write(
-                    POLICY_DOCUMENT_SECRET_ID,
-                    serde_json::to_vec(&doc)?.as_slice(),
-                )
-            }) {
-                Ok(()) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminOkResponse { ok: true },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(store) => {
+                    let update_result = (|| -> Result<()> {
+                        let mut doc: underwrap_protocol::policy::PolicyDocument =
+                            match store.read(POLICY_DOCUMENT_SECRET_ID)? {
+                                Some(material) => serde_json::from_slice(material.as_ref())?,
+                                None => underwrap_protocol::policy::PolicyDocument::default(),
+                            };
+                        doc.grants.retain(|grant| grant.id != body.id);
+                        store.write(
+                            POLICY_DOCUMENT_SECRET_ID,
+                            serde_json::to_vec(&doc)?.as_slice(),
+                        )
+                    })();
+                    match update_result {
+                        Ok(()) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminOkResponse { ok: true },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    }
+                }
+                Err(resp) => resp,
             },
             Err(response) => response,
         },
@@ -4837,6 +5034,159 @@ mod tests {
             );
         }
         (headers, payload)
+    }
+
+    fn principal(
+        role: crate::operators::OperatorRole,
+        grants: &[&str],
+    ) -> crate::operators::Principal {
+        crate::operators::Principal {
+            id: "id".into(),
+            username: "alice".into(),
+            role,
+            granted_stores: grants.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn admin_store_for_principal_admin_can_access_existing_store() {
+        let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
+        let mut state = test_admin_state(
+            HashMap::from([("work".to_string(), store.clone())]),
+            HashMap::new(),
+        );
+        state.admin_home_store = store.clone();
+        let p = principal(crate::operators::OperatorRole::Admin, &[]);
+        assert!(admin_store_for_principal(&state, &p, "work").is_ok());
+    }
+
+    fn expect_404(result: std::result::Result<&Arc<dyn StorageBackend>, Response<Full<Bytes>>>) {
+        match result {
+            Ok(_) => panic!("expected 404 not_found, got Ok"),
+            Err(resp) => assert_eq!(resp.status(), StatusCode::NOT_FOUND),
+        }
+    }
+
+    #[test]
+    fn admin_store_for_principal_admin_sees_unknown_store_as_404() {
+        let state = test_admin_state(HashMap::new(), HashMap::new());
+        let p = principal(crate::operators::OperatorRole::Admin, &[]);
+        expect_404(admin_store_for_principal(&state, &p, "missing"));
+    }
+
+    #[test]
+    fn admin_store_for_principal_operator_without_grant_returns_404_not_403() {
+        // Don't leak the existence of stores the operator can't reach:
+        // ungranted-but-existing must look identical to truly-missing.
+        let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
+        let mut state = test_admin_state(
+            HashMap::from([("work".to_string(), store.clone())]),
+            HashMap::new(),
+        );
+        state.admin_home_store = store;
+        let p = principal(crate::operators::OperatorRole::Operator, &[]);
+        expect_404(admin_store_for_principal(&state, &p, "work"));
+        expect_404(admin_store_for_principal(&state, &p, "nope"));
+    }
+
+    #[test]
+    fn admin_store_for_principal_operator_with_grant_sees_only_that_store() {
+        let store_a: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
+        let store_b: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
+        let mut state = test_admin_state(
+            HashMap::from([
+                ("alpha".to_string(), store_a.clone()),
+                ("beta".to_string(), store_b),
+            ]),
+            HashMap::new(),
+        );
+        state.admin_home_store = store_a;
+        let p = principal(crate::operators::OperatorRole::Operator, &["alpha"]);
+        assert!(admin_store_for_principal(&state, &p, "alpha").is_ok());
+        expect_404(admin_store_for_principal(&state, &p, "beta"));
+    }
+
+    #[test]
+    fn resolve_principal_session_uses_operator_collection_role_and_grants() {
+        let state = seeded_admin_state("alice", "hunter2");
+        // Re-seed collection so alice has Operator role with one grant.
+        let store = state.admin_home_store.clone();
+        let mut collection = crate::operators::OperatorCollection::default();
+        let hash = crate::auth::hash_password("hunter2").unwrap();
+        collection
+            .add(crate::operators::OperatorRecord {
+                id: crate::operators::new_operator_id(),
+                username: "alice".into(),
+                password_hash: hash,
+                role: crate::operators::OperatorRole::Operator,
+                granted_stores: vec!["work".into()],
+                created_at: 1000,
+                password_changed_at: 1000,
+            })
+            .unwrap();
+        crate::operators::save(store.as_ref(), &collection).unwrap();
+
+        let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
+        let auth = AdminAuth::Session(payload);
+        let p = resolve_principal(&state, &auth).unwrap();
+        assert_eq!(p.username, "alice");
+        assert!(!p.is_admin());
+        assert!(p.has_store_access("work"));
+        assert!(!p.has_store_access("other"));
+    }
+
+    #[test]
+    fn resolve_principal_bearer_synthesises_admin() {
+        let state = seeded_admin_state("alice", "hunter2");
+        let auth = AdminAuth::Bearer {
+            operator: "cli-token".into(),
+        };
+        let p = resolve_principal(&state, &auth).unwrap();
+        assert!(p.is_admin());
+        assert_eq!(p.username, "cli-token");
+    }
+
+    #[test]
+    fn resolve_principal_session_fails_when_operator_was_deleted() {
+        // Cookie says "alice" but the collection has no record of her.
+        let state = seeded_admin_state("alice", "hunter2");
+        // Save an empty collection over alice's slot.
+        crate::operators::save(
+            state.admin_home_store.as_ref(),
+            &crate::operators::OperatorCollection::default(),
+        )
+        .unwrap();
+        let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
+        let auth = AdminAuth::Session(payload);
+        match resolve_principal(&state, &auth) {
+            Ok(_) => panic!("expected 401 for deleted operator"),
+            Err(resp) => assert_eq!(resp.status(), StatusCode::UNAUTHORIZED),
+        }
+    }
+
+    #[test]
+    fn wrapper_set_mode_audit_event_carries_principal_username() {
+        // Verifies the principal-propagation requirement: a mutation
+        // performed as "bob" lands in the audit history with
+        // operator: "bob".
+        let raw_store = Arc::new(TestStore::new());
+        let store: Arc<dyn StorageBackend> = raw_store.clone();
+        let stores: HashMap<String, Arc<dyn StorageBackend>> =
+            HashMap::from([("work".to_string(), store)]);
+        let state = test_admin_state(stores, HashMap::new());
+        let body = underwrap_protocol::service::AdminUiWrapperSetModeRequest {
+            store: "work".to_string(),
+            wrapper: "gh-readonly".to_string(),
+            mode: underwrap_protocol::policy::WrapperApprovalMode::Locked,
+            reason: Some("test".into()),
+        };
+        let resp = handle_admin_ui_wrapper_set_mode(&state, "bob", body);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let history = load_audit_history(raw_store.as_ref()).unwrap();
+        assert!(
+            history.iter().any(|e| e.operator == "bob"),
+            "audit history should record 'bob' as the operator: {history:?}"
+        );
     }
 
     #[test]
