@@ -1,10 +1,5 @@
-import { AppShell } from "@/components/app-shell";
-import { Dashboard } from "@/pages/dashboard";
+import { AppRouter } from "./router";
 
 export function App() {
-  return (
-    <AppShell>
-      <Dashboard />
-    </AppShell>
-  );
+  return <AppRouter />;
 }

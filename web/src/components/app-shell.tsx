@@ -1,5 +1,15 @@
 import { useState, type ReactNode } from "react";
-import { Menu, Moon, Sun, Box, Users, Lock, ShieldCheck, History } from "lucide-react";
+import {
+  Menu,
+  Moon,
+  Sun,
+  Box,
+  Users,
+  Lock,
+  ShieldCheck,
+  History,
+  LogOut,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -48,7 +58,13 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-export function AppShell({ children }: { children: ReactNode }) {
+interface AppShellProps {
+  children: ReactNode;
+  /** Optional sign-out callback. When omitted the logout button is hidden. */
+  onLogout?: () => void | Promise<void>;
+}
+
+export function AppShell({ children, onLogout }: AppShellProps) {
   const { theme, toggle } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -92,6 +108,18 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
+          {onLogout ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Sign out"
+              onClick={() => {
+                void onLogout();
+              }}
+            >
+              <LogOut className="h-4 w-4" />
+            </Button>
+          ) : null}
         </div>
       </header>
 

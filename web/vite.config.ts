@@ -42,6 +42,15 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // jsdom enforces the `Secure` requirement on `__Host-` cookies,
+    // which is only set over https. Pin the jsdom URL to https so
+    // tests exercise the same cookie shape the SPA sees in
+    // production.
+    environmentOptions: {
+      jsdom: {
+        url: "https://underwrap.test/",
+      },
+    },
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
     css: true,
