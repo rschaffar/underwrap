@@ -113,6 +113,8 @@ impl TestDaemon {
                     "tester".to_string(),
                     underwrap_backendd::server::AdminTokenConfig { token_file },
                 )]),
+                tls: None,
+                allowed_origins: None,
             }),
         };
         let backend_shutdown = Arc::new(Notify::new());

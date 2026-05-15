@@ -56,6 +56,12 @@ pub struct AdminTokenConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminTlsConfig {
+    pub cert_file: PathBuf,
+    pub key_file: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
     pub listen: String,
     /// Bearer tokens by operator name. Each request must present one via
@@ -63,6 +69,16 @@ pub struct AdminConfig {
     /// unavailable (no requests can authenticate).
     #[serde(default)]
     pub tokens: HashMap<String, AdminTokenConfig>,
+    /// Optional TLS termination for the admin listener. When absent, the
+    /// listener serves plain HTTP and the listen address must be loopback.
+    #[serde(default)]
+    pub tls: Option<AdminTlsConfig>,
+    /// Optional allowlist of `Origin` (or `Referer`) values for
+    /// state-changing requests. When set, every non-GET/HEAD/OPTIONS
+    /// request must carry an Origin matching one of these entries.
+    /// Foundation for the CSRF work in ticket 212.
+    #[serde(default)]
+    pub allowed_origins: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +99,9 @@ struct AdminRuntimeState {
     /// Operator name → opaque bearer token. Both fields are trusted; the
     /// caller authenticates by presenting a matching token.
     tokens: HashMap<String, String>,
+    /// When present, every state-changing request must carry an `Origin`
+    /// (or `Referer`) matching one of these entries.
+    allowed_origins: Option<Vec<String>>,
 }
 
 const CATALOG_DOCUMENT_SECRET_ID: &str = "__underwrap/catalog/document";
@@ -119,16 +138,28 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
     }
 
     if let Some(admin_config) = &config.admin {
+        validate_admin_config(admin_config)?;
         let admin_listener = TcpListener::bind(&admin_config.listen)
             .await
             .with_context(|| format!("binding admin listener {}", admin_config.listen))?;
         let tokens = load_admin_tokens(&admin_config.tokens)?;
+        let tls_acceptor = match &admin_config.tls {
+            Some(tls) => Some(build_admin_tls_acceptor(tls)?),
+            None => None,
+        };
         let admin_state = Arc::new(AdminRuntimeState {
             stores: stores.clone(),
             tokens,
+            allowed_origins: admin_config.allowed_origins.clone(),
         });
-        info!(listen = %admin_config.listen, stores = admin_state.stores.len(), operators = admin_state.tokens.len(), "backend admin HTTP listening");
-        tasks.spawn(admin_accept_loop(admin_listener, admin_state));
+        info!(
+            listen = %admin_config.listen,
+            stores = admin_state.stores.len(),
+            operators = admin_state.tokens.len(),
+            tls = tls_acceptor.is_some(),
+            "backend admin listening",
+        );
+        tasks.spawn(admin_accept_loop(admin_listener, admin_state, tls_acceptor));
     }
 
     tasks.spawn(expiry_sweeper_loop(stores.clone()));
@@ -213,6 +244,117 @@ fn build_tls_acceptor(config: &ServiceTlsConfig) -> Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
+fn build_admin_tls_acceptor(config: &AdminTlsConfig) -> Result<TlsAcceptor> {
+    use rustls::ServerConfig;
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let certs = load_cert_chain(&config.cert_file)?;
+    let key = load_private_key(&config.key_file)?;
+
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .context("building rustls admin server config")?;
+
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
+/// Validate an `AdminConfig` at startup. The admin listener carries
+/// browser traffic, so we refuse to expose it as plain HTTP on a
+/// non-loopback address; either TLS must be configured or the listen
+/// address must resolve to loopback.
+fn validate_admin_config(config: &AdminConfig) -> Result<()> {
+    if config.tls.is_none() && !is_loopback_listen(&config.listen) {
+        anyhow::bail!(
+            "admin listener {} is not loopback and TLS is not configured; \
+             refusing to expose plain HTTP on a non-loopback address",
+            config.listen
+        );
+    }
+    if let Some(origins) = &config.allowed_origins {
+        for origin in origins {
+            if origin.trim().is_empty() {
+                anyhow::bail!("admin.allowed_origins contains an empty entry");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Return true if the host portion of a `host:port` (or `[ipv6]:port`)
+/// listen address is a loopback IP literal or `localhost`. Hostnames
+/// other than `localhost` are not resolved here and are treated as
+/// non-loopback to keep the check deterministic.
+fn is_loopback_listen(listen: &str) -> bool {
+    let host = match listen.rsplit_once(':') {
+        Some((host, _)) => host,
+        None => return false,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() {
+        return false;
+    }
+    if let Ok(addr) = host.parse::<std::net::IpAddr>() {
+        return addr.is_loopback();
+    }
+    host.eq_ignore_ascii_case("localhost")
+}
+
+/// Check the `Origin` (or `Referer`) header of a state-changing request
+/// against the configured allowlist. GET/HEAD/OPTIONS are not gated.
+/// Returns `Ok(())` when no allowlist is configured.
+fn check_admin_origin(
+    method: &Method,
+    headers: &hyper::HeaderMap,
+    allowed: Option<&[String]>,
+) -> std::result::Result<(), &'static str> {
+    if matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS) {
+        return Ok(());
+    }
+    let allowed = match allowed {
+        Some(list) if !list.is_empty() => list,
+        _ => return Ok(()),
+    };
+    let presented = headers
+        .get(hyper::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            headers
+                .get(hyper::header::REFERER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(referer_to_origin)
+        });
+    let presented = match presented {
+        Some(value) => value,
+        None => return Err("missing Origin/Referer on state-changing request"),
+    };
+    if allowed.iter().any(|a| a.trim() == presented) {
+        Ok(())
+    } else {
+        Err("Origin/Referer not in allowed_origins")
+    }
+}
+
+/// Strip path/query from a `Referer` value, returning the scheme+host[:port]
+/// prefix. Returns `None` for malformed inputs so callers can reject.
+fn referer_to_origin(referer: &str) -> Option<String> {
+    let trimmed = referer.trim();
+    let (scheme, rest) = trimmed.split_once("://")?;
+    if scheme.is_empty() {
+        return None;
+    }
+    let authority = match rest.find('/') {
+        Some(idx) => &rest[..idx],
+        None => rest,
+    };
+    if authority.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}"))
+}
+
 fn load_cert_chain(path: &Path) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
     let pem = std::fs::read(path)
         .with_context(|| format!("reading certificate file {}", path.display()))?;
@@ -288,12 +430,17 @@ fn put_policy_document(
     store.write(POLICY_DOCUMENT_SECRET_ID, document_json.as_bytes())
 }
 
-async fn admin_accept_loop(listener: TcpListener, state: Arc<AdminRuntimeState>) -> Result<()> {
+async fn admin_accept_loop(
+    listener: TcpListener,
+    state: Arc<AdminRuntimeState>,
+    tls_acceptor: Option<TlsAcceptor>,
+) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let state = Arc::clone(&state);
+        let tls_acceptor = tls_acceptor.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_admin_connection(stream, state).await {
+            if let Err(e) = handle_admin_connection(stream, state, tls_acceptor).await {
                 error!("backend admin connection error: {e:#}");
             }
         });
@@ -303,16 +450,32 @@ async fn admin_accept_loop(listener: TcpListener, state: Arc<AdminRuntimeState>)
 async fn handle_admin_connection(
     stream: tokio::net::TcpStream,
     state: Arc<AdminRuntimeState>,
+    tls_acceptor: Option<TlsAcceptor>,
 ) -> Result<()> {
     let service = service_fn(move |req| {
         let state = Arc::clone(&state);
         async move { handle_admin_request(req, state).await }
     });
 
-    hyper::server::conn::http1::Builder::new()
-        .serve_connection(TokioIo::new(stream), service)
-        .await
-        .context("serving admin HTTP connection")?;
+    let builder = hyper::server::conn::http1::Builder::new();
+    match tls_acceptor {
+        Some(acceptor) => {
+            let tls_stream = acceptor
+                .accept(stream)
+                .await
+                .context("accepting admin TLS connection")?;
+            builder
+                .serve_connection(TokioIo::new(tls_stream), service)
+                .await
+                .context("serving admin HTTPS connection")?;
+        }
+        None => {
+            builder
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .context("serving admin HTTP connection")?;
+        }
+    }
     Ok(())
 }
 
@@ -618,8 +781,9 @@ fn load_catalog_document(store: &dyn StorageBackend) -> Result<Vec<StoredCatalog
 
 fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyDocument> {
     match store.read(POLICY_DOCUMENT_SECRET_ID)? {
-        Some(material) => serde_json::from_slice(material.as_ref())
-            .context("parsing backend policy document"),
+        Some(material) => {
+            serde_json::from_slice(material.as_ref()).context("parsing backend policy document")
+        }
         None => Ok(PolicyDocument::default()),
     }
 }
@@ -638,7 +802,10 @@ fn store_audit_history(
     store: &dyn StorageBackend,
     events: &[underwrap_protocol::service::AdminUiAuditEvent],
 ) -> Result<()> {
-    store.write(AUDIT_HISTORY_SECRET_ID, serde_json::to_vec(events)?.as_slice())?;
+    store.write(
+        AUDIT_HISTORY_SECRET_ID,
+        serde_json::to_vec(events)?.as_slice(),
+    )?;
     Ok(())
 }
 
@@ -710,7 +877,10 @@ fn looks_like_utf8_text(bytes: &[u8]) -> bool {
         .all(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
 }
 
-fn resource_query_matches(item: &underwrap_protocol::service::AdminUiResourceListItem, query: &str) -> bool {
+fn resource_query_matches(
+    item: &underwrap_protocol::service::AdminUiResourceListItem,
+    query: &str,
+) -> bool {
     if query.is_empty() {
         return true;
     }
@@ -787,7 +957,8 @@ fn admin_ui_overview_for_store(
         .collect::<BTreeSet<_>>()
         .len();
 
-    let mut all_wrappers: BTreeSet<String> = catalog.iter().map(|entry| entry.wrapper.clone()).collect();
+    let mut all_wrappers: BTreeSet<String> =
+        catalog.iter().map(|entry| entry.wrapper.clone()).collect();
     all_wrappers.extend(policy.wrappers.iter().map(|entry| entry.wrapper.clone()));
 
     let mut wrapper_counts = underwrap_protocol::service::AdminUiWrapperCounts {
@@ -1117,7 +1288,9 @@ fn handle_admin_ui_resource_write_text(
         Ok(store) => store,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     };
-    if let Err(e) = authorize_admin_ui_mutation(store.as_ref(), &body.wrapper, &body.secret_id, now_epoch) {
+    if let Err(e) =
+        authorize_admin_ui_mutation(store.as_ref(), &body.wrapper, &body.secret_id, now_epoch)
+    {
         return error_response(StatusCode::FORBIDDEN, "mutation_denied", &e.to_string());
     }
     let material = body.material_utf8.into_bytes();
@@ -1205,7 +1378,9 @@ fn handle_admin_ui_resource_upload_file(
         Ok(store) => store,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     };
-    if let Err(e) = authorize_admin_ui_mutation(store.as_ref(), &body.wrapper, &body.secret_id, now_epoch) {
+    if let Err(e) =
+        authorize_admin_ui_mutation(store.as_ref(), &body.wrapper, &body.secret_id, now_epoch)
+    {
         return error_response(StatusCode::FORBIDDEN, "mutation_denied", &e.to_string());
     }
     if let Err(e) = store.write(&body.secret_id, &material) {
@@ -1261,7 +1436,9 @@ fn handle_admin_ui_resource_delete_entry(
         Ok(store) => store,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     };
-    if let Err(e) = authorize_admin_ui_mutation(store.as_ref(), &body.wrapper, &body.secret_id, now_epoch) {
+    if let Err(e) =
+        authorize_admin_ui_mutation(store.as_ref(), &body.wrapper, &body.secret_id, now_epoch)
+    {
         return error_response(StatusCode::FORBIDDEN, "mutation_denied", &e.to_string());
     }
     match store.delete(&body.secret_id) {
@@ -1305,9 +1482,7 @@ fn handle_admin_ui_resource_reveal(
     };
     let material = match store.read(&body.secret_id) {
         Ok(Some(material)) => material,
-        Ok(None) => {
-            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown secret_id")
-        }
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "not_found", "unknown secret_id"),
         Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     };
     let material_ref = material.as_ref();
@@ -1375,9 +1550,7 @@ fn handle_admin_ui_resource_download(
     };
     let material = match store.read(&body.secret_id) {
         Ok(Some(material)) => material,
-        Ok(None) => {
-            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown secret_id")
-        }
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "not_found", "unknown secret_id"),
         Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     };
     let material_ref = material.as_ref();
@@ -1416,7 +1589,10 @@ fn handle_admin_ui_resource_download(
         .header(hyper::header::CONTENT_TYPE, "application/octet-stream")
         .header(
             hyper::header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{}\"", resource_filename(&body.secret_id)),
+            format!(
+                "attachment; filename=\"{}\"",
+                resource_filename(&body.secret_id)
+            ),
         )
         .header(hyper::header::CACHE_CONTROL, "no-store")
         .body(Full::new(Bytes::copy_from_slice(material_ref)))
@@ -1456,7 +1632,9 @@ fn admin_ui_mutation_get(
             rule.wrapper == wrapper
                 && rule.operation == underwrap_protocol::policy::OP_STORE_WRITE
                 && rule.effect == underwrap_protocol::policy::PolicyEffect::Allow
-                && matching_resources.iter().any(|resource_key| resource_key == &rule.resource)
+                && matching_resources
+                    .iter()
+                    .any(|resource_key| resource_key == &rule.resource)
         });
 
         let active_grants: Vec<&underwrap_protocol::policy::PolicyGrant> = policy
@@ -1466,21 +1644,26 @@ fn admin_ui_mutation_get(
                 grant.wrapper == wrapper
                     && grant.operation == underwrap_protocol::policy::OP_STORE_WRITE
                     && grant.effect == underwrap_protocol::policy::PolicyEffect::Allow
-                    && matching_resources.iter().any(|resource_key| resource_key == &grant.resource)
+                    && matching_resources
+                        .iter()
+                        .any(|resource_key| resource_key == &grant.resource)
                     && grant.starts_at_epoch.is_none_or(|start| now_epoch >= start)
                     && grant.expires_at_epoch.is_none_or(|end| now_epoch < end)
             })
             .collect();
 
         let active = permanent
-            || matching_resources
-                .iter()
-                .any(|resource_key| active_targets.contains(&(wrapper.clone(), resource_key.clone())));
+            || matching_resources.iter().any(|resource_key| {
+                active_targets.contains(&(wrapper.clone(), resource_key.clone()))
+            });
 
         let expires_at_epoch = if permanent {
             None
         } else {
-            active_grants.iter().filter_map(|grant| grant.expires_at_epoch).min()
+            active_grants
+                .iter()
+                .filter_map(|grant| grant.expires_at_epoch)
+                .min()
         };
 
         let mode = if permanent {
@@ -1517,11 +1700,12 @@ fn handle_admin_ui_wrapper_set_mode(
             entry.mode = body.mode.clone();
             entry.reason = body.reason.clone();
         } else {
-            doc.wrappers.push(underwrap_protocol::policy::WrapperPolicyState {
-                wrapper: body.wrapper.clone(),
-                mode: body.mode.clone(),
-                reason: body.reason.clone(),
-            });
+            doc.wrappers
+                .push(underwrap_protocol::policy::WrapperPolicyState {
+                    wrapper: body.wrapper.clone(),
+                    mode: body.mode.clone(),
+                    reason: body.reason.clone(),
+                });
         }
         doc.wrappers.sort_by(|a, b| a.wrapper.cmp(&b.wrapper));
         store.write(
@@ -1536,7 +1720,9 @@ fn handle_admin_ui_wrapper_set_mode(
                 .map(|duration| duration.as_secs())
                 .unwrap_or(0);
             if let Err(e) = append_audit_history_event(
-                admin_store(state, &body.store).expect("store looked up earlier").as_ref(),
+                admin_store(state, &body.store)
+                    .expect("store looked up earlier")
+                    .as_ref(),
                 underwrap_protocol::service::AdminUiAuditEvent {
                     ts_epoch: now_epoch,
                     action: "wrapper_mode_updated".to_string(),
@@ -1586,7 +1772,9 @@ fn handle_admin_ui_matrix_set_cell(
 ) -> Response<Full<Bytes>> {
     let resource_key = match admin_ui_matrix_rule_resource(&body.resource, &body.operation) {
         Ok(resource_key) => resource_key,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string()),
+        Err(e) => {
+            return error_response(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string());
+        }
     };
     let rule_id = admin_ui_matrix_rule_id(&body.wrapper, &body.resource, &body.operation);
 
@@ -1621,7 +1809,9 @@ fn handle_admin_ui_matrix_set_cell(
                 .map(|duration| duration.as_secs())
                 .unwrap_or(0);
             if let Err(e) = append_audit_history_event(
-                admin_store(state, &body.store).expect("store looked up earlier").as_ref(),
+                admin_store(state, &body.store)
+                    .expect("store looked up earlier")
+                    .as_ref(),
                 underwrap_protocol::service::AdminUiAuditEvent {
                     ts_epoch: now_epoch,
                     action: if body.enabled {
@@ -1657,7 +1847,8 @@ fn admin_ui_wrappers_query(
     let catalog = load_catalog_document(store)?;
     let policy = load_policy_document(store)?;
 
-    let mut wrappers: BTreeSet<String> = catalog.iter().map(|entry| entry.wrapper.clone()).collect();
+    let mut wrappers: BTreeSet<String> =
+        catalog.iter().map(|entry| entry.wrapper.clone()).collect();
     wrappers.extend(policy.wrappers.iter().map(|entry| entry.wrapper.clone()));
 
     let query = request.query.to_ascii_lowercase();
@@ -1680,8 +1871,15 @@ fn admin_ui_wrappers_query(
             None | Some("any") => true,
             Some("locked") => matches!(mode, WrapperApprovalMode::Locked),
             Some("unlocked") => matches!(mode, WrapperApprovalMode::Unlocked { until_epoch: None }),
-            Some("unlocked_until") => matches!(mode, WrapperApprovalMode::Unlocked { until_epoch: Some(_) }),
-            Some("per_call_approval") => matches!(mode, WrapperApprovalMode::PerCallApproval { .. }),
+            Some("unlocked_until") => matches!(
+                mode,
+                WrapperApprovalMode::Unlocked {
+                    until_epoch: Some(_)
+                }
+            ),
+            Some("per_call_approval") => {
+                matches!(mode, WrapperApprovalMode::PerCallApproval { .. })
+            }
             Some(other) => anyhow::bail!("unknown mode filter '{other}'"),
         };
         let query_matches = query.is_empty() || wrapper.to_ascii_lowercase().contains(&query);
@@ -1715,21 +1913,42 @@ fn admin_ui_matrix_query(
 
     let mut rows = Vec::new();
     for entry in catalog.into_iter().filter(|entry| {
-        request.resource.as_deref().is_none_or(|resource| entry.resource == resource)
-            && request.host.as_deref().is_none_or(|host| entry.host == host)
-            && request.user.as_deref().is_none_or(|user| entry.user == user)
-            && request.wrapper.as_deref().is_none_or(|wrapper| entry.wrapper == wrapper)
+        request
+            .resource
+            .as_deref()
+            .is_none_or(|resource| entry.resource == resource)
+            && request
+                .host
+                .as_deref()
+                .is_none_or(|host| entry.host == host)
+            && request
+                .user
+                .as_deref()
+                .is_none_or(|user| entry.user == user)
+            && request
+                .wrapper
+                .as_deref()
+                .is_none_or(|wrapper| entry.wrapper == wrapper)
     }) {
         let mut cells = std::collections::BTreeMap::new();
         for operation in &operations {
             let resource_key = match operation.as_str() {
                 underwrap_protocol::policy::OP_ENV_READ => format!("env:{}", entry.resource),
-                underwrap_protocol::policy::OP_FILES_READ | underwrap_protocol::policy::OP_FILES_WRITE => format!("files:{}", entry.resource),
-                underwrap_protocol::policy::OP_LIBSECRET_READ | underwrap_protocol::policy::OP_LIBSECRET_WRITE => format!("libsecret:{}", entry.resource),
+                underwrap_protocol::policy::OP_FILES_READ
+                | underwrap_protocol::policy::OP_FILES_WRITE => format!("files:{}", entry.resource),
+                underwrap_protocol::policy::OP_LIBSECRET_READ
+                | underwrap_protocol::policy::OP_LIBSECRET_WRITE => {
+                    format!("libsecret:{}", entry.resource)
+                }
                 _ => continue,
             };
             let allowed = matches!(
-                policy.evaluate_after_approval_at(&entry.wrapper, &resource_key, operation, now_epoch),
+                policy.evaluate_after_approval_at(
+                    &entry.wrapper,
+                    &resource_key,
+                    operation,
+                    now_epoch
+                ),
                 PolicyDecision::Allow
             );
             cells.insert(operation.clone(), allowed);
@@ -1781,10 +2000,17 @@ fn admin_ui_resources_query(
 
     let mut items = Vec::new();
     for resource in resources {
-        let ids = resource_secret_ids.get(&resource).cloned().unwrap_or_default();
+        let ids = resource_secret_ids
+            .get(&resource)
+            .cloned()
+            .unwrap_or_default();
         let slots = underwrap_protocol::service::AdminUiResourceSlots {
-            env: ids.iter().any(|id| matches!(split_resource_id(id), Some((_, "env", _)))),
-            files: ids.iter().any(|id| matches!(split_resource_id(id), Some((_, "files", _)))),
+            env: ids
+                .iter()
+                .any(|id| matches!(split_resource_id(id), Some((_, "env", _)))),
+            files: ids
+                .iter()
+                .any(|id| matches!(split_resource_id(id), Some((_, "files", _)))),
             libsecret: ids
                 .iter()
                 .any(|id| matches!(split_resource_id(id), Some((_, "libsecret", _)))),
@@ -1998,6 +2224,14 @@ async fn handle_admin_request(
     request: Request<Incoming>,
     state: Arc<AdminRuntimeState>,
 ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    if let Err(reason) = check_admin_origin(
+        request.method(),
+        request.headers(),
+        state.allowed_origins.as_deref(),
+    ) {
+        warn!(reason = reason, "rejected admin request (origin check)");
+        return Ok(error_response(StatusCode::FORBIDDEN, "bad_origin", reason));
+    }
     let operator = match authenticate_admin(&state, request.headers()) {
         Ok(op) => op,
         Err(reason) => {
@@ -2138,39 +2372,41 @@ async fn handle_admin_request(
             }
             Err(response) => response,
         },
-        (&Method::POST, "/v1/admin/ui/mutation/get") => match parse_json_body::<
-            underwrap_protocol::service::AdminUiMutationGetRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => {
-                let now_epoch = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0);
-                match admin_store(&state, &body.store)
-                    .and_then(|store| admin_ui_mutation_get(store.as_ref(), &body.resource, now_epoch))
-                {
-                    Ok(response) => json_response(StatusCode::OK, &response),
-                    Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+        (&Method::POST, "/v1/admin/ui/mutation/get") => {
+            match parse_json_body::<underwrap_protocol::service::AdminUiMutationGetRequest>(request)
+                .await
+            {
+                Ok(body) => {
+                    let now_epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0);
+                    match admin_store(&state, &body.store).and_then(|store| {
+                        admin_ui_mutation_get(store.as_ref(), &body.resource, now_epoch)
+                    }) {
+                        Ok(response) => json_response(StatusCode::OK, &response),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    }
                 }
+                Err(response) => response,
             }
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/ui/mutation/set") => match parse_json_body::<
-            underwrap_protocol::service::AdminUiMutationSetRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => {
-                let now_epoch = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0);
-                handle_admin_ui_mutation_set(&state, &operator, body, now_epoch)
+        }
+        (&Method::POST, "/v1/admin/ui/mutation/set") => {
+            match parse_json_body::<underwrap_protocol::service::AdminUiMutationSetRequest>(request)
+                .await
+            {
+                Ok(body) => {
+                    let now_epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0);
+                    handle_admin_ui_mutation_set(&state, &operator, body, now_epoch)
+                }
+                Err(response) => response,
             }
-            Err(response) => response,
-        },
+        }
         (&Method::POST, "/v1/admin/ui/wrappers/query") => match parse_json_body::<
             underwrap_protocol::service::AdminUiWrappersQueryRequest,
         >(request)
@@ -2192,25 +2428,27 @@ async fn handle_admin_request(
             Ok(body) => handle_admin_ui_wrapper_set_mode(&state, &operator, body),
             Err(response) => response,
         },
-        (&Method::POST, "/v1/admin/ui/matrix/query") => match parse_json_body::<
-            underwrap_protocol::service::AdminUiMatrixQueryRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => {
-                let now_epoch = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0);
-                match admin_store(&state, &body.store)
-                    .and_then(|store| admin_ui_matrix_query(store.as_ref(), &body, now_epoch))
-                {
-                    Ok(response) => json_response(StatusCode::OK, &response),
-                    Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+        (&Method::POST, "/v1/admin/ui/matrix/query") => {
+            match parse_json_body::<underwrap_protocol::service::AdminUiMatrixQueryRequest>(request)
+                .await
+            {
+                Ok(body) => {
+                    let now_epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0);
+                    match admin_store(&state, &body.store)
+                        .and_then(|store| admin_ui_matrix_query(store.as_ref(), &body, now_epoch))
+                    {
+                        Ok(response) => json_response(StatusCode::OK, &response),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    }
                 }
+                Err(response) => response,
             }
-            Err(response) => response,
-        },
+        }
         (&Method::POST, "/v1/admin/ui/matrix/set-cell") => match parse_json_body::<
             underwrap_protocol::service::AdminUiMatrixSetCellRequest,
         >(request)
@@ -2763,12 +3001,8 @@ mod tests {
     #[test]
     fn admin_ui_overview_counts_resources_wrappers_and_mutation_windows() {
         let store = TestStore::new();
-        store
-            .write("gh/main/env/GH_TOKEN", b"gh-token")
-            .unwrap();
-        store
-            .write("gh/main/files/hosts.json", b"{}")
-            .unwrap();
+        store.write("gh/main/env/GH_TOKEN", b"gh-token").unwrap();
+        store.write("gh/main/files/hosts.json", b"{}").unwrap();
         store
             .write("aws/prod/env/AWS_SECRET", b"aws-secret")
             .unwrap();
@@ -2829,7 +3063,9 @@ mod tests {
             grants: vec![underwrap_protocol::policy::PolicyGrant {
                 id: "grant-1".to_string(),
                 wrapper: "aws-prod".to_string(),
-                resource: underwrap_protocol::policy::credential_resource("aws/prod/env/AWS_SECRET"),
+                resource: underwrap_protocol::policy::credential_resource(
+                    "aws/prod/env/AWS_SECRET",
+                ),
                 operation: underwrap_protocol::policy::OP_STORE_WRITE.to_string(),
                 effect: underwrap_protocol::policy::PolicyEffect::Allow,
                 starts_at_epoch: Some(100),
@@ -2838,7 +3074,10 @@ mod tests {
             }],
         };
         store
-            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .write(
+                POLICY_DOCUMENT_SECRET_ID,
+                &serde_json::to_vec(&doc).unwrap(),
+            )
             .unwrap();
         append_audit_history_event(
             &store,
@@ -2869,12 +3108,8 @@ mod tests {
     #[test]
     fn admin_ui_resources_query_filters_by_query_slot_and_mutation() {
         let store = TestStore::new();
-        store
-            .write("gh/main/env/GH_TOKEN", b"gh-token")
-            .unwrap();
-        store
-            .write("gh/main/files/hosts.json", b"{}")
-            .unwrap();
+        store.write("gh/main/env/GH_TOKEN", b"gh-token").unwrap();
+        store.write("gh/main/files/hosts.json", b"{}").unwrap();
         store
             .write("aws/prod/env/AWS_SECRET", b"aws-secret")
             .unwrap();
@@ -2914,7 +3149,10 @@ mod tests {
             grants: Vec::new(),
         };
         store
-            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .write(
+                POLICY_DOCUMENT_SECRET_ID,
+                &serde_json::to_vec(&doc).unwrap(),
+            )
             .unwrap();
 
         let response = admin_ui_resources_query(
@@ -2945,12 +3183,8 @@ mod tests {
     #[test]
     fn admin_ui_resource_detail_reports_slot_metadata() {
         let store = TestStore::new();
-        store
-            .write("gh/main/env/GH_TOKEN", b"gh-token")
-            .unwrap();
-        store
-            .write("gh/main/files/hosts.json", b"{}")
-            .unwrap();
+        store.write("gh/main/env/GH_TOKEN", b"gh-token").unwrap();
+        store.write("gh/main/files/hosts.json", b"{}").unwrap();
         store
             .write("gh/main/libsecret/default/item_1", &[0_u8, 1_u8, 2_u8])
             .unwrap();
@@ -2983,6 +3217,7 @@ mod tests {
         let state = AdminRuntimeState {
             stores,
             tokens: HashMap::new(),
+            allowed_origins: None,
         };
 
         let utf8 = handle_admin_ui_resource_reveal(
@@ -3036,9 +3271,7 @@ mod tests {
     async fn admin_ui_download_rejects_oversized_payloads_and_sets_download_headers() {
         let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
         let store: Arc<dyn StorageBackend> = Arc::new(TestStore::new());
-        store
-            .write("gh/main/files/hosts.json", b"{}")
-            .unwrap();
+        store.write("gh/main/files/hosts.json", b"{}").unwrap();
         store
             .write(
                 "gh/main/files/big.bin",
@@ -3049,6 +3282,7 @@ mod tests {
         let state = AdminRuntimeState {
             stores,
             tokens: HashMap::new(),
+            allowed_origins: None,
         };
 
         let ok = handle_admin_ui_resource_download(
@@ -3060,9 +3294,14 @@ mod tests {
             },
         );
         assert_eq!(ok.status(), StatusCode::OK);
-        assert_eq!(ok.headers().get(hyper::header::CACHE_CONTROL).unwrap(), "no-store");
         assert_eq!(
-            ok.headers().get(hyper::header::CONTENT_DISPOSITION).unwrap(),
+            ok.headers().get(hyper::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert_eq!(
+            ok.headers()
+                .get(hyper::header::CONTENT_DISPOSITION)
+                .unwrap(),
             "attachment; filename=\"hosts.json\""
         );
         let ok_body = ok.into_body().collect().await.unwrap().to_bytes();
@@ -3083,13 +3322,16 @@ mod tests {
     async fn admin_ui_audit_query_filters_and_reveal_download_events_are_queryable() {
         let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
         let raw_store = Arc::new(TestStore::new());
-        raw_store.write("gh/main/env/GH_TOKEN", b"gh-token").unwrap();
+        raw_store
+            .write("gh/main/env/GH_TOKEN", b"gh-token")
+            .unwrap();
         raw_store.write("gh/main/files/hosts.json", b"{}").unwrap();
         let store: Arc<dyn StorageBackend> = raw_store.clone();
         stores.insert("work".to_string(), Arc::clone(&store));
         let state = AdminRuntimeState {
             stores,
             tokens: HashMap::new(),
+            allowed_origins: None,
         };
 
         let reveal = handle_admin_ui_resource_reveal(
@@ -3143,8 +3385,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(all.total, 3);
-        assert!(all.items.iter().any(|event| event.action == "secret_revealed"));
-        assert!(all.items.iter().any(|event| event.action == "secret_downloaded"));
+        assert!(
+            all.items
+                .iter()
+                .any(|event| event.action == "secret_revealed")
+        );
+        assert!(
+            all.items
+                .iter()
+                .any(|event| event.action == "secret_downloaded")
+        );
 
         let filtered = admin_ui_audit_query(
             raw_store.as_ref(),
@@ -3182,7 +3432,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(wrapper_filtered.total, 1);
-        assert_eq!(wrapper_filtered.items[0].wrapper.as_deref(), Some("jira-readonly"));
+        assert_eq!(
+            wrapper_filtered.items[0].wrapper.as_deref(),
+            Some("jira-readonly")
+        );
     }
 
     #[test]
@@ -3224,7 +3477,9 @@ mod tests {
             grants: vec![underwrap_protocol::policy::PolicyGrant {
                 id: "grant-1".to_string(),
                 wrapper: "jira-readonly".to_string(),
-                resource: underwrap_protocol::policy::credential_resource("gh/main/files/hosts.json"),
+                resource: underwrap_protocol::policy::credential_resource(
+                    "gh/main/files/hosts.json",
+                ),
                 operation: underwrap_protocol::policy::OP_STORE_WRITE.to_string(),
                 effect: underwrap_protocol::policy::PolicyEffect::Allow,
                 starts_at_epoch: Some(100),
@@ -3233,7 +3488,10 @@ mod tests {
             }],
         };
         store
-            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .write(
+                POLICY_DOCUMENT_SECRET_ID,
+                &serde_json::to_vec(&doc).unwrap(),
+            )
             .unwrap();
 
         let response = admin_ui_mutation_get(&store, "gh/main", 150).unwrap();
@@ -3290,7 +3548,10 @@ mod tests {
             grants: Vec::new(),
         };
         store
-            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .write(
+                POLICY_DOCUMENT_SECRET_ID,
+                &serde_json::to_vec(&doc).unwrap(),
+            )
             .unwrap();
 
         let response = admin_ui_wrappers_query(
@@ -3317,6 +3578,7 @@ mod tests {
         let state = AdminRuntimeState {
             stores,
             tokens: HashMap::new(),
+            allowed_origins: None,
         };
 
         let response = handle_admin_ui_wrapper_set_mode(
@@ -3341,7 +3603,10 @@ mod tests {
         let policy = read_policy(&raw_store);
         assert_eq!(policy.wrappers.len(), 1);
         assert_eq!(policy.wrappers[0].wrapper, "gh-authorized");
-        assert_eq!(policy.wrappers[0].reason.as_deref(), Some("maintenance window"));
+        assert_eq!(
+            policy.wrappers[0].reason.as_deref(),
+            Some("maintenance window")
+        );
         assert_eq!(
             policy.wrappers[0].mode,
             WrapperApprovalMode::Unlocked {
@@ -3387,7 +3652,10 @@ mod tests {
             grants: Vec::new(),
         };
         store
-            .write(POLICY_DOCUMENT_SECRET_ID, &serde_json::to_vec(&doc).unwrap())
+            .write(
+                POLICY_DOCUMENT_SECRET_ID,
+                &serde_json::to_vec(&doc).unwrap(),
+            )
             .unwrap();
 
         let response = admin_ui_matrix_query(
@@ -3405,8 +3673,8 @@ mod tests {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].host, "deepthought");
         assert_eq!(response.rows[0].wrapper, "gh-authorized");
-        assert_eq!(response.rows[0].cells[underwrap_protocol::policy::OP_ENV_READ], true);
-        assert_eq!(response.rows[0].cells[underwrap_protocol::policy::OP_FILES_READ], false);
+        assert!(response.rows[0].cells[underwrap_protocol::policy::OP_ENV_READ]);
+        assert!(!response.rows[0].cells[underwrap_protocol::policy::OP_FILES_READ]);
     }
 
     #[tokio::test]
@@ -3419,6 +3687,7 @@ mod tests {
         let state = AdminRuntimeState {
             stores,
             tokens: HashMap::new(),
+            allowed_origins: None,
         };
 
         let enabled = handle_admin_ui_matrix_set_cell(
@@ -3437,7 +3706,10 @@ mod tests {
         assert_eq!(policy.rules.len(), 1);
         assert_eq!(policy.rules[0].wrapper, "gh-authorized");
         assert_eq!(policy.rules[0].resource, "env:gh/main");
-        assert_eq!(policy.rules[0].operation, underwrap_protocol::policy::OP_ENV_READ);
+        assert_eq!(
+            policy.rules[0].operation,
+            underwrap_protocol::policy::OP_ENV_READ
+        );
 
         let disabled = handle_admin_ui_matrix_set_cell(
             &state,
@@ -3464,6 +3736,7 @@ mod tests {
         let state = AdminRuntimeState {
             stores,
             tokens: HashMap::new(),
+            allowed_origins: None,
         };
 
         let denied = handle_admin_ui_resource_write_text(
@@ -3515,7 +3788,11 @@ mod tests {
         );
         assert_eq!(stored.status(), StatusCode::OK);
         assert_eq!(
-            raw_store.read("gh/main/env/GH_TOKEN").unwrap().unwrap().as_ref(),
+            raw_store
+                .read("gh/main/env/GH_TOKEN")
+                .unwrap()
+                .unwrap()
+                .as_ref(),
             b"ghp-after"
         );
 
@@ -3557,6 +3834,7 @@ mod tests {
         let state = AdminRuntimeState {
             stores,
             tokens: HashMap::new(),
+            allowed_origins: None,
         };
 
         let denied_upload = handle_admin_ui_resource_upload_file(
@@ -3622,8 +3900,11 @@ mod tests {
                 store: "work".to_string(),
                 wrapper: "gh-authorized".to_string(),
                 secret_id: "gh/main/files/big.bin".to_string(),
-                material_b64: base64::engine::general_purpose::STANDARD
-                    .encode(vec![0_u8; ADMIN_UI_MAX_FILE_BYTES + 1]),
+                material_b64: base64::engine::general_purpose::STANDARD.encode(vec![
+                    0_u8;
+                    ADMIN_UI_MAX_FILE_BYTES
+                        + 1
+                ]),
             },
             130,
         );
@@ -3637,6 +3918,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
+            allowed_origins: None,
         }
     }
 
@@ -3708,5 +3990,161 @@ mod tests {
         )]))
         .unwrap_err();
         assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn is_loopback_listen_recognises_loopback_addresses() {
+        assert!(is_loopback_listen("127.0.0.1:8080"));
+        assert!(is_loopback_listen("127.0.0.5:0"));
+        assert!(is_loopback_listen("[::1]:8080"));
+        assert!(is_loopback_listen("localhost:443"));
+        assert!(is_loopback_listen("LOCALHOST:443"));
+    }
+
+    #[test]
+    fn is_loopback_listen_rejects_non_loopback_addresses() {
+        assert!(!is_loopback_listen("0.0.0.0:8080"));
+        assert!(!is_loopback_listen("[::]:8080"));
+        assert!(!is_loopback_listen("192.168.1.10:8080"));
+        assert!(!is_loopback_listen("10.0.0.1:443"));
+        assert!(!is_loopback_listen("example.com:443"));
+        assert!(!is_loopback_listen("8080")); // no colon at all
+        assert!(!is_loopback_listen(":8080")); // empty host
+    }
+
+    #[test]
+    fn validate_admin_config_allows_loopback_plain_http() {
+        let cfg = AdminConfig {
+            listen: "127.0.0.1:19443".to_string(),
+            tokens: HashMap::new(),
+            tls: None,
+            allowed_origins: None,
+        };
+        validate_admin_config(&cfg).expect("loopback plain HTTP must be allowed");
+    }
+
+    #[test]
+    fn validate_admin_config_allows_non_loopback_with_tls() {
+        let cfg = AdminConfig {
+            listen: "0.0.0.0:18444".to_string(),
+            tokens: HashMap::new(),
+            tls: Some(AdminTlsConfig {
+                cert_file: PathBuf::from("/dev/null"),
+                key_file: PathBuf::from("/dev/null"),
+            }),
+            allowed_origins: None,
+        };
+        validate_admin_config(&cfg).expect("TLS on non-loopback must be allowed");
+    }
+
+    #[test]
+    fn validate_admin_config_refuses_non_loopback_plain_http() {
+        let cfg = AdminConfig {
+            listen: "0.0.0.0:18444".to_string(),
+            tokens: HashMap::new(),
+            tls: None,
+            allowed_origins: None,
+        };
+        let err = validate_admin_config(&cfg).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not loopback") && msg.contains("TLS"),
+            "expected fail-closed message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_admin_config_rejects_empty_origin_entry() {
+        let cfg = AdminConfig {
+            listen: "127.0.0.1:19443".to_string(),
+            tokens: HashMap::new(),
+            tls: None,
+            allowed_origins: Some(vec!["https://ok.example".to_string(), "  ".to_string()]),
+        };
+        let err = validate_admin_config(&cfg).unwrap_err();
+        assert!(format!("{err:#}").contains("empty entry"));
+    }
+
+    fn headers_with(pairs: &[(&str, &str)]) -> hyper::HeaderMap {
+        let mut headers = hyper::HeaderMap::new();
+        for (k, v) in pairs {
+            headers.insert(
+                hyper::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                hyper::header::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn check_admin_origin_passes_get_without_check() {
+        let allowed = vec!["https://ok.example".to_string()];
+        assert!(check_admin_origin(&Method::GET, &headers_with(&[]), Some(&allowed)).is_ok());
+        assert!(check_admin_origin(&Method::HEAD, &headers_with(&[]), Some(&allowed)).is_ok());
+        assert!(check_admin_origin(&Method::OPTIONS, &headers_with(&[]), Some(&allowed)).is_ok());
+    }
+
+    #[test]
+    fn check_admin_origin_passes_when_no_allowlist_configured() {
+        // No allowlist == no check, even for POST.
+        assert!(check_admin_origin(&Method::POST, &headers_with(&[]), None).is_ok());
+        assert!(check_admin_origin(&Method::POST, &headers_with(&[]), Some(&[])).is_ok());
+    }
+
+    #[test]
+    fn check_admin_origin_accepts_matching_origin() {
+        let allowed = vec!["https://ok.example".to_string()];
+        let headers = headers_with(&[("Origin", "https://ok.example")]);
+        assert!(check_admin_origin(&Method::POST, &headers, Some(&allowed)).is_ok());
+    }
+
+    #[test]
+    fn check_admin_origin_rejects_mismatched_origin() {
+        let allowed = vec!["https://ok.example".to_string()];
+        let headers = headers_with(&[("Origin", "https://attacker.example")]);
+        let err = check_admin_origin(&Method::POST, &headers, Some(&allowed)).unwrap_err();
+        assert!(err.contains("not in allowed_origins"));
+    }
+
+    #[test]
+    fn check_admin_origin_falls_back_to_referer() {
+        let allowed = vec!["https://ok.example".to_string()];
+        let headers = headers_with(&[("Referer", "https://ok.example/admin/users")]);
+        assert!(check_admin_origin(&Method::POST, &headers, Some(&allowed)).is_ok());
+    }
+
+    #[test]
+    fn check_admin_origin_rejects_referer_from_other_origin() {
+        let allowed = vec!["https://ok.example".to_string()];
+        let headers = headers_with(&[("Referer", "https://attacker.example/page")]);
+        let err = check_admin_origin(&Method::POST, &headers, Some(&allowed)).unwrap_err();
+        assert!(err.contains("not in allowed_origins"));
+    }
+
+    #[test]
+    fn check_admin_origin_rejects_when_origin_and_referer_missing() {
+        let allowed = vec!["https://ok.example".to_string()];
+        let err =
+            check_admin_origin(&Method::POST, &headers_with(&[]), Some(&allowed)).unwrap_err();
+        assert!(err.contains("missing Origin"));
+    }
+
+    #[test]
+    fn referer_to_origin_strips_path_and_query() {
+        assert_eq!(
+            referer_to_origin("https://ok.example/foo/bar?x=1#y").as_deref(),
+            Some("https://ok.example")
+        );
+        assert_eq!(
+            referer_to_origin("http://localhost:5173/").as_deref(),
+            Some("http://localhost:5173")
+        );
+    }
+
+    #[test]
+    fn referer_to_origin_rejects_malformed_input() {
+        assert!(referer_to_origin("not-a-url").is_none());
+        assert!(referer_to_origin("https://").is_none());
+        assert!(referer_to_origin("://nohost").is_none());
     }
 }
