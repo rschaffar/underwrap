@@ -102,6 +102,8 @@ struct AdminRuntimeState {
     /// When present, every state-changing request must carry an `Origin`
     /// (or `Referer`) matching one of these entries.
     allowed_origins: Option<Vec<String>>,
+    /// Where to read the SPA bundle from when serving non-API paths.
+    web_source: crate::web::WebAssetSource,
 }
 
 const CATALOG_DOCUMENT_SECRET_ID: &str = "__underwrap/catalog/document";
@@ -151,6 +153,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             stores: stores.clone(),
             tokens,
             allowed_origins: admin_config.allowed_origins.clone(),
+            web_source: crate::web::WebAssetSource::from_env(),
         });
         info!(
             listen = %admin_config.listen,
@@ -2224,6 +2227,13 @@ async fn handle_admin_request(
     request: Request<Incoming>,
     state: Arc<AdminRuntimeState>,
 ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    if crate::web::is_spa_request(request.method(), request.uri().path()) {
+        return Ok(crate::web::serve_web_request(
+            request.method(),
+            request.uri().path(),
+            &state.web_source,
+        ));
+    }
     if let Err(reason) = check_admin_origin(
         request.method(),
         request.headers(),
@@ -3218,6 +3228,7 @@ mod tests {
             stores,
             tokens: HashMap::new(),
             allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
         };
 
         let utf8 = handle_admin_ui_resource_reveal(
@@ -3283,6 +3294,7 @@ mod tests {
             stores,
             tokens: HashMap::new(),
             allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
         };
 
         let ok = handle_admin_ui_resource_download(
@@ -3332,6 +3344,7 @@ mod tests {
             stores,
             tokens: HashMap::new(),
             allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
         };
 
         let reveal = handle_admin_ui_resource_reveal(
@@ -3579,6 +3592,7 @@ mod tests {
             stores,
             tokens: HashMap::new(),
             allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
         };
 
         let response = handle_admin_ui_wrapper_set_mode(
@@ -3688,6 +3702,7 @@ mod tests {
             stores,
             tokens: HashMap::new(),
             allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
         };
 
         let enabled = handle_admin_ui_matrix_set_cell(
@@ -3737,6 +3752,7 @@ mod tests {
             stores,
             tokens: HashMap::new(),
             allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
         };
 
         let denied = handle_admin_ui_resource_write_text(
@@ -3835,6 +3851,7 @@ mod tests {
             stores,
             tokens: HashMap::new(),
             allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
         };
 
         let denied_upload = handle_admin_ui_resource_upload_file(
@@ -3919,6 +3936,7 @@ mod tests {
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
             allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
         }
     }
 

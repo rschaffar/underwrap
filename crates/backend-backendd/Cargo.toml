@@ -39,6 +39,8 @@ base64 = { workspace = true }
 hex = { workspace = true }
 subtle = "2"
 sha2 = "0.10"
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
