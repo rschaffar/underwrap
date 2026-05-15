@@ -79,6 +79,11 @@ pub struct AdminConfig {
     /// Foundation for the CSRF work in ticket 212.
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
+    /// Which declared store should hold the operator collection
+    /// (`__underwrap/admin/operators`). Defaults to the alphabetically
+    /// first declared store when not set.
+    #[serde(default)]
+    pub admin_home_store: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +146,13 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
 
     if let Some(admin_config) = &config.admin {
         validate_admin_config(admin_config)?;
+        // Fail-fast: resolve the admin-home store name now so a typo in
+        // config doesn't surface only on the first login attempt.
+        let (home_name, _) = crate::operators::resolve_admin_home_store(
+            &stores,
+            admin_config.admin_home_store.as_deref(),
+        )?;
+        info!(admin_home_store = %home_name, "resolved admin-home store");
         let admin_listener = TcpListener::bind(&admin_config.listen)
             .await
             .with_context(|| format!("binding admin listener {}", admin_config.listen))?;
@@ -4037,6 +4049,7 @@ mod tests {
             tokens: HashMap::new(),
             tls: None,
             allowed_origins: None,
+            admin_home_store: None,
         };
         validate_admin_config(&cfg).expect("loopback plain HTTP must be allowed");
     }
@@ -4051,6 +4064,7 @@ mod tests {
                 key_file: PathBuf::from("/dev/null"),
             }),
             allowed_origins: None,
+            admin_home_store: None,
         };
         validate_admin_config(&cfg).expect("TLS on non-loopback must be allowed");
     }
@@ -4062,6 +4076,7 @@ mod tests {
             tokens: HashMap::new(),
             tls: None,
             allowed_origins: None,
+            admin_home_store: None,
         };
         let err = validate_admin_config(&cfg).unwrap_err();
         let msg = format!("{err:#}");
@@ -4078,6 +4093,7 @@ mod tests {
             tokens: HashMap::new(),
             tls: None,
             allowed_origins: Some(vec!["https://ok.example".to_string(), "  ".to_string()]),
+            admin_home_store: None,
         };
         let err = validate_admin_config(&cfg).unwrap_err();
         assert!(format!("{err:#}").contains("empty entry"));

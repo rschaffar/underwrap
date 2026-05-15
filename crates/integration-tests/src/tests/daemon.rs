@@ -119,6 +119,7 @@ async fn underwrapd_binary_start_and_read() {
             )]),
             tls: None,
             allowed_origins: None,
+            admin_home_store: None,
         }),
     })
     .unwrap();

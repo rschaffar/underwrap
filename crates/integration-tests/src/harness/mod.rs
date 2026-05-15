@@ -115,6 +115,7 @@ impl TestDaemon {
                 )]),
                 tls: None,
                 allowed_origins: None,
+                admin_home_store: None,
             }),
         };
         let backend_shutdown = Arc::new(Notify::new());
