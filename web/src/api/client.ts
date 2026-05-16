@@ -134,6 +134,13 @@ import type {
   AdminPasswordChangeRequest,
   AdminPolicyGetRequest,
   AdminPolicyGetResponse,
+  AdminSecretDeleteRequest,
+  AdminSecretDeleteResponse,
+  AdminSecretListRequest,
+  AdminSecretListResponse,
+  AdminSecretReadRequest,
+  AdminSecretReadResponse,
+  AdminSecretWriteRequest,
   AdminStoreCreateRequest,
   AdminStoreCreateResponse,
   AdminStoreDeleteResponse,
@@ -173,6 +180,13 @@ export type {
   AdminPasswordChangeRequest,
   AdminPolicyGetRequest,
   AdminPolicyGetResponse,
+  AdminSecretDeleteRequest,
+  AdminSecretDeleteResponse,
+  AdminSecretListRequest,
+  AdminSecretListResponse,
+  AdminSecretReadRequest,
+  AdminSecretReadResponse,
+  AdminSecretWriteRequest,
   AdminStoreCreateRequest,
   AdminStoreCreateResponse,
   AdminStoreDeleteResponse,
@@ -358,6 +372,44 @@ export function postPolicyGet(
   body: AdminPolicyGetRequest,
 ): Promise<AdminPolicyGetResponse> {
   return apiJson<AdminPolicyGetResponse>("/v1/admin/policy/get", {
+    method: "POST",
+    json: body,
+  });
+}
+
+// ----- Secrets CRUD (ticket 300, Option A) -----
+
+export function postSecretList(
+  body: AdminSecretListRequest,
+): Promise<AdminSecretListResponse> {
+  return apiJson<AdminSecretListResponse>("/v1/admin/secret/list", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postSecretRead(
+  body: AdminSecretReadRequest,
+): Promise<AdminSecretReadResponse> {
+  return apiJson<AdminSecretReadResponse>("/v1/admin/secret/read", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postSecretWrite(
+  body: AdminSecretWriteRequest,
+): Promise<AdminOkResponse> {
+  return apiJson<AdminOkResponse>("/v1/admin/secret/write", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postSecretDelete(
+  body: AdminSecretDeleteRequest,
+): Promise<AdminSecretDeleteResponse> {
+  return apiJson<AdminSecretDeleteResponse>("/v1/admin/secret/delete", {
     method: "POST",
     json: body,
   });

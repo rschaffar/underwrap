@@ -9,6 +9,7 @@ import {
   LogOut,
   UserCircle,
   Grid3x3,
+  KeyRound,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,7 @@ interface NavItem {
 export const NAV: NavItem[] = [
   { label: "Dashboard", icon: LayoutDashboard, href: "/" },
   { label: "Matrix", icon: Grid3x3, href: "/matrix" },
+  { label: "Secrets", icon: KeyRound, href: "/secrets" },
   { label: "Stores", icon: Lock, href: "/stores", adminOnly: true },
   { label: "Users", icon: Users, href: "/users", adminOnly: true },
   { label: "Profile", icon: UserCircle, href: "/profile" },

@@ -15,6 +15,7 @@ import { Dashboard } from "@/pages/dashboard";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
 import { MatrixPage } from "@/pages/matrix";
+import { SecretsPage } from "@/pages/secrets";
 import { StoresPage } from "@/pages/stores";
 import { UsersPage } from "@/pages/users";
 import { ProfilePage } from "@/pages/profile";
@@ -154,6 +155,7 @@ const appLayoutRoute = new Route({
 export const APP_ROUTE_PATHS = [
   "/",
   "/matrix",
+  "/secrets",
   "/stores",
   "/users",
   "/profile",
@@ -215,6 +217,15 @@ const matrixRoute = new Route({
   component: function MatrixRouteComponent() {
     const ctx = matrixRoute.useRouteContext();
     return <MatrixPage principal={ctx.principal} />;
+  },
+});
+
+const secretsRoute = new Route({
+  getParentRoute: () => appLayoutRoute,
+  path: "/secrets",
+  component: function SecretsRouteComponent() {
+    const ctx = secretsRoute.useRouteContext();
+    return <SecretsPage principal={ctx.principal} />;
   },
 });
 
@@ -312,6 +323,7 @@ function safeNextPath(next: string | null): string | null {
 export const appRoutes = [
   indexRoute,
   matrixRoute,
+  secretsRoute,
   storesRoute,
   usersRoute,
   profileRoute,
