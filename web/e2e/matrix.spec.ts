@@ -148,3 +148,38 @@ test("cell editor cycles a grant through all four modes and then removes it", as
     page.getByText(/matrix is empty for this store/i),
   ).toBeVisible();
 });
+
+test("raw policy viewer surfaces the live PolicyDocument and the writes-enabled badge (ticket 301)", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  await page.goto(`${backendWithAdmin.baseUrl}/matrix`);
+
+  // Open the viewer. The button is exposed on the Matrix header.
+  await page.getByRole("button", { name: /view raw policy/i }).click();
+  const dlg = page.getByRole("dialog", { name: /raw policy: default/i });
+  await expect(dlg).toBeVisible();
+
+  // Initial state: empty grants, writes_enabled = false.
+  await expect(dlg.getByTestId("writes-enabled-badge")).toHaveText(/^off$/i);
+  const json = dlg.getByTestId("policy-json");
+  await expect(json).toContainText('"grants"');
+  await expect(json).toContainText('"writes_enabled": false');
+
+  // Close, flip writes-enabled on, reopen — the badge tracks the
+  // backend state, not a cached view. The dialog has two "Close"
+  // buttons (footer button + Radix's X corner button); the footer
+  // one carries the matching accessible text content.
+  await dlg.getByText("Close", { exact: true }).click();
+  await expect(dlg).toBeHidden();
+  await page.getByTestId("writes-toggle-input").click();
+  await expect(page.getByTestId("writes-toggle-input")).toBeChecked();
+
+  await page.getByRole("button", { name: /view raw policy/i }).click();
+  const dlg2 = page.getByRole("dialog", { name: /raw policy: default/i });
+  await expect(dlg2.getByTestId("writes-enabled-badge")).toHaveText(/^on$/i);
+  await expect(dlg2.getByTestId("policy-json")).toContainText(
+    '"writes_enabled": true',
+  );
+});

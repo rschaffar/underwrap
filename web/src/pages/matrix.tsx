@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ShieldCheck, ShieldOff, Hourglass, KeyRound, Plus } from "lucide-react";
+import {
+  ShieldCheck,
+  ShieldOff,
+  Hourglass,
+  KeyRound,
+  Plus,
+  FileText,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { PolicyViewerDialog } from "@/components/policy-viewer-dialog";
 import {
   Dialog,
   DialogContent,
@@ -171,6 +179,7 @@ export function MatrixPage({ principal }: MatrixPageProps) {
     user: string;
     grant: AgentGrant | null;
   } | null>(null);
+  const [rawOpen, setRawOpen] = useState(false);
 
   if (!storeName) {
     return (
@@ -201,21 +210,32 @@ export function MatrixPage({ principal }: MatrixPageProps) {
             Click a cell to set or change the mode.
           </p>
         </div>
-        <label className="text-sm text-(--color-muted)">
-          Store:{" "}
-          <select
-            data-testid="matrix-store-select"
-            value={storeName}
-            onChange={(e) => setStoreName(e.target.value)}
-            className="ml-1 rounded-md border border-(--color-line) bg-(--color-surface-0) px-2 py-1 text-sm text-(--color-fg)"
+        <div className="flex items-center gap-3">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setRawOpen(true)}
           >
-            {(stores.data?.items ?? []).map((s) => (
-              <option key={s.name} value={s.name}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </label>
+            <FileText className="mr-1.5 h-4 w-4" aria-hidden />
+            View raw policy
+          </Button>
+          <label className="text-sm text-(--color-muted)">
+            Store:{" "}
+            <select
+              data-testid="matrix-store-select"
+              value={storeName}
+              onChange={(e) => setStoreName(e.target.value)}
+              className="ml-1 rounded-md border border-(--color-line) bg-(--color-surface-0) px-2 py-1 text-sm text-(--color-fg)"
+            >
+              {(stores.data?.items ?? []).map((s) => (
+                <option key={s.name} value={s.name}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </header>
 
       <WritesToggle
@@ -261,6 +281,12 @@ export function MatrixPage({ principal }: MatrixPageProps) {
           onClose={() => setEditing(null)}
         />
       ) : null}
+
+      <PolicyViewerDialog
+        storeName={storeName}
+        open={rawOpen}
+        onClose={() => setRawOpen(false)}
+      />
     </div>
   );
 }

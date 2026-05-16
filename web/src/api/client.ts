@@ -132,6 +132,8 @@ import type {
   AdminOkResponse,
   AdminOkUserResponse,
   AdminPasswordChangeRequest,
+  AdminPolicyGetRequest,
+  AdminPolicyGetResponse,
   AdminStoreCreateRequest,
   AdminStoreCreateResponse,
   AdminStoreDeleteResponse,
@@ -169,6 +171,8 @@ export type {
   AdminOkResponse,
   AdminOkUserResponse,
   AdminPasswordChangeRequest,
+  AdminPolicyGetRequest,
+  AdminPolicyGetResponse,
   AdminStoreCreateRequest,
   AdminStoreCreateResponse,
   AdminStoreDeleteResponse,
@@ -345,6 +349,15 @@ export function postGrantUpsert(
   body: AdminAgentGrantUpsertRequest,
 ): Promise<AdminOkResponse> {
   return apiJson<AdminOkResponse>("/v1/admin/grants/upsert", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postPolicyGet(
+  body: AdminPolicyGetRequest,
+): Promise<AdminPolicyGetResponse> {
+  return apiJson<AdminPolicyGetResponse>("/v1/admin/policy/get", {
     method: "POST",
     json: body,
   });
