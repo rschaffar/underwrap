@@ -22,21 +22,21 @@ import {
 } from "@/components/ui/sheet";
 import { useTheme } from "@/hooks/use-theme";
 import { cn } from "@/lib/utils";
+import { type AppRoutePath } from "@/router";
 
 interface NavItem {
   label: string;
   icon: typeof LayoutDashboard;
-  href: string;
+  // Constrained to the union of registered app-shell route paths so
+  // a nav entry cannot point at a missing route. Adding a new
+  // destination requires updating `APP_ROUTE_PATHS` in router.tsx,
+  // which in turn is asserted to match the live route tree.
+  href: AppRoutePath;
   /** Hide this nav item unless the role string is admin. */
   adminOnly?: boolean;
 }
 
-// Nav entries map to live routes in `web/src/router.tsx`. Add entries
-// here when a corresponding `Route` lands; don't list aspirational
-// destinations — the SPA's notFoundComponent will render a "Not
-// found" page for any unmatched path, which is the worst possible
-// thing to see in a top-level nav.
-const NAV: NavItem[] = [
+export const NAV: NavItem[] = [
   { label: "Dashboard", icon: LayoutDashboard, href: "/" },
   { label: "Matrix", icon: Grid3x3, href: "/matrix" },
   { label: "Stores", icon: Lock, href: "/stores", adminOnly: true },

@@ -144,6 +144,22 @@ const appLayoutRoute = new Route({
   },
 });
 
+// Single source of truth for nav-targetable paths under the protected
+// app shell. The `NAV` array in `app-shell.tsx` constrains its href
+// values to this union, and `routePathsAreConsistent` (below) asserts
+// the set matches the actual registered routes. The pair makes it
+// impossible for a nav entry to point at a missing route or for a
+// route to be added without surfacing it through the type that NAV
+// consumes.
+export const APP_ROUTE_PATHS = [
+  "/",
+  "/matrix",
+  "/stores",
+  "/users",
+  "/profile",
+] as const;
+export type AppRoutePath = (typeof APP_ROUTE_PATHS)[number];
+
 const indexRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/",
@@ -290,14 +306,19 @@ function safeNextPath(next: string | null): string | null {
   }
 }
 
+// Exported so the consistency test in `router.test.tsx` can compare
+// the actual registered path set against `APP_ROUTE_PATHS`. Keep this
+// list ordered the same way as `APP_ROUTE_PATHS` for readability.
+export const appRoutes = [
+  indexRoute,
+  matrixRoute,
+  storesRoute,
+  usersRoute,
+  profileRoute,
+];
+
 const routeTree = rootRoute.addChildren([
-  appLayoutRoute.addChildren([
-    indexRoute,
-    matrixRoute,
-    storesRoute,
-    usersRoute,
-    profileRoute,
-  ]),
+  appLayoutRoute.addChildren(appRoutes),
   loginRoute,
   bootstrapRoute,
   logoutRoute,

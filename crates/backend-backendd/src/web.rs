@@ -412,6 +412,42 @@ mod tests {
         }
     }
 
+    /// Smoke test for the embedded SPA bundle. Fails when the embed is
+    /// empty / placeholder-only — i.e. when `$UNDERWRAP_WEB_DIST` at
+    /// compile time pointed at an unbuilt `web/dist/`. Without this
+    /// gate the binary builds and starts fine but serves 503 to every
+    /// `/` request, which the older harness did not catch (ticket
+    /// 292).
+    ///
+    /// **Local development**: this test requires the SPA to be built.
+    /// Run `cd web && npm run build` (or `nix build .#underwrap-web-dist`)
+    /// before `cargo test -p backend-backendd`. The Nix derivation sets
+    /// `UNDERWRAP_WEB_DIST` to the built bundle automatically.
+    #[tokio::test]
+    async fn embedded_assets_contain_built_spa_index() {
+        use http_body_util::BodyExt;
+        let resp = serve_web_request(&Method::GET, "/", &WebAssetSource::Embedded);
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "embedded SPA bundle is empty — was web/dist/ built before this test ran? \
+             See the test's doc comment for the local-dev procedure."
+        );
+        assert_eq!(
+            resp.headers().get(hyper::header::CONTENT_TYPE).unwrap(),
+            "text/html"
+        );
+        // `index.html`'s `<title>underwrap</title>` is the most stable
+        // marker we can assert against — the surrounding head / body
+        // varies with each Vite build (asset hashes change).
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let body_str = std::str::from_utf8(&body).expect("index.html is valid UTF-8");
+        assert!(
+            body_str.contains("<title>underwrap</title>"),
+            "embedded index.html does not contain the expected title marker"
+        );
+    }
+
     #[test]
     fn from_env_uses_embedded_when_var_empty() {
         let prev = std::env::var("UNDERWRAP_BACKENDD_WEB_DIR").ok();
