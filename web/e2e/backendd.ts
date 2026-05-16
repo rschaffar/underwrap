@@ -133,11 +133,21 @@ export async function startBackend(
   const storeDir = join(tmpDir, "store");
   mkdirSync(storeDir);
 
+  // Per-store YAML files under a temp `stores.d/`. The 230 refactor
+  // moved store definitions out of the inline backend.yaml; each
+  // `<name>.yaml` is the `StoreDefinition` shape (storage config
+  // flattened in, with optional `description`/`created_at`).
+  const storesDir = join(tmpDir, "stores.d");
+  mkdirSync(storesDir);
+  const defaultStoreYaml = [
+    "backend: plain",
+    `dir: ${JSON.stringify(storeDir)}`,
+    "",
+  ].join("\n");
+  writeFileSync(join(storesDir, "default.yaml"), defaultStoreYaml);
+
   const configYaml = [
-    "stores:",
-    "  default:",
-    "    backend: plain",
-    `    dir: ${JSON.stringify(storeDir)}`,
+    `stores_dynamic_dir: ${JSON.stringify(storesDir)}`,
     "admin:",
     `  listen: "127.0.0.1:${port}"`,
     "  tls:",

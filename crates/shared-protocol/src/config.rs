@@ -30,7 +30,7 @@ pub struct DaemonConfig {
 
 /// Storage backend configuration — how `underwrap-backendd` persists secrets
 /// behind the service API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "backend")]
 pub enum StorageConfig {
     /// Plain directory of files owned by the daemon user.
@@ -65,6 +65,45 @@ impl StorageConfig {
             Self::Plain { dir } | Self::Encrypted { dir, .. } => dir,
         }
     }
+}
+
+/// One on-disk store definition. Each file under
+/// `stores_declarative_dir` / `stores_dynamic_dir` deserialises into
+/// one of these. `storage` is flattened into the top level so the
+/// YAML reads naturally:
+///
+/// ```yaml
+/// backend: encrypted
+/// dir: /var/lib/underwrap-backend/work
+/// key_file: /var/lib/underwrap-backend/work.key
+/// description: "Production work secrets"
+/// created_at: 1729123456
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoreDefinition {
+    /// Operator-facing description shown in the admin UI. Optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Unix-epoch seconds the definition was created. Stamped by the
+    /// admin UI when a dynamic store is created via the API; absent
+    /// for hand-authored declarative files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+    /// The storage backend itself.
+    #[serde(flatten)]
+    pub storage: StorageConfig,
+}
+
+/// Where a loaded store definition came from. Declarative stores are
+/// reproducible artefacts (a symlink into `/nix/store` via the NixOS
+/// module); dynamic stores were created via the admin API and live
+/// under `/var/lib/underwrap-backend/stores.d/`. The admin API is
+/// allowed to mutate the latter and must refuse the former.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StoreSource {
+    Declarative,
+    Dynamic,
 }
 
 fn default_storage_dir() -> PathBuf {

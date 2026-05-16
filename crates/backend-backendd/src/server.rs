@@ -22,7 +22,7 @@ use tokio::time::{Duration, interval};
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
-use underwrap_protocol::config::StorageConfig;
+use underwrap_protocol::config::{StoreDefinition, StoreSource};
 use underwrap_protocol::policy::{
     POLICY_DOCUMENT_SECRET_ID, PolicyDecision, PolicyDocument, WrapperApprovalMode,
 };
@@ -94,13 +94,60 @@ pub struct AdminConfig {
     pub session_lifetime_secs: Option<u64>,
 }
 
+/// Default location of the declarative stores directory. Each
+/// `<name>.yaml` here is owned by the NixOS module and treated as
+/// read-only by the admin API.
+pub const DEFAULT_STORES_DECLARATIVE_DIR: &str = "/etc/underwrap-backend/stores.d";
+
+/// Default location of the dynamic stores directory. The admin API
+/// owns this tree and is allowed to create/update/delete files in it.
+pub const DEFAULT_STORES_DYNAMIC_DIR: &str = "/var/lib/underwrap-backend/stores.d";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
-    pub stores: HashMap<String, StorageConfig>,
+    /// Directory of declarative store definitions. Each `<name>.yaml`
+    /// is loaded with `source = declarative` and refused by the admin
+    /// API's mutation handlers. Defaults to
+    /// [`DEFAULT_STORES_DECLARATIVE_DIR`]. Missing directories are
+    /// tolerated and treated as empty.
+    #[serde(default)]
+    pub stores_declarative_dir: Option<PathBuf>,
+    /// Directory of admin-API-managed store definitions. Same on-disk
+    /// shape, but mutations are allowed. Defaults to
+    /// [`DEFAULT_STORES_DYNAMIC_DIR`].
+    #[serde(default)]
+    pub stores_dynamic_dir: Option<PathBuf>,
     #[serde(default)]
     pub service: Option<ServiceConfig>,
     #[serde(default)]
     pub admin: Option<AdminConfig>,
+}
+
+impl BackendConfig {
+    /// Resolve [`Self::stores_declarative_dir`] or the project default.
+    pub fn declarative_dir(&self) -> PathBuf {
+        self.stores_declarative_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_STORES_DECLARATIVE_DIR))
+    }
+
+    /// Resolve [`Self::stores_dynamic_dir`] or the project default.
+    pub fn dynamic_dir(&self) -> PathBuf {
+        self.stores_dynamic_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_STORES_DYNAMIC_DIR))
+    }
+}
+
+/// One store as loaded from disk plus its provenance. Kept alongside
+/// the opened [`StorageBackend`] in [`AdminRuntimeState`] so admin
+/// handlers can refuse to mutate declarative stores and surface the
+/// description in list endpoints.
+#[derive(Debug, Clone)]
+pub struct LoadedStoreDef {
+    pub source: StoreSource,
+    pub source_path: PathBuf,
+    pub definition: StoreDefinition,
 }
 
 struct ServiceRuntimeState {
@@ -109,6 +156,12 @@ struct ServiceRuntimeState {
 
 struct AdminRuntimeState {
     stores: HashMap<String, Arc<dyn StorageBackend>>,
+    /// Source provenance and on-disk path for each store in `stores`,
+    /// keyed by the same store name. Populated at startup from the
+    /// declarative/dynamic dir union. The admin CRUD handlers in
+    /// ticket 231 read this to refuse mutation requests targeting a
+    /// `Declarative` store.
+    store_sources: HashMap<String, LoadedStoreDef>,
     /// Operator name → opaque bearer token. Both fields are trusted; the
     /// caller authenticates by presenting a matching token.
     tokens: HashMap<String, String>,
@@ -157,7 +210,8 @@ struct StoredCatalogEntry {
 }
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
-    let stores = open_stores(&config.stores)?;
+    let definitions = load_store_definitions(&config.declarative_dir(), &config.dynamic_dir())?;
+    let stores = open_stores(&definitions)?;
 
     let mut tasks = JoinSet::new();
 
@@ -203,6 +257,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             .unwrap_or(crate::auth::DEFAULT_SESSION_LIFETIME_SECS);
         let admin_state = Arc::new(AdminRuntimeState {
             stores: stores.clone(),
+            store_sources: definitions.clone(),
             tokens,
             allowed_origins: admin_config.allowed_origins.clone(),
             web_source: crate::web::WebAssetSource::from_env(),
@@ -214,9 +269,21 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
         });
+        let declarative_count = admin_state
+            .store_sources
+            .values()
+            .filter(|d| d.source == StoreSource::Declarative)
+            .count();
+        let dynamic_count = admin_state
+            .store_sources
+            .values()
+            .filter(|d| d.source == StoreSource::Dynamic)
+            .count();
         info!(
             listen = %admin_config.listen,
             stores = admin_state.stores.len(),
+            declarative = declarative_count,
+            dynamic = dynamic_count,
             operators = admin_state.tokens.len(),
             tls = tls_acceptor.is_some(),
             "backend admin listening",
@@ -249,14 +316,106 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
 }
 
 fn open_stores(
-    configs: &HashMap<String, StorageConfig>,
+    definitions: &HashMap<String, LoadedStoreDef>,
 ) -> Result<HashMap<String, Arc<dyn StorageBackend>>> {
     let mut stores = HashMap::new();
-    for (name, config) in configs {
-        let store: Arc<dyn StorageBackend> = Arc::from(underwrap_store::open(config)?);
+    for (name, def) in definitions {
+        let store: Arc<dyn StorageBackend> =
+            Arc::from(underwrap_store::open(&def.definition.storage)?);
         stores.insert(name.clone(), store);
     }
     Ok(stores)
+}
+
+/// Read every `<name>.yaml` under both directories and union them
+/// into the runtime store map. Duplicate names across sources are a
+/// fatal startup error; missing directories are treated as empty so
+/// a freshly-provisioned host with no dynamic stores yet can still
+/// boot.
+pub fn load_store_definitions(
+    declarative_dir: &Path,
+    dynamic_dir: &Path,
+) -> Result<HashMap<String, LoadedStoreDef>> {
+    let mut out: HashMap<String, LoadedStoreDef> = HashMap::new();
+    read_one_dir(declarative_dir, StoreSource::Declarative, &mut out)?;
+    read_one_dir(dynamic_dir, StoreSource::Dynamic, &mut out)?;
+    Ok(out)
+}
+
+fn read_one_dir(
+    dir: &Path,
+    source: StoreSource,
+    out: &mut HashMap<String, LoadedStoreDef>,
+) -> Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+    };
+    let mut sorted: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading entry under {}", dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        sorted.push(path);
+    }
+    // Stable order so test failures are deterministic.
+    sorted.sort();
+    for path in sorted {
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .with_context(|| format!("non-UTF8 store filename {}", path.display()))?;
+        if !is_valid_store_name(&name) {
+            return Err(anyhow::anyhow!(
+                "invalid store name '{name}' (file {}): must match [a-z0-9][a-z0-9_-]*",
+                path.display()
+            ));
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading store definition {}", path.display()))?;
+        let definition: StoreDefinition = serde_yaml::from_str(&text)
+            .with_context(|| format!("parsing store definition {}", path.display()))?;
+        if let Some(existing) = out.get(&name) {
+            return Err(anyhow::anyhow!(
+                "duplicate store name '{name}': defined in both {} and {}",
+                existing.source_path.display(),
+                path.display(),
+            ));
+        }
+        out.insert(
+            name,
+            LoadedStoreDef {
+                source,
+                source_path: path,
+                definition,
+            },
+        );
+    }
+    Ok(())
+}
+
+/// A store name must be safe to use as a filename and as a URL path
+/// segment. Lowercase letters, digits, `-`, `_`, starting with an
+/// alphanumeric.
+pub fn is_valid_store_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 fn build_service_runtime_state(
@@ -3708,6 +3867,166 @@ fn attach_csrf_cookie(
 }
 
 #[cfg(test)]
+mod store_dir_tests {
+    //! Tests for the declarative+dynamic `stores.d/` loader added by
+    //! ticket 230. The wider runtime tests live in `mod tests` below.
+    use super::*;
+
+    fn write_def(dir: &Path, name: &str, def: &StoreDefinition) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{name}.yaml")),
+            serde_yaml::to_string(def).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn plain_def(dir: &Path) -> StoreDefinition {
+        StoreDefinition {
+            description: None,
+            created_at: None,
+            storage: underwrap_protocol::config::StorageConfig::Plain {
+                dir: dir.to_path_buf(),
+            },
+        }
+    }
+
+    #[test]
+    fn only_declarative_loads() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let decl = tmp.path().join("decl");
+        let dynd = tmp.path().join("dyn");
+        write_def(&decl, "work", &plain_def(&tmp.path().join("work-data")));
+
+        let map = load_store_definitions(&decl, &dynd).unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["work"].source, StoreSource::Declarative);
+    }
+
+    #[test]
+    fn only_dynamic_loads() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let decl = tmp.path().join("decl");
+        let dynd = tmp.path().join("dyn");
+        write_def(&dynd, "personal", &plain_def(&tmp.path().join("p-data")));
+
+        let map = load_store_definitions(&decl, &dynd).unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["personal"].source, StoreSource::Dynamic);
+    }
+
+    #[test]
+    fn both_dirs_union() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let decl = tmp.path().join("decl");
+        let dynd = tmp.path().join("dyn");
+        write_def(&decl, "work", &plain_def(&tmp.path().join("w")));
+        write_def(&dynd, "personal", &plain_def(&tmp.path().join("p")));
+
+        let map = load_store_definitions(&decl, &dynd).unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["work"].source, StoreSource::Declarative);
+        assert_eq!(map["personal"].source, StoreSource::Dynamic);
+    }
+
+    #[test]
+    fn duplicate_name_across_sources_is_fatal_and_names_both_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let decl = tmp.path().join("decl");
+        let dynd = tmp.path().join("dyn");
+        write_def(&decl, "shared", &plain_def(&tmp.path().join("a")));
+        write_def(&dynd, "shared", &plain_def(&tmp.path().join("b")));
+
+        let err =
+            load_store_definitions(&decl, &dynd).expect_err("duplicate names must abort startup");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("duplicate store name 'shared'"), "got: {msg}");
+        assert!(msg.contains(decl.join("shared.yaml").to_string_lossy().as_ref()));
+        assert!(msg.contains(dynd.join("shared.yaml").to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn malformed_file_is_rejected_with_path_in_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let decl = tmp.path().join("decl");
+        std::fs::create_dir_all(&decl).unwrap();
+        let bad = decl.join("bad.yaml");
+        std::fs::write(&bad, ": not valid yaml :::\n").unwrap();
+
+        let err = load_store_definitions(&decl, &tmp.path().join("dyn"))
+            .expect_err("malformed YAML must abort");
+        let msg = format!("{err:#}");
+        assert!(msg.contains(bad.to_string_lossy().as_ref()), "got: {msg}");
+    }
+
+    #[test]
+    fn missing_directories_are_tolerated() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let map = load_store_definitions(
+            &tmp.path().join("does-not-exist-decl"),
+            &tmp.path().join("does-not-exist-dyn"),
+        )
+        .unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn non_yaml_files_are_ignored() {
+        // Operators sometimes leave editor swapfiles or README files
+        // in config dirs; only `*.yaml` is treated as a definition.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let decl = tmp.path().join("decl");
+        std::fs::create_dir_all(&decl).unwrap();
+        std::fs::write(decl.join("notes.txt"), "ignore me\n").unwrap();
+        std::fs::write(decl.join(".work.yaml.swp"), "vim swap\n").unwrap();
+        write_def(&decl, "work", &plain_def(&tmp.path().join("w")));
+
+        let map = load_store_definitions(&decl, &tmp.path().join("dyn")).unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("work"));
+    }
+
+    #[test]
+    fn invalid_store_filename_is_rejected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let decl = tmp.path().join("decl");
+        std::fs::create_dir_all(&decl).unwrap();
+        // Uppercase is rejected: store names must round-trip as URL
+        // path segments and (later) as filesystem paths under a
+        // case-insensitive FS without colliding.
+        std::fs::write(
+            decl.join("Bad-Name.yaml"),
+            serde_yaml::to_string(&plain_def(&tmp.path().join("x"))).unwrap(),
+        )
+        .unwrap();
+
+        let err = load_store_definitions(&decl, &tmp.path().join("dyn"))
+            .expect_err("uppercase store name must be refused");
+        assert!(format!("{err:#}").contains("invalid store name"));
+    }
+
+    #[test]
+    fn description_metadata_round_trips() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let decl = tmp.path().join("decl");
+        let def = StoreDefinition {
+            description: Some("the work store".into()),
+            created_at: Some(123),
+            storage: underwrap_protocol::config::StorageConfig::Plain {
+                dir: tmp.path().join("w"),
+            },
+        };
+        write_def(&decl, "work", &def);
+        let map = load_store_definitions(&decl, &tmp.path().join("dyn")).unwrap();
+        assert_eq!(
+            map["work"].definition.description.as_deref(),
+            Some("the work store"),
+        );
+        assert_eq!(map["work"].definition.created_at, Some(123));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
@@ -4851,6 +5170,7 @@ mod tests {
             .unwrap_or_else(|| Arc::new(MemTestStore::new()));
         AdminRuntimeState {
             stores,
+            store_sources: HashMap::new(),
             tokens,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -5164,6 +5484,7 @@ mod tests {
         }
         AdminRuntimeState {
             stores: HashMap::from([("home".to_string(), store.clone())]),
+            store_sources: HashMap::new(),
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -5434,6 +5755,7 @@ mod tests {
         }
         AdminRuntimeState {
             stores: HashMap::from([("home".to_string(), store.clone())]),
+            store_sources: HashMap::new(),
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,

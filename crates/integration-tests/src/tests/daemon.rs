@@ -84,13 +84,26 @@ async fn underwrapd_binary_start_and_read() {
     std::fs::write(&client_cert, crate::harness::TEST_CLIENT_LOCAL_PEM).unwrap();
     std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
 
+    // 230 moved store config out of the inline map. Drop a single
+    // `test.yaml` into a per-tempdir stores dir so the binary picks
+    // it up at startup.
+    let stores_dir = base.join("stores.d");
+    std::fs::create_dir_all(&stores_dir).unwrap();
+    let test_def = underwrap_protocol::config::StoreDefinition {
+        description: None,
+        created_at: None,
+        storage: underwrap_protocol::config::StorageConfig::Plain {
+            dir: base.join("secrets"),
+        },
+    };
+    std::fs::write(
+        stores_dir.join("test.yaml"),
+        serde_yaml::to_string(&test_def).unwrap(),
+    )
+    .unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
-        stores: HashMap::from([(
-            "test".to_string(),
-            underwrap_protocol::config::StorageConfig::Plain {
-                dir: base.join("secrets"),
-            },
-        )]),
+        stores_declarative_dir: None,
+        stores_dynamic_dir: Some(stores_dir),
         service: Some(underwrap_backendd::server::ServiceConfig {
             listen: format!("127.0.0.1:{service_port}"),
             tls: underwrap_backendd::server::ServiceTlsConfig {

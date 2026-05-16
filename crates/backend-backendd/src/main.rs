@@ -75,7 +75,24 @@ enum AdminCommand {
 }
 
 fn parse_backend_config(config_text: &str) -> Result<server::BackendConfig> {
-    serde_yaml::from_str(config_text).context("parsing config")
+    // Reject the pre-230 inline `stores:` block up front so an operator
+    // upgrading an older config gets a clear migration hint instead of a
+    // confusing "unknown field" or, worse, a silently-ignored map.
+    let raw: serde_yaml::Value =
+        serde_yaml::from_str(config_text).context("parsing config as YAML")?;
+    if let serde_yaml::Value::Mapping(map) = &raw
+        && map.contains_key(serde_yaml::Value::String("stores".into()))
+    {
+        anyhow::bail!(
+            "the inline `stores:` map in backend.yaml was removed in the stores.d \
+             refactor. Move each store into its own \
+             `<name>.yaml` under `stores_dynamic_dir` \
+             (or `stores_declarative_dir`, default `/etc/underwrap-backend/stores.d/`). \
+             Each file contains the storage config (`backend: plain|encrypted`, `dir`, …) \
+             plus optional `description` / `created_at` metadata."
+        );
+    }
+    serde_yaml::from_value(raw).context("parsing config")
 }
 
 #[tokio::main]
@@ -117,7 +134,6 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => {
             info!(
-                stores = config.stores.len(),
                 has_service = config.service.is_some(),
                 has_admin = config.admin.is_some(),
                 "starting backend daemon"
@@ -129,7 +145,9 @@ async fn main() -> Result<()> {
 }
 
 fn run_admin(cmd: AdminCommand, config: server::BackendConfig) -> Result<()> {
-    let stores = open_stores_for_admin(&config.stores)?;
+    let definitions =
+        server::load_store_definitions(&config.declarative_dir(), &config.dynamic_dir())?;
+    let stores = open_stores_for_admin(&definitions)?;
     let configured_home = config
         .admin
         .as_ref()
@@ -195,12 +213,12 @@ fn run_admin(cmd: AdminCommand, config: server::BackendConfig) -> Result<()> {
 }
 
 fn open_stores_for_admin(
-    configs: &HashMap<String, underwrap_protocol::config::StorageConfig>,
+    definitions: &HashMap<String, server::LoadedStoreDef>,
 ) -> Result<HashMap<String, Arc<dyn underwrap_store::StorageBackend>>> {
     let mut out = HashMap::new();
-    for (name, cfg) in configs {
+    for (name, def) in definitions {
         let store: Arc<dyn underwrap_store::StorageBackend> =
-            Arc::from(underwrap_store::open(cfg)?);
+            Arc::from(underwrap_store::open(&def.definition.storage)?);
         out.insert(name.clone(), store);
     }
     Ok(out)
@@ -390,7 +408,19 @@ mod tests {
 
     #[test]
     fn parse_backend_config_parses_minimal_yaml() {
-        let config = parse_backend_config(
+        // Empty YAML works because both store dirs and service+admin
+        // are optional. Tests that need stores write per-store YAML
+        // files under a temp `stores.d/` instead.
+        let config = parse_backend_config("{}\n").unwrap();
+        assert!(config.stores_declarative_dir.is_none());
+        assert!(config.stores_dynamic_dir.is_none());
+        assert!(config.service.is_none());
+        assert!(config.admin.is_none());
+    }
+
+    #[test]
+    fn parse_backend_config_rejects_legacy_inline_stores_with_migration_hint() {
+        let err = parse_backend_config(
             r#"
 stores:
   default:
@@ -398,10 +428,26 @@ stores:
     dir: /var/lib/underwrap-backend/secrets
 "#,
         )
+        .expect_err("inline `stores:` must be rejected after the stores.d refactor");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("stores.d") && msg.contains("removed"),
+            "error message must guide the operator to the new layout, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn parse_backend_config_accepts_dir_overrides() {
+        let config = parse_backend_config(
+            "stores_declarative_dir: /etc/u/decl\n\
+             stores_dynamic_dir: /var/u/dyn\n",
+        )
         .unwrap();
-        assert!(config.stores.contains_key("default"));
-        assert!(config.service.is_none());
-        assert!(config.admin.is_none());
+        assert_eq!(
+            config.declarative_dir(),
+            std::path::PathBuf::from("/etc/u/decl"),
+        );
+        assert_eq!(config.dynamic_dir(), std::path::PathBuf::from("/var/u/dyn"),);
     }
 
     #[test]

@@ -86,13 +86,26 @@ impl TestDaemon {
         let admin_token = format!("test-admin-token-{admin_port}-do-not-reuse-zA=");
         let token_file = base.join("admin-token");
         std::fs::write(&token_file, admin_token.as_bytes())?;
+        // 230 moved stores out of the inline config and into a
+        // `stores.d/` directory union. The harness writes a single
+        // `test.yaml` under a temp dynamic dir so the rest of the
+        // setup looks the same to the test code.
+        let stores_dir = base.join("stores.d");
+        std::fs::create_dir_all(&stores_dir)?;
+        let test_store_def = underwrap_protocol::config::StoreDefinition {
+            description: None,
+            created_at: None,
+            storage: StorageConfig::Plain {
+                dir: storage_dir.clone(),
+            },
+        };
+        std::fs::write(
+            stores_dir.join("test.yaml"),
+            serde_yaml::to_string(&test_store_def)?,
+        )?;
         let backend_config = underwrap_backendd::server::BackendConfig {
-            stores: HashMap::from([(
-                "test".to_string(),
-                StorageConfig::Plain {
-                    dir: storage_dir.clone(),
-                },
-            )]),
+            stores_declarative_dir: None,
+            stores_dynamic_dir: Some(stores_dir),
             service: Some(underwrap_backendd::server::ServiceConfig {
                 listen: format!("127.0.0.1:{service_port}"),
                 tls: underwrap_backendd::server::ServiceTlsConfig {
