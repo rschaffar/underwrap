@@ -3,11 +3,9 @@ import {
   Menu,
   Moon,
   Sun,
-  Box,
+  LayoutDashboard,
   Users,
   Lock,
-  ShieldCheck,
-  History,
   LogOut,
   UserCircle,
   Grid3x3,
@@ -27,19 +25,22 @@ import { cn } from "@/lib/utils";
 
 interface NavItem {
   label: string;
-  icon: typeof Box;
+  icon: typeof LayoutDashboard;
   href: string;
   /** Hide this nav item unless the role string is admin. */
   adminOnly?: boolean;
 }
 
+// Nav entries map to live routes in `web/src/router.tsx`. Add entries
+// here when a corresponding `Route` lands; don't list aspirational
+// destinations — the SPA's notFoundComponent will render a "Not
+// found" page for any unmatched path, which is the worst possible
+// thing to see in a top-level nav.
 const NAV: NavItem[] = [
-  { label: "Resources", icon: Box, href: "/" },
+  { label: "Dashboard", icon: LayoutDashboard, href: "/" },
   { label: "Matrix", icon: Grid3x3, href: "/matrix" },
-  { label: "Wrappers", icon: ShieldCheck, href: "/wrappers" },
   { label: "Stores", icon: Lock, href: "/stores", adminOnly: true },
   { label: "Users", icon: Users, href: "/users", adminOnly: true },
-  { label: "Audit", icon: History, href: "/audit" },
   { label: "Profile", icon: UserCircle, href: "/profile" },
 ];
 

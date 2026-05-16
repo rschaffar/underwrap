@@ -26,7 +26,7 @@ test("drawer nav opens on mobile and dashboard is reachable", async ({
   ).toBeVisible();
   // Sidebar entries inside the drawer should render — exact label
   // doesn't matter, but at least one nav link must be visible.
-  await expect(page.getByRole("link", { name: /resources/i })).toBeVisible();
+  await expect(page.getByRole("link", { name: /dashboard/i })).toBeVisible();
 });
 
 test("login form fits the mobile viewport without horizontal scroll", async ({
