@@ -120,8 +120,15 @@ def boot_and_service_checks():
     machine.succeed("id underwrap-local")
     machine.succeed("id underwrap-tunnel")
 
-    assert admin_api(ADMIN_LOCAL, "/v1/admin/stores", None, method="GET")["stores"] == ["local"]
-    assert admin_api(ADMIN_REMOTE, "/v1/admin/stores", None, method="GET")["stores"] == ["remote"]
+    # Ticket 231 replaced the bare `{stores: [...]}` response with a
+    # richer per-store list. Assert the surfaced names match what
+    # each daemon's `stores_declarative_dir` actually contains.
+    local_stores = admin_api(ADMIN_LOCAL, "/v1/admin/stores", None, method="GET")["items"]
+    remote_stores = admin_api(ADMIN_REMOTE, "/v1/admin/stores", None, method="GET")["items"]
+    assert [s["name"] for s in local_stores] == ["local"]
+    assert [s["name"] for s in remote_stores] == ["remote"]
+    # Declarative provenance is surfaced so the SPA can refuse to mutate.
+    assert all(s["source"] == "declarative" for s in local_stores + remote_stores)
 
     # Frontends auto-register catalog rows on daemon startup. The backend must
     # see instance separately from wrapper so the UI matrix does not need to

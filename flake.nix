@@ -36,7 +36,17 @@
             filter = path: type:
               (craneLib.filterCargoSources path type)
               || (pkgs.lib.hasInfix "/src/assets/" path)
-              || (pkgs.lib.hasInfix "/crates/frontend-keyring-probe" path);
+              || (pkgs.lib.hasInfix "/crates/frontend-keyring-probe" path)
+              # ts-rs's `TS_RS_EXPORT_DIR` is set via this file; without
+              # it the drift test in `tests/ts_export.rs` writes to the
+              # wrong location inside the sandbox.
+              || (pkgs.lib.hasSuffix "/.cargo/config.toml" path)
+              # The generated TypeScript bindings live under
+              # `web/src/api/types/`. The drift test reads them off
+              # disk and compares to the freshly-regenerated content;
+              # without them in the sandbox source the test sees
+              # "expected … actual <empty>" and fails.
+              || (pkgs.lib.hasInfix "/web/src/api/types/" path);
             name = "source";
           };
 
@@ -210,6 +220,7 @@
         # NixOS modules.
         nixosModules.default = ./nix/modules/underwrap.nix;
         nixosModules.admin-ui = ./nix/modules/admin-ui-nextjs.nix;
+        nixosModules.backend = ./nix/modules/underwrap-backend.nix;
       };
 
       # NixOS VM test (x86_64-linux only since it needs KVM).
@@ -238,6 +249,7 @@
                 goKeyringProbePackage = perSystem.packages.${system}.underwrap-go-keyring-probe;
                 nixosModule = self.nixosModules.default;
                 adminUiModule = self.nixosModules.admin-ui;
+                backendModule = self.nixosModules.backend;
               };
 
               testScript = ''

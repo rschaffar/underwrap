@@ -60,17 +60,14 @@ only the secret material that the authorized read flow exposes.
 
 ## Backend configuration
 
-`underwrap-backendd` takes a single YAML config. All paths are absolute.
+`underwrap-backendd` takes a single YAML config. Store definitions
+live in their own per-store YAML files under two directories, *not*
+inline in this config (changed in ticket 230). All paths are absolute.
 
 ```yaml
-stores:
-  work:
-    backend: plain
-    dir: /var/lib/underwrap-backend/work
-  personal:
-    backend: encrypted
-    dir: /var/lib/underwrap-backend/personal
-    key_file: /run/keys/underwrap-personal.key
+# Optional — the two defaults below kick in when omitted.
+stores_declarative_dir: /etc/underwrap-backend/stores.d
+stores_dynamic_dir: /var/lib/underwrap-backend/stores.d
 
 service:
   listen: 127.0.0.1:18443
@@ -90,20 +87,75 @@ admin:
   tokens:
     alice:
       token_file: /run/keys/underwrap-admin-alice
-    bob:
-      token_file: /run/keys/underwrap-admin-bob
+  # Directory prefixes the admin "create store" API may place new
+  # data dirs under. Empty disables store creation.
+  stores_data_roots:
+    - /var/lib/underwrap-backend/data
 ```
 
-- `stores`: one or more backing stores. Plain or encrypted (ChaCha20-Poly1305
-  with a 32-byte key file).
+### Store definition files
+
+Each store gets its own YAML under one of the two `stores_*_dir`
+trees. Filename is `<store-name>.yaml`. The `<store-name>` must
+match `[a-z0-9][a-z0-9_-]*`.
+
+```yaml
+# /etc/underwrap-backend/stores.d/work.yaml (declarative; owned by Nix)
+backend: encrypted
+dir: /var/lib/underwrap-backend/work
+key_file: /run/keys/underwrap-work.key
+description: Production work secrets.
+```
+
+```yaml
+# /var/lib/underwrap-backend/stores.d/scratch.yaml (dynamic; admin API)
+backend: plain
+dir: /var/lib/underwrap-backend/data/scratch
+description: Ad-hoc operator scratchpad.
+created_at: 1729123456
+```
+
+- The **declarative** directory is owned by the deployment tool (the
+  NixOS `services.underwrap-backend.declarativeStores` option writes
+  symlinks into `/nix/store`). The admin API refuses to mutate
+  declarative stores — edit the source tree instead.
+- The **dynamic** directory is owned by `underwrap-backendd` itself.
+  `POST /v1/admin/stores` writes here atomically via
+  `tempfile::persist()`.
+- Duplicate names across the two directories are a fatal startup
+  error that prints both source paths.
 - `service.clients`: maps each authenticated client principal (the TLS
-  subject CN) to one store. Requests from other principals get 401; requests
-  that would cross stores are impossible because the principal is bound to
-  its store at authentication time.
+  subject CN) to one store. Requests from other principals get 401;
+  requests that would cross stores are impossible because the
+  principal is bound to its store at authentication time.
 - `admin.tokens`: opaque bearer tokens for operators. Each request to
-  `/v1/admin/*` must carry an `Authorization: Bearer <token>` matching one
-  of these (constant-time compared). The matched operator name is recorded
-  in the audit log.
+  `/v1/admin/*` must carry an `Authorization: Bearer <token>`
+  matching one of these (constant-time compared). The matched
+  operator name is recorded in the audit log.
+
+### NixOS module
+
+The flake exposes `nixosModules.backend` with one option:
+
+```nix
+services.underwrap-backend.declarativeStores = {
+  work = {
+    backend = "encrypted";
+    dir = "/var/lib/underwrap-backend/work";
+    keyFile = "/run/keys/underwrap-work.key";   # sops-managed
+    description = "Production work secrets.";
+  };
+  personal = {
+    backend = "plain";
+    dir = "/var/lib/underwrap-backend/personal";
+  };
+};
+```
+
+Each entry materialises as
+`/etc/underwrap-backend/stores.d/<name>.yaml`, a symlink into the
+Nix store. The module asserts at evaluation time that encrypted
+stores supply a `keyFile`.
 
 ## Runtime API
 

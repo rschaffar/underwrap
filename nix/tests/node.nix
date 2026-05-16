@@ -1,5 +1,5 @@
 # VM test node: both local and remote instances on one machine.
-{ pkgs, underwrapPackage, underwrapAdminUiPackage, goKeyringProbePackage, nixosModule, adminUiModule, ... }:
+{ pkgs, underwrapPackage, underwrapAdminUiPackage, goKeyringProbePackage, nixosModule, adminUiModule, backendModule, ... }:
 
 let
   testCaPem = pkgs.writeText "underwrap-test-ca.pem" (builtins.readFile ../../testdata/pki/ca.pem);
@@ -71,13 +71,38 @@ let
   adminUiConfig = pkgs.writeText "underwrap-admin-ui.yaml" ''
     session_key_file: ${adminUiSessionKey}
 
-    backends:
-      corp:
-        admin_url: http://127.0.0.1:19443
-        token_file: /etc/underwrap-admin-token
+    backend:
+      label: corp
+      admin_url: http://127.0.0.1:19443
+      token_file: /etc/underwrap-admin-token
   '';
 in {
-  imports = [ nixosModule adminUiModule ];
+  imports = [ nixosModule adminUiModule backendModule ];
+
+  # Per-daemon declarative store definitions. The VM test runs two
+  # backendds on one host (a contrived stand-in for "two separate
+  # deployments"), so we can't share `/etc/underwrap-backend/stores.d/`
+  # between them — each daemon must only open stores it has read
+  # access to. We materialise each store's YAML under a daemon-
+  # specific `/etc/underwrap-backend/<role>/stores.d/<name>.yaml` and
+  # point each daemon at its own dir via `stores_declarative_dir`.
+  #
+  # Real deployments will use `services.underwrap-backend.declarative
+  # Stores` instead (defined in `nix/modules/underwrap-backend.nix`),
+  # which materialises into the default `/etc/underwrap-backend/
+  # stores.d/`. That module is exercised by inclusion in the flake's
+  # `nixosModules.backend` output; this test bypasses it because of
+  # the two-daemon-on-one-host wrinkle.
+  environment.etc."underwrap-backend-remote/stores.d/remote.yaml".text = builtins.toJSON {
+    backend = "plain";
+    dir = "/var/lib/underwrap-backend/secrets";
+    description = "remote-mode test store";
+  };
+  environment.etc."underwrap-backend-local/stores.d/local.yaml".text = builtins.toJSON {
+    backend = "plain";
+    dir = "/var/lib/underwrap-backend-local/secrets";
+    description = "local-mode test store";
+  };
 
   environment.systemPackages = [ underwrapPackage underwrapAdminUiPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl ];
 
@@ -113,11 +138,13 @@ in {
       User = "underwrap-backend";
       Group = "underwrap-backend";
       ExecStart = let
+        # Each daemon points at its own `stores.d` so it only opens
+        # stores it has filesystem access to. NotFound on the
+        # dynamic dir is tolerated by the backend; this test has no
+        # dynamic stores.
         cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
-          stores.remote = {
-            backend = "plain";
-            dir = "/var/lib/underwrap-backend/secrets";
-          };
+          stores_declarative_dir = "/etc/underwrap-backend-remote/stores.d";
+          stores_dynamic_dir = "/var/lib/underwrap-backend/dynamic.d";
           service = {
             listen = "127.0.0.1:18444";
             tls = {
@@ -191,10 +218,8 @@ in {
       Group = "underwrap-local";
       ExecStart = let
         cfg = pkgs.writeText "underwrap-local-backend.yaml" (builtins.toJSON {
-          stores.local = {
-            backend = "plain";
-            dir = "/var/lib/underwrap-backend-local/secrets";
-          };
+          stores_declarative_dir = "/etc/underwrap-backend-local/stores.d";
+          stores_dynamic_dir = "/var/lib/underwrap-backend-local/dynamic.d";
           service = {
             listen = "127.0.0.1:18443";
             tls = {
