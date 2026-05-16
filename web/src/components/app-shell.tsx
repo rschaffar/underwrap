@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   History,
   LogOut,
+  UserCircle,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -35,8 +36,9 @@ const NAV: NavItem[] = [
   { label: "Resources", icon: Box, href: "/" },
   { label: "Wrappers", icon: ShieldCheck, href: "/wrappers" },
   { label: "Stores", icon: Lock, href: "/stores", adminOnly: true },
-  { label: "Operators", icon: Users, href: "/operators", adminOnly: true },
+  { label: "Users", icon: Users, href: "/users", adminOnly: true },
   { label: "Audit", icon: History, href: "/audit" },
+  { label: "Profile", icon: UserCircle, href: "/profile" },
 ];
 
 function Sidebar({

@@ -123,6 +123,8 @@ export async function apiJson<T>(
 // running `cargo test --workspace` instead.
 
 import type {
+  AdminOkUserResponse,
+  AdminPasswordChangeRequest,
   AdminStoreCreateRequest,
   AdminStoreCreateResponse,
   AdminStoreDeleteResponse,
@@ -130,6 +132,12 @@ import type {
   AdminStoreRotateKeyResponse,
   AdminStoreUpdateRequest,
   AdminStoresListResponse,
+  AdminUserCreateRequest,
+  AdminUserDetailResponse,
+  AdminUserResetPasswordRequest,
+  AdminUserRole,
+  AdminUserUpdateRequest,
+  AdminUsersListResponse,
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
@@ -139,6 +147,8 @@ import type {
 } from "@/api/types";
 
 export type {
+  AdminOkUserResponse,
+  AdminPasswordChangeRequest,
   AdminStoreCreateRequest,
   AdminStoreCreateResponse,
   AdminStoreDeleteResponse,
@@ -146,6 +156,12 @@ export type {
   AdminStoreRotateKeyResponse,
   AdminStoreUpdateRequest,
   AdminStoresListResponse,
+  AdminUserCreateRequest,
+  AdminUserDetailResponse,
+  AdminUserResetPasswordRequest,
+  AdminUserRole,
+  AdminUserUpdateRequest,
+  AdminUsersListResponse,
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
@@ -229,4 +245,61 @@ export function deleteStore(
     `/v1/admin/stores/${encodeURIComponent(name)}${query}`,
     { method: "DELETE" },
   );
+}
+
+// ----- Users admin (ticket 240) -----
+
+export function fetchUsers(): Promise<AdminUsersListResponse> {
+  return apiJson<AdminUsersListResponse>("/v1/admin/users");
+}
+
+export function fetchUser(id: string): Promise<AdminUserDetailResponse> {
+  return apiJson<AdminUserDetailResponse>(
+    `/v1/admin/users/${encodeURIComponent(id)}`,
+  );
+}
+
+export function postUserCreate(
+  body: AdminUserCreateRequest,
+): Promise<AdminUserDetailResponse> {
+  return apiJson<AdminUserDetailResponse>("/v1/admin/users", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function putUserUpdate(
+  id: string,
+  body: AdminUserUpdateRequest,
+): Promise<AdminUserDetailResponse> {
+  return apiJson<AdminUserDetailResponse>(
+    `/v1/admin/users/${encodeURIComponent(id)}`,
+    { method: "PUT", json: body },
+  );
+}
+
+export function postUserResetPassword(
+  id: string,
+  body: AdminUserResetPasswordRequest,
+): Promise<AdminOkUserResponse> {
+  return apiJson<AdminOkUserResponse>(
+    `/v1/admin/users/${encodeURIComponent(id)}/password`,
+    { method: "POST", json: body },
+  );
+}
+
+export function deleteUser(id: string): Promise<AdminOkUserResponse> {
+  return apiJson<AdminOkUserResponse>(
+    `/v1/admin/users/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function postPasswordChange(
+  body: AdminPasswordChangeRequest,
+): Promise<AdminOkUserResponse> {
+  return apiJson<AdminOkUserResponse>("/v1/admin/auth/password", {
+    method: "POST",
+    json: body,
+  });
 }

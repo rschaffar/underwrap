@@ -15,6 +15,8 @@ import { Dashboard } from "@/pages/dashboard";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
 import { StoresPage } from "@/pages/stores";
+import { UsersPage } from "@/pages/users";
+import { ProfilePage } from "@/pages/profile";
 import {
   ApiError,
   fetchBootstrapStatus,
@@ -158,6 +160,38 @@ const storesRoute = new Route({
   },
 });
 
+const usersRoute = new Route({
+  getParentRoute: () => appLayoutRoute,
+  path: "/users",
+  beforeLoad: ({ context }) => {
+    // Server-side authz is the source of truth (the admin API itself
+    // 403s non-admin requests). The router redirect is UX only —
+    // sending an operator-role visitor back to the dashboard avoids
+    // the brief flash of an empty Users page.
+    const ctx = context as RouterContext;
+    if (
+      ctx.principal &&
+      ctx.principal.authenticated &&
+      ctx.principal.role !== "admin"
+    ) {
+      throw redirect({ to: "/" });
+    }
+  },
+  component: function UsersRouteComponent() {
+    const ctx = usersRoute.useRouteContext();
+    return <UsersPage principal={ctx.principal} />;
+  },
+});
+
+const profileRoute = new Route({
+  getParentRoute: () => appLayoutRoute,
+  path: "/profile",
+  component: function ProfileRouteComponent() {
+    const ctx = profileRoute.useRouteContext();
+    return <ProfilePage principal={ctx.principal} />;
+  },
+});
+
 // ----- Public auth routes -----
 
 function LoginRouteComponent() {
@@ -247,7 +281,12 @@ function safeNextPath(next: string | null): string | null {
 }
 
 const routeTree = rootRoute.addChildren([
-  appLayoutRoute.addChildren([indexRoute, storesRoute]),
+  appLayoutRoute.addChildren([
+    indexRoute,
+    storesRoute,
+    usersRoute,
+    profileRoute,
+  ]),
   loginRoute,
   bootstrapRoute,
   logoutRoute,
