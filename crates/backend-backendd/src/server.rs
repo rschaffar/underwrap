@@ -92,6 +92,14 @@ pub struct AdminConfig {
     /// `auth::DEFAULT_SESSION_LIFETIME_SECS` (12 hours) when unset.
     #[serde(default)]
     pub session_lifetime_secs: Option<u64>,
+    /// Allowlist of directory prefixes the admin "create store" API
+    /// (ticket 231) is willing to place new store data dirs under.
+    /// A `POST /v1/admin/stores` request whose `dir` is not
+    /// canonically below one of these roots is rejected with
+    /// `dir_outside_allowed_roots`. Empty disables store creation
+    /// (returns `data_root_not_configured`).
+    #[serde(default)]
+    pub stores_data_roots: Option<Vec<PathBuf>>,
 }
 
 /// Default location of the declarative stores directory. Each
@@ -150,18 +158,51 @@ pub struct LoadedStoreDef {
     pub definition: StoreDefinition,
 }
 
+/// Open backends + provenance metadata for every store visible to the
+/// admin API. Wrapped in an `RwLock` inside [`AdminRuntimeState`] so
+/// the CRUD handlers in ticket 231 can mutate it without rebooting
+/// the daemon. Readers (overview, secret-read, …) take the read
+/// guard and clone out the `Arc<dyn StorageBackend>` they need.
+pub struct StoreRegistry {
+    pub open: HashMap<String, Arc<dyn StorageBackend>>,
+    pub sources: HashMap<String, LoadedStoreDef>,
+}
+
+impl StoreRegistry {
+    pub fn new() -> Self {
+        Self {
+            open: HashMap::new(),
+            sources: HashMap::new(),
+        }
+    }
+}
+
+impl Default for StoreRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct ServiceRuntimeState {
     clients: HashMap<String, Arc<dyn StorageBackend>>,
 }
 
 struct AdminRuntimeState {
-    stores: HashMap<String, Arc<dyn StorageBackend>>,
-    /// Source provenance and on-disk path for each store in `stores`,
-    /// keyed by the same store name. Populated at startup from the
-    /// declarative/dynamic dir union. The admin CRUD handlers in
-    /// ticket 231 read this to refuse mutation requests targeting a
-    /// `Declarative` store.
-    store_sources: HashMap<String, LoadedStoreDef>,
+    /// Open store backends + their on-disk provenance. CRUD handlers
+    /// hold the write lock briefly while they swap in/out a single
+    /// entry; everyone else takes the read lock and clones the
+    /// `Arc<dyn StorageBackend>` they need so the lock isn't held
+    /// across I/O.
+    stores: std::sync::RwLock<StoreRegistry>,
+    /// Path of the dynamic stores directory — where the admin CRUD
+    /// handlers write/remove `<name>.yaml`. Stored here so the
+    /// handlers don't need a separate config reference.
+    stores_dynamic_dir: PathBuf,
+    /// Configured roots under which a created store's `dir` must
+    /// live. Mutating handlers reject requests whose `dir` is outside
+    /// every entry. Empty disables creation (returns
+    /// `data_root_not_configured`).
+    stores_data_roots: Vec<PathBuf>,
     /// Operator name → opaque bearer token. Both fields are trusted; the
     /// caller authenticates by presenting a matching token.
     tokens: HashMap<String, String>,
@@ -212,6 +253,8 @@ struct StoredCatalogEntry {
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let definitions = load_store_definitions(&config.declarative_dir(), &config.dynamic_dir())?;
     let stores = open_stores(&definitions)?;
+    let registry_for_expiry = stores.clone();
+    let dynamic_dir = config.dynamic_dir();
 
     let mut tasks = JoinSet::new();
 
@@ -256,8 +299,12 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             .session_lifetime_secs
             .unwrap_or(crate::auth::DEFAULT_SESSION_LIFETIME_SECS);
         let admin_state = Arc::new(AdminRuntimeState {
-            stores: stores.clone(),
-            store_sources: definitions.clone(),
+            stores: std::sync::RwLock::new(StoreRegistry {
+                open: stores.clone(),
+                sources: definitions.clone(),
+            }),
+            stores_dynamic_dir: dynamic_dir.clone(),
+            stores_data_roots: admin_config.stores_data_roots.clone().unwrap_or_default(),
             tokens,
             allowed_origins: admin_config.allowed_origins.clone(),
             web_source: crate::web::WebAssetSource::from_env(),
@@ -269,29 +316,32 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
         });
-        let declarative_count = admin_state
-            .store_sources
-            .values()
-            .filter(|d| d.source == StoreSource::Declarative)
-            .count();
-        let dynamic_count = admin_state
-            .store_sources
-            .values()
-            .filter(|d| d.source == StoreSource::Dynamic)
-            .count();
-        info!(
-            listen = %admin_config.listen,
-            stores = admin_state.stores.len(),
-            declarative = declarative_count,
-            dynamic = dynamic_count,
-            operators = admin_state.tokens.len(),
-            tls = tls_acceptor.is_some(),
-            "backend admin listening",
-        );
+        {
+            let snapshot = admin_state.stores.read().unwrap();
+            let declarative_count = snapshot
+                .sources
+                .values()
+                .filter(|d| d.source == StoreSource::Declarative)
+                .count();
+            let dynamic_count = snapshot
+                .sources
+                .values()
+                .filter(|d| d.source == StoreSource::Dynamic)
+                .count();
+            info!(
+                listen = %admin_config.listen,
+                stores = snapshot.open.len(),
+                declarative = declarative_count,
+                dynamic = dynamic_count,
+                operators = admin_state.tokens.len(),
+                tls = tls_acceptor.is_some(),
+                "backend admin listening",
+            );
+        }
         tasks.spawn(admin_accept_loop(admin_listener, admin_state, tls_acceptor));
     }
 
-    tasks.spawn(expiry_sweeper_loop(stores.clone()));
+    tasks.spawn(expiry_sweeper_loop(registry_for_expiry));
 
     match shutdown {
         Some(notify) => {
@@ -2317,13 +2367,14 @@ fn replace_catalog_entries_for_principal(
     store_catalog_document(store, &existing)
 }
 
-fn admin_store<'a>(
-    state: &'a AdminRuntimeState,
-    store: &str,
-) -> Result<&'a Arc<dyn StorageBackend>> {
+fn admin_store(state: &AdminRuntimeState, store: &str) -> Result<Arc<dyn StorageBackend>> {
     state
         .stores
+        .read()
+        .unwrap()
+        .open
         .get(store)
+        .cloned()
         .with_context(|| format!("unknown store '{store}'"))
 }
 
@@ -2332,11 +2383,11 @@ fn admin_store<'a>(
 /// lacks a grant for it. Collapsing both into the same response code
 /// prevents operators from probing the store catalogue.
 #[allow(clippy::result_large_err)]
-fn admin_store_for_principal<'a>(
-    state: &'a AdminRuntimeState,
+fn admin_store_for_principal(
+    state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
     store: &str,
-) -> std::result::Result<&'a Arc<dyn StorageBackend>, Response<Full<Bytes>>> {
+) -> std::result::Result<Arc<dyn StorageBackend>, Response<Full<Bytes>>> {
     if !principal.has_store_access(store) {
         return Err(error_response(
             StatusCode::NOT_FOUND,
@@ -2344,7 +2395,7 @@ fn admin_store_for_principal<'a>(
             "unknown store",
         ));
     }
-    match state.stores.get(store) {
+    match state.stores.read().unwrap().open.get(store).cloned() {
         Some(s) => Ok(s),
         None => Err(error_response(
             StatusCode::NOT_FOUND,
@@ -3061,6 +3112,564 @@ fn handle_admin_whoami(
     )
 }
 
+// ===== Stores CRUD (ticket 231) =====
+//
+// All five handlers operate on the runtime `state.stores` registry
+// plus the on-disk `<stores_dynamic_dir>/<name>.yaml` file. Mutating
+// handlers refuse declarative stores (409 declarative_immutable) and
+// validate the requested data `dir` against the configured allow-
+// list of roots. Atomicity comes from `tempfile::NamedTempFile`
+// `persist()` on the YAML write side and a brief held `write()`
+// lock on the registry update.
+
+use underwrap_protocol::service::{
+    AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreDeleteResponse,
+    AdminStoreDetailResponse, AdminStoreListItem, AdminStoreSource, AdminStoreUpdateRequest,
+    AdminStoresListResponse,
+};
+
+fn backend_kind(storage: &underwrap_protocol::config::StorageConfig) -> AdminStoreBackendKind {
+    match storage {
+        underwrap_protocol::config::StorageConfig::Plain { .. } => AdminStoreBackendKind::Plain,
+        underwrap_protocol::config::StorageConfig::Encrypted { .. } => {
+            AdminStoreBackendKind::Encrypted
+        }
+    }
+}
+
+fn source_kind(s: StoreSource) -> AdminStoreSource {
+    match s {
+        StoreSource::Declarative => AdminStoreSource::Declarative,
+        StoreSource::Dynamic => AdminStoreSource::Dynamic,
+    }
+}
+
+fn admin_store_list_item(name: &str, loaded: &LoadedStoreDef) -> AdminStoreListItem {
+    AdminStoreListItem {
+        name: name.to_string(),
+        source: source_kind(loaded.source),
+        backend: backend_kind(&loaded.definition.storage),
+        description: loaded.definition.description.clone(),
+        created_at: loaded.definition.created_at,
+    }
+}
+
+fn admin_store_detail(name: &str, loaded: &LoadedStoreDef) -> AdminStoreDetailResponse {
+    let (dir, key_file) = match &loaded.definition.storage {
+        underwrap_protocol::config::StorageConfig::Plain { dir } => {
+            (dir.to_string_lossy().to_string(), None)
+        }
+        underwrap_protocol::config::StorageConfig::Encrypted { dir, key_file } => (
+            dir.to_string_lossy().to_string(),
+            Some(key_file.to_string_lossy().to_string()),
+        ),
+    };
+    AdminStoreDetailResponse {
+        name: name.to_string(),
+        source: source_kind(loaded.source),
+        backend: backend_kind(&loaded.definition.storage),
+        dir,
+        key_file,
+        description: loaded.definition.description.clone(),
+        created_at: loaded.definition.created_at,
+        source_path: loaded.source_path.to_string_lossy().to_string(),
+    }
+}
+
+fn handle_admin_stores_list(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+) -> Response<Full<Bytes>> {
+    let reg = state.stores.read().unwrap();
+    let mut items: Vec<AdminStoreListItem> = reg
+        .sources
+        .iter()
+        .filter(|(name, _)| principal.has_store_access(name))
+        .map(|(name, loaded)| admin_store_list_item(name, loaded))
+        .collect();
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+    json_response(StatusCode::OK, &AdminStoresListResponse { items })
+}
+
+#[allow(clippy::result_large_err)]
+fn handle_admin_store_detail(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    name: &str,
+) -> Response<Full<Bytes>> {
+    if !principal.has_store_access(name) {
+        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
+    }
+    let reg = state.stores.read().unwrap();
+    match reg.sources.get(name) {
+        Some(loaded) => json_response(StatusCode::OK, &admin_store_detail(name, loaded)),
+        None => error_response(StatusCode::NOT_FOUND, "not_found", "unknown store"),
+    }
+}
+
+/// True iff `candidate` is canonically below `root`. We refuse
+/// symlinks and `..` traversal by canonicalising `root` first and
+/// requiring `candidate` to lexically start with it once normalised.
+/// `candidate` may not exist yet (we're about to create it); we walk
+/// up its components until we find an existing ancestor and
+/// canonicalise from there.
+fn path_is_under(candidate: &Path, root: &Path) -> bool {
+    let root_canon = match root.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    // Find the deepest existing ancestor of `candidate` to canonicalise.
+    let mut existing = candidate.to_path_buf();
+    let mut suffix = std::path::PathBuf::new();
+    while !existing.exists() {
+        let Some(parent) = existing.parent().map(|p| p.to_path_buf()) else {
+            return false;
+        };
+        let file_name = match existing.file_name() {
+            Some(n) => n.to_owned(),
+            None => return false,
+        };
+        let mut rebuilt = std::path::PathBuf::from(file_name);
+        rebuilt.push(&suffix);
+        suffix = rebuilt;
+        existing = parent;
+    }
+    let Ok(canon_existing) = existing.canonicalize() else {
+        return false;
+    };
+    let combined = canon_existing.join(suffix);
+    combined.starts_with(&root_canon)
+}
+
+/// Validate a `dir` from a create request: must be absolute, not
+/// already a configured store dir, and below at least one of
+/// `stores_data_roots`.
+fn validate_create_dir(
+    state: &AdminRuntimeState,
+    dir: &Path,
+) -> std::result::Result<PathBuf, (&'static str, String)> {
+    if !dir.is_absolute() {
+        return Err((
+            "dir_must_be_absolute",
+            "`dir` must be an absolute path".to_string(),
+        ));
+    }
+    if state.stores_data_roots.is_empty() {
+        return Err((
+            "data_root_not_configured",
+            "store creation is disabled: backend.yaml has no `admin.stores_data_roots`".to_string(),
+        ));
+    }
+    let allowed = state
+        .stores_data_roots
+        .iter()
+        .any(|root| path_is_under(dir, root));
+    if !allowed {
+        return Err((
+            "dir_outside_allowed_roots",
+            "`dir` is not below any configured stores_data_roots prefix".to_string(),
+        ));
+    }
+    Ok(dir.to_path_buf())
+}
+
+fn write_store_yaml_atomic(path: &Path, def: &StoreDefinition) -> Result<()> {
+    let yaml = serde_yaml::to_string(def).context("serialising store definition")?;
+    let dir = path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "store definition path '{}' has no parent directory",
+            path.display()
+        )
+    })?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating stores.d dir {}", dir.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("creating temp store-def under {}", dir.display()))?;
+    use std::io::Write;
+    tmp.write_all(yaml.as_bytes())
+        .context("writing store definition tempfile")?;
+    tmp.persist(path).map_err(|e| {
+        anyhow::anyhow!(
+            "atomically persisting store definition to {}: {e}",
+            path.display(),
+        )
+    })?;
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+async fn handle_admin_store_create(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may create stores",
+        );
+    }
+    let body = match parse_json_body::<AdminStoreCreateRequest>(request).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    do_admin_store_create(state, principal, body)
+}
+
+/// Body-already-parsed half of [`handle_admin_store_create`]. Split
+/// out so unit tests can drive it without synthesising a
+/// `Request<Incoming>` (which `hyper` doesn't expose constructors
+/// for). The HTTP-shaped handler above is exercised by Playwright.
+#[allow(clippy::result_large_err)]
+fn do_admin_store_create(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: AdminStoreCreateRequest,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may create stores",
+        );
+    }
+    if !is_valid_store_name(&body.name) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_store_name",
+            "store name must match [a-z0-9][a-z0-9_-]*",
+        );
+    }
+    // No name collisions across either source.
+    {
+        let reg = state.stores.read().unwrap();
+        if let Some(existing) = reg.sources.get(&body.name) {
+            return error_response(
+                StatusCode::CONFLICT,
+                "store_already_exists",
+                &format!(
+                    "store '{}' already exists ({}{})",
+                    body.name,
+                    match existing.source {
+                        StoreSource::Declarative => "declarative source ",
+                        StoreSource::Dynamic => "dynamic source ",
+                    },
+                    existing.source_path.display(),
+                ),
+            );
+        }
+    }
+    let dir = PathBuf::from(&body.dir);
+    let validated_dir = match validate_create_dir(state, &dir) {
+        Ok(p) => p,
+        Err((code, msg)) => return error_response(StatusCode::BAD_REQUEST, code, &msg),
+    };
+    let storage = match body.backend {
+        AdminStoreBackendKind::Plain => underwrap_protocol::config::StorageConfig::Plain {
+            dir: validated_dir.clone(),
+        },
+        AdminStoreBackendKind::Encrypted => {
+            let key_file = match body.key_file.as_ref() {
+                Some(p) if !p.is_empty() => PathBuf::from(p),
+                _ => {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "key_file_required",
+                        "`key_file` is required for encrypted stores (rotate via ticket 234)",
+                    );
+                }
+            };
+            underwrap_protocol::config::StorageConfig::Encrypted {
+                dir: validated_dir.clone(),
+                key_file,
+            }
+        }
+    };
+    let definition = StoreDefinition {
+        description: body.description.clone(),
+        created_at: Some(crate::operators::now_epoch_secs()),
+        storage,
+    };
+    // Create the data dir if needed. Mode 0700 keeps other users out;
+    // operators who want a different mode can pre-create the dir.
+    if let Err(e) = create_data_dir_secure(&validated_dir) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "create_data_dir_failed",
+            &format!("creating data dir {}: {e:#}", validated_dir.display()),
+        );
+    }
+    let path = state.stores_dynamic_dir.join(format!("{}.yaml", body.name));
+    if let Err(e) = write_store_yaml_atomic(&path, &definition) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_store_def_failed",
+            &format!("{e:#}"),
+        );
+    }
+    // Open the backend and swap into the registry.
+    let opened: Arc<dyn StorageBackend> = match underwrap_store::open(&definition.storage) {
+        Ok(b) => Arc::from(b),
+        Err(e) => {
+            // Roll the YAML back so the next request doesn't see a
+            // half-created store.
+            let _ = std::fs::remove_file(&path);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "open_store_failed",
+                &format!("opening store backend after create: {e:#}"),
+            );
+        }
+    };
+    {
+        let mut reg = state.stores.write().unwrap();
+        reg.open.insert(body.name.clone(), opened);
+        reg.sources.insert(
+            body.name.clone(),
+            LoadedStoreDef {
+                source: StoreSource::Dynamic,
+                source_path: path,
+                definition: definition.clone(),
+            },
+        );
+    }
+    write_admin_store_audit(state, principal, &body.name, "store.create", "success");
+    let loaded = LoadedStoreDef {
+        source: StoreSource::Dynamic,
+        source_path: state.stores_dynamic_dir.join(format!("{}.yaml", body.name)),
+        definition,
+    };
+    json_response(StatusCode::OK, &admin_store_detail(&body.name, &loaded))
+}
+
+#[cfg(unix)]
+fn create_data_dir_secure(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    if dir.exists() {
+        return Ok(());
+    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .with_context(|| format!("creating {}", dir.display()))
+}
+#[cfg(not(unix))]
+fn create_data_dir_secure(dir: &Path) -> Result<()> {
+    if dir.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))
+}
+
+#[allow(clippy::result_large_err)]
+async fn handle_admin_store_update(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    name: &str,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may update stores",
+        );
+    }
+    let body = match parse_json_body::<AdminStoreUpdateRequest>(request).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    do_admin_store_update(state, principal, name, body)
+}
+
+#[allow(clippy::result_large_err)]
+fn do_admin_store_update(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    name: &str,
+    body: AdminStoreUpdateRequest,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may update stores",
+        );
+    }
+    // Snapshot the source so we can build the updated YAML without
+    // holding the lock across I/O. We re-check the source under the
+    // write lock at the end before swapping.
+    let (mut updated_def, source_path) = {
+        let reg = state.stores.read().unwrap();
+        let Some(loaded) = reg.sources.get(name) else {
+            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
+        };
+        if loaded.source == StoreSource::Declarative {
+            return error_response(
+                StatusCode::CONFLICT,
+                "declarative_immutable",
+                &format!(
+                    "store '{name}' is declarative (defined in {}); edit the Nix module instead",
+                    loaded.source_path.display(),
+                ),
+            );
+        }
+        (loaded.definition.clone(), loaded.source_path.clone())
+    };
+    if let Some(new_desc) = body.description {
+        updated_def.description = if new_desc.is_empty() {
+            None
+        } else {
+            Some(new_desc)
+        };
+    }
+    if let Err(e) = write_store_yaml_atomic(&source_path, &updated_def) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_store_def_failed",
+            &format!("{e:#}"),
+        );
+    }
+    {
+        let mut reg = state.stores.write().unwrap();
+        if let Some(loaded) = reg.sources.get_mut(name) {
+            loaded.definition = updated_def.clone();
+        }
+    }
+    write_admin_store_audit(state, principal, name, "store.update", "success");
+    let loaded = LoadedStoreDef {
+        source: StoreSource::Dynamic,
+        source_path,
+        definition: updated_def,
+    };
+    json_response(StatusCode::OK, &admin_store_detail(name, &loaded))
+}
+
+#[allow(clippy::result_large_err)]
+fn handle_admin_store_delete(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    name: &str,
+    force: bool,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may delete stores",
+        );
+    }
+    // Inspect under read lock first.
+    let (source_path, store_handle, dir_for_hint) = {
+        let reg = state.stores.read().unwrap();
+        let Some(loaded) = reg.sources.get(name) else {
+            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
+        };
+        if loaded.source == StoreSource::Declarative {
+            return error_response(
+                StatusCode::CONFLICT,
+                "declarative_immutable",
+                &format!(
+                    "store '{name}' is declarative (defined in {}); edit the Nix module instead",
+                    loaded.source_path.display(),
+                ),
+            );
+        }
+        let Some(handle) = reg.open.get(name).cloned() else {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "store metadata present but backend missing",
+            );
+        };
+        let dir = match &loaded.definition.storage {
+            underwrap_protocol::config::StorageConfig::Plain { dir } => dir.clone(),
+            underwrap_protocol::config::StorageConfig::Encrypted { dir, .. } => dir.clone(),
+        };
+        (loaded.source_path.clone(), handle, dir)
+    };
+
+    let non_empty = match store_handle.list("") {
+        Ok(ids) => !ids.is_empty(),
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "list_store_failed",
+                &format!("checking store contents before delete: {e:#}"),
+            );
+        }
+    };
+    if non_empty && !force {
+        return error_response(
+            StatusCode::CONFLICT,
+            "store_not_empty",
+            "store contains secrets; re-issue with `?force=true` to delete the definition anyway",
+        );
+    }
+
+    // Atomic-as-we-can: remove the YAML, then drop from the registry.
+    if let Err(e) = std::fs::remove_file(&source_path) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "remove_store_def_failed",
+            &format!("removing {}: {e:#}", source_path.display()),
+        );
+    }
+    {
+        let mut reg = state.stores.write().unwrap();
+        reg.open.remove(name);
+        reg.sources.remove(name);
+    }
+    let cleanup_hint = if non_empty {
+        Some(format!(
+            "store '{name}' had secrets at deletion time. The YAML definition has been removed; \
+             the data dir at {} was left in place so you can decide whether to back it up first. \
+             Remove it manually (`rm -rf {}`) when ready.",
+            dir_for_hint.display(),
+            dir_for_hint.display(),
+        ))
+    } else {
+        None
+    };
+    let result = if non_empty {
+        "force-deleted"
+    } else {
+        "success"
+    };
+    write_admin_store_audit(state, principal, name, "store.delete", result);
+    json_response(
+        StatusCode::OK,
+        &AdminStoreDeleteResponse {
+            ok: true,
+            cleanup_hint,
+        },
+    )
+}
+
+fn write_admin_store_audit(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    store_name: &str,
+    action: &str,
+    result: &str,
+) {
+    let event = underwrap_protocol::service::AdminUiAuditEvent {
+        ts_epoch: crate::operators::now_epoch_secs(),
+        action: action.to_string(),
+        operator: principal.username.clone(),
+        wrapper: None,
+        resource: Some(format!("store:{store_name}")),
+        secret_id: None,
+        operation: None,
+        result: result.to_string(),
+    };
+    if let Err(e) = append_audit_history_event(state.admin_home_store.as_ref(), event) {
+        warn!(err = %e, "store CRUD: writing audit event failed");
+    }
+}
+
 /// How often the expiry sweeper checks for expired `Unlocked { until }` windows.
 const EXPIRY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -3213,29 +3822,68 @@ async fn handle_admin_request(
         });
     }
 
+    // Path-parameterised stores routes: GET /v1/admin/stores/<name>,
+    // PUT, DELETE. Match them first so the literal "/v1/admin/stores"
+    // dispatch below doesn't shadow them.
+    if let Some(name) = request
+        .uri()
+        .path()
+        .strip_prefix("/v1/admin/stores/")
+        .filter(|rest| !rest.is_empty() && !rest.contains('/'))
+    {
+        let name = name.to_string();
+        match *request.method() {
+            Method::GET => {
+                return Ok(handle_admin_store_detail(&state, &principal, &name));
+            }
+            Method::PUT => {
+                return Ok(handle_admin_store_update(&state, &principal, &name, request).await);
+            }
+            Method::DELETE => {
+                let force = request
+                    .uri()
+                    .query()
+                    .map(|q| {
+                        q.split('&')
+                            .any(|pair| matches!(pair, "force=true" | "force=1" | "force"))
+                    })
+                    .unwrap_or(false);
+                return Ok(handle_admin_store_delete(&state, &principal, &name, force));
+            }
+            _ => {
+                return Ok(error_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "GET, PUT, or DELETE",
+                ));
+            }
+        }
+    }
+
     let response = match (request.method(), request.uri().path()) {
         (&Method::GET, "/v1/admin/stores") => {
-            let mut stores: Vec<String> = state
-                .stores
-                .keys()
-                .filter(|name| principal.has_store_access(name))
-                .cloned()
-                .collect();
-            stores.sort();
-            json_response(
-                StatusCode::OK,
-                &underwrap_protocol::service::AdminStoresResponse { stores },
-            )
+            return Ok(handle_admin_stores_list(&state, &principal));
+        }
+        (&Method::POST, "/v1/admin/stores") => {
+            return Ok(handle_admin_store_create(&state, &principal, request).await);
         }
         (&Method::GET, "/v1/admin/ui/overview") => {
             let now_epoch = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_secs())
                 .unwrap_or(0);
-            match state
-                .stores
+            // Snapshot the open backends so we can release the read
+            // lock before doing I/O against each store.
+            let snapshot: Vec<(String, Arc<dyn StorageBackend>)> = {
+                let reg = state.stores.read().unwrap();
+                reg.open
+                    .iter()
+                    .filter(|(name, _)| principal.has_store_access(name))
+                    .map(|(name, store)| (name.clone(), store.clone()))
+                    .collect()
+            };
+            match snapshot
                 .iter()
-                .filter(|(name, _)| principal.has_store_access(name))
                 .map(|(name, store)| admin_ui_overview_for_store(name, store.as_ref(), now_epoch))
                 .collect::<Result<Vec<_>>>()
             {
@@ -3560,7 +4208,7 @@ async fn handle_admin_request(
                 .await
             {
                 Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match load_catalog_document(&**store) {
+                    Ok(store) => match load_catalog_document(store.as_ref()) {
                         Ok(entries) => json_response(
                             StatusCode::OK,
                             &underwrap_protocol::service::AdminCatalogGetResponse {
@@ -5169,8 +5817,12 @@ mod tests {
             .cloned()
             .unwrap_or_else(|| Arc::new(MemTestStore::new()));
         AdminRuntimeState {
-            stores,
-            store_sources: HashMap::new(),
+            stores: std::sync::RwLock::new(StoreRegistry {
+                open: stores,
+                sources: HashMap::new(),
+            }),
+            stores_dynamic_dir: std::path::PathBuf::new(),
+            stores_data_roots: Vec::new(),
             tokens,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -5322,6 +5974,7 @@ mod tests {
             admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
+            stores_data_roots: None,
         };
         validate_admin_config(&cfg).expect("loopback plain HTTP must be allowed");
     }
@@ -5339,6 +5992,7 @@ mod tests {
             admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
+            stores_data_roots: None,
         };
         validate_admin_config(&cfg).expect("TLS on non-loopback must be allowed");
     }
@@ -5353,6 +6007,7 @@ mod tests {
             admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
+            stores_data_roots: None,
         };
         let err = validate_admin_config(&cfg).unwrap_err();
         let msg = format!("{err:#}");
@@ -5372,6 +6027,7 @@ mod tests {
             admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
+            stores_data_roots: None,
         };
         let err = validate_admin_config(&cfg).unwrap_err();
         assert!(format!("{err:#}").contains("empty entry"));
@@ -5483,8 +6139,12 @@ mod tests {
             *b = i as u8;
         }
         AdminRuntimeState {
-            stores: HashMap::from([("home".to_string(), store.clone())]),
-            store_sources: HashMap::new(),
+            stores: std::sync::RwLock::new(StoreRegistry {
+                open: HashMap::from([("home".to_string(), store.clone())]),
+                sources: HashMap::new(),
+            }),
+            stores_dynamic_dir: std::path::PathBuf::new(),
+            stores_data_roots: Vec::new(),
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -5639,7 +6299,7 @@ mod tests {
         assert!(admin_store_for_principal(&state, &p, "work").is_ok());
     }
 
-    fn expect_404(result: std::result::Result<&Arc<dyn StorageBackend>, Response<Full<Bytes>>>) {
+    fn expect_404(result: std::result::Result<Arc<dyn StorageBackend>, Response<Full<Bytes>>>) {
         match result {
             Ok(_) => panic!("expected 404 not_found, got Ok"),
             Err(resp) => assert_eq!(resp.status(), StatusCode::NOT_FOUND),
@@ -5754,8 +6414,12 @@ mod tests {
             *b = i as u8;
         }
         AdminRuntimeState {
-            stores: HashMap::from([("home".to_string(), store.clone())]),
-            store_sources: HashMap::new(),
+            stores: std::sync::RwLock::new(StoreRegistry {
+                open: HashMap::from([("home".to_string(), store.clone())]),
+                sources: HashMap::new(),
+            }),
+            stores_dynamic_dir: std::path::PathBuf::new(),
+            stores_data_roots: Vec::new(),
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -6207,5 +6871,403 @@ mod tests {
             hyper::header::HeaderValue::from_static("the-secret"),
         );
         check_csrf(&Method::POST, &headers, "the-secret").unwrap();
+    }
+
+    // ===== Stores CRUD (ticket 231) =====
+
+    fn admin_principal(stores: &[&str]) -> crate::operators::Principal {
+        crate::operators::Principal {
+            id: "admin-id".into(),
+            username: "alice".into(),
+            role: crate::operators::OperatorRole::Admin,
+            granted_stores: stores.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+    fn operator_principal(stores: &[&str]) -> crate::operators::Principal {
+        crate::operators::Principal {
+            id: "op-id".into(),
+            username: "bob".into(),
+            role: crate::operators::OperatorRole::Operator,
+            granted_stores: stores.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Build an `AdminRuntimeState` wired up for CRUD tests: a
+    /// dedicated `stores.d/` and one allowed data root, both under
+    /// the supplied tempdir. The admin-home store is a fresh memory
+    /// store so audit-event writes succeed.
+    fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
+        let dynamic_dir = tmp.join("stores.d");
+        std::fs::create_dir_all(&dynamic_dir).unwrap();
+        let data_root = tmp.join("data");
+        std::fs::create_dir_all(&data_root).unwrap();
+        AdminRuntimeState {
+            stores: std::sync::RwLock::new(StoreRegistry::new()),
+            stores_dynamic_dir: dynamic_dir,
+            stores_data_roots: vec![data_root],
+            tokens: HashMap::new(),
+            allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
+            admin_home_store: Arc::new(MemTestStore::new()),
+            session_key: None,
+            session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
+            cookies_secure: false,
+            login_rate_limiter: crate::auth::RateLimiter::new(),
+            session_revocations: crate::auth::SessionRevocations::new(),
+            bootstrap_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn response_body_json(resp: Response<Full<Bytes>>) -> serde_json::Value {
+        let (parts, body) = resp.into_parts();
+        let bytes = body.collect_bytes_simple();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("response body is JSON");
+        // Smuggle the status into the JSON value so the test can assert both.
+        let mut obj = v.as_object().cloned().unwrap_or_default();
+        obj.insert(
+            "__status".into(),
+            serde_json::Value::Number(parts.status.as_u16().into()),
+        );
+        serde_json::Value::Object(obj)
+    }
+    // Local trait extension so we can grab the body bytes synchronously.
+    trait CollectBytesSync {
+        fn collect_bytes_simple(self) -> Vec<u8>;
+    }
+    impl CollectBytesSync for Full<Bytes> {
+        fn collect_bytes_simple(self) -> Vec<u8> {
+            use http_body_util::BodyExt;
+            // The Full body has a single frame; drain via block_in_place.
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async { self.collect().await.unwrap().to_bytes().to_vec() })
+        }
+    }
+
+    #[test]
+    fn path_is_under_basic_cases() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        // Existing path inside root → allowed.
+        assert!(path_is_under(&root.join("a"), &root));
+        // Sibling outside root → rejected.
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(!path_is_under(&other.join("a"), &root));
+    }
+
+    #[test]
+    fn path_is_under_rejects_traversal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        // `root/../other` resolves above the allowlist root.
+        let outside = root.join("..").join("other-data");
+        assert!(!path_is_under(&outside, &root));
+    }
+
+    #[test]
+    fn validate_create_dir_rejects_relative() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let err = validate_create_dir(&state, std::path::Path::new("relative/path"))
+            .expect_err("must reject relative dirs");
+        assert_eq!(err.0, "dir_must_be_absolute");
+    }
+
+    #[test]
+    fn validate_create_dir_rejects_when_no_roots_configured() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = crud_state(tmp.path());
+        state.stores_data_roots.clear();
+        let err = validate_create_dir(&state, &tmp.path().join("data").join("x"))
+            .expect_err("must refuse without roots");
+        assert_eq!(err.0, "data_root_not_configured");
+    }
+
+    #[test]
+    fn validate_create_dir_rejects_outside_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let outside = tmp.path().join("outside").join("a");
+        let err = validate_create_dir(&state, &outside).expect_err("must reject outside-root");
+        assert_eq!(err.0, "dir_outside_allowed_roots");
+    }
+
+    #[test]
+    fn list_returns_empty_when_nothing_configured() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let resp = handle_admin_stores_list(&state, &admin_principal(&[]));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_body_json(resp);
+        assert_eq!(body["items"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let dir = tmp.path().join("data").join("work");
+        let create = AdminStoreCreateRequest {
+            name: "work".to_string(),
+            backend: AdminStoreBackendKind::Plain,
+            dir: dir.to_string_lossy().to_string(),
+            key_file: None,
+            description: Some("the work store".into()),
+        };
+        let resp = do_admin_store_create(&state, &p, create);
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The yaml file landed.
+        let yaml_path = state.stores_dynamic_dir.join("work.yaml");
+        assert!(yaml_path.exists());
+        // The runtime registry sees it.
+        let resp = handle_admin_stores_list(&state, &p);
+        let body = response_body_json(resp);
+        let items = body["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["name"], "work");
+        assert_eq!(items[0]["source"], "dynamic");
+        assert_eq!(items[0]["backend"], "plain");
+        assert_eq!(items[0]["description"], "the work store");
+        // Detail.
+        let resp = handle_admin_store_detail(&state, &p, "work");
+        let body = response_body_json(resp);
+        assert_eq!(body["__status"], 200);
+        assert_eq!(body["dir"], dir.to_string_lossy().to_string());
+        // Update description.
+        let resp = do_admin_store_update(
+            &state,
+            &p,
+            "work",
+            AdminStoreUpdateRequest {
+                description: Some("renamed".into()),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = handle_admin_store_detail(&state, &p, "work");
+        assert_eq!(response_body_json(resp)["description"], "renamed");
+        // Clearing description with an empty string nulls it out.
+        let resp = do_admin_store_update(
+            &state,
+            &p,
+            "work",
+            AdminStoreUpdateRequest {
+                description: Some(String::new()),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = handle_admin_store_detail(&state, &p, "work");
+        let body = response_body_json(resp);
+        assert!(!body.as_object().unwrap().contains_key("description"));
+        // Delete (empty store).
+        let resp = handle_admin_store_delete(&state, &p, "work", false);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_body_json(resp);
+        assert_eq!(body["ok"], true);
+        assert!(!body.as_object().unwrap().contains_key("cleanup_hint"));
+        assert!(!yaml_path.exists());
+    }
+
+    #[test]
+    fn declarative_store_mutations_are_rejected_with_documented_code() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        // Hand-stuff a declarative store into the registry — that's
+        // what `read_one_dir(declarative, …)` would have done at
+        // startup.
+        {
+            let mut reg = state.stores.write().unwrap();
+            let dir = tmp.path().join("data").join("nixed");
+            std::fs::create_dir_all(&dir).unwrap();
+            let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
+            reg.open.insert("nixed".to_string(), store);
+            reg.sources.insert(
+                "nixed".to_string(),
+                LoadedStoreDef {
+                    source: StoreSource::Declarative,
+                    source_path: std::path::PathBuf::from("/nix/store/zzz/stores.d/nixed.yaml"),
+                    definition: StoreDefinition {
+                        description: None,
+                        created_at: None,
+                        storage: underwrap_protocol::config::StorageConfig::Plain { dir },
+                    },
+                },
+            );
+        }
+        let p = admin_principal(&[]);
+        let resp = do_admin_store_update(
+            &state,
+            &p,
+            "nixed",
+            AdminStoreUpdateRequest {
+                description: Some("x".into()),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = response_body_json(resp);
+        assert_eq!(body["code"], "declarative_immutable");
+
+        let resp = handle_admin_store_delete(&state, &p, "nixed", true);
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = response_body_json(resp);
+        assert_eq!(body["code"], "declarative_immutable");
+    }
+
+    #[test]
+    fn create_refuses_dir_outside_allowlist() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let outside = tmp.path().join("not-under-root").join("data");
+        let resp = do_admin_store_create(
+            &state,
+            &admin_principal(&[]),
+            AdminStoreCreateRequest {
+                name: "stray".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: outside.to_string_lossy().to_string(),
+                key_file: None,
+                description: None,
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = response_body_json(resp);
+        assert_eq!(body["code"], "dir_outside_allowed_roots");
+    }
+
+    #[test]
+    fn create_refuses_duplicate_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let dir = tmp.path().join("data").join("work");
+        let req = AdminStoreCreateRequest {
+            name: "work".to_string(),
+            backend: AdminStoreBackendKind::Plain,
+            dir: dir.to_string_lossy().to_string(),
+            key_file: None,
+            description: None,
+        };
+        let _first = do_admin_store_create(&state, &p, req.clone());
+        let resp = do_admin_store_create(&state, &p, req);
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = response_body_json(resp);
+        assert_eq!(body["code"], "store_already_exists");
+    }
+
+    #[test]
+    fn non_admin_cannot_create_or_update_or_delete() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let op = operator_principal(&["work"]);
+        let dir = tmp.path().join("data").join("work");
+        // Create
+        let resp = do_admin_store_create(
+            &state,
+            &op,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: dir.to_string_lossy().to_string(),
+                key_file: None,
+                description: None,
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // Update
+        let resp = do_admin_store_update(
+            &state,
+            &op,
+            "work",
+            AdminStoreUpdateRequest {
+                description: Some("hi".into()),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // Delete
+        let resp = handle_admin_store_delete(&state, &op, "work", true);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let dir = tmp.path().join("data").join("work");
+        do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: dir.to_string_lossy().to_string(),
+                key_file: None,
+                description: None,
+            },
+        );
+        // Drop a secret in so the store is non-empty.
+        {
+            let reg = state.stores.read().unwrap();
+            reg.open["work"]
+                .write("greeting", &SecretBytes::from(b"hello".to_vec()))
+                .unwrap();
+        }
+        // Without force → 409 + code store_not_empty.
+        let resp = handle_admin_store_delete(&state, &p, "work", false);
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(response_body_json(resp)["code"], "store_not_empty");
+        // With force → 200 + cleanup_hint pointing at the data dir.
+        let resp = handle_admin_store_delete(&state, &p, "work", true);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_body_json(resp);
+        let hint = body["cleanup_hint"]
+            .as_str()
+            .expect("force-delete must include a cleanup_hint when non-empty");
+        assert!(hint.contains(dir.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn store_crud_actions_emit_audit_events() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let dir = tmp.path().join("data").join("audit-store");
+        do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "audit-store".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: dir.to_string_lossy().to_string(),
+                key_file: None,
+                description: None,
+            },
+        );
+        do_admin_store_update(
+            &state,
+            &p,
+            "audit-store",
+            AdminStoreUpdateRequest {
+                description: Some("hi".into()),
+            },
+        );
+        handle_admin_store_delete(&state, &p, "audit-store", true);
+        // Audit history lives under the admin-home store. Three
+        // events expected: create, update, delete.
+        let events = load_audit_history(state.admin_home_store.as_ref()).unwrap();
+        let actions: Vec<&str> = events.iter().map(|e| e.action.as_str()).collect();
+        assert!(
+            actions.contains(&"store.create"),
+            "create event missing; got {actions:?}",
+        );
+        assert!(actions.contains(&"store.update"));
+        assert!(actions.contains(&"store.delete"));
+        for e in &events {
+            assert_eq!(e.operator, "alice");
+            assert_eq!(e.resource.as_deref(), Some("store:audit-store"));
+        }
     }
 }

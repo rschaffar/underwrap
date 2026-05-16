@@ -135,6 +135,7 @@ async fn underwrapd_binary_start_and_read() {
             admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
+            stores_data_roots: None,
         }),
     })
     .unwrap();

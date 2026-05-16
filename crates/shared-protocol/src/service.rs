@@ -98,6 +98,109 @@ pub struct AdminStoresResponse {
     pub stores: Vec<String>,
 }
 
+/// Provenance of a store as visible to the admin UI. Mirrors
+/// [`underwrap_protocol::config::StoreSource`] but lives here as well
+/// so DTOs in this module are self-contained on the wire.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum AdminStoreSource {
+    Declarative,
+    Dynamic,
+}
+
+/// Storage backend kind a store uses. Kept as a flat enum so the
+/// admin UI can switch on it without having to mirror the full
+/// `StorageConfig` discriminant logic; the per-kind details
+/// (`dir`, `key_file`) live on the detail response instead.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum AdminStoreBackendKind {
+    Plain,
+    Encrypted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoreListItem {
+    pub name: String,
+    pub source: AdminStoreSource,
+    pub backend: AdminStoreBackendKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub created_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoresListResponse {
+    pub items: Vec<AdminStoreListItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoreDetailResponse {
+    pub name: String,
+    pub source: AdminStoreSource,
+    pub backend: AdminStoreBackendKind,
+    pub dir: String,
+    /// Set when the backend is `encrypted` — the path to the master
+    /// key file. Never echo the key contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub key_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub created_at: Option<u64>,
+    /// On-disk path of the YAML definition. Helpful for surfacing the
+    /// `declarative_immutable` error code in the SPA.
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoreCreateRequest {
+    pub name: String,
+    pub backend: AdminStoreBackendKind,
+    pub dir: String,
+    /// Required when `backend == Encrypted`; ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub key_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoreUpdateRequest {
+    /// New description. Pass an empty string to clear it; omit to
+    /// leave it unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoreDeleteResponse {
+    pub ok: bool,
+    /// Filesystem cleanup the operator still has to do by hand. Set
+    /// when `force=true` deleted a store whose data dir is non-empty;
+    /// the server intentionally never `rm -rf`s secret material.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cleanup_hint: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminUiWrapperCounts {

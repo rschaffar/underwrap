@@ -46,5 +46,7 @@ argon2 = "0.5"
 chacha20poly1305 = "0.10"
 ts-rs = { workspace = true }
 
+tempfile = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }

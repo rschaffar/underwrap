@@ -131,6 +131,7 @@ impl TestDaemon {
                 admin_home_store: None,
                 session_key_file: None,
                 session_lifetime_secs: None,
+                stores_data_roots: None,
             }),
         };
         let backend_shutdown = Arc::new(Notify::new());
