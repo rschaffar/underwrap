@@ -9,33 +9,57 @@ use underwrap_protocol::policy::PolicyDecision;
 
 use crate::approval::{self, IssuedChallenge};
 use crate::audit;
-use crate::policy::authorize_operation;
+use crate::policy::authorize_grant;
 use crate::server::State;
+use crate::startup::username_for_uid;
 
 const WRAPPER_APPROVAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) enum ModeGate {
     Proceed,
     NeedApproval(String),
+    Deny(WrapperResponse),
 }
 
+/// Consult the per-store policy document for the `(wrapper, host, user)`
+/// grant tied to `peer_uid`. Returns:
+///
+/// - `Proceed`       — grant is `Unlocked` or `UnlockedUntil` and within
+///   its deadline; the read flow runs without an approval round.
+/// - `NeedApproval`  — grant is `PerCallApproval`; caller runs the
+///   approval round before proceeding.
+/// - `Deny`          — no grant, or grant is `Locked` / past its
+///   `UnlockedUntil` deadline. The error response is pre-baked so the
+///   caller can ship it back to the wrapper without further work.
 pub(super) fn check_wrapper_mode(
     wrapper_name: &str,
+    peer_uid: u32,
     state: &State,
 ) -> Result<ModeGate, WrapperResponse> {
-    // Probe the policy document by evaluating a dummy tuple: we only care
-    // whether the mode gate fires. We pick a sentinel resource/operation
-    // pair; this never allow-matches any real rule.
-    match authorize_operation(
-        &*state.store,
-        wrapper_name,
-        "__underwrap/mode-probe",
-        "__underwrap.mode-probe",
-    ) {
-        Ok(PolicyDecision::NeedsApproval { approval_key }) => {
+    let Some(user) = username_for_uid(peer_uid) else {
+        return Ok(ModeGate::Deny(WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: format!("no passwd entry for peer uid {peer_uid}"),
+        }));
+    };
+    let host = state.config.catalog_host.as_str();
+    let wrapper_def = state.config.wrappers.get(wrapper_name);
+    let logical_name = wrapper_def
+        .and_then(|w| w.logical_name.clone())
+        .unwrap_or_else(|| wrapper_name.to_string());
+    match authorize_grant(&*state.store, &logical_name, host, &user) {
+        Ok(Some(PolicyDecision::Allow)) => Ok(ModeGate::Proceed),
+        Ok(Some(PolicyDecision::NeedsApproval { approval_key })) => {
             Ok(ModeGate::NeedApproval(approval_key))
         }
-        Ok(_) => Ok(ModeGate::Proceed),
+        Ok(Some(PolicyDecision::Deny { reason })) => Ok(ModeGate::Deny(WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: reason,
+        })),
+        Ok(None) => Ok(ModeGate::Deny(WrapperResponse::Error {
+            code: ErrorCode::Unauthorized,
+            message: format!("no grant for wrapper '{logical_name}' on {host} as user '{user}'"),
+        })),
         Err(e) => {
             error!(wrapper = %wrapper_name, err = %e, "policy lookup error");
             Err(WrapperResponse::Error {

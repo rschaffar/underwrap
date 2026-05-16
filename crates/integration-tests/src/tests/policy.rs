@@ -1,7 +1,5 @@
 use super::*;
-use underwrap_protocol::policy::{
-    PolicyDocument, PolicyEffect, PolicyRule, WrapperApprovalMode, WrapperPolicyState,
-};
+use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode};
 
 #[tokio::test]
 async fn admin_api_rejects_missing_or_wrong_bearer_token() {
@@ -52,25 +50,16 @@ async fn backend_policy_roundtrip_over_admin_api() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
 
+    // Default policy on a fresh store: no grants, writes disabled.
     assert_eq!(
         daemon.get_policy("test").await.unwrap(),
         Some(PolicyDocument::default())
     );
 
+    let grant = daemon.current_user_grant("gh-authorized");
     let document = PolicyDocument {
-        wrappers: vec![WrapperPolicyState {
-            wrapper: "gh-authorized".to_string(),
-            mode: WrapperApprovalMode::Unlocked { until_epoch: None },
-            reason: None,
-        }],
-        rules: vec![PolicyRule {
-            id: "allow-read".to_string(),
-            wrapper: "gh-authorized".to_string(),
-            resource: "env:github/token".to_string(),
-            operation: "env.read".to_string(),
-            effect: PolicyEffect::Allow,
-        }],
-        grants: Vec::new(),
+        grants: vec![grant.clone()],
+        writes_enabled: false,
     };
     daemon.put_policy("test", &document).await.unwrap();
 
@@ -81,7 +70,7 @@ async fn backend_policy_roundtrip_over_admin_api() {
 }
 
 #[tokio::test]
-async fn wrapper_read_is_denied_when_policy_document_has_no_matching_rule() {
+async fn wrapper_read_is_denied_when_no_grant_for_principal() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
 
@@ -98,7 +87,7 @@ async fn wrapper_read_is_denied_when_policy_document_has_no_matching_rule() {
     match resp {
         WrapperResponse::Error { code, message } => {
             assert!(matches!(code, ErrorCode::Unauthorized));
-            assert!(message.contains("no backend policy rule"));
+            assert!(message.contains("no grant"));
         }
         other => panic!("expected Error, got {other:?}"),
     }
@@ -107,7 +96,7 @@ async fn wrapper_read_is_denied_when_policy_document_has_no_matching_rule() {
 }
 
 #[tokio::test]
-async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
+async fn wrapper_read_succeeds_when_grant_is_unlocked() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
 
@@ -119,15 +108,8 @@ async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
         .put_policy(
             "test",
             &PolicyDocument {
-                wrappers: Vec::new(),
-                rules: vec![PolicyRule {
-                    id: "allow-read".to_string(),
-                    wrapper: "gh-authorized".to_string(),
-                    resource: "env:github/token".to_string(),
-                    operation: "env.read".to_string(),
-                    effect: PolicyEffect::Allow,
-                }],
-                grants: Vec::new(),
+                grants: vec![daemon.current_user_grant("gh-authorized")],
+                writes_enabled: false,
             },
         )
         .await
@@ -140,7 +122,7 @@ async fn wrapper_read_succeeds_when_policy_document_allows_secret_read() {
 }
 
 #[tokio::test]
-async fn locked_wrapper_is_denied_even_with_allow_rule() {
+async fn locked_grant_denies_read() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
 
@@ -148,23 +130,15 @@ async fn locked_wrapper_is_denied_even_with_allow_rule() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
+    let mut grant = daemon.current_user_grant("gh-authorized");
+    grant.mode = WrapperApprovalMode::Locked;
+    grant.reason = Some("locked centrally".to_string());
     daemon
         .put_policy(
             "test",
             &PolicyDocument {
-                wrappers: vec![WrapperPolicyState {
-                    wrapper: "gh-authorized".to_string(),
-                    mode: WrapperApprovalMode::Locked,
-                    reason: Some("locked centrally".to_string()),
-                }],
-                rules: vec![PolicyRule {
-                    id: "allow-read".to_string(),
-                    wrapper: "gh-authorized".to_string(),
-                    resource: "env:github/token".to_string(),
-                    operation: "env.read".to_string(),
-                    effect: PolicyEffect::Allow,
-                }],
-                grants: Vec::new(),
+                grants: vec![grant],
+                writes_enabled: false,
             },
         )
         .await
@@ -179,5 +153,38 @@ async fn locked_wrapper_is_denied_even_with_allow_rule() {
         other => panic!("expected Error, got {other:?}"),
     }
 
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn unlocked_until_grant_denies_after_deadline() {
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
+    daemon
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
+        .await
+        .unwrap();
+    // Stamp a deadline far in the past so the grant is already
+    // expired by the time we read. The expiry check is lazy on
+    // request, so there's no flaky sleep involved.
+    let mut grant = daemon.current_user_grant("gh-authorized");
+    grant.mode = WrapperApprovalMode::UnlockedUntil { until_epoch: 1 };
+    daemon
+        .put_policy(
+            "test",
+            &PolicyDocument {
+                grants: vec![grant],
+                writes_enabled: false,
+            },
+        )
+        .await
+        .unwrap();
+    let resp = daemon.read_request("gh-authorized").await.unwrap();
+    match resp {
+        WrapperResponse::Error { code, .. } => {
+            assert!(matches!(code, ErrorCode::Unauthorized));
+        }
+        other => panic!("expected Unauthorized after deadline, got {other:?}"),
+    }
     daemon.stop().await.unwrap();
 }

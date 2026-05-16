@@ -1,5 +1,5 @@
 use super::*;
-use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, PolicyRule};
+use underwrap_protocol::policy::PolicyDocument;
 
 #[tokio::test]
 async fn service_mode_roundtrip_reads_secret() {
@@ -16,15 +16,8 @@ async fn service_mode_roundtrip_reads_secret() {
         .put_policy(
             "test",
             &PolicyDocument {
-                wrappers: Vec::new(),
-                rules: vec![PolicyRule {
-                    id: "allow-read".to_string(),
-                    wrapper: "gh-authorized".to_string(),
-                    resource: "env:github/token".to_string(),
-                    operation: "env.read".to_string(),
-                    effect: PolicyEffect::Allow,
-                }],
-                grants: Vec::new(),
+                grants: vec![daemon.current_user_grant("gh-authorized")],
+                writes_enabled: false,
             },
         )
         .await

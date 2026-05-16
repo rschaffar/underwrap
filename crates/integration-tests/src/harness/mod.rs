@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use underwrap_protocol::config::*;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
-use underwrap_protocol::policy::{PolicyDocument, PolicyGrant};
+use underwrap_protocol::policy::{AgentGrant, PolicyDocument};
 use underwrap_protocol::service::CatalogEntry;
 
 mod builders;
@@ -36,11 +36,36 @@ pub struct TestDaemon {
     pub admin_url: String,
     pub admin_token: String,
     pub storage_dir: PathBuf,
+    /// The `catalog_host` configured on the daemon. Tests use it to
+    /// build grants for `(wrapper, host, current_user)`.
+    catalog_host: String,
     shutdown: Arc<Notify>,
     backend_shutdown: Arc<Notify>,
     backend_handle: thread::JoinHandle<Result<()>>,
     _tempdir: tempfile::TempDir,
     handle: tokio::task::JoinHandle<Result<()>>,
+}
+
+/// Resolve the username of the user running `cargo test`. Used to
+/// populate the `user` field on agent grants the tests construct.
+pub(crate) fn current_username() -> String {
+    let uid = unsafe { libc::getuid() };
+    // SAFETY: getpwuid returns either null or a pointer to a static
+    // passwd struct. We copy the name out immediately.
+    let pwd = unsafe { libc::getpwuid(uid) };
+    if pwd.is_null() {
+        // Fall back to a sentinel if the env has no passwd entry;
+        // the test will fail at the grant-mismatch assertion anyway.
+        return format!("uid-{uid}");
+    }
+    let c_name = unsafe { (*pwd).pw_name };
+    if c_name.is_null() {
+        return format!("uid-{uid}");
+    }
+    unsafe { std::ffi::CStr::from_ptr(c_name) }
+        .to_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| format!("uid-{uid}"))
 }
 
 fn env_secret_id(resource_id: &str) -> String {
@@ -186,6 +211,7 @@ impl TestDaemon {
             admin_url,
             admin_token,
             storage_dir,
+            catalog_host: client_name.to_string(),
             shutdown,
             backend_shutdown,
             backend_handle,
@@ -243,6 +269,36 @@ impl TestDaemon {
     /// by the request shape but is only consulted when a policy document
     /// exists; pass any wrapper name from the test fixture.
     pub async fn store_secret(
+        &self,
+        store: &str,
+        wrapper: &str,
+        secret_id: &str,
+        material: &str,
+    ) -> Result<()> {
+        // The admin secret write gates on the global `writes_enabled`
+        // flag (ticket 247), and the wrapper-side read gates on an
+        // `AgentGrant` matching `(wrapper, host, user)` (ticket 246).
+        // Pre-245 most tests didn't touch the policy at all and
+        // relied on permissive defaults; preserve that ergonomic by
+        // seeding both transparently. Tests that need to assert
+        // negative paths call `put_policy` or `set_writes_enabled`
+        // again afterwards to overwrite.
+        self.put_policy(
+            store,
+            &PolicyDocument {
+                grants: vec![self.current_user_grant(wrapper)],
+                writes_enabled: true,
+            },
+        )
+        .await?;
+        self.admin_write_raw(store, wrapper, secret_id, material)
+            .await
+    }
+
+    /// Write a secret through the admin API *without* touching the
+    /// policy document first. Used by tests that assert the
+    /// writes-disabled gate fires.
+    pub async fn admin_write_raw(
         &self,
         store: &str,
         wrapper: &str,
@@ -318,10 +374,10 @@ impl TestDaemon {
         Ok(())
     }
 
-    pub async fn upsert_grant(&self, store: &str, grant: &PolicyGrant) -> Result<()> {
+    pub async fn upsert_grant(&self, store: &str, grant: &AgentGrant) -> Result<()> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/grant/upsert")
-            .json(&underwrap_protocol::service::AdminGrantUpsertRequest {
+            .admin_request(reqwest::Method::POST, "/v1/admin/grants/upsert")
+            .json(&underwrap_protocol::service::AdminAgentGrantUpsertRequest {
                 store: store.to_string(),
                 grant: grant.clone(),
             })
@@ -335,12 +391,54 @@ impl TestDaemon {
         Ok(())
     }
 
-    pub async fn delete_grant(&self, store: &str, id: &str) -> Result<()> {
+    pub async fn delete_grant(
+        &self,
+        store: &str,
+        wrapper: &str,
+        host: &str,
+        user: &str,
+    ) -> Result<()> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/grant/delete")
-            .json(&underwrap_protocol::service::AdminGrantDeleteRequest {
+            .admin_request(reqwest::Method::POST, "/v1/admin/grants/delete")
+            .json(&underwrap_protocol::service::AdminAgentGrantDeleteRequest {
                 store: store.to_string(),
-                id: id.to_string(),
+                wrapper: wrapper.to_string(),
+                host: host.to_string(),
+                user: user.to_string(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(())
+    }
+
+    /// Convenience: build an `Unlocked` grant for the given wrapper on
+    /// the harness's `(catalog_host, current-user)` principal. Used by
+    /// almost every read-flow test.
+    pub fn current_user_grant(&self, wrapper: &str) -> AgentGrant {
+        AgentGrant {
+            wrapper: wrapper.to_string(),
+            host: self.catalog_host().to_string(),
+            user: current_username(),
+            mode: underwrap_protocol::policy::WrapperApprovalMode::Unlocked,
+            reason: None,
+        }
+    }
+
+    pub fn catalog_host(&self) -> &str {
+        &self.catalog_host
+    }
+
+    pub async fn set_writes_enabled(&self, store: &str, enabled: bool) -> Result<()> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/policy/writes-enabled/set")
+            .json(&underwrap_protocol::service::AdminWritesEnabledSetRequest {
+                store: store.to_string(),
+                enabled,
             })
             .send()
             .await?;

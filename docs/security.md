@@ -601,61 +601,42 @@ This is a deliberate choice:
 ### Backend-managed administration
 
 The admin surface is not a Unix socket on the target host. Operators
-manage wrapper modes, rules, and grants through the central
-`underwrap-backendd`'s admin HTTP API (bearer-token authenticated) or
-through the browser-based `underwrap-admin-ui` in front of it. The
-target host only needs outbound mTLS access to the backend.
+manage agent grants and the global write-lock through the central
+`underwrap-backendd`'s admin HTTP API (bearer-token or session-cookie
+authenticated) or through the browser-based admin UI in front of it.
+The target host only needs outbound mTLS access to the backend.
 
 ---
 
 ## Mutation gating
 
-Credentials are operator-managed; there is no per-secret schema flag
-that marks a value as write-once. Instead, **every write to a
-credential is gated by the policy document** — the same backend-owned
-document that gates reads, lock state, and per-call approval.
+The ticket-245 rewrite replaced the per-secret unlock-until model
+with a single global toggle per store, `writes_enabled`. Default:
+`false`. Every write path in the admin API
+(`/v1/admin/secret/{write,delete}`) consults the flag; when it is
+off, the request rejects with `403 writes_globally_disabled` and
+nothing reaches storage.
 
-The shape of the gate is uniform across the three places writes can
-originate:
-
-- the admin HTTP endpoint `POST /v1/admin/secret/write`
-- the wrapper-initiated libsecret channel (target writes a Secret
-  Service item back into the store)
-- the wrapper-initiated directory credential channel (target syncs
-  files in a managed directory back into the store)
-
-Each of these evaluates the tuple `(wrapper, cred:<credential-ref>,
-store.write)` against the policy. The decision is one of:
-
-- **Allow** — the write proceeds and is audited as `secret_stored`
-  (admin) or `secretsd_write` / `secretsd_delete` (libsecret).
-- **Deny** — the write is rejected with `403`/`Unauthorized` and
-  audited as `store_denied`. The previous value is preserved.
-
-The default for an established policy document is **deny**: an
-operator must add a matching rule or grant before any write is
-permitted. As an explicit bootstrap allowance, a store with no policy
-document at all auto-allows writes so first-time provisioning works
-without setup. The first `policy/put` flips the store into the
-default-deny posture.
+Wrapper-side writes through the libsecret channel inherit the same
+gate: when `writes_enabled = false`, the libsecret slot is projected
+to the target with `AccessMode::ReadOnly` and the wrapper-side
+secretsd refuses store operations against it.
 
 ### Operator workflow
 
-To edit a credential, an operator opens the admin UI, enables a
-short-lived "allow mutation" grant against the (wrapper, credential)
-pair (default expiry: 30 minutes), submits the new value, and lets
-the grant expire. Permanent allow-grants are possible but require a
-deliberate confirmation step, because a permanent grant is
-operationally indistinguishable from "this credential is mutable
-forever."
+To edit a credential, an operator flips the per-store toggle on,
+submits the new value, and flips the toggle back off. There is no
+auto-disable timer; the manual flow is intentionally explicit. A
+prominent banner in the admin UI marks the window so an operator
+doesn't leave writes enabled by accident.
 
 ### Trust model implication
 
-Mutation immutability is now an **operator-discipline property**, not
-a schema invariant. A permanent `store.write` allow-grant behaves
-exactly like the old `mutable: true`. If a future requirement calls
-for true tamper-evidence ("this value was never overwritten"), it has
-to come from a different mechanism — append-only storage, audit
+Mutation immutability is an **operator-discipline property**, not a
+schema invariant. While `writes_enabled` is `true`, any agent grant
+on the store can drive a write. If a future requirement calls for
+true tamper-evidence ("this value was never overwritten"), it has to
+come from a different mechanism — append-only storage, audit
 attestations — not from the policy layer, since policy itself is
 operator-mutable.
 
@@ -663,18 +644,10 @@ operator-mutable.
 
 `/v1/admin/secret/write` refuses outright to write to the reserved
 policy-document secret id. Policy edits go through
-`/v1/admin/policy/put`, which is itself authenticated by the bearer
-token but not gated by the policy document (otherwise the operator
-could lock themselves out).
-
-### Concurrency
-
-The previous design intended to serialize writes per secret to avoid
-TOCTOU on first write. That serialization was never implemented and
-is not part of the current model — the policy gate is the only
-contract. In practice, concurrent admin writes to the same secret
-are rare; the wrapper-initiated channels are single-writer by
-construction (one channel per wrapper instance).
+`/v1/admin/policy/put` (and the dedicated
+`/v1/admin/policy/writes-enabled/set`), which are authenticated by
+the admin session but are **not** themselves gated by `writes_enabled`
+— otherwise the operator could lock themselves out of the toggle.
 
 ---
 
@@ -867,33 +840,32 @@ under a reserved key in the same `StorageBackend` that holds the
 wrapper's secrets, so policy and secret material share one trust
 model.
 
-A request succeeds only if both layers below accept it.
+After ticket 245 the document is a flat list of **agent grants**
+keyed by `(wrapper, host, user)` plus the per-store
+`writes_enabled` toggle. Each grant carries one of four modes:
 
-### Mode gate (per wrapper)
-
-Each wrapper has one of three modes:
-
-- **`Locked`** — every request is denied. The admin UI uses this as
-  the "off switch" for a wrapper.
-- **`Unlocked { until_epoch? }`** — requests are subject to the
-  rule/grant layer below. An optional `until_epoch` flips the mode
-  back to `Locked` automatically; a backend sweeper runs every 30 s
-  and drops expired entries.
+- **`Locked`** — every request through this grant is denied.
+- **`Unlocked`** — requests are allowed.
+- **`UnlockedUntil { until_epoch }`** — requests are allowed until
+  the deadline. The deadline is checked lazily on each request;
+  there is no backend sweeper.
 - **`PerCallApproval { approval_key }`** — each individual request
-  must be accompanied by a fresh SSH-agent signature. There is no
-  persistent "unlocked" state in this mode; a prior success does not
-  carry over to the next call.
+  must be accompanied by a fresh ssh-agent signature. A prior
+  success does not carry over to the next call.
 
-Wrappers with no explicit entry default to `Unlocked` with no
-expiry.
+If no grant exists for `(wrapper, host, user)` the request is
+rejected with the same "ungranted" shape as a `Locked` grant — the
+daemon does not distinguish "no grant" from "denied grant" to the
+wrapper, so operators can't be probed for grant existence through
+the wrapper channel.
 
-### Per-call SSH-agent approval
+### Per-call ssh-agent approval
 
-When a wrapper is in `PerCallApproval`, the flow is:
+When a grant is in `PerCallApproval`, the flow is:
 
 1. The daemon issues a challenge: a random 32-byte nonce and a
    short-lived challenge ID, valid for 60 seconds. The
-   `approval_key` bound to the wrapper (an OpenSSH public key) is
+   `approval_key` bound to the grant (an OpenSSH public key) is
    returned so the caller knows which key to sign with.
 2. `underwrap-exec` asks the caller's SSH agent to sign the nonce
    with the matching private key.
@@ -906,28 +878,14 @@ The only thing the caller needs to hold is access to the SSH agent
 loaded with the approved key. The private key never touches the
 daemon or the wrapper.
 
-### Rule/grant layer
+### What's no longer in the model
 
-Once the mode gate passes (or a per-call approval verifies), the
-policy document is evaluated against the `(wrapper, resource,
-operation)` tuple derived from the request. The document carries:
-
-- **`PolicyRule`** — permanent allow/deny for a
-  `(wrapper, resource, operation)` tuple.
-- **`PolicyGrant`** — the same shape plus optional
-  `starts_at_epoch` / `expires_at_epoch` bounds. Grants are the
-  mechanism operators use for time-limited allowances without
-  editing the baseline rule set.
-
-Rules and grants are keyed by the resource and operation the
-request targets — not by caller UID. Identity is already established
-at the socket layer by the setgid/egid mechanism described earlier;
-the policy layer decides *what* that wrapper may do, not *who* is
-allowed to invoke it.
-
-If both layers accept, the daemon serves the request and emits the
-matching audit event; otherwise it refuses and emits a denial event
-carrying the reason.
+The pre-245 model carried a per-`(wrapper, resource, operation)`
+allow/deny ACL on top of the mode gate. That layer is gone. Once
+the grant mode says "allow", the daemon serves whatever resources
+the wrapper's declaration lists — no per-resource filter. To revoke
+an agent's access to a resource, edit the wrapper definition; to
+revoke the agent entirely, delete the grant.
 
 ---
 

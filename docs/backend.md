@@ -201,97 +201,98 @@ tagged to the token ends up in audit events.
   unreadable through this backend. Re-encrypt them offline first if
   you need to keep them.
 - `POST /v1/admin/secret/{read,write,list,delete}` — direct access to any
-  store's key-value surface
+  store's key-value surface. `write` and `delete` gate on
+  [`writes_enabled`](#global-write-lock) and reject with
+  `403 writes_globally_disabled` when the toggle is off.
 - `POST /v1/admin/policy/get` — fetch the entire `PolicyDocument`
 - `POST /v1/admin/policy/put` — replace the entire document
-- `POST /v1/admin/wrapper/set-mode` — update one wrapper's approval mode
-- `POST /v1/admin/rule/upsert`, `/rule/delete`
-- `POST /v1/admin/grant/upsert`, `/grant/delete`
+- `POST /v1/admin/grants/list` — list every grant in a store
+- `POST /v1/admin/grants/upsert` — create or update one grant by
+  `(wrapper, host, user)`
+- `POST /v1/admin/grants/delete` — remove a grant by tuple
+- `POST /v1/admin/policy/writes-enabled/get` — read the per-store
+  write toggle
+- `POST /v1/admin/policy/writes-enabled/set` — flip the per-store
+  write toggle. Admin-only; audited.
 
 Every admin write is a full atomic replacement of the stored policy
-document.
+document or of one grant entry.
 
 ## Policy model
 
 The backend persists one policy document per store under a reserved
-secret id (`__underwrap/policy/document`). It has three sections.
+secret id (`__underwrap/policy/document`). After the ticket-245 rewrite
+it has just two sections.
 
-### Wrappers — approval mode
+### Agent grants
 
-Each wrapper entry carries its runtime mode:
+A grant is one row keyed by the tuple `(wrapper, host, user)`. The mode
+on the grant decides whether the agent can use that grant *right now*:
 
 ```yaml
-wrappers:
+grants:
   - wrapper: gh-authorized
+    host: deepthought
+    user: robert
     mode:
       kind: unlocked
-    # reason: optional operator note
   - wrapper: aws-prod
+    host: deepthought
+    user: robert
     mode:
       kind: per-call-approval
       approval_key: "ssh-ed25519 AAAA…"
     reason: "ops approval required"
   - wrapper: jira-readonly
+    host: ci
+    user: bot
     mode:
-      kind: unlocked
+      kind: unlocked-until
       until_epoch: 1745092800
 ```
 
-Modes:
+Four modes:
 
-- **`locked`** — deny every request.
-- **`unlocked`** — allow requests subject to rules/grants. Optional
-  `until_epoch`: past that time, the backend's sweeper transitions the
-  wrapper back to `locked` automatically.
-- **`per-call-approval`** — every request must be accompanied by a fresh
-  SSH-agent signature over a backend-issued nonce, verifiable against
-  `approval_key` (OpenSSH public key format; ed25519 or RSA).
+- **`locked`** — deny every invocation through this grant.
+- **`unlocked`** — allow every invocation through this grant.
+- **`unlocked-until`** — allow until `until_epoch`; deny after. The
+  expiry is checked lazily on each request — there is no background
+  sweeper.
+- **`per-call-approval`** — every invocation must be accompanied by a
+  fresh ssh-agent signature over a backend-issued nonce, verifiable
+  against `approval_key` (OpenSSH public key format; ed25519 or RSA).
 
-Wrappers that are absent from the policy default to `unlocked` forever —
-the backend only constrains the wrappers it has been told about.
+There is **no per-secret read filter**. Once the mode allows the
+invocation, the daemon hands the wrapper every resource the wrapper's
+declaration lists. To remove an agent's access to a resource, edit the
+wrapper definition, not the policy.
 
-### Rules and grants
+### Global write lock
 
-Rules and grants share the authorization tuple:
-
-```text
-(wrapper, resource, operation) → allow | deny
+```yaml
+writes_enabled: false
 ```
 
-- **Rules** are permanent.
-- **Grants** layer on top with `starts_at_epoch` / `expires_at_epoch`.
+`writes_enabled` is a per-store kill switch over every write path in
+the admin API (`/v1/admin/secret/{write,delete}`). When `false`, those
+endpoints reject with `403 writes_globally_disabled`. Default `false` on
+a fresh store — admins opt in deliberately before any mutation lands.
+Wrapper-side writes through the libsecret channel inherit the same
+gate via the `AccessMode::ReadWrite` projection.
 
-Resources are strings. Underwrap uses the prefix convention
-`<slot>:<resource>`:
+### Evaluation order (daemon)
 
-- `env:github/token` — the env slot of resource `github/token`
-- `files:gws/state` — the files slot of resource `gws/state`
-- `libsecret:gh/default` — the libsecret slot of resource `gh/default`
-
-Every backend resource always has all three slots in storage:
-
-- `<resource>/env/<VAR>`
-- `<resource>/files/<relative-path>`
-- `<resource>/libsecret/<relative-id>`
-
-Operations mirror the slots:
-
-- `env.read`
-- `files.read`
-- `files.write`
-- `libsecret.read`
-- `libsecret.write`
-
-### Evaluation order
-
-1. If the wrapper is `locked` → deny with the configured reason.
-2. If `unlocked { until_epoch }` has expired → deny.
-3. If `per-call-approval` → surface `NeedsApproval{approval_key}`; the
-   daemon runs the challenge round-trip and re-evaluates with the mode
-   gate bypassed.
-4. Otherwise: a matching active deny rule/grant → deny.
-5. A matching active allow grant or rule → allow.
-6. No match → deny.
+1. Look up the grant for `(wrapper, host, user)`. No grant → reject.
+2. Consult the grant's mode:
+   - `locked` → reject with the operator-supplied reason.
+   - `unlocked` → proceed.
+   - `unlocked-until { until_epoch }` → proceed if `now < until_epoch`,
+     else reject.
+   - `per-call-approval` → run the ssh-agent challenge round; on
+     success, proceed.
+3. Serve every resource the wrapper's declaration lists. The libsecret
+   slot is projected `ReadOnly` if `writes_enabled = false`, `ReadWrite`
+   otherwise.
 
 ## Per-call approval flow
 
@@ -312,15 +313,6 @@ backend in addition to local verification) is a later step; today the
 backend sees only the resulting `secret.read` after the daemon accepts
 the signature. The admin UI can still reason about "is this wrapper in
 per-call mode?" because the mode lives in the policy document.
-
-## Expiry sweeper
-
-`underwrap-backendd` spawns a background task every 30 seconds that walks
-each configured store's policy document, finds every
-`Unlocked { until_epoch: Some(t) }` with `now > t`, and flips the entry
-to `Locked` with an operator-visible `reason` explaining the automatic
-transition. This keeps the admin UI's view and the real policy state in
-agreement without relying on a read request to land.
 
 ## What this replaces
 

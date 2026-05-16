@@ -17,8 +17,8 @@ use std::path::Path;
 /// real server binds would close the race but requires restructuring
 /// the harness — see the ticket for the deferred follow-up.
 pub(crate) fn pick_unused_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .context("binding ephemeral port for harness")?;
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").context("binding ephemeral port for harness")?;
     let port = listener
         .local_addr()
         .context("reading local_addr from ephemeral listener")?

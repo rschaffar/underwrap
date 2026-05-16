@@ -93,7 +93,7 @@ async fn complete_read(
 ) -> Result<read::ReadResult> {
     info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
 
-    let approval_satisfied = match check_wrapper_mode(wrapper_name, state) {
+    let approval_satisfied = match check_wrapper_mode(wrapper_name, peer_uid, state) {
         Ok(ModeGate::Proceed) => false,
         Ok(ModeGate::NeedApproval(approval_key)) => {
             match run_approval_round(stream, wrapper_name, &approval_key, peer_uid, state).await? {
@@ -106,6 +106,13 @@ async fn complete_read(
                     });
                 }
             }
+        }
+        Ok(ModeGate::Deny(response)) => {
+            return Ok(read::ReadResult {
+                response,
+                snapshot: read::BundleSnapshot::default(),
+                libsecret_access: None,
+            });
         }
         Err(response) => {
             return Ok(read::ReadResult {

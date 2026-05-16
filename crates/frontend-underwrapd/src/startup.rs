@@ -50,6 +50,30 @@ pub(crate) fn resolve_user_uid(name: &str) -> Result<u32> {
     Ok(unsafe { (*pwd).pw_uid })
 }
 
+/// Inverse of [`resolve_user_uid`]: look up the username for a kernel
+/// peer-credentials UID so the daemon can identify the principal as
+/// `(host, user)` when consulting per-store grants.
+///
+/// Returns `None` when the uid has no passwd entry — the caller
+/// treats that as "ungranted" rather than falling back to a numeric
+/// uid string, so a kernel-only / nsswitch-missing account can't
+/// shadow a real grant.
+pub(crate) fn username_for_uid(uid: u32) -> Option<String> {
+    // SAFETY: `getpwuid` returns either a null pointer or a pointer
+    // to a statically-allocated `passwd` struct that lives until the
+    // next call. We copy out of it immediately.
+    let pwd = unsafe { libc::getpwuid(uid) };
+    if pwd.is_null() {
+        return None;
+    }
+    let c_name = unsafe { (*pwd).pw_name };
+    if c_name.is_null() {
+        return None;
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(c_name) };
+    name.to_str().ok().map(|s| s.to_string())
+}
+
 pub(crate) fn build_allowed_user_uids(
     config: &DaemonConfig,
 ) -> Result<std::collections::HashSet<u32>> {

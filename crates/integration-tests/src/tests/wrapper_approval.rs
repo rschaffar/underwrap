@@ -1,8 +1,6 @@
 use super::*;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
-use underwrap_protocol::policy::{
-    PolicyDocument, PolicyEffect, PolicyRule, WrapperApprovalMode, WrapperPolicyState,
-};
+use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode};
 
 /// Sign `nonce` with `signing_key` and wrap the raw Ed25519 signature as the
 /// SSH agent wire format that `ssh_key::Signature::try_from` expects.
@@ -36,25 +34,16 @@ async fn per_call_approval_succeeds_with_valid_ed25519_signature() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
+    let mut grant = daemon.current_user_grant("gh-authorized");
+    grant.mode = WrapperApprovalMode::PerCallApproval {
+        approval_key: public_key_openssh,
+    };
     daemon
         .put_policy(
             "test",
             &PolicyDocument {
-                wrappers: vec![WrapperPolicyState {
-                    wrapper: "gh-authorized".to_string(),
-                    mode: WrapperApprovalMode::PerCallApproval {
-                        approval_key: public_key_openssh,
-                    },
-                    reason: None,
-                }],
-                rules: vec![PolicyRule {
-                    id: "allow-read".to_string(),
-                    wrapper: "gh-authorized".to_string(),
-                    resource: "env:github/token".to_string(),
-                    operation: "env.read".to_string(),
-                    effect: PolicyEffect::Allow,
-                }],
-                grants: Vec::new(),
+                grants: vec![grant],
+                writes_enabled: false,
             },
         )
         .await
@@ -113,25 +102,16 @@ async fn per_call_approval_rejects_wrong_signature() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
+    let mut grant = daemon.current_user_grant("gh-authorized");
+    grant.mode = WrapperApprovalMode::PerCallApproval {
+        approval_key: authorized_openssh,
+    };
     daemon
         .put_policy(
             "test",
             &PolicyDocument {
-                wrappers: vec![WrapperPolicyState {
-                    wrapper: "gh-authorized".to_string(),
-                    mode: WrapperApprovalMode::PerCallApproval {
-                        approval_key: authorized_openssh,
-                    },
-                    reason: None,
-                }],
-                rules: vec![PolicyRule {
-                    id: "allow-read".to_string(),
-                    wrapper: "gh-authorized".to_string(),
-                    resource: "env:github/token".to_string(),
-                    operation: "env.read".to_string(),
-                    effect: PolicyEffect::Allow,
-                }],
-                grants: Vec::new(),
+                grants: vec![grant],
+                writes_enabled: false,
             },
         )
         .await
@@ -177,15 +157,13 @@ async fn per_call_approval_rejects_wrong_signature() {
 }
 
 #[tokio::test]
-async fn per_call_approval_denies_without_matching_rule() {
+async fn per_call_approval_denies_without_matching_grant() {
     use ssh_key::PrivateKey;
     use ssh_key::private::{Ed25519Keypair, KeypairData};
 
     let keypair = Ed25519Keypair::random(&mut rand::thread_rng());
     let private_key = PrivateKey::new(KeypairData::Ed25519(keypair.clone()), "k").unwrap();
     let pubkey_openssh = private_key.public_key().to_openssh().unwrap();
-    let pubkey_blob = private_key.public_key().to_bytes().unwrap();
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&keypair.private.to_bytes());
 
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
@@ -193,56 +171,33 @@ async fn per_call_approval_denies_without_matching_rule() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
-    // Policy allows per-call approval but has no read rule. After the
-    // signature is accepted, the rule/grant layer must still deny.
+    // Policy has per-call approval mode for a DIFFERENT user; the
+    // current user has no grant at all and must be rejected before
+    // the approval round even fires.
     daemon
         .put_policy(
             "test",
             &PolicyDocument {
-                wrappers: vec![WrapperPolicyState {
+                grants: vec![underwrap_protocol::policy::AgentGrant {
                     wrapper: "gh-authorized".to_string(),
+                    host: daemon.catalog_host().to_string(),
+                    user: "definitely-not-the-test-runner".to_string(),
                     mode: WrapperApprovalMode::PerCallApproval {
                         approval_key: pubkey_openssh,
                     },
                     reason: None,
                 }],
-                rules: Vec::new(),
-                grants: Vec::new(),
+                writes_enabled: false,
             },
         )
         .await
         .unwrap();
 
-    let mut stream = daemon.connect_wrapper("gh-authorized").await.unwrap();
-    write_frame_async(&mut stream, &WrapperRequest::Read { scope: None })
-        .await
-        .unwrap();
-    let resp: WrapperResponse = read_frame_async(&mut stream).await.unwrap();
-    let (challenge_id, nonce) = match resp {
-        WrapperResponse::ApprovalRequired {
-            challenge_id,
-            nonce,
-            ..
-        } => (challenge_id, nonce),
-        other => panic!("expected ApprovalRequired, got {other:?}"),
-    };
-    let signature = sign_nonce(&signing_key, &nonce);
-    write_frame_async(
-        &mut stream,
-        &WrapperRequest::ApprovalProof {
-            challenge_id,
-            signature,
-            public_key_blob: pubkey_blob,
-        },
-    )
-    .await
-    .unwrap();
-
-    let resp: WrapperResponse = read_frame_async(&mut stream).await.unwrap();
+    let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
         WrapperResponse::Error { code, message } => {
             assert!(matches!(code, ErrorCode::Unauthorized));
-            assert!(message.contains("no backend policy rule"));
+            assert!(message.contains("no grant"));
         }
         other => panic!("expected Error, got {other:?}"),
     }

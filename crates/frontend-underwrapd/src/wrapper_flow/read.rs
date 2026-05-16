@@ -12,10 +12,10 @@ use underwrap_protocol::resource::{
 
 use crate::audit;
 use crate::policy::{
-    OP_ENV_READ, OP_FILES_READ, OP_FILES_WRITE, OP_LIBSECRET_READ, OP_LIBSECRET_WRITE,
-    evaluate_after_approval_with, evaluate_with, load_policy_document,
+    evaluate_grant_after_approval_with, evaluate_grant_with, load_policy_document, writes_enabled,
 };
 use crate::server::State;
+use crate::startup::username_for_uid;
 use crate::wrapper_bindings::{
     wrapper_env_resources, wrapper_file_bindings, wrapper_libsecret_resource,
 };
@@ -32,9 +32,10 @@ pub(super) struct ReadResult {
     pub libsecret_access: Option<(String, AccessMode)>,
 }
 
-/// Run the post-gate read: rule/grant authorization and one bundle fetch for
-/// every projected slot. When `approval_satisfied` is true, mode gating is
-/// bypassed (the caller just proved presence).
+/// Run the post-gate read: re-check the agent grant in the same
+/// policy document the mode gate consulted, then fetch every resource
+/// the wrapper declares. When `approval_satisfied` is true the mode
+/// check is bypassed; the grant must still exist.
 pub(super) fn process_read_for(
     wrapper_name: &str,
     scope: Option<&str>,
@@ -61,93 +62,87 @@ pub(super) fn process_read_for(
         }
     };
 
-    let authorize = |resource: &str, operation: &str| -> PolicyDecision {
-        if approval_satisfied {
-            evaluate_after_approval_with(&policy, wrapper_name, resource, operation)
-        } else {
-            evaluate_with(&policy, wrapper_name, resource, operation)
-        }
+    // Resolve the calling principal. The daemon trusts SO_PEERCRED for
+    // the uid; we look up the corresponding username for grant
+    // matching. An unknown uid → reject (no grant covers a numeric
+    // ghost user).
+    let Some(user) = username_for_uid(peer_uid) else {
+        let reason = format!("no passwd entry for peer uid {peer_uid}");
+        audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+        return error_result(ErrorCode::Unauthorized, reason);
+    };
+    let host = state.config.catalog_host.as_str();
+
+    let logical_name = wrapper_def
+        .logical_name
+        .clone()
+        .unwrap_or_else(|| wrapper_name.to_string());
+
+    let decision = if approval_satisfied {
+        evaluate_grant_after_approval_with(&policy, &logical_name, host, &user)
+    } else {
+        evaluate_grant_with(&policy, &logical_name, host, &user)
     };
 
+    match decision {
+        Some(PolicyDecision::Allow) => {}
+        Some(PolicyDecision::Deny { reason }) => {
+            audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+            return error_result(ErrorCode::Unauthorized, reason);
+        }
+        Some(PolicyDecision::NeedsApproval { .. }) => {
+            // The mode gate runs ahead of process_read_for, so reaching
+            // this arm means an approval round was expected but wasn't
+            // satisfied — treat it as denial.
+            let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
+            audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+            return error_result(ErrorCode::Unauthorized, reason);
+        }
+        None => {
+            // No grant for this (wrapper, host, user) tuple. We return
+            // the same generic ungranted message as the legacy path so
+            // operators can't probe the grant catalogue.
+            let reason =
+                format!("no grant for wrapper '{logical_name}' on {host} as user '{user}'");
+            audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
+            return error_result(ErrorCode::Unauthorized, reason);
+        }
+    }
+
+    // The grant mode passed. The wrapper now sees whatever resources
+    // its declaration lists — read access through an active grant is
+    // unconditional (ticket 246). Write access on the libsecret slot
+    // gates on the global writes_enabled flag.
     let mut prefixes = Vec::new();
     let mut env_resources = Vec::new();
     for resource_id in wrapper_env_resources(wrapper_def) {
-        let resource = env_resource(resource_id);
-        match require_allowed(
-            &authorize,
-            wrapper_name,
-            &resource,
-            OP_ENV_READ,
-            Some(peer_uid),
-            scope,
-        ) {
-            Ok(()) => {
-                audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
-                prefixes.push(env_prefix(resource_id));
-                env_resources.push(resource_id.to_string());
-            }
-            Err(response) => {
-                return ReadResult {
-                    response,
-                    snapshot: BundleSnapshot::default(),
-                    libsecret_access: None,
-                };
-            }
-        }
+        let _resource = env_resource(resource_id);
+        audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
+        prefixes.push(env_prefix(resource_id));
+        env_resources.push(resource_id.to_string());
     }
 
     let mut file_bindings = Vec::new();
     for projection in wrapper_file_bindings(wrapper_def) {
-        let resource = files_resource(&projection.resource_id);
-        match require_allowed(
-            &authorize,
-            wrapper_name,
-            &resource,
-            OP_FILES_READ,
-            Some(peer_uid),
-            scope,
-        ) {
-            Ok(()) => {
-                let access = access_for_optional_write(&authorize, &resource, OP_FILES_WRITE);
-                audit::read_granted(wrapper_name, &projection.resource_id, Some(peer_uid), scope);
-                prefixes.push(files_prefix(&projection.resource_id));
-                file_bindings.push(projection.into_read_binding(access));
-            }
-            Err(response) => {
-                return ReadResult {
-                    response,
-                    snapshot: BundleSnapshot::default(),
-                    libsecret_access: None,
-                };
-            }
-        }
+        let _resource = files_resource(&projection.resource_id);
+        audit::read_granted(wrapper_name, &projection.resource_id, Some(peer_uid), scope);
+        prefixes.push(files_prefix(&projection.resource_id));
+        // Files don't currently use the libsecret-style read-write
+        // toggle; keep them read-only.
+        file_bindings.push(projection.into_read_binding(AccessMode::ReadOnly));
     }
 
     let mut libsecret_access = None;
     if let Some(resource_id) = wrapper_libsecret_resource(wrapper_def) {
-        let resource = libsecret_resource(resource_id);
-        match require_allowed(
-            &authorize,
-            wrapper_name,
-            &resource,
-            OP_LIBSECRET_READ,
-            Some(peer_uid),
-            scope,
-        ) {
-            Ok(()) => {
-                let access = access_for_optional_write(&authorize, &resource, OP_LIBSECRET_WRITE);
-                audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
-                prefixes.push(libsecret_prefix(resource_id));
-                libsecret_access = Some((resource_id.to_string(), access));
-            }
-            Err(response) => {
-                return ReadResult {
-                    response,
-                    snapshot: BundleSnapshot::default(),
-                    libsecret_access: None,
-                };
-            }
-        }
+        let _resource = libsecret_resource(resource_id);
+        audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
+        prefixes.push(libsecret_prefix(resource_id));
+        let access = if writes_enabled(&policy) {
+            AccessMode::ReadWrite
+        } else {
+            AccessMode::ReadOnly
+        };
+        libsecret_access = Some((resource_id.to_string(), access));
     }
 
     let snapshot = match state.store.read_prefixes(&prefixes) {
@@ -200,45 +195,6 @@ fn build_env(
     Ok(env)
 }
 
-fn require_allowed(
-    authorize: &impl Fn(&str, &str) -> PolicyDecision,
-    wrapper_name: &str,
-    resource: &str,
-    operation: &str,
-    peer_uid: Option<u32>,
-    scope: Option<&str>,
-) -> Result<(), WrapperResponse> {
-    match authorize(resource, operation) {
-        PolicyDecision::Allow => Ok(()),
-        PolicyDecision::Deny { reason } => {
-            audit::read_denied(wrapper_name, &reason, peer_uid, scope);
-            Err(WrapperResponse::Error {
-                code: ErrorCode::Unauthorized,
-                message: reason,
-            })
-        }
-        PolicyDecision::NeedsApproval { .. } => {
-            let reason = format!("wrapper '{wrapper_name}' requires per-call approval");
-            audit::read_denied(wrapper_name, &reason, peer_uid, scope);
-            Err(WrapperResponse::Error {
-                code: ErrorCode::Unauthorized,
-                message: reason,
-            })
-        }
-    }
-}
-
-fn access_for_optional_write(
-    authorize: &impl Fn(&str, &str) -> PolicyDecision,
-    resource: &str,
-    operation: &str,
-) -> AccessMode {
-    match authorize(resource, operation) {
-        PolicyDecision::Allow => AccessMode::ReadWrite,
-        PolicyDecision::Deny { .. } | PolicyDecision::NeedsApproval { .. } => AccessMode::ReadOnly,
-    }
-}
-
 fn error_result(code: ErrorCode, message: String) -> ReadResult {
     ReadResult {
         response: WrapperResponse::Error { code, message },
@@ -256,7 +212,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use underwrap_protocol::config::{BackendServiceConfig, FilesUse, ResourceUse, WrapperDef};
-    use underwrap_protocol::policy::{PolicyDocument, PolicyEffect, PolicyRule};
+    use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
 
     fn state_with_store(store: Arc<dyn underwrap_store::StorageBackend>) -> State {
         State {
@@ -301,15 +257,21 @@ mod tests {
         }
     }
 
+    fn current_uid() -> u32 {
+        unsafe { libc::getuid() }
+    }
+
     #[test]
-    fn process_read_for_returns_env_and_directory_bindings() {
+    fn process_read_for_returns_env_and_directory_bindings_when_no_policy() {
+        // Empty document = fresh store = permissive (matches the
+        // pre-245 contract on a brand-new install).
         let store: Arc<dyn underwrap_store::StorageBackend> =
             Arc::new(MemStore::with_entries(&[(
                 "github/token/env/GH_TOKEN",
                 b"ghp_test",
             )]));
         let state = state_with_store(store);
-        let result = process_read_for("gh-authorized", None, &state, 1000, true);
+        let result = process_read_for("gh-authorized", None, &state, current_uid(), true);
         match result.response {
             WrapperResponse::ReadOk { env, directories } => {
                 assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
@@ -321,50 +283,42 @@ mod tests {
     }
 
     #[test]
-    fn process_read_for_denies_when_backend_policy_lacks_required_rule() {
+    fn process_read_for_denies_when_grant_missing() {
         let store: Arc<dyn underwrap_store::StorageBackend> =
             Arc::new(MemStore::with_entries_and_policy(
                 &[("github/token/env/GH_TOKEN", b"ghp_test")],
                 PolicyDocument::default(),
             ));
         let state = state_with_store(store);
-        let result = process_read_for("gh-authorized", None, &state, 1000, false);
+        let result = process_read_for("gh-authorized", None, &state, current_uid(), false);
         match result.response {
             WrapperResponse::Error { code, message } => {
                 assert!(matches!(code, ErrorCode::Unauthorized));
-                assert!(message.contains("no backend policy rule"));
+                assert!(message.contains("no grant"));
             }
             other => panic!("expected Error, got {other:?}"),
         }
     }
 
     #[test]
-    fn process_read_for_allows_when_backend_policy_has_required_rules() {
+    fn process_read_for_allows_when_grant_unlocked() {
+        let user = username_for_uid(current_uid()).expect("uid resolves to username");
         let store: Arc<dyn underwrap_store::StorageBackend> =
             Arc::new(MemStore::with_entries_and_policy(
                 &[("github/token/env/GH_TOKEN", b"ghp_test")],
                 PolicyDocument {
-                    rules: vec![
-                        PolicyRule {
-                            id: "env-read".to_string(),
-                            wrapper: "gh-authorized".to_string(),
-                            resource: "env:github/token".to_string(),
-                            operation: "env.read".to_string(),
-                            effect: PolicyEffect::Allow,
-                        },
-                        PolicyRule {
-                            id: "files-read".to_string(),
-                            wrapper: "gh-authorized".to_string(),
-                            resource: "files:gws/state".to_string(),
-                            operation: "files.read".to_string(),
-                            effect: PolicyEffect::Allow,
-                        },
-                    ],
-                    ..Default::default()
+                    grants: vec![AgentGrant {
+                        wrapper: "gh-authorized".into(),
+                        host: "test-host".into(),
+                        user: user.clone(),
+                        mode: WrapperApprovalMode::Unlocked,
+                        reason: None,
+                    }],
+                    writes_enabled: false,
                 },
             ));
         let state = state_with_store(store);
-        let result = process_read_for("gh-authorized", None, &state, 1000, false);
+        let result = process_read_for("gh-authorized", None, &state, current_uid(), false);
         assert!(matches!(result.response, WrapperResponse::ReadOk { .. }));
     }
 
@@ -376,7 +330,7 @@ mod tests {
                 b"evil",
             )]));
         let state = state_with_store(store);
-        let result = process_read_for("gh-authorized", None, &state, 1000, true);
+        let result = process_read_for("gh-authorized", None, &state, current_uid(), true);
         match result.response {
             WrapperResponse::Error { message, .. } => {
                 assert!(message.contains("invalid env name"));
