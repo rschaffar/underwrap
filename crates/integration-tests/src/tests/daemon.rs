@@ -1,13 +1,6 @@
 use super::*;
+use crate::harness::pick_unused_port;
 use base64::Engine;
-
-fn pick_unused_port_local() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 #[tokio::test]
 async fn parse_example_config() {
@@ -64,8 +57,8 @@ async fn underwrapd_binary_start_and_read() {
 
     let daemon_bin = require_bin!("underwrapd");
     let backend_bin = require_bin!("underwrap-backendd");
-    let admin_port = pick_unused_port_local();
-    let service_port = pick_unused_port_local();
+    let admin_port = pick_unused_port().unwrap();
+    let service_port = pick_unused_port().unwrap();
     let admin_url = format!("http://127.0.0.1:{admin_port}");
     let service_url = format!("https://127.0.0.1:{service_port}");
 

@@ -26,7 +26,8 @@ pub(crate) use pki::{
 };
 
 use pki::{principal_client_name, test_pki_paths};
-use readiness::{pick_unused_port, wait_for_admin, wait_for_path, wait_for_service};
+pub(crate) use readiness::pick_unused_port;
+use readiness::{wait_for_admin, wait_for_path, wait_for_service};
 
 /// A running test daemon with temp dirs and sockets.
 #[allow(dead_code)]

@@ -1,13 +1,29 @@
 //! Readiness probes: port picking and wait-for-URL/path helpers.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
-pub(super) fn pick_unused_port() -> Result<u16> {
-    use std::sync::atomic::{AtomicU16, Ordering};
-    static NEXT_PORT: AtomicU16 = AtomicU16::new(43000);
-    let port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
-    anyhow::ensure!(port < 60000, "ran out of test ports");
+/// Ask the kernel for an unused TCP port on loopback, then release
+/// it so the caller can bind it from the test fixture.
+///
+/// This pattern has a tiny race window — between `drop(listener)` and
+/// the next bind, the kernel could reassign the port to a different
+/// process. In practice, port assignment is roughly LIFO inside the
+/// ephemeral range, and the next bind happens within microseconds, so
+/// collisions are rare in the test harness. The previous monotonic
+/// counter starting at 43000 had the much worse failure mode of
+/// reusing the same port across `cargo test` runs while it was still
+/// in `TIME_WAIT` (ticket 280). Holding the listener open until the
+/// real server binds would close the race but requires restructuring
+/// the harness — see the ticket for the deferred follow-up.
+pub(crate) fn pick_unused_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .context("binding ephemeral port for harness")?;
+    let port = listener
+        .local_addr()
+        .context("reading local_addr from ephemeral listener")?
+        .port();
+    drop(listener);
     Ok(port)
 }
 
