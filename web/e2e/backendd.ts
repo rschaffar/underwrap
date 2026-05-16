@@ -69,6 +69,9 @@ export interface BackendInstance {
   /** Absolute path of the configured `stores_data_roots[0]`. Tests can use a
    *  subdirectory here as the `dir` field when creating a dynamic store. */
   dataRoot: string;
+  /** Absolute path of the configured `keys_dir`. Encrypted-store key
+   *  files (ticket 234) are generated here, one per store. */
+  keysDir: string;
   /** Tear down: SIGTERM the process, wait for exit, remove the temp dir. */
   cleanup: () => Promise<void>;
 }
@@ -156,6 +159,12 @@ export async function startBackend(
   const dataRootsDir = join(tmpDir, "data-roots");
   mkdirSync(dataRootsDir);
 
+  // Per-test master-key directory for encrypted dynamic stores
+  // (ticket 234). The backend generates one file per store at
+  // `<keys_dir>/<store>.key` with mode 0600.
+  const keysDir = join(tmpDir, "keys");
+  mkdirSync(keysDir);
+
   const configYaml = [
     `stores_dynamic_dir: ${JSON.stringify(storesDir)}`,
     "admin:",
@@ -170,6 +179,7 @@ export async function startBackend(
     `    - "https://127.0.0.1:${port}"`,
     "  stores_data_roots:",
     `    - ${JSON.stringify(dataRootsDir)}`,
+    `  keys_dir: ${JSON.stringify(keysDir)}`,
     "",
   ].join("\n");
   const configPath = join(tmpDir, "backend.yaml");
@@ -220,7 +230,13 @@ export async function startBackend(
     }
   };
 
-  return { baseUrl, tmpDir, dataRoot: dataRootsDir, cleanup };
+  return {
+    baseUrl,
+    tmpDir,
+    dataRoot: dataRootsDir,
+    keysDir,
+    cleanup,
+  };
 }
 
 async function waitForReady(

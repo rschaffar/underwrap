@@ -64,6 +64,112 @@ test("admin can create, edit, and delete a dynamic store", async ({
   ).toBeHidden();
 });
 
+test("creating an encrypted store reveals the master key once and leaves no traces in storage", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  await page.goto(`${backendWithAdmin.baseUrl}/stores`);
+  await expect(page.getByRole("heading", { name: /^stores$/i })).toBeVisible();
+
+  await page.getByRole("button", { name: /create store/i }).click();
+  const createDlg = page.getByRole("dialog", { name: /create store/i });
+  await createDlg.getByLabel("Name").fill("vault");
+  await createDlg
+    .getByLabel(/backend/i)
+    .selectOption("encrypted");
+  await createDlg
+    .getByLabel(/data directory/i)
+    .fill(`${backendWithAdmin.dataRoot}/vault`);
+  // The free-form key file path field is gone in ticket 234 — the
+  // backend chooses where to put it.
+  await expect(createDlg.getByLabel(/key file/i)).toBeHidden();
+  await createDlg.getByRole("button", { name: /^create$/i }).click();
+
+  // The reveal modal supersedes the create dialog.
+  const reveal = page.getByTestId("key-reveal-dialog");
+  await expect(reveal).toBeVisible();
+  const keyValue = (
+    await page.getByTestId("key-reveal-value").innerText()
+  ).trim();
+  expect(keyValue).toMatch(/^[0-9a-f]{64}$/);
+
+  // Confirm button is disabled until the acknowledgement box is ticked.
+  const confirmBtn = page.getByTestId("key-reveal-confirm");
+  await expect(confirmBtn).toBeDisabled();
+  await page.getByTestId("key-reveal-ack").check();
+  await expect(confirmBtn).toBeEnabled();
+  await confirmBtn.click();
+  await expect(reveal).toBeHidden();
+  await expect(
+    page.getByRole("cell", { name: "vault", exact: true }),
+  ).toBeVisible();
+
+  // Storage must be clean: no localStorage / sessionStorage entry,
+  // no cookie, and the URL must not carry the key value.
+  const storageSnapshot = await page.evaluate(() => ({
+    local: Object.entries(localStorage),
+    session: Object.entries(sessionStorage),
+    cookie: document.cookie,
+    href: window.location.href,
+  }));
+  const serialised = JSON.stringify(storageSnapshot);
+  expect(
+    serialised,
+    "key value must not appear in storage, cookies, or the URL after the reveal flow",
+  ).not.toContain(keyValue);
+});
+
+test("rotate-key flow surfaces a fresh key once for an existing encrypted store", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  await page.goto(`${backendWithAdmin.baseUrl}/stores`);
+
+  // Create an encrypted store first.
+  await page.getByRole("button", { name: /create store/i }).click();
+  const createDlg = page.getByRole("dialog", { name: /create store/i });
+  await createDlg.getByLabel("Name").fill("rotvault");
+  await createDlg
+    .getByLabel(/backend/i)
+    .selectOption("encrypted");
+  await createDlg
+    .getByLabel(/data directory/i)
+    .fill(`${backendWithAdmin.dataRoot}/rotvault`);
+  await createDlg.getByRole("button", { name: /^create$/i }).click();
+  await page.getByTestId("key-reveal-ack").check();
+  const originalKey = (
+    await page.getByTestId("key-reveal-value").innerText()
+  ).trim();
+  await page.getByTestId("key-reveal-confirm").click();
+
+  // Open edit and trigger a rotate.
+  await page
+    .getByRole("row", { name: /rotvault/ })
+    .getByRole("button", { name: /edit/i })
+    .click();
+  const editDlg = page.getByRole("dialog", {
+    name: /edit store: rotvault/i,
+  });
+  await editDlg
+    .getByRole("checkbox", { name: /existing secrets/i })
+    .check();
+  await editDlg.getByRole("button", { name: /rotate key/i }).click();
+
+  const reveal = page.getByTestId("key-reveal-dialog");
+  await expect(reveal).toBeVisible();
+  const rotatedKey = (
+    await page.getByTestId("key-reveal-value").innerText()
+  ).trim();
+  expect(rotatedKey).toMatch(/^[0-9a-f]{64}$/);
+  expect(rotatedKey).not.toEqual(originalKey);
+
+  await page.getByTestId("key-reveal-ack").check();
+  await page.getByTestId("key-reveal-confirm").click();
+  await expect(reveal).toBeHidden();
+});
+
 test("non-admin operator sees the nav item hidden", async ({
   page,
   backendWithAdmin,

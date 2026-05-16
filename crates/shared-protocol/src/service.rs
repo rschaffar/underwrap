@@ -170,13 +170,35 @@ pub struct AdminStoreCreateRequest {
     pub name: String,
     pub backend: AdminStoreBackendKind,
     pub dir: String,
-    /// Required when `backend == Encrypted`; ignored otherwise.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub key_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub description: Option<String>,
+}
+
+/// Response from `POST /v1/admin/stores`. When the new store is
+/// encrypted, `key_hex` carries the freshly generated 32-byte master
+/// key (hex-encoded) and is returned **exactly once** — subsequent GETs
+/// of the store never expose the key value. Plain stores have
+/// `key_hex == None`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoreCreateResponse {
+    pub store: AdminStoreDetailResponse,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub key_hex: Option<String>,
+}
+
+/// Response from `POST /v1/admin/stores/{name}/rotate-key`. The new
+/// key is returned exactly once. `warning` documents the v1 rotation
+/// limitation: existing ciphertext encrypted with the previous key
+/// is no longer readable through this backend until the operator
+/// re-encrypts it offline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoreRotateKeyResponse {
+    pub key_hex: String,
+    pub warning: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

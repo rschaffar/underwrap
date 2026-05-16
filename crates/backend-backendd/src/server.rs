@@ -100,6 +100,12 @@ pub struct AdminConfig {
     /// (returns `data_root_not_configured`).
     #[serde(default)]
     pub stores_data_roots: Option<Vec<PathBuf>>,
+    /// Directory under which the admin API writes master-key files
+    /// for encrypted dynamic stores (ticket 234). Each encrypted
+    /// store gets one key file at `<keys_dir>/<store>.key`, mode
+    /// 0600. Defaults to [`DEFAULT_KEYS_DIR`].
+    #[serde(default)]
+    pub keys_dir: Option<PathBuf>,
 }
 
 /// Default location of the declarative stores directory. Each
@@ -110,6 +116,11 @@ pub const DEFAULT_STORES_DECLARATIVE_DIR: &str = "/etc/underwrap-backend/stores.
 /// Default location of the dynamic stores directory. The admin API
 /// owns this tree and is allowed to create/update/delete files in it.
 pub const DEFAULT_STORES_DYNAMIC_DIR: &str = "/var/lib/underwrap-backend/stores.d";
+
+/// Default location of the master-key directory the admin API writes
+/// to when creating encrypted dynamic stores (ticket 234). One file
+/// per store at `<keys_dir>/<store>.key`, mode 0600.
+pub const DEFAULT_KEYS_DIR: &str = "/var/lib/underwrap-backend/keys";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
@@ -203,6 +214,9 @@ struct AdminRuntimeState {
     /// every entry. Empty disables creation (returns
     /// `data_root_not_configured`).
     stores_data_roots: Vec<PathBuf>,
+    /// Directory where master-key files for encrypted dynamic stores
+    /// are written. One file per store, mode 0600. See ticket 234.
+    keys_dir: PathBuf,
     /// Operator name → opaque bearer token. Both fields are trusted; the
     /// caller authenticates by presenting a matching token.
     tokens: HashMap<String, String>,
@@ -305,6 +319,10 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             }),
             stores_dynamic_dir: dynamic_dir.clone(),
             stores_data_roots: admin_config.stores_data_roots.clone().unwrap_or_default(),
+            keys_dir: admin_config
+                .keys_dir
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_KEYS_DIR)),
             tokens,
             allowed_origins: admin_config.allowed_origins.clone(),
             web_source: crate::web::WebAssetSource::from_env(),
@@ -3123,8 +3141,9 @@ fn handle_admin_whoami(
 // lock on the registry update.
 
 use underwrap_protocol::service::{
-    AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreDeleteResponse,
-    AdminStoreDetailResponse, AdminStoreListItem, AdminStoreSource, AdminStoreUpdateRequest,
+    AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
+    AdminStoreDeleteResponse, AdminStoreDetailResponse, AdminStoreListItem,
+    AdminStoreRotateKeyResponse, AdminStoreSource, AdminStoreUpdateRequest,
     AdminStoresListResponse,
 };
 
@@ -3365,25 +3384,49 @@ fn do_admin_store_create(
         Ok(p) => p,
         Err((code, msg)) => return error_response(StatusCode::BAD_REQUEST, code, &msg),
     };
-    let storage = match body.backend {
-        AdminStoreBackendKind::Plain => underwrap_protocol::config::StorageConfig::Plain {
-            dir: validated_dir.clone(),
-        },
+    // For encrypted stores we generate the master key here and stash
+    // it in `generated_key_hex` so it can be returned to the caller
+    // **once**. The key value never leaves this function except as
+    // part of the `AdminStoreCreateResponse` returned below.
+    let (storage, generated_key_hex) = match body.backend {
+        AdminStoreBackendKind::Plain => (
+            underwrap_protocol::config::StorageConfig::Plain {
+                dir: validated_dir.clone(),
+            },
+            None,
+        ),
         AdminStoreBackendKind::Encrypted => {
-            let key_file = match body.key_file.as_ref() {
-                Some(p) if !p.is_empty() => PathBuf::from(p),
-                _ => {
+            let key_file = state.keys_dir.join(format!("{}.key", body.name));
+            // Refuse if a stale key file is already there — it would
+            // belong to a previous store of the same name, and we'd
+            // overwrite an operator's secret material.
+            if key_file.exists() {
+                return error_response(
+                    StatusCode::CONFLICT,
+                    "key_file_exists",
+                    &format!(
+                        "refusing to overwrite existing key file at {} — remove it manually if you intended to recreate this store",
+                        key_file.display(),
+                    ),
+                );
+            }
+            let key_hex = match generate_master_key_atomic(&key_file) {
+                Ok(hex) => hex,
+                Err(e) => {
                     return error_response(
-                        StatusCode::BAD_REQUEST,
-                        "key_file_required",
-                        "`key_file` is required for encrypted stores (rotate via ticket 234)",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "key_generation_failed",
+                        &format!("generating master key at {}: {e:#}", key_file.display()),
                     );
                 }
             };
-            underwrap_protocol::config::StorageConfig::Encrypted {
-                dir: validated_dir.clone(),
-                key_file,
-            }
+            (
+                underwrap_protocol::config::StorageConfig::Encrypted {
+                    dir: validated_dir.clone(),
+                    key_file,
+                },
+                Some(key_hex),
+            )
         }
     };
     let definition = StoreDefinition {
@@ -3394,6 +3437,9 @@ fn do_admin_store_create(
     // Create the data dir if needed. Mode 0700 keeps other users out;
     // operators who want a different mode can pre-create the dir.
     if let Err(e) = create_data_dir_secure(&validated_dir) {
+        // Roll any generated key file back so we don't leave an
+        // orphan 0600 file in keys_dir for a store that doesn't exist.
+        rollback_generated_key(&definition.storage);
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "create_data_dir_failed",
@@ -3402,6 +3448,7 @@ fn do_admin_store_create(
     }
     let path = state.stores_dynamic_dir.join(format!("{}.yaml", body.name));
     if let Err(e) = write_store_yaml_atomic(&path, &definition) {
+        rollback_generated_key(&definition.storage);
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "write_store_def_failed",
@@ -3412,9 +3459,10 @@ fn do_admin_store_create(
     let opened: Arc<dyn StorageBackend> = match underwrap_store::open(&definition.storage) {
         Ok(b) => Arc::from(b),
         Err(e) => {
-            // Roll the YAML back so the next request doesn't see a
-            // half-created store.
+            // Roll the YAML and key file back so the next request
+            // doesn't see a half-created store.
             let _ = std::fs::remove_file(&path);
+            rollback_generated_key(&definition.storage);
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "open_store_failed",
@@ -3440,7 +3488,80 @@ fn do_admin_store_create(
         source_path: state.stores_dynamic_dir.join(format!("{}.yaml", body.name)),
         definition,
     };
-    json_response(StatusCode::OK, &admin_store_detail(&body.name, &loaded))
+    json_response(
+        StatusCode::OK,
+        &AdminStoreCreateResponse {
+            store: admin_store_detail(&body.name, &loaded),
+            key_hex: generated_key_hex,
+        },
+    )
+}
+
+/// Best-effort cleanup of an in-flight encrypted-store creation:
+/// drop the key file we just wrote so a failed YAML or backend-open
+/// step doesn't leave an orphan 0600 file in `keys_dir` for a store
+/// that never made it into the registry.
+fn rollback_generated_key(storage: &underwrap_protocol::config::StorageConfig) {
+    if let underwrap_protocol::config::StorageConfig::Encrypted { key_file, .. } = storage {
+        let _ = std::fs::remove_file(key_file);
+    }
+}
+
+/// Generate 32 fresh random bytes and atomically install them as the
+/// hex-encoded master key at `path` with mode 0600. The hex form is
+/// returned to the caller; the disk and the in-memory copy share the
+/// same bytes so we don't have to keep both around. The temp file
+/// lives in the same directory as `path` so `persist` is rename-only.
+fn generate_master_key_atomic(path: &Path) -> Result<String> {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let key_hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+
+    let dir = path.parent().ok_or_else(|| {
+        anyhow::anyhow!("master key path {} has no parent directory", path.display())
+    })?;
+    // mkdir_p the keys dir if it's missing. 0700 keeps other users
+    // out even if the parent's default mode would be looser.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        if !dir.exists() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .with_context(|| format!("creating keys dir {}", dir.display()))?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating keys dir {}", dir.display()))?;
+    }
+
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("creating temp key file in {}", dir.display()))?;
+    use std::io::Write;
+    tmp.write_all(key_hex.as_bytes())
+        .context("writing master key tempfile")?;
+    tmp.as_file()
+        .sync_all()
+        .context("fsync master key tempfile")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(tmp.path(), perms)
+            .with_context(|| format!("setting 0600 on {}", tmp.path().display()))?;
+    }
+    tmp.persist(path).map_err(|e| {
+        anyhow::anyhow!(
+            "atomically persisting master key to {}: {e}",
+            path.display()
+        )
+    })?;
+    Ok(key_hex)
 }
 
 #[cfg(unix)]
@@ -3648,6 +3769,117 @@ fn handle_admin_store_delete(
     )
 }
 
+/// `POST /v1/admin/stores/{name}/rotate-key` — generate a fresh
+/// master key, replace the on-disk key file atomically, reopen the
+/// backend, and return the new key value **exactly once**. Refuses
+/// declarative stores and plain stores. Existing ciphertext encrypted
+/// with the previous key becomes unreadable through this backend —
+/// v1 of rotation does not re-encrypt; the warning in the response
+/// documents that limitation.
+#[allow(clippy::result_large_err)]
+fn handle_admin_store_rotate_key(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    name: &str,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may rotate store keys",
+        );
+    }
+
+    // Snapshot under read lock so we don't hold it across key-file I/O.
+    let (key_file, dir) = {
+        let reg = state.stores.read().unwrap();
+        let Some(loaded) = reg.sources.get(name) else {
+            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
+        };
+        if loaded.source == StoreSource::Declarative {
+            return error_response(
+                StatusCode::CONFLICT,
+                "declarative_immutable",
+                &format!(
+                    "store '{name}' is declarative (defined in {}); edit the Nix module instead",
+                    loaded.source_path.display(),
+                ),
+            );
+        }
+        match &loaded.definition.storage {
+            underwrap_protocol::config::StorageConfig::Plain { .. } => {
+                return error_response(
+                    StatusCode::CONFLICT,
+                    "not_encrypted",
+                    "store is not encrypted; rotate-key only applies to encrypted backends",
+                );
+            }
+            underwrap_protocol::config::StorageConfig::Encrypted { dir, key_file } => {
+                (key_file.clone(), dir.clone())
+            }
+        }
+    };
+
+    // Atomic key replacement: write the new key to a tempfile in the
+    // same directory, then rename over the existing file. `persist`
+    // is a POSIX rename, so a reader that opens after rename gets the
+    // new key and the file is never observed in a partial state.
+    let key_hex = match generate_master_key_atomic(&key_file) {
+        Ok(hex) => hex,
+        Err(e) => {
+            write_admin_store_audit(state, principal, name, "store.rotate-key", "failure");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "key_generation_failed",
+                &format!("rotating master key at {}: {e:#}", key_file.display()),
+            );
+        }
+    };
+
+    // Reopen the backend with the new key and swap it into the
+    // registry. If reopen fails the new key file is still on disk
+    // (so the daemon-restart path stays consistent) but the old
+    // in-memory backend keeps serving until the next restart.
+    let new_backend: Arc<dyn StorageBackend> =
+        match underwrap_store::open(&underwrap_protocol::config::StorageConfig::Encrypted {
+            dir,
+            key_file: key_file.clone(),
+        }) {
+            Ok(b) => Arc::from(b),
+            Err(e) => {
+                write_admin_store_audit(
+                    state,
+                    principal,
+                    name,
+                    "store.rotate-key",
+                    "reopen-failed",
+                );
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "open_store_failed",
+                    &format!("reopening store with new master key: {e:#}"),
+                );
+            }
+        };
+    {
+        let mut reg = state.stores.write().unwrap();
+        reg.open.insert(name.to_string(), new_backend);
+    }
+
+    write_admin_store_audit(state, principal, name, "store.rotate-key", "success");
+    json_response(
+        StatusCode::OK,
+        &AdminStoreRotateKeyResponse {
+            key_hex,
+            warning: "the previous master key has been replaced; secrets already \
+                     stored under this store remain encrypted with the old key and \
+                     cannot be decrypted through this backend. re-encrypt them \
+                     offline if you need to keep them readable."
+                .to_string(),
+        },
+    )
+}
+
 fn write_admin_store_audit(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
@@ -3822,9 +4054,23 @@ async fn handle_admin_request(
         });
     }
 
-    // Path-parameterised stores routes: GET /v1/admin/stores/<name>,
-    // PUT, DELETE. Match them first so the literal "/v1/admin/stores"
-    // dispatch below doesn't shadow them.
+    // Path-parameterised stores routes. Match them first so the
+    // literal "/v1/admin/stores" dispatch below doesn't shadow them.
+    //
+    // `/v1/admin/stores/{name}/rotate-key` is the only nested route;
+    // it must be matched before the generic single-segment matcher
+    // (which filters out any path containing '/').
+    if let Some(rest) = request.uri().path().strip_prefix("/v1/admin/stores/")
+        && let Some(name) = rest.strip_suffix("/rotate-key")
+        && !name.is_empty()
+        && !name.contains('/')
+    {
+        return Ok(match *request.method() {
+            Method::POST => handle_admin_store_rotate_key(&state, &principal, name),
+            _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
+        });
+    }
+    // GET /v1/admin/stores/<name>, PUT, DELETE.
     if let Some(name) = request
         .uri()
         .path()
@@ -5823,6 +6069,7 @@ mod tests {
             }),
             stores_dynamic_dir: std::path::PathBuf::new(),
             stores_data_roots: Vec::new(),
+            keys_dir: std::path::PathBuf::new(),
             tokens,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -5975,6 +6222,7 @@ mod tests {
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,
+            keys_dir: None,
         };
         validate_admin_config(&cfg).expect("loopback plain HTTP must be allowed");
     }
@@ -5993,6 +6241,7 @@ mod tests {
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,
+            keys_dir: None,
         };
         validate_admin_config(&cfg).expect("TLS on non-loopback must be allowed");
     }
@@ -6008,6 +6257,7 @@ mod tests {
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,
+            keys_dir: None,
         };
         let err = validate_admin_config(&cfg).unwrap_err();
         let msg = format!("{err:#}");
@@ -6028,6 +6278,7 @@ mod tests {
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,
+            keys_dir: None,
         };
         let err = validate_admin_config(&cfg).unwrap_err();
         assert!(format!("{err:#}").contains("empty entry"));
@@ -6145,6 +6396,7 @@ mod tests {
             }),
             stores_dynamic_dir: std::path::PathBuf::new(),
             stores_data_roots: Vec::new(),
+            keys_dir: std::path::PathBuf::new(),
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -6420,6 +6672,7 @@ mod tests {
             }),
             stores_dynamic_dir: std::path::PathBuf::new(),
             stores_data_roots: Vec::new(),
+            keys_dir: std::path::PathBuf::new(),
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -6901,10 +7154,13 @@ mod tests {
         std::fs::create_dir_all(&dynamic_dir).unwrap();
         let data_root = tmp.join("data");
         std::fs::create_dir_all(&data_root).unwrap();
+        let keys_dir = tmp.join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
         AdminRuntimeState {
             stores: std::sync::RwLock::new(StoreRegistry::new()),
             stores_dynamic_dir: dynamic_dir,
             stores_data_roots: vec![data_root],
+            keys_dir,
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -7014,7 +7270,6 @@ mod tests {
             name: "work".to_string(),
             backend: AdminStoreBackendKind::Plain,
             dir: dir.to_string_lossy().to_string(),
-            key_file: None,
             description: Some("the work store".into()),
         };
         let resp = do_admin_store_create(&state, &p, create);
@@ -7128,7 +7383,6 @@ mod tests {
                 name: "stray".into(),
                 backend: AdminStoreBackendKind::Plain,
                 dir: outside.to_string_lossy().to_string(),
-                key_file: None,
                 description: None,
             },
         );
@@ -7147,7 +7401,6 @@ mod tests {
             name: "work".to_string(),
             backend: AdminStoreBackendKind::Plain,
             dir: dir.to_string_lossy().to_string(),
-            key_file: None,
             description: None,
         };
         let _first = do_admin_store_create(&state, &p, req.clone());
@@ -7171,7 +7424,6 @@ mod tests {
                 name: "work".into(),
                 backend: AdminStoreBackendKind::Plain,
                 dir: dir.to_string_lossy().to_string(),
-                key_file: None,
                 description: None,
             },
         );
@@ -7204,7 +7456,6 @@ mod tests {
                 name: "work".into(),
                 backend: AdminStoreBackendKind::Plain,
                 dir: dir.to_string_lossy().to_string(),
-                key_file: None,
                 description: None,
             },
         );
@@ -7230,6 +7481,265 @@ mod tests {
     }
 
     #[test]
+    fn create_plain_store_returns_no_key_hex() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("work")
+                    .to_string_lossy()
+                    .to_string(),
+                description: None,
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_body_json(resp);
+        assert!(
+            !body.as_object().unwrap().contains_key("key_hex"),
+            "plain stores must not carry a key_hex; got {body:?}",
+        );
+        // The store payload sits under `store`.
+        assert_eq!(body["store"]["backend"], "plain");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_encrypted_store_generates_key_with_0600_and_returns_it_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let dir = tmp.path().join("data").join("vault");
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                dir: dir.to_string_lossy().to_string(),
+                description: None,
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_body_json(resp);
+        let key_hex = body["key_hex"]
+            .as_str()
+            .expect("encrypted create must include key_hex");
+        assert_eq!(key_hex.len(), 64, "key_hex must be 32 bytes hex-encoded");
+        assert!(
+            key_hex.chars().all(|c| c.is_ascii_hexdigit()),
+            "key_hex must be lowercase hex",
+        );
+
+        // Key file is in state.keys_dir, named after the store, mode 0600.
+        let key_path = state.keys_dir.join("vault.key");
+        assert!(key_path.exists(), "key file must be created");
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "key file must be mode 0600, got {mode:o}");
+        let on_disk = std::fs::read_to_string(&key_path).unwrap();
+        assert_eq!(
+            on_disk, key_hex,
+            "key file contents must match returned key"
+        );
+
+        // Subsequent detail GETs must NOT echo the key value. (The
+        // detail response carries the *path*, not the contents.)
+        let resp = handle_admin_store_detail(&state, &p, "vault");
+        let body = response_body_json(resp);
+        assert_eq!(body["backend"], "encrypted");
+        assert_eq!(body["key_file"], key_path.to_string_lossy().to_string());
+        let body_str = serde_json::to_string(&body).unwrap();
+        assert!(
+            !body_str.contains(key_hex),
+            "key material leaked into detail response: {body_str}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_encrypted_store_refuses_existing_key_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        // Stash a stale key file as if a previous store with this
+        // name had been created and torn down without cleanup.
+        let stale = state.keys_dir.join("vault.key");
+        std::fs::write(&stale, "stale-key").unwrap();
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("vault")
+                    .to_string_lossy()
+                    .to_string(),
+                description: None,
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(response_body_json(resp)["code"], "key_file_exists");
+        // The original file is untouched.
+        assert_eq!(std::fs::read_to_string(&stale).unwrap(), "stale-key");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rotate_key_replaces_key_and_returns_new_value_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let dir = tmp.path().join("data").join("vault");
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                dir: dir.to_string_lossy().to_string(),
+                description: None,
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        let original_key = response_body_json(resp)["key_hex"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let resp = handle_admin_store_rotate_key(&state, &p, "vault");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_body_json(resp);
+        let new_key = body["key_hex"].as_str().unwrap().to_string();
+        assert_ne!(new_key, original_key, "rotation must produce a fresh key");
+        assert_eq!(new_key.len(), 64);
+        assert!(
+            body["warning"].as_str().unwrap().contains("re-encrypt"),
+            "warning must mention the re-encryption limitation",
+        );
+
+        // On-disk key file still 0600, contents = new key.
+        let key_path = state.keys_dir.join("vault.key");
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read_to_string(&key_path).unwrap(), new_key);
+
+        // Detail GET still does not leak the key value.
+        let resp = handle_admin_store_detail(&state, &p, "vault");
+        let body = response_body_json(resp);
+        let body_str = serde_json::to_string(&body).unwrap();
+        assert!(!body_str.contains(&new_key));
+        assert!(!body_str.contains(&original_key));
+    }
+
+    #[test]
+    fn rotate_key_refuses_plain_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("work")
+                    .to_string_lossy()
+                    .to_string(),
+                description: None,
+            },
+        );
+        let resp = handle_admin_store_rotate_key(&state, &p, "work");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(response_body_json(resp)["code"], "not_encrypted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rotate_key_refuses_declarative_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        // Hand-stuff an encrypted declarative store.
+        let dir = tmp.path().join("data").join("nixed");
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_file = tmp.path().join("nix-key");
+        std::fs::write(&key_file, "a".repeat(64)).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        {
+            let mut reg = state.stores.write().unwrap();
+            let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
+            reg.open.insert("nixed".to_string(), store);
+            reg.sources.insert(
+                "nixed".to_string(),
+                LoadedStoreDef {
+                    source: StoreSource::Declarative,
+                    source_path: std::path::PathBuf::from("/nix/store/zzz/nixed.yaml"),
+                    definition: StoreDefinition {
+                        description: None,
+                        created_at: None,
+                        storage: underwrap_protocol::config::StorageConfig::Encrypted {
+                            dir,
+                            key_file,
+                        },
+                    },
+                },
+            );
+        }
+        let resp = handle_admin_store_rotate_key(&state, &admin_principal(&[]), "nixed");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(response_body_json(resp)["code"], "declarative_immutable");
+    }
+
+    #[test]
+    fn rotate_key_audited_and_requires_admin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let dir = tmp.path().join("data").join("vault");
+        do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                dir: dir.to_string_lossy().to_string(),
+                description: None,
+            },
+        );
+        // Non-admin gets 403.
+        let op = operator_principal(&["vault"]);
+        let resp = handle_admin_store_rotate_key(&state, &op, "vault");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // Admin succeeds and the audit event lands.
+        let resp = handle_admin_store_rotate_key(&state, &p, "vault");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let events = load_audit_history(state.admin_home_store.as_ref()).unwrap();
+        let actions: Vec<&str> = events.iter().map(|e| e.action.as_str()).collect();
+        assert!(
+            actions.contains(&"store.rotate-key"),
+            "rotate-key audit event missing; got {actions:?}",
+        );
+    }
+
+    #[test]
     fn store_crud_actions_emit_audit_events() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
@@ -7242,7 +7752,6 @@ mod tests {
                 name: "audit-store".into(),
                 backend: AdminStoreBackendKind::Plain,
                 dir: dir.to_string_lossy().to_string(),
-                key_file: None,
                 description: None,
             },
         );

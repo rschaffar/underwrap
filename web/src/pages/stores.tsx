@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -17,7 +17,6 @@ import {
 import {
   Form,
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -32,6 +31,7 @@ import {
   deleteStore,
   fetchStores,
   postStoreCreate,
+  postStoreRotateKey,
   putStoreUpdate,
   type WhoamiResponse,
 } from "@/api/client";
@@ -254,27 +254,18 @@ function SourceBadge({
 
 // ---------- Create ----------
 
-const createSchema = z
-  .object({
-    name: z
-      .string()
-      .min(1, "Store name is required.")
-      .regex(
-        /^[a-z0-9][a-z0-9_-]*$/,
-        "Use lowercase letters, digits, '-' or '_'; must start with a letter or digit.",
-      ),
-    backend: z.enum(["plain", "encrypted"]),
-    dir: z.string().min(1, "Data directory is required."),
-    key_file: z.string().optional(),
-    description: z.string().optional(),
-  })
-  .refine(
-    (v) => v.backend !== "encrypted" || (v.key_file && v.key_file.length > 0),
-    {
-      path: ["key_file"],
-      message: "Key file is required for encrypted stores.",
-    },
-  );
+const createSchema = z.object({
+  name: z
+    .string()
+    .min(1, "Store name is required.")
+    .regex(
+      /^[a-z0-9][a-z0-9_-]*$/,
+      "Use lowercase letters, digits, '-' or '_'; must start with a letter or digit.",
+    ),
+  backend: z.enum(["plain", "encrypted"]),
+  dir: z.string().min(1, "Data directory is required."),
+  description: z.string().optional(),
+});
 type CreateValues = z.infer<typeof createSchema>;
 
 function CreateStoreDialog({
@@ -286,23 +277,35 @@ function CreateStoreDialog({
 }) {
   const qc = useQueryClient();
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Held only while the reveal modal is up; cleared when the operator
+  // confirms acknowledgement and we close the modal. Never persisted
+  // beyond React state — no localStorage / sessionStorage / URL.
+  const [revealKey, setRevealKey] = useState<{
+    storeName: string;
+    keyHex: string;
+  } | null>(null);
   const form = useForm<CreateValues>({
     resolver: zodResolver(createSchema),
     defaultValues: {
       name: "",
       backend: "plain",
       dir: "",
-      key_file: "",
       description: "",
     },
   });
-  const backend = form.watch("backend");
 
   const create = useMutation({
     mutationFn: (body: AdminStoreCreateRequest) => postStoreCreate(body),
-    onSuccess: async () => {
+    onSuccess: async (res) => {
       await qc.invalidateQueries({ queryKey: ["admin", "stores"] });
-      onClose();
+      if (res.key_hex) {
+        // Encrypted store: surface the master key once. We keep the
+        // create dialog mounted underneath so onClose isn't called
+        // until the operator finishes the reveal flow.
+        setRevealKey({ storeName: res.store.name, keyHex: res.key_hex });
+      } else {
+        onClose();
+      }
     },
     onError: (err) => setSubmitError(describeApiError(err)),
   });
@@ -314,11 +317,30 @@ function CreateStoreDialog({
       backend: values.backend,
       dir: values.dir,
     };
-    if (values.backend === "encrypted") {
-      body.key_file = values.key_file;
-    }
     if (values.description) body.description = values.description;
     create.mutate(body);
+  }
+
+  if (revealKey) {
+    return (
+      <KeyRevealDialog
+        title={`Encryption key for ${revealKey.storeName}`}
+        description={
+          <>
+            This is the only time the master key will be shown. Copy and
+            store it somewhere safe (a password manager, an offline
+            vault). The backend keeps the key file readable only by its
+            own user; you do not need a copy to operate the store —
+            keeping one is just an escape hatch for disaster recovery.
+          </>
+        }
+        keyHex={revealKey.keyHex}
+        onClose={() => {
+          setRevealKey(null);
+          onClose();
+        }}
+      />
+    );
   }
 
   return (
@@ -385,31 +407,13 @@ function CreateStoreDialog({
                 </FormItem>
               )}
             />
-            {backend === "encrypted" ? (
-              <FormField
-                control={form.control}
-                name="key_file"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Key file path</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder="/run/keys/underwrap-work.key"
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        spellCheck={false}
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      32-byte master key file readable only by the
-                      <code className="mx-1 rounded bg-(--color-surface-1) px-1 py-0.5 text-xs">underwrap-backend</code>
-                      user.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+            {form.watch("backend") === "encrypted" ? (
+              <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                The backend will generate a fresh 32-byte master key,
+                write it to its keys directory with mode 0600, and show
+                it to you once after creation. Save it somewhere safe —
+                it cannot be retrieved afterwards.
+              </p>
             ) : null}
             <FormField
               control={form.control}
@@ -461,6 +465,13 @@ function EditStoreDialog({
 }) {
   const qc = useQueryClient();
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [rotateConfirm, setRotateConfirm] = useState(false);
+  const [rotateWarning, setRotateWarning] = useState<string | null>(null);
+  const [revealKey, setRevealKey] = useState<{
+    storeName: string;
+    keyHex: string;
+    warning: string;
+  } | null>(null);
   const form = useForm<EditValues>({
     resolver: zodResolver(editSchema),
     defaultValues: { description: store.description ?? "" },
@@ -474,6 +485,39 @@ function EditStoreDialog({
     },
     onError: (err) => setSubmitError(describeApiError(err)),
   });
+  const rotate = useMutation({
+    mutationFn: () => postStoreRotateKey(store.name),
+    onSuccess: (res) => {
+      setRotateWarning(null);
+      setRevealKey({
+        storeName: store.name,
+        keyHex: res.key_hex,
+        warning: res.warning,
+      });
+    },
+    onError: (err) => setRotateWarning(describeApiError(err)),
+  });
+
+  if (revealKey) {
+    return (
+      <KeyRevealDialog
+        title={`New encryption key for ${revealKey.storeName}`}
+        description={
+          <>
+            <strong>Heads up:</strong> {revealKey.warning} This is the
+            only time the new key will be shown.
+          </>
+        }
+        keyHex={revealKey.keyHex}
+        onClose={() => {
+          setRevealKey(null);
+          onClose();
+        }}
+      />
+    );
+  }
+
+  const canRotate = store.backend === "encrypted";
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -482,8 +526,8 @@ function EditStoreDialog({
           <DialogTitle>Edit store: {store.name}</DialogTitle>
           <DialogDescription>
             Backend type and data directory are immutable. Only the
-            description can be edited here. Encrypted-store key rotation
-            lands in a follow-up ticket.
+            description can be edited here. Encrypted stores also
+            support master-key rotation.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -526,6 +570,160 @@ function EditStoreDialog({
             </DialogFooter>
           </form>
         </Form>
+        {canRotate ? (
+          <div className="mt-6 space-y-3 rounded-md border border-(--color-line) bg-(--color-surface-1) p-4">
+            <h3 className="text-sm font-semibold text-(--color-fg)">
+              Rotate master key
+            </h3>
+            <p className="text-xs text-(--color-muted)">
+              Generates a fresh 32-byte master key and replaces the
+              existing key file. Secrets already stored under this
+              store will no longer be decryptable through this backend
+              — re-encrypt them offline first if you need to keep them.
+            </p>
+            <label className="flex items-start gap-2 text-xs text-(--color-muted)">
+              <input
+                type="checkbox"
+                checked={rotateConfirm}
+                onChange={(e) => setRotateConfirm(e.target.checked)}
+              />
+              <span>
+                I understand existing secrets will become unreadable
+                through this backend.
+              </span>
+            </label>
+            {rotateWarning ? (
+              <p
+                role="alert"
+                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+              >
+                {rotateWarning}
+              </p>
+            ) : null}
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={!rotateConfirm || rotate.isPending}
+              onClick={() => rotate.mutate()}
+            >
+              {rotate.isPending ? "Rotating…" : "Rotate key"}
+            </Button>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------- One-time key reveal ----------
+
+/**
+ * Shown after a successful encrypted-store create or rotate-key call.
+ * The key value lives only in this component's state — it is dropped
+ * the moment the operator confirms the acknowledgement checkbox and
+ * closes the dialog. Never written to localStorage, sessionStorage,
+ * cookies, or the URL.
+ */
+function KeyRevealDialog({
+  title,
+  description,
+  keyHex,
+  onClose,
+}: {
+  title: string;
+  description: ReactNode;
+  keyHex: string;
+  onClose: () => void;
+}) {
+  const [ack, setAck] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
+
+  async function onCopy() {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(keyHex);
+        setCopyStatus("copied");
+      } else {
+        setCopyStatus("failed");
+      }
+    } catch {
+      setCopyStatus("failed");
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        // Only allow closing via the explicit confirm button after the
+        // ack box is ticked. Ignore escape / outside clicks while the
+        // key is visible so a stray click can't bury it.
+        if (!o && ack) onClose();
+      }}
+    >
+      <DialogContent
+        data-testid="key-reveal-dialog"
+        onEscapeKeyDown={(e) => {
+          if (!ack) e.preventDefault();
+        }}
+        onPointerDownOutside={(e) => {
+          if (!ack) e.preventDefault();
+        }}
+        onInteractOutside={(e) => {
+          if (!ack) e.preventDefault();
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <Label htmlFor="key-reveal-value" className="text-xs">
+            Master key (hex)
+          </Label>
+          <pre
+            id="key-reveal-value"
+            data-testid="key-reveal-value"
+            className="overflow-x-auto rounded-md border border-(--color-line) bg-(--color-surface-1) p-3 font-mono text-xs text-(--color-fg)"
+          >
+            {keyHex}
+          </pre>
+          <div className="flex items-center gap-2">
+            <Button type="button" size="sm" variant="ghost" onClick={onCopy}>
+              Copy to clipboard
+            </Button>
+            {copyStatus === "copied" ? (
+              <span className="text-xs text-emerald-300">Copied.</span>
+            ) : copyStatus === "failed" ? (
+              <span className="text-xs text-rose-300">
+                Could not access clipboard — select the value above and
+                copy by hand.
+              </span>
+            ) : null}
+          </div>
+          <label className="flex items-start gap-2 text-xs text-(--color-muted)">
+            <input
+              type="checkbox"
+              data-testid="key-reveal-ack"
+              checked={ack}
+              onChange={(e) => setAck(e.target.checked)}
+            />
+            <span>I have saved this key securely.</span>
+          </label>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            data-testid="key-reveal-confirm"
+            disabled={!ack}
+            onClick={onClose}
+          >
+            Done
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

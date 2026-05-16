@@ -91,6 +91,10 @@ admin:
   # data dirs under. Empty disables store creation.
   stores_data_roots:
     - /var/lib/underwrap-backend/data
+  # Where the admin API writes master-key files for encrypted dynamic
+  # stores (one file per store, mode 0600). Defaults to
+  # /var/lib/underwrap-backend/keys.
+  keys_dir: /var/lib/underwrap-backend/keys
 ```
 
 ### Store definition files
@@ -180,7 +184,22 @@ behind a local TLS-terminating reverse proxy when exposed beyond
 localhost. Every request must present a bearer token. The operator name
 tagged to the token ends up in audit events.
 
-- `GET /v1/admin/stores` — list of configured store names
+- `GET /v1/admin/stores` — list of configured stores
+- `POST /v1/admin/stores` — create a dynamic store. For
+  `backend = "encrypted"` the backend auto-generates a 32-byte master
+  key, writes it to `<keys_dir>/<store>.key` with mode 0600, and
+  returns the key value **exactly once** in the response as
+  `key_hex`. Subsequent reads never include the key.
+- `GET /v1/admin/stores/{name}`, `PUT`, `DELETE` — dynamic-store
+  detail / update / delete. Mutations on declarative stores are
+  refused with `409 declarative_immutable`.
+- `POST /v1/admin/stores/{name}/rotate-key` — generate a fresh
+  master key for an encrypted dynamic store, replace the key file
+  atomically, reopen the backend, and return the new key value once.
+  **Limitation:** v1 of rotation does not re-encrypt existing
+  ciphertext, so secrets already stored under the store become
+  unreadable through this backend. Re-encrypt them offline first if
+  you need to keep them.
 - `POST /v1/admin/secret/{read,write,list,delete}` — direct access to any
   store's key-value surface
 - `POST /v1/admin/policy/get` — fetch the entire `PolicyDocument`

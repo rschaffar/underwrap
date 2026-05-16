@@ -136,6 +136,7 @@ async fn underwrapd_binary_start_and_read() {
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,
+            keys_dir: None,
         }),
     })
     .unwrap();

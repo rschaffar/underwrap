@@ -56,8 +56,9 @@ use underwrap_protocol::service::{
     AdminWrapperModeRequest, CatalogEntry,
 };
 use underwrap_protocol::service::{
-    AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreDeleteResponse,
-    AdminStoreDetailResponse, AdminStoreListItem, AdminStoreSource, AdminStoreUpdateRequest,
+    AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
+    AdminStoreDeleteResponse, AdminStoreDetailResponse, AdminStoreListItem,
+    AdminStoreRotateKeyResponse, AdminStoreSource, AdminStoreUpdateRequest,
     AdminStoresListResponse,
 };
 
@@ -142,8 +143,10 @@ fn ts_bindings_in_sync_with_rust() {
         AdminStoresListResponse,
         AdminStoreDetailResponse,
         AdminStoreCreateRequest,
+        AdminStoreCreateResponse,
         AdminStoreUpdateRequest,
         AdminStoreDeleteResponse,
+        AdminStoreRotateKeyResponse,
         AdminUiAuditEvent,
         AdminUiAuditQueryRequest,
         AdminUiAuditQueryResponse,

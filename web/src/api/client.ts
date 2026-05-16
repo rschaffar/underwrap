@@ -124,8 +124,10 @@ export async function apiJson<T>(
 
 import type {
   AdminStoreCreateRequest,
+  AdminStoreCreateResponse,
   AdminStoreDeleteResponse,
   AdminStoreDetailResponse,
+  AdminStoreRotateKeyResponse,
   AdminStoreUpdateRequest,
   AdminStoresListResponse,
   BootstrapRequest,
@@ -138,8 +140,10 @@ import type {
 
 export type {
   AdminStoreCreateRequest,
+  AdminStoreCreateResponse,
   AdminStoreDeleteResponse,
   AdminStoreDetailResponse,
+  AdminStoreRotateKeyResponse,
   AdminStoreUpdateRequest,
   AdminStoresListResponse,
   BootstrapRequest,
@@ -190,11 +194,20 @@ export function fetchStore(name: string): Promise<AdminStoreDetailResponse> {
 
 export function postStoreCreate(
   body: AdminStoreCreateRequest,
-): Promise<AdminStoreDetailResponse> {
-  return apiJson<AdminStoreDetailResponse>("/v1/admin/stores", {
+): Promise<AdminStoreCreateResponse> {
+  return apiJson<AdminStoreCreateResponse>("/v1/admin/stores", {
     method: "POST",
     json: body,
   });
+}
+
+export function postStoreRotateKey(
+  name: string,
+): Promise<AdminStoreRotateKeyResponse> {
+  return apiJson<AdminStoreRotateKeyResponse>(
+    `/v1/admin/stores/${encodeURIComponent(name)}/rotate-key`,
+    { method: "POST" },
+  );
 }
 
 export function putStoreUpdate(
