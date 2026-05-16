@@ -1,126 +1,78 @@
 # Admin UI
 
-`underwrap-admin-ui` is the supported operator-facing web service for one
-`underwrap-backendd` instance.
-
-The implementation is the Next.js app in `apps/admin-ui/`. It acts as a
-server-side BFF in front of `underwrap-backendd`:
-
-- the browser never talks to `underwrap-backendd` directly
-- backend bearer tokens remain server-side only
-- operator auth uses Argon2 password hashes, signed `HttpOnly` sessions,
-  same-origin checks, and CSRF validation on state-changing routes
+The underwrap admin UI is a Vite + React + shadcn single-page app that
+ships embedded inside `underwrap-backendd`. There is no separate Node
+or Next.js process — the SPA bundle is statically compiled into the
+backend binary via `rust-embed` and served from the same HTTPS admin
+listener that exposes the JSON admin API.
 
 ## Deployment shape
 
 ```text
-browser ──TLS──► reverse proxy ──HTTP──► underwrap-admin-ui ──HTTP bearer──► underwrap-backendd admin
+browser ──HTTPS──► underwrap-backendd admin listener
+                       │
+                       ├── / and /assets/...      → SPA (embedded)
+                       └── /v1/admin/...          → JSON admin API
 ```
 
-The app itself serves plain HTTP. Put it behind a TLS-terminating reverse proxy
-when exposed beyond localhost.
+The admin listener terminates TLS natively (rustls). No reverse proxy
+is required, though one is still possible for centralised certificate
+management.
 
-## Runtime configuration
+## Authentication
 
-The Next.js server reads its runtime config from `UNDERWRAP_ADMIN_UI_CONFIG`.
-That YAML file contains:
+- **Argon2id** password hashing.
+- **AEAD-encrypted session cookies** signed and encrypted with a
+  32-byte key configured via `admin.session_key_file`.
+- **Double-submit CSRF** for every state-changing request: the SPA
+  reads the `__Host-uw-csrf` cookie and echoes it back via the
+  `X-CSRF-Token` header.
+- **Same-origin checks** for state-changing requests via the
+  `admin.allowed_origins` allowlist.
+- **First-use bootstrap** flow that the SPA detects automatically via
+  `GET /v1/admin/auth/bootstrap/status`.
 
-```yaml
-session_key_file: /run/keys/underwrap-admin-ui.session
+A legacy bearer-token auth path remains in the backend for scripts and
+the integration-test harness; new deployments should use the cookie
+flow exclusively.
 
-operators:
-  alice:
-    password_hash_file: /etc/underwrap-admin-ui/alice.phc
+## Surface today
 
-backend:
-  label: shame01
-  admin_url: http://127.0.0.1:19443
-  token_file: /run/keys/underwrap-admin-backend
-```
+| Page        | Path        | Role required |
+| ----------- | ----------- | ------------- |
+| Dashboard   | `/`         | any operator  |
+| Matrix      | `/matrix`   | any operator  |
+| Stores      | `/stores`   | admin         |
+| Users       | `/users`    | admin         |
+| Profile     | `/profile`  | any operator  |
+| Login       | `/login`    | unauthenticated |
+| Bootstrap   | `/bootstrap`| empty backend |
 
-- `session_key_file` must contain exactly 32 random bytes
-- `operators` is optional; if omitted, the UI uses the first-use bootstrap flow
-  and stores the created operator hash in local UI state
-- each configured `password_hash_file` must contain an Argon2 PHC string
-- `backend.token_file` must match a configured `underwrap-backendd` admin
-  bearer token
-- `backend.label` is an operator-facing backend/host label for the one backend
-  this UI instance fronts
+Operators see only the stores they have been granted access to.
+Admins see everything. The matrix tab lets admins set the
+`(wrapper, host, user)` grant mode and toggle the per-store global
+`writes_enabled` switch — see [backend docs](backend.md#policy-model)
+for the underlying model.
 
-The server binds through the normal Next.js environment variables:
+## Local development
 
-- `HOSTNAME`
-- `PORT`
-- `UNDERWRAP_ADMIN_UI_CONFIG`
-- `UNDERWRAP_ADMIN_UI_STATE_DIR`
-- `UNDERWRAP_ADMIN_UI_SECURE_COOKIES`
-
-## NixOS deployment
-
-Use the flake's admin UI module export:
-
-```nix
-{
-  imports = [ underwrap.nixosModules.admin-ui ];
-
-  services.underwrap-admin-ui = {
-    enable = true;
-    package = underwrap.packages.${pkgs.system}.underwrap-admin-ui;
-    configFile = /run/keys/underwrap-admin-ui.yaml;
-    listenAddress = "127.0.0.1";
-    port = 3000;
-  };
-}
-```
-
-The module wires:
-
-- the `underwrap-admin-ui` systemd service
-- `HOSTNAME`, `PORT`, `UNDERWRAP_ADMIN_UI_CONFIG`,
-  `UNDERWRAP_ADMIN_UI_STATE_DIR`, and `UNDERWRAP_ADMIN_UI_SECURE_COOKIES`
-- the packaged standalone Next.js server
-
-## Main operator workflows
-
-- log in as an operator
-- bootstrap the first operator if none exists yet
-- choose a store within this backend
-- browse resources
-- explicitly reveal or download secret material
-- enable mutation, write/upload/delete, then revoke mutation
-- manage wrapper modes
-- toggle access-matrix allow cells
-- inspect the read-only audit history feed
-
-Routes are scoped by store, not by a top-level target selector:
-
-- `/`
-- `/s/[store]/resources`
-- `/s/[store]/resources/[...resource]`
-- `/s/[store]/wrappers`
-- `/s/[store]/audit`
-
-## Security notes
-
-- secret values are never placed in URLs
-- reveal/download responses are `Cache-Control: no-store`
-- secret values and backend tokens are not written to browser storage
-- audit remains backend-owned; the UI only reads the backend feed
-
-## Testing
-
-Frontend checks live in `apps/admin-ui/`:
+Inside `nix develop`:
 
 ```bash
-cd apps/admin-ui
-npm test
-npm run build
-npm run test:e2e
+cargo build -p backend-backendd   # build the backend binary
+cd web
+npm install                       # first time only
+npm run dev                       # Vite dev server with HMR (proxies to backendd)
 ```
 
-The browser regression suite uses Playwright and covers:
+For a production build:
 
-- protected-route/session failures
-- CSRF rejection
-- reveal/download no-store behavior
-- mutation, upload, delete, wrapper-mode, matrix, and audit flows
+```bash
+cd web
+npm run build                     # writes web/dist/
+cargo build -p backend-backendd   # the embedded SPA picks up web/dist/
+```
+
+The dev server proxies `/v1/admin/*` to the backend, so the same
+auth flows work without TLS. For Playwright/e2e runs see
+`docs/testing.md`.

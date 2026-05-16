@@ -47,8 +47,9 @@ Depending on how you configure it, underwrap can also:
 
 - keep secrets in a central `underwrap-backendd` service on the same
   machine or on a trusted remote workstation/server
-- let operators manage wrapper modes, rules, and grants through the
-  browser-based [admin UI](docs/admin-ui.md)
+- let operators manage stores, users, and per-`(wrapper, host, user)`
+  agent grants through a single-binary admin SPA that
+  `underwrap-backendd` serves directly over HTTPS
 - require a fresh SSH-agent signature for individual invocations of
   high-privilege wrappers (per-call approval)
 - provide a private Secret Service (`libsecret`) environment for tools
@@ -60,6 +61,10 @@ underwrap is trying to combine a few things that are rarely available together:
 
 - **wrapper-first UX** — users run a command like `work-jira issue list`
 - **kernel-backed wrapper identity** — wrapper socket selection sets the expected wrapper, and the peer's setgid-derived effective GID must confirm it
+- **per-agent `(wrapper, host, user)` grants** — central policy
+  controls which agents on which hosts can use each wrapper, with
+  four modes per grant (locked, unlocked, time-limited, ssh-agent
+  per-call approval) and a single global write-lock toggle per store
 - **clean target environments** — the target does not inherit the caller's full shell environment
 - **process-isolated delivery** — under the default hardened posture
   (`services.underwrap.hardenTargetHost = true`, which pins
@@ -191,7 +196,6 @@ Then start with [Getting started](docs/getting-started.md).
 - [Documentation overview](docs/index.md)
 - [Getting started](docs/getting-started.md)
 - [The underwrap backend](docs/backend.md)
-- [Admin UI](docs/admin-ui.md)
 - [Agent-facing wrappers](docs/agents.md)
 - [GitHub via libsecret](docs/gh-libsecret.md)
 - [Configuration reference](docs/configuration.md)

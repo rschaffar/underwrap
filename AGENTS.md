@@ -52,22 +52,25 @@ nix build .#checks.x86_64-linux.vm-test              # NixOS VM test (21 asserti
 
 ```
 crates/
-  underwrap-protocol/    # Shared: IPC framing, config schema, messages, SCM_RIGHTS, policy types
-  underwrap-store/       # StorageBackend trait: plain, encrypted; mTLS HTTPS service client
-  underwrapd/            # Frontend daemon: identity, per-call approval, audit, secretsd channels
-  underwrap-backendd/    # Central HTTPS service + admin API; storage; expiry sweeper
-  underwrap-admin-ui/    # Operator web UI in front of the admin API
-  underwrap-exec/        # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
-  underwrap-ns/          # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
-  underwrap-secretsd/    # D-Bus Secret Service provider for libsecret mode
-  underwrap-secretsd-store/ # In-memory Secret Service data model + JSON serialization
-  integration-tests/     # Cargo integration tests
+  shared-protocol/         # IPC framing, config schema, messages, SCM_RIGHTS, policy types
+  shared-store/            # StorageBackend trait: plain, encrypted; mTLS HTTPS service client
+  shared-secretsd-store/   # In-memory Secret Service data model + JSON serialization
+  frontend-underwrapd/     # Daemon: identity, grant gate, per-call approval, audit
+  frontend-exec/           # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
+  frontend-ns/             # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
+  frontend-secretsd/       # D-Bus Secret Service provider for libsecret mode
+  frontend-debug-tool/     # CLI for debugging wrapper-socket flows
+  frontend-keyring-probe/  # Smoke-test binary for the libsecret round-trip
+  backend-backendd/        # Central HTTPS service + admin API + auth + SPA hosting
+  integration-tests/       # Cargo integration tests (real daemon + backend)
+web/                       # Vite + React + shadcn admin SPA (served by backend-backendd)
 nix/
-  modules/underwrap.nix  # Multi-instance NixOS module
-  tests/node.nix         # VM test node configuration
-  tests/test.py          # VM test script (Python)
-  tests/spoof.py         # Socket spoofing test helper
-docs/                    # Documentation (backend, admin UI, security, etc.)
+  modules/underwrap.nix         # Multi-instance frontend NixOS module
+  modules/underwrap-backend.nix # Backend declarative-stores module
+  tests/node.nix                # VM test node configuration
+  tests/test.py                 # VM test script (Python)
+  tests/spoof.py                # Socket spoofing test helper
+docs/                    # Documentation (backend, security, etc.)
 examples/config.yaml     # Annotated example frontend config
 tickets/                 # Kanban-style ticket system (see "Ticket system" below)
 ```
@@ -94,18 +97,23 @@ story tickets and give both story and task tickets these ordered numeric prefixe
 
 ## Key files to understand first
 
-- `crates/underwrap-exec/src/main.rs` — two-stage wrapper entry point with
+- `crates/frontend-exec/src/main.rs` — two-stage wrapper entry point with
   per-call approval ssh-agent signing
-- `crates/underwrap-ns/src/main.rs` — PID namespace + hardening + libsecret mode
-- `crates/underwrapd/src/server.rs` — daemon: identity resolution, wrapper dispatch
-- `crates/underwrapd/src/approval.rs` — pending-challenge store + signature verify
-- `crates/underwrapd/src/wrapper_flow.rs` — the wrapper socket request flow
-- `crates/underwrap-backendd/src/server.rs` — HTTPS service + admin API + expiry sweeper
-- `crates/underwrap-admin-ui/src/server.rs` — axum routes for the operator UI
-- `crates/underwrap-protocol/src/policy.rs` — PolicyDocument, WrapperApprovalMode
-- `crates/underwrap-store/src/service.rs` — mTLS HTTPS backend client
-- `nix/modules/underwrap.nix` — NixOS module (generates everything)
-- `docs/backend.md` — the backend's data model and API surface
+- `crates/frontend-ns/src/main.rs` — PID namespace + hardening + libsecret mode
+- `crates/frontend-underwrapd/src/server.rs` — daemon: identity resolution, wrapper dispatch
+- `crates/frontend-underwrapd/src/approval.rs` — pending-challenge store + signature verify
+- `crates/frontend-underwrapd/src/wrapper_flow/` — the wrapper socket request flow
+- `crates/frontend-underwrapd/src/policy.rs` — grant gate (lookup by `(wrapper, host, user)`)
+- `crates/backend-backendd/src/server.rs` — HTTPS service + admin API + stores/users/grants CRUD
+- `crates/backend-backendd/src/auth.rs` — Argon2id password hashing + AEAD session cookies
+- `crates/backend-backendd/src/web.rs` — embedded SPA hosting via `rust-embed`
+- `crates/backend-backendd/src/operators.rs` — operator records + Principal + role/grant model
+- `crates/shared-protocol/src/policy.rs` — `PolicyDocument`, `AgentGrant`, `WrapperApprovalMode`
+- `crates/shared-store/src/service.rs` — mTLS HTTPS backend client
+- `web/src/router.tsx` — TanStack Router setup; the SPA's auth/bootstrap guard lives here
+- `nix/modules/underwrap.nix` — frontend NixOS module (generates wrappers, sockets, services)
+- `nix/modules/underwrap-backend.nix` — backend NixOS module (declarative stores)
+- `docs/backend.md` — backend data model + API surface
 - `docs/security.md` — every security mechanism explained
 
 ## Code conventions
@@ -175,25 +183,37 @@ on backward compatibility concerns.
 
 - Unit tests: in each crate, run with `cargo test -p <crate>`
 - Integration tests: `cargo test -p integration-tests` (some skip without cap_sys_admin)
-- Admin UI end-to-end: `cargo test -p underwrap-admin-ui --test end_to_end`
+- Admin SPA Vitest: `cd web && npm test`
+- Admin SPA Playwright (run inside `nix develop`): `cd web && npm run test:e2e`
 - VM test: `nix build .#checks.x86_64-linux.vm-test` — boots a real NixOS VM, tests
   local and remote-style instances against real `underwrap-backendd` processes,
   unprivileged user, spoofing resistance, PID namespace isolation, memory
-  protection, core dump prevention, policy-driven wrapper locking
+  protection, core dump prevention, grant-driven wrapper locking
 
 ## Architecture notes
 
 **Two-stage wrapper chain:**
 `underwrap-exec` (setgid) → pipe fd 3 → `underwrap-ns` (cap_sys_admin) → target in PID namespace
 
-**Identity model:** wrapper socket selects expected wrapper + setgid group → `SO_PEERCRED` effective GID → daemon confirms the match
+**Identity model:** wrapper socket selects expected wrapper + setgid group → `SO_PEERCRED` effective GID → daemon confirms the match; daemon resolves the GID-validated peer UID to a username via `getpwuid` and consults the per-store grant `(wrapper, host, user)`.
 
 **Central backend:** the frontend daemon connects outbound to
-`underwrap-backendd` over HTTPS with mTLS. The backend holds secrets + the
-policy document. Operators manage the backend through the web-based
-`underwrap-admin-ui` service using bearer tokens on the admin API.
+`underwrap-backendd` over HTTPS with mTLS. The backend holds secrets, the
+policy document, the operator collection, and the admin SPA. Operators
+interact with the backend over its HTTPS admin listener with session-cookie
+auth (Argon2id passwords + AEAD session cookies + double-submit CSRF). The
+SPA bundle ships embedded inside the backend binary and is served from
+the same listener as the JSON admin API.
 
 **Multi-instance:** `services.underwrap.instances.<name>` — fully isolated users, groups, sockets.
+
+**Grant model:** the per-store policy document is a flat list of
+`AgentGrant` rows keyed by `(wrapper, host, user)` plus a single
+global `writes_enabled` toggle. Each grant carries one of four modes
+(`Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`,
+`PerCallApproval { approval_key }`). Read access through an active
+grant is unconditional; write access (admin + wrapper) gates on the
+global `writes_enabled` flag.
 
 **Libsecret mode:** When `libsecret = true` on a wrapper:
 
@@ -221,14 +241,14 @@ PID + mount namespace (created by underwrap-ns)
 
 See `docs/security.md` "Design invariants" and "Secretsd channel" for security analysis.
 
-**Per-call approval** (when a wrapper is in that backend mode):
+**Per-call approval** (when the grant for `(wrapper, host, user)` is in `PerCallApproval` mode):
 
 1. underwrap-exec connects and sends `WrapperRequest::Read`
-2. underwrapd evaluates policy and responds with
+2. underwrapd consults the grant and responds with
    `WrapperResponse::ApprovalRequired { challenge_id, nonce, approval_key }`
 3. underwrap-exec signs the nonce via `SSH_AUTH_SOCK` and sends
    `WrapperRequest::ApprovalProof { challenge_id, signature, public_key_blob }`
-4. underwrapd verifies the signature against the policy-stored key,
+4. underwrapd verifies the signature against the grant's `approval_key`,
    consumes the nonce, and re-authorizes the read with the mode gate
    bypassed
 5. The usual `ReadOk` / scoped-channel flow continues
