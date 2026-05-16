@@ -1,0 +1,15 @@
+[env]
+# Where ts-rs writes generated TypeScript bindings.
+#
+# `relative = true` resolves the value against the directory containing
+# THIS config file (the workspace root), so any crate in the workspace
+# exports into the same `web/src/api/types/` tree regardless of which
+# crate `cargo test` happens to be running from.
+TS_RS_EXPORT_DIR = { value = "web/src/api/types", relative = true }
+
+[alias]
+# Regenerate the TypeScript bindings under `web/src/api/types/` by
+# running every `ts-rs` auto-export test plus the drift checker. Use
+# this after touching a `#[derive(TS)]` DTO; commit the resulting
+# changes under `web/src/api/types/` alongside the Rust edit.
+types = "test --workspace export_bindings_"

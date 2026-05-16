@@ -2419,25 +2419,33 @@ fn check_csrf(
     Ok(())
 }
 
-#[derive(serde::Deserialize)]
-struct LoginRequest {
+#[derive(serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct LoginRequest {
     username: String,
     password: String,
 }
 
-#[derive(serde::Serialize)]
-struct LoginResponse {
-    username: String,
-    role: crate::operators::OperatorRole,
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct LoginResponse {
+    pub username: String,
+    pub role: crate::operators::OperatorRole,
 }
 
-#[derive(serde::Serialize)]
-struct WhoamiResponse {
-    authenticated: bool,
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct WhoamiResponse {
+    pub authenticated: bool,
+    // `skip_serializing_if = "Option::is_none"` omits the JSON key when None;
+    // `#[ts(optional)]` makes ts-rs emit `username?: string` (instead of the
+    // default `string | null`) so the SPA type matches the wire format.
     #[serde(skip_serializing_if = "Option::is_none")]
-    username: Option<String>,
+    #[ts(optional)]
+    pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    role: Option<crate::operators::OperatorRole>,
+    #[ts(optional)]
+    pub role: Option<crate::operators::OperatorRole>,
 }
 
 async fn handle_admin_login(
@@ -2566,21 +2574,24 @@ async fn handle_admin_login(
         .expect("building login response")
 }
 
-#[derive(serde::Deserialize)]
-struct BootstrapRequest {
-    username: String,
-    password: String,
+#[derive(serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct BootstrapRequest {
+    pub username: String,
+    pub password: String,
 }
 
-#[derive(serde::Serialize)]
-struct BootstrapStatusResponse {
-    bootstrap_required: bool,
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct BootstrapStatusResponse {
+    pub bootstrap_required: bool,
 }
 
-#[derive(serde::Serialize)]
-struct BootstrapResponse {
-    username: String,
-    role: crate::operators::OperatorRole,
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct BootstrapResponse {
+    pub username: String,
+    pub role: crate::operators::OperatorRole,
 }
 
 /// Handle `GET /v1/admin/auth/bootstrap/status`. Public endpoint:

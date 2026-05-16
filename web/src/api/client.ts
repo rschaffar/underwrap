@@ -114,17 +114,31 @@ export async function apiJson<T>(
   return (await res.json()) as T;
 }
 
-// ----- Typed response shapes the SPA depends on -----
+// ----- Typed admin-API helpers -----
+//
+// All request/response shapes come from `@/api/types`, the barrel for the
+// TypeScript bindings ts-rs generates from the Rust DTOs in
+// `crates/shared-protocol` and `crates/backend-backendd`. Editing those
+// files by hand will fail `cargo test --test ts_export`; regenerate by
+// running `cargo test --workspace` instead.
 
-export interface WhoamiResponse {
-  authenticated: boolean;
-  username?: string;
-  role?: "admin" | "operator";
-}
+import type {
+  BootstrapRequest,
+  BootstrapResponse,
+  BootstrapStatusResponse,
+  LoginRequest,
+  LoginResponse,
+  WhoamiResponse,
+} from "@/api/types";
 
-export interface BootstrapStatusResponse {
-  bootstrap_required: boolean;
-}
+export type {
+  BootstrapRequest,
+  BootstrapResponse,
+  BootstrapStatusResponse,
+  LoginRequest,
+  LoginResponse,
+  WhoamiResponse,
+};
 
 export function fetchWhoami(): Promise<WhoamiResponse> {
   return apiJson<WhoamiResponse>("/v1/admin/auth/whoami");
@@ -132,16 +146,6 @@ export function fetchWhoami(): Promise<WhoamiResponse> {
 
 export function fetchBootstrapStatus(): Promise<BootstrapStatusResponse> {
   return apiJson<BootstrapStatusResponse>("/v1/admin/auth/bootstrap/status");
-}
-
-export interface LoginRequest {
-  username: string;
-  password: string;
-}
-
-export interface LoginResponse {
-  username: string;
-  role: "admin" | "operator";
 }
 
 export function postLogin(body: LoginRequest): Promise<LoginResponse> {
@@ -155,8 +159,8 @@ export function postLogout(): Promise<void> {
   return apiJson<void>("/v1/admin/auth/logout", { method: "POST" });
 }
 
-export function postBootstrap(body: LoginRequest): Promise<LoginResponse> {
-  return apiJson<LoginResponse>("/v1/admin/auth/bootstrap", {
+export function postBootstrap(body: BootstrapRequest): Promise<BootstrapResponse> {
+  return apiJson<BootstrapResponse>("/v1/admin/auth/bootstrap", {
     method: "POST",
     json: body,
   });

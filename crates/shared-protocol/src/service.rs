@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::policy::{PolicyDocument, PolicyGrant, PolicyRule, WrapperApprovalMode};
 
@@ -39,7 +40,8 @@ pub struct ServiceListResponse {
     pub ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct CatalogEntry {
     pub host: String,
     pub user: String,
@@ -90,12 +92,14 @@ pub struct ServiceErrorResponse {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminStoresResponse {
     pub stores: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiWrapperCounts {
     pub locked: usize,
     pub unlocked: usize,
@@ -103,7 +107,8 @@ pub struct AdminUiWrapperCounts {
     pub per_call_approval: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiOverviewStore {
     pub store: String,
     pub resource_count: usize,
@@ -112,12 +117,14 @@ pub struct AdminUiOverviewStore {
     pub recent_audit_events: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiOverviewResponse {
     pub stores: Vec<AdminUiOverviewStore>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourcesQueryRequest {
     pub store: String,
     #[serde(default)]
@@ -132,19 +139,22 @@ pub struct AdminUiResourcesQueryRequest {
     pub page_size: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceSlots {
     pub env: bool,
     pub files: bool,
     pub libsecret: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceMutationSummary {
     pub active: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceListItem {
     pub resource: String,
     pub slots: AdminUiResourceSlots,
@@ -152,19 +162,22 @@ pub struct AdminUiResourceListItem {
     pub mutation: AdminUiResourceMutationSummary,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourcesQueryResponse {
     pub items: Vec<AdminUiResourceListItem>,
     pub total: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceGetRequest {
     pub store: String,
     pub resource: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceEntrySummary {
     pub entry: String,
     pub secret_id: String,
@@ -174,7 +187,8 @@ pub struct AdminUiResourceEntrySummary {
     pub sha256_hex: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[ts(export)]
 pub struct AdminUiResourceSlotsDetail {
     #[serde(default)]
     pub env: Vec<AdminUiResourceEntrySummary>,
@@ -184,19 +198,22 @@ pub struct AdminUiResourceSlotsDetail {
     pub libsecret: Vec<AdminUiResourceEntrySummary>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceGetResponse {
     pub resource: String,
     pub slots: AdminUiResourceSlotsDetail,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceRevealRequest {
     pub store: String,
     pub secret_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum AdminUiResourceRevealResponse {
     Utf8 {
@@ -212,13 +229,15 @@ pub enum AdminUiResourceRevealResponse {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceDownloadRequest {
     pub store: String,
     pub secret_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceWriteTextRequest {
     pub store: String,
     pub wrapper: String,
@@ -226,7 +245,8 @@ pub struct AdminUiResourceWriteTextRequest {
     pub material_utf8: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceUploadFileRequest {
     pub store: String,
     pub wrapper: String,
@@ -234,30 +254,35 @@ pub struct AdminUiResourceUploadFileRequest {
     pub material_b64: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceWriteResponse {
     pub entry: AdminUiResourceEntrySummary,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceDeleteEntryRequest {
     pub store: String,
     pub wrapper: String,
     pub secret_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiResourceDeleteEntryResponse {
     pub existed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMutationGetRequest {
     pub store: String,
     pub resource: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMutationWrapperState {
     pub wrapper: String,
     pub active: bool,
@@ -266,19 +291,22 @@ pub struct AdminUiMutationWrapperState {
     pub mode: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMutationGetResponse {
     pub wrappers: Vec<AdminUiMutationWrapperState>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 #[serde(rename_all = "kebab-case")]
 pub enum AdminUiMutationSetMode {
     Disabled,
     Temporary,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMutationSetRequest {
     pub store: String,
     pub wrapper: String,
@@ -288,7 +316,8 @@ pub struct AdminUiMutationSetRequest {
     pub expires_at_epoch: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMutationSetResponse {
     pub active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -296,7 +325,8 @@ pub struct AdminUiMutationSetResponse {
     pub mode: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiWrappersQueryRequest {
     pub store: String,
     #[serde(default)]
@@ -305,7 +335,8 @@ pub struct AdminUiWrappersQueryRequest {
     pub mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiWrapperListItem {
     pub wrapper: String,
     pub mode: WrapperApprovalMode,
@@ -314,12 +345,14 @@ pub struct AdminUiWrapperListItem {
     pub resource_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiWrappersQueryResponse {
     pub items: Vec<AdminUiWrapperListItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiWrapperSetModeRequest {
     pub store: String,
     pub wrapper: String,
@@ -328,7 +361,8 @@ pub struct AdminUiWrapperSetModeRequest {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiWrapperSetModeResponse {
     pub wrapper: String,
     pub mode: WrapperApprovalMode,
@@ -336,7 +370,8 @@ pub struct AdminUiWrapperSetModeResponse {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMatrixQueryRequest {
     pub store: String,
     #[serde(default)]
@@ -349,7 +384,8 @@ pub struct AdminUiMatrixQueryRequest {
     pub wrapper: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMatrixRow {
     pub host: String,
     pub user: String,
@@ -357,13 +393,15 @@ pub struct AdminUiMatrixRow {
     pub cells: std::collections::BTreeMap<String, bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMatrixQueryResponse {
     pub operations: Vec<String>,
     pub rows: Vec<AdminUiMatrixRow>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMatrixSetCellRequest {
     pub store: String,
     pub wrapper: String,
@@ -372,12 +410,14 @@ pub struct AdminUiMatrixSetCellRequest {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiMatrixSetCellResponse {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiAuditQueryRequest {
     pub store: String,
     #[serde(default)]
@@ -398,7 +438,8 @@ pub struct AdminUiAuditQueryRequest {
     pub page_size: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiAuditEvent {
     pub ts_epoch: u64,
     pub action: String,
@@ -414,24 +455,28 @@ pub struct AdminUiAuditEvent {
     pub result: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminUiAuditQueryResponse {
     pub items: Vec<AdminUiAuditEvent>,
     pub total: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminSecretReadRequest {
     pub store: String,
     pub secret_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminSecretReadResponse {
     pub material_b64: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminSecretWriteRequest {
     pub store: String,
     /// The wrapper context the operator is editing under. Required: the
@@ -443,55 +488,65 @@ pub struct AdminSecretWriteRequest {
     pub material_b64: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminSecretListRequest {
     pub store: String,
     pub prefix: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminSecretListResponse {
     pub ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminSecretDeleteRequest {
     pub store: String,
     pub secret_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminSecretDeleteResponse {
     pub existed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminCatalogGetRequest {
     pub store: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminCatalogGetResponse {
     pub entries: Vec<CatalogEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminPolicyGetRequest {
     pub store: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminPolicyGetResponse {
     pub document: PolicyDocument,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminPolicyPutRequest {
     pub store: String,
     pub document: PolicyDocument,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminWrapperModeRequest {
     pub store: String,
     pub wrapper: String,
@@ -500,31 +555,36 @@ pub struct AdminWrapperModeRequest {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminRuleUpsertRequest {
     pub store: String,
     pub rule: PolicyRule,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminRuleDeleteRequest {
     pub store: String,
     pub id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminGrantUpsertRequest {
     pub store: String,
     pub grant: PolicyGrant,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminGrantDeleteRequest {
     pub store: String,
     pub id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminOkResponse {
     pub ok: bool,
 }

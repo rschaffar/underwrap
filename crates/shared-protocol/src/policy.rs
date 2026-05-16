@@ -1,6 +1,7 @@
 //! Central policy model shared by backend and frontend.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Reserved secret id used to persist the policy document inside a backend store.
 pub const POLICY_DOCUMENT_SECRET_ID: &str = "__underwrap/policy/document";
@@ -37,7 +38,8 @@ pub enum PolicyDecision {
 }
 
 /// Whether a rule allows or denies a request.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 #[serde(rename_all = "kebab-case")]
 pub enum PolicyEffect {
     Allow,
@@ -50,7 +52,8 @@ pub enum PolicyEffect {
 /// The mode decides *if* the wrapper can operate at all right now. Rules and
 /// grants then decide *which* resources and operations are in scope when the
 /// mode permits it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum WrapperApprovalMode {
     /// Deny every request for this wrapper.
@@ -74,7 +77,8 @@ impl Default for WrapperApprovalMode {
 }
 
 /// Wrapper-level runtime state.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct WrapperPolicyState {
     pub wrapper: String,
     #[serde(default)]
@@ -84,7 +88,8 @@ pub struct WrapperPolicyState {
 }
 
 /// One policy rule for one wrapper/resource/operation tuple.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct PolicyRule {
     pub id: String,
     pub wrapper: String,
@@ -94,7 +99,8 @@ pub struct PolicyRule {
 }
 
 /// A time-bounded runtime grant for one wrapper/resource/operation tuple.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct PolicyGrant {
     pub id: String,
     pub wrapper: String,
@@ -110,7 +116,8 @@ pub struct PolicyGrant {
 }
 
 /// Store-backed policy document for one underwrap instance namespace.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[ts(export)]
 pub struct PolicyDocument {
     #[serde(default)]
     pub wrappers: Vec<WrapperPolicyState>,

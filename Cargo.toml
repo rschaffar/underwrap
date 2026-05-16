@@ -51,3 +51,4 @@ ssh-key = { version = "0.6", features = ["ed25519", "rsa", "std"] }
 base64 = "0.22"
 hex = "0.4"
 signature = "2"
+ts-rs = "12"

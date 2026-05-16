@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use underwrap_store::StorageBackend;
 
@@ -64,7 +65,8 @@ impl std::fmt::Debug for OperatorRecord {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum OperatorRole {
     Admin,
