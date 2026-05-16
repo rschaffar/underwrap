@@ -123,6 +123,13 @@ export async function apiJson<T>(
 // running `cargo test --workspace` instead.
 
 import type {
+  AdminAgentGrantDeleteRequest,
+  AdminAgentGrantUpsertRequest,
+  AdminAgentGrantsListRequest,
+  AdminAgentGrantsListResponse,
+  AdminCatalogGetRequest,
+  AdminCatalogGetResponse,
+  AdminOkResponse,
   AdminOkUserResponse,
   AdminPasswordChangeRequest,
   AdminStoreCreateRequest,
@@ -138,15 +145,28 @@ import type {
   AdminUserRole,
   AdminUserUpdateRequest,
   AdminUsersListResponse,
+  AdminWritesEnabledGetRequest,
+  AdminWritesEnabledResponse,
+  AdminWritesEnabledSetRequest,
+  AgentGrant,
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
+  CatalogEntry,
   LoginRequest,
   LoginResponse,
   WhoamiResponse,
+  WrapperApprovalMode,
 } from "@/api/types";
 
 export type {
+  AdminAgentGrantDeleteRequest,
+  AdminAgentGrantUpsertRequest,
+  AdminAgentGrantsListRequest,
+  AdminAgentGrantsListResponse,
+  AdminCatalogGetRequest,
+  AdminCatalogGetResponse,
+  AdminOkResponse,
   AdminOkUserResponse,
   AdminPasswordChangeRequest,
   AdminStoreCreateRequest,
@@ -162,12 +182,18 @@ export type {
   AdminUserRole,
   AdminUserUpdateRequest,
   AdminUsersListResponse,
+  AdminWritesEnabledGetRequest,
+  AdminWritesEnabledResponse,
+  AdminWritesEnabledSetRequest,
+  AgentGrant,
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
+  CatalogEntry,
   LoginRequest,
   LoginResponse,
   WhoamiResponse,
+  WrapperApprovalMode,
 };
 
 export function fetchWhoami(): Promise<WhoamiResponse> {
@@ -299,6 +325,66 @@ export function postPasswordChange(
   body: AdminPasswordChangeRequest,
 ): Promise<AdminOkUserResponse> {
   return apiJson<AdminOkUserResponse>("/v1/admin/auth/password", {
+    method: "POST",
+    json: body,
+  });
+}
+
+// ----- Agent grants (ticket 246) -----
+
+export function postGrantsList(
+  body: AdminAgentGrantsListRequest,
+): Promise<AdminAgentGrantsListResponse> {
+  return apiJson<AdminAgentGrantsListResponse>("/v1/admin/grants/list", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postGrantUpsert(
+  body: AdminAgentGrantUpsertRequest,
+): Promise<AdminOkResponse> {
+  return apiJson<AdminOkResponse>("/v1/admin/grants/upsert", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postGrantDelete(
+  body: AdminAgentGrantDeleteRequest,
+): Promise<AdminOkResponse> {
+  return apiJson<AdminOkResponse>("/v1/admin/grants/delete", {
+    method: "POST",
+    json: body,
+  });
+}
+
+// ----- Global writes-enabled toggle (ticket 247) -----
+
+export function postWritesEnabledGet(
+  body: AdminWritesEnabledGetRequest,
+): Promise<AdminWritesEnabledResponse> {
+  return apiJson<AdminWritesEnabledResponse>(
+    "/v1/admin/policy/writes-enabled/get",
+    { method: "POST", json: body },
+  );
+}
+
+export function postWritesEnabledSet(
+  body: AdminWritesEnabledSetRequest,
+): Promise<AdminWritesEnabledResponse> {
+  return apiJson<AdminWritesEnabledResponse>(
+    "/v1/admin/policy/writes-enabled/set",
+    { method: "POST", json: body },
+  );
+}
+
+// ----- Catalog (admin) -----
+
+export function postCatalogGet(
+  body: AdminCatalogGetRequest,
+): Promise<AdminCatalogGetResponse> {
+  return apiJson<AdminCatalogGetResponse>("/v1/admin/catalog/get", {
     method: "POST",
     json: body,
   });

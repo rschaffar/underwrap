@@ -10,6 +10,7 @@ import {
   History,
   LogOut,
   UserCircle,
+  Grid3x3,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { label: "Resources", icon: Box, href: "/" },
+  { label: "Matrix", icon: Grid3x3, href: "/matrix" },
   { label: "Wrappers", icon: ShieldCheck, href: "/wrappers" },
   { label: "Stores", icon: Lock, href: "/stores", adminOnly: true },
   { label: "Users", icon: Users, href: "/users", adminOnly: true },

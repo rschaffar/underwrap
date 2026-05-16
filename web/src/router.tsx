@@ -14,6 +14,7 @@ import { AppShell } from "@/components/app-shell";
 import { Dashboard } from "@/pages/dashboard";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
+import { MatrixPage } from "@/pages/matrix";
 import { StoresPage } from "@/pages/stores";
 import { UsersPage } from "@/pages/users";
 import { ProfilePage } from "@/pages/profile";
@@ -192,6 +193,15 @@ const profileRoute = new Route({
   },
 });
 
+const matrixRoute = new Route({
+  getParentRoute: () => appLayoutRoute,
+  path: "/matrix",
+  component: function MatrixRouteComponent() {
+    const ctx = matrixRoute.useRouteContext();
+    return <MatrixPage principal={ctx.principal} />;
+  },
+});
+
 // ----- Public auth routes -----
 
 function LoginRouteComponent() {
@@ -283,6 +293,7 @@ function safeNextPath(next: string | null): string | null {
 const routeTree = rootRoute.addChildren([
   appLayoutRoute.addChildren([
     indexRoute,
+    matrixRoute,
     storesRoute,
     usersRoute,
     profileRoute,
