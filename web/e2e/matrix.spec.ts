@@ -1,10 +1,10 @@
 /**
  * Matrix page e2e (ticket 250).
  *
- * Exercises the new agent-grant model end-to-end from the SPA: the
- * writes-enabled toggle, cell-editor flows for each of the four
- * modes, removing a grant, and a refresh that preserves the URL
- * `?store=` selection.
+ * Exercises the agent-grant model end-to-end from the SPA: cell-
+ * editor flows for each of the four modes, removing a grant, and a
+ * refresh that preserves the URL `?store=` selection. Per-resource
+ * wrapper-write toggles live on the Secrets page, not here.
  */
 import { test, expect, loginViaUi } from "./fixtures";
 
@@ -18,7 +18,7 @@ async function csrfFromPage(page: import("@playwright/test").Page): Promise<stri
   return csrf.value;
 }
 
-test("matrix page loads, shows writes toggle, and renders empty for an empty catalog", async ({
+test("matrix page loads and renders empty for an empty catalog", async ({
   page,
   backendWithAdmin,
 }) => {
@@ -26,42 +26,11 @@ test("matrix page loads, shows writes toggle, and renders empty for an empty cat
   await page.goto(`${backendWithAdmin.baseUrl}/matrix`);
 
   await expect(page.getByRole("heading", { name: /^matrix$/i })).toBeVisible();
-  await expect(page.getByTestId("writes-toggle")).toBeVisible();
 
   // Empty fixture: no agents register, so the catalog is empty.
   await expect(
     page.getByText(/matrix is empty for this store/i),
   ).toBeVisible();
-});
-
-test("toggling writes-enabled flips the banner and persists across reload", async ({
-  page,
-  backendWithAdmin,
-}) => {
-  await loginViaUi(page, backendWithAdmin.baseUrl);
-  await page.goto(`${backendWithAdmin.baseUrl}/matrix`);
-
-  const toggle = page.getByTestId("writes-toggle-input");
-  await expect(toggle).not.toBeChecked();
-  // The toggle is controlled — `checked` reflects the cached query.
-  // Click and then poll for the post-refetch state instead of
-  // using `.check()`, which asserts the value flipped synchronously.
-  await toggle.click();
-  await expect(toggle).toBeChecked();
-  await expect(
-    page.getByText(/writes enabled globally\. disable when finished/i),
-  ).toBeVisible();
-
-  // Reload: state must come from the backend, not the SPA cache.
-  await page.reload();
-  await expect(page.getByTestId("writes-toggle-input")).toBeChecked();
-
-  // Flip back off; the banner disappears.
-  await page.getByTestId("writes-toggle-input").click();
-  await expect(page.getByTestId("writes-toggle-input")).not.toBeChecked();
-  await expect(
-    page.getByText(/writes enabled globally\. disable when finished/i),
-  ).toBeHidden();
 });
 
 test("cell editor cycles a grant through all four modes and then removes it", async ({
@@ -149,7 +118,7 @@ test("cell editor cycles a grant through all four modes and then removes it", as
   ).toBeVisible();
 });
 
-test("raw policy viewer surfaces the live PolicyDocument and the writes-enabled badge (ticket 301)", async ({
+test("raw policy viewer surfaces the live PolicyDocument and per-slot write-enabled counts", async ({
   page,
   backendWithAdmin,
 }) => {
@@ -161,25 +130,47 @@ test("raw policy viewer surfaces the live PolicyDocument and the writes-enabled 
   const dlg = page.getByRole("dialog", { name: /raw policy: default/i });
   await expect(dlg).toBeVisible();
 
-  // Initial state: empty grants, writes_enabled = false.
-  await expect(dlg.getByTestId("writes-enabled-badge")).toHaveText(/^off$/i);
+  // Initial state: no grants, no writable resources for either slot.
+  await expect(dlg.getByTestId("writable-files-badge")).toHaveText(
+    /files: 0 on/i,
+  );
+  await expect(dlg.getByTestId("writable-libsecret-badge")).toHaveText(
+    /libsecret: 0 on/i,
+  );
   const json = dlg.getByTestId("policy-json");
   await expect(json).toContainText('"grants"');
-  await expect(json).toContainText('"writes_enabled": false');
+  await expect(json).toContainText('"files_writable"');
+  await expect(json).toContainText('"libsecret_writable"');
 
-  // Close, flip writes-enabled on, reopen — the badge tracks the
-  // backend state, not a cached view. The dialog has two "Close"
-  // buttons (footer button + Radix's X corner button); the footer
-  // one carries the matching accessible text content.
+  // Close, flip one resource's files-writable flag on via the admin
+  // API, reopen — the badge re-fetches because the dialog opens
+  // with `staleTime: 0`.
   await dlg.getByText("Close", { exact: true }).click();
   await expect(dlg).toBeHidden();
-  await page.getByTestId("writes-toggle-input").click();
-  await expect(page.getByTestId("writes-toggle-input")).toBeChecked();
+  const csrf = await csrfFromPage(page);
+  const setResp = await page.request.post(
+    `${backendWithAdmin.baseUrl}/v1/admin/policy/write-permissions/set`,
+    {
+      data: {
+        store: "default",
+        resource: "github/token",
+        slot: "files",
+        enabled: true,
+      },
+      headers: {
+        "X-CSRF-Token": csrf,
+        Origin: backendWithAdmin.baseUrl,
+      },
+    },
+  );
+  expect(setResp.status()).toBe(200);
 
   await page.getByRole("button", { name: /view raw policy/i }).click();
   const dlg2 = page.getByRole("dialog", { name: /raw policy: default/i });
-  await expect(dlg2.getByTestId("writes-enabled-badge")).toHaveText(/^on$/i);
+  await expect(dlg2.getByTestId("writable-files-badge")).toHaveText(
+    /files: 1 on/i,
+  );
   await expect(dlg2.getByTestId("policy-json")).toContainText(
-    '"writes_enabled": true',
+    '"github/token": true',
   );
 });

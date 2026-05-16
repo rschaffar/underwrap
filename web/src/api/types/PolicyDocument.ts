@@ -5,10 +5,10 @@ import type { AgentGrant } from "./AgentGrant";
  * Store-backed policy document for one underwrap instance namespace.
  *
  * `serde` accepts extra fields by default, so pre-245 policy blobs
- * (carrying the legacy `wrappers` / `rules` arrays) deserialise into the
- * new shape with those fields silently dropped. The
- * `old_policy_blob_with_legacy_fields_still_parses` regression test pins
- * that contract.
+ * (carrying the legacy `wrappers` / `rules` arrays, or the pre-permissions
+ * `writes_enabled` flag) deserialise into the new shape with those fields
+ * silently dropped. The `old_policy_blob_with_legacy_fields_still_parses`
+ * regression test pins that contract.
  */
 export type PolicyDocument = { 
 /**
@@ -16,7 +16,13 @@ export type PolicyDocument = {
  */
 grants: Array<AgentGrant>, 
 /**
- * Master kill switch for every write path in this store. `false` by
- * default — admins opt in deliberately before any mutation lands.
+ * Per-resource toggle for wrapper-side writes to the `files` slot.
+ * Absent key or `false` → writes denied. Keyed by the resource ID
+ * (e.g. `"github/token"`) — not by secret ID.
  */
-writes_enabled: boolean, };
+files_writable: { [key in string]: boolean }, 
+/**
+ * Per-resource toggle for wrapper-side writes to the `libsecret`
+ * slot. Same semantics as [`PolicyDocument::files_writable`].
+ */
+libsecret_writable: { [key in string]: boolean }, };

@@ -71,7 +71,10 @@ export function PolicyViewerDialog({
     }
   }
 
-  const writesEnabled = policy.data?.document.writes_enabled ?? null;
+  const filesWritable = policy.data?.document.files_writable ?? {};
+  const libsecretWritable = policy.data?.document.libsecret_writable ?? {};
+  const filesOnCount = Object.values(filesWritable).filter(Boolean).length;
+  const libsecretOnCount = Object.values(libsecretWritable).filter(Boolean).length;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -95,18 +98,21 @@ export function PolicyViewerDialog({
           </p>
         ) : (
           <div className="space-y-3">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-(--color-muted)">Writes enabled:</span>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-(--color-muted)">
+                Wrapper writes:
+              </span>
               <span
-                data-testid="writes-enabled-badge"
-                className={
-                  "rounded-md px-2 py-0.5 font-mono " +
-                  (writesEnabled
-                    ? "border border-amber-500/40 bg-amber-500/15 text-amber-200"
-                    : "border border-(--color-line) bg-(--color-surface-1) text-(--color-fg)")
-                }
+                data-testid="writable-files-badge"
+                className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-(--color-fg)"
               >
-                {writesEnabled ? "on" : "off"}
+                files: {filesOnCount} on
+              </span>
+              <span
+                data-testid="writable-libsecret-badge"
+                className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-(--color-fg)"
+              >
+                libsecret: {libsecretOnCount} on
               </span>
             </div>
             <pre

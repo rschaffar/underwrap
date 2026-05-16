@@ -7,17 +7,24 @@
 //!   W". The grant carries a [`WrapperApprovalMode`] (the same four-state mode
 //!   the wrapper UI exposed before), which decides *if* the grant is usable
 //!   right now.
-//! - One global per-store toggle [`PolicyDocument::writes_enabled`] gates
-//!   every write attempt across the store. There is no per-secret write ACL.
 //! - Read access through an active grant is **unconditional**. Once the
 //!   mode check passes, the daemon hands the wrapper every secret listed in
 //!   its declaration — no per-resource filter, no per-secret toggling.
+//! - Per-resource write permissions for the `files` and `libsecret` slots
+//!   live in [`PolicyDocument::files_writable`] and
+//!   [`PolicyDocument::libsecret_writable`]. Absent or `false` → wrapper-side
+//!   writes to that slot/resource are denied. The `env` slot has no
+//!   wrapper-side write path, so it carries no flag. Admin-side writes
+//!   through the JSON API are not gated by this document at all — they
+//!   are always authorised by an operator's role + per-store access.
 //!
-//! The previous per-secret rule/grant ACL and per-secret unlock-until
-//! windows are gone. The four `WrapperApprovalMode` variants (`Locked`,
-//! `Unlocked`, `UnlockedUntil { until }`, `PerCallApproval { approval_key }`)
-//! are unchanged in behaviour and now live on each grant rather than
-//! per-wrapper.
+//! The previous global `writes_enabled` toggle and the older per-secret
+//! rule/grant ACL are gone. The four `WrapperApprovalMode` variants
+//! (`Locked`, `Unlocked`, `UnlockedUntil { until }`,
+//! `PerCallApproval { approval_key }`) are unchanged in behaviour and live
+//! on each grant rather than per-wrapper.
+
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -79,23 +86,53 @@ pub struct AgentGrant {
 /// Store-backed policy document for one underwrap instance namespace.
 ///
 /// `serde` accepts extra fields by default, so pre-245 policy blobs
-/// (carrying the legacy `wrappers` / `rules` arrays) deserialise into the
-/// new shape with those fields silently dropped. The
-/// `old_policy_blob_with_legacy_fields_still_parses` regression test pins
-/// that contract.
+/// (carrying the legacy `wrappers` / `rules` arrays, or the pre-permissions
+/// `writes_enabled` flag) deserialise into the new shape with those fields
+/// silently dropped. The `old_policy_blob_with_legacy_fields_still_parses`
+/// regression test pins that contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
 #[ts(export)]
 pub struct PolicyDocument {
     /// The flat list of agent grants. One per `(wrapper, host, user)` tuple.
     #[serde(default)]
     pub grants: Vec<AgentGrant>,
-    /// Master kill switch for every write path in this store. `false` by
-    /// default — admins opt in deliberately before any mutation lands.
+    /// Per-resource toggle for wrapper-side writes to the `files` slot.
+    /// Absent key or `false` → writes denied. Keyed by the resource ID
+    /// (e.g. `"github/token"`) — not by secret ID.
     #[serde(default)]
-    pub writes_enabled: bool,
+    pub files_writable: HashMap<String, bool>,
+    /// Per-resource toggle for wrapper-side writes to the `libsecret`
+    /// slot. Same semantics as [`PolicyDocument::files_writable`].
+    #[serde(default)]
+    pub libsecret_writable: HashMap<String, bool>,
+}
+
+/// The three secret "slots" a wrapper resource carries. The first two
+/// have a wrapper-side write path and are subject to the per-resource
+/// permission flags in [`PolicyDocument`]; `Env` is daemon→target only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretSlot {
+    Env,
+    Files,
+    Libsecret,
 }
 
 impl PolicyDocument {
+    /// True when the wrapper is permitted to write to the `<resource>/files/*`
+    /// namespace through the secretsd channel. Defaults to `false`.
+    pub fn files_writable_for(&self, resource: &str) -> bool {
+        self.files_writable.get(resource).copied().unwrap_or(false)
+    }
+
+    /// True when the wrapper is permitted to write to the
+    /// `<resource>/libsecret/*` namespace. Defaults to `false`.
+    pub fn libsecret_writable_for(&self, resource: &str) -> bool {
+        self.libsecret_writable
+            .get(resource)
+            .copied()
+            .unwrap_or(false)
+    }
+
     /// Look up the grant for `(wrapper, host, user)`.
     pub fn find_grant(&self, wrapper: &str, host: &str, user: &str) -> Option<&AgentGrant> {
         self.grants
@@ -185,7 +222,8 @@ mod tests {
                 mode,
                 reason: None,
             }],
-            writes_enabled: false,
+            files_writable: HashMap::new(),
+            libsecret_writable: HashMap::new(),
         }
     }
 
@@ -299,20 +337,23 @@ mod tests {
                     reason: None,
                 },
             ],
-            writes_enabled: true,
+            files_writable: HashMap::from([("a".to_string(), true)]),
+            libsecret_writable: HashMap::from([("c".to_string(), true)]),
         };
         let json = serde_json::to_string(&doc).unwrap();
         let parsed: PolicyDocument = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.grants, doc.grants);
-        assert_eq!(parsed.writes_enabled, doc.writes_enabled);
+        assert_eq!(parsed.files_writable, doc.files_writable);
+        assert_eq!(parsed.libsecret_writable, doc.libsecret_writable);
     }
 
     #[test]
     fn old_policy_blob_with_legacy_fields_still_parses() {
         // A pre-245 policy document persisted as JSON: contains the
-        // dropped `wrappers` and `rules` fields. The new
-        // deserialiser must accept it (treat as empty) so an upgrade
-        // doesn't refuse to boot against a still-old store blob.
+        // dropped `wrappers`, `rules`, and `writes_enabled` fields.
+        // The new deserialiser must accept it (treat as empty / off)
+        // so an upgrade doesn't refuse to boot against a still-old
+        // store blob.
         let legacy = r#"{
             "wrappers": [
                 {"wrapper":"old","mode":{"kind":"locked"},"reason":"x"}
@@ -320,10 +361,30 @@ mod tests {
             "rules": [
                 {"id":"r","wrapper":"w","resource":"x","operation":"y","effect":"allow"}
             ],
+            "writes_enabled": true,
             "grants": []
         }"#;
         let parsed: PolicyDocument = serde_json::from_str(legacy).unwrap();
         assert!(parsed.grants.is_empty());
-        assert!(!parsed.writes_enabled);
+        assert!(parsed.files_writable.is_empty());
+        assert!(parsed.libsecret_writable.is_empty());
+    }
+
+    #[test]
+    fn per_resource_write_flags_default_to_false() {
+        let doc = PolicyDocument::default();
+        assert!(!doc.files_writable_for("any"));
+        assert!(!doc.libsecret_writable_for("any"));
+    }
+
+    #[test]
+    fn per_resource_write_flags_honour_explicit_settings() {
+        let mut doc = PolicyDocument::default();
+        doc.files_writable.insert("gws/state".into(), true);
+        doc.libsecret_writable.insert("github/gh".into(), true);
+        assert!(doc.files_writable_for("gws/state"));
+        assert!(!doc.files_writable_for("github/gh"));
+        assert!(doc.libsecret_writable_for("github/gh"));
+        assert!(!doc.libsecret_writable_for("gws/state"));
     }
 }

@@ -17,7 +17,7 @@ async fn service_mode_roundtrip_reads_secret() {
             "test",
             &PolicyDocument {
                 grants: vec![daemon.current_user_grant("gh-authorized")],
-                writes_enabled: false,
+                ..Default::default()
             },
         )
         .await

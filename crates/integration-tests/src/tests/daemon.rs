@@ -201,20 +201,9 @@ async fn underwrapd_binary_start_and_read() {
     }
     assert!(wrapper_sock.exists(), "wrapper socket never appeared");
 
-    // Writes through the admin API gate on the global writes_enabled
-    // flag (ticket 247). Flip it on before we drop the secret in.
-    let toggle = client
-        .post(format!("{admin_url}/v1/admin/policy/writes-enabled/set"))
-        .bearer_auth(admin_token)
-        .json(&underwrap_protocol::service::AdminWritesEnabledSetRequest {
-            store: "test".to_string(),
-            enabled: true,
-        })
-        .send()
-        .await
-        .unwrap();
-    assert!(toggle.status().is_success());
-
+    // Admin writes are unconditional now that per-resource write
+    // flags only gate wrapper-side writes — drop the secret in
+    // directly.
     let write_resp = client
         .post(format!("{admin_url}/v1/admin/secret/write"))
         .bearer_auth(admin_token)
@@ -245,7 +234,7 @@ async fn underwrapd_binary_start_and_read() {
                     mode: underwrap_protocol::policy::WrapperApprovalMode::Unlocked,
                     reason: None,
                 }],
-                writes_enabled: true,
+                ..Default::default()
             },
         })
         .send()

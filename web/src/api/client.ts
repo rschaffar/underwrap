@@ -154,9 +154,10 @@ import type {
   AdminUserRole,
   AdminUserUpdateRequest,
   AdminUsersListResponse,
-  AdminWritesEnabledGetRequest,
-  AdminWritesEnabledResponse,
-  AdminWritesEnabledSetRequest,
+  AdminWritableSlot,
+  AdminWritePermissionsGetRequest,
+  AdminWritePermissionsResponse,
+  AdminWritePermissionsSetRequest,
   AgentGrant,
   BootstrapRequest,
   BootstrapResponse,
@@ -200,9 +201,10 @@ export type {
   AdminUserRole,
   AdminUserUpdateRequest,
   AdminUsersListResponse,
-  AdminWritesEnabledGetRequest,
-  AdminWritesEnabledResponse,
-  AdminWritesEnabledSetRequest,
+  AdminWritableSlot,
+  AdminWritePermissionsGetRequest,
+  AdminWritePermissionsResponse,
+  AdminWritePermissionsSetRequest,
   AgentGrant,
   BootstrapRequest,
   BootstrapResponse,
@@ -424,22 +426,22 @@ export function postGrantDelete(
   });
 }
 
-// ----- Global writes-enabled toggle (ticket 247) -----
+// ----- Per-resource wrapper-write permissions -----
 
-export function postWritesEnabledGet(
-  body: AdminWritesEnabledGetRequest,
-): Promise<AdminWritesEnabledResponse> {
-  return apiJson<AdminWritesEnabledResponse>(
-    "/v1/admin/policy/writes-enabled/get",
+export function postWritePermissionsGet(
+  body: AdminWritePermissionsGetRequest,
+): Promise<AdminWritePermissionsResponse> {
+  return apiJson<AdminWritePermissionsResponse>(
+    "/v1/admin/policy/write-permissions/get",
     { method: "POST", json: body },
   );
 }
 
-export function postWritesEnabledSet(
-  body: AdminWritesEnabledSetRequest,
-): Promise<AdminWritesEnabledResponse> {
-  return apiJson<AdminWritesEnabledResponse>(
-    "/v1/admin/policy/writes-enabled/set",
+export function postWritePermissionsSet(
+  body: AdminWritePermissionsSetRequest,
+): Promise<AdminWritePermissionsResponse> {
+  return apiJson<AdminWritePermissionsResponse>(
+    "/v1/admin/policy/write-permissions/set",
     { method: "POST", json: body },
   );
 }

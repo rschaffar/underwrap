@@ -72,16 +72,21 @@ pub(crate) fn evaluate_grant_after_approval_with(
     }
 }
 
-/// Whether the per-store write toggle is on. `None` document means
-/// fresh-store/permissive (writes allowed). Writes are an active
-/// operation that always has to be approved, so the more conservative
-/// default would be `false`; pre-245 there was no toggle at all and
-/// every write was governed by the per-secret ACL, so to keep the
-/// "no document → permissive" invariant from above we mirror it
-/// here.
-pub(crate) fn writes_enabled(document: &Option<PolicyDocument>) -> bool {
+/// Whether wrapper-side writes to `<resource>/files/*` are permitted.
+/// `None` document → fresh-store/permissive (writes allowed); same
+/// "no document → permissive" invariant we use for the grant gate so
+/// the out-of-the-box experience matches a single-user local install.
+pub(crate) fn files_writable_for(document: &Option<PolicyDocument>, resource: &str) -> bool {
     match document {
-        Some(doc) => doc.writes_enabled,
+        Some(doc) => doc.files_writable_for(resource),
+        None => true,
+    }
+}
+
+/// Same as [`files_writable_for`] for the libsecret slot.
+pub(crate) fn libsecret_writable_for(document: &Option<PolicyDocument>, resource: &str) -> bool {
+    match document {
+        Some(doc) => doc.libsecret_writable_for(resource),
         None => true,
     }
 }
@@ -95,7 +100,7 @@ mod tests {
     fn doc_with(grant: AgentGrant) -> PolicyDocument {
         PolicyDocument {
             grants: vec![grant],
-            writes_enabled: false,
+            ..Default::default()
         }
     }
 

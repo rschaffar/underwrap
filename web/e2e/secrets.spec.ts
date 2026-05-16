@@ -1,19 +1,18 @@
 /**
  * Secrets CRUD e2e (ticket 300, Option A).
  *
- * Exercises the new /secrets page end-to-end against a real backend:
+ * Exercises the /secrets page end-to-end against a real backend:
  *
- *   - Empty state surfaces a friendly hint and a disabled "Create
- *     secret" button (writes are off on a fresh store).
- *   - With writes enabled, the operator can create a secret, see it
- *     in the list, reveal it (and the dialog requires explicit
- *     confirmation), overwrite it, and delete it (with the
- *     type-to-confirm guard).
+ *   - Admin can create a secret, see it grouped under its resource,
+ *     reveal it (with explicit confirmation), overwrite it, and
+ *     delete it (with the type-to-confirm guard).
  *   - Reserved __underwrap/ IDs (policy, catalog, audit) are hidden.
+ *   - Per-(resource, slot) wrapper-write toggles appear for files
+ *     and libsecret, but not for env.
  */
 import { test, expect, loginViaUi } from "./fixtures";
 
-test("secrets page disables create / edit / delete when writes_enabled is off", async ({
+test("admin always sees an enabled Create secret button (writes are unconditional)", async ({
   page,
   backendWithAdmin,
 }) => {
@@ -21,12 +20,12 @@ test("secrets page disables create / edit / delete when writes_enabled is off", 
   await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
 
   await expect(page.getByRole("heading", { name: /^secrets$/i })).toBeVisible();
-  // The "writes disabled" status banner is visible.
-  await expect(page.getByRole("status")).toContainText(/writes are currently disabled/i);
-  // The create-secret button is disabled.
+  // No "writes disabled" status banner — there's no global toggle
+  // anymore. Admin writes are always allowed.
+  await expect(page.getByRole("status")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: /create secret/i }),
-  ).toBeDisabled();
+  ).toBeEnabled();
 });
 
 test("secrets full round trip: create → reveal → edit → delete", async ({
@@ -34,12 +33,6 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   backendWithAdmin,
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
-
-  // Flip writes on via the Matrix page so the Secrets dialogs unlock.
-  await page.goto(`${backendWithAdmin.baseUrl}/matrix`);
-  await page.getByTestId("writes-toggle-input").click();
-  await expect(page.getByTestId("writes-toggle-input")).toBeChecked();
-
   await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
 
   // Empty initial list — fresh store.
@@ -67,11 +60,22 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   const envSection = resourceBlock.getByTestId("slot-env");
   await expect(envSection.getByText("GH_TOKEN")).toBeVisible();
 
-  // The reserved __underwrap/ policy document was just written by
-  // the toggle flip — confirm no resource block was created for it.
+  // env has no wrapper-side write path, so no wrapper-writable toggle.
   await expect(
-    page.getByTestId(/^resource-block-__underwrap\//),
+    resourceBlock.getByTestId(
+      "wrapper-writable-env-github/token",
+    ),
   ).toHaveCount(0);
+  // files + libsecret toggles ARE present (the resource has those
+  // slot containers even though they're empty).
+  await expect(
+    resourceBlock.getByTestId("wrapper-writable-files-github/token"),
+  ).toBeVisible();
+  await expect(
+    resourceBlock.getByTestId(
+      "wrapper-writable-libsecret-github/token",
+    ),
+  ).toBeVisible();
 
   // Reveal: the confirmation step gates the actual read.
   const row = envSection
@@ -126,4 +130,39 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   await expect(
     page.getByTestId("resource-block-github/token"),
   ).toHaveCount(0);
+});
+
+test("wrapper-writable toggle flips a files-slot permission and the change persists", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
+
+  // Seed at least one secret under a resource so the resource block
+  // appears.
+  await page.getByRole("button", { name: /create secret/i }).click();
+  const createDlg = page.getByRole("dialog", { name: /create secret/i });
+  await createDlg.getByLabel("Secret ID").fill("github/token/env/GH_TOKEN");
+  await createDlg.getByLabel(/wrapper context/i).fill("gh-authorized");
+  await createDlg.getByTestId("material-input").fill("value");
+  await createDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(createDlg).toBeHidden();
+
+  const block = page.getByTestId("resource-block-github/token");
+  await block.locator("summary").click();
+  const filesToggle = block.getByTestId("wrapper-writable-files-github/token");
+  await expect(filesToggle).not.toBeChecked();
+  await filesToggle.click();
+  await expect(filesToggle).toBeChecked();
+
+  // Reload — state must come from the backend, not the SPA cache.
+  await page.reload();
+  await page
+    .getByTestId("resource-block-github/token")
+    .locator("summary")
+    .click();
+  await expect(
+    page.getByTestId("wrapper-writable-files-github/token"),
+  ).toBeChecked();
 });

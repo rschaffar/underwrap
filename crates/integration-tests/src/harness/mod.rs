@@ -275,19 +275,16 @@ impl TestDaemon {
         secret_id: &str,
         material: &str,
     ) -> Result<()> {
-        // The admin secret write gates on the global `writes_enabled`
-        // flag (ticket 247), and the wrapper-side read gates on an
-        // `AgentGrant` matching `(wrapper, host, user)` (ticket 246).
-        // Pre-245 most tests didn't touch the policy at all and
-        // relied on permissive defaults; preserve that ergonomic by
-        // seeding both transparently. Tests that need to assert
-        // negative paths call `put_policy` or `set_writes_enabled`
-        // again afterwards to overwrite.
+        // The wrapper-side read gates on an `AgentGrant` matching
+        // `(wrapper, host, user)` (ticket 246); admin writes are
+        // unconditional now that per-resource write flags only apply
+        // to wrapper writes. Seed a grant for the current user so
+        // the read flow under test still passes.
         self.put_policy(
             store,
             &PolicyDocument {
                 grants: vec![self.current_user_grant(wrapper)],
-                writes_enabled: true,
+                ..Default::default()
             },
         )
         .await?;
@@ -296,8 +293,8 @@ impl TestDaemon {
     }
 
     /// Write a secret through the admin API *without* touching the
-    /// policy document first. Used by tests that assert the
-    /// writes-disabled gate fires.
+    /// policy document first. Used by tests that exercise the admin
+    /// write path in isolation.
     pub async fn admin_write_raw(
         &self,
         store: &str,
@@ -433,13 +430,29 @@ impl TestDaemon {
         &self.catalog_host
     }
 
-    pub async fn set_writes_enabled(&self, store: &str, enabled: bool) -> Result<()> {
+    /// Flip the per-resource wrapper-write flag for one of the two
+    /// gated slots (files / libsecret). The backend serialises this
+    /// onto `PolicyDocument::files_writable` / `libsecret_writable`.
+    pub async fn set_write_permission(
+        &self,
+        store: &str,
+        resource: &str,
+        slot: underwrap_protocol::service::AdminWritableSlot,
+        enabled: bool,
+    ) -> Result<()> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/policy/writes-enabled/set")
-            .json(&underwrap_protocol::service::AdminWritesEnabledSetRequest {
-                store: store.to_string(),
-                enabled,
-            })
+            .admin_request(
+                reqwest::Method::POST,
+                "/v1/admin/policy/write-permissions/set",
+            )
+            .json(
+                &underwrap_protocol::service::AdminWritePermissionsSetRequest {
+                    store: store.to_string(),
+                    resource: resource.to_string(),
+                    slot,
+                    enabled,
+                },
+            )
             .send()
             .await?;
         anyhow::ensure!(

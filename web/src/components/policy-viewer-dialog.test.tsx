@@ -55,7 +55,8 @@ describe("PolicyViewerDialog", () => {
             reason: undefined,
           },
         ],
-        writes_enabled: true,
+        files_writable: { "github/token": true, "aws/access-key": false },
+        libsecret_writable: { "github/gh": true },
       },
     });
 
@@ -72,9 +73,13 @@ describe("PolicyViewerDialog", () => {
       await screen.findByRole("heading", { name: /raw policy: prod/i }),
     ).toBeInTheDocument();
 
-    // Writes-enabled shows "on" with the warning styling.
-    const badge = await screen.findByTestId("writes-enabled-badge");
-    expect(badge).toHaveTextContent(/on/i);
+    // Wrapper-writes summary surfaces both per-slot counts.
+    expect(await screen.findByTestId("writable-files-badge")).toHaveTextContent(
+      /files: 1 on/i,
+    );
+    expect(screen.getByTestId("writable-libsecret-badge")).toHaveTextContent(
+      /libsecret: 1 on/i,
+    );
 
     // The JSON pre block contains every grant tuple. Asserting on
     // the wrapper names is the most legible cross-section.
@@ -93,15 +98,19 @@ describe("PolicyViewerDialog", () => {
     expect(copyBtn).toBeEnabled();
   });
 
-  it("flips the badge to off when writes_enabled is false", async () => {
+  it("shows 0-on counts when no resources have wrapper writes enabled", async () => {
     vi.mocked(postPolicyGet).mockResolvedValue({
-      document: { grants: [], writes_enabled: false },
+      document: { grants: [], files_writable: {}, libsecret_writable: {} },
     });
     renderWithQuery(
       <PolicyViewerDialog storeName="dev" open={true} onClose={() => {}} />,
     );
-    const badge = await screen.findByTestId("writes-enabled-badge");
-    expect(badge).toHaveTextContent(/^off$/i);
+    expect(await screen.findByTestId("writable-files-badge")).toHaveTextContent(
+      /files: 0 on/i,
+    );
+    expect(screen.getByTestId("writable-libsecret-badge")).toHaveTextContent(
+      /libsecret: 0 on/i,
+    );
   });
 
   it("surfaces an API error in an alert without rendering the JSON", async () => {
@@ -132,7 +141,8 @@ describe("PolicyViewerDialog", () => {
             reason: undefined,
           },
         ],
-        writes_enabled: false,
+        files_writable: {},
+        libsecret_writable: {},
       },
     });
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -161,7 +171,8 @@ describe("PolicyViewerDialog", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const arg = writeText.mock.calls[0][0] as string;
     expect(arg).toContain("gh-authorized");
-    expect(arg).toContain('"writes_enabled": false');
+    expect(arg).toContain('"files_writable":');
+    expect(arg).toContain('"libsecret_writable":');
 
     // The button flips to the "Copied" affordance.
     expect(

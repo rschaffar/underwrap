@@ -206,11 +206,10 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   await createDlg.getByRole("button", { name: /^create$/i }).click();
   await expect(createDlg).toBeHidden();
 
-  // Pull the CSRF token from the cookie set by the session and use it
-  // to flip writes on (ticket 247 gates all admin writes on
-  // per-store `writes_enabled`) and then post a secret directly. We
-  // do this from the page context so we get the same TLS / origin
-  // handling Playwright already configured.
+  // Post a secret directly so we have something on disk to test the
+  // force-delete path against. Admin writes are unconditional under
+  // the per-resource permission model, so no writes_enabled toggle
+  // is needed first.
   await page.evaluate(async () => {
     const csrf = document.cookie
       .split(";")
@@ -218,18 +217,6 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
       .find((part) => part.startsWith("__Host-uw-csrf="))
       ?.slice("__Host-uw-csrf=".length);
     if (!csrf) throw new Error("no csrf cookie on page");
-    const toggle = await fetch("/v1/admin/policy/writes-enabled/set", {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRF-Token": csrf,
-      },
-      body: JSON.stringify({ store: "packed", enabled: true }),
-    });
-    if (!toggle.ok) {
-      throw new Error(`writes-enabled/set failed: ${toggle.status}`);
-    }
     const res = await fetch("/v1/admin/secret/write", {
       method: "POST",
       credentials: "include",

@@ -12,7 +12,8 @@ use underwrap_protocol::resource::{
 
 use crate::audit;
 use crate::policy::{
-    evaluate_grant_after_approval_with, evaluate_grant_with, load_policy_document, writes_enabled,
+    evaluate_grant_after_approval_with, evaluate_grant_with, files_writable_for,
+    libsecret_writable_for, load_policy_document,
 };
 use crate::server::State;
 use crate::startup::username_for_uid;
@@ -111,8 +112,10 @@ pub(super) fn process_read_for(
 
     // The grant mode passed. The wrapper now sees whatever resources
     // its declaration lists — read access through an active grant is
-    // unconditional (ticket 246). Write access on the libsecret slot
-    // gates on the global writes_enabled flag.
+    // unconditional (ticket 246). Write access for `files` and
+    // `libsecret` slots is decided per-resource by the
+    // `files_writable` / `libsecret_writable` maps on the policy
+    // document; absent or `false` → read-only.
     let mut prefixes = Vec::new();
     let mut env_resources = Vec::new();
     for resource_id in wrapper_env_resources(wrapper_def) {
@@ -123,19 +126,16 @@ pub(super) fn process_read_for(
     }
 
     let mut file_bindings = Vec::new();
-    let global_write_access = if writes_enabled(&policy) {
-        AccessMode::ReadWrite
-    } else {
-        AccessMode::ReadOnly
-    };
     for projection in wrapper_file_bindings(wrapper_def) {
         let _resource = files_resource(&projection.resource_id);
         audit::read_granted(wrapper_name, &projection.resource_id, Some(peer_uid), scope);
         prefixes.push(files_prefix(&projection.resource_id));
-        // Wrapper files inherit the per-store `writes_enabled` flag.
-        // Pre-245 the daemon ran a per-`files.write` rule check; the
-        // grant-model rewrite collapses that into the global toggle.
-        file_bindings.push(projection.into_read_binding(global_write_access));
+        let access = if files_writable_for(&policy, &projection.resource_id) {
+            AccessMode::ReadWrite
+        } else {
+            AccessMode::ReadOnly
+        };
+        file_bindings.push(projection.into_read_binding(access));
     }
 
     let mut libsecret_access = None;
@@ -143,7 +143,12 @@ pub(super) fn process_read_for(
         let _resource = libsecret_resource(resource_id);
         audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
         prefixes.push(libsecret_prefix(resource_id));
-        libsecret_access = Some((resource_id.to_string(), global_write_access));
+        let access = if libsecret_writable_for(&policy, resource_id) {
+            AccessMode::ReadWrite
+        } else {
+            AccessMode::ReadOnly
+        };
+        libsecret_access = Some((resource_id.to_string(), access));
     }
 
     let snapshot = match state.store.read_prefixes(&prefixes) {
@@ -315,7 +320,7 @@ mod tests {
                         mode: WrapperApprovalMode::Unlocked,
                         reason: None,
                     }],
-                    writes_enabled: false,
+                    ..Default::default()
                 },
             ));
         let state = state_with_store(store);

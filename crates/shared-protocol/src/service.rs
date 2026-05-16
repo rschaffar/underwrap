@@ -336,7 +336,12 @@ pub struct AdminUiOverviewStore {
     pub resource_count: usize,
     pub wrapper_counts: AdminUiWrapperCounts,
     pub recent_audit_events: usize,
-    pub writes_enabled: bool,
+    /// Number of resources with the wrapper-side `files` slot
+    /// writable. Surfaced on the dashboard overview as a quick
+    /// "how many resources have writes opened up" signal.
+    pub writable_files_resources: usize,
+    /// Same for the `libsecret` slot.
+    pub writable_libsecret_resources: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -508,26 +513,43 @@ pub struct AdminAgentGrantDeleteRequest {
     pub user: String,
 }
 
-// ===== Global writes-enabled toggle (ticket 247) =====
+// ===== Per-resource wrapper-write permissions =====
 
+/// Get the current `(files_writable, libsecret_writable)` maps for a store.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct AdminWritesEnabledGetRequest {
+pub struct AdminWritePermissionsGetRequest {
     pub store: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct AdminWritesEnabledResponse {
+pub struct AdminWritePermissionsResponse {
     pub store: String,
+    /// Resource → allowed flag. Resources missing from the map are
+    /// implicitly denied — same semantics as `PolicyDocument`.
+    pub files_writable: std::collections::HashMap<String, bool>,
+    pub libsecret_writable: std::collections::HashMap<String, bool>,
+}
+
+/// Set a single `(resource, slot) → enabled` permission. The slot is
+/// constrained to `files` or `libsecret` — `env` has no wrapper-side
+/// write path so it isn't valid here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminWritePermissionsSetRequest {
+    pub store: String,
+    pub resource: String,
+    pub slot: AdminWritableSlot,
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct AdminWritesEnabledSetRequest {
-    pub store: String,
-    pub enabled: bool,
+#[serde(rename_all = "kebab-case")]
+pub enum AdminWritableSlot {
+    Files,
+    Libsecret,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

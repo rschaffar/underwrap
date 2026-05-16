@@ -25,15 +25,12 @@ import {
   type AdminAgentGrantsListResponse,
   type AdminCatalogGetResponse,
   type AdminStoresListResponse,
-  type AdminWritesEnabledResponse,
   type AgentGrant,
   fetchStores,
   postCatalogGet,
   postGrantDelete,
   postGrantUpsert,
   postGrantsList,
-  postWritesEnabledGet,
-  postWritesEnabledSet,
   type WhoamiResponse,
   type WrapperApprovalMode,
 } from "@/api/client";
@@ -109,7 +106,6 @@ export function MatrixPage({ principal }: MatrixPageProps) {
   }, []);
 
   const isAdmin = !!(principal?.authenticated && principal.role === "admin");
-  const qc = useQueryClient();
 
   // Stores → pick first granted by default. Admin sees everything.
   const stores = useQuery<AdminStoresListResponse>({
@@ -149,12 +145,6 @@ export function MatrixPage({ principal }: MatrixPageProps) {
     queryFn: () => postCatalogGet({ store: storeName! }),
     enabled: !!storeName,
   });
-  const writes = useQuery<AdminWritesEnabledResponse>({
-    queryKey: ["admin", "writes-enabled", storeName],
-    queryFn: () => postWritesEnabledGet({ store: storeName! }),
-    enabled: !!storeName,
-  });
-
   const wrappers = useMemo(
     () => deriveWrappers(catalog.data, grants.data?.grants ?? []),
     [catalog.data, grants.data],
@@ -238,15 +228,6 @@ export function MatrixPage({ principal }: MatrixPageProps) {
         </div>
       </header>
 
-      <WritesToggle
-        storeName={storeName}
-        writes={writes.data}
-        canToggle={isAdmin}
-        onAfterToggle={() =>
-          qc.invalidateQueries({ queryKey: ["admin", "writes-enabled", storeName] })
-        }
-      />
-
       {grants.isLoading || catalog.isLoading ? (
         <p className="text-sm text-(--color-muted)">Loading matrix…</p>
       ) : grants.error || catalog.error ? (
@@ -292,72 +273,6 @@ export function MatrixPage({ principal }: MatrixPageProps) {
 }
 
 // ---------- Subcomponents ----------
-
-function WritesToggle({
-  storeName,
-  writes,
-  canToggle,
-  onAfterToggle,
-}: {
-  storeName: string;
-  writes: AdminWritesEnabledResponse | undefined;
-  canToggle: boolean;
-  onAfterToggle: () => void;
-}) {
-  const enabled = !!writes?.enabled;
-  const mut = useMutation({
-    mutationFn: (next: boolean) =>
-      postWritesEnabledSet({ store: storeName, enabled: next }),
-    onSuccess: () => onAfterToggle(),
-  });
-  return (
-    <section
-      data-testid="writes-toggle"
-      className={
-        "rounded-xl border p-4 " +
-        (enabled
-          ? "border-amber-500/30 bg-amber-500/10"
-          : "border-(--color-line) bg-(--color-surface-1)")
-      }
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-(--color-fg)">
-            Writes enabled globally
-          </h3>
-          <p className="mt-1 text-xs text-(--color-muted)">
-            When on, every admin / wrapper write through this store is
-            allowed. When off, every write is rejected with{" "}
-            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
-              403 writes_globally_disabled
-            </code>
-            .
-          </p>
-        </div>
-        <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
-          <input
-            data-testid="writes-toggle-input"
-            type="checkbox"
-            checked={enabled}
-            disabled={!canToggle || mut.isPending}
-            onChange={(e) => mut.mutate(e.target.checked)}
-          />
-          <span>{enabled ? "On" : "Off"}</span>
-        </label>
-      </div>
-      {enabled ? (
-        <p className="mt-2 text-xs text-amber-200" role="status">
-          Writes enabled globally. Disable when finished.
-        </p>
-      ) : null}
-      {mut.error ? (
-        <p role="alert" className="mt-2 text-xs text-rose-300">
-          {describeApiError(mut.error)}
-        </p>
-      ) : null}
-    </section>
-  );
-}
 
 function MatrixTable({
   wrappers,

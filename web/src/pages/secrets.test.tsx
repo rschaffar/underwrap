@@ -14,7 +14,7 @@ vi.mock("@/api/client", async () => {
     fetchStores: vi.fn(),
     postSecretList: vi.fn(),
     postCatalogGet: vi.fn(),
-    postWritesEnabledGet: vi.fn(),
+    postWritePermissionsGet: vi.fn(),
   };
 });
 
@@ -22,7 +22,7 @@ import {
   fetchStores,
   postCatalogGet,
   postSecretList,
-  postWritesEnabledGet,
+  postWritePermissionsGet,
 } from "@/api/client";
 
 function renderWithQuery(ui: React.ReactNode) {
@@ -37,7 +37,7 @@ describe("SecretsPage", () => {
     vi.mocked(fetchStores).mockReset();
     vi.mocked(postSecretList).mockReset();
     vi.mocked(postCatalogGet).mockReset();
-    vi.mocked(postWritesEnabledGet).mockReset();
+    vi.mocked(postWritePermissionsGet).mockReset();
   });
 
   it("filters out reserved __underwrap/ secret IDs and groups the rest by resource", async () => {
@@ -62,9 +62,10 @@ describe("SecretsPage", () => {
       ],
     });
     vi.mocked(postCatalogGet).mockResolvedValue({ entries: [] });
-    vi.mocked(postWritesEnabledGet).mockResolvedValue({
+    vi.mocked(postWritePermissionsGet).mockResolvedValue({
       store: "default",
-      enabled: true,
+      files_writable: {},
+      libsecret_writable: {},
     });
 
     renderWithQuery(<SecretsPage principal={null} />);
@@ -122,9 +123,10 @@ describe("SecretsPage", () => {
       ids: ["legacy-blob", "another/orphan"],
     });
     vi.mocked(postCatalogGet).mockResolvedValue({ entries: [] });
-    vi.mocked(postWritesEnabledGet).mockResolvedValue({
+    vi.mocked(postWritePermissionsGet).mockResolvedValue({
       store: "default",
-      enabled: true,
+      files_writable: {},
+      libsecret_writable: {},
     });
 
     renderWithQuery(<SecretsPage principal={null} />);
@@ -134,7 +136,7 @@ describe("SecretsPage", () => {
     expect(within(block).getByText("another/orphan")).toBeInTheDocument();
   });
 
-  it("disables the Create / Edit / Delete buttons when writes_enabled is false", async () => {
+  it("renders the wrapper-writable toggle for files and libsecret slots but not env", async () => {
     vi.mocked(fetchStores).mockResolvedValue({
       items: [
         {
@@ -146,31 +148,82 @@ describe("SecretsPage", () => {
       ],
     });
     vi.mocked(postSecretList).mockResolvedValue({
-      ids: ["github/token/env/GH_TOKEN"],
+      ids: [
+        "github/token/env/GH_TOKEN",
+        "github/token/files/config.json",
+        "github/gh/libsecret/credential",
+      ],
     });
     vi.mocked(postCatalogGet).mockResolvedValue({ entries: [] });
-    vi.mocked(postWritesEnabledGet).mockResolvedValue({
+    vi.mocked(postWritePermissionsGet).mockResolvedValue({
       store: "default",
-      enabled: false,
+      files_writable: { "github/token": true },
+      libsecret_writable: {},
     });
 
-    renderWithQuery(<SecretsPage principal={null} />);
-
-    // Wait for the resource block to land.
-    await screen.findByTestId("resource-block-github/token");
-    // Create-secret button on the header is disabled.
-    expect(
-      screen.getByRole("button", { name: /create secret/i }),
-    ).toBeDisabled();
-    // Reveal stays enabled (read-only path).
-    expect(screen.getByRole("button", { name: /reveal/i })).toBeEnabled();
-    // Edit and Delete are disabled.
-    expect(screen.getByRole("button", { name: /^edit$/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^delete$/i })).toBeDisabled();
-    // And a "writes are currently disabled" status banner is up.
-    expect(screen.getByRole("status")).toHaveTextContent(
-      /writes are currently disabled/i,
+    renderWithQuery(
+      <SecretsPage
+        principal={{
+          authenticated: true,
+          username: "alice",
+          role: "admin",
+        }}
+      />,
     );
+
+    // The files toggle for github/token is checked (admin set it on).
+    const filesToggle = await screen.findByTestId(
+      "wrapper-writable-files-github/token",
+    );
+    expect(filesToggle).toBeChecked();
+    expect(filesToggle).toBeEnabled();
+    // The libsecret toggle for github/gh is unchecked.
+    const libsecretToggle = await screen.findByTestId(
+      "wrapper-writable-libsecret-github/gh",
+    );
+    expect(libsecretToggle).not.toBeChecked();
+    // env slots get no toggle — the slot has no wrapper-side write
+    // path so nothing is gateable.
+    expect(
+      screen.queryByTestId("wrapper-writable-env-github/token"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("disables the wrapper-writable toggle for non-admin operators", async () => {
+    vi.mocked(fetchStores).mockResolvedValue({
+      items: [
+        {
+          name: "default",
+          source: "dynamic",
+          backend: "plain",
+          created_at: 0n,
+        },
+      ],
+    });
+    vi.mocked(postSecretList).mockResolvedValue({
+      ids: ["github/token/files/config.json"],
+    });
+    vi.mocked(postCatalogGet).mockResolvedValue({ entries: [] });
+    vi.mocked(postWritePermissionsGet).mockResolvedValue({
+      store: "default",
+      files_writable: {},
+      libsecret_writable: {},
+    });
+
+    renderWithQuery(
+      <SecretsPage
+        principal={{
+          authenticated: true,
+          username: "bob",
+          role: "operator",
+        }}
+      />,
+    );
+
+    const toggle = await screen.findByTestId(
+      "wrapper-writable-files-github/token",
+    );
+    expect(toggle).toBeDisabled();
   });
 });
 

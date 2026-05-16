@@ -43,7 +43,7 @@ async fn per_call_approval_succeeds_with_valid_ed25519_signature() {
             "test",
             &PolicyDocument {
                 grants: vec![grant],
-                writes_enabled: false,
+                ..Default::default()
             },
         )
         .await
@@ -111,7 +111,7 @@ async fn per_call_approval_rejects_wrong_signature() {
             "test",
             &PolicyDocument {
                 grants: vec![grant],
-                writes_enabled: false,
+                ..Default::default()
             },
         )
         .await
@@ -187,7 +187,7 @@ async fn per_call_approval_denies_without_matching_grant() {
                     },
                     reason: None,
                 }],
-                writes_enabled: false,
+                ..Default::default()
             },
         )
         .await

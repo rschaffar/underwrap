@@ -44,9 +44,10 @@ export type { AdminUserResetPasswordRequest } from "./AdminUserResetPasswordRequ
 export type { AdminUserRole } from "./AdminUserRole";
 export type { AdminUserUpdateRequest } from "./AdminUserUpdateRequest";
 export type { AdminUsersListResponse } from "./AdminUsersListResponse";
-export type { AdminWritesEnabledGetRequest } from "./AdminWritesEnabledGetRequest";
-export type { AdminWritesEnabledResponse } from "./AdminWritesEnabledResponse";
-export type { AdminWritesEnabledSetRequest } from "./AdminWritesEnabledSetRequest";
+export type { AdminWritableSlot } from "./AdminWritableSlot";
+export type { AdminWritePermissionsGetRequest } from "./AdminWritePermissionsGetRequest";
+export type { AdminWritePermissionsResponse } from "./AdminWritePermissionsResponse";
+export type { AdminWritePermissionsSetRequest } from "./AdminWritePermissionsSetRequest";
 export type { AgentGrant } from "./AgentGrant";
 export type { BootstrapRequest } from "./BootstrapRequest";
 export type { BootstrapResponse } from "./BootstrapResponse";

@@ -1042,21 +1042,10 @@ fn handle_admin_secret_write(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     };
 
-    // Ticket 247: every write path gates on the per-store global
-    // `writes_enabled` toggle. The policy document is excluded above
-    // (operators must always be able to edit it; that's what the
-    // toggle hangs off of).
-    match load_policy_document_or_default(store.as_ref()) {
-        Ok(doc) if !doc.writes_enabled => {
-            return error_response(
-                StatusCode::FORBIDDEN,
-                "writes_globally_disabled",
-                "writes are disabled for this store; enable them via /v1/admin/policy/writes-enabled/set",
-            );
-        }
-        Ok(_) => {}
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-    }
+    // Admin writes are always allowed once the operator's per-store
+    // access has been checked. Per-resource write permissions on the
+    // policy document gate wrapper-side writes only — admins can't
+    // be locked out of their own backend.
 
     match store.write(&body.secret_id, &material) {
         Ok(()) => {
@@ -1207,7 +1196,16 @@ fn admin_ui_overview_for_store(
         resource_count,
         wrapper_counts,
         recent_audit_events: load_audit_history(store)?.len(),
-        writes_enabled: policy.writes_enabled,
+        writable_files_resources: policy
+            .files_writable
+            .values()
+            .filter(|enabled| **enabled)
+            .count(),
+        writable_libsecret_resources: policy
+            .libsecret_writable
+            .values()
+            .filter(|enabled| **enabled)
+            .count(),
     })
 }
 
@@ -3554,10 +3552,10 @@ fn handle_admin_grant_delete(
 }
 
 #[allow(clippy::result_large_err)]
-fn handle_admin_writes_enabled_get(
+fn handle_admin_write_permissions_get(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
-    body: &underwrap_protocol::service::AdminWritesEnabledGetRequest,
+    body: &underwrap_protocol::service::AdminWritePermissionsGetRequest,
 ) -> Response<Full<Bytes>> {
     let store = match admin_store_for_principal(state, principal, &body.store) {
         Ok(s) => s,
@@ -3571,24 +3569,25 @@ fn handle_admin_writes_enabled_get(
     };
     json_response(
         StatusCode::OK,
-        &underwrap_protocol::service::AdminWritesEnabledResponse {
+        &underwrap_protocol::service::AdminWritePermissionsResponse {
             store: body.store.clone(),
-            enabled: doc.writes_enabled,
+            files_writable: doc.files_writable,
+            libsecret_writable: doc.libsecret_writable,
         },
     )
 }
 
 #[allow(clippy::result_large_err)]
-fn handle_admin_writes_enabled_set(
+fn handle_admin_write_permissions_set(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
-    body: &underwrap_protocol::service::AdminWritesEnabledSetRequest,
+    body: &underwrap_protocol::service::AdminWritePermissionsSetRequest,
 ) -> Response<Full<Bytes>> {
     if !principal.is_admin() {
         return error_response(
             StatusCode::FORBIDDEN,
             "forbidden",
-            "only admins may toggle the global write lock",
+            "only admins may edit per-resource write permissions",
         );
     }
     let store = match admin_store_for_principal(state, principal, &body.store) {
@@ -3601,8 +3600,26 @@ fn handle_admin_writes_enabled_set(
             return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
         }
     };
-    let previous = doc.writes_enabled;
-    doc.writes_enabled = body.enabled;
+    let (previous, slot_label) = match body.slot {
+        underwrap_protocol::service::AdminWritableSlot::Files => {
+            let prev = doc.files_writable_for(&body.resource);
+            if body.enabled {
+                doc.files_writable.insert(body.resource.clone(), true);
+            } else {
+                doc.files_writable.remove(&body.resource);
+            }
+            (prev, "files")
+        }
+        underwrap_protocol::service::AdminWritableSlot::Libsecret => {
+            let prev = doc.libsecret_writable_for(&body.resource);
+            if body.enabled {
+                doc.libsecret_writable.insert(body.resource.clone(), true);
+            } else {
+                doc.libsecret_writable.remove(&body.resource);
+            }
+            (prev, "libsecret")
+        }
+    };
     if let Err(e) = save_policy_document(store.as_ref(), &doc) {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3612,22 +3629,23 @@ fn handle_admin_writes_enabled_set(
     }
     let event = underwrap_protocol::service::AdminUiAuditEvent {
         ts_epoch: crate::operators::now_epoch_secs(),
-        action: "policy.writes-enabled".to_string(),
+        action: format!("policy.{slot_label}-writable"),
         operator: principal.username.clone(),
         wrapper: None,
-        resource: Some(format!("store:{}", body.store)),
+        resource: Some(format!("store:{}/{}", body.store, body.resource)),
         secret_id: None,
         operation: None,
         result: format!("{previous}->{}", body.enabled),
     };
     if let Err(e) = append_audit_history_event(state.admin_home_store.as_ref(), event) {
-        warn!(err = %e, "writes-enabled: writing audit event failed");
+        warn!(err = %e, "write-permissions: writing audit event failed");
     }
     json_response(
         StatusCode::OK,
-        &underwrap_protocol::service::AdminWritesEnabledResponse {
+        &underwrap_protocol::service::AdminWritePermissionsResponse {
             store: body.store.clone(),
-            enabled: body.enabled,
+            files_writable: doc.files_writable,
+            libsecret_writable: doc.libsecret_writable,
         },
     )
 }
@@ -3942,27 +3960,18 @@ async fn handle_admin_request(
             }
         }
         (&Method::POST, "/v1/admin/secret/delete") => {
+            // Admin deletes are always allowed once per-store access
+            // has been checked; per-resource write flags only gate
+            // wrapper-side writes.
             match parse_json_body::<underwrap_protocol::service::AdminSecretDeleteRequest>(request)
                 .await
             {
                 Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match load_policy_document_or_default(store.as_ref()) {
-                        Ok(doc) if !doc.writes_enabled => error_response(
-                            StatusCode::FORBIDDEN,
-                            "writes_globally_disabled",
-                            "writes are disabled for this store",
+                    Ok(store) => match store.delete(&body.secret_id) {
+                        Ok(existed) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
                         ),
-                        Ok(_) => match store.delete(&body.secret_id) {
-                            Ok(existed) => json_response(
-                                StatusCode::OK,
-                                &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
-                            ),
-                            Err(e) => error_response(
-                                StatusCode::BAD_REQUEST,
-                                "admin_error",
-                                &e.to_string(),
-                            ),
-                        },
                         Err(e) => {
                             error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
                         }
@@ -4081,23 +4090,27 @@ async fn handle_admin_request(
             Ok(body) => handle_admin_grant_delete(&state, &principal, &body),
             Err(response) => response,
         },
-        // ===== Global writes-enabled toggle (ticket 247) =====
-        (&Method::POST, "/v1/admin/policy/writes-enabled/get") => match parse_json_body::<
-            underwrap_protocol::service::AdminWritesEnabledGetRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_writes_enabled_get(&state, &principal, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/policy/writes-enabled/set") => match parse_json_body::<
-            underwrap_protocol::service::AdminWritesEnabledSetRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_writes_enabled_set(&state, &principal, &body),
-            Err(response) => response,
-        },
+        // ===== Per-resource wrapper-write permissions =====
+        (&Method::POST, "/v1/admin/policy/write-permissions/get") => {
+            match parse_json_body::<underwrap_protocol::service::AdminWritePermissionsGetRequest>(
+                request,
+            )
+            .await
+            {
+                Ok(body) => handle_admin_write_permissions_get(&state, &principal, &body),
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/admin/policy/write-permissions/set") => {
+            match parse_json_body::<underwrap_protocol::service::AdminWritePermissionsSetRequest>(
+                request,
+            )
+            .await
+            {
+                Ok(body) => handle_admin_write_permissions_set(&state, &principal, &body),
+                Err(response) => response,
+            }
+        }
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     };
     Ok(attach_csrf_cookie(response, &state, &auth))

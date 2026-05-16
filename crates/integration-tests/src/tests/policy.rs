@@ -59,7 +59,7 @@ async fn backend_policy_roundtrip_over_admin_api() {
     let grant = daemon.current_user_grant("gh-authorized");
     let document = PolicyDocument {
         grants: vec![grant.clone()],
-        writes_enabled: false,
+        ..Default::default()
     };
     daemon.put_policy("test", &document).await.unwrap();
 
@@ -109,7 +109,7 @@ async fn wrapper_read_succeeds_when_grant_is_unlocked() {
             "test",
             &PolicyDocument {
                 grants: vec![daemon.current_user_grant("gh-authorized")],
-                writes_enabled: false,
+                ..Default::default()
             },
         )
         .await
@@ -138,7 +138,7 @@ async fn locked_grant_denies_read() {
             "test",
             &PolicyDocument {
                 grants: vec![grant],
-                writes_enabled: false,
+                ..Default::default()
             },
         )
         .await
@@ -174,7 +174,7 @@ async fn unlocked_until_grant_denies_after_deadline() {
             "test",
             &PolicyDocument {
                 grants: vec![grant],
-                writes_enabled: false,
+                ..Default::default()
             },
         )
         .await
