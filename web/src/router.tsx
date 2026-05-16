@@ -14,6 +14,7 @@ import { AppShell } from "@/components/app-shell";
 import { Dashboard } from "@/pages/dashboard";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
+import { StoresPage } from "@/pages/stores";
 import {
   ApiError,
   fetchBootstrapStatus,
@@ -122,10 +123,12 @@ function NotFound() {
 const appLayoutRoute = new Route({
   getParentRoute: () => rootRoute,
   id: "app",
-  component: () => {
+  component: function AppLayoutComponent() {
     const navigate = useNavigate();
+    const ctx = appLayoutRoute.useRouteContext();
     return (
       <AppShell
+        role={ctx.principal?.role}
         onLogout={async () => {
           // Delegate the actual POST to the `/logout` route so there's
           // one place that knows how to revoke + clear caches + redirect.
@@ -142,6 +145,17 @@ const indexRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/",
   component: Dashboard,
+});
+
+const storesRoute = new Route({
+  getParentRoute: () => appLayoutRoute,
+  path: "/stores",
+  component: function StoresRouteComponent() {
+    // `principal` is set on the root route's beforeLoad; pass it
+    // down so admin-gating doesn't re-fetch.
+    const ctx = storesRoute.useRouteContext();
+    return <StoresPage principal={ctx.principal} />;
+  },
 });
 
 // ----- Public auth routes -----
@@ -233,7 +247,7 @@ function safeNextPath(next: string | null): string | null {
 }
 
 const routeTree = rootRoute.addChildren([
-  appLayoutRoute.addChildren([indexRoute]),
+  appLayoutRoute.addChildren([indexRoute, storesRoute]),
   loginRoute,
   bootstrapRoute,
   logoutRoute,

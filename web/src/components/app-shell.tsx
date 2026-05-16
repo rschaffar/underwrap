@@ -27,23 +27,31 @@ interface NavItem {
   label: string;
   icon: typeof Box;
   href: string;
+  /** Hide this nav item unless the role string is admin. */
+  adminOnly?: boolean;
 }
 
 const NAV: NavItem[] = [
   { label: "Resources", icon: Box, href: "/" },
   { label: "Wrappers", icon: ShieldCheck, href: "/wrappers" },
-  { label: "Stores", icon: Lock, href: "/stores" },
-  { label: "Operators", icon: Users, href: "/operators" },
+  { label: "Stores", icon: Lock, href: "/stores", adminOnly: true },
+  { label: "Operators", icon: Users, href: "/operators", adminOnly: true },
   { label: "Audit", icon: History, href: "/audit" },
 ];
 
-function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+function Sidebar({
+  onNavigate,
+  role,
+}: {
+  onNavigate?: () => void;
+  role?: string;
+}) {
   return (
     <nav aria-label="Primary" className="flex h-full flex-col gap-1 p-3">
       <div className="px-3 py-4 text-sm font-semibold tracking-wide text-(--color-muted) uppercase">
         underwrap
       </div>
-      {NAV.map(({ label, icon: Icon, href }) => (
+      {NAV.filter((n) => !n.adminOnly || role === "admin").map(({ label, icon: Icon, href }) => (
         <a
           key={label}
           href={href}
@@ -62,9 +70,15 @@ interface AppShellProps {
   children: ReactNode;
   /** Optional sign-out callback. When omitted the logout button is hidden. */
   onLogout?: () => void | Promise<void>;
+  /**
+   * Role string from `whoami`. Drives admin-only nav-item visibility.
+   * Omit for the unauthenticated case (no nav items rendered for
+   * admin-only entries).
+   */
+  role?: string;
 }
 
-export function AppShell({ children, onLogout }: AppShellProps) {
+export function AppShell({ children, onLogout, role }: AppShellProps) {
   const { theme, toggle } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -93,7 +107,10 @@ export function AppShell({ children, onLogout }: AppShellProps) {
                 Top-level sections of the underwrap admin UI.
               </SheetDescription>
             </SheetHeader>
-            <Sidebar onNavigate={() => setDrawerOpen(false)} />
+            <Sidebar
+              onNavigate={() => setDrawerOpen(false)}
+              role={role}
+            />
           </SheetContent>
         </Sheet>
 
@@ -128,7 +145,7 @@ export function AppShell({ children, onLogout }: AppShellProps) {
           aria-label="Sidebar"
           className="sticky top-14 hidden h-[calc(100vh-3.5rem)] w-60 shrink-0 border-r border-(--color-line) bg-(--color-surface-0)/50 md:block"
         >
-          <Sidebar />
+          <Sidebar role={role} />
         </aside>
         <main className="min-w-0 flex-1 p-6">{children}</main>
       </div>

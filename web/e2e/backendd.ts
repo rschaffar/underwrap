@@ -66,6 +66,9 @@ export interface BackendInstance {
   baseUrl: string;
   /** Absolute path of the per-test temp directory (config, certs, store live here). */
   tmpDir: string;
+  /** Absolute path of the configured `stores_data_roots[0]`. Tests can use a
+   *  subdirectory here as the `dir` field when creating a dynamic store. */
+  dataRoot: string;
   /** Tear down: SIGTERM the process, wait for exit, remove the temp dir. */
   cleanup: () => Promise<void>;
 }
@@ -146,6 +149,13 @@ export async function startBackend(
   ].join("\n");
   writeFileSync(join(storesDir, "default.yaml"), defaultStoreYaml);
 
+  // `stores_data_roots` allowlist for the create-store path. The
+  // store CRUD tests need this to be non-empty to exercise the
+  // create flow; pointing it at a per-test temp dir keeps the
+  // test isolated.
+  const dataRootsDir = join(tmpDir, "data-roots");
+  mkdirSync(dataRootsDir);
+
   const configYaml = [
     `stores_dynamic_dir: ${JSON.stringify(storesDir)}`,
     "admin:",
@@ -158,6 +168,8 @@ export async function startBackend(
     "  allowed_origins:",
     `    - "${baseUrl}"`,
     `    - "https://127.0.0.1:${port}"`,
+    "  stores_data_roots:",
+    `    - ${JSON.stringify(dataRootsDir)}`,
     "",
   ].join("\n");
   const configPath = join(tmpDir, "backend.yaml");
@@ -208,7 +220,7 @@ export async function startBackend(
     }
   };
 
-  return { baseUrl, tmpDir, cleanup };
+  return { baseUrl, tmpDir, dataRoot: dataRootsDir, cleanup };
 }
 
 async function waitForReady(

@@ -123,6 +123,11 @@ export async function apiJson<T>(
 // running `cargo test --workspace` instead.
 
 import type {
+  AdminStoreCreateRequest,
+  AdminStoreDeleteResponse,
+  AdminStoreDetailResponse,
+  AdminStoreUpdateRequest,
+  AdminStoresListResponse,
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
@@ -132,6 +137,11 @@ import type {
 } from "@/api/types";
 
 export type {
+  AdminStoreCreateRequest,
+  AdminStoreDeleteResponse,
+  AdminStoreDetailResponse,
+  AdminStoreUpdateRequest,
+  AdminStoresListResponse,
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
@@ -164,4 +174,46 @@ export function postBootstrap(body: BootstrapRequest): Promise<BootstrapResponse
     method: "POST",
     json: body,
   });
+}
+
+// ----- Stores admin (ticket 231) -----
+
+export function fetchStores(): Promise<AdminStoresListResponse> {
+  return apiJson<AdminStoresListResponse>("/v1/admin/stores");
+}
+
+export function fetchStore(name: string): Promise<AdminStoreDetailResponse> {
+  return apiJson<AdminStoreDetailResponse>(
+    `/v1/admin/stores/${encodeURIComponent(name)}`,
+  );
+}
+
+export function postStoreCreate(
+  body: AdminStoreCreateRequest,
+): Promise<AdminStoreDetailResponse> {
+  return apiJson<AdminStoreDetailResponse>("/v1/admin/stores", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function putStoreUpdate(
+  name: string,
+  body: AdminStoreUpdateRequest,
+): Promise<AdminStoreDetailResponse> {
+  return apiJson<AdminStoreDetailResponse>(
+    `/v1/admin/stores/${encodeURIComponent(name)}`,
+    { method: "PUT", json: body },
+  );
+}
+
+export function deleteStore(
+  name: string,
+  opts: { force?: boolean } = {},
+): Promise<AdminStoreDeleteResponse> {
+  const query = opts.force ? "?force=true" : "";
+  return apiJson<AdminStoreDeleteResponse>(
+    `/v1/admin/stores/${encodeURIComponent(name)}${query}`,
+    { method: "DELETE" },
+  );
 }
