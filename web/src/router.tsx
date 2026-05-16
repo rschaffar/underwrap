@@ -12,6 +12,8 @@ import { useEffect } from "react";
 
 import { AppShell } from "@/components/app-shell";
 import { Dashboard } from "@/pages/dashboard";
+import { LoginPage } from "@/pages/login";
+import { BootstrapPage } from "@/pages/bootstrap";
 import {
   ApiError,
   fetchBootstrapStatus,
@@ -125,14 +127,9 @@ const appLayoutRoute = new Route({
     return (
       <AppShell
         onLogout={async () => {
-          try {
-            await postLogout();
-          } catch {
-            // Even if the server rejects (already revoked), proceed
-            // to the login screen — the cookies have been cleared
-            // server-side or never existed.
-          }
-          await navigate({ to: "/login" });
+          // Delegate the actual POST to the `/logout` route so there's
+          // one place that knows how to revoke + clear caches + redirect.
+          await navigate({ to: "/logout" });
         }}
       >
         <Outlet />
@@ -149,69 +146,97 @@ const indexRoute = new Route({
 
 // ----- Public auth routes -----
 
+function LoginRouteComponent() {
+  const navigate = useNavigate();
+  return (
+    <LoginPage
+      onSuccess={async () => {
+        await queryClient.invalidateQueries();
+        // Honour `?next=` if it points at a same-origin pathname; otherwise
+        // fall back to the dashboard. Never follow arbitrary URLs from the
+        // query string — that would be an open redirect.
+        const search = new URLSearchParams(window.location.search);
+        const safe = safeNextPath(search.get("next"));
+        await navigate({ to: safe ?? "/", replace: true });
+      }}
+    />
+  );
+}
+
 const loginRoute = new Route({
   getParentRoute: () => rootRoute,
   path: "/login",
-  component: LoginPagePlaceholder,
+  component: LoginRouteComponent,
 });
+
+function BootstrapRouteComponent() {
+  const navigate = useNavigate();
+  return (
+    <BootstrapPage
+      onSuccess={async () => {
+        await queryClient.invalidateQueries();
+        await navigate({ to: "/" });
+      }}
+    />
+  );
+}
 
 const bootstrapRoute = new Route({
   getParentRoute: () => rootRoute,
   path: "/bootstrap",
-  component: BootstrapPagePlaceholder,
+  component: BootstrapRouteComponent,
 });
 
-function LoginPagePlaceholder() {
+function LogoutRouteComponent() {
   const navigate = useNavigate();
-  // Until ticket 223 lands the real form, this placeholder just lets
-  // the user retry the whoami round-trip after they've signed in
-  // elsewhere (e.g. a curl flow). The guard will redirect on success.
   useEffect(() => {
-    document.title = "underwrap — login";
-  }, []);
+    void (async () => {
+      try {
+        await postLogout();
+      } catch {
+        // Even if the server rejects (already revoked, CSRF, etc.) we still
+        // proceed to /login — the session cookie is either gone server-side
+        // or never existed.
+      }
+      queryClient.clear();
+      await navigate({ to: "/login", replace: true });
+    })();
+  }, [navigate]);
   return (
     <div className="flex min-h-screen items-center justify-center p-6">
-      <div className="w-full max-w-sm rounded-xl border border-(--color-line) bg-(--color-surface-0)/70 p-6">
-        <h2 className="text-lg font-semibold text-(--color-fg)">Sign in</h2>
-        <p className="mt-2 text-sm text-(--color-muted)">
-          The full login form lands in ticket 223. Once you have a
-          session cookie, click below to continue.
-        </p>
-        <Button
-          className="mt-4 w-full"
-          onClick={() => {
-            void navigate({ to: "/" });
-          }}
-        >
-          Continue
-        </Button>
-      </div>
+      <p className="text-sm text-(--color-muted)">Signing out…</p>
     </div>
   );
 }
 
-function BootstrapPagePlaceholder() {
-  useEffect(() => {
-    document.title = "underwrap — first-time setup";
-  }, []);
-  return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <div className="w-full max-w-sm rounded-xl border border-(--color-line) bg-(--color-surface-0)/70 p-6">
-        <h2 className="text-lg font-semibold text-(--color-fg)">First-time setup</h2>
-        <p className="mt-2 text-sm text-(--color-muted)">
-          No operators exist yet. The full bootstrap form lands in
-          ticket 223; for now, use the CLI or the JSON endpoint to
-          create the first admin.
-        </p>
-      </div>
-    </div>
-  );
+const logoutRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: "/logout",
+  component: LogoutRouteComponent,
+});
+
+/**
+ * Resolve a `?next=` query parameter to a same-origin path, or `null` if
+ * it is missing/malformed/cross-origin. Critical: we must NOT redirect
+ * to an attacker-controlled URL after sign-in (open redirect).
+ */
+function safeNextPath(next: string | null): string | null {
+  if (!next) return null;
+  try {
+    const url = new URL(next, window.location.origin);
+    if (url.origin !== window.location.origin) return null;
+    if (!url.pathname.startsWith("/")) return null;
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return null;
+  }
 }
 
 const routeTree = rootRoute.addChildren([
   appLayoutRoute.addChildren([indexRoute]),
   loginRoute,
   bootstrapRoute,
+  logoutRoute,
 ]);
 
 const router = new Router({
