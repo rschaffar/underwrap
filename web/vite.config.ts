@@ -54,5 +54,25 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
     css: true,
+    // Coverage gates only the small libraries the SPA depends on for
+    // correctness: the API client and the error/URL helpers in
+    // `lib/`. Component coverage is exercised by RTL + Playwright;
+    // gating it here would force us into shallow snapshot tests.
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "html"],
+      include: ["src/api/**/*.ts", "src/lib/**/*.ts"],
+      exclude: ["src/api/types/**", "**/*.test.*"],
+      thresholds: {
+        lines: 80,
+        statements: 80,
+        functions: 80,
+        branches: 80,
+      },
+    },
+    // Playwright specs live under `web/e2e/` and run via
+    // `playwright test`, not vitest. Exclude them so vitest doesn't
+    // try to import them as unit tests.
+    exclude: ["node_modules/**", "dist/**", "e2e/**", ".direnv/**"],
   },
 });

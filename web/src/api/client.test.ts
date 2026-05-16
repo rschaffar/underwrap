@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiFetch, apiJson } from "./client";
+import {
+  ApiError,
+  apiFetch,
+  apiJson,
+  fetchBootstrapStatus,
+  fetchWhoami,
+  postBootstrap,
+  postLogin,
+  postLogout,
+} from "./client";
 
 function mockResponse(
   status: number,
@@ -84,6 +93,18 @@ describe("apiFetch", () => {
     expect(err.code).toBe("error");
   });
 
+  it("forwards rawBody verbatim and does not stringify it", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse(200, { ok: true }));
+    const blob = new Blob(["raw bytes"]);
+    await apiFetch("/v1/admin/upload", { method: "POST", rawBody: blob });
+    const init = spy.mock.calls[0]![1]!;
+    expect(init.body).toBe(blob);
+    // Content-Type is NOT auto-set for rawBody — the caller owns it.
+    expect(new Headers(init.headers).get("Content-Type")).toBeNull();
+  });
+
   it("does not log request or response bodies (paranoia)", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -103,5 +124,38 @@ describe("apiFetch", () => {
         expect(stringified).not.toContain("sensitive");
       }
     }
+  });
+});
+
+describe("auth endpoint helpers", () => {
+  it("routes each helper to the documented admin path", async () => {
+    const calls: Array<[string, string]> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push([String(input), init?.method ?? "GET"]);
+        if (String(input).endsWith("/auth/bootstrap/status")) {
+          return mockResponse(200, { bootstrap_required: false });
+        }
+        if (String(input).endsWith("/auth/whoami")) {
+          return mockResponse(200, { authenticated: false });
+        }
+        // 204 → apiJson returns undefined; covers postLogout.
+        return new Response(null, { status: 204 });
+      },
+    );
+
+    await fetchWhoami();
+    await fetchBootstrapStatus();
+    await postLogin({ username: "u", password: "p" });
+    await postLogout();
+    await postBootstrap({ username: "u", password: "longenoughpw1234" });
+
+    expect(calls).toEqual([
+      ["/v1/admin/auth/whoami", "GET"],
+      ["/v1/admin/auth/bootstrap/status", "GET"],
+      ["/v1/admin/auth/login", "POST"],
+      ["/v1/admin/auth/logout", "POST"],
+      ["/v1/admin/auth/bootstrap", "POST"],
+    ]);
   });
 });

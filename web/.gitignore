@@ -3,3 +3,8 @@ dist/*
 !dist/.gitkeep
 *.log
 .vite/
+# Playwright (test artefacts) and vitest coverage output. Both are
+# regenerated on every run; commit only the spec files under e2e/.
+playwright-report/
+test-results/
+coverage/

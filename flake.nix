@@ -187,7 +187,20 @@
               cargo-udeps
               cargo-mutants
               nodejs
+              # Playwright e2e tests in `web/` use the chromium binary
+              # nixpkgs builds (patched for the Nix dynamic-loader). The
+              # env vars below tell the @playwright/test npm package to
+              # find that binary instead of downloading its own copy
+              # (which won't run unpatched on NixOS anyway).
+              playwright-driver.browsers
             ];
+            PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
+            # Playwright also probes the host browser executable when
+            # running tests outside Nix's sandbox; pointing it at the
+            # patched chromium keeps node_modules' `npx playwright …`
+            # behaviour consistent with the nixpkgs binary.
+            PLAYWRIGHT_NODEJS_PATH = "${pkgs.nodejs_22}/bin/node";
           };
         }
       );
