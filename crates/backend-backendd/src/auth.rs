@@ -297,6 +297,12 @@ pub fn hash_password(password: &str) -> Result<String> {
 #[derive(Default, Debug)]
 pub struct SessionRevocations {
     inner: Mutex<HashMap<String, u64>>,
+    /// Per-username "minimum allowed issued_at" floor. Set when an
+    /// admin rotates a user's password or deletes their account so
+    /// every session issued before that epoch is invalidated in one
+    /// shot — without us having to track which session ids each user
+    /// holds. Keyed by `normalise_username`.
+    username_floor: Mutex<HashMap<String, u64>>,
 }
 
 impl SessionRevocations {
@@ -312,6 +318,14 @@ impl SessionRevocations {
         guard.insert(session_id, expires_at);
     }
 
+    /// Invalidate every session issued for `username` strictly before
+    /// `now`. Use when the user's password changes or the user is
+    /// deleted, so a still-unexpired cookie can't outlive the change.
+    pub fn revoke_username(&self, username: &str, now: u64) {
+        let mut guard = self.username_floor.lock().unwrap();
+        guard.insert(crate::operators::normalise_username(username), now);
+    }
+
     /// Returns true while the session id is in the set AND has not
     /// passed its original expiry. Entries past their expiry are treated
     /// as "not revoked" because the cookie itself would fail expiry
@@ -319,6 +333,18 @@ impl SessionRevocations {
     pub fn is_revoked(&self, session_id: &str, now: u64) -> bool {
         let guard = self.inner.lock().unwrap();
         guard.get(session_id).is_some_and(|exp| *exp > now)
+    }
+
+    /// Whether the session payload's `(username, issued_at)` pair
+    /// falls below the per-username revocation floor set by
+    /// [`Self::revoke_username`]. Distinct from session-id revocation;
+    /// callers should treat *either* check returning true as
+    /// "session is no longer valid".
+    pub fn is_user_floor_revoked(&self, username: &str, issued_at: u64) -> bool {
+        let guard = self.username_floor.lock().unwrap();
+        guard
+            .get(&crate::operators::normalise_username(username))
+            .is_some_and(|floor| issued_at < *floor)
     }
 
     /// Drop all entries whose original session expiry has passed.

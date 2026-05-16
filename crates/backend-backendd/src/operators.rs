@@ -164,6 +164,76 @@ impl OperatorCollection {
         self.operators.push(record);
         Ok(())
     }
+
+    /// Look up an operator by id.
+    pub fn find_by_id(&self, id: &str) -> Option<&OperatorRecord> {
+        self.operators.iter().find(|o| o.id == id)
+    }
+
+    /// Number of operators currently holding the [`Admin`](OperatorRole::Admin) role.
+    pub fn admin_count(&self) -> usize {
+        self.operators
+            .iter()
+            .filter(|o| matches!(o.role, OperatorRole::Admin))
+            .count()
+    }
+
+    /// Replace the record with id `id` using the result of `f`. The
+    /// closure receives a mutable reference and may rename / re-role /
+    /// re-grant the record; uniqueness, last-admin, and PHC-hash
+    /// invariants are re-checked here so callers don't have to.
+    pub fn update<F>(&mut self, id: &str, f: F) -> Result<&OperatorRecord>
+    where
+        F: FnOnce(&mut OperatorRecord),
+    {
+        let idx = self
+            .operators
+            .iter()
+            .position(|o| o.id == id)
+            .with_context(|| format!("operator '{id}' not found"))?;
+        let before = self.operators[idx].clone();
+        let mut next = before.clone();
+        f(&mut next);
+        next.username = normalise_username(&next.username);
+        if next.username.is_empty() {
+            anyhow::bail!("operator username must be non-empty");
+        }
+        if !next.password_hash.starts_with("$argon2") {
+            anyhow::bail!("operator password_hash must be a PHC-encoded argon2 hash");
+        }
+        // Reject username conflicts with any *other* operator.
+        if let Some(other) = self.find_by_username(&next.username)
+            && other.id != next.id
+        {
+            anyhow::bail!("operator '{}' already exists", next.username);
+        }
+        // Last-admin protection: if the operator was an admin and the
+        // proposed role isn't admin, the new collection must still have
+        // at least one admin.
+        if matches!(before.role, OperatorRole::Admin)
+            && !matches!(next.role, OperatorRole::Admin)
+            && self.admin_count() <= 1
+        {
+            anyhow::bail!("last_admin_protected");
+        }
+        self.operators[idx] = next;
+        Ok(&self.operators[idx])
+    }
+
+    /// Remove the operator with id `id`. Refuses to remove the last
+    /// admin (returns an error whose `to_string()` is exactly
+    /// `last_admin_protected`).
+    pub fn remove(&mut self, id: &str) -> Result<OperatorRecord> {
+        let idx = self
+            .operators
+            .iter()
+            .position(|o| o.id == id)
+            .with_context(|| format!("operator '{id}' not found"))?;
+        if matches!(self.operators[idx].role, OperatorRole::Admin) && self.admin_count() <= 1 {
+            anyhow::bail!("last_admin_protected");
+        }
+        Ok(self.operators.remove(idx))
+    }
 }
 
 /// Normalise a username: trimmed, lowercase. Usernames are compared

@@ -56,10 +56,12 @@ use underwrap_protocol::service::{
     AdminWrapperModeRequest, CatalogEntry,
 };
 use underwrap_protocol::service::{
-    AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
-    AdminStoreDeleteResponse, AdminStoreDetailResponse, AdminStoreListItem,
-    AdminStoreRotateKeyResponse, AdminStoreSource, AdminStoreUpdateRequest,
-    AdminStoresListResponse,
+    AdminOkUserResponse, AdminPasswordChangeRequest, AdminStoreBackendKind,
+    AdminStoreCreateRequest, AdminStoreCreateResponse, AdminStoreDeleteResponse,
+    AdminStoreDetailResponse, AdminStoreListItem, AdminStoreRotateKeyResponse, AdminStoreSource,
+    AdminStoreUpdateRequest, AdminStoresListResponse, AdminUserCreateRequest,
+    AdminUserDetailResponse, AdminUserListItem, AdminUserResetPasswordRequest, AdminUserRole,
+    AdminUserUpdateRequest, AdminUsersListResponse,
 };
 
 fn export_dir() -> PathBuf {
@@ -147,6 +149,15 @@ fn ts_bindings_in_sync_with_rust() {
         AdminStoreUpdateRequest,
         AdminStoreDeleteResponse,
         AdminStoreRotateKeyResponse,
+        AdminUserRole,
+        AdminUserListItem,
+        AdminUsersListResponse,
+        AdminUserDetailResponse,
+        AdminUserCreateRequest,
+        AdminUserUpdateRequest,
+        AdminUserResetPasswordRequest,
+        AdminPasswordChangeRequest,
+        AdminOkUserResponse,
         AdminUiAuditEvent,
         AdminUiAuditQueryRequest,
         AdminUiAuditQueryResponse,

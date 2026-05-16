@@ -3,6 +3,109 @@ use ts_rs::TS;
 
 use crate::policy::{PolicyDocument, PolicyGrant, PolicyRule, WrapperApprovalMode};
 
+// ===== Users admin API (ticket 240) =====
+//
+// Operator records are written and read through these DTOs. The
+// password hash is never returned; the wire shape mirrors
+// `crate::operators::OperatorRecord` minus the hash field. The
+// `AdminUserRole` enum is duplicated here (rather than re-exported
+// from the backendd crate) so the shared-protocol crate stays free of
+// the backend dependency direction.
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum AdminUserRole {
+    Admin,
+    Operator,
+}
+
+/// One operator record as visible to the admin UI. Mirrors
+/// `crate::operators::OperatorRecord` minus the password hash, which
+/// the API never returns.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminUserListItem {
+    pub id: String,
+    pub username: String,
+    pub role: AdminUserRole,
+    #[serde(default)]
+    pub granted_stores: Vec<String>,
+    pub created_at: u64,
+    pub password_changed_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminUsersListResponse {
+    pub users: Vec<AdminUserListItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminUserDetailResponse {
+    pub id: String,
+    pub username: String,
+    pub role: AdminUserRole,
+    #[serde(default)]
+    pub granted_stores: Vec<String>,
+    pub created_at: u64,
+    pub password_changed_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminUserCreateRequest {
+    pub username: String,
+    /// Plaintext on the wire (over TLS). Hashed server-side with
+    /// Argon2id before any storage step. Never echoed back.
+    pub password: String,
+    pub role: AdminUserRole,
+    #[serde(default)]
+    pub granted_stores: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminUserUpdateRequest {
+    /// New username. Omit to keep the existing one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub username: Option<String>,
+    /// New role. Omit to keep the existing one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub role: Option<AdminUserRole>,
+    /// Replacement grant list. Omit to leave existing grants
+    /// unchanged. The empty list is a meaningful value (revoke all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub granted_stores: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminUserResetPasswordRequest {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminOkUserResponse {
+    pub ok: bool,
+}
+
+/// Self-service password change for the currently authenticated
+/// operator. Requires the current password as proof-of-possession of
+/// the session. Distinct from `POST /v1/admin/users/{id}/password`,
+/// which is admin-only and doesn't require the target's old password.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminPasswordChangeRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceStatusResponse {
     pub ok: bool,
