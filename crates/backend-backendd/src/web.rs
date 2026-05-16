@@ -23,7 +23,7 @@ use hyper::{Method, Response, StatusCode};
 use rust_embed::Embed;
 
 #[derive(Embed)]
-#[folder = "$CARGO_MANIFEST_DIR/../../web/dist/"]
+#[folder = "$UNDERWRAP_WEB_DIST"]
 struct EmbeddedAssets;
 
 /// Where to find the SPA bundle. Cheap to clone; the disk path is held

@@ -66,13 +66,45 @@
           # Build workspace dependencies first (for caching).
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
+          # Build the admin SPA via npm. The resulting `dist/`
+          # directory is what `rust_embed` reads via the
+          # `$UNDERWRAP_WEB_DIST` interpolation in
+          # `crates/backend-backendd/src/web.rs`. The Rust build
+          # itself doesn't depend on `nodejs`; only this derivation
+          # does, so the resulting binary closure stays
+          # node-free (ticket 202).
+          underwrapWebDist = pkgs.buildNpmPackage {
+            pname = "underwrap-web-dist";
+            version = "0.1.0";
+            src = ./web;
+            # If this hash drifts the build fails with the
+            # offending hash printed; copy it back into this file.
+            npmDepsHash = "sha256-jm+65/wCgwVd6vwbVg/2noOax2H6bLjRa19txQ0zXmc=";
+            npmBuildScript = "build";
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out
+              cp -r dist/. $out/
+              runHook postInstall
+            '';
+          };
+
+          # Common args extended with the env-var pointer to the
+          # built SPA — every Rust derivation in the workspace gets
+          # the same `UNDERWRAP_WEB_DIST` value, which only
+          # `backend-backendd`'s build.rs / rust-embed actually
+          # consults.
+          commonArgsWithWeb = commonArgs // {
+            UNDERWRAP_WEB_DIST = "${underwrapWebDist}";
+          };
+
           # Build the full workspace — all crates.
-          workspace = craneLib.buildPackage (commonArgs // {
+          workspace = craneLib.buildPackage (commonArgsWithWeb // {
             inherit cargoArtifacts;
           });
 
           # Individual crate packages (share the same dep artifacts).
-          mkCrate = name: craneLib.buildPackage (commonArgs // {
+          mkCrate = name: craneLib.buildPackage (commonArgsWithWeb // {
             inherit cargoArtifacts;
             pname = name;
             cargoExtraArgs = "--package ${name}";
@@ -94,6 +126,10 @@
             };
             underwrap-backendd = mkCrate "backend-backendd";
             underwrap-secretsd = mkCrate "frontend-secretsd";
+            # Expose the SPA build separately so the VM test (and any
+            # external consumer) can grab the static bundle without
+            # rebuilding the workspace.
+            underwrap-web-dist = underwrapWebDist;
           };
 
           checks = {
