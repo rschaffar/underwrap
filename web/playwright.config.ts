@@ -35,20 +35,36 @@ export default defineConfig({
 
   projects: [
     {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-      // Mobile-only specs run under their own project; exclude them
-      // from the desktop run so the burger-menu assertions don't fail
-      // against a desktop viewport (the sidebar is visible there
-      // instead of the drawer).
-      testIgnore: /.*\.mobile\.spec\.ts/,
+      // Ticket 252: 1280-wide desktop project — the default scope
+      // for every test that isn't viewport-specific.
+      name: "desktop-1280",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1280, height: 800 },
+      },
+      // Mobile- and tablet-specific specs run under their own
+      // projects; exclude them from the desktop run so the
+      // burger-menu assertions don't fail against a desktop
+      // viewport (the sidebar is visible there instead of the
+      // drawer).
+      testIgnore: /.*\.(mobile|tablet)\.spec\.ts/,
+    },
+    {
+      // Tablet project (768×1024 portrait) — picks up the
+      // `*.tablet.spec.ts` files plus serves as a viewport floor
+      // for table → card transitions.
+      name: "tablet-768",
+      use: {
+        ...devices["iPad (gen 7)"],
+      },
+      testMatch: /.*\.tablet\.spec\.ts/,
     },
     {
       // Spot-checks mobile drawer + form layout on a small viewport.
-      // Kept in the default run because it's cheap and the 220 story
-      // explicitly calls out mobile support.
-      name: "mobile-chrome",
-      use: { ...devices["Pixel 5"] },
+      // Kept in the default run because it's cheap and the 220/250
+      // stories explicitly call out mobile support.
+      name: "mobile-375",
+      use: { ...devices["iPhone SE (3rd gen)"] ?? devices["iPhone SE"] },
       testMatch: /.*\.mobile\.spec\.ts/,
     },
   ],
