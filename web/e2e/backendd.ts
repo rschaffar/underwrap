@@ -165,7 +165,26 @@ export async function startBackend(
   const keysDir = join(tmpDir, "keys");
   mkdirSync(keysDir);
 
+  // Declarative stores live in a separate `stores.d/` directory the
+  // backend treats as read-only. We plant a `nixed` store here so the
+  // 235 e2e tests can assert the SPA disables edit/delete on
+  // declarative rows.
+  const declarativeStoresDir = join(tmpDir, "stores.d-declarative");
+  mkdirSync(declarativeStoresDir);
+  const declarativeStoreDir = join(tmpDir, "nixed");
+  mkdirSync(declarativeStoreDir);
+  writeFileSync(
+    join(declarativeStoresDir, "nixed.yaml"),
+    [
+      "backend: plain",
+      `dir: ${JSON.stringify(declarativeStoreDir)}`,
+      `description: ${JSON.stringify("Owned by Nix; mutate via flake.")}`,
+      "",
+    ].join("\n"),
+  );
+
   const configYaml = [
+    `stores_declarative_dir: ${JSON.stringify(declarativeStoresDir)}`,
     `stores_dynamic_dir: ${JSON.stringify(storesDir)}`,
     "admin:",
     `  listen: "127.0.0.1:${port}"`,

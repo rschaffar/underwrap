@@ -170,6 +170,96 @@ test("rotate-key flow surfaces a fresh key once for an existing encrypted store"
   await expect(reveal).toBeHidden();
 });
 
+test("declarative store row exposes disabled edit/delete with a tooltip", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  await page.goto(`${backendWithAdmin.baseUrl}/stores`);
+
+  const row = page.getByRole("row", { name: /nixed/ });
+  const editBtn = row.getByRole("button", { name: /edit/i });
+  const deleteBtn = row.getByRole("button", { name: /delete/i });
+  await expect(editBtn).toBeDisabled();
+  await expect(deleteBtn).toBeDisabled();
+  await expect(editBtn).toHaveAttribute(
+    "title",
+    /declarative store/i,
+  );
+});
+
+test("force-delete a non-empty dynamic store after type-to-confirm", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  await page.goto(`${backendWithAdmin.baseUrl}/stores`);
+
+  // Create a store, then stuff a secret in via the admin write API
+  // before deleting so we exercise the cleanup_hint path.
+  await page.getByRole("button", { name: /create store/i }).click();
+  const createDlg = page.getByRole("dialog", { name: /create store/i });
+  await createDlg.getByLabel("Name").fill("packed");
+  await createDlg
+    .getByLabel(/data directory/i)
+    .fill(`${backendWithAdmin.dataRoot}/packed`);
+  await createDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(createDlg).toBeHidden();
+
+  // Pull the CSRF token from the cookie set by the session and use it
+  // to post a secret directly. We do this from the page context so we
+  // get the same TLS / origin handling Playwright already configured.
+  await page.evaluate(async () => {
+    const csrf = document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith("__Host-uw-csrf="))
+      ?.slice("__Host-uw-csrf=".length);
+    if (!csrf) throw new Error("no csrf cookie on page");
+    const res = await fetch("/v1/admin/secret/write", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf,
+      },
+      body: JSON.stringify({
+        store: "packed",
+        wrapper: "ignored",
+        secret_id: "marker",
+        material_b64: btoa("hello"),
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`admin/secret/write failed: ${res.status}`);
+    }
+  });
+
+  // Open delete dialog. Without force, the API rejects with
+  // store_not_empty; tick the force checkbox and confirm.
+  await page
+    .getByRole("row", { name: /packed/ })
+    .getByRole("button", { name: /delete/i })
+    .click();
+  const delDlg = page.getByRole("dialog", { name: /delete store: packed/i });
+  const deleteBtn = delDlg.getByRole("button", { name: /^delete$/i });
+  await expect(deleteBtn).toBeDisabled();
+  await delDlg.getByLabel(/type/i).fill("packed");
+  await delDlg.getByLabel(/force delete/i).check();
+  await expect(deleteBtn).toBeEnabled();
+  await deleteBtn.click();
+
+  // The backend returns a cleanup_hint when the data dir is non-empty;
+  // the SPA surfaces it in a follow-up dialog. Dismiss it.
+  const storeDeletedDlg = page.getByRole("dialog", { name: /store deleted/i });
+  await expect(storeDeletedDlg).toBeVisible();
+  await expect(storeDeletedDlg.getByText(/packed/).first()).toBeVisible();
+  await storeDeletedDlg.getByText("Close", { exact: true }).click();
+  await expect(
+    page.getByRole("cell", { name: "packed", exact: true }),
+  ).toBeHidden();
+});
+
 test("non-admin operator sees the nav item hidden", async ({
   page,
   backendWithAdmin,
