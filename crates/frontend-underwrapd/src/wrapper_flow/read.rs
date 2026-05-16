@@ -123,13 +123,19 @@ pub(super) fn process_read_for(
     }
 
     let mut file_bindings = Vec::new();
+    let global_write_access = if writes_enabled(&policy) {
+        AccessMode::ReadWrite
+    } else {
+        AccessMode::ReadOnly
+    };
     for projection in wrapper_file_bindings(wrapper_def) {
         let _resource = files_resource(&projection.resource_id);
         audit::read_granted(wrapper_name, &projection.resource_id, Some(peer_uid), scope);
         prefixes.push(files_prefix(&projection.resource_id));
-        // Files don't currently use the libsecret-style read-write
-        // toggle; keep them read-only.
-        file_bindings.push(projection.into_read_binding(AccessMode::ReadOnly));
+        // Wrapper files inherit the per-store `writes_enabled` flag.
+        // Pre-245 the daemon ran a per-`files.write` rule check; the
+        // grant-model rewrite collapses that into the global toggle.
+        file_bindings.push(projection.into_read_binding(global_write_access));
     }
 
     let mut libsecret_access = None;
@@ -137,12 +143,7 @@ pub(super) fn process_read_for(
         let _resource = libsecret_resource(resource_id);
         audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
         prefixes.push(libsecret_prefix(resource_id));
-        let access = if writes_enabled(&policy) {
-            AccessMode::ReadWrite
-        } else {
-            AccessMode::ReadOnly
-        };
-        libsecret_access = Some((resource_id.to_string(), access));
+        libsecret_access = Some((resource_id.to_string(), global_write_access));
     }
 
     let snapshot = match state.store.read_prefixes(&prefixes) {

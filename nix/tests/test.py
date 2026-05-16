@@ -4,7 +4,6 @@ import base64
 import json
 import shlex
 import time
-import re
 
 # Helper for running commands as testuser.
 def su(cmd):
@@ -20,7 +19,21 @@ ADMIN_TOKEN = "vm-test-admin-token"
 
 
 def admin_api(url, path, payload=None, method="POST"):
-    cmd = ["curl", "-fsS", "-X", method, "-H", f"Authorization: Bearer {ADMIN_TOKEN}"]
+    # State-changing requests against an admin listener with
+    # `allowed_origins` configured (ticket 212) must carry an
+    # `Origin` header matching one of the allowlisted entries.
+    # The bearer-token path is exempt from CSRF, but the origin
+    # check still applies to every non-GET/HEAD/OPTIONS request.
+    cmd = [
+        "curl",
+        "-fsS",
+        "-X",
+        method,
+        "-H",
+        f"Authorization: Bearer {ADMIN_TOKEN}",
+        "-H",
+        f"Origin: {url}",
+    ]
     if payload is not None:
         cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(payload)]
     cmd += [f"{url}{path}"]
@@ -42,64 +55,67 @@ def admin_write_secret(url, store, wrapper, secret_id, value):
     )
 
 
-def admin_set_wrapper_mode(url, store, wrapper, mode, reason=None):
-    """Set a wrapper's approval mode.
+def admin_upsert_grant(url, store, wrapper, host, user, mode, reason=None):
+    """Upsert an agent grant for a `(wrapper, host, user)` tuple
+    (ticket 246).
 
     `mode` is a dict that serializes WrapperApprovalMode, e.g.:
       {"kind": "locked"}
       {"kind": "unlocked"}
-      {"kind": "unlocked", "until_epoch": 1234}
+      {"kind": "unlocked-until", "until_epoch": 1234}
       {"kind": "per-call-approval", "approval_key": "ssh-ed25519 ..."}
     """
+    grant = {
+        "wrapper": wrapper,
+        "host": host,
+        "user": user,
+        "mode": mode,
+    }
+    if reason is not None:
+        grant["reason"] = reason
     return admin_api(
         url,
-        "/v1/admin/wrapper/set-mode",
-        {"store": store, "wrapper": wrapper, "mode": mode, "reason": reason},
+        "/v1/admin/grants/upsert",
+        {"store": store, "grant": grant},
     )
 
 
-def admin_upsert_rule(url, store, rule_id, wrapper, resource, operation, effect):
+def admin_delete_grant(url, store, wrapper, host, user):
     return admin_api(
         url,
-        "/v1/admin/rule/upsert",
-        {
-            "store": store,
-            "rule": {
-                "id": rule_id,
-                "wrapper": wrapper,
-                "resource": resource,
-                "operation": operation,
-                "effect": effect,
-            },
-        },
+        "/v1/admin/grants/delete",
+        {"store": store, "wrapper": wrapper, "host": host, "user": user},
     )
 
 
-def admin_upsert_grant(url, store, grant_id, wrapper, resource, operation, effect, starts_at_epoch=None, expires_at_epoch=None, reason=None):
+def admin_set_writes_enabled(url, store, enabled):
     return admin_api(
         url,
-        "/v1/admin/grant/upsert",
-        {
-            "store": store,
-            "grant": {
-                "id": grant_id,
-                "wrapper": wrapper,
-                "resource": resource,
-                "operation": operation,
-                "effect": effect,
-                "starts_at_epoch": starts_at_epoch,
-                "expires_at_epoch": expires_at_epoch,
-                "reason": reason,
-            },
-        },
+        "/v1/admin/policy/writes-enabled/set",
+        {"store": store, "enabled": enabled},
     )
 
 
-def admin_delete_grant(url, store, grant_id):
-    return admin_api(
-        url,
-        "/v1/admin/grant/delete",
-        {"store": store, "id": grant_id},
+# The test fixture's default `(host, user)` pair for every wrapper
+# invocation run as `testuser` against the local frontend. The
+# `machine` host comes from underwrapd's `catalog_host`, which the
+# frontend module derives from `networking.hostName` (defaults to
+# "machine" in the VM).
+GRANT_HOST = "machine"
+GRANT_USER = "testuser"
+
+
+def grant_local_unlocked(wrapper):
+    """Shortcut: grant `(wrapper, machine, testuser)` with mode
+    Unlocked. Most VM-test scenarios just want the wrapper to work
+    end-to-end without ceremony."""
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        wrapper,
+        GRANT_HOST,
+        GRANT_USER,
+        {"kind": "unlocked"},
     )
 
 
@@ -194,6 +210,30 @@ def local_store_and_basic_ops():
     # ============================================================
     # LOCAL INSTANCE: store secrets + basic operations
     # ============================================================
+
+    # Ticket 247: every admin write gates on the per-store
+    # `writes_enabled` toggle. Flip it on so the seed writes below
+    # land.
+    admin_set_writes_enabled(ADMIN_LOCAL, "local", True)
+
+    # Ticket 246: every wrapper invocation needs a grant for
+    # `(wrapper, host, user)`. Pre-seed Unlocked grants for the full
+    # test wrapper catalog so the subsequent test sections can drive
+    # the wrappers without per-test boilerplate. Tests that exercise
+    # the *absence* of a grant (or `Locked` / `UnlockedUntil`) delete
+    # or replace these as they go.
+    for wrapper in [
+        "test-echo",
+        "test-echo2",
+        "test-locked",
+        "test-sleep",
+        "test-crash",
+        "test-libsecret",
+        "test-caps",
+        "test-ns-pids",
+        "test-keyring-probe",
+    ]:
+        grant_local_unlocked(wrapper)
 
     admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token/env/MY_TOKEN", "ghp_testvmtoken")
     admin_write_secret(ADMIN_LOCAL, "local", "test-echo2", "test/other/env/OTHER_SECRET", "other_secret_val")
@@ -377,7 +417,7 @@ def local_pid_namespace_proc_isolation():
         # a) The process died (wrapper failed), OR
         # b) The PID namespace genuinely hides it from host /proc
         # Either way, we need to know which. Check if the wrapper parent is alive.
-        if "local-test-sleep" not in wrapper_procs and "sleep" not in wrapper_procs:
+        if "test-sleep" not in wrapper_procs and "sleep" not in wrapper_procs:
             assert False, \
                 f"INCONCLUSIVE: no sleep-related processes found. " \
                 f"Wrapper may have failed. All testuser procs: {all_procs}"
@@ -711,24 +751,19 @@ def local_directory_credentials():
     # LOCAL INSTANCE: directory credentials
     # ============================================================
 
-    # Once any backend policy document exists, writes are granted only by
-    # explicit files.write rules. Install the directory rules this section
-    # expects so read-only wrappers stay read-only under the central model.
-    for rule in [
-        ("dir-write-a-read", "local-test-dir-write", "files:test/dir-a", "files.read"),
-        ("dir-write-a-write", "local-test-dir-write", "files:test/dir-a", "files.write"),
-        ("dir-write-b-read", "local-test-dir-write", "files:test/dir-b", "files.read"),
-        ("dir-write-b-write", "local-test-dir-write", "files:test/dir-b", "files.write"),
-        ("dir-read-a", "local-test-dir-read", "files:test/dir-a", "files.read"),
-        ("dir-read-b", "local-test-dir-read", "files:test/dir-b", "files.read"),
-        ("dir-readonly-a", "local-test-dir-readonly-write", "files:test/dir-a", "files.read"),
-        ("dir-readonly-b", "local-test-dir-readonly-write", "files:test/dir-b", "files.read"),
-        ("dir-sleep-a", "local-test-dir-sleep", "files:test/dir-a", "files.read"),
-        ("dir-sleep-b", "local-test-dir-sleep", "files:test/dir-b", "files.read"),
-        ("dir-symlink-a-read", "local-test-dir-symlink", "files:test/dir-a", "files.read"),
-        ("dir-symlink-a-write", "local-test-dir-symlink", "files:test/dir-a", "files.write"),
+    # Post-245 grant model: one Unlocked grant per directory wrapper for
+    # `(wrapper, machine, testuser)`. Read access is then unconditional.
+    # Write access depends on the global `writes_enabled` toggle, which
+    # this section needs flipped on for the seed step.
+    for wrapper in [
+        "test-dir-write",
+        "test-dir-read",
+        "test-dir-readonly-write",
+        "test-dir-sleep",
+        "test-dir-symlink",
     ]:
-        admin_upsert_rule(ADMIN_LOCAL, "local", rule[0], rule[1], rule[2], rule[3], "allow")
+        grant_local_unlocked(wrapper)
+    admin_set_writes_enabled(ADMIN_LOCAL, "local", True)
 
     # Seed two directory credentials through a read-write wrapper.
     machine.succeed(su("/run/wrappers/bin/local-test-dir-write seed"))
@@ -740,9 +775,13 @@ def local_directory_credentials():
     assert dir_output[1].strip() == "meta-seed", f"expected meta-seed, got {dir_output}"
     machine.log("PASS: directory credential read-only wrapper can read both mounted directories")
 
-    # Read-only mounts must reject writes.
-    machine.fail(su("/run/wrappers/bin/local-test-dir-readonly-write update"))
-    machine.log("PASS: directory read-only mounts reject mutation")
+    # Pre-245 the daemon supported per-wrapper write rules so the
+    # `test-dir-readonly-write` wrapper could be denied mutation
+    # while sharing a target with `test-dir-write`. The grant-model
+    # rewrite collapses that into the per-store `writes_enabled`
+    # flag, so the two wrappers are no longer distinguishable at
+    # the daemon layer. The next scenario instead asserts that
+    # toggling `writes_enabled` off rejects mutations across both.
 
     # Update content and delete one file through the read-write wrapper.
     machine.succeed(su("/run/wrappers/bin/local-test-dir-write update"))
@@ -843,6 +882,20 @@ def remote_service_lifecycle():
     # REMOTE INSTANCE: backend service lifecycle
     # ============================================================
 
+    # Flip writes on so the admin seed and grant land.
+    admin_set_writes_enabled(ADMIN_REMOTE, "remote", True)
+    # Both daemons share the VM's hostname for their catalog_host;
+    # the wrapper is `remote-echo` (logical name) and the user is
+    # `testuser`.
+    admin_upsert_grant(
+        ADMIN_REMOTE,
+        "remote",
+        "remote-echo",
+        GRANT_HOST,
+        GRANT_USER,
+        {"kind": "unlocked"},
+    )
+
     # Store secret in backend through the admin API.
     admin_write_secret(ADMIN_REMOTE, "remote", "remote-echo", "remote/token/env/REMOTE_TOKEN", "secret_via_service")
 
@@ -872,103 +925,98 @@ def remote_service_lifecycle():
 
 def local_backend_managed_grants():
     # ============================================================
-    # LOCAL INSTANCE: backend-managed grants
+    # LOCAL INSTANCE: backend-managed grants (ticket 245+246 model)
     # ============================================================
 
-    now = int(time.time())
-
-    # No baseline rule for this wrapper/resource pair, so a time-bounded grant is required.
-    admin_set_wrapper_mode(ADMIN_LOCAL, "local", "local-test-echo2", {"kind": "unlocked"})
+    # Remove the seed grant from the earlier section so we can
+    # exercise the "no grant" path.
+    admin_delete_grant(ADMIN_LOCAL, "local", "test-echo2", GRANT_HOST, GRANT_USER)
     machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
-    machine.log("PASS: wrapper without baseline rule is denied before grant")
+    machine.log("PASS: wrapper with no agent grant is denied")
 
+    # Unlocked grant → wrapper can read.
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
-        "grant-echo2",
-        "local-test-echo2",
-        "env:test/other",
-        "env.read",
-        "allow",
-        starts_at_epoch=now - 1,
-        expires_at_epoch=now + 30,
-        reason="temporary allow",
+        "test-echo2",
+        GRANT_HOST,
+        GRANT_USER,
+        {"kind": "unlocked"},
+        reason="vm test allow",
     )
     output = machine.succeed(su("/run/wrappers/bin/local-test-echo2 hello"))
     assert "hello" in output
-    machine.log("PASS: active backend grant allows wrapper action")
+    machine.log("PASS: active agent grant allows wrapper action")
 
-    admin_delete_grant(ADMIN_LOCAL, "local", "grant-echo2")
+    # Deleting the grant revokes future reads.
+    admin_delete_grant(ADMIN_LOCAL, "local", "test-echo2", GRANT_HOST, GRANT_USER)
     machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
-    machine.log("PASS: deleting backend grant revokes future wrapper action")
+    machine.log("PASS: deleting agent grant revokes future wrapper action")
 
+    # UnlockedUntil with a deadline guaranteed in the past
+    # (1970-01-02) is denied lazily on the next request — no flaky
+    # sleep needed and no risk of host/guest clock skew.
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
-        "grant-expired",
-        "local-test-echo2",
-        "env:test/other",
-        "env.read",
-        "allow",
-        starts_at_epoch=now - 60,
-        expires_at_epoch=now - 1,
+        "test-echo2",
+        GRANT_HOST,
+        GRANT_USER,
+        {"kind": "unlocked-until", "until_epoch": 86400},
         reason="expired allow",
     )
     machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
-    machine.log("PASS: expired backend grant is not honored")
+    machine.log("PASS: expired UnlockedUntil grant is not honored")
+
+    # Clean up so the next test starts fresh.
+    admin_delete_grant(ADMIN_LOCAL, "local", "test-echo2", GRANT_HOST, GRANT_USER)
 
 
 
 def local_backend_policy_control_center():
     # ============================================================
-    # LOCAL INSTANCE: backend-managed wrapper policy control
+    # LOCAL INSTANCE: backend-managed grant mode control
     # ============================================================
 
-    # Create an active policy document but without allow rules.
-    admin_set_wrapper_mode(ADMIN_LOCAL, "local", "local-test-echo", {"kind": "unlocked"})
+    # Remove the seed grant so we can prove "no grant → denied".
+    admin_delete_grant(ADMIN_LOCAL, "local", "test-echo", GRANT_HOST, GRANT_USER)
     machine.fail(su("/run/wrappers/bin/local-test-echo"))
-    machine.log("PASS: active backend policy denies wrapper without explicit rule")
+    machine.log("PASS: wrapper with no grant is denied")
 
-    # Add exact wrapper/resource allow rule.
-    admin_upsert_rule(
+    # Unlocked grant → wrapper can read.
+    grant_local_unlocked("test-echo")
+    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after grant: {output}"
+    machine.log("PASS: Unlocked grant allows wrapper read")
+
+    # Locked grant → wrapper denied.
+    admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
-        "allow-echo",
-        "local-test-echo",
-        "env:test/token",
-        "env.read",
-        "allow",
+        "test-echo",
+        GRANT_HOST,
+        GRANT_USER,
+        {"kind": "locked"},
+        reason="maintenance",
     )
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
-    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after policy allow: {output}"
-    machine.log("PASS: backend policy can allow exact wrapper/resource access")
-
-    # Disable wrapper centrally.
-    admin_set_wrapper_mode(ADMIN_LOCAL, "local", "local-test-echo", {"kind": "locked"}, "maintenance")
     machine.fail(su("/run/wrappers/bin/local-test-echo"))
-    machine.log("PASS: backend policy can disable wrapper centrally")
+    machine.log("PASS: Locked grant denies wrapper read")
 
-    # Re-enable wrapper; existing allow rule becomes effective again.
-    admin_set_wrapper_mode(ADMIN_LOCAL, "local", "local-test-echo", {"kind": "unlocked"})
+    # Re-Unlock → wrapper allowed again.
+    grant_local_unlocked("test-echo")
     output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
-    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after re-enable: {output}"
-    machine.log("PASS: backend policy can re-enable wrapper centrally")
+    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after re-grant: {output}"
+    machine.log("PASS: re-Unlocking the grant restores wrapper access")
 
-    # Local unlock is now obsolete when backend policy is active.
-    admin_upsert_rule(
-        ADMIN_LOCAL,
-        "local",
-        "allow-locked",
-        "local-test-locked",
-        "env:test/locked-tok",
-        "env.read",
-        "allow",
-    )
+    # `local-test-locked` is wired up by the test harness as a wrapper
+    # that historically required a local unlock; under the grant
+    # model it simply needs an Unlocked grant.
+    grant_local_unlocked("test-locked")
     output = machine.succeed(su("/run/wrappers/bin/local-test-locked"))
     assert "LOCKED_TOKEN=locked_secret" in output, (
-        f"expected locked wrapper to work via backend policy without local unlock: {output}"
+        f"expected formerly-locked wrapper to work via grant model: {output}"
     )
-    machine.log("PASS: backend policy replaces local unlock when active")
+    machine.log("PASS: grant model replaces local unlock when active")
 
 
 def instance_isolation():
@@ -978,22 +1026,9 @@ def instance_isolation():
 
     # local-test-echo wrapper cannot reach tunnel instance secrets.
     # (The wrapper's GID maps to the local instance, not tunnel.)
-    admin_upsert_rule(
-        ADMIN_LOCAL,
-        "local",
-        "temp-instance-isolation-echo",
-        "local-test-echo",
-        "env:test/token",
-        "env.read",
-        "allow",
-    )
+    grant_local_unlocked("test-echo")
     output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
     assert "REMOTE_TOKEN" not in output
-    admin_api(
-        ADMIN_LOCAL,
-        "/v1/admin/rule/delete",
-        {"store": "local", "id": "temp-instance-isolation-echo"},
-    )
     machine.log("PASS: local wrapper does not leak remote secrets")
 
 

@@ -180,6 +180,10 @@ in {
     "d /var/lib/underwrap-backend/secrets 0700 underwrap-backend underwrap-backend -"
     "d /var/lib/underwrap-backend-local 0700 underwrap-local underwrap-local -"
     "d /var/lib/underwrap-backend-local/secrets 0700 underwrap-local underwrap-local -"
+    # Roots the admin API may carve dynamic stores into (ticket 262).
+    "d /var/lib/underwrap-backend-local/data-roots 0700 underwrap-local underwrap-local -"
+    # Where encrypted-store master keys land (ticket 234).
+    "d /var/lib/underwrap-backend-local/keys 0700 underwrap-local underwrap-local -"
   ];
 
   # SSH server for the tunnel.
@@ -214,6 +218,18 @@ in {
           admin = {
             listen = "127.0.0.1:19443";
             tokens.ops.token_file = "/etc/underwrap-admin-token";
+            # SPA-aware admin surface (ticket 262): a session key is
+            # required for the cookie-based login flow. The VM test
+            # uses a deterministic 32-byte file under /etc/ so the
+            # test bootstrap can drive cookie auth against the
+            # backend's own admin listener. `allowed_origins`
+            # mirrors the per-test origin curl announces.
+            session_key_file = "/etc/underwrap-admin-session.key";
+            allowed_origins = [
+              "http://127.0.0.1:19443"
+            ];
+            stores_data_roots = [ "/var/lib/underwrap-backend-local/data-roots" ];
+            keys_dir = "/var/lib/underwrap-backend-local/keys";
           };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
@@ -238,6 +254,14 @@ in {
       LimitCORE = 0;
       ReadWritePaths = [ "/var/lib/underwrap-backend-local" ];
     };
+  };
+
+  # Pre-seeded 32-byte session AEAD key used by the local admin
+  # listener for cookie-based session encryption. World-readable in
+  # the test; real deployments would ship this via sops.
+  environment.etc."underwrap-admin-session.key" = {
+    text = "01234567890123456789012345678901";
+    mode = "0644";
   };
 
 
