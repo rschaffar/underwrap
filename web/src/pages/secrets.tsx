@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Eye, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronRight, Eye, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -49,6 +49,83 @@ interface SecretsPageProps {
    * is the source of truth).
    */
   principal: WhoamiResponse | null;
+}
+
+/**
+ * The three backend "slots" every wrapper resource has. The secret
+ * ID layout is `<resource>/<slot>/<name>` — see `examples/config.yaml`
+ * and `crates/shared-protocol/src/config.rs`.
+ */
+export const SECRET_SLOTS = ["env", "files", "libsecret"] as const;
+export type SecretSlot = (typeof SECRET_SLOTS)[number];
+
+export interface SecretEntry {
+  /** Full secret ID, as stored in the backend. */
+  id: string;
+  /** Entry name within the slot — everything after `<slot>/`. */
+  name: string;
+}
+
+export interface SecretResourceGroup {
+  resource: string;
+  env: SecretEntry[];
+  files: SecretEntry[];
+  libsecret: SecretEntry[];
+}
+
+/** Total entry count across all three slots of a resource. */
+function resourceCount(g: SecretResourceGroup): number {
+  return g.env.length + g.files.length + g.libsecret.length;
+}
+
+/**
+ * Parse a list of secret IDs into resource-grouped buckets. Each
+ * ID is expected to match `<resource>/<slot>/<name>` where `<slot>`
+ * is one of env/files/libsecret. IDs that don't match the layout
+ * are surfaced separately as `unrecognized` so the operator can
+ * see and clean them up rather than have them silently disappear.
+ *
+ * Non-greedy on the resource segment so a deeply-nested resource
+ * path resolves to the first valid slot delimiter (the common
+ * shape — see the `prefer the leftmost split` test case).
+ */
+export function groupSecretIds(ids: string[]): {
+  resources: SecretResourceGroup[];
+  unrecognized: string[];
+} {
+  const groups = new Map<string, SecretResourceGroup>();
+  const unrecognized: string[] = [];
+  const pattern = /^(.+?)\/(env|files|libsecret)\/(.+)$/;
+  for (const id of ids) {
+    const m = pattern.exec(id);
+    if (!m) {
+      unrecognized.push(id);
+      continue;
+    }
+    const [, resource, slot, name] = m as unknown as [
+      string,
+      string,
+      SecretSlot,
+      string,
+    ];
+    let g = groups.get(resource);
+    if (!g) {
+      g = { resource, env: [], files: [], libsecret: [] };
+      groups.set(resource, g);
+    }
+    g[slot].push({ id, name });
+  }
+  // Stable sort within each slot, then by resource name.
+  for (const g of groups.values()) {
+    g.env.sort((a, b) => a.name.localeCompare(b.name));
+    g.files.sort((a, b) => a.name.localeCompare(b.name));
+    g.libsecret.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  const resources = [...groups.values()].sort((a, b) =>
+    a.resource.localeCompare(b.resource),
+  );
+  unrecognized.sort();
+  return { resources, unrecognized };
 }
 
 export function SecretsPage({ principal: _principal }: SecretsPageProps) {
@@ -111,6 +188,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     () => (list.data?.ids ?? []).filter((id) => !RESERVED_PREFIX.test(id)),
     [list.data],
   );
+  const grouped = useMemo(() => groupSecretIds(visibleIds), [visibleIds]);
 
   const [revealing, setRevealing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -207,53 +285,27 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
           to add one.
         </p>
       ) : (
-        <table className="w-full table-auto border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-(--color-line) text-left text-xs uppercase tracking-wide text-(--color-muted)">
-              <th className="px-4 py-2 font-medium">Secret ID</th>
-              <th className="px-4 py-2 text-right font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleIds.map((id) => (
-              <tr key={id} className="border-b border-(--color-line)/40">
-                <td className="px-4 py-3 font-mono text-xs text-(--color-fg)">
-                  {id}
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <div className="inline-flex gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setRevealing(id)}
-                    >
-                      <Eye className="mr-1.5 h-4 w-4" aria-hidden />
-                      Reveal
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setEditing(id)}
-                      disabled={!writesEnabled}
-                    >
-                      <Pencil className="mr-1.5 h-4 w-4" aria-hidden />
-                      Edit
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => setDeleting(id)}
-                      disabled={!writesEnabled}
-                    >
-                      <Trash2 className="mr-1.5 h-4 w-4" aria-hidden />
-                      Delete
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="space-y-2">
+          {grouped.resources.map((group) => (
+            <ResourceBlock
+              key={group.resource}
+              group={group}
+              writesEnabled={writesEnabled}
+              onReveal={setRevealing}
+              onEdit={setEditing}
+              onDelete={setDeleting}
+            />
+          ))}
+          {grouped.unrecognized.length > 0 ? (
+            <UnrecognizedBlock
+              ids={grouped.unrecognized}
+              writesEnabled={writesEnabled}
+              onReveal={setRevealing}
+              onEdit={setEditing}
+              onDelete={setDeleting}
+            />
+          ) : null}
+        </div>
       )}
 
       {revealing ? (
@@ -288,6 +340,171 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         />
       ) : null}
     </div>
+  );
+}
+
+// ---------- Resource block (expandable) ----------
+
+interface RowActions {
+  writesEnabled: boolean;
+  onReveal: (id: string) => void;
+  onEdit: (id: string) => void;
+  onDelete: (id: string) => void;
+}
+
+function ResourceBlock({
+  group,
+  ...actions
+}: { group: SecretResourceGroup } & RowActions) {
+  const total = resourceCount(group);
+  // The summary line shows which slots have content. It avoids
+  // overpromising an empty slot section before the operator
+  // expands.
+  const summary = SECRET_SLOTS.filter((slot) => group[slot].length > 0)
+    .map((slot) => `${slot} (${group[slot].length})`)
+    .join(" · ");
+  return (
+    <details
+      data-testid={`resource-block-${group.resource}`}
+      className="group rounded-md border border-(--color-line) bg-(--color-surface-0)/40 open:bg-(--color-surface-0)/70"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm">
+        <ChevronRight
+          className="h-4 w-4 transition-transform group-open:rotate-90"
+          aria-hidden
+        />
+        <span className="font-mono text-(--color-fg)">{group.resource}</span>
+        <span className="ml-auto text-xs text-(--color-muted)">
+          {total === 0 ? "empty" : summary}
+        </span>
+      </summary>
+      <div className="space-y-3 border-t border-(--color-line)/60 px-4 py-3">
+        {SECRET_SLOTS.map((slot) => (
+          <SlotSection
+            key={slot}
+            slot={slot}
+            entries={group[slot]}
+            {...actions}
+          />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function SlotSection({
+  slot,
+  entries,
+  ...actions
+}: { slot: SecretSlot; entries: SecretEntry[] } & RowActions) {
+  return (
+    <section data-testid={`slot-${slot}`} className="space-y-1">
+      <h3 className="font-mono text-xs uppercase tracking-wide text-(--color-muted)">
+        {slot}
+      </h3>
+      {entries.length === 0 ? (
+        <p className="pl-2 text-xs text-(--color-muted)/70">(none)</p>
+      ) : (
+        <ul className="space-y-1">
+          {entries.map((entry) => (
+            <li
+              key={entry.id}
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-(--color-surface-1)/50"
+            >
+              <span
+                className="font-mono text-xs text-(--color-fg)"
+                title={entry.id}
+              >
+                {entry.name}
+              </span>
+              <div className="ml-auto inline-flex gap-2">
+                <EntryActions entry={entry} {...actions} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function EntryActions({
+  entry,
+  writesEnabled,
+  onReveal,
+  onEdit,
+  onDelete,
+}: { entry: SecretEntry } & RowActions) {
+  return (
+    <>
+      <Button variant="ghost" size="sm" onClick={() => onReveal(entry.id)}>
+        <Eye className="mr-1.5 h-4 w-4" aria-hidden />
+        Reveal
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => onEdit(entry.id)}
+        disabled={!writesEnabled}
+      >
+        <Pencil className="mr-1.5 h-4 w-4" aria-hidden />
+        Edit
+      </Button>
+      <Button
+        variant="destructive"
+        size="sm"
+        onClick={() => onDelete(entry.id)}
+        disabled={!writesEnabled}
+      >
+        <Trash2 className="mr-1.5 h-4 w-4" aria-hidden />
+        Delete
+      </Button>
+    </>
+  );
+}
+
+function UnrecognizedBlock({
+  ids,
+  ...actions
+}: { ids: string[] } & RowActions) {
+  return (
+    <details
+      data-testid="resource-block-unrecognized"
+      className="group rounded-md border border-amber-500/30 bg-amber-500/5"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm">
+        <ChevronRight
+          className="h-4 w-4 transition-transform group-open:rotate-90"
+          aria-hidden
+        />
+        <span className="text-amber-200">Unrecognized layout</span>
+        <span className="ml-auto text-xs text-amber-200/70">
+          {ids.length} {ids.length === 1 ? "secret" : "secrets"}
+        </span>
+      </summary>
+      <div className="space-y-1 border-t border-amber-500/30 px-4 py-3">
+        <p className="pb-2 text-xs text-amber-200/80">
+          These IDs don't follow the{" "}
+          <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
+            &lt;resource&gt;/&lt;env|files|libsecret&gt;/&lt;name&gt;
+          </code>{" "}
+          convention. They may be left over from an older import.
+        </p>
+        <ul className="space-y-1">
+          {ids.map((id) => (
+            <li
+              key={id}
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-(--color-surface-1)/50"
+            >
+              <span className="font-mono text-xs text-(--color-fg)">{id}</span>
+              <div className="ml-auto inline-flex gap-2">
+                <EntryActions entry={{ id, name: id }} {...actions} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </details>
   );
 }
 

@@ -58,21 +58,25 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   await createDlg.getByRole("button", { name: /^create$/i }).click();
   await expect(createDlg).toBeHidden();
 
-  // The new secret shows up in the table.
-  await expect(
-    page.getByRole("cell", { name: "github/token/env/GH_TOKEN" }),
-  ).toBeVisible();
+  // The new secret shows up under the github/token resource block.
+  // The block is collapsed by default — expand it before reaching
+  // for the entry row.
+  const resourceBlock = page.getByTestId("resource-block-github/token");
+  await expect(resourceBlock).toBeVisible();
+  await resourceBlock.locator("summary").click();
+  const envSection = resourceBlock.getByTestId("slot-env");
+  await expect(envSection.getByText("GH_TOKEN")).toBeVisible();
 
   // The reserved __underwrap/ policy document was just written by
-  // the toggle flip — confirm it does not appear in the visible list.
+  // the toggle flip — confirm no resource block was created for it.
   await expect(
-    page.getByRole("cell", { name: /__underwrap\//i }),
+    page.getByTestId(/^resource-block-__underwrap\//),
   ).toHaveCount(0);
 
   // Reveal: the confirmation step gates the actual read.
-  const row = page
-    .getByRole("cell", { name: "github/token/env/GH_TOKEN" })
-    .locator("xpath=ancestor::tr");
+  const row = envSection
+    .getByText("GH_TOKEN")
+    .locator("xpath=ancestor::li");
   await row.getByRole("button", { name: /reveal/i }).click();
   const revealDlg = page.getByRole("dialog", { name: /reveal secret/i });
   await expect(revealDlg).toBeVisible();
@@ -118,8 +122,8 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   await delBtn.click();
   await expect(delDlg).toBeHidden();
 
-  // The secret is gone from the list.
+  // The secret is gone — the empty resource block disappears with it.
   await expect(
-    page.getByRole("cell", { name: "github/token/env/GH_TOKEN" }),
+    page.getByTestId("resource-block-github/token"),
   ).toHaveCount(0);
 });
