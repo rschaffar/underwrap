@@ -35,24 +35,6 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum AdminCommand {
-    /// Import operator records from a legacy Next.js admin-ui YAML
-    /// config and its sidecar `operators.json` state file, writing the
-    /// resulting collection into the admin-home store. Refuses if any
-    /// operator records already exist.
-    ImportOperatorsFromYaml {
-        /// Path to the legacy admin-ui.yaml (with `operators: { name:
-        /// { password_hash_file } }`).
-        #[arg(long)]
-        yaml: PathBuf,
-        /// Optional path to the legacy operators.json state file
-        /// (`{ version, operators: { name: { password_hash } } }`).
-        #[arg(long)]
-        state_json: Option<PathBuf>,
-        /// Which store in the backend config receives the records.
-        /// Defaults to the admin-home store resolved from config.
-        #[arg(long)]
-        store: Option<String>,
-    },
     /// Offline recovery: append (or refuse-on-conflict) an admin
     /// operator directly to the admin-home store. Use when nobody can
     /// log in to the running daemon. This subcommand intentionally
@@ -175,40 +157,6 @@ fn run_admin(cmd: AdminCommand, config: server::BackendConfig) -> Result<()> {
             info!(store = %target.0, username = %username, "recover-operator: admin added");
             Ok(())
         }
-        AdminCommand::ImportOperatorsFromYaml {
-            yaml,
-            state_json,
-            store,
-        } => {
-            let target = match store.as_deref().or(configured_home) {
-                Some(name) => {
-                    let s = stores
-                        .get(name)
-                        .with_context(|| format!("--store '{name}' is not declared in stores"))?;
-                    (name.to_string(), s.clone())
-                }
-                None => {
-                    let (n, s) = operators::resolve_admin_home_store(&stores, None)?;
-                    (n.to_string(), s)
-                }
-            };
-            let existing = operators::load(target.1.as_ref())?;
-            anyhow::ensure!(
-                existing.is_empty(),
-                "store '{}' already has {} operator record(s); refusing to import",
-                target.0,
-                existing.len(),
-            );
-            let collection = import_operators_from_yaml_files(&yaml, state_json.as_deref())?;
-            let count = collection.len();
-            operators::save(target.1.as_ref(), &collection)?;
-            info!(
-                store = %target.0,
-                count = count,
-                "imported operators into admin-home store"
-            );
-            Ok(())
-        }
     }
 }
 
@@ -222,112 +170,6 @@ fn open_stores_for_admin(
         out.insert(name.clone(), store);
     }
     Ok(out)
-}
-
-#[derive(serde::Deserialize)]
-struct LegacyYaml {
-    #[serde(default)]
-    operators: HashMap<String, LegacyOperator>,
-}
-
-#[derive(serde::Deserialize)]
-struct LegacyOperator {
-    password_hash_file: Option<PathBuf>,
-}
-
-#[derive(serde::Deserialize)]
-struct LegacyStateJson {
-    #[serde(default)]
-    operators: HashMap<String, LegacyStateOperator>,
-}
-
-#[derive(serde::Deserialize)]
-struct LegacyStateOperator {
-    password_hash: Option<String>,
-}
-
-fn import_operators_from_yaml_files(
-    yaml_path: &std::path::Path,
-    state_json: Option<&std::path::Path>,
-) -> Result<operators::OperatorCollection> {
-    let yaml_text = std::fs::read_to_string(yaml_path)
-        .with_context(|| format!("reading legacy admin-ui yaml at {}", yaml_path.display()))?;
-    let parsed: LegacyYaml = serde_yaml::from_str(&yaml_text).context("parsing legacy yaml")?;
-
-    let mut collection = operators::OperatorCollection::default();
-    let now = operators::now_epoch_secs();
-
-    // Config-declared operators come first (precedence-preserving over
-    // any state-file entries with the same username).
-    for (name, op) in parsed.operators {
-        let hash_path = op
-            .password_hash_file
-            .with_context(|| format!("legacy operator '{name}' missing password_hash_file"))?;
-        let resolved = if hash_path.is_absolute() {
-            hash_path
-        } else {
-            yaml_path
-                .parent()
-                .map(|p| p.join(&hash_path))
-                .unwrap_or(hash_path)
-        };
-        let hash = std::fs::read_to_string(&resolved)
-            .with_context(|| {
-                format!(
-                    "reading password hash for operator '{name}' at {}",
-                    resolved.display()
-                )
-            })?
-            .trim()
-            .to_string();
-        collection.add(operators::OperatorRecord {
-            id: operators::new_operator_id(),
-            username: name,
-            password_hash: hash,
-            role: operators::OperatorRole::Admin,
-            granted_stores: Vec::new(),
-            created_at: now,
-            password_changed_at: now,
-        })?;
-    }
-
-    // Then state-file operators that don't collide with config ones.
-    if let Some(path) = state_json {
-        let raw = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(collection),
-            Err(e) => {
-                return Err(anyhow::Error::from(e).context(format!(
-                    "reading legacy operators.json at {}",
-                    path.display()
-                )));
-            }
-        };
-        let parsed: LegacyStateJson =
-            serde_json::from_str(&raw).context("parsing legacy operators.json")?;
-        for (name, op) in parsed.operators {
-            let normalised = operators::normalise_username(&name);
-            if collection.find_by_username(&normalised).is_some() {
-                continue;
-            }
-            let hash = op
-                .password_hash
-                .with_context(|| format!("legacy state operator '{name}' missing password_hash"))?
-                .trim()
-                .to_string();
-            collection.add(operators::OperatorRecord {
-                id: operators::new_operator_id(),
-                username: name,
-                password_hash: hash,
-                role: operators::OperatorRole::Admin,
-                granted_stores: Vec::new(),
-                created_at: now,
-                password_changed_at: now,
-            })?;
-        }
-    }
-
-    Ok(collection)
 }
 
 /// Add an admin operator to the on-disk collection. Refuses if an
@@ -382,31 +224,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_admin_import_subcommand() {
-        let cli = Cli::parse_from([
-            "underwrap-backendd",
-            "admin",
-            "import-operators-from-yaml",
-            "--yaml",
-            "/tmp/admin-ui.yaml",
-            "--store",
-            "robert",
-        ]);
-        match cli.command {
-            Some(Command::Admin(AdminCommand::ImportOperatorsFromYaml {
-                yaml,
-                store,
-                state_json,
-            })) => {
-                assert_eq!(yaml, PathBuf::from("/tmp/admin-ui.yaml"));
-                assert_eq!(store.as_deref(), Some("robert"));
-                assert!(state_json.is_none());
-            }
-            _ => panic!("expected admin import subcommand, got {:?}", cli.command),
-        }
-    }
-
-    #[test]
     fn parse_backend_config_parses_minimal_yaml() {
         // Empty YAML works because both store dirs and service+admin
         // are optional. Tests that need stores write per-store YAML
@@ -448,38 +265,6 @@ stores:
             std::path::PathBuf::from("/etc/u/decl"),
         );
         assert_eq!(config.dynamic_dir(), std::path::PathBuf::from("/var/u/dyn"),);
-    }
-
-    #[test]
-    fn import_helper_reads_yaml_and_state() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let hash_path = dir.path().join("alice.hash");
-        std::fs::write(
-            &hash_path,
-            "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
-        )
-        .unwrap();
-        let yaml_path = dir.path().join("admin-ui.yaml");
-        std::fs::write(
-            &yaml_path,
-            format!(
-                "operators:\n  alice:\n    password_hash_file: {}\n",
-                hash_path.display()
-            ),
-        )
-        .unwrap();
-
-        let state_path = dir.path().join("operators.json");
-        std::fs::write(
-            &state_path,
-            r#"{"version":1,"operators":{"bob":{"password_hash":"$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"}}}"#,
-        )
-        .unwrap();
-
-        let coll = import_operators_from_yaml_files(&yaml_path, Some(&state_path)).unwrap();
-        assert_eq!(coll.len(), 2);
-        assert!(coll.find_by_username("alice").is_some());
-        assert!(coll.find_by_username("bob").is_some());
     }
 
     #[test]
@@ -555,33 +340,5 @@ stores:
             Arc::from(underwrap_store::open(&cfg).unwrap());
         let err = recover_operator(backend.as_ref(), "alice", "").unwrap_err();
         assert!(err.to_string().contains("password"));
-    }
-
-    #[test]
-    fn import_helper_state_does_not_clobber_yaml_operator() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let hash_path = dir.path().join("alice.hash");
-        let yaml_hash = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        std::fs::write(&hash_path, yaml_hash).unwrap();
-        let yaml_path = dir.path().join("admin-ui.yaml");
-        std::fs::write(
-            &yaml_path,
-            format!(
-                "operators:\n  alice:\n    password_hash_file: {}\n",
-                hash_path.display()
-            ),
-        )
-        .unwrap();
-        let state_path = dir.path().join("operators.json");
-        std::fs::write(
-            &state_path,
-            r#"{"version":1,"operators":{"Alice":{"password_hash":"$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}"#,
-        )
-        .unwrap();
-
-        let coll = import_operators_from_yaml_files(&yaml_path, Some(&state_path)).unwrap();
-        assert_eq!(coll.len(), 1);
-        let alice = coll.find_by_username("alice").unwrap();
-        assert_eq!(alice.password_hash, yaml_hash);
     }
 }

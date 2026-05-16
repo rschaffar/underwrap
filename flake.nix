@@ -26,11 +26,9 @@
           };
 
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-          nodejs = pkgs.nodejs_22;
 
           # Common source filtering — Rust/Cargo files plus per-crate src/assets/
-          # so admin-ui's bundled CSS (and any future static assets) survive
-          # the sandboxed build.
+          # so any bundled static assets survive the sandboxed build.
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter = path: type:
@@ -80,35 +78,6 @@
             cargoExtraArgs = "--package ${name}";
           });
 
-          underwrapAdminUiNextjs = pkgs.buildNpmPackage {
-            pname = "underwrap-admin-ui";
-            version = "0.1.0";
-            src = ./apps/admin-ui;
-            npmDepsHash = "sha256-NlCgdX3iSJxWROPyrIYLHQv2NYgL8V9Va8XNn+OjIIM=";
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-            npmBuildScript = "build";
-
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p $out/libexec/underwrap-admin-ui $out/bin
-              cp -r .next/standalone/. $out/libexec/underwrap-admin-ui/
-              mkdir -p $out/libexec/underwrap-admin-ui/.next
-              cp -r .next/static $out/libexec/underwrap-admin-ui/.next/static
-              if [ -d public ]; then
-                cp -r public $out/libexec/underwrap-admin-ui/public
-              fi
-
-              makeWrapper ${nodejs}/bin/node $out/bin/underwrap-admin-ui \
-                --chdir $out/libexec/underwrap-admin-ui \
-                --set-default HOSTNAME 127.0.0.1 \
-                --set-default PORT 3000 \
-                --add-flags server.js
-
-              runHook postInstall
-            '';
-          };
-
         in {
           packages = {
             default = workspace;
@@ -125,8 +94,6 @@
             };
             underwrap-backendd = mkCrate "backend-backendd";
             underwrap-secretsd = mkCrate "frontend-secretsd";
-            underwrap-admin-ui = underwrapAdminUiNextjs;
-            underwrap-admin-ui-nextjs = underwrapAdminUiNextjs;
           };
 
           checks = {
@@ -219,7 +186,6 @@
       systemIndependent = {
         # NixOS modules.
         nixosModules.default = ./nix/modules/underwrap.nix;
-        nixosModules.admin-ui = ./nix/modules/admin-ui-nextjs.nix;
         nixosModules.backend = ./nix/modules/underwrap-backend.nix;
       };
 
@@ -245,10 +211,8 @@
               nodes.machine = { pkgs, ... }: import ./nix/tests/node.nix {
                 inherit pkgs;
                 underwrapPackage = perSystem.packages.${system}.default;
-                underwrapAdminUiPackage = perSystem.packages.${system}.underwrap-admin-ui;
                 goKeyringProbePackage = perSystem.packages.${system}.underwrap-go-keyring-probe;
                 nixosModule = self.nixosModules.default;
-                adminUiModule = self.nixosModules.admin-ui;
                 backendModule = self.nixosModules.backend;
               };
 

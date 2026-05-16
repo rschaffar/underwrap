@@ -1,5 +1,5 @@
 # VM test node: both local and remote instances on one machine.
-{ pkgs, underwrapPackage, underwrapAdminUiPackage, goKeyringProbePackage, nixosModule, adminUiModule, backendModule, ... }:
+{ pkgs, underwrapPackage, goKeyringProbePackage, nixosModule, backendModule, ... }:
 
 let
   testCaPem = pkgs.writeText "underwrap-test-ca.pem" (builtins.readFile ../../testdata/pki/ca.pem);
@@ -65,19 +65,8 @@ let
     ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
     exec ${pkgs.coreutils}/bin/ln -s /etc/passwd "$HOME/.config/underwrap-dir-a/evil"
   '';
-  adminUiSessionKey = pkgs.runCommand "underwrap-admin-ui-session.key" {} ''
-    cp ${../../apps/admin-ui/dev-fixtures/session.key} $out
-  '';
-  adminUiConfig = pkgs.writeText "underwrap-admin-ui.yaml" ''
-    session_key_file: ${adminUiSessionKey}
-
-    backend:
-      label: corp
-      admin_url: http://127.0.0.1:19443
-      token_file: /etc/underwrap-admin-token
-  '';
 in {
-  imports = [ nixosModule adminUiModule backendModule ];
+  imports = [ nixosModule backendModule ];
 
   # Per-daemon declarative store definitions. The VM test runs two
   # backendds on one host (a contrived stand-in for "two separate
@@ -104,7 +93,7 @@ in {
     description = "local-mode test store";
   };
 
-  environment.systemPackages = [ underwrapPackage underwrapAdminUiPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl ];
+  environment.systemPackages = [ underwrapPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl ];
 
   # Operator bearer token for the backend admin API. World-readable is fine
   # in the VM test; real deployments would ship this via a secrets system.
@@ -192,15 +181,6 @@ in {
     "d /var/lib/underwrap-backend-local 0700 underwrap-local underwrap-local -"
     "d /var/lib/underwrap-backend-local/secrets 0700 underwrap-local underwrap-local -"
   ];
-
-  services.underwrap-admin-ui = {
-    enable = true;
-    package = underwrapAdminUiPackage;
-    listenAddress = "127.0.0.1";
-    port = 3000;
-    configFile = adminUiConfig;
-    secureCookies = false;
-  };
 
   # SSH server for the tunnel.
   services.openssh = {
