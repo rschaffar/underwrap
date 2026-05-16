@@ -27,9 +27,16 @@ pub(crate) fn pick_unused_port() -> Result<u16> {
     Ok(port)
 }
 
+// Total window: 3000 × 20 ms ≈ 60 s. The previous 2 s budget flaked
+// under contended Nix-sandbox loads (ticket 281) — the loop exits as
+// soon as the listener answers, so a longer ceiling costs nothing on
+// the happy path. The contention is real: `cargo test --workspace`
+// runs many test binaries in parallel and the `daemon` test in this
+// crate invokes a recursive `cargo build` via `ensure_package_built`,
+// which can stall sibling tests for tens of seconds.
 pub(super) async fn wait_for_admin(url: &str, token: &str) -> Result<()> {
     let client = reqwest::Client::new();
-    for _ in 0..100 {
+    for _ in 0..3000 {
         if let Ok(response) = client
             .get(format!("{url}/v1/admin/stores"))
             .bearer_auth(token)
@@ -44,6 +51,8 @@ pub(super) async fn wait_for_admin(url: &str, token: &str) -> Result<()> {
     anyhow::bail!("admin API never became ready at {url}")
 }
 
+// Total window: 3000 × 20 ms ≈ 60 s. See wait_for_admin above; rustls
+// initialisation is the slowest part of backend startup under load.
 pub(super) async fn wait_for_service(
     url: &str,
     ca_cert: &Path,
@@ -62,7 +71,7 @@ pub(super) async fn wait_for_service(
         .identity(reqwest::Identity::from_pem(&identity_pem)?)
         .build()?;
 
-    for _ in 0..100 {
+    for _ in 0..3000 {
         if let Ok(response) = client.get(format!("{url}/v1/status")).send().await
             && response.status().is_success()
         {
