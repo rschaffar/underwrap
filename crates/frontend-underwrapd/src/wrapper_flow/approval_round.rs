@@ -47,7 +47,16 @@ pub(super) fn check_wrapper_mode(
     let logical_name = wrapper_def
         .and_then(|w| w.logical_name.clone())
         .unwrap_or_else(|| wrapper_name.to_string());
-    match authorize_grant(&*state.store, &logical_name, host, &user) {
+    match authorize_grant(
+        state
+            .store
+            .as_ref()
+            .expect("approval checks only run for enrolled instances")
+            .as_ref(),
+        &logical_name,
+        host,
+        &user,
+    ) {
         Ok(Some(PolicyDecision::Allow)) => Ok(ModeGate::Proceed),
         Ok(Some(PolicyDecision::NeedsApproval { approval_key })) => {
             Ok(ModeGate::NeedApproval(approval_key))

@@ -93,6 +93,17 @@ async fn complete_read(
 ) -> Result<read::ReadResult> {
     info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
 
+    if let Some(url) = state.enrollment_url.as_deref() {
+        return Ok(read::ReadResult {
+            response: WrapperResponse::Error {
+                code: ErrorCode::Unauthorized,
+                message: crate::server::unenrolled_message(url),
+            },
+            snapshot: read::BundleSnapshot::default(),
+            libsecret_access: None,
+        });
+    }
+
     let approval_satisfied = match check_wrapper_mode(wrapper_name, peer_uid, state) {
         Ok(ModeGate::Proceed) => false,
         Ok(ModeGate::NeedApproval(approval_key)) => {
@@ -130,4 +141,49 @@ async fn complete_read(
         peer_uid,
         approval_satisfied,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::approval::PendingApprovals;
+    use crate::server::State;
+    use underwrap_protocol::config::{BackendServiceConfig, DaemonConfig};
+
+    #[tokio::test]
+    async fn complete_read_returns_enrollment_guidance_when_instance_is_unenrolled() {
+        let (mut stream, _peer) = UnixStream::pair().unwrap();
+        let state = State {
+            config: DaemonConfig {
+                backend: BackendServiceConfig {
+                    url: "https://backend.example.internal".into(),
+                    ca_file: Some(std::path::PathBuf::from("/etc/underwrap/ca.pem")),
+                    client_cert_file: None,
+                    client_key_file: None,
+                },
+                catalog_host: "host-1".into(),
+                catalog_instance: "inst-1".into(),
+                allowed_users: Vec::new(),
+                wrappers: std::collections::HashMap::new(),
+            },
+            store: None,
+            enrollment_url: Some(
+                "https://backend.example.internal/enroll?host=host-1&instance=inst-1".into(),
+            ),
+            allowed_user_uids: std::collections::HashSet::new(),
+            pending_approvals: PendingApprovals::new(),
+        };
+
+        let result = complete_read(&mut stream, None, "gh-authorized", None, 1000, &state)
+            .await
+            .unwrap();
+        match result.response {
+            WrapperResponse::Error { code, message } => {
+                assert!(matches!(code, ErrorCode::Unauthorized));
+                assert!(message.contains("not enrolled yet"));
+                assert!(message.contains("/enroll?host=host-1&instance=inst-1"));
+            }
+            other => panic!("expected enrollment error, got {other:?}"),
+        }
+    }
 }

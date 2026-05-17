@@ -26,7 +26,8 @@ const MAX_CONNECTIONS: usize = 128;
 /// Shared daemon state passed to connection handlers.
 pub(crate) struct State {
     pub(crate) config: DaemonConfig,
-    pub(crate) store: Arc<dyn StorageBackend>,
+    pub(crate) store: Option<Arc<dyn StorageBackend>>,
+    pub(crate) enrollment_url: Option<String>,
     pub(crate) allowed_user_uids: std::collections::HashSet<u32>,
     pub(crate) pending_approvals: PendingApprovals,
 }
@@ -34,7 +35,11 @@ pub(crate) struct State {
 impl State {
     /// Get a clone of the storage backend Arc for sharing with channel handlers.
     pub(crate) fn store_arc(&self) -> Arc<dyn StorageBackend> {
-        Arc::clone(&self.store)
+        Arc::clone(
+            self.store
+                .as_ref()
+                .expect("storage backend is only available for enrolled instances"),
+        )
     }
 }
 
@@ -67,23 +72,68 @@ fn register_catalog(store: &dyn StorageBackend, config: &DaemonConfig) -> Result
 }
 
 /// Run the daemon until `shutdown` is notified (or forever if `None`).
+fn build_enrollment_url(config: &DaemonConfig) -> String {
+    fn pct_encode(value: &str) -> String {
+        let mut out = String::new();
+        for b in value.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char)
+                }
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+
+    let mut url = format!(
+        "{}/enroll?host={}",
+        config.backend.url.trim_end_matches('/'),
+        pct_encode(&config.catalog_host)
+    );
+    if !config.catalog_instance.is_empty() {
+        url.push_str("&instance=");
+        url.push_str(&pct_encode(&config.catalog_instance));
+    }
+    url
+}
+
+pub(crate) fn unenrolled_message(url: &str) -> String {
+    format!(
+        "this underwrap instance is not enrolled yet. open the enrollment page in your browser: {url}"
+    )
+}
+
 pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     // Validate config at startup: every wrapper.secret must reference a declared secret.
     validate_config(&config)?;
 
-    // Open the backend client.
-    let store: Arc<dyn StorageBackend> =
-        Arc::from(underwrap_store::open_backend_client(&config.backend)?);
+    let unenrolled = config.backend.client_cert_file.is_none() && config.backend.client_key_file.is_none();
+    let enrollment_url = if unenrolled {
+        Some(build_enrollment_url(&config))
+    } else {
+        None
+    };
+
+    // Open the backend client when enrolled.
+    let store: Option<Arc<dyn StorageBackend>> = if unenrolled {
+        None
+    } else {
+        Some(Arc::from(underwrap_store::open_backend_client(&config.backend)?))
+    };
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
     let allowed_user_uids = build_allowed_user_uids(&config)?;
-    if let Err(e) = register_catalog(&*store, &config) {
+    if let Some(store) = store.as_ref()
+        && let Err(e) = register_catalog(store.as_ref(), &config)
+    {
         warn!(err = %e, "catalog registration failed; continuing without backend catalog refresh");
     }
 
     let state = Arc::new(State {
         config: config.clone(),
         store,
+        enrollment_url,
         allowed_user_uids,
         pending_approvals: PendingApprovals::new(),
     });

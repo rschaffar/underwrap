@@ -55,7 +55,13 @@ pub(super) fn process_read_for(
         }
     };
 
-    let policy = match load_policy_document(&*state.store) {
+    let policy = match load_policy_document(
+        state
+            .store
+            .as_ref()
+            .expect("read flow only runs for enrolled instances")
+            .as_ref(),
+    ) {
         Ok(doc) => doc,
         Err(e) => {
             error!(wrapper = %wrapper_name, err = %e, "failed to load policy document");
@@ -151,7 +157,12 @@ pub(super) fn process_read_for(
         libsecret_access = Some((resource_id.to_string(), access));
     }
 
-    let snapshot = match state.store.read_prefixes(&prefixes) {
+    let snapshot = match state
+        .store
+        .as_ref()
+        .expect("read flow only runs for enrolled instances")
+        .read_prefixes(&prefixes)
+    {
         Ok(entries) => BundleSnapshot { entries },
         Err(e) => {
             error!(wrapper = %wrapper_name, err = %e, "bundle read failed");
@@ -257,7 +268,8 @@ mod tests {
                     },
                 )]),
             },
-            store,
+            store: Some(store),
+            enrollment_url: None,
             allowed_user_uids: std::collections::HashSet::new(),
             pending_approvals: approval::PendingApprovals::new(),
         }
