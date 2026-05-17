@@ -8,6 +8,12 @@ export type { AdminAgentGrantsListRequest } from "./AdminAgentGrantsListRequest"
 export type { AdminAgentGrantsListResponse } from "./AdminAgentGrantsListResponse";
 export type { AdminCatalogGetRequest } from "./AdminCatalogGetRequest";
 export type { AdminCatalogGetResponse } from "./AdminCatalogGetResponse";
+export type { AdminClientInstanceCreateRequest } from "./AdminClientInstanceCreateRequest";
+export type { AdminClientInstanceDetailResponse } from "./AdminClientInstanceDetailResponse";
+export type { AdminClientInstanceListItem } from "./AdminClientInstanceListItem";
+export type { AdminClientInstanceStatus } from "./AdminClientInstanceStatus";
+export type { AdminClientInstanceUpdateRequest } from "./AdminClientInstanceUpdateRequest";
+export type { AdminClientInstancesListResponse } from "./AdminClientInstancesListResponse";
 export type { AdminOkResponse } from "./AdminOkResponse";
 export type { AdminOkUserResponse } from "./AdminOkUserResponse";
 export type { AdminPasswordChangeRequest } from "./AdminPasswordChangeRequest";

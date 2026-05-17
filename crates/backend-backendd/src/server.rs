@@ -181,7 +181,7 @@ impl Default for StoreRegistry {
 
 struct ServiceRuntimeState {
     stores: HashMap<String, Arc<dyn StorageBackend>>,
-    client_instances: HashMap<String, crate::runtime_clients::ClientInstanceRecord>,
+    client_instances: Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
 }
 
 struct AdminRuntimeState {
@@ -191,8 +191,14 @@ struct AdminRuntimeState {
     /// `Arc<dyn StorageBackend>` they need so the lock isn't held
     /// across I/O.
     stores: std::sync::RwLock<StoreRegistry>,
+    /// Runtime client-instance registry, shared with the service
+    /// listener so admin mutations can affect new runtime requests
+    /// without a daemon restart.
+    client_instances: Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
     /// Path of the backend-managed store-registry file.
     stores_file: PathBuf,
+    /// Path of the backend-managed runtime client-instance registry file.
+    client_instances_file: PathBuf,
     /// Configured roots under which a created store's `dir` must
     /// live. Mutating handlers reject requests whose `dir` is outside
     /// every entry. Empty disables creation (returns
@@ -274,9 +280,12 @@ struct StoredCatalogEntry {
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores_file = config.stores_file();
+    let client_instances_file = config.client_instances_file();
     let definitions = load_store_records(&stores_file)?;
     let stores = open_stores(&definitions)?;
-    let client_instances = crate::runtime_clients::load_client_instances(&config.client_instances_file())?;
+    let client_instances = Arc::new(std::sync::RwLock::new(
+        crate::runtime_clients::load_client_instances(&client_instances_file)?,
+    ));
 
     let mut tasks = JoinSet::new();
 
@@ -286,11 +295,11 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             .with_context(|| format!("binding service listener {}", service_config.listen))?;
         let service_state = Arc::new(build_service_runtime_state(
             &stores,
-            &client_instances,
+            Arc::clone(&client_instances),
             service_config,
         )?);
         let tls_acceptor = build_tls_acceptor(&service_config.tls)?;
-        info!(listen = %service_config.listen, clients = service_config.clients.len(), instances = client_instances.len(), "backend HTTPS service listening");
+        info!(listen = %service_config.listen, clients = service_config.clients.len(), instances = client_instances.read().unwrap().len(), "backend HTTPS service listening");
         tasks.spawn(service_accept_loop(
             service_listener,
             tls_acceptor,
@@ -329,7 +338,9 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
                 open: stores.clone(),
                 records: definitions.clone(),
             }),
+            client_instances: Arc::clone(&client_instances),
             stores_file: stores_file.clone(),
+            client_instances_file: client_instances_file.clone(),
             stores_data_roots: admin_config.stores_data_roots.clone().unwrap_or_default(),
             keys_dir: admin_config
                 .keys_dir
@@ -499,9 +510,19 @@ fn generate_store_id() -> String {
     )
 }
 
+fn generate_client_instance_id() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 10];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!(
+        "inst_{}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    )
+}
+
 fn build_service_runtime_state(
     stores: &HashMap<String, Arc<dyn StorageBackend>>,
-    client_instances: &HashMap<String, crate::runtime_clients::ClientInstanceRecord>,
+    client_instances: Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
     config: &ServiceConfig,
 ) -> Result<ServiceRuntimeState> {
     if !config.clients.is_empty() {
@@ -510,7 +531,7 @@ fn build_service_runtime_state(
             "service.clients is ignored; runtime access now resolves from the client-instance registry"
         );
     }
-    for instance in client_instances.values() {
+    for instance in client_instances.read().unwrap().values() {
         stores.get(&instance.current_store_id).with_context(|| {
             format!(
                 "runtime client instance '{}' references unknown store '{}'",
@@ -520,7 +541,7 @@ fn build_service_runtime_state(
     }
     Ok(ServiceRuntimeState {
         stores: stores.clone(),
-        client_instances: client_instances.clone(),
+        client_instances,
     })
 }
 
@@ -701,8 +722,8 @@ fn resolve_runtime_client(
         .first()
         .context("client did not present a certificate")?;
     let fingerprint = crate::runtime_clients::cert_fingerprint_from_der(cert.as_ref());
-    let instance = state
-        .client_instances
+    let client_instances = state.client_instances.read().unwrap();
+    let instance = client_instances
         .values()
         .find(|instance| instance.current_credential.cert_fingerprint == fingerprint)
         .with_context(|| format!("unknown client credential fingerprint '{fingerprint}'"))?;
@@ -2525,7 +2546,10 @@ use underwrap_protocol::service::{
     AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
     AdminStoreDeleteResponse, AdminStoreDetailResponse, AdminStoreListItem,
     AdminStoreRotateKeyResponse, AdminStoreSource, AdminStoreUpdateRequest,
-    AdminStoresListResponse,
+    AdminStoresListResponse, AdminClientInstanceCreateRequest,
+    AdminClientInstanceDetailResponse, AdminClientInstanceListItem,
+    AdminClientInstancesListResponse, AdminClientInstanceStatus,
+    AdminClientInstanceUpdateRequest,
 };
 
 fn backend_kind(storage: &underwrap_protocol::config::StorageConfig) -> AdminStoreBackendKind {
@@ -3037,6 +3061,19 @@ fn handle_admin_store_delete(
         };
         (handle, loaded.record.storage.dir().clone())
     };
+    if state
+        .client_instances
+        .read()
+        .unwrap()
+        .values()
+        .any(|instance| instance.current_store_id == name)
+    {
+        return error_response(
+            StatusCode::CONFLICT,
+            "store_in_use",
+            "store is still mapped to one or more client instances",
+        );
+    }
 
     let non_empty = match store_handle.list("") {
         Ok(ids) => !ids.is_empty(),
@@ -3212,6 +3249,343 @@ fn write_admin_store_audit(
         None,
         result,
     );
+}
+
+fn client_instance_status_to_wire(
+    status: crate::runtime_clients::ClientInstanceStatus,
+) -> AdminClientInstanceStatus {
+    match status {
+        crate::runtime_clients::ClientInstanceStatus::Active => AdminClientInstanceStatus::Active,
+        crate::runtime_clients::ClientInstanceStatus::Disabled => {
+            AdminClientInstanceStatus::Disabled
+        }
+    }
+}
+
+fn client_instance_status_from_wire(
+    status: AdminClientInstanceStatus,
+) -> crate::runtime_clients::ClientInstanceStatus {
+    match status {
+        AdminClientInstanceStatus::Active => crate::runtime_clients::ClientInstanceStatus::Active,
+        AdminClientInstanceStatus::Disabled => {
+            crate::runtime_clients::ClientInstanceStatus::Disabled
+        }
+    }
+}
+
+fn admin_client_instance_list_item(
+    record: &crate::runtime_clients::ClientInstanceRecord,
+) -> AdminClientInstanceListItem {
+    AdminClientInstanceListItem {
+        id: record.id.clone(),
+        display_name: record.display_name.clone(),
+        hostname_hint: record.hostname_hint.clone(),
+        instance_name: record.instance_name.clone(),
+        current_store_id: record.current_store_id.clone(),
+        status: client_instance_status_to_wire(record.status),
+        last_seen_at: record.last_seen_at,
+        current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
+    }
+}
+
+fn admin_client_instance_detail(
+    record: &crate::runtime_clients::ClientInstanceRecord,
+) -> AdminClientInstanceDetailResponse {
+    AdminClientInstanceDetailResponse {
+        id: record.id.clone(),
+        display_name: record.display_name.clone(),
+        hostname_hint: record.hostname_hint.clone(),
+        instance_name: record.instance_name.clone(),
+        current_store_id: record.current_store_id.clone(),
+        status: client_instance_status_to_wire(record.status),
+        last_seen_at: record.last_seen_at,
+        current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
+        current_credential_issued_at: record.current_credential.issued_at,
+    }
+}
+
+fn handle_admin_client_instances_list(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may list client instances",
+        );
+    }
+    let mut items: Vec<AdminClientInstanceListItem> = state
+        .client_instances
+        .read()
+        .unwrap()
+        .values()
+        .map(admin_client_instance_list_item)
+        .collect();
+    items.sort_by(|a, b| a.display_name.cmp(&b.display_name).then(a.id.cmp(&b.id)));
+    json_response(StatusCode::OK, &AdminClientInstancesListResponse { items })
+}
+
+fn handle_admin_client_instance_detail(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    id: &str,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may inspect client instances",
+        );
+    }
+    match state.client_instances.read().unwrap().get(id) {
+        Some(record) => json_response(StatusCode::OK, &admin_client_instance_detail(record)),
+        None => error_response(StatusCode::NOT_FOUND, "not_found", "unknown client instance"),
+    }
+}
+
+async fn handle_admin_client_instance_create(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may create client instances",
+        );
+    }
+    let body = match parse_json_body::<AdminClientInstanceCreateRequest>(request).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    do_admin_client_instance_create(state, principal, body)
+}
+
+fn do_admin_client_instance_create(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: AdminClientInstanceCreateRequest,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may create client instances",
+        );
+    }
+    let display_name = match validate_store_name(&body.display_name) {
+        Ok(v) => v,
+        Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_display_name", msg),
+    };
+    let instance_name = match validate_store_name(&body.instance_name) {
+        Ok(v) => v,
+        Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_instance_name", msg),
+    };
+    let cert_fingerprint = match crate::runtime_clients::cert_fingerprint_from_pem(&body.cert_pem) {
+        Ok(fp) => fp,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_client_certificate",
+                &format!("parsing client certificate: {e:#}"),
+            )
+        }
+    };
+    {
+        let stores = state.stores.read().unwrap();
+        if !stores.records.contains_key(&body.current_store_id) {
+            return error_response(StatusCode::BAD_REQUEST, "unknown_store", "unknown store");
+        }
+    }
+    let id = loop {
+        let candidate = generate_client_instance_id();
+        if !state.client_instances.read().unwrap().contains_key(&candidate) {
+            break candidate;
+        }
+    };
+    let mut instances = state.client_instances.write().unwrap();
+    if instances
+        .values()
+        .any(|existing| existing.display_name.eq_ignore_ascii_case(&display_name))
+    {
+        return error_response(
+            StatusCode::CONFLICT,
+            "display_name_already_exists",
+            &format!("client instance display name '{}' already exists", display_name),
+        );
+    }
+    if instances
+        .values()
+        .any(|existing| existing.current_credential.cert_fingerprint == cert_fingerprint)
+    {
+        return error_response(
+            StatusCode::CONFLICT,
+            "credential_already_exists",
+            "client credential fingerprint already exists",
+        );
+    }
+    let record = crate::runtime_clients::ClientInstanceRecord {
+        id: id.clone(),
+        display_name,
+        hostname_hint: body.hostname_hint.filter(|s| !s.trim().is_empty()),
+        instance_name,
+        current_store_id: body.current_store_id,
+        status: client_instance_status_from_wire(body.status),
+        last_seen_at: None,
+        current_credential: crate::runtime_clients::CurrentCredentialRecord {
+            cert_fingerprint,
+            cert_pem: body.cert_pem,
+            issued_at: body.issued_at,
+        },
+    };
+    instances.insert(id.clone(), record.clone());
+    if let Err(e) = crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances) {
+        instances.remove(&id);
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_client_instances_failed",
+            &format!("{e:#}"),
+        );
+    }
+    log_admin_event(
+        "client-instance.create",
+        &principal.username,
+        None,
+        Some(format!("client-instance:{id}").as_str()),
+        None,
+        None,
+        "success",
+    );
+    json_response(StatusCode::OK, &admin_client_instance_detail(&record))
+}
+
+async fn handle_admin_client_instance_update(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    id: &str,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may update client instances",
+        );
+    }
+    let body = match parse_json_body::<AdminClientInstanceUpdateRequest>(request).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    do_admin_client_instance_update(state, principal, id, body)
+}
+
+fn do_admin_client_instance_update(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    id: &str,
+    body: AdminClientInstanceUpdateRequest,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may update client instances",
+        );
+    }
+    let mut instances = state.client_instances.write().unwrap();
+    let Some(existing) = instances.get(id).cloned() else {
+        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown client instance");
+    };
+    let mut updated = existing;
+    if let Some(display_name) = body.display_name {
+        let display_name = match validate_store_name(&display_name) {
+            Ok(v) => v,
+            Err(msg) => {
+                return error_response(StatusCode::BAD_REQUEST, "invalid_display_name", msg)
+            }
+        };
+        if instances.iter().any(|(other_id, other)| {
+            other_id != id && other.display_name.eq_ignore_ascii_case(&display_name)
+        }) {
+            return error_response(
+                StatusCode::CONFLICT,
+                "display_name_already_exists",
+                &format!("client instance display name '{}' already exists", display_name),
+            );
+        }
+        updated.display_name = display_name;
+    }
+    if let Some(hostname_hint) = body.hostname_hint {
+        updated.hostname_hint = if hostname_hint.trim().is_empty() {
+            None
+        } else {
+            Some(hostname_hint)
+        };
+    }
+    if let Some(current_store_id) = body.current_store_id {
+        if !state.stores.read().unwrap().records.contains_key(&current_store_id) {
+            return error_response(StatusCode::BAD_REQUEST, "unknown_store", "unknown store");
+        }
+        updated.current_store_id = current_store_id;
+    }
+    if let Some(status) = body.status {
+        updated.status = client_instance_status_from_wire(status);
+    }
+    instances.insert(id.to_string(), updated.clone());
+    if let Err(e) = crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_client_instances_failed",
+            &format!("{e:#}"),
+        );
+    }
+    log_admin_event(
+        "client-instance.update",
+        &principal.username,
+        None,
+        Some(format!("client-instance:{id}").as_str()),
+        None,
+        None,
+        "success",
+    );
+    json_response(StatusCode::OK, &admin_client_instance_detail(&updated))
+}
+
+fn handle_admin_client_instance_delete(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    id: &str,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may delete client instances",
+        );
+    }
+    let mut instances = state.client_instances.write().unwrap();
+    if instances.remove(id).is_none() {
+        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown client instance");
+    }
+    if let Err(e) = crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_client_instances_failed",
+            &format!("{e:#}"),
+        );
+    }
+    log_admin_event(
+        "client-instance.delete",
+        &principal.username,
+        None,
+        Some(format!("client-instance:{id}").as_str()),
+        None,
+        None,
+        "success",
+    );
+    json_response(StatusCode::OK, &underwrap_protocol::service::AdminOkResponse { ok: true })
 }
 
 // ===== Agent grant CRUD + writes-enabled toggle (tickets 246, 247) =====
@@ -3659,6 +4033,34 @@ async fn handle_admin_request(
         }
     }
 
+    // Path-parameterised client-instance routes.
+    if let Some(id) = request
+        .uri()
+        .path()
+        .strip_prefix("/v1/admin/client-instances/")
+        .filter(|rest| !rest.is_empty() && !rest.contains('/'))
+    {
+        let id = id.to_string();
+        match *request.method() {
+            Method::GET => {
+                return Ok(handle_admin_client_instance_detail(&state, &principal, &id));
+            }
+            Method::PUT => {
+                return Ok(handle_admin_client_instance_update(&state, &principal, &id, request).await);
+            }
+            Method::DELETE => {
+                return Ok(handle_admin_client_instance_delete(&state, &principal, &id));
+            }
+            _ => {
+                return Ok(error_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "GET, PUT, or DELETE",
+                ));
+            }
+        }
+    }
+
     // GET /v1/admin/stores/<name>, PUT, DELETE.
     if let Some(name) = request
         .uri()
@@ -3710,6 +4112,12 @@ async fn handle_admin_request(
         }
         (&Method::POST, "/v1/admin/stores") => {
             return Ok(handle_admin_store_create(&state, &principal, request).await);
+        }
+        (&Method::GET, "/v1/admin/client-instances") => {
+            return Ok(handle_admin_client_instances_list(&state, &principal));
+        }
+        (&Method::POST, "/v1/admin/client-instances") => {
+            return Ok(handle_admin_client_instance_create(&state, &principal, request).await);
         }
         (&Method::GET, "/v1/admin/ui/overview") => {
             let now_epoch = std::time::SystemTime::now()
@@ -4247,7 +4655,9 @@ mod tests {
                 open: stores,
                 records: HashMap::new(),
             }),
+            client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
+            client_instances_file: std::path::PathBuf::new(),
             stores_data_roots: Vec::new(),
             keys_dir: std::path::PathBuf::new(),
             tokens,
@@ -4575,7 +4985,9 @@ mod tests {
                 open: HashMap::from([("home".to_string(), store.clone())]),
                 records: HashMap::new(),
             }),
+            client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
+            client_instances_file: std::path::PathBuf::new(),
             stores_data_roots: Vec::new(),
             keys_dir: std::path::PathBuf::new(),
             tokens: HashMap::new(),
@@ -4748,7 +5160,7 @@ mod tests {
         );
         ServiceRuntimeState {
             stores,
-            client_instances,
+            client_instances: Arc::new(std::sync::RwLock::new(client_instances)),
         }
     }
 
@@ -4927,7 +5339,9 @@ mod tests {
                 open: HashMap::from([("home".to_string(), store.clone())]),
                 records: HashMap::new(),
             }),
+            client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
+            client_instances_file: std::path::PathBuf::new(),
             stores_data_roots: Vec::new(),
             keys_dir: std::path::PathBuf::new(),
             tokens: HashMap::new(),
@@ -5376,7 +5790,9 @@ mod tests {
         std::fs::create_dir_all(&keys_dir).unwrap();
         AdminRuntimeState {
             stores: std::sync::RwLock::new(StoreRegistry::new()),
+            client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: tmp.join("stores.json"),
+            client_instances_file: tmp.join("client-instances.json"),
             stores_data_roots: vec![data_root],
             keys_dir,
             tokens: HashMap::new(),
@@ -5405,6 +5821,27 @@ mod tests {
             .unwrap()
             .to_string()
     }
+
+    const SAMPLE_CLIENT_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDKzCCAhOgAwIBAgIUVnjkCKXzQiyHyEsQ3ey4lgWkrTAwDQYJKoZIhvcNAQEL
+BQAwHDEaMBgGA1UEAwwRdW5kZXJ3cmFwLXRlc3QtY2EwHhcNMjYwNDE2MDAzNzAy
+WhcNMzYwNDEzMDAzNzAyWjAaMRgwFgYDVQQDDA91bmRlcndyYXAtbG9jYWwwggEi
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDcJDP5K69TcG9+uHM7q+xG7p0c
+7Cgex8XYVs3yFDpHk6UOG/JqL0bKa32rhO7LR8VxPprIyqV24LB8vTi52A2/oA/d
+ZiVouv9bkCiBOun0XDQAHveocrIYnhjvq8qrpdfFdZ+2oB/V78Mbf6FaNMJxvvUN
+hCRXh/hstwlHVACJFX0MlGU/3WAhpRF09QjIfxLUqm1t5Sd9Qg0a2IsX+qrFhDiu
+35anBoCx0x9AJl6yO40KgoDZ7iDmWLw55T2GVnSQEdTelxzsf9jFLjEzm56mymR+
+DGWdMNPEKY6wyvuJClEYLEsHaNMfTi9Jp+9FgH5spuy7E9UqpqeciYAHlDrxAgMB
+AAGjZzBlMBMGA1UdJQQMMAoGCCsGAQUFBwMCMA4GA1UdDwEB/wQEAwIFoDAdBgNV
+HQ4EFgQUrZfzoVv+iUwAlCedd1/ancfUi7YwHwYDVR0jBBgwFoAUlScjoHF7mIGw
+Qy61SLb9isP1dd4wDQYJKoZIhvcNAQELBQADggEBAMj5BtbOalwYWAi9HQt0JNPq
+NtRObdNx6Yg2uZWYAyhVXnhLerZ82hWagK/oH0KCgKFCSK140oZS/Nt7xtQ9YJXs
+g5WyGnsteF3QZ9cuUc+0te4eMOmXRMch8HtxyD1sCuO/wyKhtQSCO+OQGNvsEnKa
+1rl3PFTjG3SE5ldDwRjGSlrf9+6uf2OcqJBLaL4dcOJ0Fsrf0gkkPpbrC5hJdNSo
+Q+0W8oyLdzgmGNMRY4vvhu4cjYkbPLgrNS3fQLnnom3Jv5GzO3M2ifS9mkj249Bu
+cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
+-----END CERTIFICATE-----
+"#;
 
     fn response_body_json(resp: Response<Full<Bytes>>) -> serde_json::Value {
         let (parts, body) = resp.into_parts();
@@ -5859,6 +6296,117 @@ mod tests {
 
         let resp = handle_admin_store_rotate_key(&state, &p, &store_id);
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn client_instance_crud_and_store_mapping_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let work_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp.path().join("data").join("work").to_string_lossy().to_string(),
+                description: None,
+            },
+        );
+        let other_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "other".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp.path().join("data").join("other").to_string_lossy().to_string(),
+                description: None,
+            },
+        );
+
+        let create = do_admin_client_instance_create(
+            &state,
+            &p,
+            AdminClientInstanceCreateRequest {
+                display_name: "laptop-work".into(),
+                hostname_hint: Some("deepthought".into()),
+                instance_name: "work".into(),
+                current_store_id: work_id.clone(),
+                status: AdminClientInstanceStatus::Active,
+                cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
+                issued_at: Some(111),
+            },
+        );
+        assert_eq!(create.status(), StatusCode::OK);
+        let created = response_body_json(create);
+        let client_id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["current_store_id"], work_id);
+
+        let list = handle_admin_client_instances_list(&state, &p);
+        let list_body = response_body_json(list);
+        assert_eq!(list_body["items"].as_array().unwrap().len(), 1);
+        assert_eq!(list_body["items"][0]["id"], client_id);
+
+        let delete_in_use = handle_admin_store_delete(&state, &p, &work_id, true);
+        assert_eq!(delete_in_use.status(), StatusCode::CONFLICT);
+        assert_eq!(response_body_json(delete_in_use)["code"], "store_in_use");
+
+        let update = do_admin_client_instance_update(
+            &state,
+            &p,
+            &client_id,
+            AdminClientInstanceUpdateRequest {
+                display_name: Some("laptop-renamed".into()),
+                hostname_hint: Some("deepthought-2".into()),
+                current_store_id: Some(other_id.clone()),
+                status: Some(AdminClientInstanceStatus::Disabled),
+            },
+        );
+        assert_eq!(update.status(), StatusCode::OK);
+        let updated = response_body_json(update);
+        assert_eq!(updated["display_name"], "laptop-renamed");
+        assert_eq!(updated["current_store_id"], other_id);
+        assert_eq!(updated["status"], "disabled");
+
+        let delete_old_store = handle_admin_store_delete(&state, &p, &work_id, false);
+        assert_eq!(delete_old_store.status(), StatusCode::OK);
+
+        let delete_client = handle_admin_client_instance_delete(&state, &p, &client_id);
+        assert_eq!(delete_client.status(), StatusCode::OK);
+        assert_eq!(response_body_json(delete_client)["ok"], true);
+    }
+
+    #[test]
+    fn non_admin_cannot_manage_client_instances() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let store_id = create_store_for_test(
+            &state,
+            &admin_principal(&[]),
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp.path().join("data").join("work").to_string_lossy().to_string(),
+                description: None,
+            },
+        );
+        let op = operator_principal(&[&store_id]);
+        let create = do_admin_client_instance_create(
+            &state,
+            &op,
+            AdminClientInstanceCreateRequest {
+                display_name: "laptop-work".into(),
+                hostname_hint: None,
+                instance_name: "work".into(),
+                current_store_id: store_id.clone(),
+                status: AdminClientInstanceStatus::Active,
+                cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
+                issued_at: None,
+            },
+        );
+        assert_eq!(create.status(), StatusCode::FORBIDDEN);
+        assert_eq!(handle_admin_client_instances_list(&state, &op).status(), StatusCode::FORBIDDEN);
+        assert_eq!(handle_admin_client_instance_detail(&state, &op, "missing").status(), StatusCode::FORBIDDEN);
     }
 
     // ===== Users CRUD (ticket 240) =====
