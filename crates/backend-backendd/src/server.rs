@@ -210,7 +210,7 @@ impl Default for StoreRegistry {
 }
 
 struct ServiceRuntimeState {
-    stores: HashMap<String, Arc<dyn StorageBackend>>,
+    stores: Arc<std::sync::RwLock<StoreRegistry>>,
     client_instances:
         Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
 }
@@ -224,12 +224,10 @@ struct EnrollmentRuntimeState {
 }
 
 struct AdminRuntimeState {
-    /// Open store backends + their backend-managed records. CRUD
-    /// handlers hold the write lock briefly while they swap in/out a
-    /// single entry; everyone else takes the read lock and clones the
-    /// `Arc<dyn StorageBackend>` they need so the lock isn't held
-    /// across I/O.
-    stores: std::sync::RwLock<StoreRegistry>,
+    /// Open store backends + their backend-managed records. Shared
+    /// with the service listener so runtime requests and admin CRUD
+    /// always consult the same live registry without a daemon restart.
+    stores: Arc<std::sync::RwLock<StoreRegistry>>,
     /// Runtime client-instance registry, shared with the service
     /// listener so admin mutations can affect new runtime requests
     /// without a daemon restart.
@@ -328,6 +326,10 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
     let enrollment_runtime = build_enrollment_runtime(config.enrollment.as_ref())?;
     let definitions = load_store_records(&stores_file)?;
     let stores = open_stores(&definitions)?;
+    let store_registry = Arc::new(std::sync::RwLock::new(StoreRegistry {
+        open: stores.clone(),
+        records: definitions.clone(),
+    }));
     let client_instances = Arc::new(std::sync::RwLock::new(
         crate::runtime_clients::load_client_instances(&client_instances_file)?,
     ));
@@ -339,7 +341,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             .await
             .with_context(|| format!("binding service listener {}", service_config.listen))?;
         let service_state = Arc::new(build_service_runtime_state(
-            &stores,
+            Arc::clone(&store_registry),
             Arc::clone(&client_instances),
             service_config,
         )?);
@@ -379,10 +381,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             .session_lifetime_secs
             .unwrap_or(crate::auth::DEFAULT_SESSION_LIFETIME_SECS);
         let admin_state = Arc::new(AdminRuntimeState {
-            stores: std::sync::RwLock::new(StoreRegistry {
-                open: stores.clone(),
-                records: definitions.clone(),
-            }),
+            stores: Arc::clone(&store_registry),
             client_instances: Arc::clone(&client_instances),
             stores_file: stores_file.clone(),
             client_instances_file: client_instances_file.clone(),
@@ -609,7 +608,7 @@ fn generate_client_instance_id() -> String {
 }
 
 fn build_service_runtime_state(
-    stores: &HashMap<String, Arc<dyn StorageBackend>>,
+    stores: Arc<std::sync::RwLock<StoreRegistry>>,
     client_instances: Arc<
         std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>,
     >,
@@ -621,16 +620,21 @@ fn build_service_runtime_state(
             "service.clients is ignored; runtime access now resolves from the client-instance registry"
         );
     }
+    let registry = stores.read().unwrap();
     for instance in client_instances.read().unwrap().values() {
-        stores.get(&instance.current_store_id).with_context(|| {
-            format!(
-                "runtime client instance '{}' references unknown store '{}'",
-                instance.id, instance.current_store_id
-            )
-        })?;
+        registry
+            .open
+            .get(&instance.current_store_id)
+            .with_context(|| {
+                format!(
+                    "runtime client instance '{}' references unknown store '{}'",
+                    instance.id, instance.current_store_id
+                )
+            })?;
     }
+    drop(registry);
     Ok(ServiceRuntimeState {
-        stores: stores.clone(),
+        stores,
         client_instances,
     })
 }
@@ -824,6 +828,9 @@ fn resolve_runtime_client(
     );
     let store = state
         .stores
+        .read()
+        .unwrap()
+        .open
         .get(&instance.current_store_id)
         .with_context(|| {
             format!(
@@ -936,19 +943,19 @@ async fn handle_service_connection(
         .accept(stream)
         .await
         .context("accepting TLS connection")?;
-    let (principal, store) = resolve_runtime_client(
-        &state,
+    let peer_certificates = Arc::new(
         tls_stream
             .get_ref()
             .1
             .peer_certificates()
-            .context("reading peer certificates")?,
-    )?;
+            .context("reading peer certificates")?
+            .to_vec(),
+    );
 
     let service = service_fn(move |req| {
-        let principal = principal.clone();
-        let store = store.clone();
-        async move { handle_service_request(req, principal, store).await }
+        let state = Arc::clone(&state);
+        let peer_certificates = Arc::clone(&peer_certificates);
+        async move { handle_service_request(req, state, peer_certificates).await }
     });
 
     hyper::server::conn::http1::Builder::new()
@@ -960,9 +967,19 @@ async fn handle_service_connection(
 
 async fn handle_service_request(
     request: Request<Incoming>,
-    principal: String,
-    store: Arc<dyn StorageBackend>,
+    state: Arc<ServiceRuntimeState>,
+    peer_certificates: Arc<Vec<rustls::pki_types::CertificateDer<'static>>>,
 ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    let (principal, store) = match resolve_runtime_client(&state, peer_certificates.as_ref()) {
+        Ok(resolved) => resolved,
+        Err(_) => {
+            return Ok(error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "runtime client is not currently authorized",
+            ));
+        }
+    };
     let response = match (request.method(), request.uri().path()) {
         (&Method::GET, "/v1/status") => json_response(
             StatusCode::OK,
@@ -5479,10 +5496,10 @@ mod tests {
             .cloned()
             .unwrap_or_else(|| Arc::new(MemTestStore::new()));
         AdminRuntimeState {
-            stores: std::sync::RwLock::new(StoreRegistry {
+            stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
                 open: stores,
                 records: HashMap::new(),
-            }),
+            })),
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
@@ -5810,10 +5827,10 @@ mod tests {
             *b = i as u8;
         }
         AdminRuntimeState {
-            stores: std::sync::RwLock::new(StoreRegistry {
+            stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
                 open: HashMap::from([("home".to_string(), store.clone())]),
                 records: HashMap::new(),
-            }),
+            })),
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
@@ -5989,7 +6006,10 @@ mod tests {
             },
         );
         ServiceRuntimeState {
-            stores,
+            stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
+                open: stores,
+                records: HashMap::new(),
+            })),
             client_instances: Arc::new(std::sync::RwLock::new(client_instances)),
         }
     }
@@ -6165,10 +6185,10 @@ mod tests {
             *b = i as u8;
         }
         AdminRuntimeState {
-            stores: std::sync::RwLock::new(StoreRegistry {
+            stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
                 open: HashMap::from([("home".to_string(), store.clone())]),
                 records: HashMap::new(),
-            }),
+            })),
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
@@ -6620,7 +6640,7 @@ mod tests {
         let keys_dir = tmp.join("keys");
         std::fs::create_dir_all(&keys_dir).unwrap();
         AdminRuntimeState {
-            stores: std::sync::RwLock::new(StoreRegistry::new()),
+            stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: tmp.join("stores.json"),
             client_instances_file: tmp.join("client-instances.json"),

@@ -118,6 +118,10 @@ impl TestDaemon {
         std::fs::write(&token_file, admin_token.as_bytes())?;
         let stores_file = base.join("stores.json");
         let instances_file = base.join("client-instances.json");
+        let stores_data_root = base.join("stores-data-root");
+        std::fs::create_dir_all(&stores_data_root)?;
+        let keys_dir = base.join("keys");
+        std::fs::create_dir_all(&keys_dir)?;
         let test_store = underwrap_protocol::config::StoreRecord {
             id: "test".to_string(),
             name: "test".to_string(),
@@ -181,8 +185,8 @@ impl TestDaemon {
                 admin_home_store: None,
                 session_key_file: None,
                 session_lifetime_secs: None,
-                stores_data_roots: None,
-                keys_dir: None,
+                stores_data_roots: Some(vec![stores_data_root]),
+                keys_dir: Some(keys_dir),
             }),
         };
         let backend_shutdown = Arc::new(Notify::new());
@@ -374,6 +378,23 @@ impl TestDaemon {
         Ok(response.json().await?)
     }
 
+    pub async fn create_store(
+        &self,
+        body: &underwrap_protocol::service::AdminStoreCreateRequest,
+    ) -> Result<underwrap_protocol::service::AdminStoreCreateResponse> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/stores")
+            .json(body)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(response.json().await?)
+    }
+
     pub async fn list_client_instances(
         &self,
     ) -> Result<underwrap_protocol::service::AdminClientInstancesListResponse> {
@@ -408,6 +429,22 @@ impl TestDaemon {
             response.status()
         );
         Ok(response.json().await?)
+    }
+
+    pub async fn delete_client_instance(&self, id: &str) -> Result<()> {
+        let response = self
+            .admin_request(
+                reqwest::Method::DELETE,
+                &format!("/v1/admin/client-instances/{id}"),
+            )
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(())
     }
 
     pub async fn get_catalog(&self, store: &str) -> Result<Vec<CatalogEntry>> {
