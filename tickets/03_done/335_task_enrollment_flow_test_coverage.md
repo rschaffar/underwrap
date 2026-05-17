@@ -8,6 +8,6 @@ Add tests for unenrolled behavior and the invite-first enrollment flow.
 
 ## Acceptance criteria
 
-- [ ] Tests cover unenrolled wrapper guidance.
-- [ ] Tests cover invite creation and CSR issuance flow.
-- [ ] Tests cover successful client enrollment installation.
+- [x] Tests cover unenrolled wrapper guidance.
+- [x] Tests cover invite creation and CSR issuance flow.
+- [x] Tests cover successful client enrollment installation.

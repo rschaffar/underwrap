@@ -36,6 +36,11 @@ pub struct Cli {
 }
 
 pub fn run(cli: Cli) -> Result<()> {
+    let secret = prompt_enrollment_secret()?;
+    run_with_secret(cli, secret)
+}
+
+pub fn run_with_secret(cli: Cli, mut secret: Zeroizing<String>) -> Result<()> {
     harden_process()?;
     validate_output_paths(
         &cli.client_cert_out,
@@ -46,7 +51,6 @@ pub fn run(cli: Cli) -> Result<()> {
     eprintln!("underwrap-enroll: generating local client key and CSR");
     let (key_pem, csr_pem) = generate_key_and_csr()?;
 
-    let mut secret = prompt_enrollment_secret()?;
     let enrollment_url = normalize_enrollment_url(&cli.url)?;
 
     eprintln!("underwrap-enroll: submitting CSR to backend");

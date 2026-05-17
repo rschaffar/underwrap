@@ -1404,10 +1404,12 @@ dependencies = [
  "backend-backendd",
  "base64",
  "ed25519-dalek",
+ "frontend-enroll",
  "frontend-underwrapd",
  "hex",
  "libc",
  "rand 0.8.5",
+ "rcgen",
  "reqwest",
  "rustls",
  "serde_json",
@@ -1417,6 +1419,7 @@ dependencies = [
  "ssh-key",
  "tempfile",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
