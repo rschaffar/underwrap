@@ -35,7 +35,11 @@ pub struct TestDaemon {
     pub wrapper_sockets: HashMap<String, PathBuf>,
     pub admin_url: String,
     pub admin_token: String,
+    pub service_url: String,
     pub storage_dir: PathBuf,
+    service_ca_cert: PathBuf,
+    service_client_cert: PathBuf,
+    service_client_key: PathBuf,
     /// The `catalog_host` configured on the daemon. Tests use it to
     /// build grants for `(wrapper, host, current_user)`.
     catalog_host: String,
@@ -204,7 +208,7 @@ impl TestDaemon {
 
         let config = DaemonConfig {
             backend: BackendServiceConfig {
-                url: service_url,
+                url: service_url.clone(),
                 ca_file: Some(pki.ca_cert.clone()),
                 client_cert_file: Some(pki.client_cert.clone()),
                 client_key_file: Some(pki.client_key.clone()),
@@ -230,7 +234,11 @@ impl TestDaemon {
             wrapper_sockets,
             admin_url,
             admin_token,
+            service_url: service_url.clone(),
             storage_dir,
+            service_ca_cert: pki.ca_cert.clone(),
+            service_client_cert: pki.client_cert.clone(),
+            service_client_key: pki.client_key.clone(),
             catalog_host: client_name.to_string(),
             shutdown,
             backend_shutdown,
@@ -338,6 +346,68 @@ impl TestDaemon {
             response.status()
         );
         Ok(())
+    }
+
+    pub async fn direct_service_status(
+        &self,
+    ) -> Result<underwrap_protocol::service::ServiceStatusResponse> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let ca_pem = std::fs::read(&self.service_ca_cert)?;
+        let cert_pem = std::fs::read(&self.service_client_cert)?;
+        let key_pem = std::fs::read(&self.service_client_key)?;
+        let mut identity_pem = cert_pem;
+        identity_pem.extend_from_slice(&key_pem);
+        let client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .add_root_certificate(reqwest::Certificate::from_pem(&ca_pem)?)
+            .identity(reqwest::Identity::from_pem(&identity_pem)?)
+            .build()?;
+        let response = client
+            .get(format!("{}/v1/status", self.service_url))
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "service API returned {}",
+            response.status()
+        );
+        Ok(response.json().await?)
+    }
+
+    pub async fn list_client_instances(
+        &self,
+    ) -> Result<underwrap_protocol::service::AdminClientInstancesListResponse> {
+        let response = self
+            .admin_request(reqwest::Method::GET, "/v1/admin/client-instances")
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(response.json().await?)
+    }
+
+    pub async fn update_client_instance(
+        &self,
+        id: &str,
+        body: &underwrap_protocol::service::AdminClientInstanceUpdateRequest,
+    ) -> Result<underwrap_protocol::service::AdminClientInstanceDetailResponse> {
+        let response = self
+            .admin_request(
+                reqwest::Method::PUT,
+                &format!("/v1/admin/client-instances/{id}"),
+            )
+            .json(body)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(response.json().await?)
     }
 
     pub async fn get_catalog(&self, store: &str) -> Result<Vec<CatalogEntry>> {
