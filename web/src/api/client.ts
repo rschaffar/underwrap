@@ -129,6 +129,8 @@ import type {
   AdminAgentGrantsListResponse,
   AdminCatalogGetRequest,
   AdminCatalogGetResponse,
+  AdminEnrollmentInviteCreateRequest,
+  AdminEnrollmentInviteCreateResponse,
   AdminOkResponse,
   AdminOkUserResponse,
   AdminPasswordChangeRequest,
@@ -176,6 +178,8 @@ export type {
   AdminAgentGrantsListResponse,
   AdminCatalogGetRequest,
   AdminCatalogGetResponse,
+  AdminEnrollmentInviteCreateRequest,
+  AdminEnrollmentInviteCreateResponse,
   AdminOkResponse,
   AdminOkUserResponse,
   AdminPasswordChangeRequest,
@@ -261,6 +265,18 @@ export function postStoreCreate(
     method: "POST",
     json: body,
   });
+}
+
+export function postEnrollmentInviteCreate(
+  body: AdminEnrollmentInviteCreateRequest,
+): Promise<AdminEnrollmentInviteCreateResponse> {
+  return apiJson<AdminEnrollmentInviteCreateResponse>(
+    "/v1/admin/enrollment-invites",
+    {
+      method: "POST",
+      json: body,
+    },
+  );
 }
 
 export function postStoreRotateKey(

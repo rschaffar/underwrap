@@ -13,6 +13,6 @@ Add the operator-facing enrollment page/flow in the SPA:
 
 ## Acceptance criteria
 
-- [ ] The enrollment page can be opened from the wrapper-generated link.
-- [ ] Operators can choose an existing store or create a new one inline.
-- [ ] The UI presents the exact local enrollment command to run.
+- [x] The enrollment page can be opened from the wrapper-generated link.
+- [x] Operators can choose an existing store or create a new one inline.
+- [x] The UI presents the exact local enrollment command to run.

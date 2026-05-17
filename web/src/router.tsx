@@ -19,6 +19,7 @@ import { SecretsPage } from "@/pages/secrets";
 import { StoresPage } from "@/pages/stores";
 import { UsersPage } from "@/pages/users";
 import { ProfilePage } from "@/pages/profile";
+import { EnrollmentPage } from "@/pages/enroll";
 import {
   ApiError,
   fetchBootstrapStatus,
@@ -211,6 +212,15 @@ const profileRoute = new Route({
   },
 });
 
+const enrollRoute = new Route({
+  getParentRoute: () => appLayoutRoute,
+  path: "/enroll",
+  component: function EnrollRouteComponent() {
+    const ctx = enrollRoute.useRouteContext();
+    return <EnrollmentPage principal={ctx.principal} />;
+  },
+});
+
 const matrixRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/matrix",
@@ -330,7 +340,7 @@ export const appRoutes = [
 ];
 
 const routeTree = rootRoute.addChildren([
-  appLayoutRoute.addChildren(appRoutes),
+  appLayoutRoute.addChildren([...appRoutes, enrollRoute]),
   loginRoute,
   bootstrapRoute,
   logoutRoute,
