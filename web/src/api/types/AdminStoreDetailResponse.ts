@@ -2,7 +2,15 @@
 import type { AdminStoreBackendKind } from "./AdminStoreBackendKind";
 import type { AdminStoreSource } from "./AdminStoreSource";
 
-export type AdminStoreDetailResponse = { name: string, source: AdminStoreSource, backend: AdminStoreBackendKind, dir: string, 
+export type AdminStoreDetailResponse = { 
+/**
+ * Stable internal identifier used for routing and runtime mapping.
+ */
+id: string, 
+/**
+ * Editable operator-facing display name.
+ */
+name: string, source: AdminStoreSource, backend: AdminStoreBackendKind, dir: string, 
 /**
  * Set when the backend is `encrypted` — the path to the master
  * key file. Never echo the key contents.

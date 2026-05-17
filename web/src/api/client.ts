@@ -248,9 +248,9 @@ export function fetchStores(): Promise<AdminStoresListResponse> {
   return apiJson<AdminStoresListResponse>("/v1/admin/stores");
 }
 
-export function fetchStore(name: string): Promise<AdminStoreDetailResponse> {
+export function fetchStore(storeId: string): Promise<AdminStoreDetailResponse> {
   return apiJson<AdminStoreDetailResponse>(
-    `/v1/admin/stores/${encodeURIComponent(name)}`,
+    `/v1/admin/stores/${encodeURIComponent(storeId)}`,
   );
 }
 
@@ -264,31 +264,31 @@ export function postStoreCreate(
 }
 
 export function postStoreRotateKey(
-  name: string,
+  storeId: string,
 ): Promise<AdminStoreRotateKeyResponse> {
   return apiJson<AdminStoreRotateKeyResponse>(
-    `/v1/admin/stores/${encodeURIComponent(name)}/rotate-key`,
+    `/v1/admin/stores/${encodeURIComponent(storeId)}/rotate-key`,
     { method: "POST" },
   );
 }
 
 export function putStoreUpdate(
-  name: string,
+  storeId: string,
   body: AdminStoreUpdateRequest,
 ): Promise<AdminStoreDetailResponse> {
   return apiJson<AdminStoreDetailResponse>(
-    `/v1/admin/stores/${encodeURIComponent(name)}`,
+    `/v1/admin/stores/${encodeURIComponent(storeId)}`,
     { method: "PUT", json: body },
   );
 }
 
 export function deleteStore(
-  name: string,
+  storeId: string,
   opts: { force?: boolean } = {},
 ): Promise<AdminStoreDeleteResponse> {
   const query = opts.force ? "?force=true" : "";
   return apiJson<AdminStoreDeleteResponse>(
-    `/v1/admin/stores/${encodeURIComponent(name)}${query}`,
+    `/v1/admin/stores/${encodeURIComponent(storeId)}${query}`,
     { method: "DELETE" },
   );
 }

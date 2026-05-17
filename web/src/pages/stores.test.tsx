@@ -51,6 +51,7 @@ describe("StoresPage", () => {
   const sampleList = {
     items: [
       {
+        id: "store_work",
         name: "work",
         source: "declarative" as const,
         backend: "encrypted" as const,
@@ -58,6 +59,7 @@ describe("StoresPage", () => {
         created_at: undefined,
       },
       {
+        id: "store_scratch",
         name: "scratch",
         source: "dynamic" as const,
         backend: "plain" as const,

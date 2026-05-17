@@ -50,6 +50,7 @@ const sampleUsers = {
 const sampleStoresList = {
   items: [
     {
+      id: "store_work",
       name: "work",
       source: "dynamic" as const,
       backend: "plain" as const,

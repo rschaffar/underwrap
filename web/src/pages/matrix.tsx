@@ -123,7 +123,7 @@ export function MatrixPage({ principal }: MatrixPageProps) {
   // entry if we don't already have a URL hint.
   useEffect(() => {
     if (storeName) return;
-    const first = stores.data?.items[0]?.name;
+    const first = stores.data?.items[0]?.id;
     if (first) setStoreName(first);
   }, [storeName, stores.data]);
 
@@ -219,7 +219,7 @@ export function MatrixPage({ principal }: MatrixPageProps) {
               className="ml-1 rounded-md border border-(--color-line) bg-(--color-surface-0) px-2 py-1 text-sm text-(--color-fg)"
             >
               {(stores.data?.items ?? []).map((s) => (
-                <option key={s.name} value={s.name}>
+                <option key={s.id} value={s.id}>
                   {s.name}
                 </option>
               ))}

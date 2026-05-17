@@ -67,26 +67,19 @@ impl StorageConfig {
     }
 }
 
-/// One on-disk store definition. Each file under
-/// `stores_declarative_dir` / `stores_dynamic_dir` deserialises into
-/// one of these. `storage` is flattened into the top level so the
-/// YAML reads naturally:
-///
-/// ```yaml
-/// backend: encrypted
-/// dir: /var/lib/underwrap-backend/work
-/// key_file: /var/lib/underwrap-backend/work.key
-/// description: "Production work secrets"
-/// created_at: 1729123456
-/// ```
+/// One backend-managed store record in the central store registry.
+/// `id` is the stable internal identifier used by APIs/runtime
+/// wiring; `name` is the editable operator-facing label.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StoreDefinition {
+pub struct StoreRecord {
+    /// Stable internal identifier for this store.
+    pub id: String,
+    /// Editable human-visible store name.
+    pub name: String,
     /// Operator-facing description shown in the admin UI. Optional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Unix-epoch seconds the definition was created. Stamped by the
-    /// admin UI when a dynamic store is created via the API; absent
-    /// for hand-authored declarative files.
+    /// Unix-epoch seconds the record was created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<u64>,
     /// The storage backend itself.
@@ -94,16 +87,27 @@ pub struct StoreDefinition {
     pub storage: StorageConfig,
 }
 
-/// Where a loaded store definition came from. Declarative stores are
-/// reproducible artefacts (a symlink into `/nix/store` via the NixOS
-/// module); dynamic stores were created via the admin API and live
-/// under `/var/lib/underwrap-backend/stores.d/`. The admin API is
-/// allowed to mutate the latter and must refuse the former.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum StoreSource {
-    Declarative,
-    Dynamic,
+/// Versioned backend-managed store registry persisted by
+/// `underwrap-backendd` itself.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoreRegistryDocument {
+    #[serde(default = "default_store_registry_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub stores: Vec<StoreRecord>,
+}
+
+impl Default for StoreRegistryDocument {
+    fn default() -> Self {
+        Self {
+            version: default_store_registry_version(),
+            stores: Vec::new(),
+        }
+    }
+}
+
+fn default_store_registry_version() -> u32 {
+    1
 }
 
 fn default_storage_dir() -> PathBuf {

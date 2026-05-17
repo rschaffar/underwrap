@@ -102,6 +102,7 @@ export function StoresPage({ principal }: StoresPageProps) {
               // The list response is a subset of the detail shape;
               // missing fields are filled in on edit-load.
               {
+                id: item.id,
                 name: item.name,
                 source: item.source,
                 backend: item.backend,
@@ -114,6 +115,7 @@ export function StoresPage({ principal }: StoresPageProps) {
           }
           onDelete={(item) =>
             setDeleting({
+              id: item.id,
               name: item.name,
               source: item.source,
               backend: item.backend,
@@ -181,7 +183,7 @@ function StoresTable({ items, isAdmin, onEdit, onDelete }: StoresTableProps) {
               : undefined;
             return (
               <tr
-                key={item.name}
+                key={item.id}
                 className="border-t border-(--color-line) align-middle"
               >
                 <td className="px-4 py-3 font-medium text-(--color-fg)">
@@ -478,7 +480,7 @@ function EditStoreDialog({
   });
   const mut = useMutation({
     mutationFn: (description: string) =>
-      putStoreUpdate(store.name, { description }),
+      putStoreUpdate(store.id, { name: undefined, description }),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "stores"] });
       onClose();
@@ -486,7 +488,7 @@ function EditStoreDialog({
     onError: (err) => setSubmitError(describeApiError(err)),
   });
   const rotate = useMutation({
-    mutationFn: () => postStoreRotateKey(store.name),
+    mutationFn: () => postStoreRotateKey(store.id),
     onSuccess: (res) => {
       setRotateWarning(null);
       setRevealKey({
@@ -745,7 +747,7 @@ function DeleteStoreDialog({
   const [cleanupHint, setCleanupHint] = useState<string | null>(null);
 
   const mut = useMutation({
-    mutationFn: (opts: { force: boolean }) => deleteStore(store.name, opts),
+    mutationFn: (opts: { force: boolean }) => deleteStore(store.id, opts),
     onSuccess: async (res) => {
       await qc.invalidateQueries({ queryKey: ["admin", "stores"] });
       if (res.cleanup_hint) {

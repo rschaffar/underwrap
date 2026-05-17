@@ -221,6 +221,9 @@ pub enum AdminStoreBackendKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminStoreListItem {
+    /// Stable internal identifier used for routing and runtime mapping.
+    pub id: String,
+    /// Editable operator-facing display name.
     pub name: String,
     pub source: AdminStoreSource,
     pub backend: AdminStoreBackendKind,
@@ -241,6 +244,9 @@ pub struct AdminStoresListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminStoreDetailResponse {
+    /// Stable internal identifier used for routing and runtime mapping.
+    pub id: String,
+    /// Editable operator-facing display name.
     pub name: String,
     pub source: AdminStoreSource,
     pub backend: AdminStoreBackendKind,
@@ -301,6 +307,11 @@ pub struct AdminStoreRotateKeyResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminStoreUpdateRequest {
+    /// New display name. Pass an empty string to clear it (invalid);
+    /// omit to leave it unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
     /// New description. Pass an empty string to clear it; omit to
     /// leave it unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]

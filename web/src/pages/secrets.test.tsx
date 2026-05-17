@@ -44,6 +44,7 @@ describe("SecretsPage", () => {
     vi.mocked(fetchStores).mockResolvedValue({
       items: [
         {
+          id: "store_default",
           name: "default",
           source: "dynamic",
           backend: "plain",
@@ -109,6 +110,7 @@ describe("SecretsPage", () => {
     vi.mocked(fetchStores).mockResolvedValue({
       items: [
         {
+          id: "store_default",
           name: "default",
           source: "dynamic",
           backend: "plain",
@@ -140,6 +142,7 @@ describe("SecretsPage", () => {
     vi.mocked(fetchStores).mockResolvedValue({
       items: [
         {
+          id: "store_default",
           name: "default",
           source: "dynamic",
           backend: "plain",
@@ -197,6 +200,7 @@ describe("SecretsPage", () => {
     vi.mocked(fetchStores).mockResolvedValue({
       items: [
         {
+          id: "store_default",
           name: "default",
           source: "dynamic",
           backend: "plain",
@@ -254,6 +258,7 @@ describe("SecretsPage", () => {
     vi.mocked(fetchStores).mockResolvedValue({
       items: [
         {
+          id: "store_default",
           name: "default",
           source: "dynamic",
           backend: "plain",
@@ -292,6 +297,7 @@ describe("SecretsPage", () => {
     vi.mocked(fetchStores).mockResolvedValue({
       items: [
         {
+          id: "store_default",
           name: "default",
           source: "dynamic",
           backend: "plain",

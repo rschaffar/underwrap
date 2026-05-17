@@ -2,6 +2,11 @@
 
 export type AdminStoreUpdateRequest = { 
 /**
+ * New display name. Pass an empty string to clear it (invalid);
+ * omit to leave it unchanged.
+ */
+name?: string, 
+/**
  * New description. Pass an empty string to clear it; omit to
  * leave it unchanged.
  */

@@ -2,4 +2,12 @@
 import type { AdminStoreBackendKind } from "./AdminStoreBackendKind";
 import type { AdminStoreSource } from "./AdminStoreSource";
 
-export type AdminStoreListItem = { name: string, source: AdminStoreSource, backend: AdminStoreBackendKind, description?: string, created_at?: bigint, };
+export type AdminStoreListItem = { 
+/**
+ * Stable internal identifier used for routing and runtime mapping.
+ */
+id: string, 
+/**
+ * Editable operator-facing display name.
+ */
+name: string, source: AdminStoreSource, backend: AdminStoreBackendKind, description?: string, created_at?: bigint, };
