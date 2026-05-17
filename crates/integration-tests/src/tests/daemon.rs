@@ -1,5 +1,5 @@
 use super::*;
-use crate::harness::pick_unused_port;
+use crate::harness::{pick_unused_port, wait_for_service};
 use base64::Engine;
 
 #[tokio::test]
@@ -77,12 +77,11 @@ async fn underwrapd_binary_start_and_read() {
     std::fs::write(&client_cert, crate::harness::TEST_CLIENT_LOCAL_PEM).unwrap();
     std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
 
-    // 230 moved store config out of the inline map. Drop a single
-    // `test.yaml` into a per-tempdir stores dir so the binary picks
-    // it up at startup.
-    let stores_dir = base.join("stores.d");
-    std::fs::create_dir_all(&stores_dir).unwrap();
-    let test_def = underwrap_protocol::config::StoreDefinition {
+    let stores_file = base.join("stores.json");
+    let client_instances_file = base.join("client-instances.json");
+    let test_store = underwrap_protocol::config::StoreRecord {
+        id: "test".to_string(),
+        name: "test".to_string(),
         description: None,
         created_at: None,
         storage: underwrap_protocol::config::StorageConfig::Plain {
@@ -90,13 +89,43 @@ async fn underwrapd_binary_start_and_read() {
         },
     };
     std::fs::write(
-        stores_dir.join("test.yaml"),
-        serde_yaml::to_string(&test_def).unwrap(),
+        &stores_file,
+        serde_json::to_vec_pretty(&underwrap_protocol::config::StoreRegistryDocument {
+            version: 1,
+            stores: vec![test_store],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let client_cert_pem = std::fs::read_to_string(&client_cert).unwrap();
+    let client_fingerprint =
+        underwrap_backendd::runtime_clients::cert_fingerprint_from_pem(&client_cert_pem).unwrap();
+    let client_instance = underwrap_backendd::runtime_clients::ClientInstanceRecord {
+        id: "inst_underwrap_local".to_string(),
+        display_name: "underwrap-local".to_string(),
+        hostname_hint: Some("binary-test".to_string()),
+        instance_name: "binary-test".to_string(),
+        current_store_id: "test".to_string(),
+        status: underwrap_backendd::runtime_clients::ClientInstanceStatus::Active,
+        last_seen_at: None,
+        current_credential: underwrap_backendd::runtime_clients::CurrentCredentialRecord {
+            cert_fingerprint: client_fingerprint,
+            cert_pem: client_cert_pem,
+            issued_at: None,
+        },
+    };
+    std::fs::write(
+        &client_instances_file,
+        serde_json::to_vec_pretty(&underwrap_backendd::runtime_clients::ClientInstancesDocument {
+            version: 1,
+            instances: vec![client_instance],
+        })
+        .unwrap(),
     )
     .unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
-        stores_declarative_dir: None,
-        stores_dynamic_dir: Some(stores_dir),
+        stores_file: Some(stores_file),
+        client_instances_file: Some(client_instances_file),
         service: Some(underwrap_backendd::server::ServiceConfig {
             listen: format!("127.0.0.1:{service_port}"),
             tls: underwrap_backendd::server::ServiceTlsConfig {
@@ -104,12 +133,7 @@ async fn underwrapd_binary_start_and_read() {
                 key_file: server_key.clone(),
                 client_ca_file: ca_cert.clone(),
             },
-            clients: HashMap::from([(
-                "underwrap-local".to_string(),
-                underwrap_backendd::server::ServiceClientConfig {
-                    store: "test".to_string(),
-                },
-            )]),
+            clients: HashMap::new(),
         }),
         admin: Some(underwrap_backendd::server::AdminConfig {
             listen: format!("127.0.0.1:{admin_port}"),
@@ -160,6 +184,24 @@ async fn underwrapd_binary_start_and_read() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(backend_ready, "backend admin listener never became ready");
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        wait_for_service(&service_url, &ca_cert, &client_cert, &client_key),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("service listener readiness failed: {e:#}"),
+        Err(_) => {
+            let _ = backend_child.start_kill();
+            let backend_output = backend_child.wait_with_output().await.unwrap();
+            panic!(
+                "service listener readiness timed out\n--- backend stdout ---\n{}\n--- backend stderr ---\n{}",
+                String::from_utf8_lossy(&backend_output.stdout),
+                String::from_utf8_lossy(&backend_output.stderr),
+            );
+        }
+    }
 
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
         backend: underwrap_protocol::config::BackendServiceConfig {
@@ -249,12 +291,23 @@ async fn underwrapd_binary_start_and_read() {
     underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
         .await
         .unwrap();
-    let resp: WrapperResponse = underwrap_protocol::ipc::read_frame_async(&mut stream)
-        .await
-        .unwrap();
+    let resp: WrapperResponse = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        underwrap_protocol::ipc::read_frame_async(&mut stream),
+    )
+    .await
+    {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => panic!("wrapper read failed: {e:#}"),
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = backend_child.start_kill();
+            panic!("wrapper read timed out");
+        }
+    };
 
     assert_eq!(expect_single_env_string(resp), "value");
 
-    child.kill().await.unwrap();
-    backend_child.kill().await.unwrap();
+    child.start_kill().unwrap();
+    backend_child.start_kill().unwrap();
 }

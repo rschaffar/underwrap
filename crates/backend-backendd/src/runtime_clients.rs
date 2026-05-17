@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
@@ -64,6 +65,28 @@ impl Default for ClientInstancesDocument {
 
 fn default_client_instances_version() -> u32 {
     1
+}
+
+pub fn cert_fingerprint_from_der(cert_der: &[u8]) -> String {
+    let digest = Sha256::digest(cert_der);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn cert_fingerprint_from_pem(cert_pem: &str) -> Result<String> {
+    let mut reader = std::io::BufReader::new(cert_pem.as_bytes());
+    let certs = rustls_pemfile::certs(&mut reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("parsing client certificate PEM")?;
+    let cert = certs
+        .first()
+        .context("client certificate PEM contained no certificate")?;
+    Ok(cert_fingerprint_from_der(cert.as_ref()))
+}
+
+pub fn cert_fingerprint_from_pem_file(path: &Path) -> Result<String> {
+    let pem = std::fs::read_to_string(path)
+        .with_context(|| format!("reading client certificate PEM {}", path.display()))?;
+    cert_fingerprint_from_pem(&pem)
 }
 
 pub fn load_client_instances(path: &Path) -> Result<HashMap<String, ClientInstanceRecord>> {

@@ -26,8 +26,8 @@ pub(crate) use pki::{
 };
 
 use pki::{principal_client_name, test_pki_paths};
-pub(crate) use readiness::pick_unused_port;
-use readiness::{wait_for_admin, wait_for_path, wait_for_service};
+pub(crate) use readiness::{pick_unused_port, wait_for_service};
+use readiness::{wait_for_admin, wait_for_path};
 
 /// A running test daemon with temp dirs and sockets.
 #[allow(dead_code)]
@@ -112,13 +112,11 @@ impl TestDaemon {
         let admin_token = format!("test-admin-token-{admin_port}-do-not-reuse-zA=");
         let token_file = base.join("admin-token");
         std::fs::write(&token_file, admin_token.as_bytes())?;
-        // 230 moved stores out of the inline config and into a
-        // `stores.d/` directory union. The harness writes a single
-        // `test.yaml` under a temp dynamic dir so the rest of the
-        // setup looks the same to the test code.
-        let stores_dir = base.join("stores.d");
-        std::fs::create_dir_all(&stores_dir)?;
-        let test_store_def = underwrap_protocol::config::StoreDefinition {
+        let stores_file = base.join("stores.json");
+        let instances_file = base.join("client-instances.json");
+        let test_store = underwrap_protocol::config::StoreRecord {
+            id: "test".to_string(),
+            name: "test".to_string(),
             description: None,
             created_at: None,
             storage: StorageConfig::Plain {
@@ -126,12 +124,39 @@ impl TestDaemon {
             },
         };
         std::fs::write(
-            stores_dir.join("test.yaml"),
-            serde_yaml::to_string(&test_store_def)?,
+            &stores_file,
+            serde_json::to_vec_pretty(&underwrap_protocol::config::StoreRegistryDocument {
+                version: 1,
+                stores: vec![test_store],
+            })?,
+        )?;
+        let ready_cert_pem = std::fs::read_to_string(&ready_pki.client_cert)?;
+        let ready_fingerprint =
+            underwrap_backendd::runtime_clients::cert_fingerprint_from_pem(&ready_cert_pem)?;
+        let runtime_client = underwrap_backendd::runtime_clients::ClientInstanceRecord {
+            id: format!("inst_{accepted_principal}"),
+            display_name: accepted_principal.to_string(),
+            hostname_hint: Some(client_name.to_string()),
+            instance_name: client_name.to_string(),
+            current_store_id: "test".to_string(),
+            status: underwrap_backendd::runtime_clients::ClientInstanceStatus::Active,
+            last_seen_at: None,
+            current_credential: underwrap_backendd::runtime_clients::CurrentCredentialRecord {
+                cert_fingerprint: ready_fingerprint,
+                cert_pem: ready_cert_pem,
+                issued_at: None,
+            },
+        };
+        std::fs::write(
+            &instances_file,
+            serde_json::to_vec_pretty(&underwrap_backendd::runtime_clients::ClientInstancesDocument {
+                version: 1,
+                instances: vec![runtime_client],
+            })?,
         )?;
         let backend_config = underwrap_backendd::server::BackendConfig {
-            stores_declarative_dir: None,
-            stores_dynamic_dir: Some(stores_dir),
+            stores_file: Some(stores_file),
+            client_instances_file: Some(instances_file),
             service: Some(underwrap_backendd::server::ServiceConfig {
                 listen: format!("127.0.0.1:{service_port}"),
                 tls: underwrap_backendd::server::ServiceTlsConfig {
@@ -139,12 +164,7 @@ impl TestDaemon {
                     key_file: pki.server_key.clone(),
                     client_ca_file: pki.ca_cert.clone(),
                 },
-                clients: HashMap::from([(
-                    accepted_principal.to_string(),
-                    underwrap_backendd::server::ServiceClientConfig {
-                        store: "test".to_string(),
-                    },
-                )]),
+                clients: HashMap::new(),
             }),
             admin: Some(underwrap_backendd::server::AdminConfig {
                 listen: format!("127.0.0.1:{admin_port}"),

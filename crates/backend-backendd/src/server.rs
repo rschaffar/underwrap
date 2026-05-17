@@ -180,7 +180,8 @@ impl Default for StoreRegistry {
 }
 
 struct ServiceRuntimeState {
-    clients: HashMap<String, Arc<dyn StorageBackend>>,
+    stores: HashMap<String, Arc<dyn StorageBackend>>,
+    client_instances: HashMap<String, crate::runtime_clients::ClientInstanceRecord>,
 }
 
 struct AdminRuntimeState {
@@ -283,7 +284,11 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
         let service_listener = TcpListener::bind(&service_config.listen)
             .await
             .with_context(|| format!("binding service listener {}", service_config.listen))?;
-        let service_state = Arc::new(build_service_runtime_state(&stores, service_config)?);
+        let service_state = Arc::new(build_service_runtime_state(
+            &stores,
+            &client_instances,
+            service_config,
+        )?);
         let tls_acceptor = build_tls_acceptor(&service_config.tls)?;
         info!(listen = %service_config.listen, clients = service_config.clients.len(), instances = client_instances.len(), "backend HTTPS service listening");
         tasks.spawn(service_accept_loop(
@@ -496,22 +501,27 @@ fn generate_store_id() -> String {
 
 fn build_service_runtime_state(
     stores: &HashMap<String, Arc<dyn StorageBackend>>,
+    client_instances: &HashMap<String, crate::runtime_clients::ClientInstanceRecord>,
     config: &ServiceConfig,
 ) -> Result<ServiceRuntimeState> {
-    let mut clients = HashMap::new();
-    for (principal, client) in &config.clients {
-        let store = stores
-            .get(&client.store)
-            .with_context(|| {
-                format!(
-                    "service client '{principal}' references unknown store '{}'",
-                    client.store
-                )
-            })?
-            .clone();
-        clients.insert(principal.clone(), store);
+    if !config.clients.is_empty() {
+        warn!(
+            count = config.clients.len(),
+            "service.clients is ignored; runtime access now resolves from the client-instance registry"
+        );
     }
-    Ok(ServiceRuntimeState { clients })
+    for instance in client_instances.values() {
+        stores.get(&instance.current_store_id).with_context(|| {
+            format!(
+                "runtime client instance '{}' references unknown store '{}'",
+                instance.id, instance.current_store_id
+            )
+        })?;
+    }
+    Ok(ServiceRuntimeState {
+        stores: stores.clone(),
+        client_instances: client_instances.clone(),
+    })
 }
 
 fn build_tls_acceptor(config: &ServiceTlsConfig) -> Result<TlsAcceptor> {
@@ -683,22 +693,35 @@ fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'sta
     }
 }
 
-fn extract_client_principal(
+fn resolve_runtime_client(
+    state: &ServiceRuntimeState,
     certs: &[rustls::pki_types::CertificateDer<'static>],
-) -> Result<String> {
+) -> Result<(String, Arc<dyn StorageBackend>)> {
     let cert = certs
         .first()
         .context("client did not present a certificate")?;
-    let (_, parsed) =
-        x509_parser::parse_x509_certificate(cert.as_ref()).context("parsing client certificate")?;
-    let common_name = parsed
-        .subject()
-        .iter_common_name()
-        .next()
-        .context("client certificate missing common name")?
-        .as_str()
-        .context("client certificate common name is not valid utf-8")?;
-    Ok(common_name.to_string())
+    let fingerprint = crate::runtime_clients::cert_fingerprint_from_der(cert.as_ref());
+    let instance = state
+        .client_instances
+        .values()
+        .find(|instance| instance.current_credential.cert_fingerprint == fingerprint)
+        .with_context(|| format!("unknown client credential fingerprint '{fingerprint}'"))?;
+    anyhow::ensure!(
+        instance.status == crate::runtime_clients::ClientInstanceStatus::Active,
+        "runtime client instance '{}' is not active",
+        instance.id
+    );
+    let store = state
+        .stores
+        .get(&instance.current_store_id)
+        .with_context(|| {
+            format!(
+                "runtime client instance '{}' references unknown store '{}'",
+                instance.id, instance.current_store_id
+            )
+        })?
+        .clone();
+    Ok((instance.id.clone(), store))
 }
 
 #[cfg(test)]
@@ -802,18 +825,14 @@ async fn handle_service_connection(
         .accept(stream)
         .await
         .context("accepting TLS connection")?;
-    let principal = extract_client_principal(
+    let (principal, store) = resolve_runtime_client(
+        &state,
         tls_stream
             .get_ref()
             .1
             .peer_certificates()
             .context("reading peer certificates")?,
     )?;
-    let store = state
-        .clients
-        .get(&principal)
-        .with_context(|| format!("unknown client principal '{principal}'"))?
-        .clone();
 
     let service = service_fn(move |req| {
         let principal = principal.clone();
@@ -4700,6 +4719,81 @@ mod tests {
             role,
             granted_stores: grants.iter().map(|s| (*s).to_string()).collect(),
         }
+    }
+
+    fn service_state_with_runtime_client(
+        cert_der: &[u8],
+        status: crate::runtime_clients::ClientInstanceStatus,
+        store_id: &str,
+    ) -> ServiceRuntimeState {
+        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
+        stores.insert(store_id.to_string(), Arc::new(MemTestStore::new()));
+        let mut client_instances = HashMap::new();
+        client_instances.insert(
+            "inst_local".to_string(),
+            crate::runtime_clients::ClientInstanceRecord {
+                id: "inst_local".to_string(),
+                display_name: "Local".to_string(),
+                hostname_hint: Some("deepthought".to_string()),
+                instance_name: "work".to_string(),
+                current_store_id: store_id.to_string(),
+                status,
+                last_seen_at: None,
+                current_credential: crate::runtime_clients::CurrentCredentialRecord {
+                    cert_fingerprint: crate::runtime_clients::cert_fingerprint_from_der(cert_der),
+                    cert_pem: "pem".to_string(),
+                    issued_at: None,
+                },
+            },
+        );
+        ServiceRuntimeState {
+            stores,
+            client_instances,
+        }
+    }
+
+    #[test]
+    fn resolve_runtime_client_maps_cert_to_active_instance_store() {
+        let cert_der = vec![1u8, 2, 3, 4];
+        let state = service_state_with_runtime_client(
+            &cert_der,
+            crate::runtime_clients::ClientInstanceStatus::Active,
+            "work",
+        );
+        let cert = rustls::pki_types::CertificateDer::from(cert_der);
+        let (principal, _store) = resolve_runtime_client(&state, &[cert]).unwrap();
+        assert_eq!(principal, "inst_local");
+    }
+
+    #[test]
+    fn resolve_runtime_client_rejects_disabled_instance() {
+        let cert_der = vec![9u8, 8, 7];
+        let state = service_state_with_runtime_client(
+            &cert_der,
+            crate::runtime_clients::ClientInstanceStatus::Disabled,
+            "work",
+        );
+        let cert = rustls::pki_types::CertificateDer::from(cert_der);
+        let err = match resolve_runtime_client(&state, &[cert]) {
+            Ok(_) => panic!("disabled instances must fail"),
+            Err(err) => err,
+        };
+        assert!(format!("{err:#}").contains("not active"));
+    }
+
+    #[test]
+    fn resolve_runtime_client_rejects_unknown_fingerprint() {
+        let state = service_state_with_runtime_client(
+            &[1u8, 2, 3],
+            crate::runtime_clients::ClientInstanceStatus::Active,
+            "work",
+        );
+        let cert = rustls::pki_types::CertificateDer::from(vec![4u8, 5, 6]);
+        let err = match resolve_runtime_client(&state, &[cert]) {
+            Ok(_) => panic!("unknown fingerprints must fail"),
+            Err(err) => err,
+        };
+        assert!(format!("{err:#}").contains("unknown client credential fingerprint"));
     }
 
     #[test]

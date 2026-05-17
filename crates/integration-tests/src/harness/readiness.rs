@@ -35,7 +35,9 @@ pub(crate) fn pick_unused_port() -> Result<u16> {
 // crate invokes a recursive `cargo build` via `ensure_package_built`,
 // which can stall sibling tests for tens of seconds.
 pub(super) async fn wait_for_admin(url: &str, token: &str) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()?;
     for _ in 0..3000 {
         if let Ok(response) = client
             .get(format!("{url}/v1/admin/stores"))
@@ -53,7 +55,7 @@ pub(super) async fn wait_for_admin(url: &str, token: &str) -> Result<()> {
 
 // Total window: 3000 × 20 ms ≈ 60 s. See wait_for_admin above; rustls
 // initialisation is the slowest part of backend startup under load.
-pub(super) async fn wait_for_service(
+pub(crate) async fn wait_for_service(
     url: &str,
     ca_cert: &Path,
     client_cert: &Path,
@@ -67,6 +69,7 @@ pub(super) async fn wait_for_service(
     identity_pem.extend_from_slice(&key_pem);
     let client = reqwest::Client::builder()
         .use_rustls_tls()
+        .timeout(std::time::Duration::from_millis(500))
         .add_root_certificate(reqwest::Certificate::from_pem(&ca_pem)?)
         .identity(reqwest::Identity::from_pem(&identity_pem)?)
         .build()?;
