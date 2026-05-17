@@ -12,7 +12,7 @@
  *   etc.) so callers can switch on it without parsing strings.
  * - Never logs request or response bodies. Secret material flows
  *   through this client; accidental leaks via console.log would be a
- *   regression we audit for.
+ *   security regression.
  */
 
 const CSRF_COOKIE_NAME = "__Host-uw-csrf";

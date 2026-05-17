@@ -184,8 +184,8 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     return [...set].sort();
   }, [catalog.data]);
 
-  // Filter out the reserved policy / catalog / audit secret IDs so
-  // operators don't accidentally read or delete them through this UI.
+  // Filter out reserved underwrap internal secret IDs so operators
+  // don't accidentally read or delete them through this UI.
   // The backend already rejects writes for the policy ID with a clear
   // error, but hiding it removes the foot-gun entirely.
   const RESERVED_PREFIX = /^__underwrap\//;
@@ -262,11 +262,10 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         <div>
           <h2 className="text-xl font-semibold text-(--color-fg)">Secrets</h2>
           <p className="mt-1 text-sm text-(--color-muted)">
-            Stored credential material. Revealing a secret writes an
-            audit event. Per-resource toggles in each block decide
-            whether the wrapper can write back to <code>files</code>{" "}
-            or <code>libsecret</code> entries; admin writes through
-            this page are always allowed.
+            Stored credential material. Per-resource toggles in each
+            block decide whether the wrapper can write back to
+            <code>files</code> or <code>libsecret</code> entries;
+            admin writes through this page are always allowed.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -650,8 +649,7 @@ function RevealSecretDialog({
   const read = useQuery<AdminSecretReadResponse>({
     queryKey: ["admin", "secret", "read", storeName, secretId],
     queryFn: () => postSecretRead({ store: storeName, secret_id: secretId }),
-    // Only fire after the operator confirms they want to view it —
-    // each call writes an audit event.
+    // Only fire after the operator confirms they want to view it.
     enabled: confirmed,
     // Don't cache the secret material in the React Query store any
     // longer than necessary.
@@ -690,7 +688,6 @@ function RevealSecretDialog({
           <DialogTitle>Reveal secret</DialogTitle>
           <DialogDescription>
             <code>{secretId}</code> from <code>{storeName}</code>.
-            Revealing writes an audit event server-side.
           </DialogDescription>
         </DialogHeader>
 
@@ -765,7 +762,7 @@ const writeSchema = z.object({
     .refine((s) => !s.startsWith("__underwrap/"), {
       message: "Reserved IDs starting with __underwrap/ cannot be used.",
     }),
-  wrapper: z.string().min(1, "Pick a wrapper for audit context."),
+  wrapper: z.string().min(1, "Pick a wrapper context."),
   material: z.string().min(1, "Material is required."),
 });
 type WriteValues = z.infer<typeof writeSchema>;
@@ -891,8 +888,8 @@ function WriteSecretDialog({
                     )}
                   </FormControl>
                   <FormDescription>
-                    Tags the audit event. Free-form when the catalog
-                    is empty.
+                    Used for backend write authorization. Free-form
+                    when the catalog is empty.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
