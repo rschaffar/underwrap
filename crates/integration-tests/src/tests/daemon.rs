@@ -95,8 +95,6 @@ async fn underwrapd_binary_start_and_read() {
     )
     .unwrap();
     let client_cert_pem = std::fs::read_to_string(&client_cert).unwrap();
-    let client_fingerprint =
-        underwrap_backendd::runtime_clients::cert_fingerprint_from_pem(&client_cert_pem).unwrap();
     let client_instance = underwrap_backendd::runtime_clients::ClientInstanceRecord {
         id: "inst_underwrap_local".to_string(),
         display_name: "underwrap-local".to_string(),
@@ -105,11 +103,11 @@ async fn underwrapd_binary_start_and_read() {
         current_store_id: "test".to_string(),
         status: underwrap_backendd::runtime_clients::ClientInstanceStatus::Active,
         last_seen_at: None,
-        current_credential: underwrap_backendd::runtime_clients::CurrentCredentialRecord {
-            cert_fingerprint: client_fingerprint,
-            cert_pem: client_cert_pem,
-            issued_at: None,
-        },
+        current_credential: underwrap_backendd::runtime_clients::current_credential_from_pem(
+            client_cert_pem,
+            None,
+        )
+        .unwrap(),
     };
     std::fs::write(
         &client_instances_file,

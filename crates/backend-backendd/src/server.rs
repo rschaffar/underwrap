@@ -3701,16 +3701,18 @@ fn do_admin_client_instance_create(
         Ok(v) => v,
         Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_instance_name", msg),
     };
-    let cert_fingerprint = match crate::runtime_clients::cert_fingerprint_from_pem(&body.cert_pem) {
-        Ok(fp) => fp,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_client_certificate",
-                &format!("parsing client certificate: {e:#}"),
-            );
-        }
-    };
+    let current_credential =
+        match crate::runtime_clients::current_credential_from_pem(body.cert_pem, body.issued_at) {
+            Ok(current) => current,
+            Err(e) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_client_certificate",
+                    &format!("parsing client certificate: {e:#}"),
+                );
+            }
+        };
+    let cert_fingerprint = current_credential.cert_fingerprint.clone();
     {
         let stores = state.stores.read().unwrap();
         if !stores.records.contains_key(&body.current_store_id) {
@@ -3760,11 +3762,7 @@ fn do_admin_client_instance_create(
         current_store_id: body.current_store_id,
         status: client_instance_status_from_wire(body.status),
         last_seen_at: None,
-        current_credential: crate::runtime_clients::CurrentCredentialRecord {
-            cert_fingerprint,
-            cert_pem: body.cert_pem,
-            issued_at: body.issued_at,
-        },
+        current_credential,
     };
     instances.insert(id.clone(), record.clone());
     if let Err(e) =
@@ -4305,6 +4303,19 @@ fn do_enrollment_submit(
         );
     }
 
+    let current_credential =
+        match crate::runtime_clients::current_credential_from_pem(cert_pem.clone(), Some(now)) {
+            Ok(current) => current,
+            Err(e) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "invalid_issued_certificate",
+                    &format!(
+                        "issued client certificate was not a single current credential: {e:#}"
+                    ),
+                );
+            }
+        };
     let record = crate::runtime_clients::ClientInstanceRecord {
         id: client_instance_id.clone(),
         display_name: invite.display_name.clone(),
@@ -4313,11 +4324,7 @@ fn do_enrollment_submit(
         current_store_id: invite.current_store_id.clone(),
         status: crate::runtime_clients::ClientInstanceStatus::Active,
         last_seen_at: None,
-        current_credential: crate::runtime_clients::CurrentCredentialRecord {
-            cert_fingerprint: cert_fingerprint.clone(),
-            cert_pem: cert_pem.clone(),
-            issued_at: Some(now),
-        },
+        current_credential,
     };
     let previous_instance = instances.insert(client_instance_id.clone(), record);
     if let Err(e) =

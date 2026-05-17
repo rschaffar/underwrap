@@ -135,8 +135,6 @@ impl TestDaemon {
             })?,
         )?;
         let ready_cert_pem = std::fs::read_to_string(&ready_pki.client_cert)?;
-        let ready_fingerprint =
-            underwrap_backendd::runtime_clients::cert_fingerprint_from_pem(&ready_cert_pem)?;
         let runtime_client = underwrap_backendd::runtime_clients::ClientInstanceRecord {
             id: format!("inst_{accepted_principal}"),
             display_name: accepted_principal.to_string(),
@@ -145,11 +143,10 @@ impl TestDaemon {
             current_store_id: "test".to_string(),
             status: underwrap_backendd::runtime_clients::ClientInstanceStatus::Active,
             last_seen_at: None,
-            current_credential: underwrap_backendd::runtime_clients::CurrentCredentialRecord {
-                cert_fingerprint: ready_fingerprint,
-                cert_pem: ready_cert_pem,
-                issued_at: None,
-            },
+            current_credential: underwrap_backendd::runtime_clients::current_credential_from_pem(
+                ready_cert_pem,
+                None,
+            )?,
         };
         std::fs::write(
             &instances_file,

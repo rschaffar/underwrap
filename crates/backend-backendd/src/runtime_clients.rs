@@ -80,7 +80,23 @@ pub fn cert_fingerprint_from_pem(cert_pem: &str) -> Result<String> {
     let cert = certs
         .first()
         .context("client certificate PEM contained no certificate")?;
+    anyhow::ensure!(
+        certs.len() == 1,
+        "client certificate PEM must contain exactly one certificate"
+    );
     Ok(cert_fingerprint_from_der(cert.as_ref()))
+}
+
+pub fn current_credential_from_pem(
+    cert_pem: String,
+    issued_at: Option<u64>,
+) -> Result<CurrentCredentialRecord> {
+    let cert_fingerprint = cert_fingerprint_from_pem(&cert_pem)?;
+    Ok(CurrentCredentialRecord {
+        cert_fingerprint,
+        cert_pem,
+        issued_at,
+    })
 }
 
 pub fn cert_fingerprint_from_pem_file(path: &Path) -> Result<String> {
@@ -140,6 +156,20 @@ pub fn load_client_instances(path: &Path) -> Result<HashMap<String, ClientInstan
         anyhow::ensure!(
             !record.current_credential.cert_pem.trim().is_empty(),
             "runtime client instance '{}' has an empty current credential PEM in {}",
+            record.id,
+            path.display()
+        );
+        let derived_fingerprint = cert_fingerprint_from_pem(&record.current_credential.cert_pem)
+            .with_context(|| {
+                format!(
+                    "parsing current credential PEM for runtime client instance '{}' in {}",
+                    record.id,
+                    path.display()
+                )
+            })?;
+        anyhow::ensure!(
+            derived_fingerprint == record.current_credential.cert_fingerprint,
+            "runtime client instance '{}' has a current credential fingerprint/PEM mismatch in {}",
             record.id,
             path.display()
         );
@@ -226,6 +256,21 @@ pub fn is_valid_client_instance_id(id: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn sample_cert_pem(label: &str) -> String {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec![label.to_string()]).unwrap();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, label);
+        params.not_before = rcgen::date_time_ymd(2025, 1, 1);
+        params.not_after = rcgen::date_time_ymd(2035, 1, 1);
+        params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        params.serial_number = Some(rcgen::SerialNumber::from(1));
+        let cert = params.self_signed(&key).unwrap();
+        cert.pem()
+    }
+
     fn sample(id: &str) -> ClientInstanceRecord {
         ClientInstanceRecord {
             id: id.to_string(),
@@ -235,11 +280,8 @@ mod tests {
             current_store_id: "store_work".into(),
             status: ClientInstanceStatus::Active,
             last_seen_at: Some(123),
-            current_credential: CurrentCredentialRecord {
-                cert_fingerprint: format!("fp-{id}"),
-                cert_pem: "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----".into(),
-                issued_at: Some(100),
-            },
+            current_credential: current_credential_from_pem(sample_cert_pem(id), Some(100))
+                .unwrap(),
         }
     }
 
@@ -293,6 +335,7 @@ mod tests {
         let a = sample("inst_a");
         let mut b = sample("inst_b");
         b.current_credential.cert_fingerprint = a.current_credential.cert_fingerprint.clone();
+        b.current_credential.cert_pem = a.current_credential.cert_pem.clone();
         let doc = ClientInstancesDocument {
             version: 1,
             instances: vec![a, b],
@@ -300,6 +343,32 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
         let err = load_client_instances(&path).expect_err("duplicate fingerprints must fail");
         assert!(format!("{err:#}").contains("duplicate runtime client credential fingerprint"));
+    }
+
+    #[test]
+    fn mismatched_current_credential_fingerprint_is_rejected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("client-instances.json");
+        let mut rec = sample("inst_a");
+        rec.current_credential.cert_fingerprint = "wrong".into();
+        let doc = ClientInstancesDocument {
+            version: 1,
+            instances: vec![rec],
+        };
+        std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        let err = load_client_instances(&path).expect_err("mismatched fingerprints must fail");
+        assert!(format!("{err:#}").contains("fingerprint/PEM mismatch"));
+    }
+
+    #[test]
+    fn multiple_certificates_in_current_credential_are_rejected() {
+        let err = cert_fingerprint_from_pem(&format!(
+            "{}{}",
+            sample_cert_pem("first"),
+            sample_cert_pem("second")
+        ))
+        .expect_err("multiple certs must be rejected");
+        assert!(format!("{err:#}").contains("exactly one certificate"));
     }
 
     #[test]
