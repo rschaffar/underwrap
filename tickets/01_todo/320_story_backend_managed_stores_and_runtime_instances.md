@@ -24,6 +24,14 @@ The current backend service model relies on declarative stores and static servic
   - status / last seen
 - Runtime request authorization resolves current store mapping from backend state, not static config.
 
+## Tasks
+
+1. `321_task_replace_backend_store_registry_with_backend_managed_store_records.md`
+2. `322_task_add_runtime_client_instance_and_current_credential_model.md`
+3. `323_task_resolve_runtime_store_mapping_from_backend_state.md`
+4. `324_task_add_backend_admin_crud_for_stores_instances_and_mapping.md`
+5. `325_task_backend_managed_store_and_instance_test_coverage.md`
+
 ## Acceptance criteria
 
 - [ ] Declarative backend-store management is removed from the active runtime design.

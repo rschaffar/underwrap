@@ -23,6 +23,14 @@ Once stores and client instances are backend-managed, the admin SPA needs a clea
 - Enrollment deep links should redirect through login and return to the intended page.
 - Revoked/disabled instances remain visible in the normal list with filtering.
 
+## Tasks
+
+1. `341_task_add_store_management_view_models_and_endpoints.md`
+2. `342_task_add_client_instance_management_view_models_and_endpoints.md`
+3. `343_task_build_web_stores_management_section.md`
+4. `344_task_build_web_client_instances_management_section.md`
+5. `345_task_management_console_login_return_and_filtering_coverage.md`
+
 ## Acceptance criteria
 
 - [ ] Stores are manageable from a dedicated top-level section.

@@ -22,6 +22,14 @@ Manual certificate provisioning is too awkward, but we also do not want open CSR
 - The CLI generates the per-instance private key locally, creates the CSR locally, receives the signed cert, and writes files atomically.
 - The backend decides the issued certificate contents.
 
+## Tasks
+
+1. `331_task_add_unenrolled_instance_state_and_wrapper_guidance.md`
+2. `332_task_add_backend_invite_and_certificate_issuance_flow.md`
+3. `333_task_build_dedicated_client_enrollment_cli.md`
+4. `334_task_add_admin_enrollment_ui_and_inline_store_creation.md`
+5. `335_task_enrollment_flow_test_coverage.md`
+
 ## Acceptance criteria
 
 - [ ] Unenrolled wrapper execution clearly guides the operator into enrollment.

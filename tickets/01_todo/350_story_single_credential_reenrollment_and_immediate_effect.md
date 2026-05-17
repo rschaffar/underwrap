@@ -18,6 +18,13 @@ We do not want a full credential-rotation subsystem in the first release. Instea
   - changed store mapping → new store applies
 - Existing long-lived connections must not preserve stale authorization across later runtime requests.
 
+## Tasks
+
+1. `351_task_enforce_single_current_credential_per_instance.md`
+2. `352_task_make_reenrollment_replace_the_current_credential.md`
+3. `353_task_apply_revoke_remove_and_remap_on_next_runtime_request.md`
+4. `354_task_single_credential_reenrollment_test_coverage.md`
+
 ## Acceptance criteria
 
 - [ ] The runtime model supports exactly one current credential per logical instance.

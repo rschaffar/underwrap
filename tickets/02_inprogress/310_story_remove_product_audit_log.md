@@ -14,6 +14,12 @@ The backend currently persists audit-history events into backend storage and exp
 - Keep structured runtime logs, even if some existing helper/module names still say `audit` initially.
 - Remove product/UI wording that implies persisted audit-history exists.
 
+## Tasks
+
+1. `311_task_remove_backend_audit_history_storage_and_api.md`
+2. `312_task_remove_web_audit_history_ui_and_generated_types.md`
+3. `313_task_remove_audit_history_docs_copy_and_tests.md`
+
 ## Acceptance criteria
 
 - [ ] Backend no longer reads/writes `__underwrap/admin/ui/audit-history`.
