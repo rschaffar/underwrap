@@ -61,6 +61,16 @@
             strictDeps = true;
             buildInputs = [ ];
             nativeBuildInputs = [ ];
+            # Cap test parallelism inside the Nix sandbox. The
+            # integration-tests crate spawns one in-process backend
+            # per test on a single-threaded tokio runtime, and
+            # `tests::daemon::underwrapd_binary_start_and_read`
+            # invokes a recursive `cargo build`. Under default
+            # parallelism that combo CPU-starves sibling
+            # TestDaemon::start calls and they hit the readiness
+            # timeout. `-j 4` keeps every test fast individually
+            # without overloading the builder.
+            cargoTestExtraArgs = "-- --test-threads=4";
           };
 
           # Build workspace dependencies first (for caching).
