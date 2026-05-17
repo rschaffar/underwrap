@@ -129,6 +129,12 @@ import type {
   AdminAgentGrantsListResponse,
   AdminCatalogGetRequest,
   AdminCatalogGetResponse,
+  AdminClientInstanceActionState,
+  AdminClientInstanceDetailResponse,
+  AdminClientInstanceListItem,
+  AdminClientInstancesListResponse,
+  AdminClientInstanceStatus,
+  AdminClientInstanceUpdateRequest,
   AdminEnrollmentInviteCreateRequest,
   AdminEnrollmentInviteCreateResponse,
   AdminOkResponse,
@@ -178,6 +184,12 @@ export type {
   AdminAgentGrantsListResponse,
   AdminCatalogGetRequest,
   AdminCatalogGetResponse,
+  AdminClientInstanceActionState,
+  AdminClientInstanceDetailResponse,
+  AdminClientInstanceListItem,
+  AdminClientInstancesListResponse,
+  AdminClientInstanceStatus,
+  AdminClientInstanceUpdateRequest,
   AdminEnrollmentInviteCreateRequest,
   AdminEnrollmentInviteCreateResponse,
   AdminOkResponse,
@@ -305,6 +317,37 @@ export function deleteStore(
   const query = opts.force ? "?force=true" : "";
   return apiJson<AdminStoreDeleteResponse>(
     `/v1/admin/stores/${encodeURIComponent(storeId)}${query}`,
+    { method: "DELETE" },
+  );
+}
+
+// ----- Client instances admin (story 340) -----
+
+export function fetchClientInstances(): Promise<AdminClientInstancesListResponse> {
+  return apiJson<AdminClientInstancesListResponse>("/v1/admin/client-instances");
+}
+
+export function fetchClientInstance(
+  id: string,
+): Promise<AdminClientInstanceDetailResponse> {
+  return apiJson<AdminClientInstanceDetailResponse>(
+    `/v1/admin/client-instances/${encodeURIComponent(id)}`,
+  );
+}
+
+export function putClientInstanceUpdate(
+  id: string,
+  body: AdminClientInstanceUpdateRequest,
+): Promise<AdminClientInstanceDetailResponse> {
+  return apiJson<AdminClientInstanceDetailResponse>(
+    `/v1/admin/client-instances/${encodeURIComponent(id)}`,
+    { method: "PUT", json: body },
+  );
+}
+
+export function deleteClientInstance(id: string): Promise<AdminOkResponse> {
+  return apiJson<AdminOkResponse>(
+    `/v1/admin/client-instances/${encodeURIComponent(id)}`,
     { method: "DELETE" },
   );
 }

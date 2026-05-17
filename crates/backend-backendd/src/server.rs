@@ -2648,15 +2648,16 @@ async fn handle_admin_password_change(
 // lock on the in-memory registry update.
 
 use underwrap_protocol::service::{
-    AdminClientInstanceCreateRequest, AdminClientInstanceDetailResponse,
-    AdminClientInstanceListItem, AdminClientInstanceStatus, AdminClientInstanceUpdateRequest,
-    AdminClientInstancesListResponse, AdminEnrollmentInviteCreateRequest,
-    AdminEnrollmentInviteCreateResponse, AdminEnrollmentInviteListItem,
-    AdminEnrollmentInviteStatus, AdminEnrollmentInvitesListResponse, AdminStoreActionState,
-    AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
-    AdminStoreDeleteResponse, AdminStoreDetailResponse, AdminStoreListItem,
-    AdminStoreRotateKeyResponse, AdminStoreSource, AdminStoreUpdateRequest, AdminStoreUsageSummary,
-    AdminStoresListResponse, EnrollmentSubmitRequest, EnrollmentSubmitResponse,
+    AdminClientInstanceActionState, AdminClientInstanceCreateRequest,
+    AdminClientInstanceDetailResponse, AdminClientInstanceListItem, AdminClientInstanceStatus,
+    AdminClientInstanceUpdateRequest, AdminClientInstancesListResponse,
+    AdminEnrollmentInviteCreateRequest, AdminEnrollmentInviteCreateResponse,
+    AdminEnrollmentInviteListItem, AdminEnrollmentInviteStatus, AdminEnrollmentInvitesListResponse,
+    AdminStoreActionState, AdminStoreBackendKind, AdminStoreCreateRequest,
+    AdminStoreCreateResponse, AdminStoreDeleteResponse, AdminStoreDetailResponse,
+    AdminStoreListItem, AdminStoreRotateKeyResponse, AdminStoreSource, AdminStoreUpdateRequest,
+    AdminStoreUsageSummary, AdminStoresListResponse, EnrollmentSubmitRequest,
+    EnrollmentSubmitResponse,
 };
 
 fn backend_kind(storage: &underwrap_protocol::config::StorageConfig) -> AdminStoreBackendKind {
@@ -3526,8 +3527,37 @@ fn client_instance_status_from_wire(
     }
 }
 
+fn admin_client_instance_actions(
+    principal: &crate::operators::Principal,
+    record: &crate::runtime_clients::ClientInstanceRecord,
+) -> AdminClientInstanceActionState {
+    let can_manage = principal.is_admin();
+    AdminClientInstanceActionState {
+        can_edit_display_name: can_manage,
+        can_remap_store: can_manage,
+        can_disable: can_manage
+            && record.status == crate::runtime_clients::ClientInstanceStatus::Active,
+        can_enable: can_manage
+            && record.status == crate::runtime_clients::ClientInstanceStatus::Disabled,
+        can_delete: can_manage,
+    }
+}
+
+fn current_store_names(state: &AdminRuntimeState) -> HashMap<String, String> {
+    state
+        .stores
+        .read()
+        .unwrap()
+        .records
+        .iter()
+        .map(|(id, loaded)| (id.clone(), loaded.record.name.clone()))
+        .collect()
+}
+
 fn admin_client_instance_list_item(
     record: &crate::runtime_clients::ClientInstanceRecord,
+    current_store_name: String,
+    actions: AdminClientInstanceActionState,
 ) -> AdminClientInstanceListItem {
     AdminClientInstanceListItem {
         id: record.id.clone(),
@@ -3535,14 +3565,18 @@ fn admin_client_instance_list_item(
         hostname_hint: record.hostname_hint.clone(),
         instance_name: record.instance_name.clone(),
         current_store_id: record.current_store_id.clone(),
+        current_store_name,
         status: client_instance_status_to_wire(record.status),
         last_seen_at: record.last_seen_at,
         current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
+        actions,
     }
 }
 
 fn admin_client_instance_detail(
     record: &crate::runtime_clients::ClientInstanceRecord,
+    current_store_name: String,
+    actions: AdminClientInstanceActionState,
 ) -> AdminClientInstanceDetailResponse {
     AdminClientInstanceDetailResponse {
         id: record.id.clone(),
@@ -3550,10 +3584,12 @@ fn admin_client_instance_detail(
         hostname_hint: record.hostname_hint.clone(),
         instance_name: record.instance_name.clone(),
         current_store_id: record.current_store_id.clone(),
+        current_store_name,
         status: client_instance_status_to_wire(record.status),
         last_seen_at: record.last_seen_at,
         current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
         current_credential_issued_at: record.current_credential.issued_at,
+        actions,
     }
 }
 
@@ -3568,13 +3604,23 @@ fn handle_admin_client_instances_list(
             "only admins may list client instances",
         );
     }
-    let mut items: Vec<AdminClientInstanceListItem> = state
-        .client_instances
-        .read()
-        .unwrap()
-        .values()
-        .map(admin_client_instance_list_item)
-        .collect();
+    let store_names = current_store_names(state);
+    let mut items = Vec::new();
+    for record in state.client_instances.read().unwrap().values() {
+        let Some(current_store_name) = store_names.get(&record.current_store_id).cloned() else {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "unknown_store",
+                "client instance references an unknown store",
+            );
+        };
+        let actions = admin_client_instance_actions(principal, record);
+        items.push(admin_client_instance_list_item(
+            record,
+            current_store_name,
+            actions,
+        ));
+    }
     items.sort_by(|a, b| a.display_name.cmp(&b.display_name).then(a.id.cmp(&b.id)));
     json_response(StatusCode::OK, &AdminClientInstancesListResponse { items })
 }
@@ -3591,8 +3637,23 @@ fn handle_admin_client_instance_detail(
             "only admins may inspect client instances",
         );
     }
+    let store_names = current_store_names(state);
     match state.client_instances.read().unwrap().get(id) {
-        Some(record) => json_response(StatusCode::OK, &admin_client_instance_detail(record)),
+        Some(record) => {
+            let Some(current_store_name) = store_names.get(&record.current_store_id).cloned()
+            else {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "unknown_store",
+                    "client instance references an unknown store",
+                );
+            };
+            let actions = admin_client_instance_actions(principal, record);
+            json_response(
+                StatusCode::OK,
+                &admin_client_instance_detail(record, current_store_name, actions),
+            )
+        }
         None => error_response(
             StatusCode::NOT_FOUND,
             "not_found",
@@ -3725,7 +3786,24 @@ fn do_admin_client_instance_create(
         None,
         "success",
     );
-    json_response(StatusCode::OK, &admin_client_instance_detail(&record))
+    let current_store_name = {
+        let stores = state.stores.read().unwrap();
+        match stores.records.get(&record.current_store_id) {
+            Some(store) => store.record.name.clone(),
+            None => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "unknown_store",
+                    "client instance references an unknown store",
+                );
+            }
+        }
+    };
+    let actions = admin_client_instance_actions(principal, &record);
+    json_response(
+        StatusCode::OK,
+        &admin_client_instance_detail(&record, current_store_name, actions),
+    )
 }
 
 async fn handle_admin_client_instance_update(
@@ -3832,7 +3910,24 @@ fn do_admin_client_instance_update(
         None,
         "success",
     );
-    json_response(StatusCode::OK, &admin_client_instance_detail(&updated))
+    let current_store_name = {
+        let stores = state.stores.read().unwrap();
+        match stores.records.get(&updated.current_store_id) {
+            Some(store) => store.record.name.clone(),
+            None => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "unknown_store",
+                    "client instance references an unknown store",
+                );
+            }
+        }
+    };
+    let actions = admin_client_instance_actions(principal, &updated);
+    json_response(
+        StatusCode::OK,
+        &admin_client_instance_detail(&updated, current_store_name, actions),
+    )
 }
 
 fn handle_admin_client_instance_delete(
@@ -7182,11 +7277,19 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let created = response_body_json(create);
         let client_id = created["id"].as_str().unwrap().to_string();
         assert_eq!(created["current_store_id"], work_id);
+        assert_eq!(created["current_store_name"], "work");
+        assert_eq!(created["actions"]["can_edit_display_name"], true);
+        assert_eq!(created["actions"]["can_remap_store"], true);
+        assert_eq!(created["actions"]["can_disable"], true);
+        assert_eq!(created["actions"]["can_enable"], false);
+        assert_eq!(created["actions"]["can_delete"], true);
 
         let list = handle_admin_client_instances_list(&state, &p);
         let list_body = response_body_json(list);
         assert_eq!(list_body["items"].as_array().unwrap().len(), 1);
         assert_eq!(list_body["items"][0]["id"], client_id);
+        assert_eq!(list_body["items"][0]["current_store_name"], "work");
+        assert_eq!(list_body["items"][0]["actions"]["can_disable"], true);
 
         let delete_in_use = handle_admin_store_delete(&state, &p, &work_id, true);
         assert_eq!(delete_in_use.status(), StatusCode::CONFLICT);
@@ -7207,7 +7310,10 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let updated = response_body_json(update);
         assert_eq!(updated["display_name"], "laptop-renamed");
         assert_eq!(updated["current_store_id"], other_id);
+        assert_eq!(updated["current_store_name"], "other");
         assert_eq!(updated["status"], "disabled");
+        assert_eq!(updated["actions"]["can_disable"], false);
+        assert_eq!(updated["actions"]["can_enable"], true);
 
         let delete_old_store = handle_admin_store_delete(&state, &p, &work_id, false);
         assert_eq!(delete_old_store.status(), StatusCode::OK);

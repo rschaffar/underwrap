@@ -367,6 +367,23 @@ pub enum AdminClientInstanceStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
+pub struct AdminClientInstanceActionState {
+    /// Whether this principal may edit the display-name metadata.
+    pub can_edit_display_name: bool,
+    /// Whether this principal may remap the instance to another store.
+    pub can_remap_store: bool,
+    /// Whether this principal may transition the instance into the
+    /// disabled state.
+    pub can_disable: bool,
+    /// Whether this principal may transition the instance back to the
+    /// active state.
+    pub can_enable: bool,
+    /// Whether this principal may delete the instance record.
+    pub can_delete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminClientInstanceListItem {
     pub id: String,
     pub display_name: String,
@@ -375,11 +392,13 @@ pub struct AdminClientInstanceListItem {
     pub hostname_hint: Option<String>,
     pub instance_name: String,
     pub current_store_id: String,
+    pub current_store_name: String,
     pub status: AdminClientInstanceStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub last_seen_at: Option<u64>,
     pub current_credential_fingerprint: String,
+    pub actions: AdminClientInstanceActionState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -398,6 +417,7 @@ pub struct AdminClientInstanceDetailResponse {
     pub hostname_hint: Option<String>,
     pub instance_name: String,
     pub current_store_id: String,
+    pub current_store_name: String,
     pub status: AdminClientInstanceStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -406,6 +426,7 @@ pub struct AdminClientInstanceDetailResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub current_credential_issued_at: Option<u64>,
+    pub actions: AdminClientInstanceActionState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
