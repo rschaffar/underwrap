@@ -29,7 +29,12 @@ async fn disabling_runtime_client_instance_blocks_fresh_runtime_connections() {
         .unwrap();
 
     daemon
-        .store_secret("test", "gh-authorized", "github/token", "ghp_before_disable")
+        .store_secret(
+            "test",
+            "gh-authorized",
+            "github/token",
+            "ghp_before_disable",
+        )
         .await
         .unwrap();
     daemon
@@ -48,7 +53,9 @@ async fn disabling_runtime_client_instance_blocks_fresh_runtime_connections() {
     let status = daemon.direct_service_status().await.unwrap();
     assert!(status.ok);
 
-    let client_id = daemon.list_client_instances().await.unwrap().items[0].id.clone();
+    let client_id = daemon.list_client_instances().await.unwrap().items[0]
+        .id
+        .clone();
     daemon
         .update_client_instance(
             &client_id,

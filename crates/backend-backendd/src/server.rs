@@ -113,6 +113,34 @@ pub const DEFAULT_STORES_FILE: &str = "/var/lib/underwrap-backend/stores.json";
 /// `<keys_dir>/<store-id>.key`, mode 0600.
 pub const DEFAULT_KEYS_DIR: &str = "/var/lib/underwrap-backend/keys";
 
+/// Default location of the backend-managed enrollment invite registry.
+pub const DEFAULT_ENROLLMENT_INVITES_FILE: &str =
+    "/var/lib/underwrap-backend/enrollment-invites.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollmentConfig {
+    /// Path of the one-time invite registry. Missing files are treated
+    /// as an empty registry. Defaults to [`DEFAULT_ENROLLMENT_INVITES_FILE`].
+    #[serde(default)]
+    pub invites_file: Option<PathBuf>,
+    /// CA certificate that signs runtime client certificates.
+    pub issuer_cert_file: PathBuf,
+    /// Private key for `issuer_cert_file`. Required only on the backend; the
+    /// client still generates its own private key locally and submits a CSR.
+    pub issuer_key_file: PathBuf,
+    /// Invite lifetime in seconds. Defaults to 24 hours.
+    #[serde(default)]
+    pub default_invite_ttl_secs: Option<u64>,
+}
+
+impl EnrollmentConfig {
+    pub fn invites_file(&self) -> PathBuf {
+        self.invites_file
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_ENROLLMENT_INVITES_FILE))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
     /// Path of the backend-managed store-registry file. Missing files
@@ -125,6 +153,8 @@ pub struct BackendConfig {
     /// `/var/lib/underwrap-backend/client-instances.json`.
     #[serde(default)]
     pub client_instances_file: Option<PathBuf>,
+    #[serde(default)]
+    pub enrollment: Option<EnrollmentConfig>,
     #[serde(default)]
     pub service: Option<ServiceConfig>,
     #[serde(default)]
@@ -181,7 +211,16 @@ impl Default for StoreRegistry {
 
 struct ServiceRuntimeState {
     stores: HashMap<String, Arc<dyn StorageBackend>>,
-    client_instances: Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
+    client_instances:
+        Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
+}
+
+struct EnrollmentRuntimeState {
+    invites: std::sync::RwLock<HashMap<String, crate::enrollments::EnrollmentInviteRecord>>,
+    invites_file: PathBuf,
+    issuer_cert_pem: String,
+    issuer_key_pem: String,
+    default_invite_ttl_secs: u64,
 }
 
 struct AdminRuntimeState {
@@ -194,11 +233,16 @@ struct AdminRuntimeState {
     /// Runtime client-instance registry, shared with the service
     /// listener so admin mutations can affect new runtime requests
     /// without a daemon restart.
-    client_instances: Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
+    client_instances:
+        Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
     /// Path of the backend-managed store-registry file.
     stores_file: PathBuf,
     /// Path of the backend-managed runtime client-instance registry file.
     client_instances_file: PathBuf,
+    /// Enrollment invite registry and issuing CA material. `None` disables
+    /// invite creation and CSR consumption while leaving the rest of the admin
+    /// API usable.
+    enrollment: Option<EnrollmentRuntimeState>,
     /// Configured roots under which a created store's `dir` must
     /// live. Mutating handlers reject requests whose `dir` is outside
     /// every entry. Empty disables creation (returns
@@ -281,6 +325,7 @@ struct StoredCatalogEntry {
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores_file = config.stores_file();
     let client_instances_file = config.client_instances_file();
+    let enrollment_runtime = build_enrollment_runtime(config.enrollment.as_ref())?;
     let definitions = load_store_records(&stores_file)?;
     let stores = open_stores(&definitions)?;
     let client_instances = Arc::new(std::sync::RwLock::new(
@@ -341,6 +386,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             client_instances: Arc::clone(&client_instances),
             stores_file: stores_file.clone(),
             client_instances_file: client_instances_file.clone(),
+            enrollment: enrollment_runtime,
             stores_data_roots: admin_config.stores_data_roots.clone().unwrap_or_default(),
             keys_dir: admin_config
                 .keys_dir
@@ -393,6 +439,35 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
     }
 }
 
+fn build_enrollment_runtime(
+    config: Option<&EnrollmentConfig>,
+) -> Result<Option<EnrollmentRuntimeState>> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    let invites_file = config.invites_file();
+    let invites = crate::enrollments::load_enrollment_invites(&invites_file)?;
+    let issuer_cert_pem = std::fs::read_to_string(&config.issuer_cert_file).with_context(|| {
+        format!(
+            "reading enrollment issuer certificate {}",
+            config.issuer_cert_file.display()
+        )
+    })?;
+    let issuer_key_pem = std::fs::read_to_string(&config.issuer_key_file).with_context(|| {
+        format!(
+            "reading enrollment issuer key {}",
+            config.issuer_key_file.display()
+        )
+    })?;
+    Ok(Some(EnrollmentRuntimeState {
+        invites: std::sync::RwLock::new(invites),
+        invites_file,
+        issuer_cert_pem,
+        issuer_key_pem,
+        default_invite_ttl_secs: config.default_invite_ttl_secs.unwrap_or(24 * 60 * 60),
+    }))
+}
+
 fn open_stores(
     definitions: &HashMap<String, LoadedStoreRecord>,
 ) -> Result<HashMap<String, Arc<dyn StorageBackend>>> {
@@ -415,7 +490,11 @@ pub fn load_store_records(stores_file: &Path) -> Result<HashMap<String, LoadedSt
     };
     let doc: StoreRegistryDocument = serde_json::from_str(&text)
         .with_context(|| format!("parsing store registry {}", stores_file.display()))?;
-    anyhow::ensure!(doc.version == 1, "unsupported store registry version {}", doc.version);
+    anyhow::ensure!(
+        doc.version == 1,
+        "unsupported store registry version {}",
+        doc.version
+    );
     let mut out: HashMap<String, LoadedStoreRecord> = HashMap::new();
     let mut names = std::collections::BTreeSet::new();
     for record in doc.stores {
@@ -440,31 +519,40 @@ pub fn load_store_records(stores_file: &Path) -> Result<HashMap<String, LoadedSt
             trimmed_name,
             stores_file.display()
         );
-        if out.insert(record.id.clone(), LoadedStoreRecord { record }).is_some() {
-            anyhow::bail!(
-                "duplicate store id in {}",
-                stores_file.display()
-            );
+        if out
+            .insert(record.id.clone(), LoadedStoreRecord { record })
+            .is_some()
+        {
+            anyhow::bail!("duplicate store id in {}", stores_file.display());
         }
     }
     Ok(out)
 }
 
-fn save_store_records(stores_file: &Path, records: &HashMap<String, LoadedStoreRecord>) -> Result<()> {
+fn save_store_records(
+    stores_file: &Path,
+    records: &HashMap<String, LoadedStoreRecord>,
+) -> Result<()> {
     let mut stores: Vec<StoreRecord> = records.values().map(|r| r.record.clone()).collect();
     stores.sort_by(|a, b| a.id.cmp(&b.id));
     let doc = StoreRegistryDocument { version: 1, stores };
     let json = serde_json::to_vec_pretty(&doc).context("serialising store registry")?;
     let dir = stores_file.parent().ok_or_else(|| {
-        anyhow::anyhow!("stores file path '{}' has no parent directory", stores_file.display())
+        anyhow::anyhow!(
+            "stores file path '{}' has no parent directory",
+            stores_file.display()
+        )
     })?;
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating store-registry dir {}", dir.display()))?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("creating temp store-registry under {}", dir.display()))?;
     use std::io::Write;
-    tmp.write_all(&json).context("writing store-registry tempfile")?;
-    tmp.as_file().sync_all().context("fsync store-registry tempfile")?;
+    tmp.write_all(&json)
+        .context("writing store-registry tempfile")?;
+    tmp.as_file()
+        .sync_all()
+        .context("fsync store-registry tempfile")?;
     tmp.persist(stores_file).map_err(|e| {
         anyhow::anyhow!(
             "atomically persisting store registry to {}: {e}",
@@ -522,7 +610,9 @@ fn generate_client_instance_id() -> String {
 
 fn build_service_runtime_state(
     stores: &HashMap<String, Arc<dyn StorageBackend>>,
-    client_instances: Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
+    client_instances: Arc<
+        std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>,
+    >,
     config: &ServiceConfig,
 ) -> Result<ServiceRuntimeState> {
     if !config.clients.is_empty() {
@@ -1127,7 +1217,6 @@ fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyDocument> {
         None => Ok(PolicyDocument::default()),
     }
 }
-
 
 fn admin_ui_overview_for_store(
     store_name: &str,
@@ -1892,7 +1981,15 @@ async fn handle_admin_bootstrap(
 
 /// Log one bootstrap attempt outcome. Best effort: never fails the caller.
 fn audit_bootstrap_attempt(_state: &AdminRuntimeState, username: &str, result: &str) {
-    log_admin_event("bootstrap_attempt", username, None, None, None, None, result);
+    log_admin_event(
+        "bootstrap_attempt",
+        username,
+        None,
+        None,
+        None,
+        None,
+        result,
+    );
 }
 
 /// Handle `POST /v1/admin/auth/logout`. Revokes the current session id
@@ -2047,7 +2144,15 @@ fn write_admin_user_audit(
     result: &str,
 ) {
     let resource = format!("user:{target_username}");
-    log_admin_event(action, &actor.username, None, Some(resource.as_str()), None, None, result);
+    log_admin_event(
+        action,
+        &actor.username,
+        None,
+        Some(resource.as_str()),
+        None,
+        None,
+        result,
+    );
 }
 
 /// Read-modify-write on the operator collection, serialised across
@@ -2543,13 +2648,15 @@ async fn handle_admin_password_change(
 // lock on the in-memory registry update.
 
 use underwrap_protocol::service::{
-    AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
-    AdminStoreDeleteResponse, AdminStoreDetailResponse, AdminStoreListItem,
-    AdminStoreRotateKeyResponse, AdminStoreSource, AdminStoreUpdateRequest,
-    AdminStoresListResponse, AdminClientInstanceCreateRequest,
-    AdminClientInstanceDetailResponse, AdminClientInstanceListItem,
-    AdminClientInstancesListResponse, AdminClientInstanceStatus,
-    AdminClientInstanceUpdateRequest,
+    AdminClientInstanceCreateRequest, AdminClientInstanceDetailResponse,
+    AdminClientInstanceListItem, AdminClientInstanceStatus, AdminClientInstanceUpdateRequest,
+    AdminClientInstancesListResponse, AdminEnrollmentInviteCreateRequest,
+    AdminEnrollmentInviteCreateResponse, AdminEnrollmentInviteListItem,
+    AdminEnrollmentInviteStatus, AdminEnrollmentInvitesListResponse, AdminStoreBackendKind,
+    AdminStoreCreateRequest, AdminStoreCreateResponse, AdminStoreDeleteResponse,
+    AdminStoreDetailResponse, AdminStoreListItem, AdminStoreRotateKeyResponse, AdminStoreSource,
+    AdminStoreUpdateRequest, AdminStoresListResponse, EnrollmentSubmitRequest,
+    EnrollmentSubmitResponse,
 };
 
 fn backend_kind(storage: &underwrap_protocol::config::StorageConfig) -> AdminStoreBackendKind {
@@ -2621,7 +2728,10 @@ fn handle_admin_store_detail(
     }
     let reg = state.stores.read().unwrap();
     match reg.records.get(name) {
-        Some(loaded) => json_response(StatusCode::OK, &admin_store_detail(&state.stores_file, loaded)),
+        Some(loaded) => json_response(
+            StatusCode::OK,
+            &admin_store_detail(&state.stores_file, loaded),
+        ),
         None => error_response(StatusCode::NOT_FOUND, "not_found", "unknown store"),
     }
 }
@@ -2741,7 +2851,13 @@ fn do_admin_store_create(
 
     let store_id = loop {
         let candidate = generate_store_id();
-        if !state.stores.read().unwrap().records.contains_key(&candidate) {
+        if !state
+            .stores
+            .read()
+            .unwrap()
+            .records
+            .contains_key(&candidate)
+        {
             break candidate;
         }
     };
@@ -2759,7 +2875,11 @@ fn do_admin_store_create(
                 &format!("store name '{}' already exists", visible_name),
             );
         }
-        if reg.records.values().any(|existing| existing.record.storage.dir() == &validated_dir) {
+        if reg
+            .records
+            .values()
+            .any(|existing| existing.record.storage.dir() == &validated_dir)
+        {
             return error_response(
                 StatusCode::CONFLICT,
                 "store_dir_already_exists",
@@ -3009,7 +3129,11 @@ fn do_admin_store_update(
             record.name = new_name;
         }
         if let Some(new_desc) = body.description {
-            record.description = if new_desc.is_empty() { None } else { Some(new_desc) };
+            record.description = if new_desc.is_empty() {
+                None
+            } else {
+                Some(new_desc)
+            };
         }
         record
     };
@@ -3116,7 +3240,11 @@ fn handle_admin_store_delete(
     } else {
         None
     };
-    let result = if non_empty { "force-deleted" } else { "success" };
+    let result = if non_empty {
+        "force-deleted"
+    } else {
+        "success"
+    };
     write_admin_store_audit(state, principal, name, "store.delete", result);
     json_response(
         StatusCode::OK,
@@ -3340,7 +3468,11 @@ fn handle_admin_client_instance_detail(
     }
     match state.client_instances.read().unwrap().get(id) {
         Some(record) => json_response(StatusCode::OK, &admin_client_instance_detail(record)),
-        None => error_response(StatusCode::NOT_FOUND, "not_found", "unknown client instance"),
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown client instance",
+        ),
     }
 }
 
@@ -3390,7 +3522,7 @@ fn do_admin_client_instance_create(
                 StatusCode::BAD_REQUEST,
                 "invalid_client_certificate",
                 &format!("parsing client certificate: {e:#}"),
-            )
+            );
         }
     };
     {
@@ -3401,7 +3533,12 @@ fn do_admin_client_instance_create(
     }
     let id = loop {
         let candidate = generate_client_instance_id();
-        if !state.client_instances.read().unwrap().contains_key(&candidate) {
+        if !state
+            .client_instances
+            .read()
+            .unwrap()
+            .contains_key(&candidate)
+        {
             break candidate;
         }
     };
@@ -3413,7 +3550,10 @@ fn do_admin_client_instance_create(
         return error_response(
             StatusCode::CONFLICT,
             "display_name_already_exists",
-            &format!("client instance display name '{}' already exists", display_name),
+            &format!(
+                "client instance display name '{}' already exists",
+                display_name
+            ),
         );
     }
     if instances
@@ -3441,7 +3581,9 @@ fn do_admin_client_instance_create(
         },
     };
     instances.insert(id.clone(), record.clone());
-    if let Err(e) = crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances) {
+    if let Err(e) =
+        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
+    {
         instances.remove(&id);
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3496,14 +3638,18 @@ fn do_admin_client_instance_update(
     }
     let mut instances = state.client_instances.write().unwrap();
     let Some(existing) = instances.get(id).cloned() else {
-        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown client instance");
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown client instance",
+        );
     };
     let mut updated = existing;
     if let Some(display_name) = body.display_name {
         let display_name = match validate_store_name(&display_name) {
             Ok(v) => v,
             Err(msg) => {
-                return error_response(StatusCode::BAD_REQUEST, "invalid_display_name", msg)
+                return error_response(StatusCode::BAD_REQUEST, "invalid_display_name", msg);
             }
         };
         if instances.iter().any(|(other_id, other)| {
@@ -3512,7 +3658,10 @@ fn do_admin_client_instance_update(
             return error_response(
                 StatusCode::CONFLICT,
                 "display_name_already_exists",
-                &format!("client instance display name '{}' already exists", display_name),
+                &format!(
+                    "client instance display name '{}' already exists",
+                    display_name
+                ),
             );
         }
         updated.display_name = display_name;
@@ -3525,7 +3674,13 @@ fn do_admin_client_instance_update(
         };
     }
     if let Some(current_store_id) = body.current_store_id {
-        if !state.stores.read().unwrap().records.contains_key(&current_store_id) {
+        if !state
+            .stores
+            .read()
+            .unwrap()
+            .records
+            .contains_key(&current_store_id)
+        {
             return error_response(StatusCode::BAD_REQUEST, "unknown_store", "unknown store");
         }
         updated.current_store_id = current_store_id;
@@ -3534,7 +3689,9 @@ fn do_admin_client_instance_update(
         updated.status = client_instance_status_from_wire(status);
     }
     instances.insert(id.to_string(), updated.clone());
-    if let Err(e) = crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances) {
+    if let Err(e) =
+        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
+    {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "write_client_instances_failed",
@@ -3567,9 +3724,15 @@ fn handle_admin_client_instance_delete(
     }
     let mut instances = state.client_instances.write().unwrap();
     if instances.remove(id).is_none() {
-        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown client instance");
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown client instance",
+        );
     }
-    if let Err(e) = crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances) {
+    if let Err(e) =
+        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
+    {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "write_client_instances_failed",
@@ -3585,7 +3748,418 @@ fn handle_admin_client_instance_delete(
         None,
         "success",
     );
-    json_response(StatusCode::OK, &underwrap_protocol::service::AdminOkResponse { ok: true })
+    json_response(
+        StatusCode::OK,
+        &underwrap_protocol::service::AdminOkResponse { ok: true },
+    )
+}
+
+fn enrollment_invite_status(
+    record: &crate::enrollments::EnrollmentInviteRecord,
+    now: u64,
+) -> AdminEnrollmentInviteStatus {
+    if record.consumed_at.is_some() {
+        AdminEnrollmentInviteStatus::Consumed
+    } else if record.expires_at <= now {
+        AdminEnrollmentInviteStatus::Expired
+    } else {
+        AdminEnrollmentInviteStatus::Pending
+    }
+}
+
+fn admin_enrollment_invite_list_item(
+    record: &crate::enrollments::EnrollmentInviteRecord,
+    now: u64,
+) -> AdminEnrollmentInviteListItem {
+    AdminEnrollmentInviteListItem {
+        id: record.id.clone(),
+        display_name: record.display_name.clone(),
+        hostname_hint: record.hostname_hint.clone(),
+        instance_name: record.instance_name.clone(),
+        current_store_id: record.current_store_id.clone(),
+        created_at: record.created_at,
+        expires_at: record.expires_at,
+        status: enrollment_invite_status(record, now),
+        consumed_at: record.consumed_at,
+        consumed_client_instance_id: record.consumed_client_instance_id.clone(),
+    }
+}
+
+fn handle_admin_enrollment_invites_list(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+) -> Response<Full<Bytes>> {
+    let Some(enrollment) = state.enrollment.as_ref() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "enrollment_not_configured",
+            "backend enrollment is not configured",
+        );
+    };
+    let now = crate::operators::now_epoch_secs();
+    let mut items: Vec<AdminEnrollmentInviteListItem> = enrollment
+        .invites
+        .read()
+        .unwrap()
+        .values()
+        .filter(|record| principal.has_store_access(&record.current_store_id))
+        .map(|record| admin_enrollment_invite_list_item(record, now))
+        .collect();
+    items.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+    json_response(
+        StatusCode::OK,
+        &AdminEnrollmentInvitesListResponse { items },
+    )
+}
+
+async fn handle_admin_enrollment_invite_create(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body = match parse_json_body::<AdminEnrollmentInviteCreateRequest>(request).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    do_admin_enrollment_invite_create(state, principal, body)
+}
+
+fn do_admin_enrollment_invite_create(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: AdminEnrollmentInviteCreateRequest,
+) -> Response<Full<Bytes>> {
+    let Some(enrollment) = state.enrollment.as_ref() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "enrollment_not_configured",
+            "backend enrollment is not configured",
+        );
+    };
+    let display_name = match validate_store_name(&body.display_name) {
+        Ok(v) => v,
+        Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_display_name", msg),
+    };
+    let instance_name = match validate_store_name(&body.instance_name) {
+        Ok(v) => v,
+        Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_instance_name", msg),
+    };
+    if !principal.has_store_access(&body.current_store_id) {
+        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
+    }
+    {
+        let stores = state.stores.read().unwrap();
+        if !stores.records.contains_key(&body.current_store_id) {
+            return error_response(StatusCode::BAD_REQUEST, "unknown_store", "unknown store");
+        }
+    }
+    let now = crate::operators::now_epoch_secs();
+    let ttl = body
+        .expires_in_secs
+        .unwrap_or(enrollment.default_invite_ttl_secs)
+        .min(30 * 24 * 60 * 60)
+        .max(60);
+    let secret = crate::enrollments::generate_enrollment_secret();
+    let mut invites = enrollment.invites.write().unwrap();
+    let id = loop {
+        let candidate = crate::enrollments::generate_invite_id();
+        if !invites.contains_key(&candidate) {
+            break candidate;
+        }
+    };
+    let record = crate::enrollments::EnrollmentInviteRecord {
+        id: id.clone(),
+        secret_hash: crate::enrollments::enrollment_secret_hash(&secret),
+        display_name,
+        hostname_hint: body.hostname_hint.filter(|s| !s.trim().is_empty()),
+        instance_name,
+        current_store_id: body.current_store_id,
+        created_at: now,
+        expires_at: now.saturating_add(ttl),
+        consumed_at: None,
+        consumed_client_instance_id: None,
+    };
+    invites.insert(id.clone(), record.clone());
+    if let Err(e) = crate::enrollments::save_enrollment_invites(&enrollment.invites_file, &invites)
+    {
+        invites.remove(&id);
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_enrollment_invites_failed",
+            &format!("{e:#}"),
+        );
+    }
+    log_admin_event(
+        "enrollment-invite.create",
+        &principal.username,
+        None,
+        Some(format!("enrollment-invite:{id}").as_str()),
+        None,
+        None,
+        "success",
+    );
+    let enrollment_url = "/v1/enroll".to_string();
+    json_response(
+        StatusCode::OK,
+        &AdminEnrollmentInviteCreateResponse {
+            invite: admin_enrollment_invite_list_item(&record, now),
+            enrollment_secret: secret,
+            enrollment_url: enrollment_url.clone(),
+            enrollment_command: format!("underwrap-enroll --url {enrollment_url} --invite-id {id}"),
+        },
+    )
+}
+
+async fn handle_enrollment_submit(
+    state: &AdminRuntimeState,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body = match parse_json_body::<EnrollmentSubmitRequest>(request).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    do_enrollment_submit(state, body)
+}
+
+fn logical_instance_matches(
+    record: &crate::runtime_clients::ClientInstanceRecord,
+    invite: &crate::enrollments::EnrollmentInviteRecord,
+) -> bool {
+    record.instance_name == invite.instance_name && record.hostname_hint == invite.hostname_hint
+}
+
+fn random_certificate_serial() -> rcgen::SerialNumber {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes[0] &= 0x7f;
+    if bytes.iter().all(|b| *b == 0) {
+        bytes[15] = 1;
+    }
+    rcgen::SerialNumber::from_slice(&bytes)
+}
+
+fn issue_client_certificate_from_csr(
+    enrollment: &EnrollmentRuntimeState,
+    invite: &crate::enrollments::EnrollmentInviteRecord,
+    client_instance_id: &str,
+    csr_pem: &str,
+) -> Result<(String, String)> {
+    let mut csr = rcgen::CertificateSigningRequestParams::from_pem(csr_pem)
+        .context("parsing and verifying CSR")?;
+    let mut dn = rcgen::DistinguishedName::new();
+    dn.push(
+        rcgen::DnType::CommonName,
+        format!("underwrap-client:{client_instance_id}"),
+    );
+    dn.push(rcgen::DnType::OrganizationName, "underwrap");
+    dn.push(
+        rcgen::DnType::OrganizationalUnitName,
+        format!("instance:{}", invite.instance_name),
+    );
+    let mut params = rcgen::CertificateParams::default();
+    params.serial_number = Some(random_certificate_serial());
+    params.distinguished_name = dn;
+    params.is_ca = rcgen::IsCa::NoCa;
+    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+    params.use_authority_key_identifier_extension = true;
+    // Security invariant: the CSR is only public-key transport and proof of
+    // possession. Drop every requested subject, SAN, CA, KU, and EKU value and
+    // replace them with backend-controlled parameters before signing.
+    csr.params = params;
+
+    let issuer_key = rcgen::KeyPair::from_pem(&enrollment.issuer_key_pem)
+        .context("loading enrollment issuer private key")?;
+    let issuer = rcgen::Issuer::from_ca_cert_pem(&enrollment.issuer_cert_pem, issuer_key)
+        .context("loading enrollment issuer certificate")?;
+    let cert = csr
+        .signed_by(&issuer)
+        .context("signing client certificate")?;
+    let cert_pem = cert.pem();
+    let fingerprint = crate::runtime_clients::cert_fingerprint_from_pem(&cert_pem)?;
+    Ok((cert_pem, fingerprint))
+}
+
+fn do_enrollment_submit(
+    state: &AdminRuntimeState,
+    body: EnrollmentSubmitRequest,
+) -> Response<Full<Bytes>> {
+    let Some(enrollment) = state.enrollment.as_ref() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "enrollment_not_configured",
+            "backend enrollment is not configured",
+        );
+    };
+    let now = crate::operators::now_epoch_secs();
+    let mut invites = enrollment.invites.write().unwrap();
+    let Some(invite) = invites.get(&body.invite_id).cloned() else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown enrollment invite",
+        );
+    };
+    if invite.consumed_at.is_some() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "invite_consumed",
+            "enrollment invite has already been consumed",
+        );
+    }
+    if invite.expires_at <= now {
+        return error_response(
+            StatusCode::CONFLICT,
+            "invite_expired",
+            "enrollment invite has expired",
+        );
+    }
+    if !crate::enrollments::verify_enrollment_secret(&body.enrollment_secret, &invite.secret_hash) {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "invalid_enrollment_secret",
+            "invalid enrollment secret",
+        );
+    }
+    {
+        let stores = state.stores.read().unwrap();
+        if !stores.records.contains_key(&invite.current_store_id) {
+            return error_response(StatusCode::BAD_REQUEST, "unknown_store", "unknown store");
+        }
+    }
+
+    let mut instances = state.client_instances.write().unwrap();
+    let matching_ids: Vec<String> = instances
+        .iter()
+        .filter(|(_, record)| logical_instance_matches(record, &invite))
+        .map(|(id, _)| id.clone())
+        .collect();
+    if matching_ids.len() > 1 {
+        return error_response(
+            StatusCode::CONFLICT,
+            "logical_instance_ambiguous",
+            "more than one client instance matches this hostname and instance name",
+        );
+    }
+    let client_instance_id = matching_ids
+        .first()
+        .cloned()
+        .unwrap_or_else(generate_client_instance_id);
+    if instances.iter().any(|(other_id, existing)| {
+        other_id != &client_instance_id
+            && existing
+                .display_name
+                .eq_ignore_ascii_case(&invite.display_name)
+    }) {
+        return error_response(
+            StatusCode::CONFLICT,
+            "display_name_already_exists",
+            "client instance display name already exists",
+        );
+    }
+
+    let (cert_pem, cert_fingerprint) = match issue_client_certificate_from_csr(
+        enrollment,
+        &invite,
+        &client_instance_id,
+        &body.csr_pem,
+    ) {
+        Ok(issued) => issued,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_csr",
+                &format!("could not issue certificate from CSR: {e:#}"),
+            );
+        }
+    };
+    if instances.iter().any(|(other_id, existing)| {
+        other_id != &client_instance_id
+            && existing.current_credential.cert_fingerprint == cert_fingerprint
+    }) {
+        return error_response(
+            StatusCode::CONFLICT,
+            "credential_already_exists",
+            "client credential fingerprint already exists",
+        );
+    }
+
+    let record = crate::runtime_clients::ClientInstanceRecord {
+        id: client_instance_id.clone(),
+        display_name: invite.display_name.clone(),
+        hostname_hint: invite.hostname_hint.clone(),
+        instance_name: invite.instance_name.clone(),
+        current_store_id: invite.current_store_id.clone(),
+        status: crate::runtime_clients::ClientInstanceStatus::Active,
+        last_seen_at: None,
+        current_credential: crate::runtime_clients::CurrentCredentialRecord {
+            cert_fingerprint: cert_fingerprint.clone(),
+            cert_pem: cert_pem.clone(),
+            issued_at: Some(now),
+        },
+    };
+    let previous_instance = instances.insert(client_instance_id.clone(), record);
+    if let Err(e) =
+        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
+    {
+        match previous_instance {
+            Some(previous) => {
+                instances.insert(client_instance_id.clone(), previous);
+            }
+            None => {
+                instances.remove(&client_instance_id);
+            }
+        }
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_client_instances_failed",
+            &format!("{e:#}"),
+        );
+    }
+
+    let mut consumed = invite;
+    consumed.consumed_at = Some(now);
+    consumed.consumed_client_instance_id = Some(client_instance_id.clone());
+    invites.insert(body.invite_id.clone(), consumed.clone());
+    if let Err(e) = crate::enrollments::save_enrollment_invites(&enrollment.invites_file, &invites)
+    {
+        match previous_instance {
+            Some(previous) => {
+                instances.insert(client_instance_id.clone(), previous);
+            }
+            None => {
+                instances.remove(&client_instance_id);
+            }
+        }
+        let _ =
+            crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances);
+        invites.insert(body.invite_id, consumed);
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_enrollment_invites_failed",
+            &format!("{e:#}"),
+        );
+    }
+
+    log_admin_event(
+        "enrollment.complete",
+        "enrollment-client",
+        None,
+        Some(format!("client-instance:{client_instance_id}").as_str()),
+        None,
+        None,
+        "success",
+    );
+    json_response(
+        StatusCode::OK,
+        &EnrollmentSubmitResponse {
+            client_instance_id,
+            cert_pem,
+            ca_cert_pem: enrollment.issuer_cert_pem.clone(),
+            cert_fingerprint,
+        },
+    )
 }
 
 // ===== Agent grant CRUD + writes-enabled toggle (tickets 246, 247) =====
@@ -3879,6 +4453,12 @@ async fn handle_admin_request(
     request: Request<Incoming>,
     state: Arc<AdminRuntimeState>,
 ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    if request.uri().path() == "/v1/enroll" {
+        return Ok(match *request.method() {
+            Method::POST => handle_enrollment_submit(&state, request).await,
+            _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
+        });
+    }
     if crate::web::is_spa_request(request.method(), request.uri().path()) {
         return Ok(crate::web::serve_web_request(
             request.method(),
@@ -4046,7 +4626,9 @@ async fn handle_admin_request(
                 return Ok(handle_admin_client_instance_detail(&state, &principal, &id));
             }
             Method::PUT => {
-                return Ok(handle_admin_client_instance_update(&state, &principal, &id, request).await);
+                return Ok(
+                    handle_admin_client_instance_update(&state, &principal, &id, request).await,
+                );
             }
             Method::DELETE => {
                 return Ok(handle_admin_client_instance_delete(&state, &principal, &id));
@@ -4118,6 +4700,12 @@ async fn handle_admin_request(
         }
         (&Method::POST, "/v1/admin/client-instances") => {
             return Ok(handle_admin_client_instance_create(&state, &principal, request).await);
+        }
+        (&Method::GET, "/v1/admin/enrollment-invites") => {
+            return Ok(handle_admin_enrollment_invites_list(&state, &principal));
+        }
+        (&Method::POST, "/v1/admin/enrollment-invites") => {
+            return Ok(handle_admin_enrollment_invite_create(&state, &principal, request).await);
         }
         (&Method::GET, "/v1/admin/ui/overview") => {
             let now_epoch = std::time::SystemTime::now()
@@ -4420,7 +5008,11 @@ mod store_registry_tests {
         let path = tmp.path().join("stores.json");
         write_registry(
             &path,
-            vec![plain_record("store_work", "Work", &tmp.path().join("work-data"))],
+            vec![plain_record(
+                "store_work",
+                "Work",
+                &tmp.path().join("work-data"),
+            )],
         );
 
         let map = load_store_records(&path).unwrap();
@@ -4466,7 +5058,10 @@ mod store_registry_tests {
         record.created_at = Some(123);
         write_registry(&path, vec![record]);
         let map = load_store_records(&path).unwrap();
-        assert_eq!(map["store_work"].record.description.as_deref(), Some("the work store"));
+        assert_eq!(
+            map["store_work"].record.description.as_deref(),
+            Some("the work store")
+        );
         assert_eq!(map["store_work"].record.created_at, Some(123));
     }
 }
@@ -4658,6 +5253,7 @@ mod tests {
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
+            enrollment: None,
             stores_data_roots: Vec::new(),
             keys_dir: std::path::PathBuf::new(),
             tokens,
@@ -4988,6 +5584,7 @@ mod tests {
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
+            enrollment: None,
             stores_data_roots: Vec::new(),
             keys_dir: std::path::PathBuf::new(),
             tokens: HashMap::new(),
@@ -5342,6 +5939,7 @@ mod tests {
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
+            enrollment: None,
             stores_data_roots: Vec::new(),
             keys_dir: std::path::PathBuf::new(),
             tokens: HashMap::new(),
@@ -5793,6 +6391,7 @@ mod tests {
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: tmp.join("stores.json"),
             client_instances_file: tmp.join("client-instances.json"),
+            enrollment: None,
             stores_data_roots: vec![data_root],
             keys_dir,
             tokens: HashMap::new(),
@@ -6000,7 +6599,12 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let body = response_body_json(resp);
         assert_eq!(body["ok"], true);
         assert!(!body.as_object().unwrap().contains_key("cleanup_hint"));
-        assert!(!state.stores_file.exists() || !std::fs::read_to_string(&state.stores_file).unwrap_or_default().contains(&store_id));
+        assert!(
+            !state.stores_file.exists()
+                || !std::fs::read_to_string(&state.stores_file)
+                    .unwrap_or_default()
+                    .contains(&store_id)
+        );
     }
 
     #[test]
@@ -6218,10 +6822,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(resp.status(), StatusCode::OK);
         let create_body = response_body_json(resp);
         let store_id = create_body["store"]["id"].as_str().unwrap().to_string();
-        let original_key = create_body["key_hex"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let original_key = create_body["key_hex"].as_str().unwrap().to_string();
 
         let resp = handle_admin_store_rotate_key(&state, &p, &store_id);
         assert_eq!(resp.status(), StatusCode::OK);
@@ -6309,7 +6910,12 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             AdminStoreCreateRequest {
                 name: "work".into(),
                 backend: AdminStoreBackendKind::Plain,
-                dir: tmp.path().join("data").join("work").to_string_lossy().to_string(),
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("work")
+                    .to_string_lossy()
+                    .to_string(),
                 description: None,
             },
         );
@@ -6319,7 +6925,12 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             AdminStoreCreateRequest {
                 name: "other".into(),
                 backend: AdminStoreBackendKind::Plain,
-                dir: tmp.path().join("data").join("other").to_string_lossy().to_string(),
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("other")
+                    .to_string_lossy()
+                    .to_string(),
                 description: None,
             },
         );
@@ -6386,7 +6997,12 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             AdminStoreCreateRequest {
                 name: "work".into(),
                 backend: AdminStoreBackendKind::Plain,
-                dir: tmp.path().join("data").join("work").to_string_lossy().to_string(),
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("work")
+                    .to_string_lossy()
+                    .to_string(),
                 description: None,
             },
         );
@@ -6405,8 +7021,355 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             },
         );
         assert_eq!(create.status(), StatusCode::FORBIDDEN);
-        assert_eq!(handle_admin_client_instances_list(&state, &op).status(), StatusCode::FORBIDDEN);
-        assert_eq!(handle_admin_client_instance_detail(&state, &op, "missing").status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            handle_admin_client_instances_list(&state, &op).status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            handle_admin_client_instance_detail(&state, &op, "missing").status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    fn test_enrollment_runtime(tmp: &std::path::Path) -> EnrollmentRuntimeState {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, "underwrap-test-enrollment-ca");
+        let mut params = rcgen::CertificateParams::default();
+        params.not_before = rcgen::date_time_ymd(2025, 1, 1);
+        params.not_after = rcgen::date_time_ymd(2036, 1, 1);
+        params.serial_number = Some(rcgen::SerialNumber::from(42));
+        params.distinguished_name = dn;
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+        ];
+        let cert = params.self_signed(&key).unwrap();
+        EnrollmentRuntimeState {
+            invites: std::sync::RwLock::new(HashMap::new()),
+            invites_file: tmp.join("enrollment-invites.json"),
+            issuer_cert_pem: cert.pem(),
+            issuer_key_pem: key.serialize_pem(),
+            default_invite_ttl_secs: 3600,
+        }
+    }
+
+    fn enrollment_test_state(tmp: &std::path::Path) -> AdminRuntimeState {
+        let mut state = crud_state(tmp);
+        state.enrollment = Some(test_enrollment_runtime(tmp));
+        state
+    }
+
+    fn malicious_client_csr_pem() -> String {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, "attacker-controlled-cn");
+        let mut params =
+            rcgen::CertificateParams::new(vec!["attacker.example".to_string()]).unwrap();
+        params.distinguished_name = dn;
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        params.serialize_request(&key).unwrap().pem().unwrap()
+    }
+
+    #[test]
+    fn admin_can_create_and_persist_enrollment_invite_without_persisting_secret() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = enrollment_test_state(tmp.path());
+        let p = admin_principal(&[]);
+        let store_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("work")
+                    .to_string_lossy()
+                    .to_string(),
+                description: None,
+            },
+        );
+
+        let resp = do_admin_enrollment_invite_create(
+            &state,
+            &p,
+            AdminEnrollmentInviteCreateRequest {
+                display_name: "laptop work".into(),
+                hostname_hint: Some("deepthought".into()),
+                instance_name: "work".into(),
+                current_store_id: store_id,
+                expires_in_secs: Some(120),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_body_json(resp);
+        let invite_id = body["invite"]["id"].as_str().unwrap();
+        let secret = body["enrollment_secret"].as_str().unwrap();
+        assert_eq!(body["invite"]["status"], "pending");
+        assert_eq!(
+            body["enrollment_command"],
+            format!("underwrap-enroll --url /v1/enroll --invite-id {invite_id}")
+        );
+
+        let registry =
+            std::fs::read_to_string(&state.enrollment.as_ref().unwrap().invites_file).unwrap();
+        assert!(registry.contains(invite_id));
+        assert!(
+            !registry.contains(secret),
+            "raw enrollment secret must not be persisted"
+        );
+
+        let list = handle_admin_enrollment_invites_list(&state, &p);
+        assert_eq!(list.status(), StatusCode::OK);
+        let list_body = response_body_json(list);
+        assert_eq!(list_body["items"].as_array().unwrap().len(), 1);
+        assert_eq!(list_body["items"][0]["id"], invite_id);
+    }
+
+    #[test]
+    fn operator_with_store_access_can_create_and_list_enrollment_invites() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = enrollment_test_state(tmp.path());
+        let admin = admin_principal(&[]);
+        let work_id = create_store_for_test(
+            &state,
+            &admin,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("work")
+                    .to_string_lossy()
+                    .to_string(),
+                description: None,
+            },
+        );
+        let other_id = create_store_for_test(
+            &state,
+            &admin,
+            AdminStoreCreateRequest {
+                name: "other".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("other")
+                    .to_string_lossy()
+                    .to_string(),
+                description: None,
+            },
+        );
+        let operator = operator_principal(&[&work_id]);
+
+        let allowed = do_admin_enrollment_invite_create(
+            &state,
+            &operator,
+            AdminEnrollmentInviteCreateRequest {
+                display_name: "laptop work".into(),
+                hostname_hint: Some("deepthought".into()),
+                instance_name: "work".into(),
+                current_store_id: work_id.clone(),
+                expires_in_secs: None,
+            },
+        );
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        let denied = do_admin_enrollment_invite_create(
+            &state,
+            &operator,
+            AdminEnrollmentInviteCreateRequest {
+                display_name: "laptop other".into(),
+                hostname_hint: Some("deepthought".into()),
+                instance_name: "other".into(),
+                current_store_id: other_id,
+                expires_in_secs: None,
+            },
+        );
+        assert_eq!(denied.status(), StatusCode::NOT_FOUND);
+
+        let list = response_body_json(handle_admin_enrollment_invites_list(&state, &operator));
+        assert_eq!(list["items"].as_array().unwrap().len(), 1);
+        assert_eq!(list["items"][0]["current_store_id"], work_id);
+    }
+
+    #[test]
+    fn enrollment_submit_consumes_invite_and_ignores_csr_identity_fields() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = enrollment_test_state(tmp.path());
+        let p = admin_principal(&[]);
+        let store_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("work")
+                    .to_string_lossy()
+                    .to_string(),
+                description: None,
+            },
+        );
+        let create = response_body_json(do_admin_enrollment_invite_create(
+            &state,
+            &p,
+            AdminEnrollmentInviteCreateRequest {
+                display_name: "laptop work".into(),
+                hostname_hint: Some("deepthought".into()),
+                instance_name: "work".into(),
+                current_store_id: store_id.clone(),
+                expires_in_secs: None,
+            },
+        ));
+        let invite_id = create["invite"]["id"].as_str().unwrap().to_string();
+        let secret = create["enrollment_secret"].as_str().unwrap().to_string();
+
+        let response = do_enrollment_submit(
+            &state,
+            EnrollmentSubmitRequest {
+                invite_id: invite_id.clone(),
+                enrollment_secret: secret,
+                csr_pem: malicious_client_csr_pem(),
+            },
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response);
+        let client_id = body["client_instance_id"].as_str().unwrap().to_string();
+        assert!(
+            body["cert_pem"]
+                .as_str()
+                .unwrap()
+                .contains("BEGIN CERTIFICATE")
+        );
+        assert_eq!(
+            body["ca_cert_pem"],
+            state.enrollment.as_ref().unwrap().issuer_cert_pem
+        );
+
+        let instances = state.client_instances.read().unwrap();
+        let record = instances.get(&client_id).unwrap();
+        assert_eq!(record.display_name, "laptop work");
+        assert_eq!(record.hostname_hint.as_deref(), Some("deepthought"));
+        assert_eq!(record.instance_name, "work");
+        assert_eq!(record.current_store_id, store_id);
+        assert_eq!(
+            record.status,
+            crate::runtime_clients::ClientInstanceStatus::Active
+        );
+        assert_eq!(
+            record.current_credential.cert_fingerprint,
+            body["cert_fingerprint"].as_str().unwrap()
+        );
+
+        let cert_pem = body["cert_pem"].as_str().unwrap();
+        let mut reader = std::io::BufReader::new(cert_pem.as_bytes());
+        let cert_der = rustls_pemfile::certs(&mut reader).next().unwrap().unwrap();
+        let (_, cert) = x509_parser::parse_x509_certificate(cert_der.as_ref()).unwrap();
+        let cn = cert
+            .subject()
+            .iter_common_name()
+            .next()
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(cn, format!("underwrap-client:{client_id}"));
+        assert!(!cert_pem.contains("attacker-controlled-cn"));
+        assert!(
+            cert.subject_alternative_name().unwrap().is_none(),
+            "CSR-requested SAN must be ignored"
+        );
+        let eku = cert.extended_key_usage().unwrap().unwrap().value;
+        assert!(eku.client_auth);
+        assert!(
+            !eku.server_auth,
+            "CSR-requested serverAuth EKU must be ignored"
+        );
+
+        let invite = state.enrollment.as_ref().unwrap().invites.read().unwrap()[&invite_id].clone();
+        assert!(invite.consumed_at.is_some());
+        assert_eq!(
+            invite.consumed_client_instance_id.as_deref(),
+            Some(client_id.as_str())
+        );
+        drop(instances);
+
+        let replay = do_enrollment_submit(
+            &state,
+            EnrollmentSubmitRequest {
+                invite_id,
+                enrollment_secret: "not-used".into(),
+                csr_pem: malicious_client_csr_pem(),
+            },
+        );
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
+        assert_eq!(response_body_json(replay)["code"], "invite_consumed");
+    }
+
+    #[test]
+    fn re_enrollment_replaces_current_credential_for_same_logical_instance() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = enrollment_test_state(tmp.path());
+        let p = admin_principal(&[]);
+        let store_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                dir: tmp
+                    .path()
+                    .join("data")
+                    .join("work")
+                    .to_string_lossy()
+                    .to_string(),
+                description: None,
+            },
+        );
+
+        let mut client_id = None;
+        let mut first_fingerprint = None;
+        for idx in 0..2 {
+            let create = response_body_json(do_admin_enrollment_invite_create(
+                &state,
+                &p,
+                AdminEnrollmentInviteCreateRequest {
+                    display_name: "laptop work".into(),
+                    hostname_hint: Some("deepthought".into()),
+                    instance_name: "work".into(),
+                    current_store_id: store_id.clone(),
+                    expires_in_secs: None,
+                },
+            ));
+            let submit = response_body_json(do_enrollment_submit(
+                &state,
+                EnrollmentSubmitRequest {
+                    invite_id: create["invite"]["id"].as_str().unwrap().to_string(),
+                    enrollment_secret: create["enrollment_secret"].as_str().unwrap().to_string(),
+                    csr_pem: malicious_client_csr_pem(),
+                },
+            ));
+            let this_id = submit["client_instance_id"].as_str().unwrap().to_string();
+            if idx == 0 {
+                client_id = Some(this_id);
+                first_fingerprint = Some(submit["cert_fingerprint"].as_str().unwrap().to_string());
+            } else {
+                assert_eq!(Some(&this_id), client_id.as_ref());
+                assert_ne!(
+                    Some(submit["cert_fingerprint"].as_str().unwrap()),
+                    first_fingerprint.as_deref()
+                );
+            }
+        }
+        assert_eq!(state.client_instances.read().unwrap().len(), 1);
     }
 
     // ===== Users CRUD (ticket 240) =====

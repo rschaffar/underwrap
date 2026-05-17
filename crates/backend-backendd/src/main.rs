@@ -226,6 +226,7 @@ mod tests {
         let config = parse_backend_config("{}\n").unwrap();
         assert!(config.stores_file.is_none());
         assert!(config.client_instances_file.is_none());
+        assert!(config.enrollment.is_none());
         assert!(config.service.is_none());
         assert!(config.admin.is_none());
     }
@@ -251,8 +252,14 @@ stores:
     #[test]
     fn parse_backend_config_accepts_dir_overrides() {
         let config = parse_backend_config(
-            "stores_file: /var/u/stores.json\n\
-             client_instances_file: /var/u/client-instances.json\n",
+            r#"
+stores_file: /var/u/stores.json
+client_instances_file: /var/u/client-instances.json
+enrollment:
+  invites_file: /var/u/enrollment-invites.json
+  issuer_cert_file: /var/u/ca.pem
+  issuer_key_file: /var/u/ca.key
+"#,
         )
         .unwrap();
         assert_eq!(
@@ -262,6 +269,10 @@ stores:
         assert_eq!(
             config.client_instances_file(),
             std::path::PathBuf::from("/var/u/client-instances.json"),
+        );
+        assert_eq!(
+            config.enrollment.as_ref().unwrap().invites_file(),
+            std::path::PathBuf::from("/var/u/enrollment-invites.json"),
         );
     }
 

@@ -65,22 +65,26 @@ live in their own per-store YAML files under two directories, *not*
 inline in this config (changed in ticket 230). All paths are absolute.
 
 ```yaml
-# Optional — the two defaults below kick in when omitted.
-stores_declarative_dir: /etc/underwrap-backend/stores.d
-stores_dynamic_dir: /var/lib/underwrap-backend/stores.d
+# Optional — defaults kick in when omitted.
+stores_file: /var/lib/underwrap-backend/stores.json
+client_instances_file: /var/lib/underwrap-backend/client-instances.json
+
+enrollment:
+  invites_file: /var/lib/underwrap-backend/enrollment-invites.json
+  # CA used to issue runtime client certificates from enrollment CSRs.
+  # The runtime service's `client_ca_file` must trust this issuer.
+  issuer_cert_file: /etc/underwrap-backend/client-ca.pem
+  issuer_key_file: /run/keys/underwrap-backend-client-ca.key
+  default_invite_ttl_secs: 86400
 
 service:
   listen: 127.0.0.1:18443
   tls:
     cert_file: /etc/underwrap-backend/server.pem
     key_file: /etc/underwrap-backend/server.key
-    client_ca_file: /etc/underwrap-backend/ca.pem
-  clients:
-    # Client principal (TLS subject CN) → which store it sees.
-    underwrap-work@vm-01:
-      store: work
-    underwrap-personal@laptop-02:
-      store: personal
+    client_ca_file: /etc/underwrap-backend/client-ca.pem
+  # Legacy static client mapping is ignored; runtime clients are resolved
+  # from the backend-managed client instance registry.
 
 admin:
   listen: 127.0.0.1:19443
@@ -184,6 +188,18 @@ behind a local TLS-terminating reverse proxy when exposed beyond
 localhost. Every request must present a bearer token. The operator name
 tagged to the token ends up in the backend's structured logs.
 
+- `GET /v1/admin/enrollment-invites` — list backend-managed one-time
+  enrollment invites. The raw invite secret is never returned from list
+  responses or persisted to disk.
+- `POST /v1/admin/enrollment-invites` — create an operator-approved
+  enrollment invite for a `(hostname_hint, instance_name)` and target
+  store. The response returns the invite secret exactly once plus an
+  enrollment command that keeps the secret out of argv.
+- `POST /v1/enroll` — unauthenticated CSR submission gated by invite id
+  and one-time secret. The backend verifies CSR proof-of-possession but
+  ignores CSR-requested subject/SAN/KU/EKU values; it signs a client-auth
+  certificate with backend-controlled identity fields and creates or
+  replaces the matching runtime client instance credential.
 - `GET /v1/admin/stores` — list of configured stores
 - `POST /v1/admin/stores` — create a dynamic store. For
   `backend = "encrypted"` the backend auto-generates a 32-byte master

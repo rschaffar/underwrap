@@ -13,6 +13,6 @@ Add backend support for invite-first enrollment:
 
 ## Acceptance criteria
 
-- [ ] Backend can create and persist invite/enrollment records.
-- [ ] Enrollment begins from an operator-approved flow, not an open CSR inbox.
-- [ ] Backend issues the certificate from the submitted CSR while controlling the issued identity fields.
+- [x] Backend can create and persist invite/enrollment records.
+- [x] Enrollment begins from an operator-approved flow, not an open CSR inbox.
+- [x] Backend issues the certificate from the submitted CSR while controlling the issued identity fields.

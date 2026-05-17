@@ -187,8 +187,12 @@ pub fn save_client_instances(
     })?;
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating runtime client registry dir {}", dir.display()))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("creating temp runtime client registry under {}", dir.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).with_context(|| {
+        format!(
+            "creating temp runtime client registry under {}",
+            dir.display()
+        )
+    })?;
     use std::io::Write;
     tmp.write_all(&json)
         .context("writing runtime client registry tempfile")?;

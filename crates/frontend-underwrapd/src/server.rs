@@ -108,7 +108,8 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     // Validate config at startup: every wrapper.secret must reference a declared secret.
     validate_config(&config)?;
 
-    let unenrolled = config.backend.client_cert_file.is_none() && config.backend.client_key_file.is_none();
+    let unenrolled =
+        config.backend.client_cert_file.is_none() && config.backend.client_key_file.is_none();
     let enrollment_url = if unenrolled {
         Some(build_enrollment_url(&config))
     } else {
@@ -119,7 +120,9 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     let store: Option<Arc<dyn StorageBackend>> = if unenrolled {
         None
     } else {
-        Some(Arc::from(underwrap_store::open_backend_client(&config.backend)?))
+        Some(Arc::from(underwrap_store::open_backend_client(
+            &config.backend,
+        )?))
     };
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;

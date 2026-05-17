@@ -116,16 +116,19 @@ async fn underwrapd_binary_start_and_read() {
     };
     std::fs::write(
         &client_instances_file,
-        serde_json::to_vec_pretty(&underwrap_backendd::runtime_clients::ClientInstancesDocument {
-            version: 1,
-            instances: vec![client_instance],
-        })
+        serde_json::to_vec_pretty(
+            &underwrap_backendd::runtime_clients::ClientInstancesDocument {
+                version: 1,
+                instances: vec![client_instance],
+            },
+        )
         .unwrap(),
     )
     .unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
         stores_file: Some(stores_file),
         client_instances_file: Some(client_instances_file),
+        enrollment: None,
         service: Some(underwrap_backendd::server::ServiceConfig {
             listen: format!("127.0.0.1:{service_port}"),
             tls: underwrap_backendd::server::ServiceTlsConfig {
