@@ -114,7 +114,7 @@ when per-call approval is required.
 
 The service listener exposes only the narrow runtime surface
 (`/v1/read`, `/v1/write`, `/v1/list`, `/v1/delete`, `/v1/status`). A
-separate admin listener exposes the policy and audit surface.
+separate admin listener exposes the policy and admin surface.
 
 ## Libsecret flow
 
@@ -180,7 +180,7 @@ apps/
   approval round-trip
 - `approval.rs` — pending-challenge store and SSH signature verification
 - `policy.rs` — loads the backend's policy document and evaluates it
-- `status.rs` — wrapper/credential status for the admin API audit
+- `status.rs` — wrapper/credential status for the admin API
 - `wrapper_bindings.rs` — env/libsecret/directory binding selection
 
 ### `underwrap-ns` internals

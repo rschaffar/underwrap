@@ -135,7 +135,7 @@ created_at: 1729123456
 - `admin.tokens`: opaque bearer tokens for operators. Each request to
   `/v1/admin/*` must carry an `Authorization: Bearer <token>`
   matching one of these (constant-time compared). The matched
-  operator name is recorded in the audit log.
+  operator name is included in the backend's structured logs.
 
 ### NixOS module
 
@@ -182,7 +182,7 @@ store name in the request body.
 The admin listener is separate (HTTP, not HTTPS) and intended to sit
 behind a local TLS-terminating reverse proxy when exposed beyond
 localhost. Every request must present a bearer token. The operator name
-tagged to the token ends up in audit events.
+tagged to the token ends up in the backend's structured logs.
 
 - `GET /v1/admin/stores` — list of configured stores
 - `POST /v1/admin/stores` — create a dynamic store. For
@@ -213,7 +213,7 @@ tagged to the token ends up in audit events.
 - `POST /v1/admin/policy/writes-enabled/get` — read the per-store
   write toggle
 - `POST /v1/admin/policy/writes-enabled/set` — flip the per-store
-  write toggle. Admin-only; audited.
+  write toggle. Admin-only; logged.
 
 Every admin write is a full atomic replacement of the stored policy
 document or of one grant entry.
@@ -308,7 +308,7 @@ nonce is single-use. Signatures are verified with
 [`ssh-key`](https://docs.rs/ssh-key) against the `approval_key` stored in
 the policy.
 
-Central audit of the raw signature (sending the signed blob to the
+Central logging of the raw signature (sending the signed blob to the
 backend in addition to local verification) is a later step; today the
 backend sees only the resulting `secret.read` after the daemon accepts
 the signature. The admin UI can still reason about "is this wrapper in

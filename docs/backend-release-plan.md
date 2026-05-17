@@ -148,7 +148,7 @@ Tests: all existing suites stay green with the reduced transport surface.
   to `BackendConfig`. Tokens are loaded from file paths so secrets don't need
   to sit in the YAML verbatim.
 - Require `Authorization: Bearer <token>` on every `/v1/admin/*` request.
-- Tag audit events with the token's name (operator identity).
+- Tag structured logs with the token's name (operator identity).
 - Update the integration harness to send a bearer token. Update `node.nix`
   and `test.py` for the VM test.
 
@@ -171,7 +171,6 @@ Delivered scope:
 - resource explorer with reveal, upload/download, write, delete, and mutation
   flows
 - wrapper mode console and access matrix console
-- read-only audit history console
 - systemd + NixOS module wiring for deployment alongside backendd
 
 Tests:
@@ -180,7 +179,7 @@ Tests:
 - backend tests for the UI-oriented admin API surface
 - Playwright browser regressions covering protected-route/session failures,
   CSRF rejection, reveal/download no-store behavior, mutation/upload/delete,
-  wrapper-mode changes, matrix toggles, and audit filtering
+  wrapper-mode changes and matrix toggles
 
 ### M5 — Docs rewrite
 
@@ -219,8 +218,8 @@ Testing is part of each milestone, not a trailing phase:
 - Concrete encoding of the ssh signature and pubkey on the admin/runtime
   API: raw `ssh_key::Signature` bytes + OpenSSH pubkey string, base64'd. This
   gets nailed down in M1 when the request/response types land.
-- Whether to audit denied per-call approvals to the backend audit log even
-  when the daemon never completes the retry. Default: yes; underwrapd POSTs
-  a best-effort audit notice.
+- Whether to log denied per-call approvals centrally even when the daemon
+  never completes the retry. Default: yes; underwrapd POSTs a best-effort
+  notice.
 - Whether `PerCallApproval` should support multiple authorized pubkeys
   eventually. Out of scope for first release: one key per wrapper.

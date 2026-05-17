@@ -651,9 +651,9 @@ the admin session but are **not** themselves gated by `writes_enabled`
 
 ---
 
-## Audit trail
+## Structured security logging
 
-The daemon emits structured audit events for security-relevant operations such as:
+The daemon emits structured log events for security-relevant operations such as:
 
 - granted and denied reads
 - stores and denied stores
@@ -666,7 +666,7 @@ The design goal is:
 - log the action and relevant identity context
 - never log secret material
 
-Logging does not make a system secure, but in systems that are trying to be security-aware, absence of usable audit events is a real weakness.
+Logging does not make a system secure, but in systems that are trying to be security-aware, absence of usable security logs is a real weakness. underwrap relies on journald/stdout logging here, not on a separate persisted audit-history product feature.
 
 ---
 
@@ -703,8 +703,8 @@ but not the basic wrapper flow on the target host.
   runs.
 - **Admin** (`/v1/admin/*`) — bearer tokens. Each operator has one
   opaque token loaded from a file at startup. Tokens are compared in
-  constant time. The matched operator name is recorded with every
-  audit event.
+  constant time. The matched operator name is recorded in structured
+  backend logs.
 
 The admin listener is plain HTTP. When it needs to be reachable beyond
 localhost, the operator is expected to front it with a local

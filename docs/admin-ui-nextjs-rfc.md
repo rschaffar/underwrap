@@ -44,7 +44,6 @@ instance and its own operator auth/session state.
 - `/s/[store]/resources`
 - `/s/[store]/resources/[...resource]`
 - `/s/[store]/wrappers`
-- `/s/[store]/audit`
 
 ## Current runtime YAML
 
@@ -84,7 +83,6 @@ The current console supports:
 - mutation-gated write/upload/delete
 - wrapper mode management
 - access-matrix toggles
-- read-only audit history
 
 ## Historical note
 

@@ -1348,7 +1348,7 @@ impl AdminAuth {
     /// Operator name carried by this authentication, for the few
     /// places that need to label the auth itself (e.g. tests). Most
     /// request handlers should use [`Principal::username`] instead,
-    /// which is the source of truth for audit and authorization.
+    /// which is the source of truth for structured logging and authorization.
     #[cfg(test)]
     fn operator(&self) -> &str {
         match self {
