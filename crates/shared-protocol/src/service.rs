@@ -220,6 +220,28 @@ pub enum AdminStoreBackendKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
+pub struct AdminStoreUsageSummary {
+    /// How many runtime client instances currently map to this store.
+    pub mapped_client_instance_count: u32,
+    /// Whether the store currently contains at least one secret.
+    pub has_secrets: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoreActionState {
+    /// Whether this principal may edit the store metadata.
+    pub can_edit_metadata: bool,
+    /// Whether this principal may rotate the store's master key.
+    pub can_rotate_key: bool,
+    /// Whether a plain DELETE is currently allowed.
+    pub can_delete_now: bool,
+    /// Whether a force delete is currently allowed.
+    pub can_force_delete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 pub struct AdminStoreListItem {
     /// Stable internal identifier used for routing and runtime mapping.
     pub id: String,
@@ -233,6 +255,8 @@ pub struct AdminStoreListItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub created_at: Option<u64>,
+    pub usage: AdminStoreUsageSummary,
+    pub actions: AdminStoreActionState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -262,9 +286,11 @@ pub struct AdminStoreDetailResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub created_at: Option<u64>,
-    /// On-disk path of the YAML definition. Helpful for surfacing the
-    /// `declarative_immutable` error code in the SPA.
+    /// On-disk path of the backend-managed store registry file that
+    /// owns this record.
     pub source_path: String,
+    pub usage: AdminStoreUsageSummary,
+    pub actions: AdminStoreActionState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
