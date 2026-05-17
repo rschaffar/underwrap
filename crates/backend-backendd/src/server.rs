@@ -7315,6 +7315,11 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(updated["actions"]["can_disable"], false);
         assert_eq!(updated["actions"]["can_enable"], true);
 
+        let list_after_disable = response_body_json(handle_admin_client_instances_list(&state, &p));
+        assert_eq!(list_after_disable["items"].as_array().unwrap().len(), 1);
+        assert_eq!(list_after_disable["items"][0]["id"], client_id);
+        assert_eq!(list_after_disable["items"][0]["status"], "disabled");
+
         let delete_old_store = handle_admin_store_delete(&state, &p, &work_id, false);
         assert_eq!(delete_old_store.status(), StatusCode::OK);
 

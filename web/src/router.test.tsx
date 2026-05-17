@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { NAV } from "@/components/app-shell";
-import { APP_ROUTE_PATHS, appRoutes } from "@/router";
+import { APP_ROUTE_PATHS, appRoutes, safeNextPath } from "@/router";
 
 describe("router ↔ nav consistency", () => {
   it("APP_ROUTE_PATHS matches the set of registered app routes", () => {
@@ -33,5 +33,17 @@ describe("router ↔ nav consistency", () => {
     for (const item of NAV) {
       expect(declared).toContain(item.href);
     }
+  });
+});
+
+describe("safeNextPath", () => {
+  it("preserves same-origin enrollment deep links through login", () => {
+    const originalOrigin = window.location.origin;
+    const next = `${originalOrigin}/enroll?host=deepthought&instance=work`;
+    expect(safeNextPath(next)).toBe("/enroll?host=deepthought&instance=work");
+  });
+
+  it("rejects cross-origin redirects", () => {
+    expect(safeNextPath("https://evil.example/enroll?host=x&instance=y")).toBeNull();
   });
 });

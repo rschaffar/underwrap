@@ -336,7 +336,7 @@ const logoutRoute = new Route({
  * it is missing/malformed/cross-origin. Critical: we must NOT redirect
  * to an attacker-controlled URL after sign-in (open redirect).
  */
-function safeNextPath(next: string | null): string | null {
+export function safeNextPath(next: string | null): string | null {
   if (!next) return null;
   try {
     const url = new URL(next, window.location.origin);
