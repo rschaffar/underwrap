@@ -32,9 +32,9 @@ Manual certificate provisioning is too awkward, but we also do not want open CSR
 
 ## Acceptance criteria
 
-- [ ] Unenrolled wrapper execution clearly guides the operator into enrollment.
-- [ ] Enrollment begins from an operator-approved flow, not an open CSR inbox.
-- [ ] Enrollment command uses interactive secret entry rather than argv-exposed secrets.
-- [ ] Keypair generation stays local to the client instance.
-- [ ] Enrollment can target an existing store or create a new one inline.
-- [ ] Successful enrollment installs a per-instance key/cert pair and enables runtime access.
+- [x] Unenrolled wrapper execution clearly guides the operator into enrollment.
+- [x] Enrollment begins from an operator-approved flow, not an open CSR inbox.
+- [x] Enrollment command uses interactive secret entry rather than argv-exposed secrets.
+- [x] Keypair generation stays local to the client instance.
+- [x] Enrollment can target an existing store or create a new one inline.
+- [x] Successful enrollment installs a per-instance key/cert pair and enables runtime access.
