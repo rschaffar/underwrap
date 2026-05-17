@@ -35,9 +35,9 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
 
-  // Empty initial list — fresh store.
+  // Empty initial list — fresh store with no catalog entries yet.
   await expect(
-    page.getByText(/no secrets in this store yet/i),
+    page.getByText(/no resources are known to this store yet/i),
   ).toBeVisible();
 
   // Create a secret.

@@ -189,6 +189,105 @@ describe("SecretsPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("lists resources from the catalog even when they hold zero secrets", async () => {
+    // Critical for the bootstrap flow: an admin must be able to
+    // flip wrapper-writable ON for a resource BEFORE that resource
+    // has any secrets, otherwise the wrapper can never write the
+    // first one.
+    vi.mocked(fetchStores).mockResolvedValue({
+      items: [
+        {
+          name: "default",
+          source: "dynamic",
+          backend: "plain",
+          created_at: 0n,
+        },
+      ],
+    });
+    vi.mocked(postSecretList).mockResolvedValue({ ids: [] });
+    vi.mocked(postCatalogGet).mockResolvedValue({
+      entries: [
+        {
+          host: "deepthought",
+          user: "robert",
+          instance: "",
+          wrapper: "gh-libsecret",
+          resource: "github/gh",
+        },
+      ],
+    });
+    vi.mocked(postWritePermissionsGet).mockResolvedValue({
+      store: "default",
+      files_writable: {},
+      libsecret_writable: {},
+    });
+
+    renderWithQuery(
+      <SecretsPage
+        principal={{
+          authenticated: true,
+          username: "alice",
+          role: "admin",
+        }}
+      />,
+    );
+
+    // The resource appears as a block — empty, but present — so the
+    // admin can flip libsecret-writable on it.
+    const block = await screen.findByTestId("resource-block-github/gh");
+    expect(block).toBeInTheDocument();
+    const libsecretToggle = within(block).getByTestId(
+      "wrapper-writable-libsecret-github/gh",
+    );
+    expect(libsecretToggle).toBeEnabled();
+    expect(libsecretToggle).not.toBeChecked();
+    // And the slot sections report empty rather than disappearing.
+    expect(within(block).getByTestId("slot-libsecret")).toHaveTextContent(
+      /none/i,
+    );
+  });
+
+  it("lists resources from existing write-permission keys even without a catalog entry", async () => {
+    // Defence in depth for the case where a permission was set
+    // before the wrapper ever registered — the resource still
+    // shows up so the admin can see and adjust it.
+    vi.mocked(fetchStores).mockResolvedValue({
+      items: [
+        {
+          name: "default",
+          source: "dynamic",
+          backend: "plain",
+          created_at: 0n,
+        },
+      ],
+    });
+    vi.mocked(postSecretList).mockResolvedValue({ ids: [] });
+    vi.mocked(postCatalogGet).mockResolvedValue({ entries: [] });
+    vi.mocked(postWritePermissionsGet).mockResolvedValue({
+      store: "default",
+      files_writable: { "preregistered/resource": true },
+      libsecret_writable: {},
+    });
+
+    renderWithQuery(
+      <SecretsPage
+        principal={{
+          authenticated: true,
+          username: "alice",
+          role: "admin",
+        }}
+      />,
+    );
+
+    const block = await screen.findByTestId(
+      "resource-block-preregistered/resource",
+    );
+    expect(block).toBeInTheDocument();
+    expect(
+      within(block).getByTestId("wrapper-writable-files-preregistered/resource"),
+    ).toBeChecked();
+  });
+
   it("disables the wrapper-writable toggle for non-admin operators", async () => {
     vi.mocked(fetchStores).mockResolvedValue({
       items: [

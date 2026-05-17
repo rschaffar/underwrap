@@ -195,6 +195,43 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
   );
   const grouped = useMemo(() => groupSecretIds(visibleIds), [visibleIds]);
 
+  // Resources known to this store from any source: actually-stored
+  // secrets, catalog entries from wrappers that have registered, and
+  // every resource that already has a wrapper-write permission set.
+  // Listing all of them — even when they hold zero secrets — is what
+  // lets an admin pre-grant `files`/`libsecret` writes BEFORE the
+  // wrapper writes its first entry. Without this, the page would
+  // hide an empty resource and the wrapper would never be able to
+  // initialise it.
+  const allResources = useMemo<SecretResourceGroup[]>(() => {
+    const byResource = new Map<string, SecretResourceGroup>();
+    for (const g of grouped.resources) {
+      byResource.set(g.resource, g);
+    }
+    const ensureEmpty = (resource: string) => {
+      if (!byResource.has(resource)) {
+        byResource.set(resource, {
+          resource,
+          env: [],
+          files: [],
+          libsecret: [],
+        });
+      }
+    };
+    for (const entry of catalog.data?.entries ?? []) {
+      ensureEmpty(entry.resource);
+    }
+    for (const r of Object.keys(permissions.data?.files_writable ?? {})) {
+      ensureEmpty(r);
+    }
+    for (const r of Object.keys(permissions.data?.libsecret_writable ?? {})) {
+      ensureEmpty(r);
+    }
+    return [...byResource.values()].sort((a, b) =>
+      a.resource.localeCompare(b.resource),
+    );
+  }, [grouped.resources, catalog.data, permissions.data]);
+
   const [revealing, setRevealing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -265,15 +302,15 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         <p role="alert" className="text-sm text-rose-300">
           {describeApiError(list.error)}
         </p>
-      ) : visibleIds.length === 0 ? (
+      ) : allResources.length === 0 && grouped.unrecognized.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
-          No secrets in this store yet. Use{" "}
+          No resources are known to this store yet. Use{" "}
           <strong className="text-(--color-fg)">Create secret</strong>{" "}
-          to add one.
+          to add one, or wait for a wrapper to register its catalog.
         </p>
       ) : (
         <div className="space-y-2">
-          {grouped.resources.map((group) => (
+          {allResources.map((group) => (
             <ResourceBlock
               key={group.resource}
               storeName={storeName}
