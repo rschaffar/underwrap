@@ -33,6 +33,25 @@ function renderWithQuery(ui: React.ReactNode) {
 }
 
 describe("SecretsPage", () => {
+  const storesList = {
+    items: [
+      {
+        id: "store_default",
+        name: "default",
+        source: "dynamic" as const,
+        backend: "plain" as const,
+        created_at: 0n,
+        usage: { mapped_client_instance_count: 0, has_secrets: false },
+        actions: {
+          can_edit_metadata: true,
+          can_rotate_key: false,
+          can_delete_now: true,
+          can_force_delete: false,
+        },
+      },
+    ],
+  };
+
   beforeEach(() => {
     vi.mocked(fetchStores).mockReset();
     vi.mocked(postSecretList).mockReset();
@@ -41,17 +60,7 @@ describe("SecretsPage", () => {
   });
 
   it("filters out reserved __underwrap/ secret IDs and groups the rest by resource", async () => {
-    vi.mocked(fetchStores).mockResolvedValue({
-      items: [
-        {
-          id: "store_default",
-          name: "default",
-          source: "dynamic",
-          backend: "plain",
-          created_at: 0n,
-        },
-      ],
-    });
+    vi.mocked(fetchStores).mockResolvedValue(storesList);
     vi.mocked(postSecretList).mockResolvedValue({
       ids: [
         "github/token/env/GH_TOKEN",
@@ -107,17 +116,7 @@ describe("SecretsPage", () => {
   });
 
   it("surfaces non-conforming IDs in the unrecognized block", async () => {
-    vi.mocked(fetchStores).mockResolvedValue({
-      items: [
-        {
-          id: "store_default",
-          name: "default",
-          source: "dynamic",
-          backend: "plain",
-          created_at: 0n,
-        },
-      ],
-    });
+    vi.mocked(fetchStores).mockResolvedValue(storesList);
     // No `/env|files|libsecret/` segment — these don't fit the
     // wrapper-resource layout and the page should still surface
     // them so the operator can clean up.
@@ -139,17 +138,7 @@ describe("SecretsPage", () => {
   });
 
   it("renders the wrapper-writable toggle for files and libsecret slots but not env", async () => {
-    vi.mocked(fetchStores).mockResolvedValue({
-      items: [
-        {
-          id: "store_default",
-          name: "default",
-          source: "dynamic",
-          backend: "plain",
-          created_at: 0n,
-        },
-      ],
-    });
+    vi.mocked(fetchStores).mockResolvedValue(storesList);
     vi.mocked(postSecretList).mockResolvedValue({
       ids: [
         "github/token/env/GH_TOKEN",
@@ -197,17 +186,7 @@ describe("SecretsPage", () => {
     // flip wrapper-writable ON for a resource BEFORE that resource
     // has any secrets, otherwise the wrapper can never write the
     // first one.
-    vi.mocked(fetchStores).mockResolvedValue({
-      items: [
-        {
-          id: "store_default",
-          name: "default",
-          source: "dynamic",
-          backend: "plain",
-          created_at: 0n,
-        },
-      ],
-    });
+    vi.mocked(fetchStores).mockResolvedValue(storesList);
     vi.mocked(postSecretList).mockResolvedValue({ ids: [] });
     vi.mocked(postCatalogGet).mockResolvedValue({
       entries: [
@@ -255,17 +234,7 @@ describe("SecretsPage", () => {
     // Defence in depth for the case where a permission was set
     // before the wrapper ever registered — the resource still
     // shows up so the admin can see and adjust it.
-    vi.mocked(fetchStores).mockResolvedValue({
-      items: [
-        {
-          id: "store_default",
-          name: "default",
-          source: "dynamic",
-          backend: "plain",
-          created_at: 0n,
-        },
-      ],
-    });
+    vi.mocked(fetchStores).mockResolvedValue(storesList);
     vi.mocked(postSecretList).mockResolvedValue({ ids: [] });
     vi.mocked(postCatalogGet).mockResolvedValue({ entries: [] });
     vi.mocked(postWritePermissionsGet).mockResolvedValue({
@@ -294,17 +263,7 @@ describe("SecretsPage", () => {
   });
 
   it("disables the wrapper-writable toggle for non-admin operators", async () => {
-    vi.mocked(fetchStores).mockResolvedValue({
-      items: [
-        {
-          id: "store_default",
-          name: "default",
-          source: "dynamic",
-          backend: "plain",
-          created_at: 0n,
-        },
-      ],
-    });
+    vi.mocked(fetchStores).mockResolvedValue(storesList);
     vi.mocked(postSecretList).mockResolvedValue({
       ids: ["github/token/files/config.json"],
     });

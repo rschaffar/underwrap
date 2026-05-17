@@ -57,6 +57,13 @@ describe("StoresPage", () => {
         backend: "encrypted" as const,
         description: "Nix-owned",
         created_at: undefined,
+        usage: { mapped_client_instance_count: 0, has_secrets: false },
+        actions: {
+          can_edit_metadata: false,
+          can_rotate_key: false,
+          can_delete_now: false,
+          can_force_delete: false,
+        },
       },
       {
         id: "store_scratch",
@@ -65,6 +72,28 @@ describe("StoresPage", () => {
         backend: "plain" as const,
         description: undefined,
         created_at: 100,
+        usage: { mapped_client_instance_count: 0, has_secrets: true },
+        actions: {
+          can_edit_metadata: true,
+          can_rotate_key: false,
+          can_delete_now: false,
+          can_force_delete: true,
+        },
+      },
+      {
+        id: "store_shared",
+        name: "shared",
+        source: "dynamic" as const,
+        backend: "encrypted" as const,
+        description: "In use",
+        created_at: 200,
+        usage: { mapped_client_instance_count: 2, has_secrets: true },
+        actions: {
+          can_edit_metadata: true,
+          can_rotate_key: true,
+          can_delete_now: false,
+          can_force_delete: false,
+        },
       },
     ],
   };
@@ -81,7 +110,7 @@ describe("StoresPage", () => {
       ),
     );
     // Wait for the table to render.
-    await screen.findByText(/work/);
+    await screen.findByText(/^work$/);
     expect(
       screen.queryByRole("button", { name: /create store/i }),
     ).toBeNull();
@@ -129,7 +158,7 @@ describe("StoresPage", () => {
     expect(screen.queryByLabelText(/key file/i)).toBeNull();
   });
 
-  it("delete dialog refuses to enable destructive button until the name is typed", async () => {
+  it("delete dialog requires force confirmation for non-empty stores", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockJson(200, sampleList),
@@ -144,13 +173,35 @@ describe("StoresPage", () => {
     await screen.findByText("scratch");
     const scratchRow = screen.getByText("scratch").closest("tr")!;
     const buttons = scratchRow.querySelectorAll("button");
-    // [Edit, Delete] — click Delete.
     await user.click(buttons[1]!);
     const dlg = await screen.findByRole("dialog", { name: /delete store/i });
-    const deleteBtn = within(dlg).getByRole("button", { name: /^delete$/i });
+    const deleteBtn = within(dlg).getByRole("button", { name: /force delete/i });
     expect(deleteBtn).toBeDisabled();
     await user.type(within(dlg).getByLabelText(/type/i), "scratch");
+    expect(deleteBtn).toBeDisabled();
+    await user.click(within(dlg).getByLabelText(/force delete even if the store contains secrets/i));
     expect(deleteBtn).toBeEnabled();
+  });
+
+  it("disables delete when a store is still mapped to client instances", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockJson(200, sampleList),
+    );
+    render(
+      withQuery(
+        <StoresPage
+          principal={{ authenticated: true, role: "admin" }}
+        />,
+      ),
+    );
+    const sharedRow = (await screen.findByText("shared")).closest("tr")!;
+    const buttons = sharedRow.querySelectorAll("button");
+    const deleteBtn = buttons[1]!;
+    expect(deleteBtn).toBeDisabled();
+    expect(deleteBtn).toHaveAttribute(
+      "title",
+      expect.stringMatching(/mapped to 2 client instances/i),
+    );
   });
 });
 
@@ -178,13 +229,14 @@ function within(scope: HTMLElement) {
     getByLabelText: (re: RegExp) => {
       const labels = Array.from(scope.querySelectorAll("label"));
       for (const lbl of labels) {
-        if (re.test(lbl.textContent ?? "")) {
-          const id = lbl.getAttribute("for");
-          if (id) {
-            const el = scope.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
-            if (el) return el;
-          }
+        if (!re.test(lbl.textContent ?? "")) continue;
+        const id = lbl.getAttribute("for");
+        if (id) {
+          const el = scope.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
+          if (el) return el;
         }
+        const nested = lbl.querySelector<HTMLElement>("input, textarea, select");
+        if (nested) return nested;
       }
       throw new Error(`label ${re} not found`);
     },
