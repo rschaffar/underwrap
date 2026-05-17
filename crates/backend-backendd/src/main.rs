@@ -225,6 +225,7 @@ mod tests {
         // path and service+admin blocks are optional.
         let config = parse_backend_config("{}\n").unwrap();
         assert!(config.stores_file.is_none());
+        assert!(config.client_instances_file.is_none());
         assert!(config.service.is_none());
         assert!(config.admin.is_none());
     }
@@ -250,12 +251,17 @@ stores:
     #[test]
     fn parse_backend_config_accepts_dir_overrides() {
         let config = parse_backend_config(
-            "stores_file: /var/u/stores.json\n",
+            "stores_file: /var/u/stores.json\n\
+             client_instances_file: /var/u/client-instances.json\n",
         )
         .unwrap();
         assert_eq!(
             config.stores_file(),
             std::path::PathBuf::from("/var/u/stores.json"),
+        );
+        assert_eq!(
+            config.client_instances_file(),
+            std::path::PathBuf::from("/var/u/client-instances.json"),
         );
     }
 

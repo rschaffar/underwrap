@@ -120,6 +120,11 @@ pub struct BackendConfig {
     /// [`DEFAULT_STORES_FILE`].
     #[serde(default)]
     pub stores_file: Option<PathBuf>,
+    /// Path of the backend-managed runtime client-instance registry.
+    /// Missing files are treated as an empty registry. Defaults to
+    /// `/var/lib/underwrap-backend/client-instances.json`.
+    #[serde(default)]
+    pub client_instances_file: Option<PathBuf>,
     #[serde(default)]
     pub service: Option<ServiceConfig>,
     #[serde(default)]
@@ -132,6 +137,13 @@ impl BackendConfig {
         self.stores_file
             .clone()
             .unwrap_or_else(|| PathBuf::from(DEFAULT_STORES_FILE))
+    }
+
+    /// Resolve [`Self::client_instances_file`] or the project default.
+    pub fn client_instances_file(&self) -> PathBuf {
+        self.client_instances_file
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/var/lib/underwrap-backend/client-instances.json"))
     }
 }
 
@@ -263,6 +275,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
     let stores_file = config.stores_file();
     let definitions = load_store_records(&stores_file)?;
     let stores = open_stores(&definitions)?;
+    let client_instances = crate::runtime_clients::load_client_instances(&config.client_instances_file())?;
 
     let mut tasks = JoinSet::new();
 
@@ -272,7 +285,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             .with_context(|| format!("binding service listener {}", service_config.listen))?;
         let service_state = Arc::new(build_service_runtime_state(&stores, service_config)?);
         let tls_acceptor = build_tls_acceptor(&service_config.tls)?;
-        info!(listen = %service_config.listen, clients = service_config.clients.len(), "backend HTTPS service listening");
+        info!(listen = %service_config.listen, clients = service_config.clients.len(), instances = client_instances.len(), "backend HTTPS service listening");
         tasks.spawn(service_accept_loop(
             service_listener,
             tls_acceptor,
