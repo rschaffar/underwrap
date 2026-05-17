@@ -61,15 +61,15 @@
             strictDeps = true;
             buildInputs = [ ];
             nativeBuildInputs = [ ];
-            # Cap test parallelism inside the Nix sandbox. The
-            # integration-tests crate spawns one in-process backend
-            # per test on a single-threaded tokio runtime, and
-            # `tests::daemon::underwrapd_binary_start_and_read`
-            # invokes a recursive `cargo build`. Under default
-            # parallelism that combo CPU-starves sibling
-            # TestDaemon::start calls and they hit the readiness
-            # timeout. `-j 4` keeps every test fast individually
-            # without overloading the builder.
+            # Belt-and-suspenders cap on integration-test
+            # parallelism. The real fix for the readiness flake was
+            # making `ensure_package_built` a no-op when the binary
+            # is already on disk (which it always is in a crane
+            # build), so the daemon test no longer fires a recursive
+            # `cargo build` that CPU-starves sibling TestDaemon
+            # startups. The cap stays because it's a sensible
+            # default for a contended sandbox and protects against
+            # future regressions of the same shape.
             cargoTestExtraArgs = "-- --test-threads=4";
           };
 

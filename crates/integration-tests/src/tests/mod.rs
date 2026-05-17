@@ -116,6 +116,17 @@ macro_rules! require_echo {
     };
 }
 
+/// Build the named workspace package if-and-only-if its binary
+/// isn't already on disk. Tests that spawn a real binary call this
+/// before doing the lookup so a single-shot `cargo test -p
+/// integration-tests` run from a clean state still works.
+///
+/// CRITICAL: this MUST be a no-op when the binary exists, because
+/// shelling out to `cargo build` from inside a test serialises with
+/// the parent `cargo test` invocation via the workspace target lock
+/// and CPU-starves sibling TestDaemon::start calls for tens of
+/// seconds. In Nix builds the binary is always pre-built by crane,
+/// so this short-circuits and the readiness flake disappears.
 fn ensure_package_built(package: &'static str) {
     static UNDERWRAPD: OnceLock<()> = OnceLock::new();
     static UNDERWRAP_BACKENDD: OnceLock<()> = OnceLock::new();
@@ -126,7 +137,19 @@ fn ensure_package_built(package: &'static str) {
         other => panic!("unsupported package build cache for {other}"),
     };
 
+    // Map the cargo package name to the binary name `require_bin!`
+    // would look for. They differ for the two crates this helper
+    // covers.
+    let binary = match package {
+        "frontend-underwrapd" => "underwrapd",
+        "backend-backendd" => "underwrap-backendd",
+        other => panic!("unsupported package build cache for {other}"),
+    };
+
     once.get_or_init(|| {
+        if try_cargo_bin(binary).is_some() {
+            return;
+        }
         let build_status = std::process::Command::new("cargo")
             .args(["build", "-p", package])
             .status()
