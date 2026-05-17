@@ -4316,14 +4316,20 @@ fn do_enrollment_submit(
                 );
             }
         };
+    let existing_instance = instances.get(&client_instance_id).cloned();
     let record = crate::runtime_clients::ClientInstanceRecord {
         id: client_instance_id.clone(),
         display_name: invite.display_name.clone(),
         hostname_hint: invite.hostname_hint.clone(),
         instance_name: invite.instance_name.clone(),
         current_store_id: invite.current_store_id.clone(),
-        status: crate::runtime_clients::ClientInstanceStatus::Active,
-        last_seen_at: None,
+        status: existing_instance
+            .as_ref()
+            .map(|existing| existing.status)
+            .unwrap_or(crate::runtime_clients::ClientInstanceStatus::Active),
+        last_seen_at: existing_instance
+            .as_ref()
+            .and_then(|existing| existing.last_seen_at),
         current_credential,
     };
     let previous_instance = instances.insert(client_instance_id.clone(), record);
@@ -7707,8 +7713,17 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             ));
             let this_id = submit["client_instance_id"].as_str().unwrap().to_string();
             if idx == 0 {
-                client_id = Some(this_id);
+                client_id = Some(this_id.clone());
                 first_fingerprint = Some(submit["cert_fingerprint"].as_str().unwrap().to_string());
+                let mut instances = state.client_instances.write().unwrap();
+                let record = instances.get_mut(&this_id).unwrap();
+                record.status = crate::runtime_clients::ClientInstanceStatus::Disabled;
+                record.last_seen_at = Some(1234);
+                crate::runtime_clients::save_client_instances(
+                    &state.client_instances_file,
+                    &instances,
+                )
+                .unwrap();
             } else {
                 assert_eq!(Some(&this_id), client_id.as_ref());
                 assert_ne!(
@@ -7717,7 +7732,14 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 );
             }
         }
-        assert_eq!(state.client_instances.read().unwrap().len(), 1);
+        let instances = state.client_instances.read().unwrap();
+        assert_eq!(instances.len(), 1);
+        let record = instances.get(client_id.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            record.status,
+            crate::runtime_clients::ClientInstanceStatus::Disabled
+        );
+        assert_eq!(record.last_seen_at, Some(1234));
     }
 
     // ===== Users CRUD (ticket 240) =====
