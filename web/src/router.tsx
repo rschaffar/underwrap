@@ -17,6 +17,7 @@ import { BootstrapPage } from "@/pages/bootstrap";
 import { MatrixPage } from "@/pages/matrix";
 import { SecretsPage } from "@/pages/secrets";
 import { StoresPage } from "@/pages/stores";
+import { ClientInstancesPage } from "@/pages/client-instances";
 import { UsersPage } from "@/pages/users";
 import { ProfilePage } from "@/pages/profile";
 import { EnrollmentPage } from "@/pages/enroll";
@@ -158,6 +159,7 @@ export const APP_ROUTE_PATHS = [
   "/matrix",
   "/secrets",
   "/stores",
+  "/client-instances",
   "/users",
   "/profile",
 ] as const;
@@ -177,6 +179,25 @@ const storesRoute = new Route({
     // down so admin-gating doesn't re-fetch.
     const ctx = storesRoute.useRouteContext();
     return <StoresPage principal={ctx.principal} />;
+  },
+});
+
+const clientInstancesRoute = new Route({
+  getParentRoute: () => appLayoutRoute,
+  path: "/client-instances",
+  beforeLoad: ({ context }) => {
+    const ctx = context as RouterContext;
+    if (
+      ctx.principal &&
+      ctx.principal.authenticated &&
+      ctx.principal.role !== "admin"
+    ) {
+      throw redirect({ to: "/" });
+    }
+  },
+  component: function ClientInstancesRouteComponent() {
+    const ctx = clientInstancesRoute.useRouteContext();
+    return <ClientInstancesPage principal={ctx.principal} />;
   },
 });
 
@@ -335,6 +356,7 @@ export const appRoutes = [
   matrixRoute,
   secretsRoute,
   storesRoute,
+  clientInstancesRoute,
   usersRoute,
   profileRoute,
 ];

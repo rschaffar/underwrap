@@ -10,6 +10,7 @@ import {
   UserCircle,
   Grid3x3,
   KeyRound,
+  Monitor,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,12 @@ export const NAV: NavItem[] = [
   { label: "Matrix", icon: Grid3x3, href: "/matrix" },
   { label: "Secrets", icon: KeyRound, href: "/secrets" },
   { label: "Stores", icon: Lock, href: "/stores", adminOnly: true },
+  {
+    label: "Client Instances",
+    icon: Monitor,
+    href: "/client-instances",
+    adminOnly: true,
+  },
   { label: "Users", icon: Users, href: "/users", adminOnly: true },
   { label: "Profile", icon: UserCircle, href: "/profile" },
 ];
