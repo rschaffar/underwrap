@@ -287,6 +287,17 @@ async fn unenrolled_wrapper_read_returns_enrollment_guidance() {
     handle.await.unwrap().unwrap();
 }
 
+fn mtls_client(ca_pem: &[u8], cert_pem: &[u8], key_pem: &[u8]) -> reqwest::Client {
+    let mut identity_pem = cert_pem.to_vec();
+    identity_pem.extend_from_slice(key_pem);
+    reqwest::Client::builder()
+        .use_rustls_tls()
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_pem).unwrap())
+        .identity(reqwest::Identity::from_pem(&identity_pem).unwrap())
+        .build()
+        .unwrap()
+}
+
 #[tokio::test]
 async fn invite_first_enrollment_flow_installs_credential_and_enables_runtime_access() {
     let backend = EnrollmentBackend::start().await.unwrap();
@@ -322,14 +333,7 @@ async fn invite_first_enrollment_flow_installs_credential_and_enables_runtime_ac
     assert!(String::from_utf8_lossy(&key_pem).contains("BEGIN PRIVATE KEY"));
     assert_eq!(std::fs::read(&issuer_ca).unwrap(), ca_pem);
 
-    let mut identity_pem = cert_pem;
-    identity_pem.extend_from_slice(&key_pem);
-    let client = reqwest::Client::builder()
-        .use_rustls_tls()
-        .add_root_certificate(reqwest::Certificate::from_pem(&ca_pem).unwrap())
-        .identity(reqwest::Identity::from_pem(&identity_pem).unwrap())
-        .build()
-        .unwrap();
+    let client = mtls_client(&ca_pem, &cert_pem, &key_pem);
     let status = client
         .get(format!("{}/v1/status", backend.service_url))
         .send()
@@ -360,6 +364,95 @@ async fn invite_first_enrollment_flow_installs_credential_and_enables_runtime_ac
         instances.items[0].hostname_hint.as_deref(),
         Some("deepthought")
     );
+
+    backend.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn re_enrollment_replaces_old_credential_end_to_end() {
+    let backend = EnrollmentBackend::start().await.unwrap();
+    let first_invite = backend
+        .create_invite("deepthought work", "deepthought", "work")
+        .await
+        .unwrap();
+
+    let install_dir = tempfile::TempDir::new().unwrap();
+    let first_cert = install_dir.path().join("client-work-first.pem");
+    let first_key = install_dir.path().join("client-work-first.key");
+    let first_cli = frontend_enroll::Cli {
+        url: backend.admin_url.clone(),
+        invite_id: first_invite.invite.id.clone(),
+        ca_file: backend.service_ca_cert.clone(),
+        client_cert_out: first_cert.clone(),
+        client_key_out: first_key.clone(),
+        issuer_ca_out: None,
+    };
+    tokio::task::spawn_blocking(move || {
+        frontend_enroll::run_with_secret(first_cli, Zeroizing::new(first_invite.enrollment_secret))
+    })
+    .await
+    .unwrap()
+    .unwrap();
+
+    let second_invite = backend
+        .create_invite("deepthought work", "deepthought", "work")
+        .await
+        .unwrap();
+    let second_cert = install_dir.path().join("client-work-second.pem");
+    let second_key = install_dir.path().join("client-work-second.key");
+    let second_cli = frontend_enroll::Cli {
+        url: backend.admin_url.clone(),
+        invite_id: second_invite.invite.id.clone(),
+        ca_file: backend.service_ca_cert.clone(),
+        client_cert_out: second_cert.clone(),
+        client_key_out: second_key.clone(),
+        issuer_ca_out: None,
+    };
+    tokio::task::spawn_blocking(move || {
+        frontend_enroll::run_with_secret(
+            second_cli,
+            Zeroizing::new(second_invite.enrollment_secret),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+
+    let ca_pem = std::fs::read(&backend.service_ca_cert).unwrap();
+    let first_client = mtls_client(
+        &ca_pem,
+        &std::fs::read(&first_cert).unwrap(),
+        &std::fs::read(&first_key).unwrap(),
+    );
+    let first_status = first_client
+        .get(format!("{}/v1/status", backend.service_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_status.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let second_client = mtls_client(
+        &ca_pem,
+        &std::fs::read(&second_cert).unwrap(),
+        &std::fs::read(&second_key).unwrap(),
+    );
+    let second_status = second_client
+        .get(format!("{}/v1/status", backend.service_url))
+        .send()
+        .await
+        .unwrap();
+    assert!(second_status.status().is_success());
+
+    let instances = reqwest::Client::new()
+        .get(format!("{}/v1/admin/client-instances", backend.admin_url))
+        .bearer_auth(&backend.admin_token)
+        .send()
+        .await
+        .unwrap();
+    assert!(instances.status().is_success());
+    let instances: underwrap_protocol::service::AdminClientInstancesListResponse =
+        instances.json().await.unwrap();
+    assert_eq!(instances.items.len(), 1);
 
     backend.stop().await.unwrap();
 }
