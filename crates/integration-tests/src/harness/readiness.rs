@@ -31,9 +31,8 @@ pub(crate) fn pick_unused_port() -> Result<u16> {
 // under contended Nix-sandbox loads (ticket 281) — the loop exits as
 // soon as the listener answers, so a longer ceiling costs nothing on
 // the happy path. The contention is real: `cargo test --workspace`
-// runs many test binaries in parallel and the `daemon` test in this
-// crate invokes a recursive `cargo build` via `ensure_package_built`,
-// which can stall sibling tests for tens of seconds.
+// runs many test binaries in parallel, and backend startup can still
+// be delayed substantially by general CPU / I/O contention.
 pub(super) async fn wait_for_admin(url: &str, token: &str) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))

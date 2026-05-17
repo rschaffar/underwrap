@@ -52,11 +52,8 @@ wrappers:
 
 #[tokio::test]
 async fn underwrapd_binary_start_and_read() {
-    ensure_package_built("frontend-underwrapd");
-    ensure_package_built("backend-backendd");
-
-    let daemon_bin = require_bin!("underwrapd");
-    let backend_bin = require_bin!("underwrap-backendd");
+    let daemon_bin = cargo_bin("underwrapd");
+    let backend_bin = cargo_bin("underwrap-backendd");
     let admin_port = pick_unused_port().unwrap();
     let service_port = pick_unused_port().unwrap();
     let admin_url = format!("http://127.0.0.1:{admin_port}");
