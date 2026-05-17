@@ -335,7 +335,6 @@ pub struct AdminUiOverviewStore {
     pub store: String,
     pub resource_count: usize,
     pub wrapper_counts: AdminUiWrapperCounts,
-    pub recent_audit_events: usize,
     /// Number of resources with the wrapper-side `files` slot
     /// writable. Surfaced on the dashboard overview as a quick
     /// "how many resources have writes opened up" signal.
@@ -348,52 +347,6 @@ pub struct AdminUiOverviewStore {
 #[ts(export)]
 pub struct AdminUiOverviewResponse {
     pub stores: Vec<AdminUiOverviewStore>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminUiAuditQueryRequest {
-    pub store: String,
-    #[serde(default)]
-    pub operator: Option<String>,
-    #[serde(default)]
-    pub wrapper: Option<String>,
-    #[serde(default)]
-    pub resource: Option<String>,
-    #[serde(default)]
-    pub action: Option<String>,
-    #[serde(default)]
-    pub from_epoch: Option<u64>,
-    #[serde(default)]
-    pub to_epoch: Option<u64>,
-    #[serde(default = "default_page")]
-    pub page: usize,
-    #[serde(default = "default_page_size")]
-    pub page_size: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminUiAuditEvent {
-    pub ts_epoch: u64,
-    pub action: String,
-    pub operator: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wrapper: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operation: Option<String>,
-    pub result: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminUiAuditQueryResponse {
-    pub items: Vec<AdminUiAuditEvent>,
-    pub total: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -556,14 +509,6 @@ pub enum AdminWritableSlot {
 #[ts(export)]
 pub struct AdminOkResponse {
     pub ok: bool,
-}
-
-fn default_page() -> usize {
-    1
-}
-
-fn default_page_size() -> usize {
-    50
 }
 
 #[cfg(test)]

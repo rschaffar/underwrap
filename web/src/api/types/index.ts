@@ -31,9 +31,6 @@ export type { AdminStoreRotateKeyResponse } from "./AdminStoreRotateKeyResponse"
 export type { AdminStoreSource } from "./AdminStoreSource";
 export type { AdminStoreUpdateRequest } from "./AdminStoreUpdateRequest";
 export type { AdminStoresListResponse } from "./AdminStoresListResponse";
-export type { AdminUiAuditEvent } from "./AdminUiAuditEvent";
-export type { AdminUiAuditQueryRequest } from "./AdminUiAuditQueryRequest";
-export type { AdminUiAuditQueryResponse } from "./AdminUiAuditQueryResponse";
 export type { AdminUiOverviewResponse } from "./AdminUiOverviewResponse";
 export type { AdminUiOverviewStore } from "./AdminUiOverviewStore";
 export type { AdminUiWrapperCounts } from "./AdminUiWrapperCounts";

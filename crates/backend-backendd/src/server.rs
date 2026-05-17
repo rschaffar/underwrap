@@ -253,8 +253,27 @@ struct AdminRuntimeState {
 }
 
 const CATALOG_DOCUMENT_SECRET_ID: &str = "__underwrap/catalog/document";
-const AUDIT_HISTORY_SECRET_ID: &str = "__underwrap/admin/ui/audit-history";
-const ADMIN_UI_AUDIT_MAX_EVENTS: usize = 2000;
+
+fn log_admin_event(
+    action: &str,
+    operator: &str,
+    wrapper: Option<&str>,
+    resource: Option<&str>,
+    secret_id: Option<&str>,
+    operation: Option<&str>,
+    result: &str,
+) {
+    info!(
+        action = %action,
+        operator = %operator,
+        wrapper = ?wrapper,
+        resource = ?resource,
+        secret_id = ?secret_id,
+        operation = ?operation,
+        result = %result,
+        "admin event"
+    );
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct StoredCatalogEntry {
@@ -1080,77 +1099,6 @@ fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyDocument> {
     }
 }
 
-fn load_audit_history(
-    store: &dyn StorageBackend,
-) -> Result<Vec<underwrap_protocol::service::AdminUiAuditEvent>> {
-    match store.read(AUDIT_HISTORY_SECRET_ID)? {
-        Some(material) => serde_json::from_slice(material.as_ref())
-            .context("parsing backend audit history document"),
-        None => Ok(Vec::new()),
-    }
-}
-
-fn store_audit_history(
-    store: &dyn StorageBackend,
-    events: &[underwrap_protocol::service::AdminUiAuditEvent],
-) -> Result<()> {
-    store.write(
-        AUDIT_HISTORY_SECRET_ID,
-        serde_json::to_vec(events)?.as_slice(),
-    )?;
-    Ok(())
-}
-
-fn append_audit_history_event(
-    store: &dyn StorageBackend,
-    event: underwrap_protocol::service::AdminUiAuditEvent,
-) -> Result<()> {
-    let mut events = load_audit_history(store)?;
-    events.push(event);
-    if events.len() > ADMIN_UI_AUDIT_MAX_EVENTS {
-        let remove = events.len() - ADMIN_UI_AUDIT_MAX_EVENTS;
-        events.drain(..remove);
-    }
-    store_audit_history(store, &events)
-}
-
-fn admin_ui_audit_query(
-    store: &dyn StorageBackend,
-    request: &underwrap_protocol::service::AdminUiAuditQueryRequest,
-) -> Result<underwrap_protocol::service::AdminUiAuditQueryResponse> {
-    let mut events: Vec<_> = load_audit_history(store)?
-        .into_iter()
-        .filter(|event| {
-            request
-                .operator
-                .as_deref()
-                .is_none_or(|operator| event.operator == operator)
-                && request
-                    .wrapper
-                    .as_deref()
-                    .is_none_or(|wrapper| event.wrapper.as_deref() == Some(wrapper))
-                && request
-                    .resource
-                    .as_deref()
-                    .is_none_or(|resource| event.resource.as_deref() == Some(resource))
-                && request
-                    .action
-                    .as_deref()
-                    .is_none_or(|action| event.action == action)
-                && request.from_epoch.is_none_or(|from| event.ts_epoch >= from)
-                && request.to_epoch.is_none_or(|to| event.ts_epoch <= to)
-        })
-        .collect();
-    events.sort_by(|a, b| b.ts_epoch.cmp(&a.ts_epoch).then(b.action.cmp(&a.action)));
-    let total = events.len();
-    let start = request.page.saturating_sub(1) * request.page_size.max(1);
-    let items = events
-        .into_iter()
-        .skip(start)
-        .take(request.page_size.max(1))
-        .collect();
-    Ok(underwrap_protocol::service::AdminUiAuditQueryResponse { items, total })
-}
 
 fn admin_ui_overview_for_store(
     store_name: &str,
@@ -1195,7 +1143,6 @@ fn admin_ui_overview_for_store(
         store: store_name.to_string(),
         resource_count,
         wrapper_counts,
-        recent_audit_events: load_audit_history(store)?.len(),
         writable_files_resources: policy
             .files_writable
             .values()
@@ -1265,10 +1212,9 @@ fn admin_store(state: &AdminRuntimeState, store: &str) -> Result<Arc<dyn Storage
 /// lacks a grant for it. Collapsing both into the same response code
 /// prevents operators from probing the store catalogue.
 ///
-/// Ungranted-access attempts by non-admin principals also emit a
-/// `denied_grant` audit event so an admin can detect probing
-/// (ticket 241). Admin requests that 404 on an unknown store don't
-/// audit — they're either typos or stale UI state, not probing.
+/// Ungranted-access attempts by non-admin principals are still logged
+/// to journald/stdout, but no longer persisted as backend audit-history
+/// records.
 #[allow(clippy::result_large_err)]
 fn admin_store_for_principal(
     state: &AdminRuntimeState,
@@ -1276,7 +1222,7 @@ fn admin_store_for_principal(
     store: &str,
 ) -> std::result::Result<Arc<dyn StorageBackend>, Response<Full<Bytes>>> {
     if !principal.has_store_access(store) {
-        emit_denied_grant_audit(state, principal, store);
+        emit_denied_grant_log(state, principal, store);
         return Err(error_response(
             StatusCode::NOT_FOUND,
             "not_found",
@@ -1293,11 +1239,9 @@ fn admin_store_for_principal(
     }
 }
 
-/// Record an audit-history event for an operator hitting a store
-/// they don't have a grant for. Best-effort: a failure to append
-/// must not turn an authentication-layer 404 into a 500.
-fn emit_denied_grant_audit(
-    state: &AdminRuntimeState,
+/// Log an operator probing a store they do not have a grant for.
+fn emit_denied_grant_log(
+    _state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
     store: &str,
 ) {
@@ -1306,19 +1250,16 @@ fn emit_denied_grant_audit(
     // that invariant in debug builds so a future refactor doesn't
     // accidentally start filtering admin requests too.
     debug_assert!(!principal.is_admin());
-    let event = underwrap_protocol::service::AdminUiAuditEvent {
-        ts_epoch: crate::operators::now_epoch_secs(),
-        action: "store.access".to_string(),
-        operator: principal.username.clone(),
-        wrapper: None,
-        resource: Some(format!("store:{store}")),
-        secret_id: None,
-        operation: None,
-        result: "denied_grant".to_string(),
-    };
-    if let Err(e) = append_audit_history_event(state.admin_home_store.as_ref(), event) {
-        warn!(err = %e, "denied_grant audit emit failed");
-    }
+    let resource = format!("store:{store}");
+    log_admin_event(
+        "store.access",
+        &principal.username,
+        None,
+        Some(resource.as_str()),
+        None,
+        None,
+        "denied_grant",
+    );
 }
 
 /// Build a [`Principal`] from an authenticated request. For
@@ -1920,22 +1861,9 @@ async fn handle_admin_bootstrap(
         .expect("building bootstrap response")
 }
 
-/// Write a single audit history entry for a bootstrap attempt. Best
-/// effort: never fails the caller.
-fn audit_bootstrap_attempt(state: &AdminRuntimeState, username: &str, result: &str) {
-    let event = underwrap_protocol::service::AdminUiAuditEvent {
-        ts_epoch: crate::operators::now_epoch_secs(),
-        action: "bootstrap_attempt".to_string(),
-        operator: username.to_string(),
-        wrapper: None,
-        resource: None,
-        secret_id: None,
-        operation: None,
-        result: result.to_string(),
-    };
-    if let Err(e) = append_audit_history_event(state.admin_home_store.as_ref(), event) {
-        warn!(err = %e, "bootstrap: writing audit event failed");
-    }
+/// Log one bootstrap attempt outcome. Best effort: never fails the caller.
+fn audit_bootstrap_attempt(_state: &AdminRuntimeState, username: &str, result: &str) {
+    log_admin_event("bootstrap_attempt", username, None, None, None, None, result);
 }
 
 /// Handle `POST /v1/admin/auth/logout`. Revokes the current session id
@@ -2083,25 +2011,14 @@ fn user_detail(record: &crate::operators::OperatorRecord) -> AdminUserDetailResp
 }
 
 fn write_admin_user_audit(
-    state: &AdminRuntimeState,
+    _state: &AdminRuntimeState,
     actor: &crate::operators::Principal,
     target_username: &str,
     action: &str,
     result: &str,
 ) {
-    let event = underwrap_protocol::service::AdminUiAuditEvent {
-        ts_epoch: crate::operators::now_epoch_secs(),
-        action: action.to_string(),
-        operator: actor.username.clone(),
-        wrapper: None,
-        resource: Some(format!("user:{target_username}")),
-        secret_id: None,
-        operation: None,
-        result: result.to_string(),
-    };
-    if let Err(e) = append_audit_history_event(state.admin_home_store.as_ref(), event) {
-        warn!(err = %e, "user CRUD: writing audit event failed");
-    }
+    let resource = format!("user:{target_username}");
+    log_admin_event(action, &actor.username, None, Some(resource.as_str()), None, None, result);
 }
 
 /// Read-modify-write on the operator collection, serialised across
@@ -3338,25 +3255,22 @@ fn handle_admin_store_rotate_key(
 }
 
 fn write_admin_store_audit(
-    state: &AdminRuntimeState,
+    _state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
     store_name: &str,
     action: &str,
     result: &str,
 ) {
-    let event = underwrap_protocol::service::AdminUiAuditEvent {
-        ts_epoch: crate::operators::now_epoch_secs(),
-        action: action.to_string(),
-        operator: principal.username.clone(),
-        wrapper: None,
-        resource: Some(format!("store:{store_name}")),
-        secret_id: None,
-        operation: None,
-        result: result.to_string(),
-    };
-    if let Err(e) = append_audit_history_event(state.admin_home_store.as_ref(), event) {
-        warn!(err = %e, "store CRUD: writing audit event failed");
-    }
+    let resource = format!("store:{store_name}");
+    log_admin_event(
+        action,
+        &principal.username,
+        None,
+        Some(resource.as_str()),
+        None,
+        None,
+        result,
+    );
 }
 
 // ===== Agent grant CRUD + writes-enabled toggle (tickets 246, 247) =====
@@ -3376,29 +3290,26 @@ fn save_policy_document(store: &dyn StorageBackend, doc: &PolicyDocument) -> Res
 }
 
 fn write_admin_grant_audit(
-    state: &AdminRuntimeState,
+    _state: &AdminRuntimeState,
     actor: &crate::operators::Principal,
     store_name: &str,
     grant: &underwrap_protocol::policy::AgentGrant,
     action: &str,
     result: &str,
 ) {
-    let event = underwrap_protocol::service::AdminUiAuditEvent {
-        ts_epoch: crate::operators::now_epoch_secs(),
-        action: action.to_string(),
-        operator: actor.username.clone(),
-        wrapper: Some(grant.wrapper.clone()),
-        resource: Some(format!(
-            "grant:{store_name}/{}/{}/{}",
-            grant.wrapper, grant.host, grant.user
-        )),
-        secret_id: None,
-        operation: None,
-        result: result.to_string(),
-    };
-    if let Err(e) = append_audit_history_event(state.admin_home_store.as_ref(), event) {
-        warn!(err = %e, "grant CRUD: writing audit event failed");
-    }
+    let resource = format!(
+        "grant:{store_name}/{}/{}/{}",
+        grant.wrapper, grant.host, grant.user
+    );
+    log_admin_event(
+        action,
+        &actor.username,
+        Some(grant.wrapper.as_str()),
+        Some(resource.as_str()),
+        None,
+        None,
+        result,
+    );
 }
 
 #[allow(clippy::result_large_err)]
@@ -3627,19 +3538,18 @@ fn handle_admin_write_permissions_set(
             &format!("persisting policy document: {e:#}"),
         );
     }
-    let event = underwrap_protocol::service::AdminUiAuditEvent {
-        ts_epoch: crate::operators::now_epoch_secs(),
-        action: format!("policy.{slot_label}-writable"),
-        operator: principal.username.clone(),
-        wrapper: None,
-        resource: Some(format!("store:{}/{}", body.store, body.resource)),
-        secret_id: None,
-        operation: None,
-        result: format!("{previous}->{}", body.enabled),
-    };
-    if let Err(e) = append_audit_history_event(state.admin_home_store.as_ref(), event) {
-        warn!(err = %e, "write-permissions: writing audit event failed");
-    }
+    let action = format!("policy.{slot_label}-writable");
+    let resource = format!("store:{}/{}", body.store, body.resource);
+    let result = format!("{previous}->{}", body.enabled);
+    log_admin_event(
+        action.as_str(),
+        &principal.username,
+        None,
+        Some(resource.as_str()),
+        None,
+        None,
+        result.as_str(),
+    );
     json_response(
         StatusCode::OK,
         &underwrap_protocol::service::AdminWritePermissionsResponse {
@@ -3888,22 +3798,6 @@ async fn handle_admin_request(
                     )
                 }
                 Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-            }
-        }
-        (&Method::POST, "/v1/admin/ui/audit/query") => {
-            match parse_json_body::<underwrap_protocol::service::AdminUiAuditQueryRequest>(request)
-                .await
-            {
-                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match admin_ui_audit_query(store.as_ref(), &body) {
-                        Ok(response) => json_response(StatusCode::OK, &response),
-                        Err(e) => {
-                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
-                        }
-                    },
-                    Err(resp) => resp,
-                },
-                Err(response) => response,
             }
         }
         (&Method::POST, "/v1/admin/secret/read") => match parse_json_body::<
@@ -5274,14 +5168,6 @@ mod tests {
             .collect();
         assert!(cookies.iter().any(|c| c.starts_with("__Host-uw-session=")));
         assert!(cookies.iter().any(|c| c.starts_with("__Host-uw-csrf=")));
-        // Audit event recorded.
-        let history = load_audit_history(state.admin_home_store.as_ref()).unwrap();
-        assert!(
-            history.iter().any(|e| e.action == "bootstrap_attempt"
-                && e.operator == "alice"
-                && e.result == "success"),
-            "expected success audit event: {history:?}"
-        );
     }
 
     #[tokio::test]
@@ -5292,13 +5178,6 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = read_json(resp).await;
         assert_eq!(body["code"], "bootstrap_already_completed");
-        let history = load_audit_history(state.admin_home_store.as_ref()).unwrap();
-        assert!(
-            history
-                .iter()
-                .any(|e| e.operator == "eve" && e.result == "bootstrap_already_completed"),
-            "expected failure audit event: {history:?}"
-        );
     }
 
     #[tokio::test]
@@ -5545,7 +5424,7 @@ mod tests {
     /// Build an `AdminRuntimeState` wired up for CRUD tests: a
     /// dedicated `stores.d/` and one allowed data root, both under
     /// the supplied tempdir. The admin-home store is a fresh memory
-    /// store so audit-event writes succeed.
+    /// store so operator/session state can be persisted in tests.
     fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
         let dynamic_dir = tmp.join("stores.d");
         std::fs::create_dir_all(&dynamic_dir).unwrap();
@@ -6106,7 +5985,7 @@ mod tests {
     }
 
     #[test]
-    fn rotate_key_audited_and_requires_admin() {
+    fn rotate_key_requires_admin_and_succeeds() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         let p = admin_principal(&[]);
@@ -6126,56 +6005,8 @@ mod tests {
         let resp = handle_admin_store_rotate_key(&state, &op, "vault");
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
-        // Admin succeeds and the audit event lands.
         let resp = handle_admin_store_rotate_key(&state, &p, "vault");
         assert_eq!(resp.status(), StatusCode::OK);
-        let events = load_audit_history(state.admin_home_store.as_ref()).unwrap();
-        let actions: Vec<&str> = events.iter().map(|e| e.action.as_str()).collect();
-        assert!(
-            actions.contains(&"store.rotate-key"),
-            "rotate-key audit event missing; got {actions:?}",
-        );
-    }
-
-    #[test]
-    fn store_crud_actions_emit_audit_events() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state = crud_state(tmp.path());
-        let p = admin_principal(&[]);
-        let dir = tmp.path().join("data").join("audit-store");
-        do_admin_store_create(
-            &state,
-            &p,
-            AdminStoreCreateRequest {
-                name: "audit-store".into(),
-                backend: AdminStoreBackendKind::Plain,
-                dir: dir.to_string_lossy().to_string(),
-                description: None,
-            },
-        );
-        do_admin_store_update(
-            &state,
-            &p,
-            "audit-store",
-            AdminStoreUpdateRequest {
-                description: Some("hi".into()),
-            },
-        );
-        handle_admin_store_delete(&state, &p, "audit-store", true);
-        // Audit history lives under the admin-home store. Three
-        // events expected: create, update, delete.
-        let events = load_audit_history(state.admin_home_store.as_ref()).unwrap();
-        let actions: Vec<&str> = events.iter().map(|e| e.action.as_str()).collect();
-        assert!(
-            actions.contains(&"store.create"),
-            "create event missing; got {actions:?}",
-        );
-        assert!(actions.contains(&"store.update"));
-        assert!(actions.contains(&"store.delete"));
-        for e in &events {
-            assert_eq!(e.operator, "alice");
-            assert_eq!(e.resource.as_deref(), Some("store:audit-store"));
-        }
     }
 
     // ===== Users CRUD (ticket 240) =====
@@ -6486,59 +6317,7 @@ mod tests {
     }
 
     #[test]
-    fn user_mutations_emit_audit_events() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state = crud_state(tmp.path());
-        let alice_id = seed_admin_into(&state, "alice");
-        let p = admin_principal_with_id(&alice_id);
-        let create = do_admin_user_create(
-            &state,
-            &p,
-            underwrap_protocol::service::AdminUserCreateRequest {
-                username: "bob".into(),
-                password: "x".into(),
-                role: underwrap_protocol::service::AdminUserRole::Operator,
-                granted_stores: Vec::new(),
-            },
-        );
-        let bob_id = response_body_json(create)["id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        do_admin_user_update(
-            &state,
-            &p,
-            &bob_id,
-            underwrap_protocol::service::AdminUserUpdateRequest {
-                username: None,
-                role: None,
-                granted_stores: Some(vec!["work".into()]),
-            },
-        );
-        handle_admin_user_delete(&state, &p, &bob_id);
-        let events = load_audit_history(state.admin_home_store.as_ref()).unwrap();
-        let actions: Vec<&str> = events.iter().map(|e| e.action.as_str()).collect();
-        for required in ["user.create", "user.update", "user.delete"] {
-            assert!(
-                actions.contains(&required),
-                "missing {required} audit event; got {actions:?}",
-            );
-        }
-        for e in &events {
-            assert_eq!(e.operator, "alice");
-            assert!(
-                e.resource
-                    .as_deref()
-                    .unwrap_or_default()
-                    .starts_with("user:bob"),
-                "audit resource must be `user:bob`, got {:?}",
-                e.resource,
-            );
-        }
-    }
-
-    #[test]
-    fn operator_probing_ungranted_store_gets_404_and_emits_denied_grant_audit() {
+    fn operator_probing_ungranted_store_gets_404() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         // Seed a store and an operator with no grants.
@@ -6561,46 +6340,14 @@ mod tests {
         );
         // Operator with no grant for `private`.
         let op = operator_principal(&[]);
-        // List filters it out (no audit on filtered lists).
+        // List filtering hides ungranted stores from the operator.
         let resp = handle_admin_stores_list(&state, &op);
         let body = response_body_json(resp);
         assert_eq!(body["items"].as_array().unwrap().len(), 0);
-        // Probing the store by name 404s with a `denied_grant` audit.
         let resp = handle_admin_store_detail(&state, &op, "private");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let result = admin_store_for_principal(&state, &op, "private");
         assert!(result.is_err());
-        let events = load_audit_history(state.admin_home_store.as_ref()).unwrap();
-        let denied: Vec<&underwrap_protocol::service::AdminUiAuditEvent> = events
-            .iter()
-            .filter(|e| e.result == "denied_grant")
-            .collect();
-        assert!(
-            !denied.is_empty(),
-            "expected at least one denied_grant audit event; got {events:?}",
-        );
-        for e in denied {
-            assert_eq!(e.operator, "bob");
-            assert_eq!(e.resource.as_deref(), Some("store:private"));
-            assert_eq!(e.action, "store.access");
-        }
-    }
-
-    #[test]
-    fn admin_404_on_unknown_store_does_not_emit_denied_grant_audit() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state = crud_state(tmp.path());
-        seed_admin_into(&state, "alice");
-        let p = admin_principal(&[]);
-        let resp = handle_admin_store_detail(&state, &p, "nonexistent");
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let events = load_audit_history(state.admin_home_store.as_ref()).unwrap();
-        for e in &events {
-            assert_ne!(
-                e.result, "denied_grant",
-                "admin's 404 must not generate a denied_grant audit",
-            );
-        }
     }
 
     #[test]

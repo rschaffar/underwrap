@@ -36,9 +36,9 @@ use underwrap_protocol::service::{
     AdminAgentGrantsListResponse, AdminCatalogGetRequest, AdminCatalogGetResponse, AdminOkResponse,
     AdminPolicyGetRequest, AdminPolicyGetResponse, AdminPolicyPutRequest, AdminSecretDeleteRequest,
     AdminSecretDeleteResponse, AdminSecretListRequest, AdminSecretListResponse,
-    AdminSecretReadRequest, AdminSecretReadResponse, AdminSecretWriteRequest, AdminUiAuditEvent,
-    AdminUiAuditQueryRequest, AdminUiAuditQueryResponse, AdminUiOverviewResponse,
-    AdminUiOverviewStore, AdminUiWrapperCounts, AdminWritableSlot, AdminWritePermissionsGetRequest,
+    AdminSecretReadRequest, AdminSecretReadResponse, AdminSecretWriteRequest,
+    AdminUiOverviewResponse, AdminUiOverviewStore, AdminUiWrapperCounts, AdminWritableSlot,
+    AdminWritePermissionsGetRequest,
     AdminWritePermissionsResponse, AdminWritePermissionsSetRequest, CatalogEntry,
 };
 use underwrap_protocol::service::{
@@ -144,9 +144,6 @@ fn ts_bindings_in_sync_with_rust() {
         AdminUserResetPasswordRequest,
         AdminPasswordChangeRequest,
         AdminOkUserResponse,
-        AdminUiAuditEvent,
-        AdminUiAuditQueryRequest,
-        AdminUiAuditQueryResponse,
         AdminUiOverviewResponse,
         AdminUiOverviewStore,
         AdminUiWrapperCounts,
