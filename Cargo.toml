@@ -10,6 +10,7 @@ members = [
     "crates/frontend-secretsd",
     "crates/frontend-debug-tool",
     "crates/frontend-keyring-probe",
+    "crates/frontend-enroll",
     "crates/backend-backendd",
     "crates/integration-tests",
 ]

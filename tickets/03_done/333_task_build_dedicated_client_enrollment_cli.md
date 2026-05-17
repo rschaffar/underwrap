@@ -14,6 +14,6 @@ Build the per-instance enrollment helper/CLI:
 
 ## Acceptance criteria
 
-- [ ] Enrollment secret entry is interactive rather than argv-exposed.
-- [ ] Keypair generation happens locally on the client instance.
-- [ ] The CLI can install the returned credential atomically.
+- [x] Enrollment secret entry is interactive rather than argv-exposed.
+- [x] Keypair generation happens locally on the client instance.
+- [x] The CLI can install the returned credential atomically.

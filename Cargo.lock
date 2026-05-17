@@ -899,6 +899,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "frontend-enroll"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "rcgen",
+ "reqwest",
+ "serde_json",
+ "shared-protocol",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
 name = "frontend-exec"
 version = "0.1.0"
 dependencies = [
