@@ -37,17 +37,14 @@ describe("enrollment helpers", () => {
   });
 
   it("builds the local enrollment command without argv secret exposure", () => {
-    const command = buildEnrollmentCommand(
-      "/v1/enroll",
-      "enr_abc123",
-      "work",
-      "https://backend.example",
-    );
+    const command = buildEnrollmentCommand("/v1/enroll", "enr_abc123", "work");
     expect(command).toContain("sudo underwrap-enroll");
     expect(command).toContain("--invite-id enr_abc123");
-    expect(command).toContain("/etc/underwrap/client-work.pem");
-    expect(command).toContain("/etc/underwrap/client-work.key");
+    expect(command).toContain("--instance-config /etc/underwrap/instances/work.yaml");
+    expect(command).not.toContain("--url");
     expect(command).not.toContain("--ca-file");
+    expect(command).not.toContain("--client-cert-out");
+    expect(command).not.toContain("--client-key-out");
     expect(command).not.toContain("enrollment_secret");
   });
 });
@@ -203,6 +200,8 @@ describe("EnrollmentPage", () => {
     expect(await screen.findByText("secret-once")).toBeVisible();
     expect(screen.getByText(/sudo underwrap-enroll/)).toBeVisible();
     expect(screen.getByText(/--invite-id enr_abc123/)).toBeVisible();
-    expect(screen.getByText(/client-work\.pem/)).toBeVisible();
+    expect(
+      screen.getByText(/--instance-config \/etc\/underwrap\/instances\/work\.yaml/),
+    ).toBeVisible();
   });
 });

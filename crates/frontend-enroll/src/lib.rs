@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use underwrap_protocol::config::DaemonConfig;
 use underwrap_protocol::service::{
     EnrollmentSubmitRequest, EnrollmentSubmitResponse, ServiceErrorResponse,
 };
@@ -19,18 +20,29 @@ use zeroize::{Zeroize, Zeroizing};
 )]
 pub struct Cli {
     /// Enrollment endpoint URL or backend base URL. If the path does not end
-    /// with `/v1/enroll`, the helper appends it.
-    #[arg(long)]
-    pub url: String,
+    /// with `/v1/enroll`, the helper appends it. Required unless
+    /// `--instance-config` is given.
+    #[arg(long, conflicts_with = "instance_config")]
+    pub url: Option<String>,
     /// One-time invite id from the operator-approved enrollment flow.
     #[arg(long)]
     pub invite_id: String,
     /// Where to atomically install the generated client certificate PEM.
-    #[arg(long)]
-    pub client_cert_out: PathBuf,
+    /// Required unless `--instance-config` is given.
+    #[arg(long, conflicts_with = "instance_config")]
+    pub client_cert_out: Option<PathBuf>,
     /// Where to atomically install the generated client private key PEM.
+    /// Required unless `--instance-config` is given.
+    #[arg(long, conflicts_with = "instance_config")]
+    pub client_key_out: Option<PathBuf>,
+    /// Path to an underwrapd instance config (typically
+    /// `/etc/underwrap/instances/<instance>.yaml`). When given, the
+    /// helper reads `backend.url`, `backend.client_cert_file`, and
+    /// `backend.client_key_file` from that file and refuses any
+    /// duplicate explicit `--url` / `--client-cert-out` /
+    /// `--client-key-out`.
     #[arg(long)]
-    pub client_key_out: PathBuf,
+    pub instance_config: Option<PathBuf>,
     /// Pinned SHA-256 fingerprint (hex, lowercase, optional colons) of the
     /// backend's TLS server certificate. When set, the helper accepts that
     /// exact leaf without consulting any CA. Use this for backends served
@@ -40,6 +52,66 @@ pub struct Cli {
     /// and its fingerprint so an operator can decide whether to pin it.
     #[arg(long)]
     pub accept_server_ca_fingerprint: Option<String>,
+}
+
+/// Effective output locations and backend URL, resolved either from
+/// explicit CLI flags or from an instance config file.
+#[derive(Debug, Clone)]
+pub struct ResolvedTargets {
+    pub url: String,
+    pub client_cert_out: PathBuf,
+    pub client_key_out: PathBuf,
+}
+
+impl Cli {
+    pub fn resolve_targets(&self) -> Result<ResolvedTargets> {
+        if let Some(path) = self.instance_config.as_deref() {
+            let yaml = std::fs::read_to_string(path)
+                .with_context(|| format!("reading instance config '{}'", path.display()))?;
+            let cfg: DaemonConfig = serde_yaml::from_str(&yaml)
+                .with_context(|| format!("parsing instance config '{}'", path.display()))?;
+            anyhow::ensure!(
+                !cfg.backend.url.trim().is_empty(),
+                "instance config '{}' has an empty backend.url",
+                path.display()
+            );
+            let client_cert_out = cfg.backend.client_cert_file.with_context(|| {
+                format!(
+                    "instance config '{}' has no backend.client_cert_file",
+                    path.display()
+                )
+            })?;
+            let client_key_out = cfg.backend.client_key_file.with_context(|| {
+                format!(
+                    "instance config '{}' has no backend.client_key_file",
+                    path.display()
+                )
+            })?;
+            Ok(ResolvedTargets {
+                url: cfg.backend.url,
+                client_cert_out,
+                client_key_out,
+            })
+        } else {
+            let url = self
+                .url
+                .clone()
+                .context("either --instance-config or --url is required")?;
+            let client_cert_out = self
+                .client_cert_out
+                .clone()
+                .context("either --instance-config or --client-cert-out is required")?;
+            let client_key_out = self
+                .client_key_out
+                .clone()
+                .context("either --instance-config or --client-key-out is required")?;
+            Ok(ResolvedTargets {
+                url,
+                client_cert_out,
+                client_key_out,
+            })
+        }
+    }
 }
 
 /// How the helper should authenticate the backend's TLS server cert.
@@ -59,7 +131,8 @@ pub fn run(cli: Cli) -> Result<()> {
 
 pub fn run_with_secret(cli: Cli, mut secret: Zeroizing<String>) -> Result<()> {
     harden_process()?;
-    validate_output_paths(&cli.client_cert_out, &cli.client_key_out)?;
+    let targets = cli.resolve_targets()?;
+    validate_output_paths(&targets.client_cert_out, &targets.client_key_out)?;
 
     let trust = match cli.accept_server_ca_fingerprint.as_deref() {
         Some(raw) => ServerCertTrust::PinnedFingerprint(normalize_fingerprint(raw)?),
@@ -69,7 +142,7 @@ pub fn run_with_secret(cli: Cli, mut secret: Zeroizing<String>) -> Result<()> {
     eprintln!("underwrap-enroll: generating local client key and self-signed cert");
     let (key_pem, cert_pem) = generate_key_and_self_signed_cert()?;
 
-    let enrollment_url = normalize_enrollment_url(&cli.url)?;
+    let enrollment_url = normalize_enrollment_url(&targets.url)?;
 
     eprintln!("underwrap-enroll: submitting cert to backend");
     let response = match submit_enrollment(
@@ -93,10 +166,10 @@ pub fn run_with_secret(cli: Cli, mut secret: Zeroizing<String>) -> Result<()> {
 
     eprintln!("underwrap-enroll: installing credential files atomically");
     install_credential(
-        &cli.client_key_out,
+        &targets.client_key_out,
         key_pem.as_bytes(),
         0o600,
-        &cli.client_cert_out,
+        &targets.client_cert_out,
         cert_pem.as_bytes(),
         0o644,
     )?;
@@ -635,6 +708,106 @@ mod tests {
         assert!(key_pem.contains("BEGIN PRIVATE KEY"));
         assert!(cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(!cert_pem.contains("CERTIFICATE REQUEST"));
+    }
+
+    fn explicit_cli(url: &str, cert: &str, key: &str) -> Cli {
+        Cli {
+            url: Some(url.into()),
+            invite_id: "enr_test".into(),
+            client_cert_out: Some(PathBuf::from(cert)),
+            client_key_out: Some(PathBuf::from(key)),
+            instance_config: None,
+            accept_server_ca_fingerprint: None,
+        }
+    }
+
+    #[test]
+    fn resolve_targets_uses_explicit_flags() {
+        let cli = explicit_cli("https://x/", "/tmp/c.pem", "/tmp/c.key");
+        let t = cli.resolve_targets().unwrap();
+        assert_eq!(t.url, "https://x/");
+        assert_eq!(t.client_cert_out, PathBuf::from("/tmp/c.pem"));
+        assert_eq!(t.client_key_out, PathBuf::from("/tmp/c.key"));
+    }
+
+    #[test]
+    fn resolve_targets_reads_instance_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg = tmp.path().join("work.yaml");
+        std::fs::write(
+            &cfg,
+            r#"
+backend:
+  url: https://backend.example.internal:8443
+  client_cert_file: /etc/underwrap/client-work.pem
+  client_key_file: /etc/underwrap/client-work.key
+catalog_host: deepthought
+catalog_instance: work
+allowed_users: []
+wrappers: {}
+"#,
+        )
+        .unwrap();
+        let cli = Cli {
+            url: None,
+            invite_id: "enr_x".into(),
+            client_cert_out: None,
+            client_key_out: None,
+            instance_config: Some(cfg),
+            accept_server_ca_fingerprint: None,
+        };
+        let t = cli.resolve_targets().unwrap();
+        assert_eq!(t.url, "https://backend.example.internal:8443");
+        assert_eq!(
+            t.client_cert_out,
+            PathBuf::from("/etc/underwrap/client-work.pem")
+        );
+        assert_eq!(
+            t.client_key_out,
+            PathBuf::from("/etc/underwrap/client-work.key")
+        );
+    }
+
+    #[test]
+    fn resolve_targets_rejects_instance_config_without_cert_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg = tmp.path().join("noop.yaml");
+        std::fs::write(
+            &cfg,
+            r#"
+backend:
+  url: https://backend.example.internal:8443
+catalog_host: deepthought
+catalog_instance: work
+allowed_users: []
+wrappers: {}
+"#,
+        )
+        .unwrap();
+        let cli = Cli {
+            url: None,
+            invite_id: "enr_x".into(),
+            client_cert_out: None,
+            client_key_out: None,
+            instance_config: Some(cfg),
+            accept_server_ca_fingerprint: None,
+        };
+        let err = cli.resolve_targets().unwrap_err();
+        assert!(format!("{err:#}").contains("client_cert_file"));
+    }
+
+    #[test]
+    fn resolve_targets_requires_url_without_instance_config() {
+        let cli = Cli {
+            url: None,
+            invite_id: "enr_x".into(),
+            client_cert_out: Some(PathBuf::from("/tmp/c.pem")),
+            client_key_out: Some(PathBuf::from("/tmp/c.key")),
+            instance_config: None,
+            accept_server_ca_fingerprint: None,
+        };
+        let err = cli.resolve_targets().unwrap_err();
+        assert!(format!("{err:#}").contains("--url"));
     }
 
     #[test]

@@ -313,11 +313,12 @@ async fn invite_first_enrollment_flow_installs_credential_and_enables_runtime_ac
     let client_cert = install_dir.path().join("client-work.pem");
     let client_key = install_dir.path().join("client-work.key");
     let enroll_cli = frontend_enroll::Cli {
-        url: backend.admin_url.clone(),
+        url: Some(backend.admin_url.clone()),
         invite_id: invite.invite.id.clone(),
         accept_server_ca_fingerprint: Some(backend.server_cert_fingerprint.clone()),
-        client_cert_out: client_cert.clone(),
-        client_key_out: client_key.clone(),
+        client_cert_out: Some(client_cert.clone()),
+        client_key_out: Some(client_key.clone()),
+        instance_config: None,
     };
     let enroll_secret = Zeroizing::new(invite.enrollment_secret.clone());
     tokio::task::spawn_blocking(move || {
@@ -384,11 +385,12 @@ async fn re_enrollment_replaces_old_credential_end_to_end() {
     let first_cert = install_dir.path().join("client-work-first.pem");
     let first_key = install_dir.path().join("client-work-first.key");
     let first_cli = frontend_enroll::Cli {
-        url: backend.admin_url.clone(),
+        url: Some(backend.admin_url.clone()),
         invite_id: first_invite.invite.id.clone(),
         accept_server_ca_fingerprint: Some(backend.server_cert_fingerprint.clone()),
-        client_cert_out: first_cert.clone(),
-        client_key_out: first_key.clone(),
+        client_cert_out: Some(first_cert.clone()),
+        client_key_out: Some(first_key.clone()),
+        instance_config: None,
     };
     tokio::task::spawn_blocking(move || {
         frontend_enroll::run_with_secret(first_cli, Zeroizing::new(first_invite.enrollment_secret))
@@ -404,11 +406,12 @@ async fn re_enrollment_replaces_old_credential_end_to_end() {
     let second_cert = install_dir.path().join("client-work-second.pem");
     let second_key = install_dir.path().join("client-work-second.key");
     let second_cli = frontend_enroll::Cli {
-        url: backend.admin_url.clone(),
+        url: Some(backend.admin_url.clone()),
         invite_id: second_invite.invite.id.clone(),
         accept_server_ca_fingerprint: Some(backend.server_cert_fingerprint.clone()),
-        client_cert_out: second_cert.clone(),
-        client_key_out: second_key.clone(),
+        client_cert_out: Some(second_cert.clone()),
+        client_key_out: Some(second_key.clone()),
+        instance_config: None,
     };
     tokio::task::spawn_blocking(move || {
         frontend_enroll::run_with_secret(

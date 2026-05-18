@@ -64,19 +64,15 @@ export function parseEnrollmentHints(search: string): EnrollmentHints {
 }
 
 export function buildEnrollmentCommand(
-  enrollmentUrl: string,
+  _enrollmentUrl: string,
   inviteId: string,
   instanceName: string,
-  currentOrigin = typeof window !== "undefined" ? window.location.origin : "https://backend.example",
 ): string {
-  const resolvedUrl = new URL(enrollmentUrl, currentOrigin).toString();
-  const suffix = instanceName.trim() ? `-${instanceName.trim()}` : "";
+  const name = instanceName.trim() || "INSTANCE";
   return [
     "sudo underwrap-enroll",
-    `--url ${shellQuote(resolvedUrl)}`,
     `--invite-id ${shellQuote(inviteId)}`,
-    `--client-cert-out /etc/underwrap/client${suffix}.pem`,
-    `--client-key-out /etc/underwrap/client${suffix}.key`,
+    `--instance-config /etc/underwrap/instances/${name}.yaml`,
   ].join(" ");
 }
 

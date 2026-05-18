@@ -84,7 +84,21 @@ unit is in the VM test
 
 The helper verifies the backend's server certificate against the host's
 **system trust store**. When the backend's cert chains to a public or
-otherwise OS-trusted CA, no extra flags are needed:
+otherwise OS-trusted CA, no extra flags are needed.
+
+On NixOS, the `services.underwrap` module symlinks each instance's
+generated config to `/etc/underwrap/instances/<instance>.yaml`. Point
+`underwrap-enroll` at it and the helper reads the backend URL plus the
+client cert/key output paths from that file:
+
+```bash
+sudo underwrap-enroll \
+  --invite-id enr_… \
+  --instance-config /etc/underwrap/instances/work.yaml
+```
+
+Off NixOS (or if you want to override the config), pass the targets
+explicitly instead:
 
 ```bash
 sudo underwrap-enroll \
