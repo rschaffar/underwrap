@@ -128,7 +128,6 @@ in {
             tls = {
               cert_file = testServerPem;
               key_file = testServerKey;
-              client_ca_file = testCaPem;
             };
             clients = {
               underwrap-tunnel.store = "remote";
@@ -198,7 +197,6 @@ in {
             tls = {
               cert_file = testServerPem;
               key_file = testServerKey;
-              client_ca_file = testCaPem;
             };
             clients = {
               underwrap-local.store = "local";

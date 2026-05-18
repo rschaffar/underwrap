@@ -62,8 +62,6 @@ impl EnrollmentBackend {
             operators_file: Some(base.join("operators.json")),
             enrollment: Some(underwrap_backendd::server::EnrollmentConfig {
                 invites_file: Some(base.join("enrollment-invites.json")),
-                issuer_cert_file: pki.ca_cert.clone(),
-                issuer_key_file: pki.ca_key.clone(),
                 default_invite_ttl_secs: Some(3600),
             }),
             https: Some(underwrap_backendd::server::HttpsConfig {
@@ -71,7 +69,6 @@ impl EnrollmentBackend {
                 tls: underwrap_backendd::server::HttpsTlsConfig {
                     cert_file: pki.server_cert.clone(),
                     key_file: pki.server_key.clone(),
-                    client_ca_file: pki.ca_cert.clone(),
                 },
             }),
             admin: Some(underwrap_backendd::server::AdminConfig {
@@ -162,7 +159,6 @@ impl EnrollmentBackend {
 
 struct GeneratedBackendPki {
     ca_cert: PathBuf,
-    ca_key: PathBuf,
     server_cert: PathBuf,
     server_key: PathBuf,
 }
@@ -171,9 +167,12 @@ fn generate_backend_pki(base: &Path) -> Result<GeneratedBackendPki> {
     let pki_dir = base.join("pki");
     std::fs::create_dir_all(&pki_dir)?;
 
-    let ca_key = rcgen::KeyPair::generate().context("generating enrollment CA key")?;
+    // Server CA only — the backend's TLS cert is signed by this CA so the
+    // daemon's reqwest client can verify it. Client certs are now
+    // fingerprint-pinned and need no CA at all.
+    let ca_key = rcgen::KeyPair::generate().context("generating server CA key")?;
     let mut ca_dn = rcgen::DistinguishedName::new();
-    ca_dn.push(rcgen::DnType::CommonName, "underwrap-enrollment-test-ca");
+    ca_dn.push(rcgen::DnType::CommonName, "underwrap-server-test-ca");
     let mut ca_params = rcgen::CertificateParams::default();
     ca_params.distinguished_name = ca_dn;
     ca_params.serial_number = Some(rcgen::SerialNumber::from(1u64));
@@ -184,7 +183,7 @@ fn generate_backend_pki(base: &Path) -> Result<GeneratedBackendPki> {
         rcgen::KeyUsagePurpose::CrlSign,
     ];
     let ca = rcgen::CertifiedIssuer::self_signed(ca_params, ca_key)
-        .context("issuing enrollment CA certificate")?;
+        .context("issuing server CA certificate")?;
 
     let server_key = rcgen::KeyPair::generate().context("generating backend TLS key")?;
     let mut server_dn = rcgen::DistinguishedName::new();
@@ -205,17 +204,14 @@ fn generate_backend_pki(base: &Path) -> Result<GeneratedBackendPki> {
         .context("issuing backend TLS certificate")?;
 
     let ca_cert_path = pki_dir.join("ca.pem");
-    let ca_key_path = pki_dir.join("ca.key");
     let server_cert_path = pki_dir.join("server.pem");
     let server_key_path = pki_dir.join("server.key");
     std::fs::write(&ca_cert_path, ca.pem())?;
-    std::fs::write(&ca_key_path, ca.key().serialize_pem())?;
     std::fs::write(&server_cert_path, server_cert.pem())?;
     std::fs::write(&server_key_path, server_key.serialize_pem())?;
 
     Ok(GeneratedBackendPki {
         ca_cert: ca_cert_path,
-        ca_key: ca_key_path,
         server_cert: server_cert_path,
         server_key: server_key_path,
     })
@@ -301,14 +297,12 @@ async fn invite_first_enrollment_flow_installs_credential_and_enables_runtime_ac
     let install_dir = tempfile::TempDir::new().unwrap();
     let client_cert = install_dir.path().join("client-work.pem");
     let client_key = install_dir.path().join("client-work.key");
-    let issuer_ca = install_dir.path().join("issuer-ca.pem");
     let enroll_cli = frontend_enroll::Cli {
         url: backend.admin_url.clone(),
         invite_id: invite.invite.id.clone(),
         ca_file: backend.service_ca_cert.clone(),
         client_cert_out: client_cert.clone(),
         client_key_out: client_key.clone(),
-        issuer_ca_out: Some(issuer_ca.clone()),
     };
     let enroll_secret = Zeroizing::new(invite.enrollment_secret.clone());
     tokio::task::spawn_blocking(move || {
@@ -323,7 +317,6 @@ async fn invite_first_enrollment_flow_installs_credential_and_enables_runtime_ac
     let ca_pem = std::fs::read(&backend.service_ca_cert).unwrap();
     assert!(String::from_utf8_lossy(&cert_pem).contains("BEGIN CERTIFICATE"));
     assert!(String::from_utf8_lossy(&key_pem).contains("BEGIN PRIVATE KEY"));
-    assert_eq!(std::fs::read(&issuer_ca).unwrap(), ca_pem);
 
     let client = mtls_client(&ca_pem, &cert_pem, &key_pem);
     let status = client
@@ -381,7 +374,6 @@ async fn re_enrollment_replaces_old_credential_end_to_end() {
         ca_file: backend.service_ca_cert.clone(),
         client_cert_out: first_cert.clone(),
         client_key_out: first_key.clone(),
-        issuer_ca_out: None,
     };
     tokio::task::spawn_blocking(move || {
         frontend_enroll::run_with_secret(first_cli, Zeroizing::new(first_invite.enrollment_secret))
@@ -402,7 +394,6 @@ async fn re_enrollment_replaces_old_credential_end_to_end() {
         ca_file: backend.service_ca_cert.clone(),
         client_cert_out: second_cert.clone(),
         client_key_out: second_key.clone(),
-        issuer_ca_out: None,
     };
     tokio::task::spawn_blocking(move || {
         frontend_enroll::run_with_secret(

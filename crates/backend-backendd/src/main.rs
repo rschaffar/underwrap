@@ -220,8 +220,6 @@ client_instances_file: /var/u/client-instances.json
 operators_file: /var/u/operators.json
 enrollment:
   invites_file: /var/u/enrollment-invites.json
-  issuer_cert_file: /var/u/ca.pem
-  issuer_key_file: /var/u/ca.key
 "#,
         )
         .unwrap();

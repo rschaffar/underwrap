@@ -527,14 +527,16 @@ pub struct AdminEnrollmentInviteCreateResponse {
 pub struct EnrollmentSubmitRequest {
     pub invite_id: String,
     pub enrollment_secret: String,
-    pub csr_pem: String,
+    /// PEM-encoded self-signed client certificate generated locally by the
+    /// helper. The backend stores its SHA-256 fingerprint and does not
+    /// re-issue or chain-validate the cert; only the fingerprint authorizes
+    /// later runtime mTLS connections.
+    pub cert_pem: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EnrollmentSubmitResponse {
     pub client_instance_id: String,
-    pub cert_pem: String,
-    pub ca_cert_pem: String,
     pub cert_fingerprint: String,
 }
 

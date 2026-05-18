@@ -80,7 +80,6 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
             tls: underwrap_backendd::server::HttpsTlsConfig {
                 cert_file: server_cert,
                 key_file: server_key,
-                client_ca_file: ca_cert.clone(),
             },
         }),
         admin: Some(underwrap_backendd::server::AdminConfig {
@@ -221,7 +220,6 @@ async fn underwrapd_binary_start_and_read() {
             tls: underwrap_backendd::server::HttpsTlsConfig {
                 cert_file: server_cert.clone(),
                 key_file: server_key.clone(),
-                client_ca_file: ca_cert.clone(),
             },
         }),
         admin: Some(underwrap_backendd::server::AdminConfig {

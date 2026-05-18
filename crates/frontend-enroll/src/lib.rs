@@ -21,18 +21,17 @@ pub struct Cli {
     /// One-time invite id from the operator-approved enrollment flow.
     #[arg(long)]
     pub invite_id: String,
-    /// CA bundle used to verify the backend service certificate.
+    /// CA bundle used to verify the backend's server certificate. This is the
+    /// backend's server-cert trust anchor and is unrelated to client-cert
+    /// authentication, which uses fingerprint pinning rather than a CA.
     #[arg(long)]
     pub ca_file: PathBuf,
-    /// Where to atomically install the issued client certificate PEM.
+    /// Where to atomically install the generated client certificate PEM.
     #[arg(long)]
     pub client_cert_out: PathBuf,
-    /// Where to atomically install the locally generated client private key PEM.
+    /// Where to atomically install the generated client private key PEM.
     #[arg(long)]
     pub client_key_out: PathBuf,
-    /// Optional output path for the certificate issuer PEM returned by the backend.
-    #[arg(long)]
-    pub issuer_ca_out: Option<PathBuf>,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -42,25 +41,21 @@ pub fn run(cli: Cli) -> Result<()> {
 
 pub fn run_with_secret(cli: Cli, mut secret: Zeroizing<String>) -> Result<()> {
     harden_process()?;
-    validate_output_paths(
-        &cli.client_cert_out,
-        &cli.client_key_out,
-        cli.issuer_ca_out.as_deref(),
-    )?;
+    validate_output_paths(&cli.client_cert_out, &cli.client_key_out)?;
 
-    eprintln!("underwrap-enroll: generating local client key and CSR");
-    let (key_pem, csr_pem) = generate_key_and_csr()?;
+    eprintln!("underwrap-enroll: generating local client key and self-signed cert");
+    let (key_pem, cert_pem) = generate_key_and_self_signed_cert()?;
 
     let enrollment_url = normalize_enrollment_url(&cli.url)?;
 
-    eprintln!("underwrap-enroll: submitting CSR to backend");
+    eprintln!("underwrap-enroll: submitting cert to backend");
     let response = submit_enrollment(
         &enrollment_url,
         &cli.ca_file,
         EnrollmentSubmitRequest {
             invite_id: cli.invite_id,
             enrollment_secret: secret.to_string(),
-            csr_pem,
+            cert_pem: cert_pem.clone(),
         },
     )?;
     secret.zeroize();
@@ -71,11 +66,8 @@ pub fn run_with_secret(cli: Cli, mut secret: Zeroizing<String>) -> Result<()> {
         key_pem.as_bytes(),
         0o600,
         &cli.client_cert_out,
-        response.cert_pem.as_bytes(),
+        cert_pem.as_bytes(),
         0o644,
-        cli.issuer_ca_out
-            .as_deref()
-            .map(|path| (path, response.ca_cert_pem.as_bytes(), 0o644)),
     )?;
 
     eprintln!(
@@ -119,16 +111,9 @@ pub fn normalize_enrollment_url(input: &str) -> Result<String> {
     }
 }
 
-fn validate_output_paths(
-    cert_out: &Path,
-    key_out: &Path,
-    issuer_ca_out: Option<&Path>,
-) -> Result<()> {
+fn validate_output_paths(cert_out: &Path, key_out: &Path) -> Result<()> {
     let mut seen = std::collections::BTreeSet::new();
-    for path in [Some(cert_out), Some(key_out), issuer_ca_out]
-        .into_iter()
-        .flatten()
-    {
+    for path in [cert_out, key_out] {
         let key = path.as_os_str().to_owned();
         anyhow::ensure!(seen.insert(key), "output paths must be distinct");
         anyhow::ensure!(
@@ -139,20 +124,25 @@ fn validate_output_paths(
     Ok(())
 }
 
-fn generate_key_and_csr() -> Result<(Zeroizing<String>, String)> {
+fn generate_key_and_self_signed_cert() -> Result<(Zeroizing<String>, String)> {
     let key_pair = rcgen::KeyPair::generate().context("generating client keypair")?;
     let key_pem = Zeroizing::new(key_pair.serialize_pem());
 
+    // The backend authenticates this cert by SHA-256 fingerprint of the leaf;
+    // it never consults the subject, SAN, EKU, or validity window. We still
+    // set sensible client-auth-shaped values so standard tooling (openssl,
+    // wire-level inspectors) renders the cert without surprises.
     let mut dn = rcgen::DistinguishedName::new();
-    dn.push(rcgen::DnType::CommonName, "underwrap-enrollment");
+    dn.push(rcgen::DnType::CommonName, "underwrap-client");
     let mut params = rcgen::CertificateParams::default();
     params.distinguished_name = dn;
-    let csr_pem = params
-        .serialize_request(&key_pair)
-        .context("generating CSR")?
-        .pem()
-        .context("encoding CSR as PEM")?;
-    Ok((key_pem, csr_pem))
+    params.is_ca = rcgen::IsCa::NoCa;
+    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+    let cert = params
+        .self_signed(&key_pair)
+        .context("generating self-signed client cert")?;
+    Ok((key_pem, cert.pem()))
 }
 
 struct EchoDisabledGuard {
@@ -285,13 +275,9 @@ fn install_credential(
     cert_out: &Path,
     cert_pem: &[u8],
     cert_mode: u32,
-    issuer_ca: Option<(&Path, &[u8], u32)>,
 ) -> Result<()> {
     write_atomic(key_out, key_pem, key_mode)?;
     write_atomic(cert_out, cert_pem, cert_mode)?;
-    if let Some((path, pem, mode)) = issuer_ca {
-        write_atomic(path, pem, mode)?;
-    }
     Ok(())
 }
 
@@ -318,15 +304,16 @@ mod tests {
     #[test]
     fn distinct_output_paths_are_required() {
         let path = Path::new("/tmp/same.pem");
-        let err = validate_output_paths(path, path, None).unwrap_err();
+        let err = validate_output_paths(path, path).unwrap_err();
         assert!(format!("{err:#}").contains("must be distinct"));
     }
 
     #[test]
-    fn key_and_csr_are_generated_locally() {
-        let (key_pem, csr_pem) = generate_key_and_csr().unwrap();
+    fn key_and_self_signed_cert_are_generated_locally() {
+        let (key_pem, cert_pem) = generate_key_and_self_signed_cert().unwrap();
         assert!(key_pem.contains("BEGIN PRIVATE KEY"));
-        assert!(csr_pem.contains("BEGIN CERTIFICATE REQUEST"));
+        assert!(cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(!cert_pem.contains("CERTIFICATE REQUEST"));
     }
 
     #[cfg(unix)]
@@ -335,30 +322,15 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let key = tmp.path().join("client.key");
         let cert = tmp.path().join("client.pem");
-        let ca = tmp.path().join("issuer.pem");
-        install_credential(
-            &key,
-            b"KEY",
-            0o600,
-            &cert,
-            b"CERT",
-            0o644,
-            Some((&ca, b"CA", 0o644)),
-        )
-        .unwrap();
+        install_credential(&key, b"KEY", 0o600, &cert, b"CERT", 0o644).unwrap();
         assert_eq!(std::fs::read(&key).unwrap(), b"KEY");
         assert_eq!(std::fs::read(&cert).unwrap(), b"CERT");
-        assert_eq!(std::fs::read(&ca).unwrap(), b"CA");
         assert_eq!(
             std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
             0o600
         );
         assert_eq!(
             std::fs::metadata(&cert).unwrap().permissions().mode() & 0o777,
-            0o644
-        );
-        assert_eq!(
-            std::fs::metadata(&ca).unwrap().permissions().mode() & 0o777,
             0o644
         );
     }

@@ -697,20 +697,25 @@ but not the basic wrapper flow on the target host.
 `underwrap-backendd` authenticates two distinct surfaces:
 
 - **Runtime** (`/v1/*`) — mutual TLS. Every `underwrapd` instance gets
-  one client certificate. The certificate's subject CN is the instance
-  principal; the backend maps it to one store and serves only that
-  store. Unknown principals are rejected before any request handler
-  runs.
-- **Admin** (`/v1/admin/*`) — bearer tokens. Each operator has one
-  opaque token loaded from a file at startup. Tokens are compared in
-  constant time. The matched operator name is recorded in structured
-  backend logs.
+  one client certificate, generated locally as a **self-signed leaf** by
+  `underwrap-enroll` during the operator-approved enrollment flow. The
+  backend authenticates by SHA-256 fingerprint match against its
+  runtime-client registry: a custom rustls `ClientCertVerifier` accepts
+  any presented leaf at the TLS layer (still verifying the handshake
+  signature against the leaf's public key, so a stolen cert without its
+  private key cannot be replayed), and `resolve_runtime_client` then
+  rejects any cert whose fingerprint is not registered as `Active`. There
+  is no CA chain validation, no subject/SAN/EKU consultation, and no
+  enrollment signing key on the backend.
+- **Admin** (`/v1/admin/*`) — same HTTPS listener, no client certificate.
+  Operators authenticate with username + Argon2id password hash + signed
+  session cookie (HMAC-SHA256) + per-session CSRF token on every POST.
 
-The admin listener is plain HTTP. When it needs to be reachable beyond
-localhost, the operator is expected to front it with a local
-TLS-terminating reverse proxy. The bundled `underwrap-admin-ui` is
-itself one such client, designed to sit on a jump host or behind the
-same TLS front.
+The CSR-signing model from earlier iterations has been removed: the
+backend no longer holds a private CA key, no `issuer_cert_file` /
+`issuer_key_file` / `client_ca_file` configuration is required, and the
+attack surface around CSR scrubbing is gone. Identity comes from
+fingerprint membership in `client-instances.json`, full stop.
 
 ---
 

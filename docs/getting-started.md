@@ -41,10 +41,12 @@ from the backend the operator configured.
   inputs.underwrap.url = "github:rschaffar/underwrap";
   ```
 
-- A CA + server + client certificate pair for mTLS between the frontend
-  daemon and the backend. See
-  [Deploying the central backend](remote-backend.md) for one-liner
-  recipes with `step-ca`.
+- A server CA + server certificate for the backend's HTTPS listener (used
+  by the frontend daemon to verify the backend). Runtime client certs do
+  **not** need a CA — the helper generates a self-signed leaf during
+  enrollment and the backend authenticates connections by fingerprint
+  pinning. See [Deploying the central backend](remote-backend.md) for
+  one-liner recipes with `step-ca`.
 
 ## 1. Start the backend
 
@@ -60,7 +62,6 @@ https:
   tls:
     cert_file: /etc/underwrap-backend/server.pem
     key_file: /etc/underwrap-backend/server.key
-    client_ca_file: /etc/underwrap-backend/ca.pem
 
 admin:
   session_key_file: /run/keys/underwrap-admin-session-key

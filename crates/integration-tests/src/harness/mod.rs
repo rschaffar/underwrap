@@ -176,7 +176,6 @@ impl TestDaemon {
                 tls: underwrap_backendd::server::HttpsTlsConfig {
                     cert_file: pki.server_cert.clone(),
                     key_file: pki.server_key.clone(),
-                    client_ca_file: pki.ca_cert.clone(),
                 },
             }),
             admin: Some(underwrap_backendd::server::AdminConfig {

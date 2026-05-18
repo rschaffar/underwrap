@@ -30,10 +30,6 @@ use underwrap_store::StorageBackend;
 pub struct HttpsTlsConfig {
     pub cert_file: PathBuf,
     pub key_file: PathBuf,
-    /// CA certificate bundle trusted for runtime client certificates.
-    /// The listener requests client certificates on every connection,
-    /// but only the runtime `/v1/*` endpoints require one.
-    pub client_ca_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,11 +87,6 @@ pub struct EnrollmentConfig {
     /// as an empty registry. Defaults to [`DEFAULT_ENROLLMENT_INVITES_FILE`].
     #[serde(default)]
     pub invites_file: Option<PathBuf>,
-    /// CA certificate that signs runtime client certificates.
-    pub issuer_cert_file: PathBuf,
-    /// Private key for `issuer_cert_file`. Required only on the backend; the
-    /// client still generates its own private key locally and submits a CSR.
-    pub issuer_key_file: PathBuf,
     /// Invite lifetime in seconds. Defaults to 24 hours.
     #[serde(default)]
     pub default_invite_ttl_secs: Option<u64>,
@@ -193,8 +184,6 @@ impl Default for StoreRegistry {
 struct EnrollmentRuntimeState {
     invites: std::sync::RwLock<HashMap<String, crate::enrollments::EnrollmentInviteRecord>>,
     invites_file: PathBuf,
-    issuer_cert_pem: String,
-    issuer_key_pem: String,
     default_invite_ttl_secs: u64,
 }
 
@@ -212,9 +201,8 @@ struct AdminRuntimeState {
     stores_file: PathBuf,
     /// Path of the backend-managed runtime client-instance registry file.
     client_instances_file: PathBuf,
-    /// Enrollment invite registry and issuing CA material. `None` disables
-    /// invite creation and CSR consumption while leaving the rest of the admin
-    /// API usable.
+    /// Enrollment invite registry. `None` disables invite creation and
+    /// enrollment submission while leaving the rest of the admin API usable.
     enrollment: Option<EnrollmentRuntimeState>,
     /// Configured roots under which a created store's `dir` must
     /// live. Mutating handlers reject requests whose `dir` is outside
@@ -396,23 +384,9 @@ fn build_enrollment_runtime(
     };
     let invites_file = config.invites_file();
     let invites = crate::enrollments::load_enrollment_invites(&invites_file)?;
-    let issuer_cert_pem = std::fs::read_to_string(&config.issuer_cert_file).with_context(|| {
-        format!(
-            "reading enrollment issuer certificate {}",
-            config.issuer_cert_file.display()
-        )
-    })?;
-    let issuer_key_pem = std::fs::read_to_string(&config.issuer_key_file).with_context(|| {
-        format!(
-            "reading enrollment issuer key {}",
-            config.issuer_key_file.display()
-        )
-    })?;
     Ok(Some(EnrollmentRuntimeState {
         invites: std::sync::RwLock::new(invites),
         invites_file,
-        issuer_cert_pem,
-        issuer_key_pem,
         default_invite_ttl_secs: config.default_invite_ttl_secs.unwrap_or(24 * 60 * 60),
     }))
 }
@@ -579,24 +553,15 @@ fn validate_runtime_client_mappings(
 }
 
 fn build_https_acceptor(config: &HttpsTlsConfig) -> Result<TlsAcceptor> {
-    use rustls::server::WebPkiClientVerifier;
-    use rustls::{RootCertStore, ServerConfig};
+    use rustls::ServerConfig;
 
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let certs = load_cert_chain(&config.cert_file)?;
     let key = load_private_key(&config.key_file)?;
-    let client_ca_certs = load_cert_chain(&config.client_ca_file)?;
 
-    let mut roots = RootCertStore::empty();
-    for cert in client_ca_certs {
-        roots.add(cert).context("adding client CA certificate")?;
-    }
-
-    let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
-        .allow_unauthenticated()
-        .build()
-        .context("building rustls client verifier")?;
+    let verifier: Arc<dyn rustls::server::danger::ClientCertVerifier> =
+        Arc::new(FingerprintClientCertVerifier::new());
 
     let server_config = ServerConfig::builder()
         .with_client_cert_verifier(verifier)
@@ -604,6 +569,75 @@ fn build_https_acceptor(config: &HttpsTlsConfig) -> Result<TlsAcceptor> {
         .context("building rustls server config")?;
 
     Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
+/// Client certificate verifier that accepts any presented leaf at the TLS
+/// layer. Authorization is performed downstream by SHA-256 fingerprint lookup
+/// against the runtime-client registry in [`resolve_runtime_client`]: the
+/// chain, subject, EKU, and validity window of the leaf are not consulted
+/// here, only its hash. An unknown-fingerprint cert still fails at the
+/// application layer; a known-fingerprint cert is admitted regardless of how
+/// it was signed.
+///
+/// The handshake signature is still verified against the leaf's public key so
+/// a stolen cert without its private key cannot be replayed.
+#[derive(Debug)]
+struct FingerprintClientCertVerifier {
+    supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
+}
+
+impl FingerprintClientCertVerifier {
+    fn new() -> Self {
+        let provider = rustls::crypto::ring::default_provider();
+        Self {
+            supported_algs: provider.signature_verification_algorithms,
+        }
+    }
+}
+
+impl rustls::server::danger::ClientCertVerifier for FingerprintClientCertVerifier {
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
+
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        Ok(rustls::server::danger::ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.supported_algs.supported_schemes()
+    }
 }
 
 /// Validate the browser-facing admin configuration.
@@ -3911,59 +3945,6 @@ fn logical_instance_matches(
     record.instance_name == invite.instance_name && record.hostname_hint == invite.hostname_hint
 }
 
-fn random_certificate_serial() -> rcgen::SerialNumber {
-    use rand::RngCore;
-    let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    bytes[0] &= 0x7f;
-    if bytes.iter().all(|b| *b == 0) {
-        bytes[15] = 1;
-    }
-    rcgen::SerialNumber::from_slice(&bytes)
-}
-
-fn issue_client_certificate_from_csr(
-    enrollment: &EnrollmentRuntimeState,
-    invite: &crate::enrollments::EnrollmentInviteRecord,
-    client_instance_id: &str,
-    csr_pem: &str,
-) -> Result<(String, String)> {
-    let mut csr = rcgen::CertificateSigningRequestParams::from_pem(csr_pem)
-        .context("parsing and verifying CSR")?;
-    let mut dn = rcgen::DistinguishedName::new();
-    dn.push(
-        rcgen::DnType::CommonName,
-        format!("underwrap-client:{client_instance_id}"),
-    );
-    dn.push(rcgen::DnType::OrganizationName, "underwrap");
-    dn.push(
-        rcgen::DnType::OrganizationalUnitName,
-        format!("instance:{}", invite.instance_name),
-    );
-    let mut params = rcgen::CertificateParams::default();
-    params.serial_number = Some(random_certificate_serial());
-    params.distinguished_name = dn;
-    params.is_ca = rcgen::IsCa::NoCa;
-    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
-    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-    params.use_authority_key_identifier_extension = true;
-    // Security invariant: the CSR is only public-key transport and proof of
-    // possession. Drop every requested subject, SAN, CA, KU, and EKU value and
-    // replace them with backend-controlled parameters before signing.
-    csr.params = params;
-
-    let issuer_key = rcgen::KeyPair::from_pem(&enrollment.issuer_key_pem)
-        .context("loading enrollment issuer private key")?;
-    let issuer = rcgen::Issuer::from_ca_cert_pem(&enrollment.issuer_cert_pem, issuer_key)
-        .context("loading enrollment issuer certificate")?;
-    let cert = csr
-        .signed_by(&issuer)
-        .context("signing client certificate")?;
-    let cert_pem = cert.pem();
-    let fingerprint = crate::runtime_clients::cert_fingerprint_from_pem(&cert_pem)?;
-    Ok((cert_pem, fingerprint))
-}
-
 fn do_enrollment_submit(
     state: &AdminRuntimeState,
     body: EnrollmentSubmitRequest,
@@ -4042,21 +4023,18 @@ fn do_enrollment_submit(
         );
     }
 
-    let (cert_pem, cert_fingerprint) = match issue_client_certificate_from_csr(
-        enrollment,
-        &invite,
-        &client_instance_id,
-        &body.csr_pem,
-    ) {
-        Ok(issued) => issued,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_csr",
-                &format!("could not issue certificate from CSR: {e:#}"),
-            );
-        }
-    };
+    let current_credential =
+        match crate::runtime_clients::current_credential_from_pem(body.cert_pem, Some(now)) {
+            Ok(current) => current,
+            Err(e) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_client_certificate",
+                    &format!("parsing client certificate: {e:#}"),
+                );
+            }
+        };
+    let cert_fingerprint = current_credential.cert_fingerprint.clone();
     if instances.iter().any(|(other_id, existing)| {
         other_id != &client_instance_id
             && existing.current_credential.cert_fingerprint == cert_fingerprint
@@ -4067,20 +4045,6 @@ fn do_enrollment_submit(
             "client credential fingerprint already exists",
         );
     }
-
-    let current_credential =
-        match crate::runtime_clients::current_credential_from_pem(cert_pem.clone(), Some(now)) {
-            Ok(current) => current,
-            Err(e) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "invalid_issued_certificate",
-                    &format!(
-                        "issued client certificate was not a single current credential: {e:#}"
-                    ),
-                );
-            }
-        };
     let existing_instance = instances.get(&client_instance_id).cloned();
     let record = crate::runtime_clients::ClientInstanceRecord {
         id: client_instance_id.clone(),
@@ -4153,8 +4117,6 @@ fn do_enrollment_submit(
         StatusCode::OK,
         &EnrollmentSubmitResponse {
             client_instance_id,
-            cert_pem,
-            ca_cert_pem: enrollment.issuer_cert_pem.clone(),
             cert_fingerprint,
         },
     )
@@ -6976,25 +6938,9 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     }
 
     fn test_enrollment_runtime(tmp: &std::path::Path) -> EnrollmentRuntimeState {
-        let key = rcgen::KeyPair::generate().unwrap();
-        let mut dn = rcgen::DistinguishedName::new();
-        dn.push(rcgen::DnType::CommonName, "underwrap-test-enrollment-ca");
-        let mut params = rcgen::CertificateParams::default();
-        params.not_before = rcgen::date_time_ymd(2025, 1, 1);
-        params.not_after = rcgen::date_time_ymd(2036, 1, 1);
-        params.serial_number = Some(rcgen::SerialNumber::from(42));
-        params.distinguished_name = dn;
-        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        params.key_usages = vec![
-            rcgen::KeyUsagePurpose::KeyCertSign,
-            rcgen::KeyUsagePurpose::CrlSign,
-        ];
-        let cert = params.self_signed(&key).unwrap();
         EnrollmentRuntimeState {
             invites: std::sync::RwLock::new(HashMap::new()),
             invites_file: tmp.join("enrollment-invites.json"),
-            issuer_cert_pem: cert.pem(),
-            issuer_key_pem: key.serialize_pem(),
             default_invite_ttl_secs: 3600,
         }
     }
@@ -7005,17 +6951,25 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         state
     }
 
-    fn malicious_client_csr_pem() -> String {
+    /// Self-signed cert PEM as the helper would generate it. The subject,
+    /// SAN, KU, and EKU values here are intentionally junk: under the new
+    /// fingerprint-pinning model the backend never consults them and the
+    /// client is free to put whatever it wants in the cert it submits.
+    fn client_self_signed_cert_pem() -> String {
         let key = rcgen::KeyPair::generate().unwrap();
         let mut dn = rcgen::DistinguishedName::new();
         dn.push(rcgen::DnType::CommonName, "attacker-controlled-cn");
         let mut params =
             rcgen::CertificateParams::new(vec!["attacker.example".to_string()]).unwrap();
         params.distinguished_name = dn;
-        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-        params.serialize_request(&key).unwrap().pem().unwrap()
+        params.is_ca = rcgen::IsCa::NoCa;
+        params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        params.not_before = rcgen::date_time_ymd(2025, 1, 1);
+        params.not_after = rcgen::date_time_ymd(2035, 1, 1);
+        params.serial_number = Some(rcgen::SerialNumber::from(1));
+        let cert = params.self_signed(&key).unwrap();
+        cert.pem()
     }
 
     #[test]
@@ -7144,7 +7098,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     }
 
     #[test]
-    fn enrollment_submit_consumes_invite_and_ignores_csr_identity_fields() {
+    fn enrollment_submit_stores_client_cert_fingerprint_and_consumes_invite() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = enrollment_test_state(tmp.path());
         let p = admin_principal(&[]);
@@ -7177,30 +7131,35 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let invite_id = create["invite"]["id"].as_str().unwrap().to_string();
         let secret = create["enrollment_secret"].as_str().unwrap().to_string();
 
+        let submitted_pem = client_self_signed_cert_pem();
         let response = do_enrollment_submit(
             &state,
             EnrollmentSubmitRequest {
                 invite_id: invite_id.clone(),
                 enrollment_secret: secret,
-                csr_pem: malicious_client_csr_pem(),
+                cert_pem: submitted_pem.clone(),
             },
         );
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body_json(response);
         let client_id = body["client_instance_id"].as_str().unwrap().to_string();
+        let expected_fingerprint =
+            crate::runtime_clients::cert_fingerprint_from_pem(&submitted_pem).unwrap();
+        assert_eq!(body["cert_fingerprint"], expected_fingerprint);
         assert!(
-            body["cert_pem"]
-                .as_str()
-                .unwrap()
-                .contains("BEGIN CERTIFICATE")
+            body.get("cert_pem").is_none(),
+            "backend no longer returns a cert PEM",
         );
-        assert_eq!(
-            body["ca_cert_pem"],
-            state.enrollment.as_ref().unwrap().issuer_cert_pem
+        assert!(
+            body.get("ca_cert_pem").is_none(),
+            "backend no longer returns an issuer CA PEM",
         );
 
         let instances = state.client_instances.read().unwrap();
         let record = instances.get(&client_id).unwrap();
+        // Instance metadata comes from the operator-approved invite, not the
+        // client-controlled cert — that is what binds the cert to a specific
+        // instance/store regardless of what subject/SAN/EKU the cert claims.
         assert_eq!(record.display_name, "laptop work");
         assert_eq!(record.hostname_hint.as_deref(), Some("deepthought"));
         assert_eq!(record.instance_name, "work");
@@ -7209,33 +7168,12 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             record.status,
             crate::runtime_clients::ClientInstanceStatus::Active
         );
+        // The cert is stored verbatim: the backend never re-issues or rewrites
+        // the client-controlled bytes.
+        assert_eq!(record.current_credential.cert_pem, submitted_pem);
         assert_eq!(
             record.current_credential.cert_fingerprint,
-            body["cert_fingerprint"].as_str().unwrap()
-        );
-
-        let cert_pem = body["cert_pem"].as_str().unwrap();
-        let mut reader = std::io::BufReader::new(cert_pem.as_bytes());
-        let cert_der = rustls_pemfile::certs(&mut reader).next().unwrap().unwrap();
-        let (_, cert) = x509_parser::parse_x509_certificate(cert_der.as_ref()).unwrap();
-        let cn = cert
-            .subject()
-            .iter_common_name()
-            .next()
-            .unwrap()
-            .as_str()
-            .unwrap();
-        assert_eq!(cn, format!("underwrap-client:{client_id}"));
-        assert!(!cert_pem.contains("attacker-controlled-cn"));
-        assert!(
-            cert.subject_alternative_name().unwrap().is_none(),
-            "CSR-requested SAN must be ignored"
-        );
-        let eku = cert.extended_key_usage().unwrap().unwrap().value;
-        assert!(eku.client_auth);
-        assert!(
-            !eku.server_auth,
-            "CSR-requested serverAuth EKU must be ignored"
+            expected_fingerprint
         );
 
         let invite = state.enrollment.as_ref().unwrap().invites.read().unwrap()[&invite_id].clone();
@@ -7251,7 +7189,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             EnrollmentSubmitRequest {
                 invite_id,
                 enrollment_secret: "not-used".into(),
-                csr_pem: malicious_client_csr_pem(),
+                cert_pem: client_self_signed_cert_pem(),
             },
         );
         assert_eq!(replay.status(), StatusCode::CONFLICT);
@@ -7298,7 +7236,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 EnrollmentSubmitRequest {
                     invite_id: create["invite"]["id"].as_str().unwrap().to_string(),
                     enrollment_secret: create["enrollment_secret"].as_str().unwrap().to_string(),
-                    csr_pem: malicious_client_csr_pem(),
+                    cert_pem: client_self_signed_cert_pem(),
                 },
             ));
             let this_id = submit["client_instance_id"].as_str().unwrap().to_string();

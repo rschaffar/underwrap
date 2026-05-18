@@ -17,13 +17,17 @@ For the local-only shape, run both on the same machine and point
 
 ## Preparing the PKI
 
-mTLS is the backend's one true authentication. You need:
+You only need a **server-side** CA:
 
-- a CA certificate used to sign both server and client certificates,
+- a CA certificate used to sign the backend's server certificate,
 - a server certificate whose SANs include the address operators and the
-  target host will use (`localhost`, an internal hostname, or an IP),
-- one client certificate per target instance. The **subject CN** is the
-  instance principal the backend will recognize.
+  target host will use (`localhost`, an internal hostname, or an IP).
+
+Client certificates are **not** CA-signed. During enrollment the
+`underwrap-enroll` helper generates a self-signed leaf locally; the
+backend authenticates later mTLS connections by SHA-256 fingerprint
+lookup against its runtime-client registry. There is no enrollment CA,
+no CSR signing, and no `client_ca_file` to manage.
 
 A minimal `step-ca` recipe:
 
@@ -37,15 +41,11 @@ step certificate create \
   --profile leaf --ca ca.pem --ca-key ca.key \
   --san backend.example.internal --san 127.0.0.1 \
   --not-after 8760h --insecure --no-password
-
-step certificate create \
-  "underwrap-work@vm-01" client-work.pem client-work.key \
-  --profile leaf --ca ca.pem --ca-key ca.key \
-  --not-after 8760h --insecure --no-password
 ```
 
 Copy `ca.pem`, `server.pem`, and `server.key` to the backend host. Copy
-`ca.pem`, `client-work.pem`, and `client-work.key` to the target host.
+`ca.pem` to each target host so its `underwrapd` can verify the backend's
+server cert.
 
 ## Backend host
 
@@ -63,7 +63,6 @@ https:
   tls:
     cert_file: /etc/underwrap-backend/server.pem
     key_file: /etc/underwrap-backend/server.key
-    client_ca_file: /etc/underwrap-backend/ca.pem
 
 admin:
   session_key_file: /run/keys/underwrap-admin-session-key
