@@ -155,11 +155,13 @@ let
         }
       ) inst.wrappers);
 
-    etcFiles = lib.mapAttrs' (configName: source:
+    etcFiles = (lib.mapAttrs' (configName: source:
       lib.nameValuePair "underwrap/wrappers/${configName}.yaml" {
         inherit source;
       }
-    ) wrapperConfigs;
+    ) wrapperConfigs) // {
+      "underwrap/instances/${instName}.yaml".source = configFile;
+    };
 
     tmpfiles = [
       "d ${runDir} 0755 ${daemonUser} ${daemonGroup} -"
