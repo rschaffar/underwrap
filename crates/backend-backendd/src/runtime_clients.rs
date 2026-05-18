@@ -29,8 +29,6 @@ pub struct ClientInstanceRecord {
     pub id: String,
     /// Editable operator-facing display name.
     pub display_name: String,
-    /// Attested configured `services.underwrap.instances.<name>`.
-    pub instance_name: String,
     /// Current mapped store id.
     pub current_store_id: String,
     /// Whether this runtime client instance may currently authenticate.
@@ -128,12 +126,6 @@ pub fn load_client_instances(path: &Path) -> Result<HashMap<String, ClientInstan
         anyhow::ensure!(
             !record.display_name.trim().is_empty(),
             "runtime client instance '{}' has an empty display name in {}",
-            record.id,
-            path.display()
-        );
-        anyhow::ensure!(
-            !record.instance_name.trim().is_empty(),
-            "runtime client instance '{}' has an empty instance_name in {}",
             record.id,
             path.display()
         );
@@ -271,7 +263,6 @@ mod tests {
         ClientInstanceRecord {
             id: id.to_string(),
             display_name: format!("Display {id}"),
-            instance_name: "work".into(),
             current_store_id: "store_work".into(),
             status: ClientInstanceStatus::Active,
             last_seen_at: Some(123),
@@ -371,13 +362,13 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("client-instances.json");
         let mut rec = sample("inst_a");
-        rec.instance_name.clear();
+        rec.display_name.clear();
         let doc = ClientInstancesDocument {
             version: 1,
             instances: vec![rec],
         };
         std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
         let err = load_client_instances(&path).expect_err("empty required fields must fail");
-        assert!(format!("{err:#}").contains("empty instance_name"));
+        assert!(format!("{err:#}").contains("empty display name"));
     }
 }

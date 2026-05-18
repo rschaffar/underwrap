@@ -3248,7 +3248,6 @@ fn admin_client_instance_list_item(
     AdminClientInstanceListItem {
         id: record.id.clone(),
         display_name: record.display_name.clone(),
-        instance_name: record.instance_name.clone(),
         current_store_id: record.current_store_id.clone(),
         current_store_name,
         status: client_instance_status_to_wire(record.status),
@@ -3266,7 +3265,6 @@ fn admin_client_instance_detail(
     AdminClientInstanceDetailResponse {
         id: record.id.clone(),
         display_name: record.display_name.clone(),
-        instance_name: record.instance_name.clone(),
         current_store_id: record.current_store_id.clone(),
         current_store_name,
         status: client_instance_status_to_wire(record.status),
@@ -3381,10 +3379,6 @@ fn do_admin_client_instance_create(
         Ok(v) => v,
         Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_display_name", msg),
     };
-    let instance_name = match validate_store_name(&body.instance_name) {
-        Ok(v) => v,
-        Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_instance_name", msg),
-    };
     let current_credential =
         match crate::runtime_clients::current_credential_from_pem(body.cert_pem, body.issued_at) {
             Ok(current) => current,
@@ -3441,7 +3435,6 @@ fn do_admin_client_instance_create(
     let record = crate::runtime_clients::ClientInstanceRecord {
         id: id.clone(),
         display_name,
-        instance_name,
         current_store_id: body.current_store_id,
         status: client_instance_status_from_wire(body.status),
         last_seen_at: None,
@@ -5094,7 +5087,6 @@ mod tests {
             crate::runtime_clients::ClientInstanceRecord {
                 id: "inst_local".to_string(),
                 display_name: "Local".to_string(),
-                instance_name: "work".to_string(),
                 current_store_id: store_id.to_string(),
                 status,
                 last_seen_at: None,
@@ -6215,7 +6207,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             crate::runtime_clients::ClientInstanceRecord {
                 id: "client_a".into(),
                 display_name: "Laptop".into(),
-                instance_name: "work".into(),
                 current_store_id: plain_id.clone(),
                 status: crate::runtime_clients::ClientInstanceStatus::Active,
                 last_seen_at: None,
@@ -6287,7 +6278,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &p,
             AdminClientInstanceCreateRequest {
                 display_name: "laptop-work".into(),
-                instance_name: "work".into(),
                 current_store_id: work_id.clone(),
                 status: AdminClientInstanceStatus::Active,
                 cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
@@ -6368,7 +6358,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &op,
             AdminClientInstanceCreateRequest {
                 display_name: "laptop-work".into(),
-                instance_name: "work".into(),
                 current_store_id: store_id.clone(),
                 status: AdminClientInstanceStatus::Active,
                 cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),

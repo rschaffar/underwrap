@@ -373,7 +373,6 @@ pub struct AdminClientInstanceActionState {
 pub struct AdminClientInstanceListItem {
     pub id: String,
     pub display_name: String,
-    pub instance_name: String,
     pub current_store_id: String,
     pub current_store_name: String,
     pub status: AdminClientInstanceStatus,
@@ -395,7 +394,6 @@ pub struct AdminClientInstancesListResponse {
 pub struct AdminClientInstanceDetailResponse {
     pub id: String,
     pub display_name: String,
-    pub instance_name: String,
     pub current_store_id: String,
     pub current_store_name: String,
     pub status: AdminClientInstanceStatus,
@@ -413,7 +411,6 @@ pub struct AdminClientInstanceDetailResponse {
 #[ts(export)]
 pub struct AdminClientInstanceCreateRequest {
     pub display_name: String,
-    pub instance_name: String,
     pub current_store_id: String,
     pub status: AdminClientInstanceStatus,
     pub cert_pem: String,

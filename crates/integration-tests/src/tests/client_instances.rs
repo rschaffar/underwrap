@@ -15,7 +15,6 @@ async fn admin_api_lists_backend_managed_runtime_client_instances() {
     assert_eq!(items.len(), 1);
     let item = &items[0];
     assert_eq!(item.display_name, "underwrap-local");
-    assert_eq!(item.instance_name, "local");
     assert_eq!(item.current_store_id, "test");
     assert!(matches!(item.status, AdminClientInstanceStatus::Active));
     assert!(!item.current_credential_fingerprint.is_empty());

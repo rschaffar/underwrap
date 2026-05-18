@@ -157,9 +157,6 @@ export function ClientInstancesPage({
                   >
                     <td className="px-4 py-3">
                       <div className="font-medium text-(--color-fg)">{item.display_name}</div>
-                      <div className="text-xs text-(--color-muted)">
-                        instance {item.instance_name}
-                      </div>
                     </td>
                     <td className="px-4 py-3 text-(--color-muted)">
                       <div>{item.current_store_name}</div>
@@ -256,7 +253,6 @@ function CreateClientInstanceDialog({
   onSuccess: () => Promise<void>;
 }) {
   const [displayName, setDisplayName] = useState("");
-  const [instanceName, setInstanceName] = useState("");
   const [storeId, setStoreId] = useState(stores[0]?.id ?? "");
   const [status, setStatus] = useState<"active" | "disabled">("active");
   const [certPem, setCertPem] = useState("");
@@ -275,7 +271,6 @@ function CreateClientInstanceDialog({
   const trimmedCert = certPem.trim();
   const canSubmit =
     displayName.trim() !== "" &&
-    instanceName.trim() !== "" &&
     storeId !== "" &&
     trimmedCert !== "" &&
     !mut.isPending;
@@ -300,15 +295,6 @@ function CreateClientInstanceDialog({
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               placeholder="laptop-work"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="create-instance-name">Instance name</Label>
-            <Input
-              id="create-instance-name"
-              value={instanceName}
-              onChange={(e) => setInstanceName(e.target.value)}
-              placeholder="work"
             />
           </div>
           <div className="space-y-1.5">
@@ -369,7 +355,6 @@ function CreateClientInstanceDialog({
             onClick={() =>
               mut.mutate({
                 display_name: displayName.trim(),
-                instance_name: instanceName.trim(),
                 current_store_id: storeId,
                 status,
                 cert_pem: trimmedCert,

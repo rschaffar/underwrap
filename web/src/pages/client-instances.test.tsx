@@ -79,7 +79,6 @@ describe("ClientInstancesPage", () => {
       {
         id: "client_work",
         display_name: "Work laptop",
-        instance_name: "work",
         current_store_id: "store_work",
         current_store_name: "Work",
         status: "active" as const,
@@ -96,7 +95,6 @@ describe("ClientInstancesPage", () => {
       {
         id: "client_disabled",
         display_name: "Retired workstation",
-        instance_name: "legacy",
         current_store_id: "store_other",
         current_store_name: "Other",
         status: "disabled" as const,
@@ -123,7 +121,6 @@ describe("ClientInstancesPage", () => {
     vi.mocked(postClientInstanceCreate).mockResolvedValue({
       id: "client_new",
       display_name: "new",
-      instance_name: "new",
       current_store_id: "store_work",
       current_store_name: "Work",
       status: "active",
@@ -143,7 +140,6 @@ describe("ClientInstancesPage", () => {
       display_name:
         body.display_name ??
         (id === "client_work" ? "Work laptop" : "Retired workstation"),
-      instance_name: id === "client_work" ? "work" : "legacy",
       current_store_id: body.current_store_id ?? (id === "client_work" ? "store_work" : "store_other"),
       current_store_name: body.current_store_id === "store_other" ? "Other" : body.current_store_id === "store_work" ? "Work" : id === "client_work" ? "Work" : "Other",
       status: body.status ?? (id === "client_work" ? "active" : "disabled"),
@@ -160,14 +156,13 @@ describe("ClientInstancesPage", () => {
     }));
   });
 
-  it("shows display name first with attested instance metadata", async () => {
+  it("shows display name, store, and status for each instance", async () => {
     renderWithQuery(
       <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
     expect(within(row).getByText("Work laptop")).toBeInTheDocument();
-    expect(within(row).getByText(/instance work/i)).toBeInTheDocument();
     expect(within(row).getByText("Work")).toBeInTheDocument();
     expect(within(row).getByText("active")).toBeInTheDocument();
   });
@@ -232,14 +227,12 @@ describe("ClientInstancesPage", () => {
       name: /create client instance/i,
     });
     await user.type(within(dialog).getByLabelText(/display name/i), "laptop-work");
-    await user.type(within(dialog).getByLabelText(/instance name/i), "work");
     const pem = "-----BEGIN CERTIFICATE-----\nFAKECERT\n-----END CERTIFICATE-----\n";
     await user.type(within(dialog).getByLabelText(/certificate pem/i), pem);
     await user.click(within(dialog).getByRole("button", { name: /^create$/i }));
 
     expect(postClientInstanceCreate).toHaveBeenCalledWith({
       display_name: "laptop-work",
-      instance_name: "work",
       current_store_id: "store_work",
       status: "active",
       cert_pem: pem.trim(),

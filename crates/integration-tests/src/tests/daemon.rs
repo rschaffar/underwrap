@@ -187,7 +187,6 @@ async fn underwrapd_binary_start_and_read() {
     let client_instance = underwrap_backendd::runtime_clients::ClientInstanceRecord {
         id: "inst_underwrap_local".to_string(),
         display_name: "underwrap-local".to_string(),
-        instance_name: "binary-test".to_string(),
         current_store_id: "test".to_string(),
         status: underwrap_backendd::runtime_clients::ClientInstanceStatus::Active,
         last_seen_at: None,
