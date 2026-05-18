@@ -232,7 +232,6 @@
       systemIndependent = {
         # NixOS modules.
         nixosModules.default = ./nix/modules/underwrap.nix;
-        nixosModules.backend = ./nix/modules/underwrap-backend.nix;
       };
 
       # NixOS VM test (x86_64-linux only since it needs KVM).
@@ -259,7 +258,6 @@
                 underwrapPackage = perSystem.packages.${system}.default;
                 goKeyringProbePackage = perSystem.packages.${system}.underwrap-go-keyring-probe;
                 nixosModule = self.nixosModules.default;
-                backendModule = self.nixosModules.backend;
               };
 
               testScript = ''

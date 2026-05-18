@@ -195,14 +195,13 @@ pub struct ServiceErrorResponse {
     pub message: String,
 }
 
-/// Provenance of a store as visible to the admin UI. Mirrors
-/// [`underwrap_protocol::config::StoreSource`] but lives here as well
-/// so DTOs in this module are self-contained on the wire.
+/// Provenance of a store as visible to the admin UI. Stores are now
+/// backend-managed records, so the only source exposed on the wire is
+/// `dynamic`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum AdminStoreSource {
-    Declarative,
     Dynamic,
 }
 

@@ -1,5 +1,5 @@
 # VM test node: both local and remote instances on one machine.
-{ pkgs, underwrapPackage, goKeyringProbePackage, nixosModule, backendModule, ... }:
+{ pkgs, underwrapPackage, goKeyringProbePackage, nixosModule, ... }:
 
 let
   testCaPem = pkgs.writeText "underwrap-test-ca.pem" (builtins.readFile ../../testdata/pki/ca.pem);
@@ -66,22 +66,11 @@ let
     exec ${pkgs.coreutils}/bin/ln -s /etc/passwd "$HOME/.config/underwrap-dir-a/evil"
   '';
 in {
-  imports = [ nixosModule backendModule ];
+  imports = [ nixosModule ];
 
-  # Per-daemon declarative store definitions. The VM test runs two
-  # backendds on one host (a contrived stand-in for "two separate
-  # deployments"), so we can't share `/etc/underwrap-backend/stores.d/`
-  # between them — each daemon must only open stores it has read
-  # access to. We materialise each store's YAML under a daemon-
-  # specific `/etc/underwrap-backend/<role>/stores.d/<name>.yaml` and
-  # point each daemon at its own dir via `stores_declarative_dir`.
-  #
-  # Real deployments will use `services.underwrap-backend.declarative
-  # Stores` instead (defined in `nix/modules/underwrap-backend.nix`),
-  # which materialises into the default `/etc/underwrap-backend/
-  # stores.d/`. That module is exercised by inclusion in the flake's
-  # `nixosModules.backend` output; this test bypasses it because of
-  # the two-daemon-on-one-host wrinkle.
+  # The VM test runs two backendds on one host (a contrived stand-in
+  # for "two separate deployments"), so it seeds each daemon with its
+  # own store material directly under a daemon-specific `/etc/` path.
   environment.etc."underwrap-backend-remote/stores.d/remote.yaml".text = builtins.toJSON {
     backend = "plain";
     dir = "/var/lib/underwrap-backend/secrets";

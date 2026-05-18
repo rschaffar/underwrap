@@ -41,8 +41,7 @@ describe("permission helpers", () => {
     expect(canMutateStores(null)).toBe(false);
   });
 
-  it("declarative stores are read-only", () => {
-    expect(isStoreReadOnly("declarative")).toBe(true);
+  it("stores are never read-only by source", () => {
     expect(isStoreReadOnly("dynamic")).toBe(false);
   });
 });
@@ -53,15 +52,15 @@ describe("StoresPage", () => {
       {
         id: "store_work",
         name: "work",
-        source: "declarative" as const,
+        source: "dynamic" as const,
         backend: "encrypted" as const,
-        description: "Nix-owned",
+        description: "Primary store",
         created_at: undefined,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
-          can_edit_metadata: false,
-          can_rotate_key: false,
-          can_delete_now: false,
+          can_edit_metadata: true,
+          can_rotate_key: true,
+          can_delete_now: true,
           can_force_delete: false,
         },
       },
@@ -116,7 +115,7 @@ describe("StoresPage", () => {
     ).toBeNull();
   });
 
-  it("disables edit/delete on declarative rows and tooltips why", async () => {
+  it("enables edit/delete on mutable rows when actions allow it", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockJson(200, sampleList),
     );
@@ -128,12 +127,9 @@ describe("StoresPage", () => {
       ),
     );
     const workRow = (await screen.findByText("work")).closest("tr")!;
-    const editBtn = workRow.querySelector("button")!;
-    expect(editBtn).toBeDisabled();
-    expect(editBtn).toHaveAttribute(
-      "title",
-      expect.stringMatching(/declarative store/i),
-    );
+    const buttons = workRow.querySelectorAll("button");
+    expect(buttons[0]!).toBeEnabled();
+    expect(buttons[1]!).toBeEnabled();
   });
 
   it("admin can open the create dialog", async () => {

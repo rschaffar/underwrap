@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { ShieldCheck, ShieldOff } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -47,11 +47,11 @@ export function canMutateStores(p: WhoamiResponse | null): boolean {
   return !!(p && p.authenticated && p.role === "admin");
 }
 
-/** True when a store's row should show its mutation controls disabled. */
+/** Stores are backend-managed records; none are read-only by source. */
 export function isStoreReadOnly(
-  source: AdminStoreDetailResponse["source"],
+  _source: AdminStoreDetailResponse["source"],
 ): boolean {
-  return source === "declarative";
+  return false;
 }
 
 function toStoreDetail(
@@ -77,9 +77,6 @@ function storeEditDisabledTitle(
   isAdmin: boolean,
 ): string | undefined {
   if (!isAdmin) return "Only admins may manage stores.";
-  if (isStoreReadOnly(item.source)) {
-    return "Declarative store — edit the Nix module that owns it.";
-  }
   if (!item.actions.can_edit_metadata) {
     return "Store metadata cannot currently be edited.";
   }
@@ -91,9 +88,6 @@ function storeDeleteTitle(
   isAdmin: boolean,
 ): string | undefined {
   if (!isAdmin) return "Only admins may manage stores.";
-  if (isStoreReadOnly(item.source)) {
-    return "Declarative store — edit the Nix module that owns it.";
-  }
   if (item.actions.can_delete_now) return undefined;
   if (item.actions.can_force_delete) {
     return "Store contains secrets — a force delete confirmation is required.";
@@ -128,9 +122,8 @@ export function StoresPage({ principal }: StoresPageProps) {
         <div>
           <h2 className="text-xl font-semibold text-(--color-fg)">Stores</h2>
           <p className="mt-1 text-sm text-(--color-muted)">
-            Declarative stores are owned by the Nix configuration and
-            cannot be edited from the UI. Dynamic stores are managed
-            here.
+            Stores are backend-managed records. Create, edit, and delete
+            them here.
           </p>
         </div>
         {isAdmin ? (
@@ -269,21 +262,9 @@ function SourceBadge({
 }: {
   source: AdminStoresListResponse["items"][number]["source"];
 }) {
-  const isDeclarative = source === "declarative";
   return (
-    <span
-      className={
-        "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs " +
-        (isDeclarative
-          ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
-          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300")
-      }
-    >
-      {isDeclarative ? (
-        <ShieldOff className="h-3 w-3" aria-hidden />
-      ) : (
-        <ShieldCheck className="h-3 w-3" aria-hidden />
-      )}
+    <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300">
+      <ShieldCheck className="h-3 w-3" aria-hidden />
       {source}
     </span>
   );

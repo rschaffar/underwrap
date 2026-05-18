@@ -54,33 +54,26 @@ underwrap-backendd`, no NixOS wrapper machinery required) and write
 `/etc/underwrap-backend/config.yaml`:
 
 ```yaml
-stores:
-  work:
-    backend: plain
-    dir: /var/lib/underwrap-backend/work
+stores_file: /var/lib/underwrap-backend/stores.json
+client_instances_file: /var/lib/underwrap-backend/client-instances.json
+operators_file: /var/lib/underwrap-backend/operators.json
 
-service:
+https:
   listen: 0.0.0.0:18443
   tls:
     cert_file: /etc/underwrap-backend/server.pem
     key_file: /etc/underwrap-backend/server.key
     client_ca_file: /etc/underwrap-backend/ca.pem
-  clients:
-    underwrap-work@vm-01:
-      store: work
 
 admin:
-  listen: 127.0.0.1:19443
-  tokens:
-    ops:
-      token_file: /run/keys/underwrap-admin-ops
+  session_key_file: /run/keys/underwrap-admin-session-key
 ```
 
-Provision the admin token:
+Provision the admin session key:
 
 ```bash
-head -c 32 /dev/urandom | base64 > /run/keys/underwrap-admin-ops
-chmod 0400 /run/keys/underwrap-admin-ops
+head -c 32 /dev/urandom > /run/keys/underwrap-admin-session-key
+chmod 0400 /run/keys/underwrap-admin-session-key
 ```
 
 Start the daemon with whichever init system suits you. A minimal systemd
@@ -132,38 +125,12 @@ document means **every request with no matching rule is denied**, so new
 wrappers always need at least one allow-rule before they can do
 anything.
 
-The short way:
+The short way is now the admin UI in the browser:
 
-```bash
-# from the backend host
-TOKEN=$(cat /run/keys/underwrap-admin-ops)
-
-# Create an allow rule so work-gh can read the env slot of github/token.
-curl -sS -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-        "store": "work",
-        "rule": {
-          "id": "gh-token-read",
-          "wrapper": "work-gh",
-          "resource": "env:github/token",
-          "operation": "env.read",
-          "effect": "allow"
-        }
-      }' \
-  http://127.0.0.1:19443/v1/admin/rule/upsert
-
-# Store the actual env slot value.
-curl -sS -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"store":"work","secret_id":"github/token/env/GH_TOKEN",
-       "material_b64":"'"$(printf 'ghp_…' | base64)"'"}' \
-  http://127.0.0.1:19443/v1/admin/secret/write
-```
-
-The [admin UI](admin-ui.md) offers the same primitives with a browser.
+- bootstrap the first admin operator
+- create the `work` store
+- create the runtime client enrollment for the target instance
+- add the wrapper grant and secret material through the UI
 
 ## Wrapper approval modes
 

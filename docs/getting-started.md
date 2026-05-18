@@ -21,10 +21,10 @@ After this, move on to:
 ## What you will build
 
 ```text
-operator browser ─► underwrap-admin-ui ─► underwrap-backendd
-                                            ▲
-                                            │ mTLS
-                                            │
+operator browser ─► underwrap-backendd
+                         ▲
+                         │ HTTPS + runtime client certs
+                         │
 user@console ─► work-jira (setgid) ─► underwrapd-work ─┘
 ```
 
@@ -51,33 +51,28 @@ from the backend the operator configured.
 Write `/etc/underwrap-backend/config.yaml`:
 
 ```yaml
-stores:
-  work:
-    backend: plain
-    dir: /var/lib/underwrap-backend/work
+stores_file: /var/lib/underwrap-backend/stores.json
+client_instances_file: /var/lib/underwrap-backend/client-instances.json
+operators_file: /var/lib/underwrap-backend/operators.json
 
-service:
+https:
   listen: 127.0.0.1:18443
   tls:
     cert_file: /etc/underwrap-backend/server.pem
     key_file: /etc/underwrap-backend/server.key
     client_ca_file: /etc/underwrap-backend/ca.pem
-  clients:
-    underwrap-work@localhost:
-      store: work
 
 admin:
-  listen: 127.0.0.1:19443
-  tokens:
-    ops:
-      token_file: /run/keys/underwrap-admin-ops
+  session_key_file: /run/keys/underwrap-admin-session-key
+  stores_data_roots:
+    - /var/lib/underwrap-backend
 ```
 
-Provision the admin token and start the daemon:
+Provision the admin session key and start the daemon:
 
 ```bash
-head -c 32 /dev/urandom | base64 > /run/keys/underwrap-admin-ops
-chmod 0400 /run/keys/underwrap-admin-ops
+head -c 32 /dev/urandom > /run/keys/underwrap-admin-session-key
+chmod 0400 /run/keys/underwrap-admin-session-key
 underwrap-backendd --config /etc/underwrap-backend/config.yaml
 ```
 
@@ -132,37 +127,16 @@ The module creates:
 - setgid wrapper: `/run/wrappers/bin/work-jira`
 - wrapper sidecar config: `/etc/underwrap/wrappers/work-jira.yaml`
 
-## 3. Store the secret and authorize the wrapper
+## 3. Create the store, store the secret, and authorize the wrapper
 
-The backend starts empty. Put the token in, then add an allow rule so
-`work-jira` can read it:
+The backend starts empty. Open the admin UI in a browser, bootstrap the
+first admin operator, create a store named `work`, then:
 
-```bash
-TOKEN=$(cat /run/keys/underwrap-admin-ops)
+- add the secret `jira/api-token`
+- add a grant allowing wrapper `work-jira` on host `localhost` for the
+  user who will run it
 
-# Store the token. Value is base64-encoded bytes.
-curl -sS -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"store":"work","secret_id":"jira/api-token",
-       "material_b64":"'"$(printf 'your-real-jira-token' | base64)"'"}' \
-  http://127.0.0.1:19443/v1/admin/secret/write
-
-# Allow the wrapper to read it.
-curl -sS -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"store":"work","rule":{
-        "id":"work-jira-read",
-        "wrapper":"work-jira",
-        "resource":"secret:jira/api-token",
-        "operation":"secret.read",
-        "effect":"allow"
-      }}' \
-  http://127.0.0.1:19443/v1/admin/rule/upsert
-```
-
-Alternately, run the [admin UI](admin-ui.md) and do it from the browser.
+The admin UI is now the canonical way to perform this setup.
 
 ## 4. Initialize `jira-cli`
 
@@ -199,12 +173,7 @@ ls -l /run/wrappers/bin/work-jira
 
 Policy and secret stored?
 
-```bash
-curl -sS -H "Authorization: Bearer $TOKEN" \
-  -X POST -H "Content-Type: application/json" \
-  -d '{"store":"work"}' \
-  http://127.0.0.1:19443/v1/admin/policy/get | jq
-```
+Open the admin UI and inspect the `work` store's policy and secrets.
 
 ## Common next steps
 

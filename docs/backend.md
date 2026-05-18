@@ -88,66 +88,37 @@ admin:
   keys_dir: /var/lib/underwrap-backend/keys
 ```
 
-### Store definition files
+### Store registry
 
-Each store gets its own YAML under one of the two `stores_*_dir`
-trees. Filename is `<store-name>.yaml`. The `<store-name>` must
-match `[a-z0-9][a-z0-9_-]*`.
+Stores are persisted in the backend-managed `stores.json` registry.
+Each entry is a `StoreRecord` with a stable internal `id`, an
+operator-facing `name`, optional `description`, optional `created_at`,
+and the storage backend itself.
 
-```yaml
-# /etc/underwrap-backend/stores.d/work.yaml (declarative; owned by Nix)
-backend: encrypted
-dir: /var/lib/underwrap-backend/work
-key_file: /run/keys/underwrap-work.key
-description: Production work secrets.
+Example dynamic store record:
+
+```json
+{
+  "version": 1,
+  "stores": [
+    {
+      "id": "store_scratch",
+      "name": "scratch",
+      "description": "Ad-hoc operator scratchpad.",
+      "created_at": 1729123456,
+      "backend": "plain",
+      "dir": "/var/lib/underwrap-backend/data/scratch"
+    }
+  ]
+}
 ```
 
-```yaml
-# /var/lib/underwrap-backend/stores.d/scratch.yaml (dynamic; admin API)
-backend: plain
-dir: /var/lib/underwrap-backend/data/scratch
-description: Ad-hoc operator scratchpad.
-created_at: 1729123456
-```
-
-- The **declarative** directory is owned by the deployment tool (the
-  NixOS `services.underwrap-backend.declarativeStores` option writes
-  symlinks into `/nix/store`). The admin API refuses to mutate
-  declarative stores — edit the source tree instead.
-- The **dynamic** directory is owned by `underwrap-backendd` itself.
-  `POST /v1/admin/stores` writes here atomically via
-  `tempfile::persist()`.
-- Duplicate names across the two directories are a fatal startup
-  error that prints both source paths.
-- Runtime client access is resolved dynamically from the
-  backend-managed client-instance registry. The presented client
-  certificate fingerprint must map to an active enrolled instance.
-- Operator login state is resolved dynamically from the
-  backend-managed operator-state file plus the session cookie.
-
-### NixOS module
-
-The flake exposes `nixosModules.backend` with one option:
-
-```nix
-services.underwrap-backend.declarativeStores = {
-  work = {
-    backend = "encrypted";
-    dir = "/var/lib/underwrap-backend/work";
-    keyFile = "/run/keys/underwrap-work.key";   # sops-managed
-    description = "Production work secrets.";
-  };
-  personal = {
-    backend = "plain";
-    dir = "/var/lib/underwrap-backend/personal";
-  };
-};
-```
-
-Each entry materialises as
-`/etc/underwrap-backend/stores.d/<name>.yaml`, a symlink into the
-Nix store. The module asserts at evaluation time that encrypted
-stores supply a `keyFile`.
+`POST /v1/admin/stores` updates this registry atomically via
+`tempfile::persist()`. Runtime client access is resolved dynamically
+from the backend-managed client-instance registry. The presented client
+certificate fingerprint must map to an active enrolled instance.
+Operator login state is resolved dynamically from the backend-managed
+operator-state file plus the session cookie.
 
 ## Runtime API
 
@@ -184,17 +155,16 @@ session cookies; state-changing requests must also satisfy the CSRF and
   ignores CSR-requested subject/SAN/KU/EKU values; it signs a client-auth
   certificate with backend-controlled identity fields and creates or
   replaces the matching runtime client instance credential.
-- `GET /v1/admin/stores` — list of configured stores
-- `POST /v1/admin/stores` — create a dynamic store. For
+- `GET /v1/admin/stores` — list of backend-managed stores
+- `POST /v1/admin/stores` — create a store. For
   `backend = "encrypted"` the backend auto-generates a 32-byte master
   key, writes it to `<keys_dir>/<store>.key` with mode 0600, and
   returns the key value **exactly once** in the response as
   `key_hex`. Subsequent reads never include the key.
-- `GET /v1/admin/stores/{name}`, `PUT`, `DELETE` — dynamic-store
-  detail / update / delete. Mutations on declarative stores are
-  refused with `409 declarative_immutable`.
+- `GET /v1/admin/stores/{name}`, `PUT`, `DELETE` — store detail /
+  update / delete.
 - `POST /v1/admin/stores/{name}/rotate-key` — generate a fresh
-  master key for an encrypted dynamic store, replace the key file
+  master key for an encrypted store, replace the key file
   atomically, reopen the backend, and return the new key value once.
   **Limitation:** v1 of rotation does not re-encrypt existing
   ciphertext, so secrets already stored under the store become
