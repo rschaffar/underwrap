@@ -504,6 +504,19 @@ in {
       };
     }] ++ lib.mapAttrsToList (_: i: i.securityWrappers) instances);
 
+    # Operator-facing helpers on PATH. `underwrap-keygen` generates a
+    # self-signed client credential locally; an admin then pastes the
+    # cert PEM into the backend admin UI. Exposed as a small symlink
+    # derivation so the operator gets the keygen helper without also
+    # pulling underwrap-debug-tool / underwrap-backendd onto every
+    # user's PATH.
+    environment.systemPackages = [
+      (pkgs.runCommandLocal "underwrap-keygen-bin" { } ''
+        mkdir -p $out/bin
+        ln -s ${cfg.package}/bin/underwrap-keygen $out/bin/underwrap-keygen
+      '')
+    ];
+
     # Sidecar configs.
     environment.etc = lib.mkMerge (lib.mapAttrsToList (_: i: i.etcFiles) instances);
 
