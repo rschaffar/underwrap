@@ -108,8 +108,19 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     // Validate config at startup: every wrapper.secret must reference a declared secret.
     validate_config(&config)?;
 
-    let unenrolled =
-        config.backend.client_cert_file.is_none() && config.backend.client_key_file.is_none();
+    // An instance is "unenrolled" when its client credential isn't on disk
+    // yet. The NixOS module always sets `client_cert_file` / `client_key_file`
+    // to per-instance paths, but those files only appear after the operator
+    // runs `underwrap-keygen --instance-config /etc/underwrap/instances/<inst>.yaml`.
+    // Missing-file → friendly enrollment guidance; populated → open the
+    // backend client normally.
+    let unenrolled = match (
+        config.backend.client_cert_file.as_ref(),
+        config.backend.client_key_file.as_ref(),
+    ) {
+        (Some(cert), Some(key)) => !cert.exists() || !key.exists(),
+        _ => true,
+    };
     let enrollment_url = if unenrolled {
         Some(build_enrollment_url(&config))
     } else {

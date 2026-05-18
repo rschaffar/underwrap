@@ -20,13 +20,22 @@ The NixOS module lives at `nix/modules/underwrap.nix`.
 | `package` | package | flake package | Which underwrap package set to use |
 | `backendUrl` | str | — | HTTPS URL of the remote backend service API |
 | `caFile` | path | — | CA bundle used to verify the backend certificate |
-| `clientCertFile` | path | — | mTLS client certificate for this frontend instance |
-| `clientKeyFile` | path | — | mTLS client private key for this frontend instance |
 | `instanceNamePrefix` | str | `"underwrap"` | Prefix for generated users/groups/socket paths |
 | `hardenTargetHost` | bool | `true` | Pins `kernel.yama.ptrace_scope=2` on the target host (via `mkDefault`) and asserts that every configured swap device is encrypted. This is the posture the strong same-UID protection claim depends on. Lower at your own risk. |
 
 `hardenTargetHost = true` is the recommended first-release posture. It
 keeps the host aligned with the security claims in `docs/security.md`.
+
+The mTLS client credential is **not** an operator-configurable option. The
+module places it at a per-instance path under the per-instance state dir:
+
+- cert: `/var/lib/underwrap-<instance>/client-<instance>.pem`
+- key:  `/var/lib/underwrap-<instance>/client-<instance>.key`
+
+Populate it with `underwrap-keygen --instance-config /etc/underwrap/instances/<instance>.yaml`
+and paste the resulting cert PEM into the admin UI. This forecloses the
+class of "two instances share the same cert path" / "stale cert was wired
+in via deploy" mistakes that fingerprint-pinning can't otherwise detect.
 
 ### Why the module clears the target environment
 

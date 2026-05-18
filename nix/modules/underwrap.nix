@@ -32,6 +32,13 @@ let
     wrapperSocketPath = name: "${runDir}/wrapper-${name}.sock";
     runDir = "/run/underwrap-${instName}";
     stateDir = "/var/lib/underwrap-${instName}";
+    # Per-instance mTLS client credential. Generated locally by
+    # `underwrap-keygen --instance-config /etc/underwrap/instances/${instName}.yaml`;
+    # never wired in via the module (so two instances on the same host can't
+    # collide, and the operator can't paste a stale cert from one host into
+    # another's enrollment).
+    clientCertPath = "${stateDir}/client-${instName}.pem";
+    clientKeyPath = "${stateDir}/client-${instName}.key";
     nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
     debugToolTarget = "${cfg.package}/bin/underwrap-debug-tool";
 
@@ -96,8 +103,8 @@ let
       backend = {
         url = inst.backend.url;
         ca_file = inst.backend.caFile;
-        client_cert_file = inst.backend.clientCertFile;
-        client_key_file = inst.backend.clientKeyFile;
+        client_cert_file = clientCertPath;
+        client_key_file = clientKeyPath;
       };
       catalog_host = config.networking.hostName;
       catalog_instance = instName;
@@ -342,14 +349,6 @@ let
       caFile = lib.mkOption {
         type = lib.types.either lib.types.path lib.types.str;
         description = "CA certificate file used to verify the backend service certificate.";
-      };
-      clientCertFile = lib.mkOption {
-        type = lib.types.either lib.types.path lib.types.str;
-        description = "Client certificate file used for backend mTLS.";
-      };
-      clientKeyFile = lib.mkOption {
-        type = lib.types.either lib.types.path lib.types.str;
-        description = "Client private key file used for backend mTLS.";
       };
     };
   };

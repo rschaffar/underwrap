@@ -95,8 +95,6 @@ In your NixOS configuration:
       backend = {
         url = "https://127.0.0.1:18443";
         caFile = "/etc/underwrap/ca.pem";
-        clientCertFile = "/etc/underwrap/client-work.pem";
-        clientKeyFile = "/etc/underwrap/client-work.key";
       };
 
       credentials."jira/api-token" = {
@@ -127,8 +125,30 @@ The module creates:
 - wrapper socket: `/run/underwrap-work/wrapper-jira.sock`
 - setgid wrapper: `/run/wrappers/bin/work-jira`
 - wrapper sidecar config: `/etc/underwrap/wrappers/work-jira.yaml`
+- instance config: `/etc/underwrap/instances/work.yaml`
+- expected client credential paths: `/var/lib/underwrap-work/client-work.{pem,key}`
+  (generated in the next step)
 
-## 3. Create the store, store the secret, and authorize the wrapper
+## 3. Enroll the instance
+
+Until `underwrap-keygen` has populated the per-instance client credential,
+the daemon comes up in "unenrolled" mode and prints an enrollment URL on
+every wrapper invocation. Generate the credential and register it once:
+
+```bash
+sudo underwrap-keygen --instance-config /etc/underwrap/instances/work.yaml
+```
+
+The helper writes `/var/lib/underwrap-work/client-work.pem` and
+`/var/lib/underwrap-work/client-work.key` (owned by the per-instance
+daemon user), then prints the cert PEM to stdout. Open the admin UI,
+create a runtime client instance, and paste the PEM. Restart the daemon:
+
+```bash
+sudo systemctl restart underwrapd-work
+```
+
+## 4. Create the store, store the secret, and authorize the wrapper
 
 The backend starts empty. Open the admin UI in a browser, bootstrap the
 first admin operator, create a store named `work`, then:
@@ -139,7 +159,7 @@ first admin operator, create a store named `work`, then:
 
 The admin UI is now the canonical way to perform this setup.
 
-## 4. Initialize `jira-cli`
+## 5. Initialize `jira-cli`
 
 underwrap only delivers the secret. `jira-cli` still needs its usual
 client-side configuration:
@@ -148,7 +168,7 @@ client-side configuration:
 jira init
 ```
 
-## 5. Run the wrapper
+## 6. Run the wrapper
 
 ```bash
 work-jira issue list
