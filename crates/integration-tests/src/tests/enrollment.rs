@@ -56,6 +56,7 @@ impl EnrollmentBackend {
         let config = underwrap_backendd::server::BackendConfig {
             stores_file: Some(stores_file),
             client_instances_file: Some(base.join("client-instances.json")),
+            operators_file: Some(base.join("operators.json")),
             enrollment: Some(underwrap_backendd::server::EnrollmentConfig {
                 invites_file: Some(base.join("enrollment-invites.json")),
                 issuer_cert_file: pki.ca_cert.clone(),
@@ -79,7 +80,6 @@ impl EnrollmentBackend {
                 )]),
                 tls: None,
                 allowed_origins: None,
-                admin_home_store: None,
                 session_key_file: None,
                 session_lifetime_secs: None,
                 stores_data_roots: Some(vec![base.join("stores-data-root")]),

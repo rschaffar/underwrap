@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use tracing::info;
 
 use underwrap_backendd::{operators, server};
@@ -36,23 +34,20 @@ enum Command {
 #[derive(Subcommand, Debug)]
 enum AdminCommand {
     /// Offline recovery: append (or refuse-on-conflict) an admin
-    /// operator directly to the admin-home store. Use when nobody can
-    /// log in to the running daemon. This subcommand intentionally
-    /// does NOT touch the bootstrap-completed sentinel: it's the
-    /// escape hatch for the locked-out case, not a replacement for
-    /// the online bootstrap flow.
+    /// operator directly to the backend-managed operator-state file.
+    /// Use when nobody can log in to the running daemon. This
+    /// subcommand intentionally does NOT touch the
+    /// bootstrap-completed sentinel: it's the escape hatch for the
+    /// locked-out case, not a replacement for the online bootstrap
+    /// flow.
     ///
-    /// Requires physical/file-system access to the store. The password
-    /// is read from stdin to keep it out of the process argv (which
-    /// would otherwise leak to `/proc/<pid>/cmdline`).
+    /// Requires physical/file-system access to the backend state dir.
+    /// The password is read from stdin to keep it out of the process
+    /// argv (which would otherwise leak to `/proc/<pid>/cmdline`).
     RecoverOperator {
         /// Username to add. Will be normalised (trimmed + lowercased).
         #[arg(long)]
         username: String,
-        /// Which store in the backend config to write to. Defaults to
-        /// the admin-home store resolved from config.
-        #[arg(long)]
-        store: Option<String>,
     },
 }
 
@@ -124,48 +119,19 @@ async fn main() -> Result<()> {
 }
 
 fn run_admin(cmd: AdminCommand, config: server::BackendConfig) -> Result<()> {
-    let definitions = server::load_store_records(&config.stores_file())?;
-    let stores = open_stores_for_admin(&definitions)?;
-    let configured_home = config
-        .admin
-        .as_ref()
-        .and_then(|a| a.admin_home_store.as_deref());
+    let operators_file = config.operators_file();
     match cmd {
-        AdminCommand::RecoverOperator { username, store } => {
-            let target = match store.as_deref().or(configured_home) {
-                Some(name) => {
-                    let s = stores
-                        .get(name)
-                        .with_context(|| format!("--store '{name}' is not declared in stores"))?;
-                    (name.to_string(), s.clone())
-                }
-                None => {
-                    let (n, s) = operators::resolve_admin_home_store(&stores, None)?;
-                    (n.to_string(), s)
-                }
-            };
+        AdminCommand::RecoverOperator { username } => {
             let mut password = String::new();
             std::io::stdin()
                 .read_line(&mut password)
                 .context("reading password from stdin")?;
             let password = password.trim_end_matches(['\r', '\n']).to_string();
-            recover_operator(target.1.as_ref(), &username, &password)?;
-            info!(store = %target.0, username = %username, "recover-operator: admin added");
+            recover_operator(&operators_file, &username, &password)?;
+            info!(path = %operators_file.display(), username = %username, "recover-operator: admin added");
             Ok(())
         }
     }
-}
-
-fn open_stores_for_admin(
-    definitions: &HashMap<String, server::LoadedStoreRecord>,
-) -> Result<HashMap<String, Arc<dyn underwrap_store::StorageBackend>>> {
-    let mut out = HashMap::new();
-    for (name, def) in definitions {
-        let store: Arc<dyn underwrap_store::StorageBackend> =
-            Arc::from(underwrap_store::open(&def.record.storage)?);
-        out.insert(name.clone(), store);
-    }
-    Ok(out)
 }
 
 /// Add an admin operator to the on-disk collection. Refuses if an
@@ -173,11 +139,7 @@ fn open_stores_for_admin(
 /// bootstrap-completed sentinel — recovery is intentionally not a
 /// substitute for the online bootstrap (which is what locks the
 /// endpoint going forward).
-fn recover_operator(
-    store: &dyn underwrap_store::StorageBackend,
-    username: &str,
-    password: &str,
-) -> Result<()> {
+fn recover_operator(path: &Path, username: &str, password: &str) -> Result<()> {
     if password.is_empty() {
         anyhow::bail!("recover-operator: password must not be empty");
     }
@@ -185,7 +147,7 @@ fn recover_operator(
     if normalised.is_empty() {
         anyhow::bail!("recover-operator: username must not be empty");
     }
-    let mut collection = operators::load(store)?;
+    let mut collection = operators::load(path)?;
     if collection.find_by_username(&normalised).is_some() {
         anyhow::bail!(
             "recover-operator: operator '{}' already exists; refusing to overwrite",
@@ -203,7 +165,7 @@ fn recover_operator(
         created_at: now,
         password_changed_at: now,
     })?;
-    operators::save(store, &collection)?;
+    operators::save(path, &collection)?;
     Ok(())
 }
 
@@ -255,6 +217,7 @@ stores:
             r#"
 stores_file: /var/u/stores.json
 client_instances_file: /var/u/client-instances.json
+operators_file: /var/u/operators.json
 enrollment:
   invites_file: /var/u/enrollment-invites.json
   issuer_cert_file: /var/u/ca.pem
@@ -271,6 +234,10 @@ enrollment:
             std::path::PathBuf::from("/var/u/client-instances.json"),
         );
         assert_eq!(
+            config.operators_file(),
+            std::path::PathBuf::from("/var/u/operators.json"),
+        );
+        assert_eq!(
             config.enrollment.as_ref().unwrap().invites_file(),
             std::path::PathBuf::from("/var/u/enrollment-invites.json"),
         );
@@ -284,13 +251,10 @@ enrollment:
             "recover-operator",
             "--username",
             "Alice",
-            "--store",
-            "home",
         ]);
         match cli.command {
-            Some(Command::Admin(AdminCommand::RecoverOperator { username, store })) => {
+            Some(Command::Admin(AdminCommand::RecoverOperator { username })) => {
                 assert_eq!(username, "Alice");
-                assert_eq!(store.as_deref(), Some("home"));
             }
             _ => panic!(
                 "expected recover-operator subcommand, got {:?}",
@@ -300,22 +264,15 @@ enrollment:
     }
 
     #[test]
-    fn recover_operator_writes_admin_to_empty_store() {
-        // Direct disk operation: no running daemon.
+    fn recover_operator_writes_admin_to_empty_state_file() {
         let dir = tempfile::TempDir::new().unwrap();
-        let store_dir = dir.path().join("store");
-        std::fs::create_dir_all(&store_dir).unwrap();
-        let cfg = underwrap_protocol::config::StorageConfig::Plain {
-            dir: store_dir.clone(),
-        };
-        let backend: Arc<dyn underwrap_store::StorageBackend> =
-            Arc::from(underwrap_store::open(&cfg).unwrap());
+        let operators_file = dir.path().join("operators.json");
 
-        recover_operator(backend.as_ref(), "Alice", "hunter2").unwrap();
+        recover_operator(&operators_file, "Alice", "hunter2").unwrap();
 
-        // Read it back: operator landed in the store with admin role
-        // and a verifiable password.
-        let coll = operators::load(backend.as_ref()).unwrap();
+        // Read it back: operator landed in the state file with admin
+        // role and a verifiable password.
+        let coll = operators::load(&operators_file).unwrap();
         let op = coll.find_by_username("alice").unwrap();
         assert_eq!(op.role, operators::OperatorRole::Admin);
         assert!(underwrap_backendd::auth::verify_password(
@@ -323,31 +280,23 @@ enrollment:
             "hunter2"
         ));
         // Sentinel is NOT set — recovery deliberately stays "offline".
-        assert!(!operators::bootstrap_completed(backend.as_ref()).unwrap());
+        assert!(!operators::bootstrap_completed(&operators_file).unwrap());
     }
 
     #[test]
     fn recover_operator_refuses_existing_username() {
         let dir = tempfile::TempDir::new().unwrap();
-        let store_dir = dir.path().join("store");
-        std::fs::create_dir_all(&store_dir).unwrap();
-        let cfg = underwrap_protocol::config::StorageConfig::Plain { dir: store_dir };
-        let backend: Arc<dyn underwrap_store::StorageBackend> =
-            Arc::from(underwrap_store::open(&cfg).unwrap());
-        recover_operator(backend.as_ref(), "alice", "p1").unwrap();
-        let err = recover_operator(backend.as_ref(), "Alice", "p2").unwrap_err();
+        let operators_file = dir.path().join("operators.json");
+        recover_operator(&operators_file, "alice", "p1").unwrap();
+        let err = recover_operator(&operators_file, "Alice", "p2").unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 
     #[test]
     fn recover_operator_rejects_empty_password() {
         let dir = tempfile::TempDir::new().unwrap();
-        let store_dir = dir.path().join("store");
-        std::fs::create_dir_all(&store_dir).unwrap();
-        let cfg = underwrap_protocol::config::StorageConfig::Plain { dir: store_dir };
-        let backend: Arc<dyn underwrap_store::StorageBackend> =
-            Arc::from(underwrap_store::open(&cfg).unwrap());
-        let err = recover_operator(backend.as_ref(), "alice", "").unwrap_err();
+        let operators_file = dir.path().join("operators.json");
+        let err = recover_operator(&operators_file, "alice", "").unwrap_err();
         assert!(err.to_string().contains("password"));
     }
 }

@@ -65,9 +65,12 @@ live in their own per-store YAML files under two directories, *not*
 inline in this config (changed in ticket 230). All paths are absolute.
 
 ```yaml
-# Optional — defaults kick in when omitted.
+# Optional — defaults kick in when omitted. Missing registry files are
+# treated as empty, so the backend can boot before the first store,
+# operator, or runtime client exists.
 stores_file: /var/lib/underwrap-backend/stores.json
 client_instances_file: /var/lib/underwrap-backend/client-instances.json
+operators_file: /var/lib/underwrap-backend/operators.json
 
 enrollment:
   invites_file: /var/lib/underwrap-backend/enrollment-invites.json

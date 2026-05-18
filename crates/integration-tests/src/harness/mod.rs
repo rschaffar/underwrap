@@ -164,6 +164,7 @@ impl TestDaemon {
         let backend_config = underwrap_backendd::server::BackendConfig {
             stores_file: Some(stores_file),
             client_instances_file: Some(instances_file),
+            operators_file: Some(base.join("operators.json")),
             enrollment: None,
             service: Some(underwrap_backendd::server::ServiceConfig {
                 listen: format!("127.0.0.1:{service_port}"),
@@ -182,7 +183,6 @@ impl TestDaemon {
                 )]),
                 tls: None,
                 allowed_origins: None,
-                admin_home_store: None,
                 session_key_file: None,
                 session_lifetime_secs: None,
                 stores_data_roots: Some(vec![stores_data_root]),

@@ -76,11 +76,6 @@ pub struct AdminConfig {
     /// Foundation for the CSRF work in ticket 212.
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
-    /// Which declared store should hold the operator collection
-    /// (`__underwrap/admin/operators`). Defaults to the alphabetically
-    /// first declared store when not set.
-    #[serde(default)]
-    pub admin_home_store: Option<String>,
     /// Path to the 32-byte AEAD key file used to sign session cookies.
     /// Required when the admin listener accepts login traffic.
     #[serde(default)]
@@ -153,6 +148,12 @@ pub struct BackendConfig {
     /// `/var/lib/underwrap-backend/client-instances.json`.
     #[serde(default)]
     pub client_instances_file: Option<PathBuf>,
+    /// Path of the backend-managed operator-state file. Missing files
+    /// are treated as an empty operator collection with bootstrap
+    /// incomplete. Defaults to
+    /// [`crate::operators::DEFAULT_OPERATORS_FILE`].
+    #[serde(default)]
+    pub operators_file: Option<PathBuf>,
     #[serde(default)]
     pub enrollment: Option<EnrollmentConfig>,
     #[serde(default)]
@@ -174,6 +175,13 @@ impl BackendConfig {
         self.client_instances_file
             .clone()
             .unwrap_or_else(|| PathBuf::from("/var/lib/underwrap-backend/client-instances.json"))
+    }
+
+    /// Resolve [`Self::operators_file`] or the project default.
+    pub fn operators_file(&self) -> PathBuf {
+        self.operators_file
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(crate::operators::DEFAULT_OPERATORS_FILE))
     }
 }
 
@@ -257,8 +265,8 @@ struct AdminRuntimeState {
     allowed_origins: Option<Vec<String>>,
     /// Where to read the SPA bundle from when serving non-API paths.
     web_source: crate::web::WebAssetSource,
-    /// Store that holds the operator collection.
-    admin_home_store: Arc<dyn StorageBackend>,
+    /// Path of the backend-managed operator-state file.
+    operators_file: PathBuf,
     /// 32-byte AEAD key used to encrypt session cookies. `None` when
     /// the deployment hasn't configured `session_key_file` yet
     /// (legacy bearer-token-only setups during the transition).
@@ -323,6 +331,7 @@ struct StoredCatalogEntry {
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores_file = config.stores_file();
     let client_instances_file = config.client_instances_file();
+    let operators_file = config.operators_file();
     let enrollment_runtime = build_enrollment_runtime(config.enrollment.as_ref())?;
     let definitions = load_store_records(&stores_file)?;
     let stores = open_stores(&definitions)?;
@@ -356,14 +365,6 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
 
     if let Some(admin_config) = &config.admin {
         validate_admin_config(admin_config)?;
-        // Fail-fast: resolve the admin-home store name now so a typo in
-        // config doesn't surface only on the first login attempt.
-        let (home_name, home_store) = crate::operators::resolve_admin_home_store(
-            &stores,
-            admin_config.admin_home_store.as_deref(),
-        )?;
-        let home_name = home_name.to_string();
-        info!(admin_home_store = %home_name, "resolved admin-home store");
         let admin_listener = TcpListener::bind(&admin_config.listen)
             .await
             .with_context(|| format!("binding admin listener {}", admin_config.listen))?;
@@ -394,7 +395,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             tokens,
             allowed_origins: admin_config.allowed_origins.clone(),
             web_source: crate::web::WebAssetSource::from_env(),
-            admin_home_store: home_store,
+            operators_file: operators_file.clone(),
             session_key,
             session_lifetime_secs,
             cookies_secure,
@@ -1409,7 +1410,7 @@ fn resolve_principal(
 ) -> std::result::Result<crate::operators::Principal, Response<Full<Bytes>>> {
     match auth {
         AdminAuth::Session(payload) => {
-            let collection = match crate::operators::load(state.admin_home_store.as_ref()) {
+            let collection = match crate::operators::load(&state.operators_file) {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(err = %e, "could not load operator collection");
@@ -1694,7 +1695,7 @@ async fn handle_admin_login(
         );
     }
 
-    let collection = match crate::operators::load(state.admin_home_store.as_ref()) {
+    let collection = match crate::operators::load(&state.operators_file) {
         Ok(c) => c,
         Err(e) => {
             warn!(err = %e, "login: failed to read operator collection");
@@ -1805,9 +1806,8 @@ pub struct BootstrapResponse {
 /// Anything else (operators exist, sentinel set, store error) yields
 /// `false` — the SPA's response is to show the login page.
 fn handle_admin_bootstrap_status(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
-    let sentinel_set =
-        crate::operators::bootstrap_completed(state.admin_home_store.as_ref()).unwrap_or(true);
-    let collection_empty = crate::operators::load(state.admin_home_store.as_ref())
+    let sentinel_set = crate::operators::bootstrap_completed(&state.operators_file).unwrap_or(true);
+    let collection_empty = crate::operators::load(&state.operators_file)
         .map(|c| c.is_empty())
         .unwrap_or(false);
     json_response(
@@ -1859,7 +1859,7 @@ async fn handle_admin_bootstrap(
     // written. The lock is held across the whole sequence.
     let _guard = state.bootstrap_lock.lock().unwrap();
 
-    match crate::operators::bootstrap_completed(state.admin_home_store.as_ref()) {
+    match crate::operators::bootstrap_completed(&state.operators_file) {
         Ok(true) => {
             audit_bootstrap_attempt(state, &username_norm, "bootstrap_already_completed");
             return error_response(
@@ -1879,7 +1879,7 @@ async fn handle_admin_bootstrap(
         }
     }
 
-    let collection = match crate::operators::load(state.admin_home_store.as_ref()) {
+    let collection = match crate::operators::load(&state.operators_file) {
         Ok(c) => c,
         Err(e) => {
             warn!(err = %e, "bootstrap: loading operator collection failed");
@@ -1929,7 +1929,7 @@ async fn handle_admin_bootstrap(
             &e.to_string(),
         );
     }
-    if let Err(e) = crate::operators::save(state.admin_home_store.as_ref(), &new_collection) {
+    if let Err(e) = crate::operators::save(&state.operators_file, &new_collection) {
         warn!(err = %e, "bootstrap: writing operator collection failed");
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1938,7 +1938,7 @@ async fn handle_admin_bootstrap(
         );
     }
     if let Err(e) = crate::operators::mark_bootstrap_completed(
-        state.admin_home_store.as_ref(),
+        &state.operators_file,
         &crate::operators::BootstrapSentinel {
             completed_at: now,
             by_username: record.username.clone(),
@@ -2088,7 +2088,7 @@ fn handle_admin_whoami(
     };
     // Resolve the current role from the collection in case it has
     // changed since the session was issued.
-    let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap_or_default();
+    let collection = crate::operators::load(&state.operators_file).unwrap_or_default();
     let role = collection
         .find_by_username(&payload.username)
         .map(|o| o.role);
@@ -2104,12 +2104,11 @@ fn handle_admin_whoami(
 
 // ===== Users CRUD (ticket 240) =====
 //
-// Operator records are stored as a single JSON document under the
-// reserved secret id `__underwrap/admin/operators` in the admin-home
-// store (see `crate::operators`). Every mutation goes through
+// Operator records are stored in the backend-managed operator-state
+// file (see `crate::operators`). Every mutation goes through
 // `mutate_collection` so the read-modify-write race against
-// concurrent admin requests is closed by the home-store mutex and the
-// uniqueness / last-admin invariants live in one place.
+// concurrent admin requests is closed by the operator-collection
+// mutex and the uniqueness / last-admin invariants live in one place.
 
 use underwrap_protocol::service::{
     AdminOkUserResponse, AdminPasswordChangeRequest, AdminUserCreateRequest,
@@ -2182,9 +2181,9 @@ where
     F: FnOnce(&mut crate::operators::OperatorCollection) -> Result<T>,
 {
     let _guard = state.operator_collection_lock.lock().unwrap();
-    let mut collection = crate::operators::load(state.admin_home_store.as_ref())?;
+    let mut collection = crate::operators::load(&state.operators_file)?;
     let out = f(&mut collection)?;
-    crate::operators::save(state.admin_home_store.as_ref(), &collection)?;
+    crate::operators::save(&state.operators_file, &collection)?;
     Ok(out)
 }
 
@@ -2200,7 +2199,7 @@ fn handle_admin_users_list(
             "only admins may list users",
         );
     }
-    let collection = match crate::operators::load(state.admin_home_store.as_ref()) {
+    let collection = match crate::operators::load(&state.operators_file) {
         Ok(c) => c,
         Err(e) => {
             warn!(err = %e, "users.list: collection unreadable");
@@ -2230,7 +2229,7 @@ fn handle_admin_user_detail(
             "only admins may inspect user records",
         );
     }
-    let collection = match crate::operators::load(state.admin_home_store.as_ref()) {
+    let collection = match crate::operators::load(&state.operators_file) {
         Ok(c) => c,
         Err(e) => {
             warn!(err = %e, "users.detail: collection unreadable");
@@ -2575,7 +2574,7 @@ async fn handle_admin_password_change(
             "new password must not be empty",
         );
     }
-    let collection = match crate::operators::load(state.admin_home_store.as_ref()) {
+    let collection = match crate::operators::load(&state.operators_file) {
         Ok(c) => c,
         Err(e) => {
             warn!(err = %e, "auth.password: collection unreadable");
@@ -2690,6 +2689,7 @@ fn saturating_u32(value: usize) -> u32 {
     value.min(u32::MAX as usize) as u32
 }
 
+#[allow(clippy::result_large_err)]
 fn admin_store_usage(
     state: &AdminRuntimeState,
     store_id: &str,
@@ -4092,8 +4092,7 @@ fn do_admin_enrollment_invite_create(
     let ttl = body
         .expires_in_secs
         .unwrap_or(enrollment.default_invite_ttl_secs)
-        .min(30 * 24 * 60 * 60)
-        .max(60);
+        .clamp(60, 30 * 24 * 60 * 60);
     let secret = crate::enrollments::generate_enrollment_secret();
     let mut invites = enrollment.invites.write().unwrap();
     let id = loop {
@@ -5483,18 +5482,17 @@ mod tests {
         )
     }
 
+    fn test_operators_file() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "underwrap-server-test-operators-{}.json",
+            crate::operators::new_operator_id()
+        ))
+    }
+
     fn test_admin_state(
         stores: HashMap<String, Arc<dyn StorageBackend>>,
         tokens: HashMap<String, String>,
     ) -> AdminRuntimeState {
-        // Tests that don't exercise login can use any store as the
-        // admin-home store; if `stores` is empty we synthesise a memory
-        // store so the field is populated.
-        let admin_home_store: Arc<dyn StorageBackend> = stores
-            .values()
-            .next()
-            .cloned()
-            .unwrap_or_else(|| Arc::new(MemTestStore::new()));
         AdminRuntimeState {
             stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
                 open: stores,
@@ -5509,7 +5507,7 @@ mod tests {
             tokens,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
-            admin_home_store,
+            operators_file: test_operators_file(),
             session_key: None,
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure: false,
@@ -5655,7 +5653,6 @@ mod tests {
             tokens: HashMap::new(),
             tls: None,
             allowed_origins: None,
-            admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,
@@ -5674,7 +5671,6 @@ mod tests {
                 key_file: PathBuf::from("/dev/null"),
             }),
             allowed_origins: None,
-            admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,
@@ -5690,7 +5686,6 @@ mod tests {
             tokens: HashMap::new(),
             tls: None,
             allowed_origins: None,
-            admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,
@@ -5711,7 +5706,6 @@ mod tests {
             tokens: HashMap::new(),
             tls: None,
             allowed_origins: Some(vec!["https://ok.example".to_string(), "  ".to_string()]),
-            admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,
@@ -5807,7 +5801,7 @@ mod tests {
     // ---------- Login + whoami end-to-end against the real handler ----------
 
     fn seeded_admin_state(username: &str, password: &str) -> AdminRuntimeState {
-        let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
+        let operators_file = test_operators_file();
         let mut collection = crate::operators::OperatorCollection::default();
         let hash = crate::auth::hash_password(password).unwrap();
         collection
@@ -5821,16 +5815,13 @@ mod tests {
                 password_changed_at: 1000,
             })
             .unwrap();
-        crate::operators::save(store.as_ref(), &collection).unwrap();
+        crate::operators::save(&operators_file, &collection).unwrap();
         let mut session_key = [0u8; crate::auth::SESSION_KEY_LEN];
         for (i, b) in session_key.iter_mut().enumerate() {
             *b = i as u8;
         }
         AdminRuntimeState {
-            stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
-                open: HashMap::from([("home".to_string(), store.clone())]),
-                records: HashMap::new(),
-            })),
+            stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
@@ -5840,7 +5831,7 @@ mod tests {
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
-            admin_home_store: store,
+            operators_file,
             session_key: Some(session_key),
             session_lifetime_secs: 3600,
             cookies_secure: false,
@@ -5859,7 +5850,7 @@ mod tests {
     #[tokio::test]
     async fn login_password_pipeline_succeeds_and_round_trips_cookie() {
         let state = seeded_admin_state("alice", "hunter2");
-        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        let collection = crate::operators::load(&state.operators_file).unwrap();
         let op = collection.find_by_username("alice").unwrap();
         assert!(crate::auth::verify_password(&op.password_hash, "hunter2"));
         assert!(!crate::auth::verify_password(&op.password_hash, "wrong"));
@@ -5882,7 +5873,7 @@ mod tests {
         // selects the dummy hash, keeping wall-clock behaviour
         // consistent with the real-user path.
         let state = seeded_admin_state("alice", "hunter2");
-        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        let collection = crate::operators::load(&state.operators_file).unwrap();
         assert!(collection.find_by_username("eve").is_none());
         assert!(!crate::auth::verify_password(
             crate::auth::DUMMY_PASSWORD_HASH,
@@ -6061,11 +6052,10 @@ mod tests {
     #[test]
     fn admin_store_for_principal_admin_can_access_existing_store() {
         let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-        let mut state = test_admin_state(
+        let state = test_admin_state(
             HashMap::from([("work".to_string(), store.clone())]),
             HashMap::new(),
         );
-        state.admin_home_store = store.clone();
         let p = principal(crate::operators::OperatorRole::Admin, &[]);
         assert!(admin_store_for_principal(&state, &p, "work").is_ok());
     }
@@ -6089,11 +6079,10 @@ mod tests {
         // Don't leak the existence of stores the operator can't reach:
         // ungranted-but-existing must look identical to truly-missing.
         let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-        let mut state = test_admin_state(
+        let state = test_admin_state(
             HashMap::from([("work".to_string(), store.clone())]),
             HashMap::new(),
         );
-        state.admin_home_store = store;
         let p = principal(crate::operators::OperatorRole::Operator, &[]);
         expect_404(admin_store_for_principal(&state, &p, "work"));
         expect_404(admin_store_for_principal(&state, &p, "nope"));
@@ -6103,14 +6092,13 @@ mod tests {
     fn admin_store_for_principal_operator_with_grant_sees_only_that_store() {
         let store_a: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
         let store_b: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-        let mut state = test_admin_state(
+        let state = test_admin_state(
             HashMap::from([
                 ("alpha".to_string(), store_a.clone()),
                 ("beta".to_string(), store_b),
             ]),
             HashMap::new(),
         );
-        state.admin_home_store = store_a;
         let p = principal(crate::operators::OperatorRole::Operator, &["alpha"]);
         assert!(admin_store_for_principal(&state, &p, "alpha").is_ok());
         expect_404(admin_store_for_principal(&state, &p, "beta"));
@@ -6120,7 +6108,7 @@ mod tests {
     fn resolve_principal_session_uses_operator_collection_role_and_grants() {
         let state = seeded_admin_state("alice", "hunter2");
         // Re-seed collection so alice has Operator role with one grant.
-        let store = state.admin_home_store.clone();
+        let operators_file = state.operators_file.clone();
         let mut collection = crate::operators::OperatorCollection::default();
         let hash = crate::auth::hash_password("hunter2").unwrap();
         collection
@@ -6134,7 +6122,7 @@ mod tests {
                 password_changed_at: 1000,
             })
             .unwrap();
-        crate::operators::save(store.as_ref(), &collection).unwrap();
+        crate::operators::save(&operators_file, &collection).unwrap();
 
         let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
         let auth = AdminAuth::Session(payload);
@@ -6162,7 +6150,7 @@ mod tests {
         let state = seeded_admin_state("alice", "hunter2");
         // Save an empty collection over alice's slot.
         crate::operators::save(
-            state.admin_home_store.as_ref(),
+            &state.operators_file,
             &crate::operators::OperatorCollection::default(),
         )
         .unwrap();
@@ -6179,16 +6167,12 @@ mod tests {
     /// Build admin state with a session key but an empty operator
     /// collection — the canonical "fresh install" shape.
     fn fresh_bootstrap_state() -> AdminRuntimeState {
-        let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
         let mut key = [0u8; crate::auth::SESSION_KEY_LEN];
         for (i, b) in key.iter_mut().enumerate() {
             *b = i as u8;
         }
         AdminRuntimeState {
-            stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
-                open: HashMap::from([("home".to_string(), store.clone())]),
-                records: HashMap::new(),
-            })),
+            stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
@@ -6198,7 +6182,7 @@ mod tests {
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
-            admin_home_store: store,
+            operators_file: test_operators_file(),
             session_key: Some(key),
             session_lifetime_secs: 3600,
             cookies_secure: false,
@@ -6230,7 +6214,7 @@ mod tests {
     async fn bootstrap_status_false_when_sentinel_set() {
         let state = fresh_bootstrap_state();
         crate::operators::mark_bootstrap_completed(
-            state.admin_home_store.as_ref(),
+            &state.operators_file,
             &crate::operators::BootstrapSentinel {
                 completed_at: 1000,
                 by_username: "alice".into(),
@@ -6256,7 +6240,7 @@ mod tests {
                 password_changed_at: 1000,
             })
             .unwrap();
-        crate::operators::save(state.admin_home_store.as_ref(), &collection).unwrap();
+        crate::operators::save(&state.operators_file, &collection).unwrap();
         let body = read_json(handle_admin_bootstrap_status(&state)).await;
         assert_eq!(body["bootstrap_required"], false);
     }
@@ -6288,7 +6272,7 @@ mod tests {
             );
         }
         let _guard = state.bootstrap_lock.lock().unwrap();
-        if crate::operators::bootstrap_completed(state.admin_home_store.as_ref()).unwrap_or(true) {
+        if crate::operators::bootstrap_completed(&state.operators_file).unwrap_or(true) {
             audit_bootstrap_attempt(state, &username_norm, "bootstrap_already_completed");
             return error_response(
                 StatusCode::CONFLICT,
@@ -6296,7 +6280,7 @@ mod tests {
                 "already done",
             );
         }
-        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        let collection = crate::operators::load(&state.operators_file).unwrap();
         if !collection.is_empty() {
             audit_bootstrap_attempt(state, &username_norm, "operators_already_exist");
             return error_response(
@@ -6318,9 +6302,9 @@ mod tests {
         };
         let mut new_collection = crate::operators::OperatorCollection::default();
         new_collection.add(record.clone()).unwrap();
-        crate::operators::save(state.admin_home_store.as_ref(), &new_collection).unwrap();
+        crate::operators::save(&state.operators_file, &new_collection).unwrap();
         crate::operators::mark_bootstrap_completed(
-            state.admin_home_store.as_ref(),
+            &state.operators_file,
             &crate::operators::BootstrapSentinel {
                 completed_at: now,
                 by_username: record.username.clone(),
@@ -6360,9 +6344,9 @@ mod tests {
         let resp = run_bootstrap(&state, "alice", "hunter2");
         assert_eq!(resp.status(), StatusCode::OK);
         // Sentinel is set.
-        assert!(crate::operators::bootstrap_completed(state.admin_home_store.as_ref()).unwrap());
+        assert!(crate::operators::bootstrap_completed(&state.operators_file).unwrap());
         // Operator is created with admin role.
-        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        let collection = crate::operators::load(&state.operators_file).unwrap();
         let op = collection.find_by_username("alice").unwrap();
         assert_eq!(op.role, crate::operators::OperatorRole::Admin);
         assert!(crate::auth::verify_password(&op.password_hash, "hunter2"));
@@ -6405,7 +6389,7 @@ mod tests {
                 password_changed_at: 1000,
             })
             .unwrap();
-        crate::operators::save(state.admin_home_store.as_ref(), &collection).unwrap();
+        crate::operators::save(&state.operators_file, &collection).unwrap();
 
         let resp = run_bootstrap(&state, "newbie", "x");
         assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -6431,8 +6415,8 @@ mod tests {
         assert_eq!(ok_count, 1, "exactly one bootstrap must win: {statuses:?}");
         assert_eq!(conflict_count, 1, "the loser must see 409: {statuses:?}");
         // Sentinel is set and collection has exactly one operator.
-        assert!(crate::operators::bootstrap_completed(state.admin_home_store.as_ref()).unwrap());
-        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        assert!(crate::operators::bootstrap_completed(&state.operators_file).unwrap());
+        let collection = crate::operators::load(&state.operators_file).unwrap();
         assert_eq!(collection.len(), 1);
     }
 
@@ -6629,9 +6613,8 @@ mod tests {
     }
 
     /// Build an `AdminRuntimeState` wired up for CRUD tests: a
-    /// dedicated `stores.d/` and one allowed data root, both under
-    /// the supplied tempdir. The admin-home store is a fresh memory
-    /// store so operator/session state can be persisted in tests.
+    /// dedicated store registry, operator-state file, and one allowed
+    /// data root, all under the supplied tempdir.
     fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
         let dynamic_dir = tmp.join("stores.d");
         std::fs::create_dir_all(&dynamic_dir).unwrap();
@@ -6650,7 +6633,7 @@ mod tests {
             tokens: HashMap::new(),
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
-            admin_home_store: Arc::new(MemTestStore::new()),
+            operators_file: tmp.join("operators.json"),
             session_key: None,
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure: false,
@@ -7781,7 +7764,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             password_changed_at: now,
         })
         .unwrap();
-        crate::operators::save(state.admin_home_store.as_ref(), &c).unwrap();
+        crate::operators::save(&state.operators_file, &c).unwrap();
         id
     }
 
@@ -7832,7 +7815,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(body["granted_stores"][0], "work");
 
         // The record landed in the operator collection.
-        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        let collection = crate::operators::load(&state.operators_file).unwrap();
         assert_eq!(collection.operators.len(), 2);
         assert!(collection.find_by_username("bob").is_some());
     }
@@ -7959,7 +7942,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let body = response_body_json(resp);
         assert_eq!(body["code"], "last_admin_protected");
         // Record still in the collection.
-        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        let collection = crate::operators::load(&state.operators_file).unwrap();
         assert!(collection.find_by_id(&alice_id).is_some());
     }
 
@@ -8028,7 +8011,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             .unwrap()
             .to_string();
 
-        let hash_before = crate::operators::load(state.admin_home_store.as_ref())
+        let hash_before = crate::operators::load(&state.operators_file)
             .unwrap()
             .find_by_id(&bob_id)
             .unwrap()
@@ -8054,7 +8037,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         .unwrap();
         state.session_revocations.revoke_username("bob", now);
 
-        let hash_after = crate::operators::load(state.admin_home_store.as_ref())
+        let hash_after = crate::operators::load(&state.operators_file)
             .unwrap()
             .find_by_id(&bob_id)
             .unwrap()
@@ -8122,7 +8105,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 granted_stores: Vec::new(),
             },
         );
-        let collection = crate::operators::load(state.admin_home_store.as_ref()).unwrap();
+        let collection = crate::operators::load(&state.operators_file).unwrap();
         let formatted = format!("{collection:?}");
         assert!(
             !formatted.contains("$argon2"),

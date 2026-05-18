@@ -51,6 +51,70 @@ wrappers:
 // ===========================================================================
 
 #[tokio::test]
+async fn backend_admin_starts_from_empty_dynamic_state() {
+    let backend_bin = cargo_bin("underwrap-backendd");
+    let admin_port = pick_unused_port().unwrap();
+    let admin_url = format!("http://127.0.0.1:{admin_port}");
+
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let base = tempdir.path();
+    let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
+        stores_file: Some(base.join("stores.json")),
+        client_instances_file: Some(base.join("client-instances.json")),
+        operators_file: Some(base.join("operators.json")),
+        enrollment: None,
+        service: None,
+        admin: Some(underwrap_backendd::server::AdminConfig {
+            listen: format!("127.0.0.1:{admin_port}"),
+            tokens: HashMap::new(),
+            tls: None,
+            allowed_origins: None,
+            session_key_file: None,
+            session_lifetime_secs: None,
+            stores_data_roots: Some(vec![base.join("stores-data-root")]),
+            keys_dir: Some(base.join("keys")),
+        }),
+    })
+    .unwrap();
+    let backend_config_path = base.join("backend-empty.yaml");
+    std::fs::write(&backend_config_path, &backend_config).unwrap();
+
+    let mut backend_child = tokio::process::Command::new(&backend_bin)
+        .args(["--config", backend_config_path.to_str().unwrap()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    let mut bootstrap_required = None;
+    for _ in 0..100 {
+        if let Ok(resp) = client
+            .get(format!("{admin_url}/v1/admin/auth/bootstrap/status"))
+            .send()
+            .await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
+        {
+            bootstrap_required = body.get("bootstrap_required").and_then(|v| v.as_bool());
+            if bootstrap_required.is_some() {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let _ = backend_child.start_kill();
+    let backend_output = backend_child.wait_with_output().await.unwrap();
+    assert_eq!(
+        bootstrap_required,
+        Some(true),
+        "backend failed to boot from empty dynamic state\n--- backend stdout ---\n{}\n--- backend stderr ---\n{}",
+        String::from_utf8_lossy(&backend_output.stdout),
+        String::from_utf8_lossy(&backend_output.stderr),
+    );
+}
+
+#[tokio::test]
 async fn underwrapd_binary_start_and_read() {
     let daemon_bin = cargo_bin("underwrapd");
     let backend_bin = cargo_bin("underwrap-backendd");
@@ -123,6 +187,7 @@ async fn underwrapd_binary_start_and_read() {
     let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
         stores_file: Some(stores_file),
         client_instances_file: Some(client_instances_file),
+        operators_file: Some(base.join("operators.json")),
         enrollment: None,
         service: Some(underwrap_backendd::server::ServiceConfig {
             listen: format!("127.0.0.1:{service_port}"),
@@ -147,7 +212,6 @@ async fn underwrapd_binary_start_and_read() {
             )]),
             tls: None,
             allowed_origins: None,
-            admin_home_store: None,
             session_key_file: None,
             session_lifetime_secs: None,
             stores_data_roots: None,

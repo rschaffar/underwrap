@@ -1,14 +1,16 @@
 //! Operator records: the people who can log in to the admin UI.
 //!
-//! Records live as a single JSON blob under the reserved secret id
-//! [`OPERATORS_SECRET_ID`] in the configured admin-home store. Subsequent
-//! tickets (211 login, 213 role middleware, 214 bootstrap, 240 user
+//! Records live in a backend-managed JSON file at
+//! [`DEFAULT_OPERATORS_FILE`] by default. The same document also holds
+//! the persistent bootstrap-completed sentinel. Subsequent tickets
+//! (211 login, 213 role middleware, 214 bootstrap, 240 user
 //! management) consume this module.
 //!
 //! Password hashes are Argon2id PHC strings. We never log them; the
 //! [`OperatorRecord`] `Debug` impl redacts them and tests assert that
 //! tracing-captured CRUD output never contains the hash material.
 
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -16,21 +18,15 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use underwrap_store::StorageBackend;
-
-/// Reserved secret id where the operator collection lives.
-pub const OPERATORS_SECRET_ID: &str = "__underwrap/admin/operators";
-
-/// Reserved secret id of the persistent bootstrap-completed sentinel.
-/// Once set, the online bootstrap endpoint refuses further calls even
-/// if every operator is later deleted — preventing an "all operators
-/// gone, anyone can claim admin" escalation. Recovery in that case
-/// goes through the offline CLI subcommand instead.
-pub const BOOTSTRAP_SENTINEL_SECRET_ID: &str = "__underwrap/admin/bootstrap_completed";
+/// Default location of the backend-managed operator-state file.
+pub const DEFAULT_OPERATORS_FILE: &str = "/var/lib/underwrap-backend/operators.json";
 
 /// Schema version for the persisted operator collection. Bump when the
 /// on-disk shape changes incompatibly.
 pub const COLLECTION_VERSION: u32 = 1;
+
+/// Schema version for the persisted operator-state file.
+const STATE_FILE_VERSION: u32 = 1;
 
 /// One operator account.
 ///
@@ -100,8 +96,7 @@ impl Principal {
     }
 }
 
-/// The persisted operator collection. Stored as JSON in the admin-home
-/// store under [`OPERATORS_SECRET_ID`].
+/// The in-memory operator collection.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OperatorCollection {
     pub version: u32,
@@ -236,6 +231,38 @@ impl OperatorCollection {
     }
 }
 
+/// Persistent marker that the online bootstrap flow has completed.
+/// Stored alongside the operator collection in the operator-state file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BootstrapSentinel {
+    pub completed_at: u64,
+    pub by_username: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct OperatorStateDocument {
+    #[serde(default = "default_state_file_version")]
+    version: u32,
+    #[serde(default)]
+    operators: Vec<OperatorRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bootstrap_completed: Option<BootstrapSentinel>,
+}
+
+impl Default for OperatorStateDocument {
+    fn default() -> Self {
+        Self {
+            version: STATE_FILE_VERSION,
+            operators: Vec::new(),
+            bootstrap_completed: None,
+        }
+    }
+}
+
+fn default_state_file_version() -> u32 {
+    STATE_FILE_VERSION
+}
+
 /// Normalise a username: trimmed, lowercase. Usernames are compared
 /// case-insensitively because operators routinely confuse `Alice` and
 /// `alice` between admin set-up and login.
@@ -260,142 +287,103 @@ pub fn now_epoch_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Load the operator collection from the admin-home store. Returns
-/// the default (empty) collection when no record exists yet; the
-/// caller treats that as "bootstrap required".
-pub fn load(store: &dyn StorageBackend) -> Result<OperatorCollection> {
-    let raw = store
-        .read(OPERATORS_SECRET_ID)
-        .context("reading operator collection from admin-home store")?;
-    let Some(bytes) = raw else {
-        return Ok(OperatorCollection::default());
-    };
-    let parsed: OperatorCollection =
-        serde_json::from_slice(bytes.as_ref()).context("parsing operator collection JSON")?;
-    if parsed.version != COLLECTION_VERSION {
-        anyhow::bail!(
-            "operator collection has version {}, expected {}",
-            parsed.version,
-            COLLECTION_VERSION
-        );
-    }
-    Ok(parsed)
+/// Load the operator collection from the backend-managed operator-state
+/// file. Returns the default (empty) collection when no file exists
+/// yet; the caller treats that as "bootstrap required".
+pub fn load(path: &Path) -> Result<OperatorCollection> {
+    let doc = load_state_document(path)?;
+    Ok(OperatorCollection {
+        version: COLLECTION_VERSION,
+        operators: doc.operators,
+    })
 }
 
-/// Persist the operator collection. Atomicity is the storage backend's
-/// responsibility (plain/encrypted both write via a tempfile + rename).
-pub fn save(store: &dyn StorageBackend, collection: &OperatorCollection) -> Result<()> {
-    let bytes =
-        serde_json::to_vec(collection).context("serialising operator collection to JSON")?;
-    store
-        .write(OPERATORS_SECRET_ID, &bytes)
-        .context("writing operator collection to admin-home store")
-}
-
-/// Persistent marker that the online bootstrap flow has completed.
-/// Stored alongside the operator collection in the admin-home store.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BootstrapSentinel {
-    pub completed_at: u64,
-    pub by_username: String,
+/// Persist the operator collection while preserving the bootstrap
+/// sentinel already present in the operator-state file.
+pub fn save(path: &Path, collection: &OperatorCollection) -> Result<()> {
+    anyhow::ensure!(
+        collection.version == COLLECTION_VERSION,
+        "operator collection has version {}, expected {}",
+        collection.version,
+        COLLECTION_VERSION
+    );
+    let mut doc = load_state_document(path)?;
+    doc.operators = collection.operators.clone();
+    save_state_document(path, &doc)
 }
 
 /// True iff the bootstrap-completed sentinel is present.
-pub fn bootstrap_completed(store: &dyn StorageBackend) -> Result<bool> {
-    Ok(store
-        .read(BOOTSTRAP_SENTINEL_SECRET_ID)
-        .context("reading bootstrap sentinel")?
-        .is_some())
+pub fn bootstrap_completed(path: &Path) -> Result<bool> {
+    Ok(load_state_document(path)?.bootstrap_completed.is_some())
 }
 
 /// Read the sentinel record, if present.
-pub fn load_bootstrap_sentinel(store: &dyn StorageBackend) -> Result<Option<BootstrapSentinel>> {
-    let Some(raw) = store
-        .read(BOOTSTRAP_SENTINEL_SECRET_ID)
-        .context("reading bootstrap sentinel")?
-    else {
-        return Ok(None);
+pub fn load_bootstrap_sentinel(path: &Path) -> Result<Option<BootstrapSentinel>> {
+    Ok(load_state_document(path)?.bootstrap_completed)
+}
+
+/// Persist the bootstrap-completed sentinel while preserving the
+/// operator collection already present in the operator-state file.
+pub fn mark_bootstrap_completed(path: &Path, sentinel: &BootstrapSentinel) -> Result<()> {
+    let mut doc = load_state_document(path)?;
+    doc.bootstrap_completed = Some(sentinel.clone());
+    save_state_document(path, &doc)
+}
+
+fn load_state_document(path: &Path) -> Result<OperatorStateDocument> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(OperatorStateDocument::default());
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    let parsed: BootstrapSentinel =
-        serde_json::from_slice(raw.as_ref()).context("parsing bootstrap sentinel")?;
-    Ok(Some(parsed))
+    let doc: OperatorStateDocument = serde_json::from_str(&text)
+        .with_context(|| format!("parsing operator-state file {}", path.display()))?;
+    anyhow::ensure!(
+        doc.version == STATE_FILE_VERSION,
+        "operator-state file has version {}, expected {}",
+        doc.version,
+        STATE_FILE_VERSION
+    );
+    Ok(doc)
 }
 
-/// Persist the bootstrap-completed sentinel. Idempotent; callers
-/// should generally only invoke this once.
-pub fn mark_bootstrap_completed(
-    store: &dyn StorageBackend,
-    sentinel: &BootstrapSentinel,
-) -> Result<()> {
-    let bytes = serde_json::to_vec(sentinel).context("serialising bootstrap sentinel")?;
-    store
-        .write(BOOTSTRAP_SENTINEL_SECRET_ID, &bytes)
-        .context("writing bootstrap sentinel")
-}
-
-/// Resolve which store should hold the operator collection. Defaults
-/// to the alphabetically first declared store when no explicit
-/// `admin_home_store` is configured.
-pub fn resolve_admin_home_store<'a>(
-    stores: &'a std::collections::HashMap<String, std::sync::Arc<dyn StorageBackend>>,
-    configured: Option<&'a str>,
-) -> Result<(&'a str, std::sync::Arc<dyn StorageBackend>)> {
-    if let Some(name) = configured {
-        let store = stores
-            .get(name)
-            .with_context(|| format!("admin_home_store '{name}' is not declared in stores"))?;
-        return Ok((name, store.clone()));
-    }
-    let mut names: Vec<&str> = stores.keys().map(|s| s.as_str()).collect();
-    names.sort();
-    let first = names
-        .first()
-        .copied()
-        .context("no stores declared; cannot resolve admin_home_store")?;
-    Ok((first, stores.get(first).unwrap().clone()))
+fn save_state_document(path: &Path, doc: &OperatorStateDocument) -> Result<()> {
+    anyhow::ensure!(
+        doc.version == STATE_FILE_VERSION,
+        "operator-state file has version {}, expected {}",
+        doc.version,
+        STATE_FILE_VERSION
+    );
+    let json = serde_json::to_vec_pretty(doc).context("serialising operator-state file")?;
+    let dir = path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "operator-state file path '{}' has no parent directory",
+            path.display()
+        )
+    })?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating operator-state dir {}", dir.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("creating temp operator-state file under {}", dir.display()))?;
+    use std::io::Write;
+    tmp.write_all(&json)
+        .with_context(|| format!("writing temp operator-state file under {}", dir.display()))?;
+    tmp.flush()
+        .with_context(|| format!("flushing temp operator-state file under {}", dir.display()))?;
+    tmp.persist(path).map_err(|e| {
+        anyhow::anyhow!(
+            "atomically persisting operator-state file to {}: {e}",
+            path.display()
+        )
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
-    use underwrap_protocol::message::SecretBytes;
-
-    struct MemStore {
-        data: Mutex<HashMap<String, Vec<u8>>>,
-    }
-
-    impl MemStore {
-        fn new() -> Arc<Self> {
-            Arc::new(Self {
-                data: Mutex::new(HashMap::new()),
-            })
-        }
-    }
-
-    impl StorageBackend for MemStore {
-        fn read(&self, id: &str) -> Result<Option<SecretBytes>> {
-            Ok(self.data.lock().unwrap().get(id).cloned().map(Into::into))
-        }
-        fn write(&self, id: &str, m: &[u8]) -> Result<()> {
-            self.data.lock().unwrap().insert(id.to_string(), m.to_vec());
-            Ok(())
-        }
-        fn list(&self, prefix: &str) -> Result<Vec<String>> {
-            Ok(self
-                .data
-                .lock()
-                .unwrap()
-                .keys()
-                .filter(|k| k.starts_with(prefix))
-                .cloned()
-                .collect())
-        }
-        fn delete(&self, id: &str) -> Result<bool> {
-            Ok(self.data.lock().unwrap().remove(id).is_some())
-        }
-    }
 
     fn sample_record(username: &str, role: OperatorRole) -> OperatorRecord {
         OperatorRecord {
@@ -409,6 +397,13 @@ mod tests {
             created_at: 1000,
             password_changed_at: 1000,
         }
+    }
+
+    fn test_state_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "underwrap-operator-state-test-{}.json",
+            new_operator_id()
+        ))
     }
 
     #[test]
@@ -463,83 +458,62 @@ mod tests {
 
     #[test]
     fn empty_collection_signals_bootstrap_required() {
-        let store = MemStore::new();
-        let collection = load(store.as_ref()).unwrap();
-        assert!(collection.is_empty(), "fresh store yields empty collection");
+        let path = test_state_path();
+        let collection = load(&path).unwrap();
+        assert!(collection.is_empty(), "fresh state yields empty collection");
     }
 
     #[test]
     fn save_and_load_round_trip() {
-        let store = MemStore::new();
+        let path = test_state_path();
         let mut c = OperatorCollection::default();
         c.add(sample_record("alice", OperatorRole::Admin)).unwrap();
-        save(store.as_ref(), &c).unwrap();
-        let loaded = load(store.as_ref()).unwrap();
+        save(&path, &c).unwrap();
+        let loaded = load(&path).unwrap();
         assert_eq!(loaded, c);
     }
 
     #[test]
-    fn load_rejects_unknown_version() {
-        let store = MemStore::new();
-        let bad = r#"{"version":99,"operators":[]}"#;
-        store.write(OPERATORS_SECRET_ID, bad.as_bytes()).unwrap();
-        let err = load(store.as_ref()).unwrap_err();
+    fn load_rejects_unknown_state_file_version() {
+        let path = test_state_path();
+        std::fs::write(&path, r#"{"version":99,"operators":[]}"#).unwrap();
+        let err = load(&path).unwrap_err();
         assert!(err.to_string().contains("version"));
     }
 
     #[test]
-    fn resolve_admin_home_store_picks_first_alphabetically_by_default() {
-        let s_b: Arc<dyn StorageBackend> = MemStore::new();
-        let s_a: Arc<dyn StorageBackend> = MemStore::new();
-        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
-        stores.insert("b".to_string(), s_b);
-        stores.insert("a".to_string(), s_a);
-        let (name, _) = resolve_admin_home_store(&stores, None).unwrap();
-        assert_eq!(name, "a");
-    }
-
-    #[test]
-    fn resolve_admin_home_store_uses_configured_name() {
-        let s_b: Arc<dyn StorageBackend> = MemStore::new();
-        let s_a: Arc<dyn StorageBackend> = MemStore::new();
-        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
-        stores.insert("b".to_string(), s_b);
-        stores.insert("a".to_string(), s_a);
-        let (name, _) = resolve_admin_home_store(&stores, Some("b")).unwrap();
-        assert_eq!(name, "b");
-    }
-
-    #[test]
-    fn resolve_admin_home_store_rejects_unknown_configured_name() {
-        let stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
-        // unwrap_err() needs Result<T: Debug>; the success tuple holds a
-        // trait object, so unwrap the error variant by hand instead.
-        let result = resolve_admin_home_store(&stores, Some("nope"));
-        let err = match result {
-            Ok(_) => panic!("expected an error for unknown configured store"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("not declared"));
-    }
-
-    #[test]
     fn bootstrap_sentinel_absent_by_default() {
-        let store = MemStore::new();
-        assert!(!bootstrap_completed(store.as_ref()).unwrap());
-        assert!(load_bootstrap_sentinel(store.as_ref()).unwrap().is_none());
+        let path = test_state_path();
+        assert!(!bootstrap_completed(&path).unwrap());
+        assert!(load_bootstrap_sentinel(&path).unwrap().is_none());
     }
 
     #[test]
     fn bootstrap_sentinel_round_trip() {
-        let store = MemStore::new();
+        let path = test_state_path();
         let sentinel = BootstrapSentinel {
             completed_at: 1234,
             by_username: "alice".into(),
         };
-        mark_bootstrap_completed(store.as_ref(), &sentinel).unwrap();
-        assert!(bootstrap_completed(store.as_ref()).unwrap());
-        let loaded = load_bootstrap_sentinel(store.as_ref()).unwrap().unwrap();
+        mark_bootstrap_completed(&path, &sentinel).unwrap();
+        assert!(bootstrap_completed(&path).unwrap());
+        let loaded = load_bootstrap_sentinel(&path).unwrap().unwrap();
         assert_eq!(loaded, sentinel);
+    }
+
+    #[test]
+    fn saving_collection_preserves_existing_bootstrap_sentinel() {
+        let path = test_state_path();
+        let sentinel = BootstrapSentinel {
+            completed_at: 1234,
+            by_username: "alice".into(),
+        };
+        mark_bootstrap_completed(&path, &sentinel).unwrap();
+        let mut c = OperatorCollection::default();
+        c.add(sample_record("alice", OperatorRole::Admin)).unwrap();
+        save(&path, &c).unwrap();
+        assert_eq!(load(&path).unwrap(), c);
+        assert_eq!(load_bootstrap_sentinel(&path).unwrap().unwrap(), sentinel);
     }
 
     #[test]
