@@ -43,8 +43,9 @@ from the backend the operator configured.
 
 - A server CA + server certificate for the backend's HTTPS listener (used
   by the frontend daemon to verify the backend). Runtime client certs do
-  **not** need a CA — the helper generates a self-signed leaf during
-  enrollment and the backend authenticates connections by fingerprint
+  **not** need a CA — `underwrap-keygen` generates a self-signed leaf
+  on the target host and an admin pastes the cert PEM into the backend
+  admin UI; the backend authenticates connections by fingerprint
   pinning. See [Deploying the central backend](remote-backend.md) for
   one-liner recipes with `step-ca`.
 

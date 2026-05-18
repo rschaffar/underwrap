@@ -130,13 +130,12 @@ import type {
   AdminCatalogGetRequest,
   AdminCatalogGetResponse,
   AdminClientInstanceActionState,
+  AdminClientInstanceCreateRequest,
   AdminClientInstanceDetailResponse,
   AdminClientInstanceListItem,
   AdminClientInstancesListResponse,
   AdminClientInstanceStatus,
   AdminClientInstanceUpdateRequest,
-  AdminEnrollmentInviteCreateRequest,
-  AdminEnrollmentInviteCreateResponse,
   AdminOkResponse,
   AdminOkUserResponse,
   AdminPasswordChangeRequest,
@@ -185,13 +184,12 @@ export type {
   AdminCatalogGetRequest,
   AdminCatalogGetResponse,
   AdminClientInstanceActionState,
+  AdminClientInstanceCreateRequest,
   AdminClientInstanceDetailResponse,
   AdminClientInstanceListItem,
   AdminClientInstancesListResponse,
   AdminClientInstanceStatus,
   AdminClientInstanceUpdateRequest,
-  AdminEnrollmentInviteCreateRequest,
-  AdminEnrollmentInviteCreateResponse,
   AdminOkResponse,
   AdminOkUserResponse,
   AdminPasswordChangeRequest,
@@ -279,18 +277,6 @@ export function postStoreCreate(
   });
 }
 
-export function postEnrollmentInviteCreate(
-  body: AdminEnrollmentInviteCreateRequest,
-): Promise<AdminEnrollmentInviteCreateResponse> {
-  return apiJson<AdminEnrollmentInviteCreateResponse>(
-    "/v1/admin/enrollment-invites",
-    {
-      method: "POST",
-      json: body,
-    },
-  );
-}
-
 export function postStoreRotateKey(
   storeId: string,
 ): Promise<AdminStoreRotateKeyResponse> {
@@ -332,6 +318,15 @@ export function fetchClientInstance(
 ): Promise<AdminClientInstanceDetailResponse> {
   return apiJson<AdminClientInstanceDetailResponse>(
     `/v1/admin/client-instances/${encodeURIComponent(id)}`,
+  );
+}
+
+export function postClientInstanceCreate(
+  body: AdminClientInstanceCreateRequest,
+): Promise<AdminClientInstanceDetailResponse> {
+  return apiJson<AdminClientInstanceDetailResponse>(
+    "/v1/admin/client-instances",
+    { method: "POST", json: body },
   );
 }
 

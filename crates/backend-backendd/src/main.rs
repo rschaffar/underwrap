@@ -188,7 +188,6 @@ mod tests {
         let config = parse_backend_config("{}\n").unwrap();
         assert!(config.stores_file.is_none());
         assert!(config.client_instances_file.is_none());
-        assert!(config.enrollment.is_none());
         assert!(config.https.is_none());
         assert!(config.admin.is_none());
     }
@@ -218,8 +217,6 @@ stores:
 stores_file: /var/u/stores.json
 client_instances_file: /var/u/client-instances.json
 operators_file: /var/u/operators.json
-enrollment:
-  invites_file: /var/u/enrollment-invites.json
 "#,
         )
         .unwrap();
@@ -234,10 +231,6 @@ enrollment:
         assert_eq!(
             config.operators_file(),
             std::path::PathBuf::from("/var/u/operators.json"),
-        );
-        assert_eq!(
-            config.enrollment.as_ref().unwrap().invites_file(),
-            std::path::PathBuf::from("/var/u/enrollment-invites.json"),
         );
     }
 

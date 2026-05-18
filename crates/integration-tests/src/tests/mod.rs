@@ -162,7 +162,6 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
 mod client_instances;
 mod daemon;
 mod directory_and_status;
-mod enrollment;
 mod grants;
 mod policy;
 mod service_transport;

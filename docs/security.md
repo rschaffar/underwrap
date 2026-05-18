@@ -698,15 +698,17 @@ but not the basic wrapper flow on the target host.
 
 - **Runtime** (`/v1/*`) — mutual TLS. Every `underwrapd` instance gets
   one client certificate, generated locally as a **self-signed leaf** by
-  `underwrap-enroll` during the operator-approved enrollment flow. The
-  backend authenticates by SHA-256 fingerprint match against its
-  runtime-client registry: a custom rustls `ClientCertVerifier` accepts
-  any presented leaf at the TLS layer (still verifying the handshake
-  signature against the leaf's public key, so a stolen cert without its
-  private key cannot be replayed), and `resolve_runtime_client` then
-  rejects any cert whose fingerprint is not registered as `Active`. There
-  is no CA chain validation, no subject/SAN/EKU consultation, and no
-  enrollment signing key on the backend.
+  `underwrap-keygen` on the target host. The key never leaves that host;
+  an admin pastes the resulting cert PEM into the admin UI's
+  **Create client instance** form to register it. The backend
+  authenticates by SHA-256 fingerprint match against its runtime-client
+  registry: a custom rustls `ClientCertVerifier` accepts any presented
+  leaf at the TLS layer (still verifying the handshake signature against
+  the leaf's public key, so a stolen cert without its private key cannot
+  be replayed), and `resolve_runtime_client` then rejects any cert whose
+  fingerprint is not registered as `Active`. There is no CA chain
+  validation, no subject/SAN/EKU consultation, and no enrollment
+  signing key on the backend.
 - **Admin** (`/v1/admin/*`) — same HTTPS listener, no client certificate.
   Operators authenticate with username + Argon2id password hash + signed
   session cookie (HMAC-SHA256) + per-session CSRF token on every POST.

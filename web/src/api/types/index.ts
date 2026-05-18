@@ -15,11 +15,6 @@ export type { AdminClientInstanceListItem } from "./AdminClientInstanceListItem"
 export type { AdminClientInstanceStatus } from "./AdminClientInstanceStatus";
 export type { AdminClientInstanceUpdateRequest } from "./AdminClientInstanceUpdateRequest";
 export type { AdminClientInstancesListResponse } from "./AdminClientInstancesListResponse";
-export type { AdminEnrollmentInviteCreateRequest } from "./AdminEnrollmentInviteCreateRequest";
-export type { AdminEnrollmentInviteCreateResponse } from "./AdminEnrollmentInviteCreateResponse";
-export type { AdminEnrollmentInviteListItem } from "./AdminEnrollmentInviteListItem";
-export type { AdminEnrollmentInviteStatus } from "./AdminEnrollmentInviteStatus";
-export type { AdminEnrollmentInvitesListResponse } from "./AdminEnrollmentInvitesListResponse";
 export type { AdminOkResponse } from "./AdminOkResponse";
 export type { AdminOkUserResponse } from "./AdminOkUserResponse";
 export type { AdminPasswordChangeRequest } from "./AdminPasswordChangeRequest";

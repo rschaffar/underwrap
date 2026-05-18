@@ -23,11 +23,13 @@ You only need a **server-side** CA:
 - a server certificate whose SANs include the address operators and the
   target host will use (`localhost`, an internal hostname, or an IP).
 
-Client certificates are **not** CA-signed. During enrollment the
-`underwrap-enroll` helper generates a self-signed leaf locally; the
-backend authenticates later mTLS connections by SHA-256 fingerprint
-lookup against its runtime-client registry. There is no enrollment CA,
-no CSR signing, and no `client_ca_file` to manage.
+Client certificates are **not** CA-signed. The `underwrap-keygen`
+helper generates a self-signed leaf locally on the target host; an
+admin pastes the resulting cert PEM into the backend admin UI to
+register the runtime client instance. The backend authenticates later
+mTLS connections by SHA-256 fingerprint lookup against its
+runtime-client registry. There is no enrollment CA, no CSR signing, and
+no `client_ca_file` to manage.
 
 A minimal `step-ca` recipe:
 
@@ -80,41 +82,38 @@ unit is in the VM test
 (`nix/tests/node.nix`) — copy its `ProtectSystem`, `PrivateTmp`,
 `RestrictAddressFamilies`, and `NoNewPrivileges` flags.
 
-## Running `underwrap-enroll`
+## Generating a client credential with `underwrap-keygen`
 
-The helper verifies the backend's server certificate against the host's
-**system trust store**. When the backend's cert chains to a public or
-otherwise OS-trusted CA, no extra flags are needed.
+`underwrap-keygen` runs on the target host and never talks to the
+backend. It generates a fresh keypair, writes the private key and a
+self-signed certificate to disk under the daemon user, and prints the
+certificate PEM to stdout. The operator pastes that PEM into the admin
+UI on the backend to register the runtime client instance.
 
 On NixOS, the `services.underwrap` module symlinks each instance's
 generated config to `/etc/underwrap/instances/<instance>.yaml`. Point
-`underwrap-enroll` at it and the helper reads the backend URL plus the
-client cert/key output paths from that file:
+`underwrap-keygen` at it and the helper reads the client cert/key
+output paths plus the daemon user from that file:
 
 ```bash
-sudo underwrap-enroll \
-  --invite-id enr_… \
+sudo underwrap-keygen \
   --instance-config /etc/underwrap/instances/work.yaml
 ```
 
-Off NixOS (or if you want to override the config), pass the targets
+Off NixOS (or if you want to override the paths), pass the targets
 explicitly instead:
 
 ```bash
-sudo underwrap-enroll \
-  --url https://backend.example.internal:18443 \
-  --invite-id enr_… \
+sudo underwrap-keygen \
   --client-cert-out /etc/underwrap/client-work.pem \
   --client-key-out /etc/underwrap/client-work.key
 ```
 
-When the backend's cert is signed by a private CA the host doesn't trust
-(or is self-signed), the helper aborts and prints the presented cert plus
-its SHA-256 fingerprint. Re-run with `--accept-server-ca-fingerprint
-<sha256>` to pin that exact leaf for this enrollment. The pinned
-fingerprint is only used by `underwrap-enroll` for this one call; the
-runtime daemon still verifies the backend through its own `caFile`
-trust anchor.
+The helper writes the key file with mode `0400` and the cert file with
+`0440`, and chowns both to the `underwrap-<instance>` user/group when it
+can resolve them. Copy the PEM that lands on stdout into the admin UI's
+**Create client instance** form on the backend; the backend stores the
+SHA-256 fingerprint and authorises later mTLS connections by it.
 
 ## Target host (NixOS)
 
@@ -164,7 +163,8 @@ The short way is now the admin UI in the browser:
 
 - bootstrap the first admin operator
 - create the `work` store
-- create the runtime client enrollment for the target instance
+- run `underwrap-keygen` on the target host and paste its cert PEM into
+  the **Create client instance** form on the **Client Instances** page
 - add the wrapper grant and secret material through the UI
 
 ## Wrapper approval modes

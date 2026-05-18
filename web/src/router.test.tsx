@@ -37,13 +37,13 @@ describe("router ↔ nav consistency", () => {
 });
 
 describe("safeNextPath", () => {
-  it("preserves same-origin enrollment deep links through login", () => {
+  it("preserves same-origin deep links through login", () => {
     const originalOrigin = window.location.origin;
-    const next = `${originalOrigin}/enroll?host=deepthought&instance=work`;
-    expect(safeNextPath(next)).toBe("/enroll?host=deepthought&instance=work");
+    const next = `${originalOrigin}/client-instances?focus=abc`;
+    expect(safeNextPath(next)).toBe("/client-instances?focus=abc");
   });
 
   it("rejects cross-origin redirects", () => {
-    expect(safeNextPath("https://evil.example/enroll?host=x&instance=y")).toBeNull();
+    expect(safeNextPath("https://evil.example/client-instances")).toBeNull();
   });
 });

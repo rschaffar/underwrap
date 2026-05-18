@@ -8,8 +8,8 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
 
-    if let Err(err) = frontend_enroll::run(frontend_enroll::Cli::parse()) {
-        eprintln!("underwrap-enroll: {err:#}");
+    if let Err(err) = frontend_keygen::run(frontend_keygen::Cli::parse()) {
+        eprintln!("underwrap-keygen: {err:#}");
         std::process::exit(1);
     }
 }

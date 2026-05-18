@@ -170,7 +170,6 @@ impl TestDaemon {
             stores_file: Some(stores_file),
             client_instances_file: Some(instances_file),
             operators_file: Some(base.join("operators.json")),
-            enrollment: None,
             https: Some(underwrap_backendd::server::HttpsConfig {
                 listen: format!("127.0.0.1:{https_port}"),
                 tls: underwrap_backendd::server::HttpsTlsConfig {

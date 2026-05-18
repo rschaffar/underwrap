@@ -15,12 +15,14 @@ vi.mock("@/api/client", async () => {
     fetchClientInstances: vi.fn(),
     fetchStores: vi.fn(),
     putClientInstanceUpdate: vi.fn(),
+    postClientInstanceCreate: vi.fn(),
   };
 });
 
 import {
   fetchClientInstances,
   fetchStores,
+  postClientInstanceCreate,
   putClientInstanceUpdate,
 } from "@/api/client";
 
@@ -119,8 +121,28 @@ describe("ClientInstancesPage", () => {
     vi.mocked(fetchClientInstances).mockReset();
     vi.mocked(fetchStores).mockReset();
     vi.mocked(putClientInstanceUpdate).mockReset();
+    vi.mocked(postClientInstanceCreate).mockReset();
     vi.mocked(fetchClientInstances).mockResolvedValue(instances);
     vi.mocked(fetchStores).mockResolvedValue(stores);
+    vi.mocked(postClientInstanceCreate).mockResolvedValue({
+      id: "client_new",
+      display_name: "new",
+      hostname_hint: undefined,
+      instance_name: "new",
+      current_store_id: "store_work",
+      current_store_name: "Work",
+      status: "active",
+      last_seen_at: undefined,
+      current_credential_fingerprint: "fp-new",
+      current_credential_issued_at: undefined,
+      actions: {
+        can_edit_display_name: true,
+        can_remap_store: true,
+        can_disable: true,
+        can_enable: false,
+        can_delete: true,
+      },
+    });
     vi.mocked(putClientInstanceUpdate).mockImplementation(async (id, body) => ({
       id,
       display_name: id === "client_work" ? "Work laptop" : "Retired workstation",
@@ -199,6 +221,52 @@ describe("ClientInstancesPage", () => {
 
     expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
       status: "disabled",
+    });
+  });
+
+  it("creates a client instance via the create dialog using a pasted cert PEM", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(
+      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+    );
+
+    await screen.findByTestId("client-instance-row-client_work");
+    await user.click(screen.getByRole("button", { name: /create client instance/i }));
+    const dialog = await screen.findByRole("dialog", {
+      name: /create client instance/i,
+    });
+    await user.type(within(dialog).getByLabelText(/display name/i), "laptop-work");
+    await user.type(within(dialog).getByLabelText(/instance name/i), "work");
+    await user.type(within(dialog).getByLabelText(/hostname hint/i), "deepthought");
+    const pem = "-----BEGIN CERTIFICATE-----\nFAKECERT\n-----END CERTIFICATE-----\n";
+    await user.type(within(dialog).getByLabelText(/certificate pem/i), pem);
+    await user.click(within(dialog).getByRole("button", { name: /^create$/i }));
+
+    expect(postClientInstanceCreate).toHaveBeenCalledWith({
+      display_name: "laptop-work",
+      instance_name: "work",
+      hostname_hint: "deepthought",
+      current_store_id: "store_work",
+      status: "active",
+      cert_pem: pem.trim(),
+    });
+  });
+
+  it("replaces the registered cert via the edit-cert dialog", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(
+      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+    );
+
+    const row = await screen.findByTestId("client-instance-row-client_work");
+    await user.click(within(row).getByRole("button", { name: /edit cert/i }));
+    const dialog = await screen.findByRole("dialog", { name: /edit cert: work laptop/i });
+    const pem = "-----BEGIN CERTIFICATE-----\nFRESHCERT\n-----END CERTIFICATE-----\n";
+    await user.type(within(dialog).getByLabelText(/new certificate pem/i), pem);
+    await user.click(within(dialog).getByRole("button", { name: /replace cert/i }));
+
+    expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
+      cert_pem: pem.trim(),
     });
   });
 });

@@ -459,85 +459,12 @@ pub struct AdminClientInstanceUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub status: Option<AdminClientInstanceStatus>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-#[serde(rename_all = "kebab-case")]
-pub enum AdminEnrollmentInviteStatus {
-    Pending,
-    Consumed,
-    Expired,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminEnrollmentInviteListItem {
-    pub id: String,
-    pub display_name: String,
+    /// Optional replacement client cert PEM. When set, the backend
+    /// parses it, validates it as a fresh client cert, replaces
+    /// `current_credential`, and updates the stored fingerprint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub hostname_hint: Option<String>,
-    pub instance_name: String,
-    pub current_store_id: String,
-    pub created_at: u64,
-    pub expires_at: u64,
-    pub status: AdminEnrollmentInviteStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub consumed_at: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub consumed_client_instance_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminEnrollmentInvitesListResponse {
-    pub items: Vec<AdminEnrollmentInviteListItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminEnrollmentInviteCreateRequest {
-    pub display_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub hostname_hint: Option<String>,
-    pub instance_name: String,
-    pub current_store_id: String,
-    /// Optional invite lifetime override in seconds. The backend may cap this.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub expires_in_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminEnrollmentInviteCreateResponse {
-    pub invite: AdminEnrollmentInviteListItem,
-    /// Returned exactly once. The CLI prompts for this value interactively;
-    /// do not place it in argv or shell history.
-    pub enrollment_secret: String,
-    pub enrollment_url: String,
-    pub enrollment_command: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EnrollmentSubmitRequest {
-    pub invite_id: String,
-    pub enrollment_secret: String,
-    /// PEM-encoded self-signed client certificate generated locally by the
-    /// helper. The backend stores its SHA-256 fingerprint and does not
-    /// re-issue or chain-validate the cert; only the fingerprint authorizes
-    /// later runtime mTLS connections.
-    pub cert_pem: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EnrollmentSubmitResponse {
-    pub client_instance_id: String,
-    pub cert_fingerprint: String,
+    pub cert_pem: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

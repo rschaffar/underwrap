@@ -10,13 +10,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  type AdminClientInstanceCreateRequest,
   type AdminClientInstanceDetailResponse,
   type AdminClientInstancesListResponse,
   type AdminStoresListResponse,
   fetchClientInstances,
   fetchStores,
+  postClientInstanceCreate,
   putClientInstanceUpdate,
   type WhoamiResponse,
 } from "@/api/client";
@@ -59,6 +62,9 @@ export function ClientInstancesPage({
   const qc = useQueryClient();
   const isAdmin = canManageClientInstances(principal);
   const [statusFilter, setStatusFilter] = useState<ClientStatusFilter>("all");
+  const [creating, setCreating] = useState(false);
+  const [editingCert, setEditingCert] =
+    useState<AdminClientInstanceDetailResponse | null>(null);
   const [remapping, setRemapping] = useState<AdminClientInstanceDetailResponse | null>(null);
   const [settingStatus, setSettingStatus] = useState<{
     instance: AdminClientInstanceDetailResponse;
@@ -89,22 +95,34 @@ export function ClientInstancesPage({
         <div>
           <h2 className="text-xl font-semibold text-(--color-fg)">Client Instances</h2>
           <p className="mt-1 text-sm text-(--color-muted)">
-            Runtime client identities enrolled into this backend. Remaps apply on the next runtime
-            request; disabled instances stay visible here for management and auditability.
+            Runtime client identities registered with this backend. Generate a credential
+            on the client host with <code>underwrap-keygen</code> and paste the cert PEM
+            below to register it. Remaps apply on the next runtime request; disabled
+            instances stay visible here for management and auditability.
           </p>
         </div>
-        <div className="space-y-1">
-          <Label htmlFor="status-filter">Status filter</Label>
-          <select
-            id="status-filter"
-            className="flex h-9 rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as ClientStatusFilter)}
+        <div className="flex items-end gap-3">
+          <div className="space-y-1">
+            <Label htmlFor="status-filter">Status filter</Label>
+            <select
+              id="status-filter"
+              className="flex h-9 rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as ClientStatusFilter)}
+            >
+              <option value="all">All</option>
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </div>
+          <Button
+            type="button"
+            disabled={!isAdmin}
+            title={!isAdmin ? "Only admins may create client instances." : undefined}
+            onClick={() => setCreating(true)}
           >
-            <option value="all">All</option>
-            <option value="active">Active</option>
-            <option value="disabled">Disabled</option>
-          </select>
+            Create client instance
+          </Button>
         </div>
       </header>
 
@@ -158,6 +176,19 @@ export function ClientInstancesPage({
                         <Button
                           variant="ghost"
                           size="sm"
+                          disabled={!isAdmin}
+                          title={
+                            !isAdmin
+                              ? "Only admins may manage client instances."
+                              : undefined
+                          }
+                          onClick={() => setEditingCert(toDetail(item))}
+                        >
+                          Edit cert
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           disabled={!canRemap || (storesQuery.data?.items.length ?? 0) < 2}
                           title={
                             !isAdmin
@@ -194,6 +225,28 @@ export function ClientInstancesPage({
         </div>
       )}
 
+      {isAdmin && creating && storesQuery.data ? (
+        <CreateClientInstanceDialog
+          stores={storesQuery.data.items}
+          onClose={() => setCreating(false)}
+          onSuccess={async () => {
+            await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
+            setCreating(false);
+          }}
+        />
+      ) : null}
+
+      {isAdmin && editingCert ? (
+        <EditCertDialog
+          instance={editingCert}
+          onClose={() => setEditingCert(null)}
+          onSuccess={async () => {
+            await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
+            setEditingCert(null);
+          }}
+        />
+      ) : null}
+
       {isAdmin && remapping ? storesQuery.data ? (
         <RemapStoreDialog
           instance={remapping}
@@ -218,6 +271,236 @@ export function ClientInstancesPage({
         />
       ) : null}
     </div>
+  );
+}
+
+function CreateClientInstanceDialog({
+  stores,
+  onClose,
+  onSuccess,
+}: {
+  stores: AdminStoresListResponse["items"];
+  onClose: () => void;
+  onSuccess: () => Promise<void>;
+}) {
+  const [displayName, setDisplayName] = useState("");
+  const [instanceName, setInstanceName] = useState("");
+  const [hostnameHint, setHostnameHint] = useState("");
+  const [storeId, setStoreId] = useState(stores[0]?.id ?? "");
+  const [status, setStatus] = useState<"active" | "disabled">("active");
+  const [certPem, setCertPem] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const mut = useMutation({
+    mutationFn: (body: AdminClientInstanceCreateRequest) =>
+      postClientInstanceCreate(body),
+    onSuccess: async () => {
+      setSubmitError(null);
+      await onSuccess();
+    },
+    onError: (err) => setSubmitError(describeApiError(err)),
+  });
+
+  const trimmedCert = certPem.trim();
+  const canSubmit =
+    displayName.trim() !== "" &&
+    instanceName.trim() !== "" &&
+    storeId !== "" &&
+    trimmedCert !== "" &&
+    !mut.isPending;
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Create client instance</DialogTitle>
+          <DialogDescription>
+            Generate a credential on the client host with
+            <code className="mx-1">underwrap-keygen</code>
+            and paste the certificate PEM below. The private key never leaves the
+            client host; only the certificate is registered here.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="create-display-name">Display name</Label>
+            <Input
+              id="create-display-name"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="laptop-work"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="create-instance-name">Instance name</Label>
+            <Input
+              id="create-instance-name"
+              value={instanceName}
+              onChange={(e) => setInstanceName(e.target.value)}
+              placeholder="work"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="create-hostname-hint">Hostname hint (optional)</Label>
+            <Input
+              id="create-hostname-hint"
+              value={hostnameHint}
+              onChange={(e) => setHostnameHint(e.target.value)}
+              placeholder="deepthought"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="create-store">Target store</Label>
+            <select
+              id="create-store"
+              value={storeId}
+              onChange={(e) => setStoreId(e.target.value)}
+              className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
+            >
+              {stores.map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="create-status">Status</Label>
+            <select
+              id="create-status"
+              value={status}
+              onChange={(e) => setStatus(e.target.value as "active" | "disabled")}
+              className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
+            >
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="create-cert-pem">Certificate PEM</Label>
+            <textarea
+              id="create-cert-pem"
+              value={certPem}
+              onChange={(e) => setCertPem(e.target.value)}
+              rows={8}
+              spellCheck={false}
+              placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"}
+              className="flex w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
+            />
+          </div>
+          {submitError ? (
+            <p
+              role="alert"
+              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+            >
+              {submitError}
+            </p>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={!canSubmit}
+            onClick={() =>
+              mut.mutate({
+                display_name: displayName.trim(),
+                instance_name: instanceName.trim(),
+                hostname_hint:
+                  hostnameHint.trim() === "" ? undefined : hostnameHint.trim(),
+                current_store_id: storeId,
+                status,
+                cert_pem: trimmedCert,
+              })
+            }
+          >
+            {mut.isPending ? "Creating…" : "Create"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditCertDialog({
+  instance,
+  onClose,
+  onSuccess,
+}: {
+  instance: AdminClientInstanceDetailResponse;
+  onClose: () => void;
+  onSuccess: () => Promise<void>;
+}) {
+  const [certPem, setCertPem] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const mut = useMutation({
+    mutationFn: (cert_pem: string) =>
+      putClientInstanceUpdate(instance.id, { cert_pem }),
+    onSuccess: async () => {
+      setSubmitError(null);
+      await onSuccess();
+    },
+    onError: (err) => setSubmitError(describeApiError(err)),
+  });
+
+  const trimmed = certPem.trim();
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit cert: {instance.display_name}</DialogTitle>
+          <DialogDescription>
+            Replace the registered certificate. Generate a new credential on the
+            client host with
+            <code className="mx-1">underwrap-keygen</code>
+            and paste the new PEM below. Takes effect on the next runtime mTLS
+            connection.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-3 py-2 text-xs text-(--color-muted)">
+            Current fingerprint:{" "}
+            <code>{instance.current_credential_fingerprint}</code>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-cert-pem">New certificate PEM</Label>
+            <textarea
+              id="edit-cert-pem"
+              value={certPem}
+              onChange={(e) => setCertPem(e.target.value)}
+              rows={8}
+              spellCheck={false}
+              placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"}
+              className="flex w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
+            />
+          </div>
+          {submitError ? (
+            <p
+              role="alert"
+              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+            >
+              {submitError}
+            </p>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={trimmed === "" || mut.isPending}
+            onClick={() => mut.mutate(trimmed)}
+          >
+            {mut.isPending ? "Replacing…" : "Replace cert"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

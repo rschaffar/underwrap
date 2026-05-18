@@ -74,7 +74,6 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
         stores_file: Some(base.join("stores.json")),
         client_instances_file: Some(base.join("client-instances.json")),
         operators_file: Some(base.join("operators.json")),
-        enrollment: None,
         https: Some(underwrap_backendd::server::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),
             tls: underwrap_backendd::server::HttpsTlsConfig {
@@ -214,7 +213,6 @@ async fn underwrapd_binary_start_and_read() {
         stores_file: Some(stores_file),
         client_instances_file: Some(client_instances_file),
         operators_file: Some(base.join("operators.json")),
-        enrollment: None,
         https: Some(underwrap_backendd::server::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),
             tls: underwrap_backendd::server::HttpsTlsConfig {
