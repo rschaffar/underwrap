@@ -816,7 +816,13 @@ async fn handle_service_request(
 ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
     let (principal, store) = match resolve_runtime_client(&state, peer_certificates.as_ref()) {
         Ok(resolved) => resolved,
-        Err(_) => {
+        Err(e) => {
+            warn!(
+                method = %request.method(),
+                path = %request.uri().path(),
+                err = format!("{e:#}"),
+                "rejecting runtime client request: {e:#}"
+            );
             return Ok(error_response(
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
