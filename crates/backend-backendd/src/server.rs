@@ -2394,7 +2394,7 @@ use underwrap_protocol::service::{
     AdminClientInstanceUpdateRequest, AdminClientInstancesListResponse, AdminStoreActionState,
     AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
     AdminStoreDeleteResponse, AdminStoreDetailResponse, AdminStoreListItem,
-    AdminStoreRotateKeyResponse, AdminStoreSource, AdminStoreUpdateRequest, AdminStoreUsageSummary,
+    AdminStoreRotateKeyResponse, AdminStoreUpdateRequest, AdminStoreUsageSummary,
     AdminStoresListResponse,
 };
 
@@ -2472,7 +2472,6 @@ fn admin_store_list_item(
     AdminStoreListItem {
         id: loaded.record.id.clone(),
         name: loaded.record.name.clone(),
-        source: AdminStoreSource::Dynamic,
         backend: backend_kind(&loaded.record.storage),
         description: loaded.record.description.clone(),
         created_at: loaded.record.created_at,
@@ -2499,7 +2498,6 @@ fn admin_store_detail(
     AdminStoreDetailResponse {
         id: loaded.record.id.clone(),
         name: loaded.record.name.clone(),
-        source: AdminStoreSource::Dynamic,
         backend: backend_kind(&loaded.record.storage),
         dir,
         key_file,
@@ -5852,7 +5850,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let store_id = body["store"]["id"].as_str().unwrap().to_string();
         let expected_dir = tmp.path().join("data").join(&store_id);
         assert_eq!(body["store"]["name"], "work");
-        assert_eq!(body["store"]["source"], "dynamic");
         assert_eq!(body["store"]["backend"], "plain");
         assert_eq!(body["store"]["description"], "the work store");
         assert_eq!(body["store"]["usage"]["mapped_client_instance_count"], 0);
@@ -5870,7 +5867,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["id"], store_id);
         assert_eq!(items[0]["name"], "work");
-        assert_eq!(items[0]["source"], "dynamic");
         assert_eq!(items[0]["backend"], "plain");
         assert_eq!(items[0]["description"], "the work store");
         assert_eq!(items[0]["usage"]["mapped_client_instance_count"], 0);

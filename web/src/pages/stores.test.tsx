@@ -3,11 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import {
-  StoresPage,
-  canMutateStores,
-  isStoreReadOnly,
-} from "./stores";
+import { StoresPage, canMutateStores } from "./stores";
 
 function mockJson(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -40,10 +36,6 @@ describe("permission helpers", () => {
     ).toBe(false);
     expect(canMutateStores(null)).toBe(false);
   });
-
-  it("stores are never read-only by source", () => {
-    expect(isStoreReadOnly("dynamic")).toBe(false);
-  });
 });
 
 describe("StoresPage", () => {
@@ -52,7 +44,6 @@ describe("StoresPage", () => {
       {
         id: "store_work",
         name: "work",
-        source: "dynamic" as const,
         backend: "encrypted" as const,
         description: "Primary store",
         created_at: undefined,
@@ -67,7 +58,6 @@ describe("StoresPage", () => {
       {
         id: "store_scratch",
         name: "scratch",
-        source: "dynamic" as const,
         backend: "plain" as const,
         description: undefined,
         created_at: 100,
@@ -82,7 +72,6 @@ describe("StoresPage", () => {
       {
         id: "store_shared",
         name: "shared",
-        source: "dynamic" as const,
         backend: "encrypted" as const,
         description: "In use",
         created_at: 200,

@@ -195,16 +195,6 @@ pub struct ServiceErrorResponse {
     pub message: String,
 }
 
-/// Provenance of a store as visible to the admin UI. Stores are now
-/// backend-managed records, so the only source exposed on the wire is
-/// `dynamic`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-#[serde(rename_all = "lowercase")]
-pub enum AdminStoreSource {
-    Dynamic,
-}
-
 /// Storage backend kind a store uses. Kept as a flat enum so the
 /// admin UI can switch on it without having to mirror the full
 /// `StorageConfig` discriminant logic; the per-kind details
@@ -246,7 +236,6 @@ pub struct AdminStoreListItem {
     pub id: String,
     /// Editable operator-facing display name.
     pub name: String,
-    pub source: AdminStoreSource,
     pub backend: AdminStoreBackendKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -271,7 +260,6 @@ pub struct AdminStoreDetailResponse {
     pub id: String,
     /// Editable operator-facing display name.
     pub name: String,
-    pub source: AdminStoreSource,
     pub backend: AdminStoreBackendKind,
     pub dir: String,
     /// Set when the backend is `encrypted` — the path to the master

@@ -36,7 +36,6 @@ export type { AdminStoreDeleteResponse } from "./AdminStoreDeleteResponse";
 export type { AdminStoreDetailResponse } from "./AdminStoreDetailResponse";
 export type { AdminStoreListItem } from "./AdminStoreListItem";
 export type { AdminStoreRotateKeyResponse } from "./AdminStoreRotateKeyResponse";
-export type { AdminStoreSource } from "./AdminStoreSource";
 export type { AdminStoreUpdateRequest } from "./AdminStoreUpdateRequest";
 export type { AdminStoreUsageSummary } from "./AdminStoreUsageSummary";
 export type { AdminStoresListResponse } from "./AdminStoresListResponse";

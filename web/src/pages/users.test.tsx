@@ -52,7 +52,6 @@ const sampleStoresList = {
     {
       id: "store_work",
       name: "work",
-      source: "dynamic" as const,
       backend: "plain" as const,
       description: undefined,
       created_at: undefined,

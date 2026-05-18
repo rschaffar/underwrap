@@ -38,7 +38,6 @@ describe("SecretsPage", () => {
       {
         id: "store_default",
         name: "default",
-        source: "dynamic" as const,
         backend: "plain" as const,
         created_at: 0n,
         usage: { mapped_client_instance_count: 0, has_secrets: false },

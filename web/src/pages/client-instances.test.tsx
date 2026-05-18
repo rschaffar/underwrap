@@ -48,7 +48,6 @@ describe("ClientInstancesPage", () => {
       {
         id: "store_work",
         name: "Work",
-        source: "dynamic" as const,
         backend: "plain" as const,
         created_at: 1n,
         usage: { mapped_client_instance_count: 1, has_secrets: true },
@@ -62,7 +61,6 @@ describe("ClientInstancesPage", () => {
       {
         id: "store_other",
         name: "Other",
-        source: "dynamic" as const,
         backend: "plain" as const,
         created_at: 2n,
         usage: { mapped_client_instance_count: 0, has_secrets: false },

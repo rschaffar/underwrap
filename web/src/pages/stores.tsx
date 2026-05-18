@@ -3,8 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { ShieldCheck } from "lucide-react";
-
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -47,20 +45,12 @@ export function canMutateStores(p: WhoamiResponse | null): boolean {
   return !!(p && p.authenticated && p.role === "admin");
 }
 
-/** Stores are backend-managed records; none are read-only by source. */
-export function isStoreReadOnly(
-  _source: AdminStoreDetailResponse["source"],
-): boolean {
-  return false;
-}
-
 function toStoreDetail(
   item: AdminStoresListResponse["items"][number],
 ): AdminStoreDetailResponse {
   return {
     id: item.id,
     name: item.name,
-    source: item.source,
     backend: item.backend,
     key_file: undefined,
     description: item.description,
@@ -187,7 +177,6 @@ function StoresTable({ items, isAdmin, onEdit, onDelete }: StoresTableProps) {
         <thead className="bg-(--color-surface-0)/60 text-xs uppercase tracking-wide text-(--color-muted)">
           <tr>
             <th className="px-4 py-2">Name</th>
-            <th className="px-4 py-2">Source</th>
             <th className="px-4 py-2">Backend</th>
             <th className="px-4 py-2">Usage</th>
             <th className="px-4 py-2">Description</th>
@@ -207,9 +196,6 @@ function StoresTable({ items, isAdmin, onEdit, onDelete }: StoresTableProps) {
                 <td className="px-4 py-3 font-medium text-(--color-fg)">
                   <div>{item.name}</div>
                   <div className="text-xs text-(--color-muted)">{item.id}</div>
-                </td>
-                <td className="px-4 py-3">
-                  <SourceBadge source={item.source} />
                 </td>
                 <td className="px-4 py-3 text-(--color-muted)">
                   {item.backend}
@@ -254,19 +240,6 @@ function StoresTable({ items, isAdmin, onEdit, onDelete }: StoresTableProps) {
         </tbody>
       </table>
     </div>
-  );
-}
-
-function SourceBadge({
-  source,
-}: {
-  source: AdminStoresListResponse["items"][number]["source"];
-}) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300">
-      <ShieldCheck className="h-3 w-3" aria-hidden />
-      {source}
-    </span>
   );
 }
 
