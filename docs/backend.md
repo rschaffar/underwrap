@@ -8,36 +8,26 @@ underwrap splits its secret-handling responsibilities across two processes:
   authenticates wrappers from kernel identity and proxies authorized
   requests to the backend.
 
-Operators manage the backend through the separate
-[`underwrap-admin-ui`](admin-ui.md) service, which is a client of the
-backend's admin HTTP API.
+Operators manage the backend through the admin UI served directly by
+`underwrap-backendd` on the same HTTPS listener as the runtime API.
 
 ## Architecture
 
 ```text
 ┌─────────────────────┐       ┌──────────────────────────┐
 │  wrapped target     │       │  operator browser        │
-│  (e.g. gh, jira)    │       │  (login + session cookie) │
+│  (e.g. gh, jira)    │       │  (login + session cookie)│
 └─────────┬───────────┘       └────────────┬─────────────┘
           │                                │
-          │  wrapper socket (setgid,       │  form POSTs
-          │  SO_PEERCRED verified)         ▼
-          ▼                     ┌────────────────────────┐
-┌─────────────────────┐         │  underwrap-admin-ui    │
-│  underwrapd         │         │  (plain HTTP over a    │
-│  (per-instance,     │         │   TLS-terminating      │
-│   Unix-socket IPC)  │         │   reverse proxy)        │
-└─────────┬───────────┘         └────────────┬───────────┘
-          │ mTLS                             │ Bearer token
-          ▼                                  ▼
-┌─────────────────────────────────────────────────────────┐
-│  underwrap-backendd                                     │
-│  ┌─────────────────────┐   ┌─────────────────────────┐  │
-│  │ HTTPS runtime API   │   │ HTTP admin API          │  │
-│  │ /v1/status, /v1/*   │   │ /v1/admin/*             │  │
-│  └─────────────────────┘   └─────────────────────────┘  │
-│  PolicyDocument + secret stores (plain | encrypted)     │
-└─────────────────────────────────────────────────────────┘
+          │  wrapper socket (setgid,       │ HTTPS
+          │  SO_PEERCRED verified)         │
+          ▼                                ▼
+┌─────────────────────┐      ┌─────────────────────────────┐
+│  underwrapd         │ HTTPS│  underwrap-backendd         │
+│  (per-instance,     ├─────▶│  one HTTPS listener         │
+│   Unix-socket IPC)  │ mTLS │  - /v1/status, /v1/*        │
+└─────────────────────┘      │  - /v1/admin/* + embedded UI│
+                              └─────────────────────────────┘
 ```
 
 ## Trust boundaries
@@ -45,15 +35,14 @@ backend's admin HTTP API.
 - **Wrapper ↔ `underwrapd`**: local, kernel-backed. The wrapper socket's
   `SO_PEERCRED` + effective GID (read from `/proc/<pid>/status`) select the
   wrapper name. Nothing the wrapper sends is trusted for identity.
-- **`underwrapd` ↔ `underwrap-backendd`**: HTTPS with mutual TLS. The
-  client certificate identifies an instance principal; the server cert is
-  verified against a pinned CA. The backend maps each principal to one
-  store and only serves that store's view.
-- **admin UI ↔ `underwrap-backendd`**: HTTP with bearer tokens. Tokens are
-  loaded from files on both sides (operator tokens on the backend,
-  per-backend token on the UI) and compared in constant time.
-- **operator ↔ admin UI**: username + argon2id password hash + signed
-  session cookie (HMAC-SHA256) + per-session CSRF token on every POST.
+- **`underwrapd` ↔ `underwrap-backendd`**: HTTPS with runtime client
+  certificates issued by the backend's private client CA. The server cert is
+  verified against a pinned CA. The backend maps each authenticated client
+  instance to one store and only serves that store's view.
+- **operator browser ↔ `underwrap-backendd`**: the same HTTPS listener,
+  but without a client certificate. Admin routes authenticate via username +
+  argon2id password hash + signed session cookie (HMAC-SHA256) + per-session
+  CSRF token on every POST.
 
 The wrapped target process is outside every trust boundary. It receives
 only the secret material that the authorized read flow exposes.
@@ -80,20 +69,15 @@ enrollment:
   issuer_key_file: /run/keys/underwrap-backend-client-ca.key
   default_invite_ttl_secs: 86400
 
-service:
+https:
   listen: 127.0.0.1:18443
   tls:
     cert_file: /etc/underwrap-backend/server.pem
     key_file: /etc/underwrap-backend/server.key
     client_ca_file: /etc/underwrap-backend/client-ca.pem
-  # Legacy static client mapping is ignored; runtime clients are resolved
-  # from the backend-managed client instance registry.
 
 admin:
-  listen: 127.0.0.1:19443
-  tokens:
-    alice:
-      token_file: /run/keys/underwrap-admin-alice
+  session_key_file: /run/keys/underwrap-admin-session-key
   # Directory prefixes the admin "create store" API may place new
   # data dirs under. Empty disables store creation.
   stores_data_roots:
@@ -135,14 +119,11 @@ created_at: 1729123456
   `tempfile::persist()`.
 - Duplicate names across the two directories are a fatal startup
   error that prints both source paths.
-- `service.clients`: maps each authenticated client principal (the TLS
-  subject CN) to one store. Requests from other principals get 401;
-  requests that would cross stores are impossible because the
-  principal is bound to its store at authentication time.
-- `admin.tokens`: opaque bearer tokens for operators. Each request to
-  `/v1/admin/*` must carry an `Authorization: Bearer <token>`
-  matching one of these (constant-time compared). The matched
-  operator name is included in the backend's structured logs.
+- Runtime client access is resolved dynamically from the
+  backend-managed client-instance registry. The presented client
+  certificate fingerprint must map to an active enrolled instance.
+- Operator login state is resolved dynamically from the
+  backend-managed operator-state file plus the session cookie.
 
 ### NixOS module
 
@@ -186,10 +167,10 @@ store name in the request body.
 
 ## Admin API
 
-The admin listener is separate (HTTP, not HTTPS) and intended to sit
-behind a local TLS-terminating reverse proxy when exposed beyond
-localhost. Every request must present a bearer token. The operator name
-tagged to the token ends up in the backend's structured logs.
+The admin API lives on the same HTTPS listener as the runtime API and
+shares the same server certificate. Operator requests authenticate with
+session cookies; state-changing requests must also satisfy the CSRF and
+`allowed_origins` checks.
 
 - `GET /v1/admin/enrollment-invites` — list backend-managed one-time
   enrollment invites. The raw invite secret is never returned from list
@@ -338,6 +319,7 @@ per-call mode?" because the mode lives in the policy document.
 The earlier design (SSH-forwarded Unix socket between `underwrapd` and
 `underwrap-backendd`, local control socket, `underwrapctl`,
 `underwrap-backendctl`, local timed-unlock flow) is gone. The codebase
-supports exactly one shape — central HTTPS service with mTLS for data
-and HTTP with bearer tokens for administration. Documentation that
+supports exactly one shape — a single central HTTPS listener with
+runtime client certificates for data and session-cookie auth for
+administration. Documentation that
 describes those retired components is historical only.

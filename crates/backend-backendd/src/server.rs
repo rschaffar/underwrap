@@ -1,7 +1,7 @@
 //! Backend daemon server.
 //!
-//! Serves the runtime HTTPS API for `underwrapd` clients and a separate admin
-//! HTTP API for operators and tests.
+//! Serves both the runtime HTTPS API for `underwrapd` clients and the
+//! browser-facing admin UI/API from one HTTPS listener.
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -27,49 +27,23 @@ use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument};
 use underwrap_store::StorageBackend;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceTlsConfig {
+pub struct HttpsTlsConfig {
     pub cert_file: PathBuf,
     pub key_file: PathBuf,
+    /// CA certificate bundle trusted for runtime client certificates.
+    /// The listener requests client certificates on every connection,
+    /// but only the runtime `/v1/*` endpoints require one.
     pub client_ca_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceClientConfig {
-    pub store: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceConfig {
+pub struct HttpsConfig {
     pub listen: String,
-    pub tls: ServiceTlsConfig,
-    #[serde(default)]
-    pub clients: HashMap<String, ServiceClientConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdminTokenConfig {
-    /// Path to a file whose contents are the opaque bearer token.
-    pub token_file: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdminTlsConfig {
-    pub cert_file: PathBuf,
-    pub key_file: PathBuf,
+    pub tls: HttpsTlsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
-    pub listen: String,
-    /// Bearer tokens by operator name. Each request must present one via
-    /// `Authorization: Bearer <token>`. When empty, the admin API is
-    /// unavailable (no requests can authenticate).
-    #[serde(default)]
-    pub tokens: HashMap<String, AdminTokenConfig>,
-    /// Optional TLS termination for the admin listener. When absent, the
-    /// listener serves plain HTTP and the listen address must be loopback.
-    #[serde(default)]
-    pub tls: Option<AdminTlsConfig>,
     /// Optional allowlist of `Origin` (or `Referer`) values for
     /// state-changing requests. When set, every non-GET/HEAD/OPTIONS
     /// request must carry an Origin matching one of these entries.
@@ -77,9 +51,8 @@ pub struct AdminConfig {
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
     /// Path to the 32-byte AEAD key file used to sign session cookies.
-    /// Required when the admin listener accepts login traffic.
-    #[serde(default)]
-    pub session_key_file: Option<PathBuf>,
+    /// Required because admin authentication is session-cookie only.
+    pub session_key_file: PathBuf,
     /// Session lifetime in seconds. Defaults to
     /// `auth::DEFAULT_SESSION_LIFETIME_SECS` (12 hours) when unset.
     #[serde(default)]
@@ -157,7 +130,7 @@ pub struct BackendConfig {
     #[serde(default)]
     pub enrollment: Option<EnrollmentConfig>,
     #[serde(default)]
-    pub service: Option<ServiceConfig>,
+    pub https: Option<HttpsConfig>,
     #[serde(default)]
     pub admin: Option<AdminConfig>,
 }
@@ -217,12 +190,6 @@ impl Default for StoreRegistry {
     }
 }
 
-struct ServiceRuntimeState {
-    stores: Arc<std::sync::RwLock<StoreRegistry>>,
-    client_instances:
-        Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
-}
-
 struct EnrollmentRuntimeState {
     invites: std::sync::RwLock<HashMap<String, crate::enrollments::EnrollmentInviteRecord>>,
     invites_file: PathBuf,
@@ -257,9 +224,9 @@ struct AdminRuntimeState {
     /// Directory where master-key files for encrypted dynamic stores
     /// are written. One file per store, mode 0600. See ticket 234.
     keys_dir: PathBuf,
-    /// Operator name → opaque bearer token. Both fields are trusted; the
-    /// caller authenticates by presenting a matching token.
-    tokens: HashMap<String, String>,
+    /// Whether the browser-facing admin UI/API is enabled on the HTTPS
+    /// listener. When false, `/v1/admin/*` and SPA routes return 404.
+    admin_enabled: bool,
     /// When present, every state-changing request must carry an `Origin`
     /// (or `Referer`) matching one of these entries.
     allowed_origins: Option<Vec<String>>,
@@ -267,10 +234,8 @@ struct AdminRuntimeState {
     web_source: crate::web::WebAssetSource,
     /// Path of the backend-managed operator-state file.
     operators_file: PathBuf,
-    /// 32-byte AEAD key used to encrypt session cookies. `None` when
-    /// the deployment hasn't configured `session_key_file` yet
-    /// (legacy bearer-token-only setups during the transition).
-    session_key: Option<[u8; crate::auth::SESSION_KEY_LEN]>,
+    /// 32-byte AEAD key used to encrypt session cookies.
+    session_key: [u8; crate::auth::SESSION_KEY_LEN],
     /// Configured session lifetime in seconds.
     session_lifetime_secs: u64,
     /// Whether to mark issued cookies with the `Secure` attribute.
@@ -345,76 +310,60 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
 
     let mut tasks = JoinSet::new();
 
-    if let Some(service_config) = &config.service {
-        let service_listener = TcpListener::bind(&service_config.listen)
+    if let Some(https_config) = &config.https {
+        if let Some(admin_config) = &config.admin {
+            validate_admin_config(admin_config)?;
+        }
+        validate_runtime_client_mappings(&store_registry, &client_instances)?;
+        let listener = TcpListener::bind(&https_config.listen)
             .await
-            .with_context(|| format!("binding service listener {}", service_config.listen))?;
-        let service_state = Arc::new(build_service_runtime_state(
-            Arc::clone(&store_registry),
-            Arc::clone(&client_instances),
-            service_config,
-        )?);
-        let tls_acceptor = build_tls_acceptor(&service_config.tls)?;
-        info!(listen = %service_config.listen, clients = service_config.clients.len(), instances = client_instances.read().unwrap().len(), "backend HTTPS service listening");
-        tasks.spawn(service_accept_loop(
-            service_listener,
-            tls_acceptor,
-            service_state,
-        ));
-    }
-
-    if let Some(admin_config) = &config.admin {
-        validate_admin_config(admin_config)?;
-        let admin_listener = TcpListener::bind(&admin_config.listen)
-            .await
-            .with_context(|| format!("binding admin listener {}", admin_config.listen))?;
-        let tokens = load_admin_tokens(&admin_config.tokens)?;
-        let tls_acceptor = match &admin_config.tls {
-            Some(tls) => Some(build_admin_tls_acceptor(tls)?),
-            None => None,
+            .with_context(|| format!("binding HTTPS listener {}", https_config.listen))?;
+        let tls_acceptor = build_https_acceptor(&https_config.tls)?;
+        let admin_config = config.admin.as_ref();
+        let session_key = match admin_config {
+            Some(admin) => crate::auth::load_session_key(&admin.session_key_file)?,
+            None => [0u8; crate::auth::SESSION_KEY_LEN],
         };
-        let session_key = match admin_config.session_key_file.as_deref() {
-            Some(path) => Some(crate::auth::load_session_key(path)?),
-            None => None,
-        };
-        let cookies_secure = admin_config.tls.is_some();
-        let session_lifetime_secs = admin_config
-            .session_lifetime_secs
-            .unwrap_or(crate::auth::DEFAULT_SESSION_LIFETIME_SECS);
-        let admin_state = Arc::new(AdminRuntimeState {
+        let state = Arc::new(AdminRuntimeState {
             stores: Arc::clone(&store_registry),
             client_instances: Arc::clone(&client_instances),
             stores_file: stores_file.clone(),
             client_instances_file: client_instances_file.clone(),
             enrollment: enrollment_runtime,
-            stores_data_roots: admin_config.stores_data_roots.clone().unwrap_or_default(),
+            stores_data_roots: admin_config
+                .and_then(|cfg| cfg.stores_data_roots.clone())
+                .unwrap_or_default(),
             keys_dir: admin_config
-                .keys_dir
-                .clone()
+                .and_then(|cfg| cfg.keys_dir.clone())
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_KEYS_DIR)),
-            tokens,
-            allowed_origins: admin_config.allowed_origins.clone(),
+            admin_enabled: admin_config.is_some(),
+            allowed_origins: admin_config.and_then(|cfg| cfg.allowed_origins.clone()),
             web_source: crate::web::WebAssetSource::from_env(),
             operators_file: operators_file.clone(),
             session_key,
-            session_lifetime_secs,
-            cookies_secure,
+            session_lifetime_secs: admin_config
+                .and_then(|cfg| cfg.session_lifetime_secs)
+                .unwrap_or(crate::auth::DEFAULT_SESSION_LIFETIME_SECS),
+            cookies_secure: true,
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
             operator_collection_lock: std::sync::Mutex::new(()),
         });
         {
-            let snapshot = admin_state.stores.read().unwrap();
+            let snapshot = state.stores.read().unwrap();
             info!(
-                listen = %admin_config.listen,
+                listen = %https_config.listen,
                 stores = snapshot.open.len(),
-                operators = admin_state.tokens.len(),
-                tls = tls_acceptor.is_some(),
-                "backend admin listening",
+                instances = state.client_instances.read().unwrap().len(),
+                admin = state.admin_enabled,
+                enrollment = state.enrollment.is_some(),
+                "backend HTTPS listener ready",
             );
         }
-        tasks.spawn(admin_accept_loop(admin_listener, admin_state, tls_acceptor));
+        tasks.spawn(https_accept_loop(listener, tls_acceptor, state));
+    } else if config.admin.is_some() || config.enrollment.is_some() {
+        anyhow::bail!("backend config enables admin and/or enrollment but has no https listener");
     }
 
     match shutdown {
@@ -608,19 +557,12 @@ fn generate_client_instance_id() -> String {
     )
 }
 
-fn build_service_runtime_state(
-    stores: Arc<std::sync::RwLock<StoreRegistry>>,
-    client_instances: Arc<
+fn validate_runtime_client_mappings(
+    stores: &Arc<std::sync::RwLock<StoreRegistry>>,
+    client_instances: &Arc<
         std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>,
     >,
-    config: &ServiceConfig,
-) -> Result<ServiceRuntimeState> {
-    if !config.clients.is_empty() {
-        warn!(
-            count = config.clients.len(),
-            "service.clients is ignored; runtime access now resolves from the client-instance registry"
-        );
-    }
+) -> Result<()> {
     let registry = stores.read().unwrap();
     for instance in client_instances.read().unwrap().values() {
         registry
@@ -633,14 +575,10 @@ fn build_service_runtime_state(
                 )
             })?;
     }
-    drop(registry);
-    Ok(ServiceRuntimeState {
-        stores,
-        client_instances,
-    })
+    Ok(())
 }
 
-fn build_tls_acceptor(config: &ServiceTlsConfig) -> Result<TlsAcceptor> {
+fn build_https_acceptor(config: &HttpsTlsConfig) -> Result<TlsAcceptor> {
     use rustls::server::WebPkiClientVerifier;
     use rustls::{RootCertStore, ServerConfig};
 
@@ -656,6 +594,7 @@ fn build_tls_acceptor(config: &ServiceTlsConfig) -> Result<TlsAcceptor> {
     }
 
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+        .allow_unauthenticated()
         .build()
         .context("building rustls client verifier")?;
 
@@ -667,34 +606,8 @@ fn build_tls_acceptor(config: &ServiceTlsConfig) -> Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
-fn build_admin_tls_acceptor(config: &AdminTlsConfig) -> Result<TlsAcceptor> {
-    use rustls::ServerConfig;
-
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
-    let certs = load_cert_chain(&config.cert_file)?;
-    let key = load_private_key(&config.key_file)?;
-
-    let server_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .context("building rustls admin server config")?;
-
-    Ok(TlsAcceptor::from(Arc::new(server_config)))
-}
-
-/// Validate an `AdminConfig` at startup. The admin listener carries
-/// browser traffic, so we refuse to expose it as plain HTTP on a
-/// non-loopback address; either TLS must be configured or the listen
-/// address must resolve to loopback.
+/// Validate the browser-facing admin configuration.
 fn validate_admin_config(config: &AdminConfig) -> Result<()> {
-    if config.tls.is_none() && !is_loopback_listen(&config.listen) {
-        anyhow::bail!(
-            "admin listener {} is not loopback and TLS is not configured; \
-             refusing to expose plain HTTP on a non-loopback address",
-            config.listen
-        );
-    }
     if let Some(origins) = &config.allowed_origins {
         for origin in origins {
             if origin.trim().is_empty() {
@@ -703,25 +616,6 @@ fn validate_admin_config(config: &AdminConfig) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Return true if the host portion of a `host:port` (or `[ipv6]:port`)
-/// listen address is a loopback IP literal or `localhost`. Hostnames
-/// other than `localhost` are not resolved here and are treated as
-/// non-loopback to keep the check deterministic.
-fn is_loopback_listen(listen: &str) -> bool {
-    let host = match listen.rsplit_once(':') {
-        Some((host, _)) => host,
-        None => return false,
-    };
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    if host.is_empty() {
-        return false;
-    }
-    if let Ok(addr) = host.parse::<std::net::IpAddr>() {
-        return addr.is_loopback();
-    }
-    host.eq_ignore_ascii_case("localhost")
 }
 
 /// Check the `Origin` (or `Referer`) header of a state-changing request
@@ -810,7 +704,7 @@ fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'sta
 }
 
 fn resolve_runtime_client(
-    state: &ServiceRuntimeState,
+    state: &AdminRuntimeState,
     certs: &[rustls::pki_types::CertificateDer<'static>],
 ) -> Result<(String, Arc<dyn StorageBackend>)> {
     let cert = certs
@@ -869,94 +763,45 @@ fn put_policy_document(
     store.write(POLICY_DOCUMENT_SECRET_ID, document_json.as_bytes())
 }
 
-async fn admin_accept_loop(
-    listener: TcpListener,
-    state: Arc<AdminRuntimeState>,
-    tls_acceptor: Option<TlsAcceptor>,
-) -> Result<()> {
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let state = Arc::clone(&state);
-        let tls_acceptor = tls_acceptor.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_admin_connection(stream, state, tls_acceptor).await {
-                error!("backend admin connection error: {e:#}");
-            }
-        });
-    }
-}
-
-async fn handle_admin_connection(
-    stream: tokio::net::TcpStream,
-    state: Arc<AdminRuntimeState>,
-    tls_acceptor: Option<TlsAcceptor>,
-) -> Result<()> {
-    let service = service_fn(move |req| {
-        let state = Arc::clone(&state);
-        async move { handle_admin_request(req, state).await }
-    });
-
-    let builder = hyper::server::conn::http1::Builder::new();
-    match tls_acceptor {
-        Some(acceptor) => {
-            let tls_stream = acceptor
-                .accept(stream)
-                .await
-                .context("accepting admin TLS connection")?;
-            builder
-                .serve_connection(TokioIo::new(tls_stream), service)
-                .await
-                .context("serving admin HTTPS connection")?;
-        }
-        None => {
-            builder
-                .serve_connection(TokioIo::new(stream), service)
-                .await
-                .context("serving admin HTTP connection")?;
-        }
-    }
-    Ok(())
-}
-
-async fn service_accept_loop(
+async fn https_accept_loop(
     listener: TcpListener,
     acceptor: TlsAcceptor,
-    state: Arc<ServiceRuntimeState>,
+    state: Arc<AdminRuntimeState>,
 ) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let acceptor = acceptor.clone();
         let state = Arc::clone(&state);
         tokio::spawn(async move {
-            if let Err(e) = handle_service_connection(stream, acceptor, state).await {
-                error!("backend service connection error: {e:#}");
+            if let Err(e) = handle_https_connection(stream, acceptor, state).await {
+                error!("backend HTTPS connection error: {e:#}");
             }
         });
     }
 }
 
-async fn handle_service_connection(
+async fn handle_https_connection(
     stream: tokio::net::TcpStream,
     acceptor: TlsAcceptor,
-    state: Arc<ServiceRuntimeState>,
+    state: Arc<AdminRuntimeState>,
 ) -> Result<()> {
     let tls_stream = acceptor
         .accept(stream)
         .await
-        .context("accepting TLS connection")?;
+        .context("accepting HTTPS connection")?;
     let peer_certificates = Arc::new(
         tls_stream
             .get_ref()
             .1
             .peer_certificates()
-            .context("reading peer certificates")?
-            .to_vec(),
+            .map(|certs| certs.to_vec())
+            .unwrap_or_default(),
     );
 
     let service = service_fn(move |req| {
         let state = Arc::clone(&state);
         let peer_certificates = Arc::clone(&peer_certificates);
-        async move { handle_service_request(req, state, peer_certificates).await }
+        async move { handle_https_request(req, state, peer_certificates).await }
     });
 
     hyper::server::conn::http1::Builder::new()
@@ -966,9 +811,31 @@ async fn handle_service_connection(
     Ok(())
 }
 
+async fn handle_https_request(
+    request: Request<Incoming>,
+    state: Arc<AdminRuntimeState>,
+    peer_certificates: Arc<Vec<rustls::pki_types::CertificateDer<'static>>>,
+) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    let path = request.uri().path();
+    if path == "/v1/enroll"
+        || path.starts_with("/v1/admin/")
+        || crate::web::is_spa_request(request.method(), path)
+    {
+        if path != "/v1/enroll" && !state.admin_enabled {
+            return Ok(error_response(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "admin interface is disabled",
+            ));
+        }
+        return handle_admin_request(request, state).await;
+    }
+    handle_service_request(request, state, peer_certificates).await
+}
+
 async fn handle_service_request(
     request: Request<Incoming>,
-    state: Arc<ServiceRuntimeState>,
+    state: Arc<AdminRuntimeState>,
     peer_certificates: Arc<Vec<rustls::pki_types::CertificateDer<'static>>>,
 ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
     let (principal, store) = match resolve_runtime_client(&state, peer_certificates.as_ref()) {
@@ -1398,107 +1265,52 @@ fn emit_denied_grant_log(
     );
 }
 
-/// Build a [`Principal`] from an authenticated request. For
-/// session-cookie auth we re-read the operator collection so role and
-/// grants are always current; for legacy bearer-token auth we
-/// synthesise an admin principal (those tokens predate the multi-user
-/// model and have always carried full access).
+/// Build a [`Principal`] from an authenticated request. We re-read the
+/// operator collection so role and grants are always current.
 #[allow(clippy::result_large_err)]
 fn resolve_principal(
     state: &AdminRuntimeState,
     auth: &AdminAuth,
 ) -> std::result::Result<crate::operators::Principal, Response<Full<Bytes>>> {
-    match auth {
-        AdminAuth::Session(payload) => {
-            let collection = match crate::operators::load(&state.operators_file) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(err = %e, "could not load operator collection");
-                    return Err(error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        "operator collection unavailable",
-                    ));
-                }
-            };
-            match collection.find_by_username(&payload.username) {
-                Some(op) => Ok(crate::operators::Principal {
-                    id: op.id.clone(),
-                    username: op.username.clone(),
-                    role: op.role,
-                    granted_stores: op.granted_stores.clone(),
-                }),
-                None => Err(error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "unauthorized",
-                    "session refers to an operator that no longer exists",
-                )),
-            }
+    let payload = auth.session();
+    let collection = match crate::operators::load(&state.operators_file) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(err = %e, "could not load operator collection");
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "operator collection unavailable",
+            ));
         }
-        AdminAuth::Bearer { operator } => Ok(crate::operators::Principal {
-            id: operator.clone(),
-            username: operator.clone(),
-            role: crate::operators::OperatorRole::Admin,
-            granted_stores: Vec::new(),
+    };
+    match collection.find_by_username(&payload.username) {
+        Some(op) => Ok(crate::operators::Principal {
+            id: op.id.clone(),
+            username: op.username.clone(),
+            role: op.role,
+            granted_stores: op.granted_stores.clone(),
         }),
+        None => Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "session refers to an operator that no longer exists",
+        )),
     }
 }
 
-/// Read each admin token file, trim whitespace, and return the loaded map.
-fn load_admin_tokens(
-    configs: &HashMap<String, AdminTokenConfig>,
-) -> Result<HashMap<String, String>> {
-    let mut out = HashMap::new();
-    for (name, entry) in configs {
-        let raw = std::fs::read_to_string(&entry.token_file).with_context(|| {
-            format!(
-                "reading admin token for operator '{name}' at {}",
-                entry.token_file.display()
-            )
-        })?;
-        let token = raw.trim().to_string();
-        anyhow::ensure!(
-            !token.is_empty(),
-            "admin token file for operator '{name}' at {} is empty",
-            entry.token_file.display()
-        );
-        out.insert(name.clone(), token);
-    }
-    Ok(out)
-}
-
-/// Result of authenticating an admin request. Carries enough context
-/// for the dispatcher to enforce CSRF (session-only) and attach the
-/// CSRF cookie on the way out.
+/// Result of authenticating an admin request.
 #[derive(Debug)]
-enum AdminAuth {
-    /// Session-cookie authentication. CSRF + revocation rules apply.
-    Session(crate::auth::SessionPayload),
-    /// Legacy bearer-token authentication. CSRF is not enforced
-    /// because programmatic callers don't run in a browser and can't
-    /// be CSRF'd. We keep this path while operators migrate off it.
-    Bearer { operator: String },
-}
+struct AdminAuth(crate::auth::SessionPayload);
 
 impl AdminAuth {
-    /// Operator name carried by this authentication, for the few
-    /// places that need to label the auth itself (e.g. tests). Most
-    /// request handlers should use [`Principal::username`] instead,
-    /// which is the source of truth for structured logging and authorization.
     #[cfg(test)]
     fn operator(&self) -> &str {
-        match self {
-            AdminAuth::Session(p) => &p.username,
-            AdminAuth::Bearer { operator } => operator.as_str(),
-        }
+        &self.0.username
     }
 
-    fn as_session(&self) -> Option<&crate::auth::SessionPayload> {
-        if let AdminAuth::Session(p) = self {
-            Some(p)
-        } else {
-            None
-        }
+    fn session(&self) -> &crate::auth::SessionPayload {
+        &self.0
     }
 }
 
@@ -1511,74 +1323,33 @@ enum AdminAuthError {
     Revoked,
 }
 
-/// Authenticate an admin request via either a session cookie (the new
-/// path, ticket 211/212) or a bearer token (the legacy path, kept
-/// while we migrate deployments off it).
+/// Authenticate an admin request via its session cookie.
 fn authenticate_admin(
     state: &AdminRuntimeState,
     headers: &hyper::HeaderMap,
 ) -> std::result::Result<AdminAuth, AdminAuthError> {
-    // 1. Session cookie. When a key is configured and the request
-    //    carries the cookie, the cookie is the source of truth.
-    if let (Some(key), Some(value)) = (
-        state.session_key.as_ref(),
-        crate::auth::extract_session_cookie(headers),
-    ) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        return match crate::auth::decrypt_session(value, key, now) {
-            Ok(payload) => {
-                if state
+    let value = crate::auth::extract_session_cookie(headers)
+        .ok_or(AdminAuthError::Unauthenticated("missing session cookie"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match crate::auth::decrypt_session(value, &state.session_key, now) {
+        Ok(payload) => {
+            if state
+                .session_revocations
+                .is_revoked(&payload.session_id, now)
+                || state
                     .session_revocations
-                    .is_revoked(&payload.session_id, now)
-                    || state
-                        .session_revocations
-                        .is_user_floor_revoked(&payload.username, payload.issued_at)
-                {
-                    Err(AdminAuthError::Revoked)
-                } else {
-                    Ok(AdminAuth::Session(payload))
-                }
+                    .is_user_floor_revoked(&payload.username, payload.issued_at)
+            {
+                Err(AdminAuthError::Revoked)
+            } else {
+                Ok(AdminAuth(payload))
             }
-            Err(_) => Err(AdminAuthError::Unauthenticated("invalid session cookie")),
-        };
-    }
-
-    // 2. Legacy bearer-token path.
-    use sha2::{Digest, Sha256};
-    use subtle::ConstantTimeEq;
-    let header = headers
-        .get(hyper::header::AUTHORIZATION)
-        .ok_or(AdminAuthError::Unauthenticated(
-            "missing Authorization header",
-        ))?
-        .to_str()
-        .map_err(|_| AdminAuthError::Unauthenticated("Authorization header is not valid UTF-8"))?;
-    let token = header
-        .strip_prefix("Bearer ")
-        .ok_or(AdminAuthError::Unauthenticated(
-            "Authorization header must use the Bearer scheme",
-        ))?
-        .trim();
-    if token.is_empty() {
-        return Err(AdminAuthError::Unauthenticated("empty bearer token"));
-    }
-    let token_hash = Sha256::digest(token.as_bytes());
-    let mut matched: Option<String> = None;
-    for (name, candidate) in &state.tokens {
-        let candidate_hash = Sha256::digest(candidate.as_bytes());
-        let is_match: bool = token_hash.ct_eq(&candidate_hash).into();
-        if is_match && matched.is_none() {
-            matched = Some(name.clone());
         }
+        Err(_) => Err(AdminAuthError::Unauthenticated("invalid session cookie")),
     }
-    matched
-        .map(|operator| AdminAuth::Bearer { operator })
-        .ok_or(AdminAuthError::Unauthenticated(
-            "no configured operator token matched",
-        ))
 }
 
 /// Verify the CSRF double-submit on a state-changing session-authenticated
@@ -1658,13 +1429,7 @@ async fn handle_admin_login(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    let Some(session_key) = state.session_key else {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "session_key_not_configured",
-            "admin session_key_file is not configured",
-        );
-    };
+    let session_key = state.session_key;
     let body = match parse_json_body::<LoginRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -1827,13 +1592,7 @@ async fn handle_admin_bootstrap(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    let Some(session_key) = state.session_key else {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "session_key_not_configured",
-            "admin session_key_file is not configured",
-        );
-    };
+    let session_key = state.session_key;
     let body = match parse_json_body::<BootstrapRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -2049,16 +1808,6 @@ fn handle_admin_whoami(
     // authenticated:false) so the SPA can use it to drive the
     // login/bootstrap redirect dance without producing 401s in the
     // browser devtools.
-    let Some(key) = state.session_key.as_ref() else {
-        return json_response(
-            StatusCode::OK,
-            &WhoamiResponse {
-                authenticated: false,
-                username: None,
-                role: None,
-            },
-        );
-    };
     let Some(value) = crate::auth::extract_session_cookie(headers) else {
         return json_response(
             StatusCode::OK,
@@ -2073,7 +1822,7 @@ fn handle_admin_whoami(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let payload = match crate::auth::decrypt_session(value, key, now) {
+    let payload = match crate::auth::decrypt_session(value, &state.session_key, now) {
         Ok(p) => p,
         Err(_) => {
             return json_response(
@@ -4725,8 +4474,8 @@ async fn handle_admin_request(
     }
     // Auth endpoints are public — they exist *to* establish a session.
     // CSRF/logout (212), bootstrap (214), and any other unauthenticated
-    // auth surfaces dispatch here before the bearer-token / cookie
-    // check below.
+    // auth surfaces dispatch here before the session-cookie check
+    // below.
     match (request.method(), request.uri().path()) {
         (&Method::POST, "/v1/admin/auth/login") => {
             return Ok(handle_admin_login(&state, request).await);
@@ -4762,13 +4511,11 @@ async fn handle_admin_request(
         }
     };
 
-    // CSRF only applies to session-cookie auth: bearer-token callers
-    // are scripts/CLIs, not browsers, so the threat model doesn't
-    // include drive-by cross-site requests carrying their credentials.
-    if let Some(payload) = auth.as_session()
-        && let Err((code, msg)) =
-            check_csrf(request.method(), request.headers(), &payload.csrf_secret)
-    {
+    if let Err((code, msg)) = check_csrf(
+        request.method(),
+        request.headers(),
+        &auth.session().csrf_secret,
+    ) {
         warn!(reason = msg, code = code, "rejected admin request (csrf)");
         return Ok(error_response(StatusCode::FORBIDDEN, code, msg));
     }
@@ -4790,14 +4537,7 @@ async fn handle_admin_request(
     // a valid session AND have proven possession of its csrf_secret to
     // revoke it. That blocks drive-by logout via cookie-only requests.
     if request.method() == Method::POST && request.uri().path() == "/v1/admin/auth/logout" {
-        return Ok(match auth.as_session() {
-            Some(payload) => handle_admin_logout(&state, payload),
-            None => error_response(
-                StatusCode::BAD_REQUEST,
-                "no_session",
-                "logout requires a cookie session, not a bearer token",
-            ),
-        });
+        return Ok(handle_admin_logout(&state, auth.session()));
     }
 
     // Path-parameterised stores routes. Match them first so the
@@ -5196,27 +4936,25 @@ async fn handle_admin_request(
     Ok(attach_csrf_cookie(response, &state, &auth))
 }
 
-/// Refresh the CSRF cookie on every session-authenticated response so
-/// the SPA always has a value matching the live session. Bearer-token
-/// responses are not modified.
+/// Refresh the CSRF cookie on every authenticated admin response so
+/// the SPA always has a value matching the live session.
 fn attach_csrf_cookie(
     mut response: Response<Full<Bytes>>,
     state: &AdminRuntimeState,
     auth: &AdminAuth,
 ) -> Response<Full<Bytes>> {
-    if let Some(payload) = auth.as_session() {
-        let cookie = crate::auth::render_csrf_cookie(
-            &payload.csrf_secret,
-            state.session_lifetime_secs,
-            state.cookies_secure,
-        );
-        match hyper::header::HeaderValue::from_str(&cookie) {
-            Ok(v) => {
-                response.headers_mut().append(hyper::header::SET_COOKIE, v);
-            }
-            Err(e) => {
-                warn!(err = %e, "could not append CSRF cookie header");
-            }
+    let payload = auth.session();
+    let cookie = crate::auth::render_csrf_cookie(
+        &payload.csrf_secret,
+        state.session_lifetime_secs,
+        state.cookies_secure,
+    );
+    match hyper::header::HeaderValue::from_str(&cookie) {
+        Ok(v) => {
+            response.headers_mut().append(hyper::header::SET_COOKIE, v);
+        }
+        Err(e) => {
+            warn!(err = %e, "could not append CSRF cookie header");
         }
     }
     response
@@ -5472,16 +5210,6 @@ mod tests {
         );
     }
 
-    fn admin_state_with_tokens(tokens: &[(&str, &str)]) -> AdminRuntimeState {
-        test_admin_state(
-            HashMap::new(),
-            tokens
-                .iter()
-                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-                .collect(),
-        )
-    }
-
     fn test_operators_file() -> PathBuf {
         std::env::temp_dir().join(format!(
             "underwrap-server-test-operators-{}.json",
@@ -5489,10 +5217,7 @@ mod tests {
         ))
     }
 
-    fn test_admin_state(
-        stores: HashMap<String, Arc<dyn StorageBackend>>,
-        tokens: HashMap<String, String>,
-    ) -> AdminRuntimeState {
+    fn test_admin_state(stores: HashMap<String, Arc<dyn StorageBackend>>) -> AdminRuntimeState {
         AdminRuntimeState {
             stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
                 open: stores,
@@ -5504,11 +5229,11 @@ mod tests {
             enrollment: None,
             stores_data_roots: Vec::new(),
             keys_dir: std::path::PathBuf::new(),
-            tokens,
+            admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
             operators_file: test_operators_file(),
-            session_key: None,
+            session_key: [0u8; crate::auth::SESSION_KEY_LEN],
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
@@ -5555,158 +5280,44 @@ mod tests {
         }
     }
 
-    fn headers_with_auth(value: Option<&str>) -> hyper::HeaderMap {
+    fn headers_with_session_cookie(value: Option<&str>) -> hyper::HeaderMap {
         let mut headers = hyper::HeaderMap::new();
         if let Some(v) = value {
             headers.insert(
-                hyper::header::AUTHORIZATION,
-                hyper::header::HeaderValue::from_str(v).unwrap(),
+                hyper::header::COOKIE,
+                hyper::header::HeaderValue::from_str(&format!("__Host-uw-session={v}")).unwrap(),
             );
         }
         headers
     }
 
     #[test]
-    fn authenticate_admin_rejects_missing_and_malformed_headers() {
-        let state = admin_state_with_tokens(&[("alice", "secret-alice-token-1234")]);
-        assert!(authenticate_admin(&state, &headers_with_auth(None)).is_err());
-        assert!(authenticate_admin(&state, &headers_with_auth(Some("Basic abc"))).is_err());
-        assert!(authenticate_admin(&state, &headers_with_auth(Some("Bearer "))).is_err());
-    }
-
-    #[test]
-    fn authenticate_admin_accepts_matching_token_and_rejects_others() {
-        let state = admin_state_with_tokens(&[
-            ("alice", "secret-alice-token-1234"),
-            ("bob", "secret-bob-token-abcd"),
-        ]);
-        let ok = authenticate_admin(
-            &state,
-            &headers_with_auth(Some("Bearer secret-bob-token-abcd")),
-        )
-        .unwrap();
-        assert_eq!(ok.operator(), "bob");
-        assert!(matches!(ok, AdminAuth::Bearer { .. }));
-
+    fn authenticate_admin_rejects_missing_and_invalid_session_cookie() {
+        let state = seeded_admin_state("alice", "hunter2");
+        assert!(authenticate_admin(&state, &headers_with_session_cookie(None)).is_err());
         assert!(
-            authenticate_admin(&state, &headers_with_auth(Some("Bearer unknown-token"))).is_err()
-        );
-        assert!(
-            authenticate_admin(
-                &state,
-                &headers_with_auth(Some("Bearer secret-alice-token-12345")), // off by one byte
-            )
-            .is_err()
+            authenticate_admin(&state, &headers_with_session_cookie(Some("not-a-session")))
+                .is_err()
         );
     }
 
     #[test]
-    fn load_admin_tokens_reads_trimmed_token_from_file() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("tok");
-        std::fs::write(&path, "  hello-token-value  \n").unwrap();
-        let tokens = load_admin_tokens(&HashMap::from([(
-            "alice".to_string(),
-            AdminTokenConfig { token_file: path },
-        )]))
-        .unwrap();
-        assert_eq!(tokens.get("alice").unwrap(), "hello-token-value");
-    }
-
-    #[test]
-    fn load_admin_tokens_rejects_empty_token() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("tok");
-        std::fs::write(&path, "   \n").unwrap();
-        let err = load_admin_tokens(&HashMap::from([(
-            "alice".to_string(),
-            AdminTokenConfig { token_file: path },
-        )]))
-        .unwrap_err();
-        assert!(err.to_string().contains("empty"));
-    }
-
-    #[test]
-    fn is_loopback_listen_recognises_loopback_addresses() {
-        assert!(is_loopback_listen("127.0.0.1:8080"));
-        assert!(is_loopback_listen("127.0.0.5:0"));
-        assert!(is_loopback_listen("[::1]:8080"));
-        assert!(is_loopback_listen("localhost:443"));
-        assert!(is_loopback_listen("LOCALHOST:443"));
-    }
-
-    #[test]
-    fn is_loopback_listen_rejects_non_loopback_addresses() {
-        assert!(!is_loopback_listen("0.0.0.0:8080"));
-        assert!(!is_loopback_listen("[::]:8080"));
-        assert!(!is_loopback_listen("192.168.1.10:8080"));
-        assert!(!is_loopback_listen("10.0.0.1:443"));
-        assert!(!is_loopback_listen("example.com:443"));
-        assert!(!is_loopback_listen("8080")); // no colon at all
-        assert!(!is_loopback_listen(":8080")); // empty host
-    }
-
-    #[test]
-    fn validate_admin_config_allows_loopback_plain_http() {
+    fn validate_admin_config_allows_nonempty_origin_entries() {
         let cfg = AdminConfig {
-            listen: "127.0.0.1:19443".to_string(),
-            tokens: HashMap::new(),
-            tls: None,
-            allowed_origins: None,
-            session_key_file: None,
+            allowed_origins: Some(vec!["https://ok.example".to_string()]),
+            session_key_file: PathBuf::from("/dev/null"),
             session_lifetime_secs: None,
             stores_data_roots: None,
             keys_dir: None,
         };
-        validate_admin_config(&cfg).expect("loopback plain HTTP must be allowed");
-    }
-
-    #[test]
-    fn validate_admin_config_allows_non_loopback_with_tls() {
-        let cfg = AdminConfig {
-            listen: "0.0.0.0:18444".to_string(),
-            tokens: HashMap::new(),
-            tls: Some(AdminTlsConfig {
-                cert_file: PathBuf::from("/dev/null"),
-                key_file: PathBuf::from("/dev/null"),
-            }),
-            allowed_origins: None,
-            session_key_file: None,
-            session_lifetime_secs: None,
-            stores_data_roots: None,
-            keys_dir: None,
-        };
-        validate_admin_config(&cfg).expect("TLS on non-loopback must be allowed");
-    }
-
-    #[test]
-    fn validate_admin_config_refuses_non_loopback_plain_http() {
-        let cfg = AdminConfig {
-            listen: "0.0.0.0:18444".to_string(),
-            tokens: HashMap::new(),
-            tls: None,
-            allowed_origins: None,
-            session_key_file: None,
-            session_lifetime_secs: None,
-            stores_data_roots: None,
-            keys_dir: None,
-        };
-        let err = validate_admin_config(&cfg).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("not loopback") && msg.contains("TLS"),
-            "expected fail-closed message, got: {msg}"
-        );
+        validate_admin_config(&cfg).expect("nonempty origins must be allowed");
     }
 
     #[test]
     fn validate_admin_config_rejects_empty_origin_entry() {
         let cfg = AdminConfig {
-            listen: "127.0.0.1:19443".to_string(),
-            tokens: HashMap::new(),
-            tls: None,
             allowed_origins: Some(vec!["https://ok.example".to_string(), "  ".to_string()]),
-            session_key_file: None,
+            session_key_file: PathBuf::from("/dev/null"),
             session_lifetime_secs: None,
             stores_data_roots: None,
             keys_dir: None,
@@ -5828,11 +5439,11 @@ mod tests {
             enrollment: None,
             stores_data_roots: Vec::new(),
             keys_dir: std::path::PathBuf::new(),
-            tokens: HashMap::new(),
+            admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
             operators_file,
-            session_key: Some(session_key),
+            session_key,
             session_lifetime_secs: 3600,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
@@ -5855,7 +5466,7 @@ mod tests {
         assert!(crate::auth::verify_password(&op.password_hash, "hunter2"));
         assert!(!crate::auth::verify_password(&op.password_hash, "wrong"));
 
-        let key = state.session_key.unwrap();
+        let key = state.session_key;
         let payload = crate::auth::new_session_payload(
             op.id.clone(),
             op.username.clone(),
@@ -5884,7 +5495,7 @@ mod tests {
     #[tokio::test]
     async fn whoami_resolves_role_from_collection() {
         let state = seeded_admin_state("alice", "hunter2");
-        let key = state.session_key.unwrap();
+        let key = state.session_key;
         // `handle_admin_whoami` reads SystemTime::now() internally, so
         // give the cookie a real-clock issued_at.
         let now = std::time::SystemTime::now()
@@ -5934,7 +5545,7 @@ mod tests {
         with_csrf_cookie: bool,
         csrf_header: Option<&str>,
     ) -> (hyper::HeaderMap, crate::auth::SessionPayload) {
-        let key = state.session_key.unwrap();
+        let key = state.session_key;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -5975,7 +5586,7 @@ mod tests {
         cert_der: &[u8],
         status: crate::runtime_clients::ClientInstanceStatus,
         store_id: &str,
-    ) -> ServiceRuntimeState {
+    ) -> AdminRuntimeState {
         let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
         stores.insert(store_id.to_string(), Arc::new(MemTestStore::new()));
         let mut client_instances = HashMap::new();
@@ -5996,12 +5607,28 @@ mod tests {
                 },
             },
         );
-        ServiceRuntimeState {
+        AdminRuntimeState {
             stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
                 open: stores,
                 records: HashMap::new(),
             })),
             client_instances: Arc::new(std::sync::RwLock::new(client_instances)),
+            stores_file: PathBuf::new(),
+            client_instances_file: PathBuf::new(),
+            enrollment: None,
+            stores_data_roots: Vec::new(),
+            keys_dir: PathBuf::new(),
+            admin_enabled: true,
+            allowed_origins: None,
+            web_source: crate::web::WebAssetSource::Embedded,
+            operators_file: test_operators_file(),
+            session_key: [0u8; crate::auth::SESSION_KEY_LEN],
+            session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
+            cookies_secure: false,
+            login_rate_limiter: crate::auth::RateLimiter::new(),
+            session_revocations: crate::auth::SessionRevocations::new(),
+            bootstrap_lock: std::sync::Mutex::new(()),
+            operator_collection_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -6052,10 +5679,7 @@ mod tests {
     #[test]
     fn admin_store_for_principal_admin_can_access_existing_store() {
         let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-        let state = test_admin_state(
-            HashMap::from([("work".to_string(), store.clone())]),
-            HashMap::new(),
-        );
+        let state = test_admin_state(HashMap::from([("work".to_string(), store.clone())]));
         let p = principal(crate::operators::OperatorRole::Admin, &[]);
         assert!(admin_store_for_principal(&state, &p, "work").is_ok());
     }
@@ -6069,7 +5693,7 @@ mod tests {
 
     #[test]
     fn admin_store_for_principal_admin_sees_unknown_store_as_404() {
-        let state = test_admin_state(HashMap::new(), HashMap::new());
+        let state = test_admin_state(HashMap::new());
         let p = principal(crate::operators::OperatorRole::Admin, &[]);
         expect_404(admin_store_for_principal(&state, &p, "missing"));
     }
@@ -6079,10 +5703,7 @@ mod tests {
         // Don't leak the existence of stores the operator can't reach:
         // ungranted-but-existing must look identical to truly-missing.
         let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-        let state = test_admin_state(
-            HashMap::from([("work".to_string(), store.clone())]),
-            HashMap::new(),
-        );
+        let state = test_admin_state(HashMap::from([("work".to_string(), store.clone())]));
         let p = principal(crate::operators::OperatorRole::Operator, &[]);
         expect_404(admin_store_for_principal(&state, &p, "work"));
         expect_404(admin_store_for_principal(&state, &p, "nope"));
@@ -6092,13 +5713,10 @@ mod tests {
     fn admin_store_for_principal_operator_with_grant_sees_only_that_store() {
         let store_a: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
         let store_b: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-        let state = test_admin_state(
-            HashMap::from([
-                ("alpha".to_string(), store_a.clone()),
-                ("beta".to_string(), store_b),
-            ]),
-            HashMap::new(),
-        );
+        let state = test_admin_state(HashMap::from([
+            ("alpha".to_string(), store_a.clone()),
+            ("beta".to_string(), store_b),
+        ]));
         let p = principal(crate::operators::OperatorRole::Operator, &["alpha"]);
         assert!(admin_store_for_principal(&state, &p, "alpha").is_ok());
         expect_404(admin_store_for_principal(&state, &p, "beta"));
@@ -6125,23 +5743,12 @@ mod tests {
         crate::operators::save(&operators_file, &collection).unwrap();
 
         let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
-        let auth = AdminAuth::Session(payload);
+        let auth = AdminAuth(payload);
         let p = resolve_principal(&state, &auth).unwrap();
         assert_eq!(p.username, "alice");
         assert!(!p.is_admin());
         assert!(p.has_store_access("work"));
         assert!(!p.has_store_access("other"));
-    }
-
-    #[test]
-    fn resolve_principal_bearer_synthesises_admin() {
-        let state = seeded_admin_state("alice", "hunter2");
-        let auth = AdminAuth::Bearer {
-            operator: "cli-token".into(),
-        };
-        let p = resolve_principal(&state, &auth).unwrap();
-        assert!(p.is_admin());
-        assert_eq!(p.username, "cli-token");
     }
 
     #[test]
@@ -6155,7 +5762,7 @@ mod tests {
         )
         .unwrap();
         let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
-        let auth = AdminAuth::Session(payload);
+        let auth = AdminAuth(payload);
         match resolve_principal(&state, &auth) {
             Ok(_) => panic!("expected 401 for deleted operator"),
             Err(resp) => assert_eq!(resp.status(), StatusCode::UNAUTHORIZED),
@@ -6179,11 +5786,11 @@ mod tests {
             enrollment: None,
             stores_data_roots: Vec::new(),
             keys_dir: std::path::PathBuf::new(),
-            tokens: HashMap::new(),
+            admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
             operators_file: test_operators_file(),
-            session_key: Some(key),
+            session_key: key,
             session_lifetime_secs: 3600,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
@@ -6256,13 +5863,7 @@ mod tests {
     ) -> Response<Full<Bytes>> {
         // Mirror the validation in `handle_admin_bootstrap` minus the
         // request-body parsing, which `parse_json_body` already covers.
-        let Some(session_key) = state.session_key else {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "session_key_not_configured",
-                "no key",
-            );
-        };
+        let session_key = state.session_key;
         let username_norm = crate::operators::normalise_username(username);
         if username_norm.is_empty() || password.is_empty() {
             return error_response(
@@ -6441,7 +6042,7 @@ mod tests {
         let (headers, _payload) = session_headers(&state, "alice", false, None);
         let auth = authenticate_admin(&state, &headers).unwrap();
         assert_eq!(auth.operator(), "alice");
-        assert!(auth.as_session().is_some());
+        assert_eq!(auth.session().username, "alice");
     }
 
     #[test]
@@ -6487,7 +6088,7 @@ mod tests {
         let state = seeded_admin_state("alice", "hunter2");
         let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
         let response = json_response(StatusCode::OK, &serde_json::json!({"hello": "world"}));
-        let wrapped = attach_csrf_cookie(response, &state, &AdminAuth::Session(payload.clone()));
+        let wrapped = attach_csrf_cookie(response, &state, &AdminAuth(payload.clone()));
         let cookies: Vec<String> = wrapped
             .headers()
             .get_all(hyper::header::SET_COOKIE)
@@ -6500,20 +6101,6 @@ mod tests {
                 .any(|c| c.starts_with(&format!("__Host-uw-csrf={}", payload.csrf_secret))),
             "expected refreshed CSRF cookie in {cookies:?}",
         );
-    }
-
-    #[test]
-    fn attach_csrf_cookie_is_noop_for_bearer_auth() {
-        let state = seeded_admin_state("alice", "hunter2");
-        let response = json_response(StatusCode::OK, &serde_json::json!({"hello": "world"}));
-        let wrapped = attach_csrf_cookie(
-            response,
-            &state,
-            &AdminAuth::Bearer {
-                operator: "alice".into(),
-            },
-        );
-        assert!(wrapped.headers().get(hyper::header::SET_COOKIE).is_none());
     }
 
     #[test]
@@ -6630,11 +6217,11 @@ mod tests {
             enrollment: None,
             stores_data_roots: vec![data_root],
             keys_dir,
-            tokens: HashMap::new(),
+            admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
             operators_file: tmp.join("operators.json"),
-            session_key: None,
+            session_key: [0u8; crate::auth::SESSION_KEY_LEN],
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),

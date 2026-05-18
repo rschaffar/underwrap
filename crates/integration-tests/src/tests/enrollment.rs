@@ -13,9 +13,11 @@ use zeroize::Zeroizing;
 
 struct EnrollmentBackend {
     admin_url: String,
-    admin_token: String,
     service_url: String,
     service_ca_cert: PathBuf,
+    admin_session_cookie: String,
+    admin_csrf_token: String,
+    admin_client: reqwest::Client,
     shutdown: Arc<Notify>,
     handle: thread::JoinHandle<Result<()>>,
     _tempdir: tempfile::TempDir,
@@ -26,15 +28,16 @@ impl EnrollmentBackend {
         let tempdir = tempfile::TempDir::new()?;
         let base = tempdir.path();
 
-        let admin_port = pick_unused_port()?;
-        let service_port = pick_unused_port()?;
-        let admin_url = format!("http://127.0.0.1:{admin_port}");
-        let service_url = format!("https://127.0.0.1:{service_port}");
+        let https_port = pick_unused_port()?;
+        let admin_url = format!("https://127.0.0.1:{https_port}");
+        let service_url = admin_url.clone();
 
         let pki = generate_backend_pki(base)?;
-        let token_file = base.join("admin-token");
-        let admin_token = format!("enrollment-admin-token-{admin_port}");
-        std::fs::write(&token_file, admin_token.as_bytes())?;
+        let session_key_file = base.join("admin-session-key");
+        std::fs::write(
+            &session_key_file,
+            [9u8; underwrap_backendd::auth::SESSION_KEY_LEN],
+        )?;
 
         let stores_file = base.join("stores.json");
         std::fs::write(
@@ -63,24 +66,17 @@ impl EnrollmentBackend {
                 issuer_key_file: pki.ca_key.clone(),
                 default_invite_ttl_secs: Some(3600),
             }),
-            service: Some(underwrap_backendd::server::ServiceConfig {
-                listen: format!("127.0.0.1:{service_port}"),
-                tls: underwrap_backendd::server::ServiceTlsConfig {
+            https: Some(underwrap_backendd::server::HttpsConfig {
+                listen: format!("127.0.0.1:{https_port}"),
+                tls: underwrap_backendd::server::HttpsTlsConfig {
                     cert_file: pki.server_cert.clone(),
                     key_file: pki.server_key.clone(),
                     client_ca_file: pki.ca_cert.clone(),
                 },
-                clients: HashMap::new(),
             }),
             admin: Some(underwrap_backendd::server::AdminConfig {
-                listen: format!("127.0.0.1:{admin_port}"),
-                tokens: HashMap::from([(
-                    "tester".to_string(),
-                    underwrap_backendd::server::AdminTokenConfig { token_file },
-                )]),
-                tls: None,
                 allowed_origins: None,
-                session_key_file: None,
+                session_key_file: session_key_file.clone(),
                 session_lifetime_secs: None,
                 stores_data_roots: Some(vec![base.join("stores-data-root")]),
                 keys_dir: Some(base.join("keys")),
@@ -99,13 +95,23 @@ impl EnrollmentBackend {
             })
         });
 
-        wait_for_admin(&admin_url, &admin_token).await?;
+        wait_for_admin(&admin_url, &pki.ca_cert).await?;
+        let (admin_session_cookie, admin_csrf_token) =
+            bootstrap_admin(&admin_url, &pki.ca_cert, "tester", "hunter2").await?;
+        let admin_client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
+                &pki.ca_cert,
+            )?)?)
+            .build()?;
 
         Ok(Self {
             admin_url,
-            admin_token,
             service_url,
             service_ca_cert: pki.ca_cert,
+            admin_session_cookie,
+            admin_csrf_token,
+            admin_client,
             shutdown,
             handle,
             _tempdir: tempdir,
@@ -118,9 +124,14 @@ impl EnrollmentBackend {
         host: &str,
         instance: &str,
     ) -> Result<underwrap_protocol::service::AdminEnrollmentInviteCreateResponse> {
-        let response = reqwest::Client::new()
+        let response = self
+            .admin_client
             .post(format!("{}/v1/admin/enrollment-invites", self.admin_url))
-            .bearer_auth(&self.admin_token)
+            .header(
+                reqwest::header::COOKIE,
+                csrf_cookie_header(&self.admin_session_cookie, &self.admin_csrf_token),
+            )
+            .header("X-CSRF-Token", &self.admin_csrf_token)
             .json(
                 &underwrap_protocol::service::AdminEnrollmentInviteCreateRequest {
                     display_name: display_name.to_string(),
@@ -208,25 +219,6 @@ fn generate_backend_pki(base: &Path) -> Result<GeneratedBackendPki> {
         server_cert: server_cert_path,
         server_key: server_key_path,
     })
-}
-
-async fn wait_for_admin(url: &str, token: &str) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(500))
-        .build()?;
-    for _ in 0..3000 {
-        if let Ok(response) = client
-            .get(format!("{url}/v1/admin/stores"))
-            .bearer_auth(token)
-            .send()
-            .await
-            && response.status().is_success()
-        {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    anyhow::bail!("admin API never became ready at {url}")
 }
 
 async fn wait_for_path(path: &Path) -> Result<()> {
@@ -347,9 +339,13 @@ async fn invite_first_enrollment_flow_installs_credential_and_enables_runtime_ac
     let body: underwrap_protocol::service::ServiceStatusResponse = status.json().await.unwrap();
     assert!(body.ok);
 
-    let instances = reqwest::Client::new()
+    let instances = backend
+        .admin_client
         .get(format!("{}/v1/admin/client-instances", backend.admin_url))
-        .bearer_auth(&backend.admin_token)
+        .header(
+            reqwest::header::COOKIE,
+            csrf_cookie_header(&backend.admin_session_cookie, &backend.admin_csrf_token),
+        )
         .send()
         .await
         .unwrap();
@@ -443,9 +439,13 @@ async fn re_enrollment_replaces_old_credential_end_to_end() {
         .unwrap();
     assert!(second_status.status().is_success());
 
-    let instances = reqwest::Client::new()
+    let instances = backend
+        .admin_client
         .get(format!("{}/v1/admin/client-instances", backend.admin_url))
-        .bearer_auth(&backend.admin_token)
+        .header(
+            reqwest::header::COOKIE,
+            csrf_cookie_header(&backend.admin_session_cookie, &backend.admin_csrf_token),
+        )
         .send()
         .await
         .unwrap();

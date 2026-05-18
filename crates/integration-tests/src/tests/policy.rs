@@ -2,44 +2,50 @@ use super::*;
 use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode};
 
 #[tokio::test]
-async fn admin_api_rejects_missing_or_wrong_bearer_token() {
+async fn admin_api_rejects_missing_or_invalid_session_cookie() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .add_root_certificate(
+            reqwest::Certificate::from_pem(&std::fs::read(&daemon.service_ca_cert).unwrap())
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
-    let no_token = client
+    let missing_cookie = client
         .get(format!("{}/v1/admin/stores", daemon.admin_url))
         .send()
         .await
         .unwrap();
     assert_eq!(
-        no_token.status(),
+        missing_cookie.status(),
         reqwest::StatusCode::UNAUTHORIZED,
-        "expected 401 without bearer token"
+        "expected 401 without session cookie"
     );
 
-    let wrong_token = client
+    let invalid_cookie = client
         .get(format!("{}/v1/admin/stores", daemon.admin_url))
-        .bearer_auth("nope-not-the-token")
+        .header(reqwest::header::COOKIE, "__Host-uw-session=not-a-session")
         .send()
         .await
         .unwrap();
     assert_eq!(
-        wrong_token.status(),
+        invalid_cookie.status(),
         reqwest::StatusCode::UNAUTHORIZED,
-        "expected 401 with wrong bearer token"
+        "expected 401 with invalid session cookie"
     );
 
-    let right_token = client
-        .get(format!("{}/v1/admin/stores", daemon.admin_url))
-        .bearer_auth(&daemon.admin_token)
+    let authenticated = daemon
+        .admin_request(reqwest::Method::GET, "/v1/admin/stores")
         .send()
         .await
         .unwrap();
     assert!(
-        right_token.status().is_success(),
-        "expected 200 with right token"
+        authenticated.status().is_success(),
+        "expected 200 with session auth"
     );
 
     daemon.stop().await.unwrap();

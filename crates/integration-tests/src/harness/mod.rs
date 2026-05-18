@@ -26,18 +26,22 @@ pub(crate) use pki::{
 };
 
 use pki::{principal_client_name, test_pki_paths};
-pub(crate) use readiness::{pick_unused_port, wait_for_service};
-use readiness::{wait_for_admin, wait_for_path};
+use readiness::wait_for_path;
+pub(crate) use readiness::{
+    bootstrap_admin, csrf_cookie_header, pick_unused_port, wait_for_admin, wait_for_service,
+};
 
 /// A running test daemon with temp dirs and sockets.
 #[allow(dead_code)]
 pub struct TestDaemon {
     pub wrapper_sockets: HashMap<String, PathBuf>,
     pub admin_url: String,
-    pub admin_token: String,
     pub service_url: String,
     pub storage_dir: PathBuf,
-    service_ca_cert: PathBuf,
+    admin_session_cookie: String,
+    admin_csrf_token: String,
+    admin_client: reqwest::Client,
+    pub service_ca_cert: PathBuf,
     service_client_cert: PathBuf,
     service_client_key: PathBuf,
     /// The `catalog_host` configured on the daemon. Tests use it to
@@ -106,16 +110,17 @@ impl TestDaemon {
             wrapper_sockets.insert(name, socket);
         }
 
-        let service_port = pick_unused_port()?;
-        let service_url = format!("https://127.0.0.1:{service_port}");
+        let https_port = pick_unused_port()?;
+        let service_url = format!("https://127.0.0.1:{https_port}");
+        let admin_url = service_url.clone();
         let pki = test_pki_paths(base, client_name)?;
         let ready_pki = test_pki_paths(base, principal_client_name(accepted_principal)?)?;
 
-        let admin_port = pick_unused_port()?;
-        let admin_url = format!("http://127.0.0.1:{admin_port}");
-        let admin_token = format!("test-admin-token-{admin_port}-do-not-reuse-zA=");
-        let token_file = base.join("admin-token");
-        std::fs::write(&token_file, admin_token.as_bytes())?;
+        let session_key_file = base.join("admin-session-key");
+        std::fs::write(
+            &session_key_file,
+            [7u8; underwrap_backendd::auth::SESSION_KEY_LEN],
+        )?;
         let stores_file = base.join("stores.json");
         let instances_file = base.join("client-instances.json");
         let stores_data_root = base.join("stores-data-root");
@@ -166,24 +171,17 @@ impl TestDaemon {
             client_instances_file: Some(instances_file),
             operators_file: Some(base.join("operators.json")),
             enrollment: None,
-            service: Some(underwrap_backendd::server::ServiceConfig {
-                listen: format!("127.0.0.1:{service_port}"),
-                tls: underwrap_backendd::server::ServiceTlsConfig {
+            https: Some(underwrap_backendd::server::HttpsConfig {
+                listen: format!("127.0.0.1:{https_port}"),
+                tls: underwrap_backendd::server::HttpsTlsConfig {
                     cert_file: pki.server_cert.clone(),
                     key_file: pki.server_key.clone(),
                     client_ca_file: pki.ca_cert.clone(),
                 },
-                clients: HashMap::new(),
             }),
             admin: Some(underwrap_backendd::server::AdminConfig {
-                listen: format!("127.0.0.1:{admin_port}"),
-                tokens: HashMap::from([(
-                    "tester".to_string(),
-                    underwrap_backendd::server::AdminTokenConfig { token_file },
-                )]),
-                tls: None,
                 allowed_origins: None,
-                session_key_file: None,
+                session_key_file: session_key_file.clone(),
                 session_lifetime_secs: None,
                 stores_data_roots: Some(vec![stores_data_root]),
                 keys_dir: Some(keys_dir),
@@ -201,7 +199,15 @@ impl TestDaemon {
             })
         });
 
-        wait_for_admin(&admin_url, &admin_token).await?;
+        wait_for_admin(&admin_url, &pki.ca_cert).await?;
+        let (admin_session_cookie, admin_csrf_token) =
+            bootstrap_admin(&admin_url, &pki.ca_cert, "tester", "hunter2").await?;
+        let admin_client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
+                &pki.ca_cert,
+            )?)?)
+            .build()?;
         wait_for_service(
             &service_url,
             &ready_pki.ca_cert,
@@ -237,9 +243,11 @@ impl TestDaemon {
         Ok(Self {
             wrapper_sockets,
             admin_url,
-            admin_token,
             service_url: service_url.clone(),
             storage_dir,
+            admin_session_cookie,
+            admin_csrf_token,
+            admin_client,
             service_ca_cert: pki.ca_cert.clone(),
             service_client_cert: pki.client_cert.clone(),
             service_client_key: pki.client_key.clone(),
@@ -288,10 +296,27 @@ impl TestDaemon {
         Ok(resp)
     }
 
-    fn admin_request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        reqwest::Client::new()
-            .request(method, format!("{}{}", self.admin_url, path))
-            .bearer_auth(&self.admin_token)
+    pub(crate) fn admin_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+    ) -> reqwest::RequestBuilder {
+        let is_state_changing = !matches!(
+            method,
+            reqwest::Method::GET | reqwest::Method::HEAD | reqwest::Method::OPTIONS
+        );
+        let builder = self
+            .admin_client
+            .request(method.clone(), format!("{}{}", self.admin_url, path))
+            .header(
+                reqwest::header::COOKIE,
+                csrf_cookie_header(&self.admin_session_cookie, &self.admin_csrf_token),
+            );
+        if is_state_changing {
+            builder.header("X-CSRF-Token", &self.admin_csrf_token)
+        } else {
+            builder
+        }
     }
 
     /// Write a secret through the backend admin API.

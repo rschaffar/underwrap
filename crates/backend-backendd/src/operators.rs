@@ -70,9 +70,8 @@ pub enum OperatorRole {
 }
 
 /// Resolved identity and authorization context for an admin request.
-/// Derived from either a session cookie (looked up in the operator
-/// collection at request time) or a legacy bearer token. Carries
-/// enough information to gate per-store access without re-reading the
+/// Derived from the authenticated session cookie and carrying enough
+/// information to gate per-store access without re-reading the
 /// collection on every authorization decision.
 #[derive(Debug, Clone)]
 pub struct Principal {

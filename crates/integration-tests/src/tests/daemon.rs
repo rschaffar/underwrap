@@ -53,23 +53,39 @@ wrappers:
 #[tokio::test]
 async fn backend_admin_starts_from_empty_dynamic_state() {
     let backend_bin = cargo_bin("underwrap-backendd");
-    let admin_port = pick_unused_port().unwrap();
-    let admin_url = format!("http://127.0.0.1:{admin_port}");
+    let https_port = pick_unused_port().unwrap();
+    let admin_url = format!("https://127.0.0.1:{https_port}");
 
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
+    let server_cert = base.join("server.pem");
+    let server_key = base.join("server.key");
+    let ca_cert = base.join("ca.pem");
+    let session_key_file = base.join("admin-session-key");
+    std::fs::write(&server_cert, crate::harness::TEST_SERVER_PEM).unwrap();
+    std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
+    std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
+    std::fs::write(
+        &session_key_file,
+        [5u8; underwrap_backendd::auth::SESSION_KEY_LEN],
+    )
+    .unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
         stores_file: Some(base.join("stores.json")),
         client_instances_file: Some(base.join("client-instances.json")),
         operators_file: Some(base.join("operators.json")),
         enrollment: None,
-        service: None,
+        https: Some(underwrap_backendd::server::HttpsConfig {
+            listen: format!("127.0.0.1:{https_port}"),
+            tls: underwrap_backendd::server::HttpsTlsConfig {
+                cert_file: server_cert,
+                key_file: server_key,
+                client_ca_file: ca_cert.clone(),
+            },
+        }),
         admin: Some(underwrap_backendd::server::AdminConfig {
-            listen: format!("127.0.0.1:{admin_port}"),
-            tokens: HashMap::new(),
-            tls: None,
             allowed_origins: None,
-            session_key_file: None,
+            session_key_file,
             session_lifetime_secs: None,
             stores_data_roots: Some(vec![base.join("stores-data-root")]),
             keys_dir: Some(base.join("keys")),
@@ -86,7 +102,13 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
         .spawn()
         .unwrap();
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .add_root_certificate(
+            reqwest::Certificate::from_pem(&std::fs::read(&ca_cert).unwrap()).unwrap(),
+        )
+        .build()
+        .unwrap();
     let mut bootstrap_required = None;
     for _ in 0..100 {
         if let Ok(resp) = client
@@ -118,10 +140,9 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
 async fn underwrapd_binary_start_and_read() {
     let daemon_bin = cargo_bin("underwrapd");
     let backend_bin = cargo_bin("underwrap-backendd");
-    let admin_port = pick_unused_port().unwrap();
-    let service_port = pick_unused_port().unwrap();
-    let admin_url = format!("http://127.0.0.1:{admin_port}");
-    let service_url = format!("https://127.0.0.1:{service_port}");
+    let https_port = pick_unused_port().unwrap();
+    let service_url = format!("https://127.0.0.1:{https_port}");
+    let admin_url = service_url.clone();
 
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
@@ -132,11 +153,17 @@ async fn underwrapd_binary_start_and_read() {
     let ca_cert = base.join("ca.pem");
     let client_cert = base.join("client.pem");
     let client_key = base.join("client.key");
+    let session_key_file = base.join("admin-session-key");
     std::fs::write(&server_cert, crate::harness::TEST_SERVER_PEM).unwrap();
     std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
     std::fs::write(&client_cert, crate::harness::TEST_CLIENT_LOCAL_PEM).unwrap();
     std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
+    std::fs::write(
+        &session_key_file,
+        [6u8; underwrap_backendd::auth::SESSION_KEY_LEN],
+    )
+    .unwrap();
 
     let stores_file = base.join("stores.json");
     let client_instances_file = base.join("client-instances.json");
@@ -189,37 +216,23 @@ async fn underwrapd_binary_start_and_read() {
         client_instances_file: Some(client_instances_file),
         operators_file: Some(base.join("operators.json")),
         enrollment: None,
-        service: Some(underwrap_backendd::server::ServiceConfig {
-            listen: format!("127.0.0.1:{service_port}"),
-            tls: underwrap_backendd::server::ServiceTlsConfig {
+        https: Some(underwrap_backendd::server::HttpsConfig {
+            listen: format!("127.0.0.1:{https_port}"),
+            tls: underwrap_backendd::server::HttpsTlsConfig {
                 cert_file: server_cert.clone(),
                 key_file: server_key.clone(),
                 client_ca_file: ca_cert.clone(),
             },
-            clients: HashMap::new(),
         }),
         admin: Some(underwrap_backendd::server::AdminConfig {
-            listen: format!("127.0.0.1:{admin_port}"),
-            tokens: HashMap::from([(
-                "tester".to_string(),
-                underwrap_backendd::server::AdminTokenConfig {
-                    token_file: {
-                        let token_path = base.join("admin-token");
-                        std::fs::write(&token_path, b"binary-test-token").unwrap();
-                        token_path
-                    },
-                },
-            )]),
-            tls: None,
             allowed_origins: None,
-            session_key_file: None,
+            session_key_file: session_key_file.clone(),
             session_lifetime_secs: None,
             stores_data_roots: None,
             keys_dir: None,
         }),
     })
     .unwrap();
-    let admin_token = "binary-test-token";
     let backend_config_path = base.join("backend.yaml");
     std::fs::write(&backend_config_path, &backend_config).unwrap();
 
@@ -230,22 +243,18 @@ async fn underwrapd_binary_start_and_read() {
         .spawn()
         .unwrap();
 
-    let client = reqwest::Client::new();
-    let mut backend_ready = false;
-    for _ in 0..100 {
-        if let Ok(resp) = client
-            .get(format!("{admin_url}/v1/admin/stores"))
-            .bearer_auth(admin_token)
-            .send()
+    wait_for_admin(&admin_url, &ca_cert).await.unwrap();
+    let (admin_session_cookie, admin_csrf_token) =
+        bootstrap_admin(&admin_url, &ca_cert, "tester", "hunter2")
             .await
-            && resp.status().is_success()
-        {
-            backend_ready = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(backend_ready, "backend admin listener never became ready");
+            .unwrap();
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .add_root_certificate(
+            reqwest::Certificate::from_pem(&std::fs::read(&ca_cert).unwrap()).unwrap(),
+        )
+        .build()
+        .unwrap();
     match tokio::time::timeout(
         std::time::Duration::from_secs(5),
         wait_for_service(&service_url, &ca_cert, &client_cert, &client_key),
@@ -310,7 +319,11 @@ async fn underwrapd_binary_start_and_read() {
     // directly.
     let write_resp = client
         .post(format!("{admin_url}/v1/admin/secret/write"))
-        .bearer_auth(admin_token)
+        .header(
+            reqwest::header::COOKIE,
+            csrf_cookie_header(&admin_session_cookie, &admin_csrf_token),
+        )
+        .header("X-CSRF-Token", &admin_csrf_token)
         .json(&underwrap_protocol::service::AdminSecretWriteRequest {
             store: "test".to_string(),
             wrapper: "w".to_string(),
@@ -327,7 +340,11 @@ async fn underwrapd_binary_start_and_read() {
     // configured with (`binary-test`).
     let policy_resp = client
         .post(format!("{admin_url}/v1/admin/policy/put"))
-        .bearer_auth(admin_token)
+        .header(
+            reqwest::header::COOKIE,
+            csrf_cookie_header(&admin_session_cookie, &admin_csrf_token),
+        )
+        .header("X-CSRF-Token", &admin_csrf_token)
         .json(&underwrap_protocol::service::AdminPolicyPutRequest {
             store: "test".to_string(),
             document: underwrap_protocol::policy::PolicyDocument {

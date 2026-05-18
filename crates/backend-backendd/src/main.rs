@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => {
             info!(
-                has_service = config.service.is_some(),
+                has_https = config.https.is_some(),
                 has_admin = config.admin.is_some(),
                 "starting backend daemon"
             );
@@ -184,12 +184,12 @@ mod tests {
     #[test]
     fn parse_backend_config_parses_minimal_yaml() {
         // Empty YAML works because the backend-managed store registry
-        // path and service+admin blocks are optional.
+        // path and https+admin blocks are optional.
         let config = parse_backend_config("{}\n").unwrap();
         assert!(config.stores_file.is_none());
         assert!(config.client_instances_file.is_none());
         assert!(config.enrollment.is_none());
-        assert!(config.service.is_none());
+        assert!(config.https.is_none());
         assert!(config.admin.is_none());
     }
 
