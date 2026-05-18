@@ -74,10 +74,10 @@ https:
 
 admin:
   session_key_file: /run/keys/underwrap-admin-session-key
-  # Directory prefixes the admin "create store" API may place new
-  # data dirs under. Empty disables store creation.
-  stores_data_roots:
-    - /var/lib/underwrap-backend/data
+  # Directory the admin "create store" API places new dynamic stores
+  # under. Each new store lands at `<stores_data_root>/<store_id>/`.
+  # Unset disables store creation.
+  stores_data_root: /var/lib/underwrap-backend/data
   # Where the admin API writes master-key files for encrypted dynamic
   # stores (one file per store, mode 0600). Defaults to
   # /var/lib/underwrap-backend/keys.
@@ -103,7 +103,7 @@ Example dynamic store record:
       "description": "Ad-hoc operator scratchpad.",
       "created_at": 1729123456,
       "backend": "plain",
-      "dir": "/var/lib/underwrap-backend/data/scratch"
+      "dir": "/var/lib/underwrap-backend/data/store_a1b2c3d4e5f6"
     }
   ]
 }

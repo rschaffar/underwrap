@@ -181,7 +181,7 @@ impl TestDaemon {
                 allowed_origins: None,
                 session_key_file: session_key_file.clone(),
                 session_lifetime_secs: None,
-                stores_data_roots: Some(vec![stores_data_root]),
+                stores_data_root: Some(stores_data_root),
                 keys_dir: Some(keys_dir),
             }),
         };

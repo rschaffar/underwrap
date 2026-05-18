@@ -168,8 +168,8 @@ in {
     "d /var/lib/underwrap-backend/secrets 0700 underwrap-backend underwrap-backend -"
     "d /var/lib/underwrap-backend-local 0700 underwrap-local underwrap-local -"
     "d /var/lib/underwrap-backend-local/secrets 0700 underwrap-local underwrap-local -"
-    # Roots the admin API may carve dynamic stores into (ticket 262).
-    "d /var/lib/underwrap-backend-local/data-roots 0700 underwrap-local underwrap-local -"
+    # Root the admin API carves dynamic stores into (ticket 262).
+    "d /var/lib/underwrap-backend-local/data-root 0700 underwrap-local underwrap-local -"
     # Where encrypted-store master keys land (ticket 234).
     "d /var/lib/underwrap-backend-local/keys 0700 underwrap-local underwrap-local -"
   ];
@@ -215,7 +215,7 @@ in {
             allowed_origins = [
               "http://127.0.0.1:19443"
             ];
-            stores_data_roots = [ "/var/lib/underwrap-backend-local/data-roots" ];
+            stores_data_root = "/var/lib/underwrap-backend-local/data-root";
             keys_dir = "/var/lib/underwrap-backend-local/keys";
           };
         });

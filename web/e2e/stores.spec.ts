@@ -6,11 +6,9 @@
  * (dynamic), so the create/edit/delete paths can hit a fresh tree
  * without colliding with anything pre-existing.
  *
- * The fixture's backend is configured WITHOUT a
- * `stores_data_roots` allowlist, so the create-store path here is
- * limited to asserting the API surfaces the expected error code.
- * Editing the description and deleting the existing `default`
- * dynamic store DO work end-to-end.
+ * The fixture's backend has `stores_data_root` set to a per-test temp
+ * directory, so the create-store flow drops new store data dirs under
+ * `<dataRoot>/<store_id>/` without any operator-chosen path.
  */
 import { test, expect, loginViaUi } from "./fixtures";
 
@@ -22,13 +20,10 @@ test("admin can create, edit, and delete a dynamic store", async ({
   await page.goto(`${backendWithAdmin.baseUrl}/stores`);
   await expect(page.getByRole("heading", { name: /^stores$/i })).toBeVisible();
 
-  // Create a fresh store under the fixture's allowed data root.
+  // Create a fresh store; the backend allocates the on-disk dir.
   await page.getByRole("button", { name: /create store/i }).click();
   const createDlg = page.getByRole("dialog", { name: /create store/i });
   await createDlg.getByLabel("Name").fill("scratch");
-  await createDlg
-    .getByLabel(/data directory/i)
-    .fill(`${backendWithAdmin.dataRoot}/scratch`);
   await createDlg.getByLabel("Description (optional)").fill("e2e scratch");
   await createDlg.getByRole("button", { name: /^create$/i }).click();
   await expect(createDlg).toBeHidden();
@@ -78,9 +73,6 @@ test("creating an encrypted store reveals the master key once and leaves no trac
   await createDlg
     .getByLabel(/backend/i)
     .selectOption("encrypted");
-  await createDlg
-    .getByLabel(/data directory/i)
-    .fill(`${backendWithAdmin.dataRoot}/vault`);
   // The free-form key file path field is gone in ticket 234 — the
   // backend chooses where to put it.
   await expect(createDlg.getByLabel(/key file/i)).toBeHidden();
@@ -134,9 +126,6 @@ test("rotate-key flow surfaces a fresh key once for an existing encrypted store"
   await createDlg
     .getByLabel(/backend/i)
     .selectOption("encrypted");
-  await createDlg
-    .getByLabel(/data directory/i)
-    .fill(`${backendWithAdmin.dataRoot}/rotvault`);
   await createDlg.getByRole("button", { name: /^create$/i }).click();
   await page.getByTestId("key-reveal-ack").check();
   const originalKey = (
@@ -200,9 +189,6 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   await page.getByRole("button", { name: /create store/i }).click();
   const createDlg = page.getByRole("dialog", { name: /create store/i });
   await createDlg.getByLabel("Name").fill("packed");
-  await createDlg
-    .getByLabel(/data directory/i)
-    .fill(`${backendWithAdmin.dataRoot}/packed`);
   await createDlg.getByRole("button", { name: /^create$/i }).click();
   await expect(createDlg).toBeHidden();
 

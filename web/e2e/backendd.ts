@@ -66,8 +66,8 @@ export interface BackendInstance {
   baseUrl: string;
   /** Absolute path of the per-test temp directory (config, certs, store live here). */
   tmpDir: string;
-  /** Absolute path of the configured `stores_data_roots[0]`. Tests can use a
-   *  subdirectory here as the `dir` field when creating a dynamic store. */
+  /** Absolute path of the configured `stores_data_root`. New dynamic
+   *  stores land at `<dataRoot>/<store_id>/`. */
   dataRoot: string;
   /** Absolute path of the configured `keys_dir`. Encrypted-store key
    *  files (ticket 234) are generated here, one per store. */
@@ -152,11 +152,10 @@ export async function startBackend(
   ].join("\n");
   writeFileSync(join(storesDir, "default.yaml"), defaultStoreYaml);
 
-  // `stores_data_roots` allowlist for the create-store path. The
-  // store CRUD tests need this to be non-empty to exercise the
-  // create flow; pointing it at a per-test temp dir keeps the
-  // test isolated.
-  const dataRootsDir = join(tmpDir, "data-roots");
+  // `stores_data_root` for the create-store path. The store CRUD
+  // tests need this to be set to exercise the create flow; pointing
+  // it at a per-test temp dir keeps the test isolated.
+  const dataRootsDir = join(tmpDir, "data-root");
   mkdirSync(dataRootsDir);
 
   // Per-test master-key directory for encrypted dynamic stores
@@ -196,8 +195,7 @@ export async function startBackend(
     "  allowed_origins:",
     `    - "${baseUrl}"`,
     `    - "https://127.0.0.1:${port}"`,
-    "  stores_data_roots:",
-    `    - ${JSON.stringify(dataRootsDir)}`,
+    `  stores_data_root: ${JSON.stringify(dataRootsDir)}`,
     `  keys_dir: ${JSON.stringify(keysDir)}`,
     "",
   ].join("\n");

@@ -171,17 +171,10 @@ async fn remapping_runtime_client_instance_changes_store_on_next_wrapper_read_wi
         .await
         .unwrap();
 
-    let second_store_dir = daemon
-        .storage_dir
-        .parent()
-        .unwrap()
-        .join("stores-data-root")
-        .join("other");
     let created = daemon
         .create_store(&AdminStoreCreateRequest {
             name: "other".into(),
             backend: AdminStoreBackendKind::Plain,
-            dir: second_store_dir.to_string_lossy().to_string(),
             description: None,
         })
         .await

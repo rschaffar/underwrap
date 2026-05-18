@@ -66,8 +66,7 @@ https:
 
 admin:
   session_key_file: /run/keys/underwrap-admin-session-key
-  stores_data_roots:
-    - /var/lib/underwrap-backend
+  stores_data_root: /var/lib/underwrap-backend/data
 ```
 
 Provision the admin session key and start the daemon:

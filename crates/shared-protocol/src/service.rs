@@ -297,7 +297,6 @@ pub struct AdminStoreDetailResponse {
 pub struct AdminStoreCreateRequest {
     pub name: String,
     pub backend: AdminStoreBackendKind,
-    pub dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub description: Option<String>,

@@ -275,13 +275,9 @@ function SourceBadge({
 const createSchema = z.object({
   name: z
     .string()
-    .min(1, "Store name is required.")
-    .regex(
-      /^[a-z0-9][a-z0-9_-]*$/,
-      "Use lowercase letters, digits, '-' or '_'; must start with a letter or digit.",
-    ),
+    .trim()
+    .min(1, "Store name is required."),
   backend: z.enum(["plain", "encrypted"]),
-  dir: z.string().min(1, "Data directory is required."),
   description: z.string().optional(),
 });
 type CreateValues = z.infer<typeof createSchema>;
@@ -307,7 +303,6 @@ function CreateStoreDialog({
     defaultValues: {
       name: "",
       backend: "plain",
-      dir: "",
       description: "",
     },
   });
@@ -333,7 +328,6 @@ function CreateStoreDialog({
     const body: AdminStoreCreateRequest = {
       name: values.name,
       backend: values.backend,
-      dir: values.dir,
     };
     if (values.description) body.description = values.description;
     create.mutate(body);
@@ -367,9 +361,8 @@ function CreateStoreDialog({
         <DialogHeader>
           <DialogTitle>Create store</DialogTitle>
           <DialogDescription>
-            The data directory must be under one of the configured
-            <code className="mx-1 rounded bg-(--color-surface-1) px-1 py-0.5 text-xs">stores_data_roots</code>
-            prefixes on the backend.
+            The backend allocates the on-disk location under its configured
+            <code className="mx-1 rounded bg-(--color-surface-1) px-1 py-0.5 text-xs">stores_data_root</code>.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -401,25 +394,6 @@ function CreateStoreDialog({
                       <option value="plain">plain</option>
                       <option value="encrypted">encrypted</option>
                     </select>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="dir"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Data directory (absolute path)</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="/var/lib/underwrap-backend/data/work"
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      {...field}
-                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
