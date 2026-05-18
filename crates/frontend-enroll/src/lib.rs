@@ -1,8 +1,12 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use sha2::{Digest, Sha256};
 use std::io::{BufRead, Write};
+use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 use underwrap_protocol::service::{
     EnrollmentSubmitRequest, EnrollmentSubmitResponse, ServiceErrorResponse,
 };
@@ -21,17 +25,31 @@ pub struct Cli {
     /// One-time invite id from the operator-approved enrollment flow.
     #[arg(long)]
     pub invite_id: String,
-    /// CA bundle used to verify the backend's server certificate. This is the
-    /// backend's server-cert trust anchor and is unrelated to client-cert
-    /// authentication, which uses fingerprint pinning rather than a CA.
-    #[arg(long)]
-    pub ca_file: PathBuf,
     /// Where to atomically install the generated client certificate PEM.
     #[arg(long)]
     pub client_cert_out: PathBuf,
     /// Where to atomically install the generated client private key PEM.
     #[arg(long)]
     pub client_key_out: PathBuf,
+    /// Pinned SHA-256 fingerprint (hex, lowercase, optional colons) of the
+    /// backend's TLS server certificate. When set, the helper accepts that
+    /// exact leaf without consulting any CA. Use this for backends served
+    /// by a private CA or a self-signed cert. When unset, the backend's
+    /// server cert is verified against the host's system trust store; if
+    /// that verification fails the helper prints the presented certificate
+    /// and its fingerprint so an operator can decide whether to pin it.
+    #[arg(long)]
+    pub accept_server_ca_fingerprint: Option<String>,
+}
+
+/// How the helper should authenticate the backend's TLS server cert.
+#[derive(Debug, Clone)]
+pub enum ServerCertTrust {
+    /// Verify against the host's native trust store (the usual flow).
+    SystemRoots,
+    /// Accept only the leaf whose SHA-256 fingerprint matches this hex
+    /// string (lowercase, no colons).
+    PinnedFingerprint(String),
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -43,21 +61,34 @@ pub fn run_with_secret(cli: Cli, mut secret: Zeroizing<String>) -> Result<()> {
     harden_process()?;
     validate_output_paths(&cli.client_cert_out, &cli.client_key_out)?;
 
+    let trust = match cli.accept_server_ca_fingerprint.as_deref() {
+        Some(raw) => ServerCertTrust::PinnedFingerprint(normalize_fingerprint(raw)?),
+        None => ServerCertTrust::SystemRoots,
+    };
+
     eprintln!("underwrap-enroll: generating local client key and self-signed cert");
     let (key_pem, cert_pem) = generate_key_and_self_signed_cert()?;
 
     let enrollment_url = normalize_enrollment_url(&cli.url)?;
 
     eprintln!("underwrap-enroll: submitting cert to backend");
-    let response = submit_enrollment(
+    let response = match submit_enrollment(
         &enrollment_url,
-        &cli.ca_file,
+        &trust,
         EnrollmentSubmitRequest {
-            invite_id: cli.invite_id,
+            invite_id: cli.invite_id.clone(),
             enrollment_secret: secret.to_string(),
             cert_pem: cert_pem.clone(),
         },
-    )?;
+    ) {
+        Ok(resp) => resp,
+        Err(err) => {
+            if matches!(trust, ServerCertTrust::SystemRoots) && looks_like_tls_error(&err) {
+                report_unverified_server_certificate(&enrollment_url)?;
+            }
+            return Err(err);
+        }
+    };
     secret.zeroize();
 
     eprintln!("underwrap-enroll: installing credential files atomically");
@@ -206,17 +237,13 @@ fn prompt_enrollment_secret() -> Result<Zeroizing<String>> {
 
 fn submit_enrollment(
     url: &str,
-    ca_file: &Path,
+    trust: &ServerCertTrust,
     request: EnrollmentSubmitRequest,
 ) -> Result<EnrollmentSubmitResponse> {
-    let ca_pem = std::fs::read(ca_file)
-        .with_context(|| format!("reading backend CA bundle {}", ca_file.display()))?;
+    let tls_config = build_rustls_client_config(trust)?;
     let client = reqwest::blocking::Client::builder()
-        .use_rustls_tls()
-        .timeout(std::time::Duration::from_secs(15))
-        .add_root_certificate(
-            reqwest::Certificate::from_pem(&ca_pem).context("parsing backend CA bundle PEM")?,
-        )
+        .use_preconfigured_tls(tls_config)
+        .timeout(Duration::from_secs(15))
         .build()
         .context("building HTTPS enrollment client")?;
     let response = client
@@ -246,6 +273,300 @@ fn submit_enrollment(
         "enrollment failed with HTTP {status}: {}",
         String::from_utf8_lossy(&body)
     )
+}
+
+fn build_rustls_client_config(trust: &ServerCertTrust) -> Result<rustls::ClientConfig> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let provider = rustls::crypto::ring::default_provider();
+    let supported_algs = provider.signature_verification_algorithms;
+    let builder = rustls::ClientConfig::builder();
+    let config = match trust {
+        ServerCertTrust::SystemRoots => {
+            let roots = load_system_roots()?;
+            builder.with_root_certificates(roots).with_no_client_auth()
+        }
+        ServerCertTrust::PinnedFingerprint(fp) => {
+            let verifier: Arc<dyn rustls::client::danger::ServerCertVerifier> = Arc::new(
+                FingerprintServerCertVerifier::new(fp.clone(), supported_algs),
+            );
+            builder
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+                .with_no_client_auth()
+        }
+    };
+    Ok(config)
+}
+
+fn load_system_roots() -> Result<rustls::RootCertStore> {
+    let mut roots = rustls::RootCertStore::empty();
+    let result = rustls_native_certs::load_native_certs();
+    if !result.errors.is_empty() {
+        for err in &result.errors {
+            eprintln!("underwrap-enroll: warning loading a system root: {err}");
+        }
+    }
+    anyhow::ensure!(
+        !result.certs.is_empty(),
+        "no system root certificates found — pass --accept-server-ca-fingerprint to pin the backend's cert instead"
+    );
+    for cert in result.certs {
+        // Skip individual roots that rustls cannot parse; this matches
+        // browser behaviour and prevents one bad anchor from breaking
+        // an otherwise valid store.
+        let _ = roots.add(cert);
+    }
+    Ok(roots)
+}
+
+/// Connect to the backend with an accept-any verifier just long enough to
+/// extract the leaf certificate, print it for human inspection, and explain
+/// how to pin it on the next run. The probe never submits the enrollment.
+fn report_unverified_server_certificate(enrollment_url: &str) -> Result<()> {
+    let (cert_der, fingerprint) = match probe_server_certificate(enrollment_url) {
+        Ok(v) => v,
+        Err(probe_err) => {
+            eprintln!(
+                "underwrap-enroll: server certificate could not be verified against the system trust store, \
+                 and probing the server to print its certificate failed: {probe_err:#}"
+            );
+            return Ok(());
+        }
+    };
+    let pem = cert_der_to_pem(&cert_der);
+    eprintln!();
+    eprintln!(
+        "underwrap-enroll: the backend's TLS certificate is not trusted by the host's system roots."
+    );
+    eprintln!("Presented server certificate (PEM):");
+    eprintln!("{pem}");
+    eprintln!("SHA-256 fingerprint: {fingerprint}");
+    eprintln!();
+    eprintln!("If this fingerprint matches the backend's published value, re-run with:");
+    eprintln!("    --accept-server-ca-fingerprint {fingerprint}");
+    Ok(())
+}
+
+fn probe_server_certificate(enrollment_url: &str) -> Result<(Vec<u8>, String)> {
+    let parsed = reqwest::Url::parse(enrollment_url)
+        .with_context(|| format!("parsing enrollment URL '{enrollment_url}'"))?;
+    let host = parsed
+        .host_str()
+        .with_context(|| format!("enrollment URL has no host: {enrollment_url}"))?;
+    let port = parsed
+        .port_or_known_default()
+        .with_context(|| format!("enrollment URL has no port: {enrollment_url}"))?;
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let provider = rustls::crypto::ring::default_provider();
+    let verifier: Arc<dyn rustls::client::danger::ServerCertVerifier> = Arc::new(
+        AcceptAnyServerCertVerifier::new(provider.signature_verification_algorithms),
+    );
+    let config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .with_context(|| format!("invalid TLS server name '{host}'"))?;
+    let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name)
+        .context("starting rustls probe client connection")?;
+    let mut sock = TcpStream::connect((host, port))
+        .with_context(|| format!("connecting TCP to {host}:{port}"))?;
+    sock.set_read_timeout(Some(Duration::from_secs(15)))?;
+    sock.set_write_timeout(Some(Duration::from_secs(15)))?;
+    // Drive the handshake until rustls has consumed the server hello and
+    // populated the peer certificate chain.
+    while conn.is_handshaking() {
+        conn.complete_io(&mut sock)
+            .context("completing TLS probe handshake")?;
+    }
+    let cert = conn
+        .peer_certificates()
+        .and_then(|certs| certs.first())
+        .context("server presented no certificate")?
+        .to_vec();
+    let fingerprint = sha256_hex(&cert);
+    Ok((cert, fingerprint))
+}
+
+fn cert_der_to_pem(der: &[u8]) -> String {
+    let encoded = base64_encode(der);
+    let mut out = String::with_capacity(encoded.len() + 64);
+    out.push_str("-----BEGIN CERTIFICATE-----\n");
+    for chunk in encoded.as_bytes().chunks(64) {
+        out.push_str(std::str::from_utf8(chunk).unwrap());
+        out.push('\n');
+    }
+    out.push_str("-----END CERTIFICATE-----\n");
+    out
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    let mut i = 0;
+    while i + 3 <= input.len() {
+        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8) | (input[i + 2] as u32);
+        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
+        out.push(ALPHABET[(n & 0x3f) as usize] as char);
+        i += 3;
+    }
+    let rem = input.len() - i;
+    if rem == 1 {
+        let n = (input[i] as u32) << 16;
+        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rem == 2 {
+        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8);
+        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
+        out.push('=');
+    }
+    out
+}
+
+fn sha256_hex(input: &[u8]) -> String {
+    let digest = Sha256::digest(input);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn normalize_fingerprint(raw: &str) -> Result<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    anyhow::ensure!(
+        cleaned.len() == 64 && cleaned.chars().all(|c| c.is_ascii_hexdigit()),
+        "--accept-server-ca-fingerprint must be 64 hex characters (SHA-256 of the server cert DER)"
+    );
+    Ok(cleaned)
+}
+
+fn looks_like_tls_error(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}").to_ascii_lowercase();
+    text.contains("invalid certificate")
+        || text.contains("invalid peer certificate")
+        || text.contains("unknownissuer")
+        || text.contains("unknown issuer")
+        || text.contains("certificate verify failed")
+        || text.contains("bad certificate")
+        || text.contains("tls handshake")
+        || text.contains("handshake failure")
+        || text.contains("certificate signature")
+}
+
+#[derive(Debug)]
+struct FingerprintServerCertVerifier {
+    expected_fingerprint: String,
+    supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
+}
+
+impl FingerprintServerCertVerifier {
+    fn new(
+        expected_fingerprint: String,
+        supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
+    ) -> Self {
+        Self {
+            expected_fingerprint,
+            supported_algs,
+        }
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for FingerprintServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let actual = sha256_hex(end_entity.as_ref());
+        if actual == self.expected_fingerprint {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(format!(
+                "server certificate fingerprint mismatch: expected {}, got {actual}",
+                self.expected_fingerprint
+            )))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.supported_algs.supported_schemes()
+    }
+}
+
+#[derive(Debug)]
+struct AcceptAnyServerCertVerifier {
+    supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
+}
+
+impl AcceptAnyServerCertVerifier {
+    fn new(supported_algs: rustls::crypto::WebPkiSupportedAlgorithms) -> Self {
+        Self { supported_algs }
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.supported_algs.supported_schemes()
+    }
 }
 
 fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> Result<()> {
@@ -314,6 +635,29 @@ mod tests {
         assert!(key_pem.contains("BEGIN PRIVATE KEY"));
         assert!(cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(!cert_pem.contains("CERTIFICATE REQUEST"));
+    }
+
+    #[test]
+    fn normalize_fingerprint_accepts_clean_hex() {
+        let fp = normalize_fingerprint(
+            "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99",
+        )
+        .unwrap();
+        assert_eq!(fp.len(), 64);
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!fp.contains(':'));
+    }
+
+    #[test]
+    fn normalize_fingerprint_rejects_short_input() {
+        assert!(normalize_fingerprint("deadbeef").is_err());
+    }
+
+    #[test]
+    fn cert_der_to_pem_round_trip_yields_a_valid_block() {
+        let pem = cert_der_to_pem(&[0u8, 1, 2, 3, 4, 5]);
+        assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"));
+        assert!(pem.trim_end().ends_with("-----END CERTIFICATE-----"));
     }
 
     #[cfg(unix)]

@@ -45,9 +45,9 @@ describe("enrollment helpers", () => {
     );
     expect(command).toContain("sudo underwrap-enroll");
     expect(command).toContain("--invite-id enr_abc123");
-    expect(command).toContain("--ca-file /etc/underwrap/ca.pem");
     expect(command).toContain("/etc/underwrap/client-work.pem");
     expect(command).toContain("/etc/underwrap/client-work.key");
+    expect(command).not.toContain("--ca-file");
     expect(command).not.toContain("enrollment_secret");
   });
 });

@@ -15,6 +15,7 @@ struct EnrollmentBackend {
     admin_url: String,
     service_url: String,
     service_ca_cert: PathBuf,
+    server_cert_fingerprint: String,
     admin_session_cookie: String,
     admin_csrf_token: String,
     admin_client: reqwest::Client,
@@ -102,10 +103,13 @@ impl EnrollmentBackend {
             )?)?)
             .build()?;
 
+        let server_cert_fingerprint = compute_cert_fingerprint(&pki.server_cert)?;
+
         Ok(Self {
             admin_url,
             service_url,
             service_ca_cert: pki.ca_cert,
+            server_cert_fingerprint,
             admin_session_cookie,
             admin_csrf_token,
             admin_client,
@@ -217,6 +221,17 @@ fn generate_backend_pki(base: &Path) -> Result<GeneratedBackendPki> {
     })
 }
 
+fn compute_cert_fingerprint(cert_pem_path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let pem = std::fs::read(cert_pem_path)?;
+    let mut reader = std::io::BufReader::new(pem.as_slice());
+    let cert = rustls_pemfile::certs(&mut reader)
+        .next()
+        .context("server cert PEM contained no certificate")??;
+    let digest = Sha256::digest(cert.as_ref());
+    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 async fn wait_for_path(path: &Path) -> Result<()> {
     for _ in 0..3000 {
         if path.exists() {
@@ -300,7 +315,7 @@ async fn invite_first_enrollment_flow_installs_credential_and_enables_runtime_ac
     let enroll_cli = frontend_enroll::Cli {
         url: backend.admin_url.clone(),
         invite_id: invite.invite.id.clone(),
-        ca_file: backend.service_ca_cert.clone(),
+        accept_server_ca_fingerprint: Some(backend.server_cert_fingerprint.clone()),
         client_cert_out: client_cert.clone(),
         client_key_out: client_key.clone(),
     };
@@ -371,7 +386,7 @@ async fn re_enrollment_replaces_old_credential_end_to_end() {
     let first_cli = frontend_enroll::Cli {
         url: backend.admin_url.clone(),
         invite_id: first_invite.invite.id.clone(),
-        ca_file: backend.service_ca_cert.clone(),
+        accept_server_ca_fingerprint: Some(backend.server_cert_fingerprint.clone()),
         client_cert_out: first_cert.clone(),
         client_key_out: first_key.clone(),
     };
@@ -391,7 +406,7 @@ async fn re_enrollment_replaces_old_credential_end_to_end() {
     let second_cli = frontend_enroll::Cli {
         url: backend.admin_url.clone(),
         invite_id: second_invite.invite.id.clone(),
-        ca_file: backend.service_ca_cert.clone(),
+        accept_server_ca_fingerprint: Some(backend.server_cert_fingerprint.clone()),
         client_cert_out: second_cert.clone(),
         client_key_out: second_key.clone(),
     };

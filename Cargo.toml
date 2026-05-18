@@ -44,6 +44,8 @@ bytes = "1"
 rustls = "0.23"
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
+rustls-native-certs = "0.8"
+sha2 = "0.10"
 x509-parser = "0.18"
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 chacha20poly1305 = "0.10"

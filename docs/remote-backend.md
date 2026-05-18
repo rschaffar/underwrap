@@ -80,6 +80,28 @@ unit is in the VM test
 (`nix/tests/node.nix`) — copy its `ProtectSystem`, `PrivateTmp`,
 `RestrictAddressFamilies`, and `NoNewPrivileges` flags.
 
+## Running `underwrap-enroll`
+
+The helper verifies the backend's server certificate against the host's
+**system trust store**. When the backend's cert chains to a public or
+otherwise OS-trusted CA, no extra flags are needed:
+
+```bash
+sudo underwrap-enroll \
+  --url https://backend.example.internal:18443 \
+  --invite-id enr_… \
+  --client-cert-out /etc/underwrap/client-work.pem \
+  --client-key-out /etc/underwrap/client-work.key
+```
+
+When the backend's cert is signed by a private CA the host doesn't trust
+(or is self-signed), the helper aborts and prints the presented cert plus
+its SHA-256 fingerprint. Re-run with `--accept-server-ca-fingerprint
+<sha256>` to pin that exact leaf for this enrollment. The pinned
+fingerprint is only used by `underwrap-enroll` for this one call; the
+runtime daemon still verifies the backend through its own `caFile`
+trust anchor.
+
 ## Target host (NixOS)
 
 Configure `services.underwrap` to connect outbound to the backend:

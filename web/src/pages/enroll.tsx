@@ -75,7 +75,6 @@ export function buildEnrollmentCommand(
     "sudo underwrap-enroll",
     `--url ${shellQuote(resolvedUrl)}`,
     `--invite-id ${shellQuote(inviteId)}`,
-    "--ca-file /etc/underwrap/ca.pem",
     `--client-cert-out /etc/underwrap/client${suffix}.pem`,
     `--client-key-out /etc/underwrap/client${suffix}.key`,
   ].join(" ");
