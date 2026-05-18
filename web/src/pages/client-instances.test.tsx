@@ -79,7 +79,6 @@ describe("ClientInstancesPage", () => {
       {
         id: "client_work",
         display_name: "Work laptop",
-        hostname_hint: "deepthought",
         instance_name: "work",
         current_store_id: "store_work",
         current_store_name: "Work",
@@ -97,7 +96,6 @@ describe("ClientInstancesPage", () => {
       {
         id: "client_disabled",
         display_name: "Retired workstation",
-        hostname_hint: "deepthought-old",
         instance_name: "legacy",
         current_store_id: "store_other",
         current_store_name: "Other",
@@ -125,7 +123,6 @@ describe("ClientInstancesPage", () => {
     vi.mocked(postClientInstanceCreate).mockResolvedValue({
       id: "client_new",
       display_name: "new",
-      hostname_hint: undefined,
       instance_name: "new",
       current_store_id: "store_work",
       current_store_name: "Work",
@@ -143,8 +140,9 @@ describe("ClientInstancesPage", () => {
     });
     vi.mocked(putClientInstanceUpdate).mockImplementation(async (id, body) => ({
       id,
-      display_name: id === "client_work" ? "Work laptop" : "Retired workstation",
-      hostname_hint: id === "client_work" ? "deepthought" : "deepthought-old",
+      display_name:
+        body.display_name ??
+        (id === "client_work" ? "Work laptop" : "Retired workstation"),
       instance_name: id === "client_work" ? "work" : "legacy",
       current_store_id: body.current_store_id ?? (id === "client_work" ? "store_work" : "store_other"),
       current_store_name: body.current_store_id === "store_other" ? "Other" : body.current_store_id === "store_work" ? "Work" : id === "client_work" ? "Work" : "Other",
@@ -162,14 +160,14 @@ describe("ClientInstancesPage", () => {
     }));
   });
 
-  it("shows display name first with hostname and attested instance metadata", async () => {
+  it("shows display name first with attested instance metadata", async () => {
     renderWithQuery(
       <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
     expect(within(row).getByText("Work laptop")).toBeInTheDocument();
-    expect(within(row).getByText(/deepthought · instance work/i)).toBeInTheDocument();
+    expect(within(row).getByText(/instance work/i)).toBeInTheDocument();
     expect(within(row).getByText("Work")).toBeInTheDocument();
     expect(within(row).getByText("active")).toBeInTheDocument();
   });
@@ -235,7 +233,6 @@ describe("ClientInstancesPage", () => {
     });
     await user.type(within(dialog).getByLabelText(/display name/i), "laptop-work");
     await user.type(within(dialog).getByLabelText(/instance name/i), "work");
-    await user.type(within(dialog).getByLabelText(/hostname hint/i), "deepthought");
     const pem = "-----BEGIN CERTIFICATE-----\nFAKECERT\n-----END CERTIFICATE-----\n";
     await user.type(within(dialog).getByLabelText(/certificate pem/i), pem);
     await user.click(within(dialog).getByRole("button", { name: /^create$/i }));
@@ -243,10 +240,28 @@ describe("ClientInstancesPage", () => {
     expect(postClientInstanceCreate).toHaveBeenCalledWith({
       display_name: "laptop-work",
       instance_name: "work",
-      hostname_hint: "deepthought",
       current_store_id: "store_work",
       status: "active",
       cert_pem: pem.trim(),
+    });
+  });
+
+  it("renames an instance via the unified edit dialog", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(
+      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+    );
+
+    const row = await screen.findByTestId("client-instance-row-client_work");
+    await user.click(within(row).getByRole("button", { name: /^edit$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /edit: work laptop/i });
+    const input = within(dialog).getByLabelText(/display name/i);
+    await user.clear(input);
+    await user.type(input, "Work laptop renamed");
+    await user.click(within(dialog).getByRole("button", { name: /^save$/i }));
+
+    expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
+      display_name: "Work laptop renamed",
     });
   });
 

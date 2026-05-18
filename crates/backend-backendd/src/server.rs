@@ -3248,7 +3248,6 @@ fn admin_client_instance_list_item(
     AdminClientInstanceListItem {
         id: record.id.clone(),
         display_name: record.display_name.clone(),
-        hostname_hint: record.hostname_hint.clone(),
         instance_name: record.instance_name.clone(),
         current_store_id: record.current_store_id.clone(),
         current_store_name,
@@ -3267,7 +3266,6 @@ fn admin_client_instance_detail(
     AdminClientInstanceDetailResponse {
         id: record.id.clone(),
         display_name: record.display_name.clone(),
-        hostname_hint: record.hostname_hint.clone(),
         instance_name: record.instance_name.clone(),
         current_store_id: record.current_store_id.clone(),
         current_store_name,
@@ -3443,7 +3441,6 @@ fn do_admin_client_instance_create(
     let record = crate::runtime_clients::ClientInstanceRecord {
         id: id.clone(),
         display_name,
-        hostname_hint: body.hostname_hint.filter(|s| !s.trim().is_empty()),
         instance_name,
         current_store_id: body.current_store_id,
         status: client_instance_status_from_wire(body.status),
@@ -3552,13 +3549,6 @@ fn do_admin_client_instance_update(
             );
         }
         updated.display_name = display_name;
-    }
-    if let Some(hostname_hint) = body.hostname_hint {
-        updated.hostname_hint = if hostname_hint.trim().is_empty() {
-            None
-        } else {
-            Some(hostname_hint)
-        };
     }
     if let Some(current_store_id) = body.current_store_id {
         if !state
@@ -5104,7 +5094,6 @@ mod tests {
             crate::runtime_clients::ClientInstanceRecord {
                 id: "inst_local".to_string(),
                 display_name: "Local".to_string(),
-                hostname_hint: Some("deepthought".to_string()),
                 instance_name: "work".to_string(),
                 current_store_id: store_id.to_string(),
                 status,
@@ -6226,7 +6215,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             crate::runtime_clients::ClientInstanceRecord {
                 id: "client_a".into(),
                 display_name: "Laptop".into(),
-                hostname_hint: Some("laptop".into()),
                 instance_name: "work".into(),
                 current_store_id: plain_id.clone(),
                 status: crate::runtime_clients::ClientInstanceStatus::Active,
@@ -6299,7 +6287,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &p,
             AdminClientInstanceCreateRequest {
                 display_name: "laptop-work".into(),
-                hostname_hint: Some("deepthought".into()),
                 instance_name: "work".into(),
                 current_store_id: work_id.clone(),
                 status: AdminClientInstanceStatus::Active,
@@ -6335,7 +6322,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &client_id,
             AdminClientInstanceUpdateRequest {
                 display_name: Some("laptop-renamed".into()),
-                hostname_hint: Some("deepthought-2".into()),
                 current_store_id: Some(other_id.clone()),
                 status: Some(AdminClientInstanceStatus::Disabled),
                 cert_pem: None,
@@ -6382,7 +6368,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &op,
             AdminClientInstanceCreateRequest {
                 display_name: "laptop-work".into(),
-                hostname_hint: None,
                 instance_name: "work".into(),
                 current_store_id: store_id.clone(),
                 status: AdminClientInstanceStatus::Active,

@@ -63,7 +63,6 @@ async fn disabling_runtime_client_instance_blocks_fresh_runtime_connections() {
             &client_id,
             &underwrap_protocol::service::AdminClientInstanceUpdateRequest {
                 display_name: None,
-                hostname_hint: None,
                 current_store_id: None,
                 status: Some(AdminClientInstanceStatus::Disabled),
                 cert_pem: None,
@@ -113,7 +112,6 @@ async fn disabling_runtime_client_instance_blocks_next_wrapper_read_without_rest
             &client_id,
             &underwrap_protocol::service::AdminClientInstanceUpdateRequest {
                 display_name: None,
-                hostname_hint: None,
                 current_store_id: None,
                 status: Some(AdminClientInstanceStatus::Disabled),
                 cert_pem: None,
@@ -206,7 +204,6 @@ async fn remapping_runtime_client_instance_changes_store_on_next_wrapper_read_wi
             &client_id,
             &underwrap_protocol::service::AdminClientInstanceUpdateRequest {
                 display_name: None,
-                hostname_hint: None,
                 current_store_id: Some(other_store_id),
                 status: None,
                 cert_pem: None,

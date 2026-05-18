@@ -96,7 +96,7 @@ export function ClientInstancesPage({
           <p className="mt-1 text-sm text-(--color-muted)">
             Runtime client identities registered with this backend. Generate a credential
             on the client host with <code>underwrap-keygen</code> and paste the cert PEM
-            below to register it. Remaps apply on the next runtime request; disabled
+            below to register it. Edits apply on the next runtime request; disabled
             instances stay visible here for management and auditability.
           </p>
         </div>
@@ -158,7 +158,7 @@ export function ClientInstancesPage({
                     <td className="px-4 py-3">
                       <div className="font-medium text-(--color-fg)">{item.display_name}</div>
                       <div className="text-xs text-(--color-muted)">
-                        {item.hostname_hint ?? "unknown-host"} · instance {item.instance_name}
+                        instance {item.instance_name}
                       </div>
                     </td>
                     <td className="px-4 py-3 text-(--color-muted)">
@@ -257,7 +257,6 @@ function CreateClientInstanceDialog({
 }) {
   const [displayName, setDisplayName] = useState("");
   const [instanceName, setInstanceName] = useState("");
-  const [hostnameHint, setHostnameHint] = useState("");
   const [storeId, setStoreId] = useState(stores[0]?.id ?? "");
   const [status, setStatus] = useState<"active" | "disabled">("active");
   const [certPem, setCertPem] = useState("");
@@ -310,15 +309,6 @@ function CreateClientInstanceDialog({
               value={instanceName}
               onChange={(e) => setInstanceName(e.target.value)}
               placeholder="work"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="create-hostname-hint">Hostname hint (optional)</Label>
-            <Input
-              id="create-hostname-hint"
-              value={hostnameHint}
-              onChange={(e) => setHostnameHint(e.target.value)}
-              placeholder="deepthought"
             />
           </div>
           <div className="space-y-1.5">
@@ -380,8 +370,6 @@ function CreateClientInstanceDialog({
               mut.mutate({
                 display_name: displayName.trim(),
                 instance_name: instanceName.trim(),
-                hostname_hint:
-                  hostnameHint.trim() === "" ? undefined : hostnameHint.trim(),
                 current_store_id: storeId,
                 status,
                 cert_pem: trimmedCert,
@@ -407,13 +395,17 @@ function EditClientInstanceDialog({
   onClose: () => void;
   onSuccess: () => Promise<void>;
 }) {
+  const [displayName, setDisplayName] = useState(instance.display_name);
   const [storeId, setStoreId] = useState(instance.current_store_id);
   const [certPem, setCertPem] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const mut = useMutation({
-    mutationFn: (body: { current_store_id?: string; cert_pem?: string }) =>
-      putClientInstanceUpdate(instance.id, body),
+    mutationFn: (body: {
+      display_name?: string;
+      current_store_id?: string;
+      cert_pem?: string;
+    }) => putClientInstanceUpdate(instance.id, body),
     onSuccess: async () => {
       setSubmitError(null);
       await onSuccess();
@@ -421,10 +413,16 @@ function EditClientInstanceDialog({
     onError: (err) => setSubmitError(describeApiError(err)),
   });
 
+  const trimmedDisplayName = displayName.trim();
   const trimmedCert = certPem.trim();
+  const displayNameChanged =
+    trimmedDisplayName !== "" && trimmedDisplayName !== instance.display_name;
   const storeChanged = storeId !== instance.current_store_id;
   const certChanged = trimmedCert !== "";
-  const canSubmit = (storeChanged || certChanged) && !mut.isPending;
+  const canSubmit =
+    trimmedDisplayName !== "" &&
+    (displayNameChanged || storeChanged || certChanged) &&
+    !mut.isPending;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -432,14 +430,23 @@ function EditClientInstanceDialog({
         <DialogHeader>
           <DialogTitle>Edit: {instance.display_name}</DialogTitle>
           <DialogDescription>
-            Remap the target store and/or replace the registered certificate.
-            Changes take effect on the next runtime request.
+            Rename, remap the target store, or replace the registered
+            certificate. Changes take effect on the next runtime request.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-3 py-2 text-xs text-(--color-muted)">
             Current fingerprint:{" "}
             <code>{instance.current_credential_fingerprint}</code>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-display-name">Display name</Label>
+            <Input
+              id="edit-display-name"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="laptop-work"
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="edit-store">Target store</Label>
@@ -492,6 +499,7 @@ function EditClientInstanceDialog({
             disabled={!canSubmit}
             onClick={() =>
               mut.mutate({
+                ...(displayNameChanged ? { display_name: trimmedDisplayName } : {}),
                 ...(storeChanged ? { current_store_id: storeId } : {}),
                 ...(certChanged ? { cert_pem: trimmedCert } : {}),
               })

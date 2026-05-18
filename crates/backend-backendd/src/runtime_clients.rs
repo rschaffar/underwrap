@@ -29,10 +29,6 @@ pub struct ClientInstanceRecord {
     pub id: String,
     /// Editable operator-facing display name.
     pub display_name: String,
-    /// Hostname the client reported during enrollment. Optional so
-    /// early/CLI-created records can omit it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hostname_hint: Option<String>,
     /// Attested configured `services.underwrap.instances.<name>`.
     pub instance_name: String,
     /// Current mapped store id.
@@ -275,7 +271,6 @@ mod tests {
         ClientInstanceRecord {
             id: id.to_string(),
             display_name: format!("Display {id}"),
-            hostname_hint: Some("deepthought".into()),
             instance_name: "work".into(),
             current_store_id: "store_work".into(),
             status: ClientInstanceStatus::Active,

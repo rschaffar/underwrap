@@ -147,7 +147,6 @@ impl TestDaemon {
         let runtime_client = underwrap_backendd::runtime_clients::ClientInstanceRecord {
             id: format!("inst_{accepted_principal}"),
             display_name: accepted_principal.to_string(),
-            hostname_hint: Some(client_name.to_string()),
             instance_name: client_name.to_string(),
             current_store_id: "test".to_string(),
             status: underwrap_backendd::runtime_clients::ClientInstanceStatus::Active,

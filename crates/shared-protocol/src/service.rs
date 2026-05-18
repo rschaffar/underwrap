@@ -373,9 +373,6 @@ pub struct AdminClientInstanceActionState {
 pub struct AdminClientInstanceListItem {
     pub id: String,
     pub display_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub hostname_hint: Option<String>,
     pub instance_name: String,
     pub current_store_id: String,
     pub current_store_name: String,
@@ -398,9 +395,6 @@ pub struct AdminClientInstancesListResponse {
 pub struct AdminClientInstanceDetailResponse {
     pub id: String,
     pub display_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub hostname_hint: Option<String>,
     pub instance_name: String,
     pub current_store_id: String,
     pub current_store_name: String,
@@ -419,9 +413,6 @@ pub struct AdminClientInstanceDetailResponse {
 #[ts(export)]
 pub struct AdminClientInstanceCreateRequest {
     pub display_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub hostname_hint: Option<String>,
     pub instance_name: String,
     pub current_store_id: String,
     pub status: AdminClientInstanceStatus,
@@ -437,9 +428,6 @@ pub struct AdminClientInstanceUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub hostname_hint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub current_store_id: Option<String>,
