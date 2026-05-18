@@ -63,9 +63,8 @@ export function ClientInstancesPage({
   const isAdmin = canManageClientInstances(principal);
   const [statusFilter, setStatusFilter] = useState<ClientStatusFilter>("all");
   const [creating, setCreating] = useState(false);
-  const [editingCert, setEditingCert] =
+  const [editing, setEditing] =
     useState<AdminClientInstanceDetailResponse | null>(null);
-  const [remapping, setRemapping] = useState<AdminClientInstanceDetailResponse | null>(null);
   const [settingStatus, setSettingStatus] = useState<{
     instance: AdminClientInstanceDetailResponse;
     nextStatus: "active" | "disabled";
@@ -148,7 +147,6 @@ export function ClientInstancesPage({
             </thead>
             <tbody>
               {items.map((item) => {
-                const canRemap = isAdmin && item.actions.can_remap_store;
                 const canDisable = isAdmin && item.actions.can_disable;
                 const canEnable = isAdmin && item.actions.can_enable;
                 return (
@@ -182,24 +180,9 @@ export function ClientInstancesPage({
                               ? "Only admins may manage client instances."
                               : undefined
                           }
-                          onClick={() => setEditingCert(toDetail(item))}
+                          onClick={() => setEditing(toDetail(item))}
                         >
-                          Edit cert
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={!canRemap || (storesQuery.data?.items.length ?? 0) < 2}
-                          title={
-                            !isAdmin
-                              ? "Only admins may manage client instances."
-                              : (storesQuery.data?.items.length ?? 0) < 2
-                                ? "Create another store before remapping client instances."
-                                : undefined
-                          }
-                          onClick={() => setRemapping(toDetail(item))}
-                        >
-                          Remap store
+                          Edit
                         </Button>
                         <Button
                           variant={canDisable ? "destructive" : "ghost"}
@@ -236,28 +219,17 @@ export function ClientInstancesPage({
         />
       ) : null}
 
-      {isAdmin && editingCert ? (
-        <EditCertDialog
-          instance={editingCert}
-          onClose={() => setEditingCert(null)}
+      {isAdmin && editing && storesQuery.data ? (
+        <EditClientInstanceDialog
+          instance={editing}
+          stores={storesQuery.data.items}
+          onClose={() => setEditing(null)}
           onSuccess={async () => {
             await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
-            setEditingCert(null);
+            setEditing(null);
           }}
         />
       ) : null}
-
-      {isAdmin && remapping ? storesQuery.data ? (
-        <RemapStoreDialog
-          instance={remapping}
-          stores={storesQuery.data.items}
-          onClose={() => setRemapping(null)}
-          onSuccess={async () => {
-            await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
-            setRemapping(null);
-          }}
-        />
-      ) : null : null}
 
       {isAdmin && settingStatus ? (
         <SetStatusDialog
@@ -424,21 +396,24 @@ function CreateClientInstanceDialog({
   );
 }
 
-function EditCertDialog({
+function EditClientInstanceDialog({
   instance,
+  stores,
   onClose,
   onSuccess,
 }: {
   instance: AdminClientInstanceDetailResponse;
+  stores: AdminStoresListResponse["items"];
   onClose: () => void;
   onSuccess: () => Promise<void>;
 }) {
+  const [storeId, setStoreId] = useState(instance.current_store_id);
   const [certPem, setCertPem] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const mut = useMutation({
-    mutationFn: (cert_pem: string) =>
-      putClientInstanceUpdate(instance.id, { cert_pem }),
+    mutationFn: (body: { current_store_id?: string; cert_pem?: string }) =>
+      putClientInstanceUpdate(instance.id, body),
     onSuccess: async () => {
       setSubmitError(null);
       await onSuccess();
@@ -446,19 +421,19 @@ function EditCertDialog({
     onError: (err) => setSubmitError(describeApiError(err)),
   });
 
-  const trimmed = certPem.trim();
+  const trimmedCert = certPem.trim();
+  const storeChanged = storeId !== instance.current_store_id;
+  const certChanged = trimmedCert !== "";
+  const canSubmit = (storeChanged || certChanged) && !mut.isPending;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Edit cert: {instance.display_name}</DialogTitle>
+          <DialogTitle>Edit: {instance.display_name}</DialogTitle>
           <DialogDescription>
-            Replace the registered certificate. Generate a new credential on the
-            client host with
-            <code className="mx-1">underwrap-keygen</code>
-            and paste the new PEM below. Takes effect on the next runtime mTLS
-            connection.
+            Remap the target store and/or replace the registered certificate.
+            Changes take effect on the next runtime request.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -467,7 +442,23 @@ function EditCertDialog({
             <code>{instance.current_credential_fingerprint}</code>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="edit-cert-pem">New certificate PEM</Label>
+            <Label htmlFor="edit-store">Target store</Label>
+            <select
+              id="edit-store"
+              value={storeId}
+              onChange={(e) => setStoreId(e.target.value)}
+              className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
+            >
+              {stores.map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.name}
+                  {store.id === instance.current_store_id ? " (current)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-cert-pem">New certificate PEM (optional)</Label>
             <textarea
               id="edit-cert-pem"
               value={certPem}
@@ -477,6 +468,11 @@ function EditCertDialog({
               placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"}
               className="flex w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
             />
+            <p className="text-xs text-(--color-muted)">
+              Generate a new credential on the client host with{" "}
+              <code>underwrap-keygen</code> and paste the cert PEM to rotate.
+              Leave blank to keep the existing cert.
+            </p>
           </div>
           {submitError ? (
             <p
@@ -493,10 +489,15 @@ function EditCertDialog({
           </Button>
           <Button
             type="button"
-            disabled={trimmed === "" || mut.isPending}
-            onClick={() => mut.mutate(trimmed)}
+            disabled={!canSubmit}
+            onClick={() =>
+              mut.mutate({
+                ...(storeChanged ? { current_store_id: storeId } : {}),
+                ...(certChanged ? { cert_pem: trimmedCert } : {}),
+              })
+            }
           >
-            {mut.isPending ? "Replacing…" : "Replace cert"}
+            {mut.isPending ? "Saving…" : "Save"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -517,89 +518,6 @@ function StatusBadge({ status }: { status: "active" | "disabled" }) {
     >
       {status}
     </span>
-  );
-}
-
-function RemapStoreDialog({
-  instance,
-  stores,
-  onClose,
-  onSuccess,
-}: {
-  instance: AdminClientInstanceDetailResponse;
-  stores: AdminStoresListResponse["items"];
-  onClose: () => void;
-  onSuccess: () => Promise<void>;
-}) {
-  const [storeId, setStoreId] = useState(instance.current_store_id);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const mut = useMutation({
-    mutationFn: (current_store_id: string) =>
-      putClientInstanceUpdate(instance.id, { current_store_id }),
-    onSuccess: async () => {
-      setSubmitError(null);
-      await onSuccess();
-    },
-    onError: (err) => setSubmitError(describeApiError(err)),
-  });
-
-  const options = stores.filter((store) => store.id !== instance.current_store_id);
-
-  return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Remap store: {instance.display_name}</DialogTitle>
-          <DialogDescription>
-            Select a new target store. This takes effect on the next runtime request for this client
-            instance.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-3 py-2 text-xs text-(--color-muted)">
-            Current store: <strong>{instance.current_store_name}</strong>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="target-store">New target store</Label>
-            <select
-              id="target-store"
-              value={storeId}
-              onChange={(e) => setStoreId(e.target.value)}
-              className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
-            >
-              <option value={instance.current_store_id} disabled>
-                Choose a different store
-              </option>
-              {options.map((store) => (
-                <option key={store.id} value={store.id}>
-                  {store.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          {submitError ? (
-            <p
-              role="alert"
-              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-            >
-              {submitError}
-            </p>
-          ) : null}
-        </div>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            disabled={storeId === instance.current_store_id || mut.isPending}
-            onClick={() => mut.mutate(storeId)}
-          >
-            {mut.isPending ? "Remapping…" : "Remap now"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 

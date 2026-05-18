@@ -189,17 +189,17 @@ describe("ClientInstancesPage", () => {
     expect(screen.getByTestId("client-instance-row-client_disabled")).toBeInTheDocument();
   });
 
-  it("remaps an instance to another store from an explicit dialog", async () => {
+  it("remaps an instance to another store from the unified edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
       <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
-    await user.click(within(row).getByRole("button", { name: /remap store/i }));
-    const dialog = await screen.findByRole("dialog", { name: /remap store: work laptop/i });
-    await user.selectOptions(within(dialog).getByLabelText(/new target store/i), "store_other");
-    await user.click(within(dialog).getByRole("button", { name: /remap now/i }));
+    await user.click(within(row).getByRole("button", { name: /^edit$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /edit: work laptop/i });
+    await user.selectOptions(within(dialog).getByLabelText(/target store/i), "store_other");
+    await user.click(within(dialog).getByRole("button", { name: /^save$/i }));
 
     expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
       current_store_id: "store_other",
@@ -250,18 +250,18 @@ describe("ClientInstancesPage", () => {
     });
   });
 
-  it("replaces the registered cert via the edit-cert dialog", async () => {
+  it("replaces the registered cert via the unified edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
       <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
-    await user.click(within(row).getByRole("button", { name: /edit cert/i }));
-    const dialog = await screen.findByRole("dialog", { name: /edit cert: work laptop/i });
+    await user.click(within(row).getByRole("button", { name: /^edit$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /edit: work laptop/i });
     const pem = "-----BEGIN CERTIFICATE-----\nFRESHCERT\n-----END CERTIFICATE-----\n";
     await user.type(within(dialog).getByLabelText(/new certificate pem/i), pem);
-    await user.click(within(dialog).getByRole("button", { name: /replace cert/i }));
+    await user.click(within(dialog).getByRole("button", { name: /^save$/i }));
 
     expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
       cert_pem: pem.trim(),
