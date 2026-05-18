@@ -61,6 +61,13 @@ pub struct ResolvedTargets {
     pub url: String,
     pub client_cert_out: PathBuf,
     pub client_key_out: PathBuf,
+    /// When the targets came from `--instance-config` and an
+    /// `underwrap-<catalog_instance>` user + group could be resolved on
+    /// this host, the (uid, gid) the helper should chown freshly written
+    /// credential files to. `None` falls back to "keep current uid/gid"
+    /// (root, under `sudo`) plus a warning so the operator knows to
+    /// adjust ownership manually.
+    pub credential_owner: Option<(u32, u32)>,
 }
 
 impl Cli {
@@ -87,10 +94,12 @@ impl Cli {
                     path.display()
                 )
             })?;
+            let credential_owner = derive_instance_owner(&cfg.catalog_instance);
             Ok(ResolvedTargets {
                 url: cfg.backend.url,
                 client_cert_out,
                 client_key_out,
+                credential_owner,
             })
         } else {
             let url = self
@@ -109,8 +118,45 @@ impl Cli {
                 url,
                 client_cert_out,
                 client_key_out,
+                credential_owner: None,
             })
         }
+    }
+}
+
+/// Derive the daemon `(uid, gid)` for an instance using the NixOS module's
+/// `underwrap-<instance>` naming convention. Returns `None` if either the
+/// instance name is empty or the user/group doesn't exist on this host
+/// (e.g., enrolling on a workstation that doesn't run the daemon).
+fn derive_instance_owner(catalog_instance: &str) -> Option<(u32, u32)> {
+    let inst = catalog_instance.trim();
+    if inst.is_empty() {
+        return None;
+    }
+    let name = format!("underwrap-{inst}");
+    let uid = lookup_uid(&name)?;
+    let gid = lookup_gid(&name)?;
+    Some((uid, gid))
+}
+
+fn lookup_uid(name: &str) -> Option<u32> {
+    let cname = std::ffi::CString::new(name).ok()?;
+    // getpwnam is not reentrant but the helper is single-threaded.
+    let pw = unsafe { libc::getpwnam(cname.as_ptr()) };
+    if pw.is_null() {
+        None
+    } else {
+        Some(unsafe { (*pw).pw_uid })
+    }
+}
+
+fn lookup_gid(name: &str) -> Option<u32> {
+    let cname = std::ffi::CString::new(name).ok()?;
+    let gr = unsafe { libc::getgrnam(cname.as_ptr()) };
+    if gr.is_null() {
+        None
+    } else {
+        Some(unsafe { (*gr).gr_gid })
     }
 }
 
@@ -168,10 +214,11 @@ pub fn run_with_secret(cli: Cli, mut secret: Zeroizing<String>) -> Result<()> {
     install_credential(
         &targets.client_key_out,
         key_pem.as_bytes(),
-        0o600,
+        0o400,
         &targets.client_cert_out,
         cert_pem.as_bytes(),
-        0o644,
+        0o440,
+        targets.credential_owner,
     )?;
 
     eprintln!(
@@ -642,7 +689,8 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCertVerifier 
     }
 }
 
-fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> Result<()> {
+fn write_atomic(path: &Path, contents: &[u8], mode: u32, owner: Option<(u32, u32)>) -> Result<()> {
+    use std::os::fd::AsRawFd;
     let parent = path.parent().ok_or_else(|| {
         anyhow::anyhow!("output path '{}' has no parent directory", path.display())
     })?;
@@ -655,6 +703,17 @@ fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> Result<()> {
     temp.as_file()
         .sync_all()
         .with_context(|| format!("fsyncing temp file for {}", path.display()))?;
+    if let Some((uid, gid)) = owner {
+        let fd = temp.as_file().as_raw_fd();
+        let ret = unsafe { libc::fchown(fd, uid, gid) };
+        if ret != 0 {
+            bail!(
+                "fchown({}, {uid}, {gid}) failed: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            );
+        }
+    }
     std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(mode))
         .with_context(|| format!("setting permissions on temp file for {}", path.display()))?;
     temp.persist(path)
@@ -669,10 +728,33 @@ fn install_credential(
     cert_out: &Path,
     cert_pem: &[u8],
     cert_mode: u32,
+    preferred_owner: Option<(u32, u32)>,
 ) -> Result<()> {
-    write_atomic(key_out, key_pem, key_mode)?;
-    write_atomic(cert_out, cert_pem, cert_mode)?;
+    let key_owner = resolve_target_owner(key_out, preferred_owner);
+    let cert_owner = resolve_target_owner(cert_out, preferred_owner);
+    if preferred_owner.is_none() && key_owner.is_none() {
+        eprintln!(
+            "underwrap-enroll: warning: could not infer a daemon user for the credential files; \
+             writing as the current user. chown {} and {} to the daemon user before starting underwrapd.",
+            key_out.display(),
+            cert_out.display()
+        );
+    }
+    write_atomic(key_out, key_pem, key_mode, key_owner)?;
+    write_atomic(cert_out, cert_pem, cert_mode, cert_owner)?;
     Ok(())
+}
+
+/// Decide the (uid, gid) for a credential file. `preferred_owner` (from the
+/// instance config) wins; otherwise we preserve the existing file's
+/// ownership for the re-enrollment case; otherwise we leave it to the
+/// process's current uid/gid.
+fn resolve_target_owner(path: &Path, preferred: Option<(u32, u32)>) -> Option<(u32, u32)> {
+    if preferred.is_some() {
+        return preferred;
+    }
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.uid(), m.gid()))
 }
 
 #[cfg(test)]
@@ -839,16 +921,50 @@ wrappers: {}
         let tmp = tempfile::TempDir::new().unwrap();
         let key = tmp.path().join("client.key");
         let cert = tmp.path().join("client.pem");
-        install_credential(&key, b"KEY", 0o600, &cert, b"CERT", 0o644).unwrap();
+        install_credential(&key, b"KEY", 0o400, &cert, b"CERT", 0o440, None).unwrap();
         assert_eq!(std::fs::read(&key).unwrap(), b"KEY");
         assert_eq!(std::fs::read(&cert).unwrap(), b"CERT");
         assert_eq!(
             std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
-            0o600
+            0o400
         );
         assert_eq!(
             std::fs::metadata(&cert).unwrap().permissions().mode() & 0o777,
-            0o644
+            0o440
+        );
+    }
+
+    #[test]
+    fn derive_instance_owner_returns_none_for_unknown_user() {
+        assert!(derive_instance_owner("definitely-not-an-existing-instance-xyzzy").is_none());
+    }
+
+    #[test]
+    fn derive_instance_owner_returns_none_for_empty_instance() {
+        assert!(derive_instance_owner("").is_none());
+        assert!(derive_instance_owner("   ").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_target_owner_prefers_explicit_then_existing_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("client.pem");
+
+        // No file, no preference → None
+        assert!(resolve_target_owner(&path, None).is_none());
+
+        // File exists → preserves its uid/gid
+        std::fs::write(&path, b"x").unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let (uid, gid) = (meta.uid(), meta.gid());
+        assert_eq!(resolve_target_owner(&path, None), Some((uid, gid)));
+
+        // Explicit preference wins over existing file
+        assert_eq!(
+            resolve_target_owner(&path, Some((12345, 67890))),
+            Some((12345, 67890))
         );
     }
 }
