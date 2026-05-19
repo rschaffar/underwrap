@@ -71,21 +71,25 @@ async fn setup_wrapper_resource_channel(
     state: &State,
 ) -> Result<()> {
     let store = state.store_arc();
-    let wrapper = wrapper_name.to_string();
-    let resource = resource_id.to_string();
+    let logical_name = state
+        .config
+        .wrappers
+        .get(wrapper_name)
+        .and_then(|def| def.logical_name.clone())
+        .unwrap_or_else(|| wrapper_name.to_string());
+    let ctx = crate::wrapper_resource_channel::ChannelContext {
+        wrapper_name: wrapper_name.to_string(),
+        resource_id: resource_id.to_string(),
+        access,
+        client_instance: state.client_instance.clone(),
+        logical_name,
+    };
     setup_scoped_channel(
         stream,
         "wrapper-resource channel fd",
         move |daemon_stream| {
             tokio::spawn(async move {
-                crate::wrapper_resource_channel::run_channel(
-                    daemon_stream,
-                    store,
-                    wrapper,
-                    resource,
-                    access,
-                )
-                .await;
+                crate::wrapper_resource_channel::run_channel(daemon_stream, store, ctx).await;
             });
         },
     )

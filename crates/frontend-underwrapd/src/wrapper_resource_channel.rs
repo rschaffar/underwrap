@@ -26,33 +26,44 @@ use underwrap_protocol::resource::resource_blob_key;
 use underwrap_protocol::resource_blob::ResourceBlob;
 use underwrap_store::{StorageBackend, load_resource_blob, save_resource_blob};
 
+/// Read-time view of the channel that the handler retains for the
+/// lifetime of the connection. `access` is captured at channel setup
+/// and gates Checkout's `writable` flag; Checkin additionally
+/// re-evaluates the policy document on every call so an operator who
+/// flips a grant from writable to read-only mid-run is observed before
+/// the write hits the backend.
+pub struct ChannelContext {
+    pub wrapper_name: String,
+    pub resource_id: String,
+    pub access: AccessMode,
+    /// Client instance id the policy is keyed on.
+    pub client_instance: String,
+    /// Logical wrapper name used by the policy lookup (matches what
+    /// the read flow consults).
+    pub logical_name: String,
+}
+
 /// Run the wrapper-resource channel handler loop on the daemon end of
 /// the socketpair. Returns when the wrapper end closes or a fatal
 /// protocol error occurs.
-pub async fn run_channel(
-    stream: UnixStream,
-    store: Arc<dyn StorageBackend>,
-    wrapper_name: String,
-    resource_id: String,
-    access: AccessMode,
-) {
+pub async fn run_channel(stream: UnixStream, store: Arc<dyn StorageBackend>, ctx: ChannelContext) {
     info!(
-        wrapper = %wrapper_name,
-        resource = %resource_id,
-        ?access,
+        wrapper = %ctx.wrapper_name,
+        resource = %ctx.resource_id,
+        access = ?ctx.access,
         "wrapper-resource channel opened",
     );
-    if let Err(e) = channel_loop(stream, &*store, &wrapper_name, &resource_id, access).await {
+    if let Err(e) = channel_loop(stream, &*store, &ctx).await {
         debug!(
-            wrapper = %wrapper_name,
-            resource = %resource_id,
+            wrapper = %ctx.wrapper_name,
+            resource = %ctx.resource_id,
             err = %e,
             "wrapper-resource channel closed",
         );
     }
     info!(
-        wrapper = %wrapper_name,
-        resource = %resource_id,
+        wrapper = %ctx.wrapper_name,
+        resource = %ctx.resource_id,
         "wrapper-resource channel handler exited",
     );
 }
@@ -60,9 +71,7 @@ pub async fn run_channel(
 async fn channel_loop(
     mut stream: UnixStream,
     store: &dyn StorageBackend,
-    wrapper_name: &str,
-    resource_id: &str,
-    access: AccessMode,
+    ctx: &ChannelContext,
 ) -> Result<()> {
     loop {
         let req: WrapperResourceRequest = match read_frame_async(&mut stream).await {
@@ -78,7 +87,7 @@ async fn channel_loop(
                 return Err(e).context("reading wrapper-resource request");
             }
         };
-        let resp = handle_request(req, store, wrapper_name, resource_id, access);
+        let resp = handle_request(req, store, ctx);
         write_frame_async(&mut stream, &resp).await?;
     }
 }
@@ -86,19 +95,15 @@ async fn channel_loop(
 fn handle_request(
     request: WrapperResourceRequest,
     store: &dyn StorageBackend,
-    wrapper_name: &str,
-    resource_id: &str,
-    access: AccessMode,
+    ctx: &ChannelContext,
 ) -> WrapperResourceResponse {
     match request {
         WrapperResourceRequest::Checkout => {
-            handle_checkout(store, wrapper_name, resource_id, access)
+            handle_checkout(store, &ctx.wrapper_name, &ctx.resource_id, ctx.access)
         }
-        WrapperResourceRequest::Checkin { blob } => {
-            handle_checkin(blob, store, wrapper_name, resource_id, access)
-        }
+        WrapperResourceRequest::Checkin { blob } => handle_checkin(blob, store, ctx),
         WrapperResourceRequest::UsageSignal => {
-            handle_usage_signal(store, wrapper_name, resource_id)
+            handle_usage_signal(store, &ctx.wrapper_name, &ctx.resource_id)
         }
     }
 }
@@ -155,11 +160,12 @@ fn handle_checkout(
 fn handle_checkin(
     blob: Vec<u8>,
     store: &dyn StorageBackend,
-    wrapper_name: &str,
-    resource_id: &str,
-    access: AccessMode,
+    ctx: &ChannelContext,
 ) -> WrapperResourceResponse {
-    if access != AccessMode::ReadWrite {
+    let wrapper_name = ctx.wrapper_name.as_str();
+    let resource_id = ctx.resource_id.as_str();
+
+    if ctx.access != AccessMode::ReadWrite {
         crate::audit::wrapper_write_denied(
             "resource",
             wrapper_name,
@@ -171,6 +177,45 @@ fn handle_checkin(
             code: ResourceErrorCode::Unauthorized,
             message: "resource is read-only by backend policy".to_string(),
         };
+    }
+
+    // Re-evaluate the policy at Checkin time so an operator who
+    // revokes write access mid-run is observed before the write
+    // touches the backend. The access mode captured at channel
+    // setup is the floor, not the ceiling.
+    match crate::policy::load_policy_document(store) {
+        Ok(doc) => {
+            if !crate::policy::writable_for(
+                doc.as_ref(),
+                &ctx.client_instance,
+                &ctx.logical_name,
+                resource_id,
+            ) {
+                crate::audit::wrapper_write_denied(
+                    "resource",
+                    wrapper_name,
+                    resource_id,
+                    "<full-blob>",
+                    "grant was flipped to read-only between Checkout and Checkin",
+                );
+                return WrapperResourceResponse::Error {
+                    code: ResourceErrorCode::Unauthorized,
+                    message: "resource grant is no longer writable".to_string(),
+                };
+            }
+        }
+        Err(e) => {
+            error!(
+                wrapper = %wrapper_name,
+                resource = %resource_id,
+                err = %e,
+                "loading policy document on checkin",
+            );
+            return WrapperResourceResponse::Error {
+                code: ResourceErrorCode::Internal,
+                message: "loading policy document failed".to_string(),
+            };
+        }
     }
     let decoded = match ResourceBlob::from_canonical_bytes(&blob) {
         Ok(b) => b,
@@ -288,6 +333,16 @@ mod tests {
         blob
     }
 
+    fn ctx_for(access: AccessMode) -> ChannelContext {
+        ChannelContext {
+            wrapper_name: "wrapper".to_string(),
+            resource_id: "github/token".to_string(),
+            access,
+            client_instance: "dev-laptop".to_string(),
+            logical_name: "wrapper".to_string(),
+        }
+    }
+
     #[test]
     fn checkout_returns_canonical_bytes_and_writability() {
         let store = MemStore::with_entries(&[("github/token/env/GH_TOKEN", b"ghp_old")]);
@@ -335,13 +390,7 @@ mod tests {
             .insert("GH_TOKEN".into(), SecretBytes::from("ghp_new"));
         let canonical = blob.to_canonical_bytes().unwrap();
 
-        let resp = handle_checkin(
-            canonical.clone(),
-            &store,
-            "wrapper",
-            "github/token",
-            AccessMode::ReadWrite,
-        );
+        let resp = handle_checkin(canonical.clone(), &store, &ctx_for(AccessMode::ReadWrite));
         assert!(matches!(resp, WrapperResourceResponse::CheckinOk));
 
         // Re-checkout sees the new state.
@@ -358,13 +407,7 @@ mod tests {
     fn checkin_rejects_when_grant_is_readonly() {
         let store = MemStore::with_entries(&[]);
         let canonical = ResourceBlob::empty().to_canonical_bytes().unwrap();
-        let resp = handle_checkin(
-            canonical,
-            &store,
-            "wrapper",
-            "github/token",
-            AccessMode::ReadOnly,
-        );
+        let resp = handle_checkin(canonical, &store, &ctx_for(AccessMode::ReadOnly));
         assert!(matches!(
             resp,
             WrapperResourceResponse::Error {
@@ -375,6 +418,36 @@ mod tests {
     }
 
     #[test]
+    fn checkin_rejects_when_policy_flipped_readonly_mid_run() {
+        use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
+        let policy = PolicyDocument {
+            grants: vec![AgentGrant {
+                client_instance: "dev-laptop".into(),
+                wrapper: "wrapper".into(),
+                resource: "github/token".into(),
+                mode: WrapperApprovalMode::Unlocked,
+                writable: false,
+                reason: None,
+            }],
+        };
+        let store = MemStore::with_entries_and_policy(&[], policy);
+        let canonical = ResourceBlob::empty().to_canonical_bytes().unwrap();
+        // Channel was opened with writable=true, but the live policy
+        // now says writable=false. The mid-run re-check must reject.
+        let resp = handle_checkin(canonical, &store, &ctx_for(AccessMode::ReadWrite));
+        match resp {
+            WrapperResourceResponse::Error {
+                code: ResourceErrorCode::Unauthorized,
+                message,
+            } => assert!(
+                message.contains("no longer writable"),
+                "expected mid-run rejection, got {message:?}",
+            ),
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn checkin_rejects_non_canonical_bytes() {
         let store = MemStore::with_entries(&[]);
         // Hand-crafted JSON with keys in non-canonical order — same
@@ -382,13 +455,7 @@ mod tests {
         let noncanonical =
             br#"{"schema_version":1,"libsecret":{"aliases":{},"collections":{}},"files":{},"env":{}}"#
                 .to_vec();
-        let resp = handle_checkin(
-            noncanonical,
-            &store,
-            "wrapper",
-            "github/token",
-            AccessMode::ReadWrite,
-        );
+        let resp = handle_checkin(noncanonical, &store, &ctx_for(AccessMode::ReadWrite));
         match resp {
             WrapperResourceResponse::Error {
                 code: ResourceErrorCode::InvalidRequest,
@@ -409,9 +476,7 @@ mod tests {
         let resp = handle_checkin(
             b"not json".to_vec(),
             &store,
-            "wrapper",
-            "github/token",
-            AccessMode::ReadWrite,
+            &ctx_for(AccessMode::ReadWrite),
         );
         assert!(matches!(
             resp,
