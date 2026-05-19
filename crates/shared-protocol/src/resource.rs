@@ -41,6 +41,28 @@ pub fn relative_to_prefix<'a>(id: &'a str, prefix: &str) -> Option<&'a str> {
     id.strip_prefix(prefix)?.strip_prefix('/')
 }
 
+/// Extract the resource id from a fully-qualified secret id like
+/// `<resource>/env/<VAR>`, `<resource>/files/<path>`, or
+/// `<resource>/libsecret/<id>`. Returns `None` for ids that don't
+/// match the canonical `<resource>/<slot>/...` shape — including the
+/// reserved `__underwrap/*` system ids the daemon doesn't gate on.
+pub fn resource_from_secret_id(secret_id: &str) -> Option<&str> {
+    let mut best: Option<usize> = None;
+    for slot in [ENV_SLOT, FILES_SLOT, LIBSECRET_SLOT] {
+        let needle = format!("/{slot}/");
+        if let Some(idx) = secret_id.find(&needle)
+            && best.map(|b| idx < b).unwrap_or(true)
+        {
+            best = Some(idx);
+        }
+    }
+    let cut = best?;
+    if cut == 0 {
+        return None;
+    }
+    Some(&secret_id[..cut])
+}
+
 pub fn has_traversal(path: &str) -> bool {
     path.is_empty()
         || path.starts_with('/')
@@ -97,6 +119,22 @@ mod tests {
         assert_eq!(env_prefix("github/token"), "github/token/env");
         assert_eq!(files_prefix("gws/castlabs"), "gws/castlabs/files");
         assert_eq!(libsecret_prefix("gh"), "gh/libsecret");
+    }
+
+    #[test]
+    fn resource_id_extraction_handles_all_slots() {
+        assert_eq!(
+            resource_from_secret_id("github/token/env/GH_TOKEN"),
+            Some("github/token"),
+        );
+        assert_eq!(
+            resource_from_secret_id("gws/state/files/config.yaml"),
+            Some("gws/state"),
+        );
+        assert_eq!(resource_from_secret_id("gh/libsecret/oauth"), Some("gh"),);
+        // System keys (no slot in the canonical position) → None.
+        assert_eq!(resource_from_secret_id("__underwrap/policy/document"), None,);
+        assert_eq!(resource_from_secret_id("no-slot-here"), None);
     }
 
     #[test]

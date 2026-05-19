@@ -63,7 +63,15 @@ impl Cli {
                     path.display()
                 )
             })?;
-            let credential_owner = derive_instance_owner(&cfg.catalog_instance);
+            // The instance name is the config file's stem
+            // (`/etc/underwrap/instances/work.yaml` → `work`). The
+            // NixOS module names the daemon user `underwrap-<instance>`
+            // by the same convention, so this preserves chown without
+            // needing a redundant field inside the config.
+            let credential_owner = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(derive_instance_owner);
             Ok(ResolvedTargets {
                 client_cert_out,
                 client_key_out,
@@ -91,8 +99,8 @@ impl Cli {
 /// `underwrap-<instance>` naming convention. Returns `None` if either the
 /// instance name is empty or the user/group doesn't exist on this host
 /// (e.g., generating credentials on a workstation that doesn't run the daemon).
-fn derive_instance_owner(catalog_instance: &str) -> Option<(u32, u32)> {
-    let inst = catalog_instance.trim();
+fn derive_instance_owner(instance: &str) -> Option<(u32, u32)> {
+    let inst = instance.trim();
     if inst.is_empty() {
         return None;
     }
@@ -326,9 +334,6 @@ backend:
   url: https://backend.example.internal:8443
   client_cert_file: /etc/underwrap/client-work.pem
   client_key_file: /etc/underwrap/client-work.key
-catalog_host: deepthought
-catalog_instance: work
-allowed_users: []
 wrappers: {}
 "#,
         )
@@ -358,9 +363,6 @@ wrappers: {}
             r#"
 backend:
   url: https://backend.example.internal:8443
-catalog_host: deepthought
-catalog_instance: work
-allowed_users: []
 wrappers: {}
 "#,
         )

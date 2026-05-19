@@ -30,15 +30,12 @@ import {
   type AdminSecretListResponse,
   type AdminSecretReadResponse,
   type AdminStoresListResponse,
-  type AdminWritePermissionsResponse,
   fetchStores,
   postCatalogGet,
   postSecretDelete,
   postSecretList,
   postSecretRead,
   postSecretWrite,
-  postWritePermissionsGet,
-  postWritePermissionsSet,
   type WhoamiResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -168,15 +165,6 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     queryFn: () => postCatalogGet({ store: storeName! }),
     enabled: !!storeName,
   });
-  // Per-resource wrapper-write permissions. Admin writes through the
-  // SPA are unconditional, but the toggles surface what the wrapper
-  // can do — admins flip them; operators see the state but cannot
-  // change it.
-  const permissions = useQuery<AdminWritePermissionsResponse>({
-    queryKey: ["admin", "write-permissions", storeName],
-    queryFn: () => postWritePermissionsGet({ store: storeName! }),
-    enabled: !!storeName,
-  });
   const isAdmin = !!(_principal?.authenticated && _principal.role === "admin");
   const wrapperChoices = useMemo(() => {
     const set = new Set<string>();
@@ -196,13 +184,9 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
   const grouped = useMemo(() => groupSecretIds(visibleIds), [visibleIds]);
 
   // Resources known to this store from any source: actually-stored
-  // secrets, catalog entries from wrappers that have registered, and
-  // every resource that already has a wrapper-write permission set.
-  // Listing all of them — even when they hold zero secrets — is what
-  // lets an admin pre-grant `files`/`libsecret` writes BEFORE the
-  // wrapper writes its first entry. Without this, the page would
-  // hide an empty resource and the wrapper would never be able to
-  // initialise it.
+  // secrets and catalog entries from wrappers that have registered.
+  // Listing empty resources from the catalog lets an admin seed
+  // entries BEFORE the wrapper writes its first secret.
   const allResources = useMemo<SecretResourceGroup[]>(() => {
     const byResource = new Map<string, SecretResourceGroup>();
     for (const g of grouped.resources) {
@@ -221,16 +205,10 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     for (const entry of catalog.data?.entries ?? []) {
       ensureEmpty(entry.resource);
     }
-    for (const r of Object.keys(permissions.data?.files_writable ?? {})) {
-      ensureEmpty(r);
-    }
-    for (const r of Object.keys(permissions.data?.libsecret_writable ?? {})) {
-      ensureEmpty(r);
-    }
     return [...byResource.values()].sort((a, b) =>
       a.resource.localeCompare(b.resource),
     );
-  }, [grouped.resources, catalog.data, permissions.data]);
+  }, [grouped.resources, catalog.data]);
 
   const [revealing, setRevealing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -312,14 +290,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
           {allResources.map((group) => (
             <ResourceBlock
               key={group.resource}
-              storeName={storeName}
               group={group}
-              filesWritable={
-                permissions.data?.files_writable[group.resource] ?? false
-              }
-              libsecretWritable={
-                permissions.data?.libsecret_writable[group.resource] ?? false
-              }
               isAdmin={isAdmin}
               onReveal={setRevealing}
               onEdit={setEditing}
@@ -381,17 +352,11 @@ interface RowActions {
 }
 
 function ResourceBlock({
-  storeName,
   group,
-  filesWritable,
-  libsecretWritable,
   isAdmin,
   ...actions
 }: {
-  storeName: string;
   group: SecretResourceGroup;
-  filesWritable: boolean;
-  libsecretWritable: boolean;
   isAdmin: boolean;
 } & RowActions) {
   const total = resourceCount(group);
@@ -417,33 +382,9 @@ function ResourceBlock({
         </span>
       </summary>
       <div className="space-y-3 border-t border-(--color-line)/60 px-4 py-3">
-        <SlotSection
-          slot="env"
-          entries={group.env}
-          wrapperWritable={null}
-          storeName={storeName}
-          resource={group.resource}
-          isAdmin={isAdmin}
-          {...actions}
-        />
-        <SlotSection
-          slot="files"
-          entries={group.files}
-          wrapperWritable={filesWritable}
-          storeName={storeName}
-          resource={group.resource}
-          isAdmin={isAdmin}
-          {...actions}
-        />
-        <SlotSection
-          slot="libsecret"
-          entries={group.libsecret}
-          wrapperWritable={libsecretWritable}
-          storeName={storeName}
-          resource={group.resource}
-          isAdmin={isAdmin}
-          {...actions}
-        />
+        <SlotSection slot="env" entries={group.env} isAdmin={isAdmin} {...actions} />
+        <SlotSection slot="files" entries={group.files} isAdmin={isAdmin} {...actions} />
+        <SlotSection slot="libsecret" entries={group.libsecret} isAdmin={isAdmin} {...actions} />
       </div>
     </details>
   );
@@ -452,18 +393,11 @@ function ResourceBlock({
 function SlotSection({
   slot,
   entries,
-  wrapperWritable,
-  storeName,
-  resource,
-  isAdmin,
+  isAdmin: _isAdmin,
   ...actions
 }: {
   slot: SecretSlot;
   entries: SecretEntry[];
-  /** `null` for the `env` slot — env has no wrapper-side write path. */
-  wrapperWritable: boolean | null;
-  storeName: string;
-  resource: string;
   isAdmin: boolean;
 } & RowActions) {
   return (
@@ -472,15 +406,6 @@ function SlotSection({
         <h3 className="font-mono text-xs uppercase tracking-wide text-(--color-muted)">
           {slot}
         </h3>
-        {wrapperWritable === null ? null : (
-          <WrapperWritableToggle
-            slot={slot as "files" | "libsecret"}
-            storeName={storeName}
-            resource={resource}
-            value={wrapperWritable}
-            isAdmin={isAdmin}
-          />
-        )}
       </div>
       {entries.length === 0 ? (
         <p className="pl-2 text-xs text-(--color-muted)/70">(none)</p>
@@ -505,54 +430,6 @@ function SlotSection({
         </ul>
       )}
     </section>
-  );
-}
-
-function WrapperWritableToggle({
-  slot,
-  storeName,
-  resource,
-  value,
-  isAdmin,
-}: {
-  slot: "files" | "libsecret";
-  storeName: string;
-  resource: string;
-  value: boolean;
-  isAdmin: boolean;
-}) {
-  const qc = useQueryClient();
-  const mut = useMutation({
-    mutationFn: (enabled: boolean) =>
-      postWritePermissionsSet({
-        store: storeName,
-        resource,
-        slot,
-        enabled,
-      }),
-    onSuccess: () =>
-      qc.invalidateQueries({
-        queryKey: ["admin", "write-permissions", storeName],
-      }),
-  });
-  return (
-    <label
-      className="inline-flex items-center gap-1.5 text-xs text-(--color-muted)"
-      title={
-        isAdmin
-          ? `Allow wrapper-side writes to ${slot} entries of this resource`
-          : "Only admins can change wrapper write permissions"
-      }
-    >
-      <input
-        type="checkbox"
-        data-testid={`wrapper-writable-${slot}-${resource}`}
-        checked={value}
-        disabled={!isAdmin || mut.isPending}
-        onChange={(e) => mut.mutate(e.target.checked)}
-      />
-      <span>wrapper writable</span>
-    </label>
   );
 }
 

@@ -1,30 +1,20 @@
 //! Central policy model shared by backend and frontend.
 //!
-//! Ticket 245 simplified this to the bare minimum:
+//! A grant is keyed on `(client_instance, wrapper, resource)` — the only
+//! client-side identifier the backend actually authenticates is the
+//! mTLS-bound runtime client instance id. Everything else the daemon
+//! would have self-reported (host, local user, instance name from the
+//! YAML config) is gone.
 //!
-//! - One [`AgentGrant`] row per `(wrapper, host, user)` tuple — the unit of
-//!   "agent X on host H running as user U can talk to the daemon for wrapper
-//!   W". The grant carries a [`WrapperApprovalMode`] (the same four-state mode
-//!   the wrapper UI exposed before), which decides *if* the grant is usable
-//!   right now.
-//! - Read access through an active grant is **unconditional**. Once the
-//!   mode check passes, the daemon hands the wrapper every secret listed in
-//!   its declaration — no per-resource filter, no per-secret toggling.
-//! - Per-resource write permissions for the `files` and `libsecret` slots
-//!   live in [`PolicyDocument::files_writable`] and
-//!   [`PolicyDocument::libsecret_writable`]. Absent or `false` → wrapper-side
-//!   writes to that slot/resource are denied. The `env` slot has no
-//!   wrapper-side write path, so it carries no flag. Admin-side writes
-//!   through the JSON API are not gated by this document at all — they
-//!   are always authorised by an operator's role + per-store access.
+//! Each grant carries:
 //!
-//! The previous global `writes_enabled` toggle and the older per-secret
-//! rule/grant ACL are gone. The four `WrapperApprovalMode` variants
-//! (`Locked`, `Unlocked`, `UnlockedUntil { until }`,
-//! `PerCallApproval { approval_key }`) are unchanged in behaviour and live
-//! on each grant rather than per-wrapper.
-
-use std::collections::HashMap;
+//! - a [`WrapperApprovalMode`] (`Locked`, `Unlocked`,
+//!   `UnlockedUntil`, `PerCallApproval`) deciding *if* the grant is
+//!   usable right now;
+//! - a `writable` flag controlling wrapper-side writes through the
+//!   secretsd channel for the `files` and `libsecret` slots (`env`
+//!   has no write path);
+//! - an optional operator-facing `reason` surfaced in the matrix UI.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -44,8 +34,7 @@ pub enum PolicyDecision {
     NeedsApproval { approval_key: String },
 }
 
-/// Runtime mode for one [`AgentGrant`]. Same four variants the wrapper-mode
-/// UI exposed pre-245; they now live per grant rather than per wrapper.
+/// Runtime mode for one [`AgentGrant`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -67,49 +56,41 @@ pub enum WrapperApprovalMode {
 
 /// One per-store agent grant.
 ///
-/// The tuple `(wrapper, host, user)` is the unique key; persistence layers
-/// MUST reject duplicates with the stable error code `duplicate_grant`.
+/// The tuple `(client_instance, wrapper, resource)` is the unique key;
+/// persistence layers MUST reject duplicates with the stable error code
+/// `duplicate_grant`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AgentGrant {
+    pub client_instance: String,
     pub wrapper: String,
-    pub host: String,
-    pub user: String,
+    pub resource: String,
     #[serde(default)]
     pub mode: WrapperApprovalMode,
+    /// Whether the wrapper may write to this resource through the
+    /// secretsd channel. Applies to the `files` and `libsecret` slots;
+    /// `env` has no wrapper-side write path. Defaults to `false`.
+    #[serde(default)]
+    pub writable: bool,
     /// Operator-facing free-form note. Surfaced in the matrix UI tooltip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub reason: Option<String>,
 }
 
-/// Store-backed policy document for one underwrap instance namespace.
-///
-/// `serde` accepts extra fields by default, so pre-245 policy blobs
-/// (carrying the legacy `wrappers` / `rules` arrays, or the pre-permissions
-/// `writes_enabled` flag) deserialise into the new shape with those fields
-/// silently dropped. The `old_policy_blob_with_legacy_fields_still_parses`
-/// regression test pins that contract.
+/// Store-backed policy document.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
 #[ts(export)]
 pub struct PolicyDocument {
-    /// The flat list of agent grants. One per `(wrapper, host, user)` tuple.
+    /// The flat list of agent grants. One per
+    /// `(client_instance, wrapper, resource)` tuple.
     #[serde(default)]
     pub grants: Vec<AgentGrant>,
-    /// Per-resource toggle for wrapper-side writes to the `files` slot.
-    /// Absent key or `false` → writes denied. Keyed by the resource ID
-    /// (e.g. `"github/token"`) — not by secret ID.
-    #[serde(default)]
-    pub files_writable: HashMap<String, bool>,
-    /// Per-resource toggle for wrapper-side writes to the `libsecret`
-    /// slot. Same semantics as [`PolicyDocument::files_writable`].
-    #[serde(default)]
-    pub libsecret_writable: HashMap<String, bool>,
 }
 
 /// The three secret "slots" a wrapper resource carries. The first two
-/// have a wrapper-side write path and are subject to the per-resource
-/// permission flags in [`PolicyDocument`]; `Env` is daemon→target only.
+/// have a wrapper-side write path and honour the per-grant `writable`
+/// flag; `Env` is daemon→target only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretSlot {
     Env,
@@ -118,73 +99,43 @@ pub enum SecretSlot {
 }
 
 impl PolicyDocument {
-    /// True when the wrapper is permitted to write to the `<resource>/files/*`
-    /// namespace through the secretsd channel. Defaults to `false`.
-    pub fn files_writable_for(&self, resource: &str) -> bool {
-        self.files_writable.get(resource).copied().unwrap_or(false)
+    /// Look up the grant for `(client_instance, wrapper, resource)`.
+    pub fn find_grant(
+        &self,
+        client_instance: &str,
+        wrapper: &str,
+        resource: &str,
+    ) -> Option<&AgentGrant> {
+        self.grants.iter().find(|g| {
+            g.client_instance == client_instance && g.wrapper == wrapper && g.resource == resource
+        })
     }
 
-    /// True when the wrapper is permitted to write to the
-    /// `<resource>/libsecret/*` namespace. Defaults to `false`.
-    pub fn libsecret_writable_for(&self, resource: &str) -> bool {
-        self.libsecret_writable
-            .get(resource)
-            .copied()
-            .unwrap_or(false)
-    }
-
-    /// Look up the grant for `(wrapper, host, user)`.
-    pub fn find_grant(&self, wrapper: &str, host: &str, user: &str) -> Option<&AgentGrant> {
-        self.grants
-            .iter()
-            .find(|g| g.wrapper == wrapper && g.host == host && g.user == user)
-    }
-
-    /// Evaluate the daemon's gate for a given principal.
+    /// Evaluate the daemon's gate for a given grant tuple.
     ///
-    /// - `None` → no matching grant exists. The caller should respond with
-    ///   the existing "ungranted" error path (same as 404 in the admin
-    ///   surface).
+    /// - `None` → no matching grant exists.
     /// - `Some(Allow)` → caller may proceed.
     /// - `Some(Deny { reason })` → caller is rejected.
     /// - `Some(NeedsApproval { approval_key })` → caller must run the
     ///   per-call ssh-agent challenge flow.
     pub fn evaluate_grant_at(
         &self,
+        client_instance: &str,
         wrapper: &str,
-        host: &str,
-        user: &str,
+        resource: &str,
         now_epoch: u64,
     ) -> Option<PolicyDecision> {
-        let grant = self.find_grant(wrapper, host, user)?;
-        Some(match grant.mode.clone() {
-            WrapperApprovalMode::Locked => PolicyDecision::Deny {
-                reason: grant
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| format!("grant for '{wrapper}' is locked")),
-            },
-            WrapperApprovalMode::Unlocked => PolicyDecision::Allow,
-            WrapperApprovalMode::UnlockedUntil { until_epoch } => {
-                if now_epoch > until_epoch {
-                    PolicyDecision::Deny {
-                        reason: format!(
-                            "grant for '{wrapper}' expired at epoch {until_epoch}, now {now_epoch}"
-                        ),
-                    }
-                } else {
-                    PolicyDecision::Allow
-                }
-            }
-            WrapperApprovalMode::PerCallApproval { approval_key } => {
-                PolicyDecision::NeedsApproval { approval_key }
-            }
-        })
+        let grant = self.find_grant(client_instance, wrapper, resource)?;
+        Some(decide(grant, now_epoch))
     }
 
-    pub fn evaluate_grant(&self, wrapper: &str, host: &str, user: &str) -> Option<PolicyDecision> {
-        let now_epoch = now_epoch_secs();
-        self.evaluate_grant_at(wrapper, host, user, now_epoch)
+    pub fn evaluate_grant(
+        &self,
+        client_instance: &str,
+        wrapper: &str,
+        resource: &str,
+    ) -> Option<PolicyDecision> {
+        self.evaluate_grant_at(client_instance, wrapper, resource, now_epoch_secs())
     }
 
     /// After the caller has satisfied a per-call approval round, the mode
@@ -193,12 +144,48 @@ impl PolicyDocument {
     /// the approval round and the second pass.
     pub fn evaluate_grant_after_approval(
         &self,
+        client_instance: &str,
         wrapper: &str,
-        host: &str,
-        user: &str,
+        resource: &str,
     ) -> Option<PolicyDecision> {
-        self.find_grant(wrapper, host, user)
+        self.find_grant(client_instance, wrapper, resource)
             .map(|_| PolicyDecision::Allow)
+    }
+
+    /// True when the wrapper is permitted to write to `resource` (any
+    /// slot with a wrapper-side write path). Defaults to `false`
+    /// (no grant → not writable).
+    pub fn writable_for(&self, client_instance: &str, wrapper: &str, resource: &str) -> bool {
+        self.find_grant(client_instance, wrapper, resource)
+            .map(|g| g.writable)
+            .unwrap_or(false)
+    }
+}
+
+fn decide(grant: &AgentGrant, now_epoch: u64) -> PolicyDecision {
+    match grant.mode.clone() {
+        WrapperApprovalMode::Locked => PolicyDecision::Deny {
+            reason: grant
+                .reason
+                .clone()
+                .unwrap_or_else(|| format!("grant for '{}' is locked", grant.wrapper)),
+        },
+        WrapperApprovalMode::Unlocked => PolicyDecision::Allow,
+        WrapperApprovalMode::UnlockedUntil { until_epoch } => {
+            if now_epoch > until_epoch {
+                PolicyDecision::Deny {
+                    reason: format!(
+                        "grant for '{}'/'{}' expired at epoch {until_epoch}, now {now_epoch}",
+                        grant.wrapper, grant.resource
+                    ),
+                }
+            } else {
+                PolicyDecision::Allow
+            }
+        }
+        WrapperApprovalMode::PerCallApproval { approval_key } => {
+            PolicyDecision::NeedsApproval { approval_key }
+        }
     }
 }
 
@@ -216,24 +203,20 @@ mod tests {
     fn doc_with_grant(mode: WrapperApprovalMode) -> PolicyDocument {
         PolicyDocument {
             grants: vec![AgentGrant {
+                client_instance: "dev-laptop".to_string(),
                 wrapper: "gh-comment".to_string(),
-                host: "deepthought".to_string(),
-                user: "robert".to_string(),
+                resource: "github/token".to_string(),
                 mode,
+                writable: false,
                 reason: None,
             }],
-            files_writable: HashMap::new(),
-            libsecret_writable: HashMap::new(),
         }
     }
 
     #[test]
     fn missing_grant_returns_none() {
         let doc = PolicyDocument::default();
-        assert!(
-            doc.evaluate_grant_at("anything", "host", "user", 100)
-                .is_none()
-        );
+        assert!(doc.evaluate_grant_at("c", "w", "r", 100).is_none());
     }
 
     #[test]
@@ -241,7 +224,7 @@ mod tests {
         let mut doc = doc_with_grant(WrapperApprovalMode::Locked);
         doc.grants[0].reason = Some("revoked".into());
         match doc
-            .evaluate_grant_at("gh-comment", "deepthought", "robert", 100)
+            .evaluate_grant_at("dev-laptop", "gh-comment", "github/token", 100)
             .unwrap()
         {
             PolicyDecision::Deny { reason } => assert_eq!(reason, "revoked"),
@@ -253,7 +236,7 @@ mod tests {
     fn unlocked_grant_allows() {
         let doc = doc_with_grant(WrapperApprovalMode::Unlocked);
         assert_eq!(
-            doc.evaluate_grant_at("gh-comment", "deepthought", "robert", 100)
+            doc.evaluate_grant_at("dev-laptop", "gh-comment", "github/token", 100)
                 .unwrap(),
             PolicyDecision::Allow,
         );
@@ -263,12 +246,12 @@ mod tests {
     fn unlocked_until_grant_allows_then_denies_lazily() {
         let doc = doc_with_grant(WrapperApprovalMode::UnlockedUntil { until_epoch: 200 });
         assert_eq!(
-            doc.evaluate_grant_at("gh-comment", "deepthought", "robert", 199)
+            doc.evaluate_grant_at("dev-laptop", "gh-comment", "github/token", 199)
                 .unwrap(),
             PolicyDecision::Allow,
         );
         assert!(matches!(
-            doc.evaluate_grant_at("gh-comment", "deepthought", "robert", 201)
+            doc.evaluate_grant_at("dev-laptop", "gh-comment", "github/token", 201)
                 .unwrap(),
             PolicyDecision::Deny { .. }
         ));
@@ -280,7 +263,7 @@ mod tests {
             approval_key: "ssh-ed25519 AAAA".into(),
         });
         match doc
-            .evaluate_grant_at("gh-comment", "deepthought", "robert", 100)
+            .evaluate_grant_at("dev-laptop", "gh-comment", "github/token", 100)
             .unwrap()
         {
             PolicyDecision::NeedsApproval { approval_key } => {
@@ -296,17 +279,30 @@ mod tests {
             approval_key: "k".into(),
         });
         assert_eq!(
-            doc.evaluate_grant_after_approval("gh-comment", "deepthought", "robert")
+            doc.evaluate_grant_after_approval("dev-laptop", "gh-comment", "github/token")
                 .unwrap(),
             PolicyDecision::Allow,
         );
-        // ...and returns None if the grant is gone.
         let empty = PolicyDocument::default();
         assert!(
             empty
-                .evaluate_grant_after_approval("gh-comment", "deepthought", "robert")
+                .evaluate_grant_after_approval("dev-laptop", "gh-comment", "github/token")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn writable_defaults_to_false_without_grant() {
+        let doc = PolicyDocument::default();
+        assert!(!doc.writable_for("dev-laptop", "gh", "r"));
+    }
+
+    #[test]
+    fn writable_honours_per_grant_flag() {
+        let mut doc = doc_with_grant(WrapperApprovalMode::Unlocked);
+        assert!(!doc.writable_for("dev-laptop", "gh-comment", "github/token"));
+        doc.grants[0].writable = true;
+        assert!(doc.writable_for("dev-laptop", "gh-comment", "github/token"));
     }
 
     #[test]
@@ -314,77 +310,35 @@ mod tests {
         let doc = PolicyDocument {
             grants: vec![
                 AgentGrant {
-                    wrapper: "a".into(),
-                    host: "h".into(),
-                    user: "u".into(),
+                    client_instance: "a".into(),
+                    wrapper: "w1".into(),
+                    resource: "r1".into(),
                     mode: WrapperApprovalMode::Locked,
+                    writable: false,
                     reason: Some("r".into()),
                 },
                 AgentGrant {
-                    wrapper: "b".into(),
-                    host: "h".into(),
-                    user: "u".into(),
+                    client_instance: "a".into(),
+                    wrapper: "w2".into(),
+                    resource: "r2".into(),
                     mode: WrapperApprovalMode::UnlockedUntil { until_epoch: 42 },
+                    writable: true,
                     reason: None,
                 },
                 AgentGrant {
-                    wrapper: "c".into(),
-                    host: "h".into(),
-                    user: "u".into(),
+                    client_instance: "b".into(),
+                    wrapper: "w3".into(),
+                    resource: "r3".into(),
                     mode: WrapperApprovalMode::PerCallApproval {
                         approval_key: "ssh-ed25519 AAAA".into(),
                     },
+                    writable: false,
                     reason: None,
                 },
             ],
-            files_writable: HashMap::from([("a".to_string(), true)]),
-            libsecret_writable: HashMap::from([("c".to_string(), true)]),
         };
         let json = serde_json::to_string(&doc).unwrap();
         let parsed: PolicyDocument = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.grants, doc.grants);
-        assert_eq!(parsed.files_writable, doc.files_writable);
-        assert_eq!(parsed.libsecret_writable, doc.libsecret_writable);
-    }
-
-    #[test]
-    fn old_policy_blob_with_legacy_fields_still_parses() {
-        // A pre-245 policy document persisted as JSON: contains the
-        // dropped `wrappers`, `rules`, and `writes_enabled` fields.
-        // The new deserialiser must accept it (treat as empty / off)
-        // so an upgrade doesn't refuse to boot against a still-old
-        // store blob.
-        let legacy = r#"{
-            "wrappers": [
-                {"wrapper":"old","mode":{"kind":"locked"},"reason":"x"}
-            ],
-            "rules": [
-                {"id":"r","wrapper":"w","resource":"x","operation":"y","effect":"allow"}
-            ],
-            "writes_enabled": true,
-            "grants": []
-        }"#;
-        let parsed: PolicyDocument = serde_json::from_str(legacy).unwrap();
-        assert!(parsed.grants.is_empty());
-        assert!(parsed.files_writable.is_empty());
-        assert!(parsed.libsecret_writable.is_empty());
-    }
-
-    #[test]
-    fn per_resource_write_flags_default_to_false() {
-        let doc = PolicyDocument::default();
-        assert!(!doc.files_writable_for("any"));
-        assert!(!doc.libsecret_writable_for("any"));
-    }
-
-    #[test]
-    fn per_resource_write_flags_honour_explicit_settings() {
-        let mut doc = PolicyDocument::default();
-        doc.files_writable.insert("gws/state".into(), true);
-        doc.libsecret_writable.insert("github/gh".into(), true);
-        assert!(doc.files_writable_for("gws/state"));
-        assert!(!doc.files_writable_for("github/gh"));
-        assert!(doc.libsecret_writable_for("github/gh"));
-        assert!(!doc.libsecret_writable_for("gws/state"));
     }
 }

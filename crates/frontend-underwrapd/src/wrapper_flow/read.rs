@@ -4,7 +4,6 @@ use tracing::{error, warn};
 
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::message::{ErrorCode, SecretBytes, WrapperResponse};
-use underwrap_protocol::policy::PolicyDecision;
 use underwrap_protocol::resource::{
     env_prefix, env_resource, files_prefix, files_resource, libsecret_prefix, libsecret_resource,
     relative_to_prefix, validate_env_name,
@@ -12,13 +11,12 @@ use underwrap_protocol::resource::{
 
 use crate::audit;
 use crate::policy::{
-    evaluate_grant_after_approval_with, evaluate_grant_with, files_writable_for,
-    libsecret_writable_for, load_policy_document,
+    InvocationDecision, evaluate_invocation, evaluate_invocation_after_approval,
+    load_policy_document, writable_for,
 };
 use crate::server::State;
-use crate::startup::username_for_uid;
 use crate::wrapper_bindings::{
-    wrapper_env_resources, wrapper_file_bindings, wrapper_libsecret_resource,
+    wrapper_all_resources, wrapper_env_resources, wrapper_file_bindings, wrapper_libsecret_resource,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -33,10 +31,10 @@ pub(super) struct ReadResult {
     pub libsecret_access: Option<(String, AccessMode)>,
 }
 
-/// Run the post-gate read: re-check the agent grant in the same
-/// policy document the mode gate consulted, then fetch every resource
-/// the wrapper declares. When `approval_satisfied` is true the mode
-/// check is bypassed; the grant must still exist.
+/// Re-check every grant in the same policy document the mode gate
+/// consulted, then fetch every resource the wrapper declares. When
+/// `approval_satisfied` is true the mode check is bypassed; the grants
+/// must still all exist.
 pub(super) fn process_read_for(
     wrapper_name: &str,
     scope: Option<&str>,
@@ -69,35 +67,35 @@ pub(super) fn process_read_for(
         }
     };
 
-    // Resolve the calling principal. The daemon trusts SO_PEERCRED for
-    // the uid; we look up the corresponding username for grant
-    // matching. An unknown uid → reject (no grant covers a numeric
-    // ghost user).
-    let Some(user) = username_for_uid(peer_uid) else {
-        let reason = format!("no passwd entry for peer uid {peer_uid}");
-        audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
-        return error_result(ErrorCode::Unauthorized, reason);
-    };
-    let host = state.config.catalog_host.as_str();
-
     let logical_name = wrapper_def
         .logical_name
         .clone()
         .unwrap_or_else(|| wrapper_name.to_string());
+    let resources = wrapper_all_resources(wrapper_def);
 
     let decision = if approval_satisfied {
-        evaluate_grant_after_approval_with(&policy, &logical_name, host, &user)
+        evaluate_invocation_after_approval(
+            policy.as_ref(),
+            &state.client_instance,
+            &logical_name,
+            &resources,
+        )
     } else {
-        evaluate_grant_with(&policy, &logical_name, host, &user)
+        evaluate_invocation(
+            policy.as_ref(),
+            &state.client_instance,
+            &logical_name,
+            &resources,
+        )
     };
 
     match decision {
-        Some(PolicyDecision::Allow) => {}
-        Some(PolicyDecision::Deny { reason }) => {
+        InvocationDecision::Allow => {}
+        InvocationDecision::Deny { reason } => {
             audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
             return error_result(ErrorCode::Unauthorized, reason);
         }
-        Some(PolicyDecision::NeedsApproval { .. }) => {
+        InvocationDecision::NeedsApproval { .. } => {
             // The mode gate runs ahead of process_read_for, so reaching
             // this arm means an approval round was expected but wasn't
             // satisfied — treat it as denial.
@@ -105,23 +103,11 @@ pub(super) fn process_read_for(
             audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
             return error_result(ErrorCode::Unauthorized, reason);
         }
-        None => {
-            // No grant for this (wrapper, host, user) tuple. We return
-            // the same generic ungranted message as the legacy path so
-            // operators can't probe the grant catalogue.
-            let reason =
-                format!("no grant for wrapper '{logical_name}' on {host} as user '{user}'");
-            audit::read_denied(wrapper_name, &reason, Some(peer_uid), scope);
-            return error_result(ErrorCode::Unauthorized, reason);
-        }
     }
 
-    // The grant mode passed. The wrapper now sees whatever resources
-    // its declaration lists — read access through an active grant is
-    // unconditional (ticket 246). Write access for `files` and
-    // `libsecret` slots is decided per-resource by the
-    // `files_writable` / `libsecret_writable` maps on the policy
-    // document; absent or `false` → read-only.
+    // The grants pass. Each resource's per-grant `writable` flag
+    // decides whether the wrapper-side mutable slot (`files` /
+    // `libsecret`) is opened for writes.
     let mut prefixes = Vec::new();
     let mut env_resources = Vec::new();
     for resource_id in wrapper_env_resources(wrapper_def) {
@@ -136,7 +122,12 @@ pub(super) fn process_read_for(
         let _resource = files_resource(&projection.resource_id);
         audit::read_granted(wrapper_name, &projection.resource_id, Some(peer_uid), scope);
         prefixes.push(files_prefix(&projection.resource_id));
-        let access = if files_writable_for(&policy, &projection.resource_id) {
+        let access = if writable_for(
+            policy.as_ref(),
+            &state.client_instance,
+            &logical_name,
+            &projection.resource_id,
+        ) {
             AccessMode::ReadWrite
         } else {
             AccessMode::ReadOnly
@@ -149,7 +140,12 @@ pub(super) fn process_read_for(
         let _resource = libsecret_resource(resource_id);
         audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
         prefixes.push(libsecret_prefix(resource_id));
-        let access = if libsecret_writable_for(&policy, resource_id) {
+        let access = if writable_for(
+            policy.as_ref(),
+            &state.client_instance,
+            &logical_name,
+            resource_id,
+        ) {
             AccessMode::ReadWrite
         } else {
             AccessMode::ReadOnly
@@ -235,9 +231,6 @@ mod tests {
         State {
             config: underwrap_protocol::config::DaemonConfig {
                 backend: BackendServiceConfig::default(),
-                catalog_host: "test-host".to_string(),
-                catalog_instance: "test-instance".to_string(),
-                allowed_users: Vec::new(),
                 wrappers: HashMap::from([(
                     "gh-authorized".to_string(),
                     WrapperDef {
@@ -270,7 +263,7 @@ mod tests {
             },
             store: Some(store),
             enrollment_url: None,
-            allowed_user_uids: std::collections::HashSet::new(),
+            client_instance: "dev-laptop".to_string(),
             pending_approvals: approval::PendingApprovals::new(),
         }
     }
@@ -281,8 +274,8 @@ mod tests {
 
     #[test]
     fn process_read_for_returns_env_and_directory_bindings_when_no_policy() {
-        // Empty document = fresh store = permissive (matches the
-        // pre-245 contract on a brand-new install).
+        // Empty document = fresh store = permissive (first-launch
+        // greenfield default).
         let store: Arc<dyn underwrap_store::StorageBackend> =
             Arc::new(MemStore::with_entries(&[(
                 "github/token/env/GH_TOKEN",
@@ -305,9 +298,19 @@ mod tests {
         let store: Arc<dyn underwrap_store::StorageBackend> =
             Arc::new(MemStore::with_entries_and_policy(
                 &[("github/token/env/GH_TOKEN", b"ghp_test")],
-                PolicyDocument::default(),
+                PolicyDocument {
+                    grants: vec![AgentGrant {
+                        client_instance: "dev-laptop".into(),
+                        wrapper: "gh-authorized".into(),
+                        resource: "github/token".into(),
+                        mode: WrapperApprovalMode::Unlocked,
+                        writable: false,
+                        reason: None,
+                    }],
+                },
             ));
         let state = state_with_store(store);
+        // Missing grant for "gws/state" → invocation denied.
         let result = process_read_for("gh-authorized", None, &state, current_uid(), false);
         match result.response {
             WrapperResponse::Error { code, message } => {
@@ -319,20 +322,29 @@ mod tests {
     }
 
     #[test]
-    fn process_read_for_allows_when_grant_unlocked() {
-        let user = username_for_uid(current_uid()).expect("uid resolves to username");
+    fn process_read_for_allows_when_all_grants_unlocked() {
         let store: Arc<dyn underwrap_store::StorageBackend> =
             Arc::new(MemStore::with_entries_and_policy(
                 &[("github/token/env/GH_TOKEN", b"ghp_test")],
                 PolicyDocument {
-                    grants: vec![AgentGrant {
-                        wrapper: "gh-authorized".into(),
-                        host: "test-host".into(),
-                        user: user.clone(),
-                        mode: WrapperApprovalMode::Unlocked,
-                        reason: None,
-                    }],
-                    ..Default::default()
+                    grants: vec![
+                        AgentGrant {
+                            client_instance: "dev-laptop".into(),
+                            wrapper: "gh-authorized".into(),
+                            resource: "github/token".into(),
+                            mode: WrapperApprovalMode::Unlocked,
+                            writable: false,
+                            reason: None,
+                        },
+                        AgentGrant {
+                            client_instance: "dev-laptop".into(),
+                            wrapper: "gh-authorized".into(),
+                            resource: "gws/state".into(),
+                            mode: WrapperApprovalMode::Unlocked,
+                            writable: false,
+                            reason: None,
+                        },
+                    ],
                 },
             ));
         let state = state_with_store(store);

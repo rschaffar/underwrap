@@ -55,9 +55,9 @@ def admin_write_secret(url, store, wrapper, secret_id, value):
     )
 
 
-def admin_upsert_grant(url, store, wrapper, host, user, mode, reason=None):
-    """Upsert an agent grant for a `(wrapper, host, user)` tuple
-    (ticket 246).
+def admin_upsert_grant(url, store, client_instance, wrapper, resource, mode, *, writable=False, reason=None):
+    """Upsert an agent grant for a `(client_instance, wrapper, resource)`
+    tuple.
 
     `mode` is a dict that serializes WrapperApprovalMode, e.g.:
       {"kind": "locked"}
@@ -66,10 +66,11 @@ def admin_upsert_grant(url, store, wrapper, host, user, mode, reason=None):
       {"kind": "per-call-approval", "approval_key": "ssh-ed25519 ..."}
     """
     grant = {
+        "client_instance": client_instance,
         "wrapper": wrapper,
-        "host": host,
-        "user": user,
+        "resource": resource,
         "mode": mode,
+        "writable": writable,
     }
     if reason is not None:
         grant["reason"] = reason
@@ -80,43 +81,99 @@ def admin_upsert_grant(url, store, wrapper, host, user, mode, reason=None):
     )
 
 
-def admin_delete_grant(url, store, wrapper, host, user):
+def admin_delete_grant(url, store, client_instance, wrapper, resource):
     return admin_api(
         url,
         "/v1/admin/grants/delete",
-        {"store": store, "wrapper": wrapper, "host": host, "user": user},
+        {
+            "store": store,
+            "client_instance": client_instance,
+            "wrapper": wrapper,
+            "resource": resource,
+        },
     )
 
 
-def admin_set_writes_enabled(url, store, enabled):
-    return admin_api(
-        url,
-        "/v1/admin/policy/writes-enabled/set",
-        {"store": store, "enabled": enabled},
+# Wrapper -> resource id mapping for the local instance. Each test
+# wrapper has a single declared resource; the grant key includes the
+# resource so the daemon can distinguish per-resource policy.
+LOCAL_WRAPPER_RESOURCES = {
+    "test-echo": "test/token",
+    "test-echo2": "test/other",
+    "test-locked": "test/locked-tok",
+    "test-sleep": "test/dumpable-tok",
+    "test-crash": "test/crash-tok",
+    "test-libsecret": "test/libsecret-store",
+    "test-caps": "test/caps-tok",
+    "test-ns-pids": "test/ns-pids-store",
+    "test-keyring-probe": "test/libsecret-store",
+    "test-dir-write": "test/dir-a",
+    "test-dir-read": "test/dir-a",
+    "test-dir-readonly-write": "test/dir-a",
+    "test-dir-sleep": "test/dir-a",
+    "test-dir-symlink": "test/dir-a",
+}
+
+# The directory wrappers map a second resource (`test/dir-b`); after
+# seeding the primary grant we also seed the secondary one so reads
+# of both mounted directories are authorized.
+LOCAL_WRAPPER_EXTRA_RESOURCES = {
+    "test-dir-write": ["test/dir-b"],
+    "test-dir-read": ["test/dir-b"],
+    "test-dir-readonly-write": ["test/dir-b"],
+    "test-dir-sleep": ["test/dir-b"],
+}
+
+REMOTE_WRAPPER_RESOURCES = {
+    "remote-echo": "remote/token",
+}
+
+# Resolved at boot from `GET /v1/admin/client-instances`. The backend
+# assigns runtime-client ids dynamically (see
+# `crates/backend-backendd/src/runtime_clients.rs`), so we look them
+# up by their `current_store_name`.
+LOCAL_CLIENT_INSTANCE = None
+REMOTE_CLIENT_INSTANCE = None
+
+
+def resolve_client_instance(url, store_name):
+    """Find the runtime client instance id whose current store maps to
+    `store_name`. The backend exposes this list at
+    `GET /v1/admin/client-instances`."""
+    items = admin_api(url, "/v1/admin/client-instances", None, method="GET")["items"]
+    for item in items:
+        if item["current_store_name"] == store_name:
+            return item["id"]
+    raise AssertionError(
+        f"no client instance found for store {store_name!r} at {url}: {items}"
     )
 
 
-# The test fixture's default `(host, user)` pair for every wrapper
-# invocation run as `testuser` against the local frontend. The
-# `machine` host comes from underwrapd's `catalog_host`, which the
-# frontend module derives from `networking.hostName` (defaults to
-# "machine" in the VM).
-GRANT_HOST = "machine"
-GRANT_USER = "testuser"
-
-
-def grant_local_unlocked(wrapper):
-    """Shortcut: grant `(wrapper, machine, testuser)` with mode
+def grant_local_unlocked(wrapper, resource=None):
+    """Shortcut: grant `(local-client, wrapper, resource)` with mode
     Unlocked. Most VM-test scenarios just want the wrapper to work
     end-to-end without ceremony."""
+    if resource is None:
+        resource = LOCAL_WRAPPER_RESOURCES[wrapper]
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
+        LOCAL_CLIENT_INSTANCE,
         wrapper,
-        GRANT_HOST,
-        GRANT_USER,
+        resource,
         {"kind": "unlocked"},
+        writable=True,
     )
+    for extra in LOCAL_WRAPPER_EXTRA_RESOURCES.get(wrapper, []):
+        admin_upsert_grant(
+            ADMIN_LOCAL,
+            "local",
+            LOCAL_CLIENT_INSTANCE,
+            wrapper,
+            extra,
+            {"kind": "unlocked"},
+            writable=True,
+        )
 
 
 def boot_and_service_checks():
@@ -144,28 +201,36 @@ def boot_and_service_checks():
     # Declarative provenance is surfaced so the SPA can refuse to mutate.
     assert all(s["source"] == "declarative" for s in local_stores + remote_stores)
 
-    # Frontends auto-register catalog rows on daemon startup. The backend must
-    # see instance separately from wrapper so the UI matrix does not need to
-    # infer it from a prefixed wrapper string.
+    # Resolve the runtime client instance ids for both daemons. The
+    # backend assigns these dynamically when the client is enrolled,
+    # so we look them up by their `current_store_name` rather than
+    # hard-coding ids in the VM fixture.
+    global LOCAL_CLIENT_INSTANCE, REMOTE_CLIENT_INSTANCE
+    LOCAL_CLIENT_INSTANCE = resolve_client_instance(ADMIN_LOCAL, "local")
+    REMOTE_CLIENT_INSTANCE = resolve_client_instance(ADMIN_REMOTE, "remote")
+    machine.log(
+        f"resolved client instances: local={LOCAL_CLIENT_INSTANCE} "
+        f"remote={REMOTE_CLIENT_INSTANCE}"
+    )
+
+    # Frontends auto-register catalog rows on daemon startup. The backend
+    # stamps each row with the mTLS-authenticated `client_instance` id so
+    # the admin UI can group wrapper/resource pairs by enrolled client.
     local_catalog = admin_api(ADMIN_LOCAL, "/v1/admin/catalog/get", {"store": "local"})["entries"]
     remote_catalog = admin_api(ADMIN_REMOTE, "/v1/admin/catalog/get", {"store": "remote"})["entries"]
     assert any(
-        entry["host"] == "machine"
-        and entry["user"] == "testuser"
-        and entry["instance"] == "local"
+        entry["client_instance"] == LOCAL_CLIENT_INSTANCE
         and entry["wrapper"] == "test-echo"
         and entry["resource"] == "test/token"
         for entry in local_catalog
-    ), f"missing local catalog row with separate instance/wrapper fields: {local_catalog}"
+    ), f"missing local catalog row with client_instance/wrapper/resource fields: {local_catalog}"
     assert any(
-        entry["host"] == "machine"
-        and entry["user"] == "testuser"
-        and entry["instance"] == "tunnel"
+        entry["client_instance"] == REMOTE_CLIENT_INSTANCE
         and entry["wrapper"] == "remote-echo"
         and entry["resource"] == "remote/token"
         for entry in remote_catalog
-    ), f"missing remote catalog row with separate instance/wrapper fields: {remote_catalog}"
-    machine.log("PASS: frontend catalog rows register host/user/instance/wrapper/resource separately")
+    ), f"missing remote catalog row with client_instance/wrapper/resource fields: {remote_catalog}"
+    machine.log("PASS: frontend catalog rows register client_instance/wrapper/resource separately")
 
     # services.underwrap.hardenTargetHost defaults true; the module pins
     # kernel.yama.ptrace_scope=2 so a same-UID caller cannot inspect the
@@ -211,29 +276,28 @@ def local_store_and_basic_ops():
     # LOCAL INSTANCE: store secrets + basic operations
     # ============================================================
 
-    # Ticket 247: every admin write gates on the per-store
-    # `writes_enabled` toggle. Flip it on so the seed writes below
-    # land.
-    admin_set_writes_enabled(ADMIN_LOCAL, "local", True)
+    # Admin writes through `/v1/admin/secret/write` are unconditional
+    # in the new grant model; the global `writes_enabled` toggle is
+    # gone and per-grant `writable` controls only wrapper-side writes.
 
-    # Ticket 246: every wrapper invocation needs a grant for
-    # `(wrapper, host, user)`. Pre-seed Unlocked grants for the full
-    # test wrapper catalog so the subsequent test sections can drive
-    # the wrappers without per-test boilerplate. Tests that exercise
-    # the *absence* of a grant (or `Locked` / `UnlockedUntil`) delete
-    # or replace these as they go.
-    for wrapper in [
-        "test-echo",
-        "test-echo2",
-        "test-locked",
-        "test-sleep",
-        "test-crash",
-        "test-libsecret",
-        "test-caps",
-        "test-ns-pids",
-        "test-keyring-probe",
+    # Every wrapper invocation needs a grant for
+    # `(client_instance, wrapper, resource)`. Pre-seed Unlocked grants
+    # for the full test wrapper catalog so the subsequent test sections
+    # can drive the wrappers without per-test boilerplate. Tests that
+    # exercise the *absence* of a grant (or `Locked` / `UnlockedUntil`)
+    # delete or replace these as they go.
+    for wrapper, resource in [
+        ("test-echo", "test/token"),
+        ("test-echo2", "test/other"),
+        ("test-locked", "test/locked-tok"),
+        ("test-sleep", "test/dumpable-tok"),
+        ("test-crash", "test/crash-tok"),
+        ("test-libsecret", "test/libsecret-store"),
+        ("test-caps", "test/caps-tok"),
+        ("test-ns-pids", "test/ns-pids-store"),
+        ("test-keyring-probe", "test/libsecret-store"),
     ]:
-        grant_local_unlocked(wrapper)
+        grant_local_unlocked(wrapper, resource)
 
     admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token/env/MY_TOKEN", "ghp_testvmtoken")
     admin_write_secret(ADMIN_LOCAL, "local", "test-echo2", "test/other/env/OTHER_SECRET", "other_secret_val")
@@ -751,10 +815,10 @@ def local_directory_credentials():
     # LOCAL INSTANCE: directory credentials
     # ============================================================
 
-    # Post-245 grant model: one Unlocked grant per directory wrapper for
-    # `(wrapper, machine, testuser)`. Read access is then unconditional.
-    # Write access depends on the global `writes_enabled` toggle, which
-    # this section needs flipped on for the seed step.
+    # New grant model: one Unlocked grant per `(client_instance,
+    # wrapper, resource)` tuple. Read access is then unconditional;
+    # wrapper-side writes are gated by the per-grant `writable: bool`
+    # flag (which `grant_local_unlocked` sets true).
     for wrapper in [
         "test-dir-write",
         "test-dir-read",
@@ -763,7 +827,6 @@ def local_directory_credentials():
         "test-dir-symlink",
     ]:
         grant_local_unlocked(wrapper)
-    admin_set_writes_enabled(ADMIN_LOCAL, "local", True)
 
     # Seed two directory credentials through a read-write wrapper.
     machine.succeed(su("/run/wrappers/bin/local-test-dir-write seed"))
@@ -777,11 +840,9 @@ def local_directory_credentials():
 
     # Pre-245 the daemon supported per-wrapper write rules so the
     # `test-dir-readonly-write` wrapper could be denied mutation
-    # while sharing a target with `test-dir-write`. The grant-model
-    # rewrite collapses that into the per-store `writes_enabled`
-    # flag, so the two wrappers are no longer distinguishable at
-    # the daemon layer. The next scenario instead asserts that
-    # toggling `writes_enabled` off rejects mutations across both.
+    # while sharing a target with `test-dir-write`. The new grant
+    # model expresses this via the per-grant `writable: bool` flag,
+    # which is decided per `(client_instance, wrapper, resource)`.
 
     # Update content and delete one file through the read-write wrapper.
     machine.succeed(su("/run/wrappers/bin/local-test-dir-write update"))
@@ -882,18 +943,18 @@ def remote_service_lifecycle():
     # REMOTE INSTANCE: backend service lifecycle
     # ============================================================
 
-    # Flip writes on so the admin seed and grant land.
-    admin_set_writes_enabled(ADMIN_REMOTE, "remote", True)
-    # Both daemons share the VM's hostname for their catalog_host;
-    # the wrapper is `remote-echo` (logical name) and the user is
-    # `testuser`.
+    # Seed an Unlocked grant for the remote daemon's
+    # `(client_instance, wrapper, resource)` tuple. The remote daemon
+    # has a single wrapper (`remote-echo`) declaring the
+    # `remote/token` resource.
     admin_upsert_grant(
         ADMIN_REMOTE,
         "remote",
+        REMOTE_CLIENT_INSTANCE,
         "remote-echo",
-        GRANT_HOST,
-        GRANT_USER,
+        "remote/token",
         {"kind": "unlocked"},
+        writable=True,
     )
 
     # Store secret in backend through the admin API.
@@ -925,12 +986,17 @@ def remote_service_lifecycle():
 
 def local_backend_managed_grants():
     # ============================================================
-    # LOCAL INSTANCE: backend-managed grants (ticket 245+246 model)
+    # LOCAL INSTANCE: backend-managed grants
     # ============================================================
+    #
+    # Grants are now keyed on `(client_instance, wrapper, resource)`.
+    # This section exercises the full lifecycle (no grant → denied,
+    # Unlocked → allowed, deleted → denied, UnlockedUntil with a past
+    # deadline → denied).
 
     # Remove the seed grant from the earlier section so we can
     # exercise the "no grant" path.
-    admin_delete_grant(ADMIN_LOCAL, "local", "test-echo2", GRANT_HOST, GRANT_USER)
+    admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
     machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
     machine.log("PASS: wrapper with no agent grant is denied")
 
@@ -938,9 +1004,9 @@ def local_backend_managed_grants():
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
+        LOCAL_CLIENT_INSTANCE,
         "test-echo2",
-        GRANT_HOST,
-        GRANT_USER,
+        "test/other",
         {"kind": "unlocked"},
         reason="vm test allow",
     )
@@ -949,7 +1015,7 @@ def local_backend_managed_grants():
     machine.log("PASS: active agent grant allows wrapper action")
 
     # Deleting the grant revokes future reads.
-    admin_delete_grant(ADMIN_LOCAL, "local", "test-echo2", GRANT_HOST, GRANT_USER)
+    admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
     machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
     machine.log("PASS: deleting agent grant revokes future wrapper action")
 
@@ -959,9 +1025,9 @@ def local_backend_managed_grants():
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
+        LOCAL_CLIENT_INSTANCE,
         "test-echo2",
-        GRANT_HOST,
-        GRANT_USER,
+        "test/other",
         {"kind": "unlocked-until", "until_epoch": 86400},
         reason="expired allow",
     )
@@ -969,7 +1035,7 @@ def local_backend_managed_grants():
     machine.log("PASS: expired UnlockedUntil grant is not honored")
 
     # Clean up so the next test starts fresh.
-    admin_delete_grant(ADMIN_LOCAL, "local", "test-echo2", GRANT_HOST, GRANT_USER)
+    admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
 
 
 
@@ -979,7 +1045,7 @@ def local_backend_policy_control_center():
     # ============================================================
 
     # Remove the seed grant so we can prove "no grant → denied".
-    admin_delete_grant(ADMIN_LOCAL, "local", "test-echo", GRANT_HOST, GRANT_USER)
+    admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo", "test/token")
     machine.fail(su("/run/wrappers/bin/local-test-echo"))
     machine.log("PASS: wrapper with no grant is denied")
 
@@ -993,9 +1059,9 @@ def local_backend_policy_control_center():
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
+        LOCAL_CLIENT_INSTANCE,
         "test-echo",
-        GRANT_HOST,
-        GRANT_USER,
+        "test/token",
         {"kind": "locked"},
         reason="maintenance",
     )

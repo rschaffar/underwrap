@@ -15,7 +15,7 @@ const WRAPPER_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) async fn authorize_wrapper_peer(
     stream: &mut UnixStream,
-    state: &State,
+    _state: &State,
     wrapper_name: &str,
     expected_gid: u32,
 ) -> Result<Option<(Option<PeerCred>, u32)>> {
@@ -35,26 +35,6 @@ pub(super) async fn authorize_wrapper_peer(
             return Ok(None);
         }
     };
-
-    if !state.allowed_user_uids.is_empty() && !state.allowed_user_uids.contains(&peer_uid) {
-        let reason = format!("peer uid {peer_uid} is not allowed for this instance");
-        audit::auth_denied(
-            "wrapper",
-            &reason,
-            Some(peer_uid),
-            peer.as_ref().map(|p| p.gid),
-        );
-        write_frame_async(
-            stream,
-            &WrapperResponse::Error {
-                code: ErrorCode::Unauthorized,
-                message: reason,
-            },
-        )
-        .await?;
-        stream.shutdown().await?;
-        return Ok(None);
-    }
 
     if peer.as_ref().and_then(|p| p.egid) != Some(expected_gid) {
         let reason = format!(

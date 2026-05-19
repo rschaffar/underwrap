@@ -21,19 +21,6 @@ impl MemStore {
         }
     }
 
-    pub fn with_policy(document: Option<PolicyDocument>) -> Self {
-        let mut data = HashMap::new();
-        if let Some(document) = document {
-            data.insert(
-                POLICY_DOCUMENT_SECRET_ID.to_string(),
-                serde_json::to_vec(&document).unwrap(),
-            );
-        }
-        Self {
-            data: Mutex::new(data),
-        }
-    }
-
     pub fn with_entries_and_policy(entries: &[(&str, &[u8])], document: PolicyDocument) -> Self {
         let mut data: HashMap<String, Vec<u8>> = entries
             .iter()

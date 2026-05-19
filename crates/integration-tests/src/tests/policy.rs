@@ -62,10 +62,9 @@ async fn backend_policy_roundtrip_over_admin_api() {
         Some(PolicyDocument::default())
     );
 
-    let grant = daemon.current_user_grant("gh-authorized");
+    let grant = daemon.current_grant("gh-authorized", "github/token");
     let document = PolicyDocument {
         grants: vec![grant.clone()],
-        ..Default::default()
     };
     daemon.put_policy("test", &document).await.unwrap();
 
@@ -114,8 +113,7 @@ async fn wrapper_read_succeeds_when_grant_is_unlocked() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![daemon.current_user_grant("gh-authorized")],
-                ..Default::default()
+                grants: vec![daemon.current_grant("gh-authorized", "github/token")],
             },
         )
         .await
@@ -136,7 +134,7 @@ async fn locked_grant_denies_read() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
-    let mut grant = daemon.current_user_grant("gh-authorized");
+    let mut grant = daemon.current_grant("gh-authorized", "github/token");
     grant.mode = WrapperApprovalMode::Locked;
     grant.reason = Some("locked centrally".to_string());
     daemon
@@ -144,7 +142,6 @@ async fn locked_grant_denies_read() {
             "test",
             &PolicyDocument {
                 grants: vec![grant],
-                ..Default::default()
             },
         )
         .await
@@ -173,14 +170,13 @@ async fn unlocked_until_grant_denies_after_deadline() {
     // Stamp a deadline far in the past so the grant is already
     // expired by the time we read. The expiry check is lazy on
     // request, so there's no flaky sleep involved.
-    let mut grant = daemon.current_user_grant("gh-authorized");
+    let mut grant = daemon.current_grant("gh-authorized", "github/token");
     grant.mode = WrapperApprovalMode::UnlockedUntil { until_epoch: 1 };
     daemon
         .put_policy(
             "test",
             &PolicyDocument {
                 grants: vec![grant],
-                ..Default::default()
             },
         )
         .await

@@ -59,6 +59,21 @@ pub(crate) fn resource_has_projection(usage: &ResourceUse) -> bool {
     usage.env || usage.files.is_some() || usage.libsecret
 }
 
+/// Every resource id the wrapper declares across any slot, sorted and
+/// deduped. Used by the grant-evaluation gate to consult one grant per
+/// resource before the read flow proceeds.
+pub(crate) fn wrapper_all_resources(wrapper: &WrapperDef) -> Vec<String> {
+    let mut out: Vec<String> = wrapper
+        .resources
+        .iter()
+        .filter(|(_, usage)| resource_has_projection(usage))
+        .map(|(id, _)| id.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

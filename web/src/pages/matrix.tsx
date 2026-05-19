@@ -52,52 +52,50 @@ export function modeKind(mode: WrapperApprovalMode): ModeKind {
   return mode.kind as ModeKind;
 }
 
-export interface Principal {
-  host: string;
-  user: string;
+/** A `(wrapper, resource)` pair — one row in the matrix. */
+export interface WrapperResource {
+  wrapper: string;
+  resource: string;
 }
 
-/** Stable display key for a `(host, user)` pair. */
-export function principalKey(p: Principal): string {
-  return `${p.host}/${p.user}`;
+export function wrapperResourceKey(wr: WrapperResource): string {
+  return `${wr.wrapper}|${wr.resource}`;
 }
 
-/** Collect every distinct `(host, user)` mentioned in the catalog + grants
- *  list, sorted for deterministic table rendering. */
-export function derivePrincipals(
-  catalog: AdminCatalogGetResponse | undefined,
-  grants: AgentGrant[],
-): Principal[] {
-  const set = new Map<string, Principal>();
-  for (const e of catalog?.entries ?? []) {
-    // Catalog uses `*` as the wildcard for "all users"; surface it
-    // verbatim so operators recognise it.
-    set.set(principalKey({ host: e.host, user: e.user }), {
-      host: e.host,
-      user: e.user,
-    });
-  }
-  for (const g of grants) {
-    set.set(principalKey({ host: g.host, user: g.user }), {
-      host: g.host,
-      user: g.user,
-    });
-  }
-  return [...set.values()].sort((a, b) =>
-    a.host === b.host ? a.user.localeCompare(b.user) : a.host.localeCompare(b.host),
-  );
-}
-
-/** Collect every distinct wrapper name mentioned in the catalog + grants
- *  list, sorted. */
-export function deriveWrappers(
+/** Collect every distinct runtime client instance mentioned in the catalog
+ *  + grants list, sorted for deterministic table rendering. */
+export function deriveClientInstances(
   catalog: AdminCatalogGetResponse | undefined,
   grants: AgentGrant[],
 ): string[] {
   const set = new Set<string>();
-  for (const e of catalog?.entries ?? []) set.add(e.wrapper);
-  for (const g of grants) set.add(g.wrapper);
+  for (const e of catalog?.entries ?? []) {
+    if (e.client_instance) set.add(e.client_instance);
+  }
+  for (const g of grants) set.add(g.client_instance);
   return [...set].sort();
+}
+
+/** Collect every distinct `(wrapper, resource)` pair mentioned in the
+ *  catalog + grants list, sorted. */
+export function deriveWrapperResources(
+  catalog: AdminCatalogGetResponse | undefined,
+  grants: AgentGrant[],
+): WrapperResource[] {
+  const map = new Map<string, WrapperResource>();
+  for (const e of catalog?.entries ?? []) {
+    const wr = { wrapper: e.wrapper, resource: e.resource };
+    map.set(wrapperResourceKey(wr), wr);
+  }
+  for (const g of grants) {
+    const wr = { wrapper: g.wrapper, resource: g.resource };
+    map.set(wrapperResourceKey(wr), wr);
+  }
+  return [...map.values()].sort((a, b) =>
+    a.wrapper === b.wrapper
+      ? a.resource.localeCompare(b.resource)
+      : a.wrapper.localeCompare(b.wrapper),
+  );
 }
 
 export function MatrixPage({ principal }: MatrixPageProps) {
@@ -145,28 +143,28 @@ export function MatrixPage({ principal }: MatrixPageProps) {
     queryFn: () => postCatalogGet({ store: storeName! }),
     enabled: !!storeName,
   });
-  const wrappers = useMemo(
-    () => deriveWrappers(catalog.data, grants.data?.grants ?? []),
+  const wrapperResources = useMemo(
+    () => deriveWrapperResources(catalog.data, grants.data?.grants ?? []),
     [catalog.data, grants.data],
   );
-  const principals = useMemo(
-    () => derivePrincipals(catalog.data, grants.data?.grants ?? []),
+  const clientInstances = useMemo(
+    () => deriveClientInstances(catalog.data, grants.data?.grants ?? []),
     [catalog.data, grants.data],
   );
 
-  /** Map `(wrapper, host, user)` → grant. Cheap; rebuilt on every render. */
+  /** Map `(client_instance, wrapper, resource)` → grant. */
   const grantIndex = useMemo(() => {
     const map = new Map<string, AgentGrant>();
     for (const g of grants.data?.grants ?? []) {
-      map.set(`${g.wrapper}|${g.host}|${g.user}`, g);
+      map.set(`${g.client_instance}|${g.wrapper}|${g.resource}`, g);
     }
     return map;
   }, [grants.data]);
 
   const [editing, setEditing] = useState<{
+    clientInstance: string;
     wrapper: string;
-    host: string;
-    user: string;
+    resource: string;
     grant: AgentGrant | null;
   } | null>(null);
   const [rawOpen, setRawOpen] = useState(false);
@@ -196,8 +194,11 @@ export function MatrixPage({ principal }: MatrixPageProps) {
         <div>
           <h2 className="text-xl font-semibold text-(--color-fg)">Matrix</h2>
           <p className="mt-1 text-sm text-(--color-muted)">
-            Agent grants for each <code className="rounded bg-(--color-surface-1) px-1 py-0.5 text-xs">(wrapper, host, user)</code> tuple.
-            Click a cell to set or change the mode.
+            Agent grants for each{" "}
+            <code className="rounded bg-(--color-surface-1) px-1 py-0.5 text-xs">
+              (client-instance, wrapper, resource)
+            </code>{" "}
+            tuple. Click a cell to set or change the mode.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -234,19 +235,24 @@ export function MatrixPage({ principal }: MatrixPageProps) {
         <p role="alert" className="text-sm text-rose-300">
           {describeApiError(grants.error ?? catalog.error)}
         </p>
-      ) : wrappers.length === 0 || principals.length === 0 ? (
+      ) : wrapperResources.length === 0 || clientInstances.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
           The matrix is empty for this store. Once an agent registers with the
           backend, its row appears here.
         </p>
       ) : (
         <MatrixTable
-          wrappers={wrappers}
-          principals={principals}
+          wrapperResources={wrapperResources}
+          clientInstances={clientInstances}
           grantIndex={grantIndex}
           isAdmin={isAdmin}
-          onCellClick={(wrapper, p, grant) =>
-            setEditing({ wrapper, host: p.host, user: p.user, grant })
+          onCellClick={(wr, clientInstance, grant) =>
+            setEditing({
+              clientInstance,
+              wrapper: wr.wrapper,
+              resource: wr.resource,
+              grant,
+            })
           }
         />
       )}
@@ -254,9 +260,9 @@ export function MatrixPage({ principal }: MatrixPageProps) {
       {editing ? (
         <EditCellDialog
           storeName={storeName}
+          clientInstance={editing.clientInstance}
           wrapper={editing.wrapper}
-          host={editing.host}
-          user={editing.user}
+          resource={editing.resource}
           existing={editing.grant}
           canEdit={isAdmin}
           onClose={() => setEditing(null)}
@@ -275,17 +281,21 @@ export function MatrixPage({ principal }: MatrixPageProps) {
 // ---------- Subcomponents ----------
 
 function MatrixTable({
-  wrappers,
-  principals,
+  wrapperResources,
+  clientInstances,
   grantIndex,
   isAdmin,
   onCellClick,
 }: {
-  wrappers: string[];
-  principals: Principal[];
+  wrapperResources: WrapperResource[];
+  clientInstances: string[];
   grantIndex: Map<string, AgentGrant>;
   isAdmin: boolean;
-  onCellClick: (wrapper: string, principal: Principal, grant: AgentGrant | null) => void;
+  onCellClick: (
+    wr: WrapperResource,
+    clientInstance: string,
+    grant: AgentGrant | null,
+  ) => void;
 }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-(--color-line)">
@@ -295,32 +305,38 @@ function MatrixTable({
             <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
               Wrapper
             </th>
-            {principals.map((p) => (
-              <th key={principalKey(p)} className="px-3 py-2">
-                <div className="font-medium text-(--color-fg)">{p.host}</div>
-                <div className="text-(--color-muted)">{p.user}</div>
+            <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
+              Resource
+            </th>
+            {clientInstances.map((c) => (
+              <th key={c} className="px-3 py-2">
+                <div className="font-medium text-(--color-fg)">{c}</div>
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {wrappers.map((w) => (
-            <tr key={w} className="border-t border-(--color-line) align-middle">
+          {wrapperResources.map((wr) => (
+            <tr
+              key={wrapperResourceKey(wr)}
+              className="border-t border-(--color-line) align-middle"
+            >
               <th
                 scope="row"
                 className="sticky left-0 z-10 bg-(--color-surface-0)/40 px-4 py-3 text-left font-medium text-(--color-fg)"
               >
-                {w}
+                {wr.wrapper}
               </th>
-              {principals.map((p) => {
-                const key = `${w}|${p.host}|${p.user}`;
+              <td className="px-4 py-3 text-(--color-muted)">{wr.resource}</td>
+              {clientInstances.map((c) => {
+                const key = `${c}|${wr.wrapper}|${wr.resource}`;
                 const grant = grantIndex.get(key) ?? null;
                 return (
                   <td key={key} className="px-3 py-3">
                     <button
                       type="button"
-                      data-testid={`matrix-cell-${w}-${p.host}-${p.user}`}
-                      onClick={() => onCellClick(w, p, grant)}
+                      data-testid={`matrix-cell-${wr.wrapper}-${wr.resource}-${c}`}
+                      onClick={() => onCellClick(wr, c, grant)}
                       disabled={!isAdmin}
                       className="min-h-11 min-w-[5rem] rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-1 text-xs hover:bg-(--color-surface-0) disabled:opacity-60"
                     >
@@ -397,17 +413,17 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
 
 function EditCellDialog({
   storeName,
+  clientInstance,
   wrapper,
-  host,
-  user,
+  resource,
   existing,
   canEdit,
   onClose,
 }: {
   storeName: string;
+  clientInstance: string;
   wrapper: string;
-  host: string;
-  user: string;
+  resource: string;
   existing: AgentGrant | null;
   canEdit: boolean;
   onClose: () => void;
@@ -433,6 +449,7 @@ function EditCellDialog({
     }
     return "";
   });
+  const [writable, setWritable] = useState<boolean>(existing?.writable ?? false);
   const [reason, setReason] = useState<string>(existing?.reason ?? "");
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -441,10 +458,11 @@ function EditCellDialog({
       postGrantUpsert({
         store: storeName,
         grant: {
+          client_instance: clientInstance,
           wrapper,
-          host,
-          user,
+          resource,
           mode,
+          writable,
           reason: reason.trim() === "" ? undefined : reason.trim(),
         },
       }),
@@ -455,7 +473,13 @@ function EditCellDialog({
     onError: (err) => setSubmitError(describeApiError(err)),
   });
   const remove = useMutation({
-    mutationFn: () => postGrantDelete({ store: storeName, wrapper, host, user }),
+    mutationFn: () =>
+      postGrantDelete({
+        store: storeName,
+        client_instance: clientInstance,
+        wrapper,
+        resource,
+      }),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "grants", storeName] });
       onClose();
@@ -508,13 +532,15 @@ function EditCellDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {wrapper} → {host} / {user}
+            {wrapper} / {resource} → {clientInstance}
           </DialogTitle>
           <DialogDescription>
-            Set the mode this agent uses when calling{" "}
-            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{wrapper}</code>
-            . The mode is checked on every read; per-call-approval also
-            requires a fresh ssh-agent signature.
+            Set the mode this client instance uses when calling{" "}
+            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{wrapper}</code>{" "}
+            for resource{" "}
+            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{resource}</code>
+            . The mode is checked on every read; per-call-approval also requires a
+            fresh ssh-agent signature.
           </DialogDescription>
         </DialogHeader>
         {!canEdit ? (
@@ -583,6 +609,16 @@ function EditCellDialog({
               />
             </div>
           ) : null}
+          <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-(--color-fg)">
+            <input
+              type="checkbox"
+              data-testid="grant-writable"
+              checked={writable}
+              disabled={!canEdit}
+              onChange={(e) => setWritable(e.target.checked)}
+            />
+            Allow wrapper-side writes for this resource (files / libsecret slots)
+          </label>
           <div className="space-y-1.5">
             <Label htmlFor="reason">Reason (optional)</Label>
             <Input

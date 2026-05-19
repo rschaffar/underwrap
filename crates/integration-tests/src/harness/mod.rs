@@ -44,36 +44,15 @@ pub struct TestDaemon {
     pub service_ca_cert: PathBuf,
     service_client_cert: PathBuf,
     service_client_key: PathBuf,
-    /// The `catalog_host` configured on the daemon. Tests use it to
-    /// build grants for `(wrapper, host, current_user)`.
-    catalog_host: String,
+    /// The mTLS-bound runtime client instance id the backend
+    /// authenticates this daemon as. Tests use it to build per-grant
+    /// keys.
+    client_instance: String,
     shutdown: Arc<Notify>,
     backend_shutdown: Arc<Notify>,
     backend_handle: thread::JoinHandle<Result<()>>,
     _tempdir: tempfile::TempDir,
     handle: tokio::task::JoinHandle<Result<()>>,
-}
-
-/// Resolve the username of the user running `cargo test`. Used to
-/// populate the `user` field on agent grants the tests construct.
-pub(crate) fn current_username() -> String {
-    let uid = unsafe { libc::getuid() };
-    // SAFETY: getpwuid returns either null or a pointer to a static
-    // passwd struct. We copy the name out immediately.
-    let pwd = unsafe { libc::getpwuid(uid) };
-    if pwd.is_null() {
-        // Fall back to a sentinel if the env has no passwd entry;
-        // the test will fail at the grant-mismatch assertion anyway.
-        return format!("uid-{uid}");
-    }
-    let c_name = unsafe { (*pwd).pw_name };
-    if c_name.is_null() {
-        return format!("uid-{uid}");
-    }
-    unsafe { std::ffi::CStr::from_ptr(c_name) }
-        .to_str()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|_| format!("uid-{uid}"))
 }
 
 fn env_secret_id(resource_id: &str) -> String {
@@ -219,11 +198,9 @@ impl TestDaemon {
                 client_cert_file: Some(pki.client_cert.clone()),
                 client_key_file: Some(pki.client_key.clone()),
             },
-            catalog_host: client_name.to_string(),
-            catalog_instance: String::new(),
-            allowed_users: Vec::new(),
             wrappers,
         };
+        let client_instance = format!("inst_{accepted_principal}");
 
         let shutdown = Arc::new(Notify::new());
         let shutdown_clone = Arc::clone(&shutdown);
@@ -247,7 +224,7 @@ impl TestDaemon {
             service_ca_cert: pki.ca_cert.clone(),
             service_client_cert: pki.client_cert.clone(),
             service_client_key: pki.client_key.clone(),
-            catalog_host: client_name.to_string(),
+            client_instance,
             shutdown,
             backend_shutdown,
             backend_handle,
@@ -329,15 +306,13 @@ impl TestDaemon {
         material: &str,
     ) -> Result<()> {
         // The wrapper-side read gates on an `AgentGrant` matching
-        // `(wrapper, host, user)` (ticket 246); admin writes are
-        // unconditional now that per-resource write flags only apply
-        // to wrapper writes. Seed a grant for the current user so
-        // the read flow under test still passes.
+        // `(client_instance, wrapper, resource)`; seed a grant for
+        // this daemon's instance so the read flow under test still
+        // passes. The `secret_id` argument is the resource id.
         self.put_policy(
             store,
             &PolicyDocument {
-                grants: vec![self.current_user_grant(wrapper)],
-                ..Default::default()
+                grants: vec![self.current_grant(wrapper, secret_id)],
             },
         )
         .await?;
@@ -539,17 +514,17 @@ impl TestDaemon {
     pub async fn delete_grant(
         &self,
         store: &str,
+        client_instance: &str,
         wrapper: &str,
-        host: &str,
-        user: &str,
+        resource: &str,
     ) -> Result<()> {
         let response = self
             .admin_request(reqwest::Method::POST, "/v1/admin/grants/delete")
             .json(&underwrap_protocol::service::AdminAgentGrantDeleteRequest {
                 store: store.to_string(),
+                client_instance: client_instance.to_string(),
                 wrapper: wrapper.to_string(),
-                host: host.to_string(),
-                user: user.to_string(),
+                resource: resource.to_string(),
             })
             .send()
             .await?;
@@ -561,54 +536,22 @@ impl TestDaemon {
         Ok(())
     }
 
-    /// Convenience: build an `Unlocked` grant for the given wrapper on
-    /// the harness's `(catalog_host, current-user)` principal. Used by
+    /// Convenience: build an `Unlocked` grant for the given wrapper +
+    /// resource on this harness's mTLS-bound client instance. Used by
     /// almost every read-flow test.
-    pub fn current_user_grant(&self, wrapper: &str) -> AgentGrant {
+    pub fn current_grant(&self, wrapper: &str, resource: &str) -> AgentGrant {
         AgentGrant {
+            client_instance: self.client_instance.clone(),
             wrapper: wrapper.to_string(),
-            host: self.catalog_host().to_string(),
-            user: current_username(),
+            resource: resource.to_string(),
             mode: underwrap_protocol::policy::WrapperApprovalMode::Unlocked,
+            writable: false,
             reason: None,
         }
     }
 
-    pub fn catalog_host(&self) -> &str {
-        &self.catalog_host
-    }
-
-    /// Flip the per-resource wrapper-write flag for one of the two
-    /// gated slots (files / libsecret). The backend serialises this
-    /// onto `PolicyDocument::files_writable` / `libsecret_writable`.
-    pub async fn set_write_permission(
-        &self,
-        store: &str,
-        resource: &str,
-        slot: underwrap_protocol::service::AdminWritableSlot,
-        enabled: bool,
-    ) -> Result<()> {
-        let response = self
-            .admin_request(
-                reqwest::Method::POST,
-                "/v1/admin/policy/write-permissions/set",
-            )
-            .json(
-                &underwrap_protocol::service::AdminWritePermissionsSetRequest {
-                    store: store.to_string(),
-                    resource: resource.to_string(),
-                    slot,
-                    enabled,
-                },
-            )
-            .send()
-            .await?;
-        anyhow::ensure!(
-            response.status().is_success(),
-            "admin API returned {}",
-            response.status()
-        );
-        Ok(())
+    pub fn client_instance(&self) -> &str {
+        &self.client_instance
     }
 
     /// Shut down the daemon.

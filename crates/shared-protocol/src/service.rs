@@ -143,12 +143,21 @@ pub struct ServiceListResponse {
     pub ids: Vec<String>,
 }
 
+/// One wrapper/resource pair declared by a runtime client instance.
+///
+/// The mTLS-authenticated client instance id is the only client-side
+/// identifier — it is filled in by the backend from the active TLS
+/// session rather than self-reported, so the wire-side struct carries
+/// only `(wrapper, resource)`. The stored/admin-facing form includes
+/// `client_instance` (see [`StoredCatalogEntry`] in the backend).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct CatalogEntry {
-    pub host: String,
-    pub user: String,
-    pub instance: String,
+    /// The mTLS-authenticated runtime client instance id this entry
+    /// belongs to. Clients leave this empty on `POST /v1/catalog/put`;
+    /// the backend fills it in from the active TLS session.
+    #[serde(default)]
+    pub client_instance: String,
     pub wrapper: String,
     pub resource: String,
 }
@@ -454,12 +463,10 @@ pub struct AdminUiOverviewStore {
     pub store: String,
     pub resource_count: usize,
     pub wrapper_counts: AdminUiWrapperCounts,
-    /// Number of resources with the wrapper-side `files` slot
-    /// writable. Surfaced on the dashboard overview as a quick
-    /// "how many resources have writes opened up" signal.
-    pub writable_files_resources: usize,
-    /// Same for the `libsecret` slot.
-    pub writable_libsecret_resources: usize,
+    /// Number of grants with `writable = true`. Surfaced on the
+    /// dashboard overview as a quick "how many wrapper writes are
+    /// open" signal.
+    pub writable_grant_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -551,11 +558,12 @@ pub struct AdminPolicyPutRequest {
     pub document: PolicyDocument,
 }
 
-// ===== Agent grant CRUD (ticket 246) =====
+// ===== Agent grant CRUD =====
 //
-// Replaces the pre-245 per-secret `(wrapper, resource, operation)` rule
-// and grant model. One `AgentGrant` per `(wrapper, host, user)` tuple,
-// keyed on that triple; mode controls *if* the grant is usable.
+// One `AgentGrant` per `(client_instance, wrapper, resource)` tuple.
+// The mode controls *if* the grant is usable; the `writable` flag on
+// the grant decides wrapper-side writes for the `files`/`libsecret`
+// slots.
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
@@ -580,48 +588,9 @@ pub struct AdminAgentGrantUpsertRequest {
 #[ts(export)]
 pub struct AdminAgentGrantDeleteRequest {
     pub store: String,
+    pub client_instance: String,
     pub wrapper: String,
-    pub host: String,
-    pub user: String,
-}
-
-// ===== Per-resource wrapper-write permissions =====
-
-/// Get the current `(files_writable, libsecret_writable)` maps for a store.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminWritePermissionsGetRequest {
-    pub store: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminWritePermissionsResponse {
-    pub store: String,
-    /// Resource → allowed flag. Resources missing from the map are
-    /// implicitly denied — same semantics as `PolicyDocument`.
-    pub files_writable: std::collections::HashMap<String, bool>,
-    pub libsecret_writable: std::collections::HashMap<String, bool>,
-}
-
-/// Set a single `(resource, slot) → enabled` permission. The slot is
-/// constrained to `files` or `libsecret` — `env` has no wrapper-side
-/// write path so it isn't valid here.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminWritePermissionsSetRequest {
-    pub store: String,
     pub resource: String,
-    pub slot: AdminWritableSlot,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-#[serde(rename_all = "kebab-case")]
-pub enum AdminWritableSlot {
-    Files,
-    Libsecret,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

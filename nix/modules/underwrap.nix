@@ -106,9 +106,6 @@ let
         client_cert_file = clientCertPath;
         client_key_file = clientKeyPath;
       };
-      catalog_host = config.networking.hostName;
-      catalog_instance = instName;
-      allowed_users = inst.allowedUsers;
       wrappers = lib.mapAttrs' (name: w:
         lib.nameValuePair (fullWrapperName name) {
           target = w.target;
@@ -358,7 +355,14 @@ let
       allowedUsers = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [];
-        description = "Usernames allowed to execute wrappers in this instance. Empty = allow all.";
+        description = ''
+          Local users who get bare-name wrapper aliases (`<wrapper>`,
+          `debug-<wrapper>`) on their PATH for this instance. This is a
+          NixOS-side convenience only — wrapper execution itself is
+          gated by the setgid group on `/run/wrappers/bin/<instance>-<wrapper>`,
+          and authorization happens entirely on the backend via grants
+          keyed on the mTLS-bound runtime client instance.
+        '';
       };
       backend = lib.mkOption {
         type = backendSubmodule;

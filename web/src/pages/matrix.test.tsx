@@ -3,10 +3,10 @@ import { render } from "@testing-library/react";
 
 import {
   ModeBadge,
-  derivePrincipals,
-  deriveWrappers,
+  deriveClientInstances,
+  deriveWrapperResources,
   modeKind,
-  principalKey,
+  wrapperResourceKey,
 } from "./matrix";
 import type { AgentGrant, WrapperApprovalMode } from "@/api/client";
 
@@ -15,53 +15,48 @@ afterEach(() => {});
 describe("derivation helpers", () => {
   const grants: AgentGrant[] = [
     {
+      client_instance: "dev-laptop",
       wrapper: "gh-authorized",
-      host: "deepthought",
-      user: "robert",
+      resource: "github/token",
       mode: { kind: "unlocked" } as WrapperApprovalMode,
+      writable: false,
       reason: undefined,
     },
     {
+      client_instance: "ci-runner",
       wrapper: "aws-prod",
-      host: "ci",
-      user: "bot",
+      resource: "aws/prod",
       mode: { kind: "locked" } as WrapperApprovalMode,
+      writable: false,
       reason: undefined,
     },
   ];
   const catalog = {
     entries: [
       {
-        host: "deepthought",
-        user: "robert",
-        instance: "",
+        client_instance: "dev-laptop",
         wrapper: "gh-authorized",
         resource: "github/token",
       },
       {
-        host: "deepthought",
-        user: "robert",
-        instance: "",
+        client_instance: "dev-laptop",
         wrapper: "jira-readonly",
         resource: "jira/api",
       },
     ],
   };
 
-  it("derivePrincipals dedupes and sorts by (host, user)", () => {
-    const principals = derivePrincipals(catalog, grants);
-    expect(principals.map(principalKey)).toEqual([
-      "ci/bot",
-      "deepthought/robert",
-    ]);
+  it("deriveClientInstances dedupes and sorts", () => {
+    const instances = deriveClientInstances(catalog, grants);
+    expect(instances).toEqual(["ci-runner", "dev-laptop"]);
   });
 
-  it("deriveWrappers dedupes across catalog and grants", () => {
-    const wrappers = deriveWrappers(catalog, grants);
-    expect(wrappers).toEqual([
-      "aws-prod",
-      "gh-authorized",
-      "jira-readonly",
+  it("deriveWrapperResources dedupes across catalog and grants", () => {
+    const pairs = deriveWrapperResources(catalog, grants);
+    expect(pairs.map(wrapperResourceKey)).toEqual([
+      "aws-prod|aws/prod",
+      "gh-authorized|github/token",
+      "jira-readonly|jira/api",
     ]);
   });
 

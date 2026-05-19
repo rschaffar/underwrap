@@ -2,7 +2,7 @@
 //!
 //! Runs wrapper socket listeners.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use tokio::sync::{Notify, Semaphore};
@@ -13,10 +13,7 @@ use underwrap_protocol::config::DaemonConfig;
 use underwrap_protocol::service::CatalogEntry;
 
 use crate::approval::PendingApprovals;
-use crate::startup::{
-    bind_socket, build_allowed_user_uids, build_wrapper_gid_map, next_listener_result,
-    validate_config,
-};
+use crate::startup::{bind_socket, build_wrapper_gid_map, next_listener_result, validate_config};
 use crate::wrapper_flow::handle_wrapper;
 use underwrap_store::StorageBackend;
 
@@ -28,7 +25,11 @@ pub(crate) struct State {
     pub(crate) config: DaemonConfig,
     pub(crate) store: Option<Arc<dyn StorageBackend>>,
     pub(crate) enrollment_url: Option<String>,
-    pub(crate) allowed_user_uids: std::collections::HashSet<u32>,
+    /// The backend-assigned runtime client instance id this daemon
+    /// authenticates as over mTLS. Empty for unenrolled instances —
+    /// the daemon refuses wrapper requests in that state anyway, so
+    /// the field is only consulted on the enrolled path.
+    pub(crate) client_instance: String,
     pub(crate) pending_approvals: PendingApprovals,
 }
 
@@ -44,12 +45,6 @@ impl State {
 }
 
 fn register_catalog(store: &dyn StorageBackend, config: &DaemonConfig) -> Result<()> {
-    let users: Vec<String> = if config.allowed_users.is_empty() {
-        vec!["*".to_string()]
-    } else {
-        config.allowed_users.clone()
-    };
-
     let mut entries = Vec::new();
     for (wrapper_name, wrapper) in &config.wrappers {
         let logical_name = wrapper
@@ -57,45 +52,20 @@ fn register_catalog(store: &dyn StorageBackend, config: &DaemonConfig) -> Result
             .clone()
             .unwrap_or_else(|| wrapper_name.clone());
         for resource in wrapper.resources.keys() {
-            for user in &users {
-                entries.push(CatalogEntry {
-                    host: config.catalog_host.clone(),
-                    user: user.clone(),
-                    instance: config.catalog_instance.clone(),
-                    wrapper: logical_name.clone(),
-                    resource: resource.clone(),
-                });
-            }
+            entries.push(CatalogEntry {
+                // The backend fills `client_instance` from the active
+                // mTLS session; leave it blank on the wire.
+                client_instance: String::new(),
+                wrapper: logical_name.clone(),
+                resource: resource.clone(),
+            });
         }
     }
     store.register_catalog(&entries)
 }
 
-/// Run the daemon until `shutdown` is notified (or forever if `None`).
 fn build_enrollment_url(config: &DaemonConfig) -> String {
-    fn pct_encode(value: &str) -> String {
-        let mut out = String::new();
-        for b in value.bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    out.push(b as char)
-                }
-                _ => out.push_str(&format!("%{b:02X}")),
-            }
-        }
-        out
-    }
-
-    let mut url = format!(
-        "{}/enroll?host={}",
-        config.backend.url.trim_end_matches('/'),
-        pct_encode(&config.catalog_host)
-    );
-    if !config.catalog_instance.is_empty() {
-        url.push_str("&instance=");
-        url.push_str(&pct_encode(&config.catalog_instance));
-    }
-    url
+    format!("{}/enroll", config.backend.url.trim_end_matches('/'),)
 }
 
 pub(crate) fn unenrolled_message(url: &str) -> String {
@@ -127,17 +97,23 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         None
     };
 
-    // Open the backend client when enrolled.
-    let store: Option<Arc<dyn StorageBackend>> = if unenrolled {
-        None
+    // Open the backend client when enrolled, and learn the
+    // mTLS-bound client instance id by hitting `/v1/status` once at
+    // startup. The id is used to look up grants in the per-store
+    // policy document.
+    let (store, client_instance): (Option<Arc<dyn StorageBackend>>, String) = if unenrolled {
+        (None, String::new())
     } else {
-        Some(Arc::from(underwrap_store::open_backend_client(
-            &config.backend,
-        )?))
+        let store: Arc<dyn StorageBackend> =
+            Arc::from(underwrap_store::open_backend_client(&config.backend)?);
+        let principal = store
+            .principal()
+            .context("learning own runtime client instance id from backend /v1/status")?;
+        info!(client_instance = %principal, "enrolled with backend");
+        (Some(store), principal)
     };
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
-    let allowed_user_uids = build_allowed_user_uids(&config)?;
     if let Some(store) = store.as_ref()
         && let Err(e) = register_catalog(store.as_ref(), &config)
     {
@@ -148,7 +124,7 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         config: config.clone(),
         store,
         enrollment_url,
-        allowed_user_uids,
+        client_instance,
         pending_approvals: PendingApprovals::new(),
     });
 

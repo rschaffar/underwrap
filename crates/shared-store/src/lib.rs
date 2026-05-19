@@ -72,6 +72,14 @@ pub trait StorageBackend: Send + Sync {
     fn register_catalog(&self, _entries: &[CatalogEntry]) -> Result<()> {
         Ok(())
     }
+
+    /// Return the runtime client instance id the backend authenticates
+    /// this connection as. For the HTTPS service backend that is the
+    /// mTLS-bound principal; in-memory test backends override with a
+    /// fixed string.
+    fn principal(&self) -> Result<String> {
+        anyhow::bail!("backend does not report a principal");
+    }
 }
 
 /// Open a storage backend from a [`StorageConfig`]. Used by

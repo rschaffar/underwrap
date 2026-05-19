@@ -161,10 +161,6 @@ import type {
   AdminUserRole,
   AdminUserUpdateRequest,
   AdminUsersListResponse,
-  AdminWritableSlot,
-  AdminWritePermissionsGetRequest,
-  AdminWritePermissionsResponse,
-  AdminWritePermissionsSetRequest,
   AgentGrant,
   BootstrapRequest,
   BootstrapResponse,
@@ -215,10 +211,6 @@ export type {
   AdminUserRole,
   AdminUserUpdateRequest,
   AdminUsersListResponse,
-  AdminWritableSlot,
-  AdminWritePermissionsGetRequest,
-  AdminWritePermissionsResponse,
-  AdminWritePermissionsSetRequest,
   AgentGrant,
   BootstrapRequest,
   BootstrapResponse,
@@ -478,26 +470,6 @@ export function postGrantDelete(
     method: "POST",
     json: body,
   });
-}
-
-// ----- Per-resource wrapper-write permissions -----
-
-export function postWritePermissionsGet(
-  body: AdminWritePermissionsGetRequest,
-): Promise<AdminWritePermissionsResponse> {
-  return apiJson<AdminWritePermissionsResponse>(
-    "/v1/admin/policy/write-permissions/get",
-    { method: "POST", json: body },
-  );
-}
-
-export function postWritePermissionsSet(
-  body: AdminWritePermissionsSetRequest,
-): Promise<AdminWritePermissionsResponse> {
-  return apiJson<AdminWritePermissionsResponse>(
-    "/v1/admin/policy/write-permissions/set",
-    { method: "POST", json: body },
-  );
 }
 
 // ----- Catalog (admin) -----

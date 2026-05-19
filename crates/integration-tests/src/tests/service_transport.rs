@@ -16,8 +16,7 @@ async fn service_mode_roundtrip_reads_secret() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![daemon.current_user_grant("gh-authorized")],
-                ..Default::default()
+                grants: vec![daemon.current_grant("gh-authorized", "github/token")],
             },
         )
         .await
@@ -37,32 +36,35 @@ async fn service_mode_registers_catalog_entries_on_startup() {
         .unwrap();
 
     let entries = daemon.get_catalog("test").await.unwrap();
-    assert!(entries.iter().any(|e| e.host == "local"
-        && e.user == "*"
-        && e.wrapper == "gh-authorized"
-        && e.resource == "github/token"));
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.client_instance == daemon.client_instance()
+                && e.wrapper == "gh-authorized"
+                && e.resource == "github/token")
+    );
 
     daemon.stop().await.unwrap();
 }
 
 #[tokio::test]
-async fn service_mode_rejects_unmapped_client_principal() {
+async fn service_mode_rejects_unmapped_client_principal_at_startup() {
+    // A daemon presenting a client cert the backend doesn't recognise
+    // can't usefully serve anything — the backend authenticates every
+    // request by mTLS fingerprint. The daemon refuses to start
+    // (binding wrapper sockets) in this state so reads can never
+    // accidentally succeed.
     let wrappers = one_wrapper_config();
-    let daemon = TestDaemon::start_service_mode(wrappers, "tunnel", "underwrap-local")
-        .await
-        .unwrap();
-
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    match resp {
-        WrapperResponse::Error { code, message } => {
-            assert!(matches!(code, ErrorCode::Internal));
-            assert!(
-                message.contains("internal storage error")
-                    || message.contains("internal policy error")
-            );
-        }
-        other => panic!("expected Error, got {other:?}"),
-    }
-
-    daemon.stop().await.unwrap();
+    let result = TestDaemon::start_service_mode(wrappers, "tunnel", "underwrap-local").await;
+    let err = match result {
+        Ok(_) => panic!("daemon must refuse to start without a recognised client principal"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("wrapper-gh-authorized.sock")
+            || msg.contains("path never appeared")
+            || msg.contains("client instance"),
+        "unexpected startup error: {msg}",
+    );
 }

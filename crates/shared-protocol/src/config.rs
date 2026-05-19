@@ -5,23 +5,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Top-level daemon configuration.
+///
+/// The frontend's only externally meaningful identity is its
+/// mTLS-bound runtime client instance id, which the backend assigns
+/// at enrollment time. No client-side `host` / `instance` / allowlist
+/// fields exist any more — anything that needs per-principal gating
+/// is expressed as a backend grant keyed on the client instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
     /// Backend service the frontend talks to.
     pub backend: BackendServiceConfig,
-
-    /// Host label published into the backend catalog for this frontend.
-    #[serde(default = "default_catalog_host")]
-    pub catalog_host: String,
-
-    /// Frontend instance label published into the backend catalog.
-    #[serde(default)]
-    pub catalog_instance: String,
-
-    /// Usernames allowed to execute wrappers in this instance.
-    /// Empty = allow all local users.
-    #[serde(default)]
-    pub allowed_users: Vec<String>,
 
     /// Wrapper definitions, keyed by wrapper name.
     #[serde(default)]
@@ -112,10 +105,6 @@ fn default_store_registry_version() -> u32 {
 
 fn default_storage_dir() -> PathBuf {
     PathBuf::from("/var/lib/underwrap/secrets")
-}
-
-fn default_catalog_host() -> String {
-    "unknown-host".to_string()
 }
 
 /// Frontend backend-client configuration.
@@ -213,8 +202,6 @@ backend:
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.wrappers.is_empty());
-        assert_eq!(config.catalog_host, "unknown-host");
-        assert_eq!(config.catalog_instance, "");
         assert_eq!(config.backend.url, "https://backend.example.internal:8443");
         assert_eq!(
             config.backend.ca_file,
@@ -238,8 +225,6 @@ backend:
   ca_file: /etc/underwrap/ca.pem
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
-catalog_host: workstation-01
-catalog_instance: robert
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
@@ -254,8 +239,6 @@ wrappers:
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.wrappers.len(), 1);
-        assert_eq!(config.catalog_host, "workstation-01");
-        assert_eq!(config.catalog_instance, "robert");
         let w = &config.wrappers["gh-authorized"];
         assert_eq!(w.target, PathBuf::from("/usr/bin/gh"));
         assert_eq!(w.resources.len(), 2);

@@ -40,52 +40,6 @@ pub(crate) fn resolve_group_gid(name: &str) -> Result<u32> {
     Ok(unsafe { (*grp).gr_gid })
 }
 
-pub(crate) fn resolve_user_uid(name: &str) -> Result<u32> {
-    let c_name = std::ffi::CString::new(name)
-        .with_context(|| format!("user name '{name}' contains null byte"))?;
-    let pwd = unsafe { libc::getpwnam(c_name.as_ptr()) };
-    if pwd.is_null() {
-        anyhow::bail!("user '{name}' not found");
-    }
-    Ok(unsafe { (*pwd).pw_uid })
-}
-
-/// Inverse of [`resolve_user_uid`]: look up the username for a kernel
-/// peer-credentials UID so the daemon can identify the principal as
-/// `(host, user)` when consulting per-store grants.
-///
-/// Returns `None` when the uid has no passwd entry — the caller
-/// treats that as "ungranted" rather than falling back to a numeric
-/// uid string, so a kernel-only / nsswitch-missing account can't
-/// shadow a real grant.
-pub(crate) fn username_for_uid(uid: u32) -> Option<String> {
-    // SAFETY: `getpwuid` returns either a null pointer or a pointer
-    // to a statically-allocated `passwd` struct that lives until the
-    // next call. We copy out of it immediately.
-    let pwd = unsafe { libc::getpwuid(uid) };
-    if pwd.is_null() {
-        return None;
-    }
-    let c_name = unsafe { (*pwd).pw_name };
-    if c_name.is_null() {
-        return None;
-    }
-    let name = unsafe { std::ffi::CStr::from_ptr(c_name) };
-    name.to_str().ok().map(|s| s.to_string())
-}
-
-pub(crate) fn build_allowed_user_uids(
-    config: &DaemonConfig,
-) -> Result<std::collections::HashSet<u32>> {
-    let mut set = std::collections::HashSet::new();
-    for user in &config.allowed_users {
-        let uid =
-            resolve_user_uid(user).with_context(|| format!("resolving allowed user '{user}'"))?;
-        set.insert(uid);
-    }
-    Ok(set)
-}
-
 /// Validate configuration at load time.
 pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
     anyhow::ensure!(!config.backend.url.is_empty(), "backend.url must be set");
@@ -240,9 +194,6 @@ mod tests {
                 client_cert_file: None,
                 client_key_file: None,
             },
-            catalog_host: "host-1".into(),
-            catalog_instance: "inst-1".into(),
-            allowed_users: Vec::new(),
             wrappers: std::collections::HashMap::new(),
         }
     }

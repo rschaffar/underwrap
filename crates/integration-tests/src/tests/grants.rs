@@ -16,7 +16,10 @@ async fn upsert_grant_allows_read_against_fresh_store() {
         .unwrap();
 
     daemon
-        .upsert_grant("test", &daemon.current_user_grant("gh-authorized"))
+        .upsert_grant(
+            "test",
+            &daemon.current_grant("gh-authorized", "github/token"),
+        )
         .await
         .unwrap();
 
@@ -39,14 +42,19 @@ async fn deleting_grant_revokes_future_reads() {
         .put_policy("test", &PolicyDocument::default())
         .await
         .unwrap();
-    let grant = daemon.current_user_grant("gh-authorized");
+    let grant = daemon.current_grant("gh-authorized", "github/token");
     daemon.upsert_grant("test", &grant).await.unwrap();
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     assert_eq!(expect_single_env_string(resp), "ghp_test123");
 
     daemon
-        .delete_grant("test", &grant.wrapper, &grant.host, &grant.user)
+        .delete_grant(
+            "test",
+            &grant.client_instance,
+            &grant.wrapper,
+            &grant.resource,
+        )
         .await
         .unwrap();
 
@@ -63,84 +71,39 @@ async fn deleting_grant_revokes_future_reads() {
 }
 
 #[tokio::test]
-async fn admin_writes_are_unconditional_relative_to_per_resource_flags() {
-    // Per-resource write flags only gate wrapper-side writes. Admin
-    // writes through `/v1/admin/secret/write` and `/secret/delete`
-    // succeed regardless of `files_writable` / `libsecret_writable`.
+async fn per_grant_writable_flag_roundtrips_through_admin_api() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_initial")
         .await
         .unwrap();
-    // Explicitly clear (disable) the libsecret-writable flag for the
-    // resource. The next admin write must still succeed.
-    daemon
-        .set_write_permission(
-            "test",
-            "github/token",
-            underwrap_protocol::service::AdminWritableSlot::Libsecret,
-            false,
-        )
-        .await
-        .unwrap();
-    daemon
-        .admin_write_raw("test", "gh-authorized", "github/token", "ghp_rotated")
-        .await
-        .expect("admin writes are not gated by per-resource flags");
-    daemon.stop().await.unwrap();
-}
-
-#[tokio::test]
-async fn per_resource_write_permission_roundtrips_through_admin_api() {
-    let wrappers = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers).await.unwrap();
-    // Seed a policy so the document exists; the flags default to
-    // missing (denied).
-    daemon
-        .store_secret("test", "gh-authorized", "github/token", "ghp_initial")
-        .await
-        .unwrap();
-    daemon
-        .set_write_permission(
-            "test",
-            "github/token",
-            underwrap_protocol::service::AdminWritableSlot::Files,
-            true,
-        )
-        .await
-        .unwrap();
+    let mut grant = daemon.current_grant("gh-authorized", "github/token");
+    grant.writable = true;
+    daemon.upsert_grant("test", &grant).await.unwrap();
     let doc = daemon
         .get_policy("test")
         .await
         .unwrap()
         .expect("policy document persists across reads");
-    assert!(doc.files_writable_for("github/token"));
-    assert!(!doc.libsecret_writable_for("github/token"));
-    // Flip back off → key is removed from the map.
-    daemon
-        .set_write_permission(
-            "test",
-            "github/token",
-            underwrap_protocol::service::AdminWritableSlot::Files,
-            false,
-        )
-        .await
-        .unwrap();
+    assert!(doc.writable_for(daemon.client_instance(), "gh-authorized", "github/token"));
+    // Flip back off.
+    grant.writable = false;
+    daemon.upsert_grant("test", &grant).await.unwrap();
     let doc = daemon
         .get_policy("test")
         .await
         .unwrap()
         .expect("policy document still exists");
-    assert!(!doc.files_writable_for("github/token"));
+    assert!(!doc.writable_for(daemon.client_instance(), "gh-authorized", "github/token"));
     daemon.stop().await.unwrap();
 }
 
 #[tokio::test]
-async fn ungranted_tuple_for_unrelated_user_still_rejects_test_runner() {
-    // Regression: the daemon must lookup by `(wrapper, host, user)`,
-    // not just `wrapper`. A grant for some other user on the same
-    // wrapper doesn't grant the test runner.
+async fn ungranted_tuple_for_unrelated_client_instance_still_rejects() {
+    // Regression: the daemon must look up by `(client_instance,
+    // wrapper, resource)`. A grant for some other client instance on
+    // the same wrapper does not grant this daemon.
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
     daemon
@@ -152,13 +115,13 @@ async fn ungranted_tuple_for_unrelated_user_still_rejects_test_runner() {
             "test",
             &PolicyDocument {
                 grants: vec![AgentGrant {
+                    client_instance: "some-other-client".to_string(),
                     wrapper: "gh-authorized".to_string(),
-                    host: daemon.catalog_host().to_string(),
-                    user: "not-the-test-runner".to_string(),
+                    resource: "github/token".to_string(),
                     mode: WrapperApprovalMode::Unlocked,
+                    writable: false,
                     reason: None,
                 }],
-                ..Default::default()
             },
         )
         .await
@@ -182,7 +145,7 @@ async fn upsert_replaces_mode_on_existing_grant_tuple() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
-    let mut grant = daemon.current_user_grant("gh-authorized");
+    let mut grant = daemon.current_grant("gh-authorized", "github/token");
     grant.mode = WrapperApprovalMode::Locked;
     daemon.upsert_grant("test", &grant).await.unwrap();
     // Re-upsert with `Unlocked` — the daemon should now allow reads.

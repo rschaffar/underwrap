@@ -47,7 +47,7 @@ enum Command {
         reply: mpsc::Sender<Result<bool>>,
     },
     Status {
-        reply: mpsc::Sender<bool>,
+        reply: mpsc::Sender<Result<ServiceStatusResponse>>,
     },
 }
 
@@ -297,15 +297,19 @@ async fn delete_request(client: &reqwest::Client, base_url: &str, secret_id: &st
     Ok(body.existed)
 }
 
-async fn status_request(client: &reqwest::Client, base_url: &str) -> bool {
-    match client.get(endpoint(base_url, "/v1/status")).send().await {
-        Ok(response) if response.status().is_success() => response
-            .json::<ServiceStatusResponse>()
-            .await
-            .map(|status| status.ok)
-            .unwrap_or(false),
-        _ => false,
+async fn status_request(client: &reqwest::Client, base_url: &str) -> Result<ServiceStatusResponse> {
+    let response = client
+        .get(endpoint(base_url, "/v1/status"))
+        .send()
+        .await
+        .context("sending backend status request")?;
+    if !response.status().is_success() {
+        bail!(parse_error(response).await);
     }
+    response
+        .json::<ServiceStatusResponse>()
+        .await
+        .context("decoding backend status response")
 }
 
 fn endpoint(base_url: &str, path: &str) -> String {
@@ -404,15 +408,24 @@ impl StorageBackend for ServiceBackend {
         rx.recv()
             .context("receiving register-catalog response from service backend worker")?
     }
+
+    fn principal(&self) -> Result<String> {
+        Ok(self.status_response()?.principal)
+    }
 }
 
 impl ServiceBackend {
     pub fn is_available(&self) -> bool {
+        self.status_response().map(|s| s.ok).unwrap_or(false)
+    }
+
+    fn status_response(&self) -> Result<ServiceStatusResponse> {
         let (tx, rx) = mpsc::channel();
-        if self.sender.send(Command::Status { reply: tx }).is_err() {
-            return false;
-        }
-        rx.recv().unwrap_or(false)
+        self.sender
+            .send(Command::Status { reply: tx })
+            .context("sending status command to service backend worker")?;
+        rx.recv()
+            .context("receiving status response from service backend worker")?
     }
 }
 

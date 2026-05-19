@@ -29,43 +29,40 @@ describe("PolicyViewerDialog", () => {
     vi.mocked(postPolicyGet).mockReset();
   });
 
-  it("renders the formatted JSON, the writes-enabled badge, and a copy button for a non-trivial policy", async () => {
+  it("renders the formatted JSON, the writable-grants badge, and a copy button for a non-trivial policy", async () => {
     vi.mocked(postPolicyGet).mockResolvedValue({
       document: {
         grants: [
           {
+            client_instance: "dev-laptop",
             wrapper: "gh-authorized",
-            host: "deepthought",
-            user: "robert",
+            resource: "github/token",
             mode: { kind: "unlocked" },
+            writable: true,
             reason: undefined,
           },
           {
+            client_instance: "ci-runner",
             wrapper: "aws-prod",
-            host: "ci",
-            user: "bot",
+            resource: "aws/prod",
             mode: { kind: "locked" },
+            writable: false,
             reason: "off-hours",
           },
           {
+            client_instance: "ci-runner",
             wrapper: "deploy",
-            host: "ci",
-            user: "bot",
+            resource: "deploy/release",
             mode: { kind: "per-call-approval", approval_key: "ssh-ed25519 AAA…" },
+            writable: false,
             reason: undefined,
           },
         ],
-        files_writable: { "github/token": true, "aws/access-key": false },
-        libsecret_writable: { "github/gh": true },
       },
     });
 
     renderWithQuery(
-      <PolicyViewerDialog
-        storeName="prod"
-        open={true}
-        onClose={() => {}}
-      />,
+      <PolicyViewerDialog storeName="prod" open={true} onClose={() => {}} />,
     );
 
     // The dialog opens with the store name in the title.
@@ -73,44 +70,33 @@ describe("PolicyViewerDialog", () => {
       await screen.findByRole("heading", { name: /raw policy: prod/i }),
     ).toBeInTheDocument();
 
-    // Wrapper-writes summary surfaces both per-slot counts.
-    expect(await screen.findByTestId("writable-files-badge")).toHaveTextContent(
-      /files: 1 on/i,
-    );
-    expect(screen.getByTestId("writable-libsecret-badge")).toHaveTextContent(
-      /libsecret: 1 on/i,
-    );
+    // Writable-grants badge counts the single grant flagged writable.
+    expect(
+      await screen.findByTestId("writable-grants-badge"),
+    ).toHaveTextContent(/1 of 3/i);
 
-    // The JSON pre block contains every grant tuple. Asserting on
-    // the wrapper names is the most legible cross-section.
+    // The JSON pre block contains every grant tuple.
     const pre = await screen.findByTestId("policy-json");
     expect(pre).toHaveTextContent("gh-authorized");
     expect(pre).toHaveTextContent("aws-prod");
     expect(pre).toHaveTextContent("deploy");
-    // And on the reason for the locked one (proves we render the
-    // full document, not just the keys).
     expect(pre).toHaveTextContent("off-hours");
-    // Indented JSON: two-space indent before any nested grant field.
     expect(pre.textContent).toContain("\n    ");
 
-    // Copy button is enabled.
     const copyBtn = screen.getByRole("button", { name: /copy json/i });
     expect(copyBtn).toBeEnabled();
   });
 
-  it("shows 0-on counts when no resources have wrapper writes enabled", async () => {
+  it("shows 0 writable when the policy is empty", async () => {
     vi.mocked(postPolicyGet).mockResolvedValue({
-      document: { grants: [], files_writable: {}, libsecret_writable: {} },
+      document: { grants: [] },
     });
     renderWithQuery(
       <PolicyViewerDialog storeName="dev" open={true} onClose={() => {}} />,
     );
-    expect(await screen.findByTestId("writable-files-badge")).toHaveTextContent(
-      /files: 0 on/i,
-    );
-    expect(screen.getByTestId("writable-libsecret-badge")).toHaveTextContent(
-      /libsecret: 0 on/i,
-    );
+    expect(
+      await screen.findByTestId("writable-grants-badge"),
+    ).toHaveTextContent(/0 of 0/i);
   });
 
   it("surfaces an API error in an alert without rendering the JSON", async () => {
@@ -121,8 +107,6 @@ describe("PolicyViewerDialog", () => {
     renderWithQuery(
       <PolicyViewerDialog storeName="prod" open={true} onClose={() => {}} />,
     );
-    // `describeApiError` falls through to the raw message for codes
-    // it does not specifically translate.
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /the backend exploded/i,
     );
@@ -134,15 +118,14 @@ describe("PolicyViewerDialog", () => {
       document: {
         grants: [
           {
+            client_instance: "dev-laptop",
             wrapper: "gh-authorized",
-            host: "deepthought",
-            user: "robert",
+            resource: "github/token",
             mode: { kind: "unlocked" },
+            writable: false,
             reason: undefined,
           },
         ],
-        files_writable: {},
-        libsecret_writable: {},
       },
     });
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -156,23 +139,15 @@ describe("PolicyViewerDialog", () => {
     renderWithQuery(
       <PolicyViewerDialog storeName="prod" open={true} onClose={() => {}} />,
     );
-    // Wait for the JSON to land and the button to enable. Radix
-    // Dialog renders via a portal and the button's disabled state
-    // can lag a render behind the data fetch.
     await screen.findByTestId("policy-json");
     const copyBtn = screen.getByRole("button", { name: /copy json/i });
     await waitFor(() => expect(copyBtn).toBeEnabled());
-    // Use fireEvent: userEvent's pointer simulation in jsdom can
-    // miss buttons rendered inside Radix's portal under specific
-    // focus conditions, but the React onClick still fires via a
-    // plain click event.
     fireEvent.click(copyBtn);
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const arg = writeText.mock.calls[0][0] as string;
     expect(arg).toContain("gh-authorized");
-    expect(arg).toContain('"files_writable":');
-    expect(arg).toContain('"libsecret_writable":');
+    expect(arg).toContain('"client_instance":');
 
     // The button flips to the "Copied" affordance.
     expect(

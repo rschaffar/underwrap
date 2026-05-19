@@ -3,12 +3,8 @@ import type { AdminUiWrapperCounts } from "./AdminUiWrapperCounts";
 
 export type AdminUiOverviewStore = { store: string, resource_count: number, wrapper_counts: AdminUiWrapperCounts, 
 /**
- * Number of resources with the wrapper-side `files` slot
- * writable. Surfaced on the dashboard overview as a quick
- * "how many resources have writes opened up" signal.
+ * Number of grants with `writable = true`. Surfaced on the
+ * dashboard overview as a quick "how many wrapper writes are
+ * open" signal.
  */
-writable_files_resources: number, 
-/**
- * Same for the `libsecret` slot.
- */
-writable_libsecret_resources: number, };
+writable_grant_count: number, };

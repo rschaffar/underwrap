@@ -37,9 +37,7 @@ use underwrap_protocol::service::{
     AdminPolicyGetRequest, AdminPolicyGetResponse, AdminPolicyPutRequest, AdminSecretDeleteRequest,
     AdminSecretDeleteResponse, AdminSecretListRequest, AdminSecretListResponse,
     AdminSecretReadRequest, AdminSecretReadResponse, AdminSecretWriteRequest,
-    AdminUiOverviewResponse, AdminUiOverviewStore, AdminUiWrapperCounts, AdminWritableSlot,
-    AdminWritePermissionsGetRequest, AdminWritePermissionsResponse,
-    AdminWritePermissionsSetRequest, CatalogEntry,
+    AdminUiOverviewResponse, AdminUiOverviewStore, AdminUiWrapperCounts, CatalogEntry,
 };
 use underwrap_protocol::service::{
     AdminClientInstanceActionState, AdminClientInstanceCreateRequest,
@@ -124,10 +122,6 @@ fn ts_bindings_in_sync_with_rust() {
         AdminSecretReadRequest,
         AdminSecretReadResponse,
         AdminSecretWriteRequest,
-        AdminWritableSlot,
-        AdminWritePermissionsGetRequest,
-        AdminWritePermissionsResponse,
-        AdminWritePermissionsSetRequest,
         AdminStoreBackendKind,
         AdminStoreUsageSummary,
         AdminStoreActionState,

@@ -238,10 +238,9 @@ fn log_admin_event(
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct StoredCatalogEntry {
-    principal: String,
-    host: String,
-    user: String,
-    instance: String,
+    /// The mTLS-authenticated runtime client instance id that
+    /// published this entry.
+    client_instance: String,
     wrapper: String,
     resource: String,
 }
@@ -835,39 +834,23 @@ async fn handle_service_request(
             StatusCode::OK,
             &underwrap_protocol::service::ServiceStatusResponse {
                 ok: true,
-                principal,
+                principal: principal.clone(),
             },
         ),
         (&Method::POST, "/v1/read") => {
             match parse_json_body::<underwrap_protocol::service::ServiceReadRequest>(request).await
             {
-                Ok(body) => match store.read(&body.secret_id) {
-                    Ok(material) => json_response(
-                        StatusCode::OK,
-                        &underwrap_protocol::service::ServiceReadResponse {
-                            material_b64: material.map(|material| {
-                                base64::engine::general_purpose::STANDARD.encode(material.as_ref())
-                            }),
-                        },
-                    ),
-                    Err(e) => error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &format!("storage error: {e}"),
-                    ),
-                },
-                Err(response) => response,
-            }
-        }
-        (&Method::POST, "/v1/write") => {
-            match parse_json_body::<underwrap_protocol::service::ServiceWriteRequest>(request).await
-            {
                 Ok(body) => {
-                    match base64::engine::general_purpose::STANDARD.decode(&body.material_b64) {
-                        Ok(material) => match store.write(&body.secret_id, &material) {
-                            Ok(()) => json_response(
+                    match runtime_read_gate(store.as_ref(), &principal, &body.secret_id, false) {
+                        Ok(()) => match store.read(&body.secret_id) {
+                            Ok(material) => json_response(
                                 StatusCode::OK,
-                                &underwrap_protocol::service::ServiceWriteResponse { ok: true },
+                                &underwrap_protocol::service::ServiceReadResponse {
+                                    material_b64: material.map(|material| {
+                                        base64::engine::general_purpose::STANDARD
+                                            .encode(material.as_ref())
+                                    }),
+                                },
                             ),
                             Err(e) => error_response(
                                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -875,11 +858,42 @@ async fn handle_service_request(
                                 &format!("storage error: {e}"),
                             ),
                         },
-                        Err(e) => error_response(
-                            StatusCode::BAD_REQUEST,
-                            "invalid_request",
-                            &format!("invalid base64 payload: {e}"),
-                        ),
+                        Err(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
+                    }
+                }
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/write") => {
+            match parse_json_body::<underwrap_protocol::service::ServiceWriteRequest>(request).await
+            {
+                Ok(body) => {
+                    match runtime_read_gate(store.as_ref(), &principal, &body.secret_id, true) {
+                        Ok(()) => {
+                            match base64::engine::general_purpose::STANDARD
+                                .decode(&body.material_b64)
+                            {
+                                Ok(material) => match store.write(&body.secret_id, &material) {
+                                    Ok(()) => json_response(
+                                        StatusCode::OK,
+                                        &underwrap_protocol::service::ServiceWriteResponse {
+                                            ok: true,
+                                        },
+                                    ),
+                                    Err(e) => error_response(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "internal",
+                                        &format!("storage error: {e}"),
+                                    ),
+                                },
+                                Err(e) => error_response(
+                                    StatusCode::BAD_REQUEST,
+                                    "invalid_request",
+                                    &format!("invalid base64 payload: {e}"),
+                                ),
+                            }
+                        }
+                        Err(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
                     }
                 }
                 Err(response) => response,
@@ -888,17 +902,22 @@ async fn handle_service_request(
         (&Method::POST, "/v1/list") => {
             match parse_json_body::<underwrap_protocol::service::ServiceListRequest>(request).await
             {
-                Ok(body) => match store.list(&body.prefix) {
-                    Ok(ids) => json_response(
-                        StatusCode::OK,
-                        &underwrap_protocol::service::ServiceListResponse { ids },
-                    ),
-                    Err(e) => error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &format!("storage error: {e}"),
-                    ),
-                },
+                Ok(body) => {
+                    match runtime_prefix_gate(store.as_ref(), &principal, &body.prefix, false) {
+                        Ok(()) => match store.list(&body.prefix) {
+                            Ok(ids) => json_response(
+                                StatusCode::OK,
+                                &underwrap_protocol::service::ServiceListResponse { ids },
+                            ),
+                            Err(e) => error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "internal",
+                                &format!("storage error: {e}"),
+                            ),
+                        },
+                        Err(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
+                    }
+                }
                 Err(response) => response,
             }
         }
@@ -908,30 +927,46 @@ async fn handle_service_request(
             )
             .await
             {
-                Ok(body) => match store.read_prefixes(&body.prefixes) {
-                    Ok(entries) => {
-                        let mut entries: Vec<_> = entries
-                            .into_iter()
-                            .map(
-                                |(id, material)| underwrap_protocol::service::ServiceBundleEntry {
-                                    id,
-                                    material_b64: base64::engine::general_purpose::STANDARD
-                                        .encode(material.as_ref()),
-                                },
-                            )
-                            .collect();
-                        entries.sort_by(|a, b| a.id.cmp(&b.id));
-                        json_response(
-                            StatusCode::OK,
-                            &underwrap_protocol::service::ServiceReadPrefixesResponse { entries },
-                        )
+                Ok(body) => {
+                    let mut blocked: Option<String> = None;
+                    for prefix in &body.prefixes {
+                        if let Err(reason) =
+                            runtime_prefix_gate(store.as_ref(), &principal, prefix, false)
+                        {
+                            blocked = Some(reason);
+                            break;
+                        }
                     }
-                    Err(e) => error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &format!("storage error: {e}"),
-                    ),
-                },
+                    match blocked {
+                        Some(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
+                        None => match store.read_prefixes(&body.prefixes) {
+                            Ok(entries) => {
+                                let mut entries: Vec<_> = entries
+                                    .into_iter()
+                                    .map(|(id, material)| {
+                                        underwrap_protocol::service::ServiceBundleEntry {
+                                            id,
+                                            material_b64: base64::engine::general_purpose::STANDARD
+                                                .encode(material.as_ref()),
+                                        }
+                                    })
+                                    .collect();
+                                entries.sort_by(|a, b| a.id.cmp(&b.id));
+                                json_response(
+                                    StatusCode::OK,
+                                    &underwrap_protocol::service::ServiceReadPrefixesResponse {
+                                        entries,
+                                    },
+                                )
+                            }
+                            Err(e) => error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "internal",
+                                &format!("storage error: {e}"),
+                            ),
+                        },
+                    }
+                }
                 Err(response) => response,
             }
         }
@@ -959,23 +994,134 @@ async fn handle_service_request(
             match parse_json_body::<underwrap_protocol::service::ServiceDeleteRequest>(request)
                 .await
             {
-                Ok(body) => match store.delete(&body.secret_id) {
-                    Ok(existed) => json_response(
-                        StatusCode::OK,
-                        &underwrap_protocol::service::ServiceDeleteResponse { existed },
-                    ),
-                    Err(e) => error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &format!("storage error: {e}"),
-                    ),
-                },
+                Ok(body) => {
+                    match runtime_read_gate(store.as_ref(), &principal, &body.secret_id, true) {
+                        Ok(()) => match store.delete(&body.secret_id) {
+                            Ok(existed) => json_response(
+                                StatusCode::OK,
+                                &underwrap_protocol::service::ServiceDeleteResponse { existed },
+                            ),
+                            Err(e) => error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "internal",
+                                &format!("storage error: {e}"),
+                            ),
+                        },
+                        Err(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
+                    }
+                }
                 Err(response) => response,
             }
         }
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown endpoint"),
     };
     Ok(response)
+}
+
+/// Gate a runtime client's request for a single secret id. The id is
+/// either:
+///
+/// - a reserved system id (`__underwrap/...`) — the runtime client is
+///   permitted unconditionally; only mTLS-authenticated clients reach
+///   this gate, and the system ids cover policy + catalog documents
+///   that the daemon legitimately needs;
+/// - a canonical `<resource>/<slot>/...` id — the runtime client must
+///   have *some* grant for `(principal, _, resource)`; on write the
+///   grant must additionally have `writable = true`.
+///
+/// Reads on resources the principal has *no* grant for are denied —
+/// closing the trust hole where a daemon with a tampered config could
+/// previously fetch any secret out of the store.
+fn runtime_read_gate(
+    store: &dyn StorageBackend,
+    principal: &str,
+    secret_id: &str,
+    write: bool,
+) -> std::result::Result<(), String> {
+    if secret_id.starts_with("__underwrap/") {
+        return Ok(());
+    }
+    let Some(resource) = underwrap_protocol::resource::resource_from_secret_id(secret_id) else {
+        return Err(format!(
+            "secret id '{secret_id}' is not a canonical <resource>/<slot>/... id"
+        ));
+    };
+    // No policy document persisted yet → permissive greenfield
+    // default. As soon as an operator writes any document (even an
+    // empty one) the daemon is locked down to whatever's been
+    // explicitly granted.
+    let raw = store
+        .read(POLICY_DOCUMENT_SECRET_ID)
+        .map_err(|e| format!("loading policy: {e}"))?;
+    let Some(material) = raw else {
+        return Ok(());
+    };
+    let doc: PolicyDocument =
+        serde_json::from_slice(material.as_ref()).map_err(|e| format!("parsing policy: {e}"))?;
+    let Some(grant) = doc
+        .grants
+        .iter()
+        .find(|g| g.client_instance == principal && g.resource == resource)
+    else {
+        return Err(format!("no grant for ({principal}, *, '{resource}')"));
+    };
+    if write && !grant.writable {
+        return Err(format!(
+            "grant for ({principal}, '{}', '{resource}') is read-only",
+            grant.wrapper
+        ));
+    }
+    Ok(())
+}
+
+/// Gate a prefix request (`/v1/list`, `/v1/read-prefixes`). A bare
+/// resource-slot prefix like `github/token/env` is permitted; the same
+/// policy lookup as the single-secret gate applies.
+fn runtime_prefix_gate(
+    store: &dyn StorageBackend,
+    principal: &str,
+    prefix: &str,
+    write: bool,
+) -> std::result::Result<(), String> {
+    if prefix.starts_with("__underwrap/") || prefix == "__underwrap" {
+        return Ok(());
+    }
+    // Strip the trailing `/<slot>` if present so we extract the
+    // resource id even when the prefix is `<resource>/env` (no
+    // trailing `/`).
+    let resource: &str = match prefix.rsplit_once('/') {
+        Some((
+            head,
+            underwrap_protocol::resource::ENV_SLOT
+            | underwrap_protocol::resource::FILES_SLOT
+            | underwrap_protocol::resource::LIBSECRET_SLOT,
+        )) => head,
+        // Fall back to interpreting the prefix as the resource
+        // itself. Bare `<resource>` listings are still gated.
+        _ => prefix,
+    };
+    let raw = store
+        .read(POLICY_DOCUMENT_SECRET_ID)
+        .map_err(|e| format!("loading policy: {e}"))?;
+    let Some(material) = raw else {
+        return Ok(());
+    };
+    let doc: PolicyDocument =
+        serde_json::from_slice(material.as_ref()).map_err(|e| format!("parsing policy: {e}"))?;
+    let Some(grant) = doc
+        .grants
+        .iter()
+        .find(|g| g.client_instance == principal && g.resource == resource)
+    else {
+        return Err(format!("no grant for ({principal}, *, '{resource}')"));
+    };
+    if write && !grant.writable {
+        return Err(format!(
+            "grant for ({principal}, '{}', '{resource}') is read-only",
+            grant.wrapper
+        ));
+    }
+    Ok(())
 }
 
 async fn parse_json_body<T: serde::de::DeserializeOwned>(
@@ -1099,16 +1245,17 @@ fn admin_ui_overview_for_store(
         .collect::<BTreeSet<_>>()
         .len();
 
-    // Bucket every agent grant by its current mode. Pre-245 these
-    // were per-wrapper modes; the grant rewrite moved them onto each
-    // `(wrapper, host, user)` tuple so the count here reflects the
-    // distribution across the agent fleet, not the wrapper catalog.
+    // Bucket every agent grant by its current mode. The grant key is
+    // `(client_instance, wrapper, resource)` so this count reflects
+    // the distribution across the per-resource grant fleet, not the
+    // wrapper catalog.
     let mut wrapper_counts = underwrap_protocol::service::AdminUiWrapperCounts {
         locked: 0,
         unlocked: 0,
         unlocked_until: 0,
         per_call_approval: 0,
     };
+    let mut writable_grant_count = 0usize;
     for grant in &policy.grants {
         match grant.mode {
             underwrap_protocol::policy::WrapperApprovalMode::Locked => wrapper_counts.locked += 1,
@@ -1122,22 +1269,16 @@ fn admin_ui_overview_for_store(
                 wrapper_counts.per_call_approval += 1
             }
         }
+        if grant.writable {
+            writable_grant_count += 1;
+        }
     }
 
     Ok(underwrap_protocol::service::AdminUiOverviewStore {
         store: store_name.to_string(),
         resource_count,
         wrapper_counts,
-        writable_files_resources: policy
-            .files_writable
-            .values()
-            .filter(|enabled| **enabled)
-            .count(),
-        writable_libsecret_resources: policy
-            .libsecret_writable
-            .values()
-            .filter(|enabled| **enabled)
-            .count(),
+        writable_grant_count,
     })
 }
 
@@ -1153,29 +1294,23 @@ fn store_catalog_document(
 
 fn replace_catalog_entries_for_principal(
     store: &dyn StorageBackend,
-    principal: &str,
+    client_instance: &str,
     entries: &[underwrap_protocol::service::CatalogEntry],
 ) -> Result<()> {
     let mut existing = load_catalog_document(store)?;
-    existing.retain(|entry| entry.principal != principal);
+    existing.retain(|entry| entry.client_instance != client_instance);
     for entry in entries {
         existing.push(StoredCatalogEntry {
-            principal: principal.to_string(),
-            host: entry.host.clone(),
-            user: entry.user.clone(),
-            instance: entry.instance.clone(),
+            client_instance: client_instance.to_string(),
             wrapper: entry.wrapper.clone(),
             resource: entry.resource.clone(),
         });
     }
     existing.sort_by(|a, b| {
-        a.resource
-            .cmp(&b.resource)
-            .then(a.host.cmp(&b.host))
-            .then(a.user.cmp(&b.user))
-            .then(a.instance.cmp(&b.instance))
+        a.client_instance
+            .cmp(&b.client_instance)
             .then(a.wrapper.cmp(&b.wrapper))
-            .then(a.principal.cmp(&b.principal))
+            .then(a.resource.cmp(&b.resource))
     });
     existing.dedup();
     store_catalog_document(store, &existing)
@@ -3672,7 +3807,7 @@ fn handle_admin_client_instance_delete(
     )
 }
 
-// ===== Agent grant CRUD + writes-enabled toggle (tickets 246, 247) =====
+// ===== Agent grant CRUD =====
 
 fn load_policy_document_or_default(store: &dyn StorageBackend) -> Result<PolicyDocument> {
     match store.read(POLICY_DOCUMENT_SECRET_ID)? {
@@ -3698,7 +3833,7 @@ fn write_admin_grant_audit(
 ) {
     let resource = format!(
         "grant:{store_name}/{}/{}/{}",
-        grant.wrapper, grant.host, grant.user
+        grant.client_instance, grant.wrapper, grant.resource
     );
     log_admin_event(
         action,
@@ -3753,26 +3888,31 @@ fn handle_admin_grant_upsert(
             return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
         }
     };
-    if body.grant.wrapper.is_empty() || body.grant.host.is_empty() || body.grant.user.is_empty() {
+    if body.grant.client_instance.is_empty()
+        || body.grant.wrapper.is_empty()
+        || body.grant.resource.is_empty()
+    {
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_grant",
-            "wrapper, host, and user must all be non-empty",
+            "client_instance, wrapper, and resource must all be non-empty",
         );
     }
     let new_grant = body.grant.clone();
     if let Some(slot) = doc.grants.iter_mut().find(|g| {
-        g.wrapper == new_grant.wrapper && g.host == new_grant.host && g.user == new_grant.user
+        g.client_instance == new_grant.client_instance
+            && g.wrapper == new_grant.wrapper
+            && g.resource == new_grant.resource
     }) {
         *slot = new_grant.clone();
     } else {
         doc.grants.push(new_grant.clone());
     }
     doc.grants.sort_by(|a, b| {
-        a.wrapper
-            .cmp(&b.wrapper)
-            .then(a.host.cmp(&b.host))
-            .then(a.user.cmp(&b.user))
+        a.client_instance
+            .cmp(&b.client_instance)
+            .then(a.wrapper.cmp(&b.wrapper))
+            .then(a.resource.cmp(&b.resource))
     });
     if let Err(e) = save_policy_document(store.as_ref(), &doc) {
         write_admin_grant_audit(
@@ -3827,8 +3967,11 @@ fn handle_admin_grant_delete(
         }
     };
     let before = doc.grants.len();
-    doc.grants
-        .retain(|g| !(g.wrapper == body.wrapper && g.host == body.host && g.user == body.user));
+    doc.grants.retain(|g| {
+        !(g.client_instance == body.client_instance
+            && g.wrapper == body.wrapper
+            && g.resource == body.resource)
+    });
     let removed = before != doc.grants.len();
     if !removed {
         return error_response(StatusCode::NOT_FOUND, "not_found", "no matching grant");
@@ -3841,10 +3984,11 @@ fn handle_admin_grant_delete(
         );
     }
     let removed_grant = underwrap_protocol::policy::AgentGrant {
+        client_instance: body.client_instance.clone(),
         wrapper: body.wrapper.clone(),
-        host: body.host.clone(),
-        user: body.user.clone(),
+        resource: body.resource.clone(),
         mode: underwrap_protocol::policy::WrapperApprovalMode::Locked,
+        writable: false,
         reason: None,
     };
     write_admin_grant_audit(
@@ -3858,104 +4002,6 @@ fn handle_admin_grant_delete(
     json_response(
         StatusCode::OK,
         &underwrap_protocol::service::AdminOkResponse { ok: true },
-    )
-}
-
-#[allow(clippy::result_large_err)]
-fn handle_admin_write_permissions_get(
-    state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
-    body: &underwrap_protocol::service::AdminWritePermissionsGetRequest,
-) -> Response<Full<Bytes>> {
-    let store = match admin_store_for_principal(state, principal, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let doc = match load_policy_document_or_default(store.as_ref()) {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
-        }
-    };
-    json_response(
-        StatusCode::OK,
-        &underwrap_protocol::service::AdminWritePermissionsResponse {
-            store: body.store.clone(),
-            files_writable: doc.files_writable,
-            libsecret_writable: doc.libsecret_writable,
-        },
-    )
-}
-
-#[allow(clippy::result_large_err)]
-fn handle_admin_write_permissions_set(
-    state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
-    body: &underwrap_protocol::service::AdminWritePermissionsSetRequest,
-) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may edit per-resource write permissions",
-        );
-    }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let mut doc = match load_policy_document_or_default(store.as_ref()) {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
-        }
-    };
-    let (previous, slot_label) = match body.slot {
-        underwrap_protocol::service::AdminWritableSlot::Files => {
-            let prev = doc.files_writable_for(&body.resource);
-            if body.enabled {
-                doc.files_writable.insert(body.resource.clone(), true);
-            } else {
-                doc.files_writable.remove(&body.resource);
-            }
-            (prev, "files")
-        }
-        underwrap_protocol::service::AdminWritableSlot::Libsecret => {
-            let prev = doc.libsecret_writable_for(&body.resource);
-            if body.enabled {
-                doc.libsecret_writable.insert(body.resource.clone(), true);
-            } else {
-                doc.libsecret_writable.remove(&body.resource);
-            }
-            (prev, "libsecret")
-        }
-    };
-    if let Err(e) = save_policy_document(store.as_ref(), &doc) {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("persisting policy document: {e:#}"),
-        );
-    }
-    let action = format!("policy.{slot_label}-writable");
-    let resource = format!("store:{}/{}", body.store, body.resource);
-    let result = format!("{previous}->{}", body.enabled);
-    log_admin_event(
-        action.as_str(),
-        &principal.username,
-        None,
-        Some(resource.as_str()),
-        None,
-        None,
-        result.as_str(),
-    );
-    json_response(
-        StatusCode::OK,
-        &underwrap_protocol::service::AdminWritePermissionsResponse {
-            store: body.store.clone(),
-            files_writable: doc.files_writable,
-            libsecret_writable: doc.libsecret_writable,
-        },
     )
 }
 
@@ -4313,9 +4359,7 @@ async fn handle_admin_request(
                                 entries: entries
                                     .into_iter()
                                     .map(|entry| underwrap_protocol::service::CatalogEntry {
-                                        host: entry.host,
-                                        user: entry.user,
-                                        instance: entry.instance,
+                                        client_instance: entry.client_instance,
                                         wrapper: entry.wrapper,
                                         resource: entry.resource,
                                     })
@@ -4410,27 +4454,6 @@ async fn handle_admin_request(
             Ok(body) => handle_admin_grant_delete(&state, &principal, &body),
             Err(response) => response,
         },
-        // ===== Per-resource wrapper-write permissions =====
-        (&Method::POST, "/v1/admin/policy/write-permissions/get") => {
-            match parse_json_body::<underwrap_protocol::service::AdminWritePermissionsGetRequest>(
-                request,
-            )
-            .await
-            {
-                Ok(body) => handle_admin_write_permissions_get(&state, &principal, &body),
-                Err(response) => response,
-            }
-        }
-        (&Method::POST, "/v1/admin/policy/write-permissions/set") => {
-            match parse_json_body::<underwrap_protocol::service::AdminWritePermissionsSetRequest>(
-                request,
-            )
-            .await
-            {
-                Ok(body) => handle_admin_write_permissions_set(&state, &principal, &body),
-                Err(response) => response,
-            }
-        }
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     };
     Ok(attach_csrf_cookie(response, &state, &auth))
@@ -4654,16 +4677,12 @@ mod tests {
             "principal-a",
             &[
                 underwrap_protocol::service::CatalogEntry {
-                    host: "deepthought".to_string(),
-                    user: "robert".to_string(),
-                    instance: "robert".to_string(),
+                    client_instance: String::new(),
                     wrapper: "gh-authorized".to_string(),
                     resource: "gh/main".to_string(),
                 },
                 underwrap_protocol::service::CatalogEntry {
-                    host: "deepthought".to_string(),
-                    user: "robert".to_string(),
-                    instance: "robert".to_string(),
+                    client_instance: String::new(),
                     wrapper: "gws-castlabs".to_string(),
                     resource: "gws/castlabs".to_string(),
                 },
@@ -4674,9 +4693,7 @@ mod tests {
             &store,
             "principal-b",
             &[underwrap_protocol::service::CatalogEntry {
-                host: "smallthought".to_string(),
-                user: "robert".to_string(),
-                instance: "robert".to_string(),
+                client_instance: String::new(),
                 wrapper: "gh-authorized".to_string(),
                 resource: "gh/main".to_string(),
             }],
@@ -4686,9 +4703,7 @@ mod tests {
             &store,
             "principal-a",
             &[underwrap_protocol::service::CatalogEntry {
-                host: "deepthought".to_string(),
-                user: "robert".to_string(),
-                instance: "robert".to_string(),
+                client_instance: String::new(),
                 wrapper: "confluence".to_string(),
                 resource: "confluence/main".to_string(),
             }],
@@ -4697,16 +4712,20 @@ mod tests {
 
         let entries = load_catalog_document(&store).unwrap();
         assert_eq!(entries.len(), 2);
-        assert!(entries.iter().any(|e| e.principal == "principal-a"
-            && e.instance == "robert"
-            && e.wrapper == "confluence"));
-        assert!(entries.iter().any(|e| e.principal == "principal-b"
-            && e.instance == "robert"
-            && e.wrapper == "gh-authorized"));
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.client_instance == "principal-a" && e.wrapper == "confluence")
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.client_instance == "principal-b" && e.wrapper == "gh-authorized")
+        );
         assert!(
             !entries
                 .iter()
-                .any(|e| e.principal == "principal-a" && e.wrapper == "gh-authorized")
+                .any(|e| e.client_instance == "principal-a" && e.wrapper == "gh-authorized")
         );
     }
 

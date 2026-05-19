@@ -275,9 +275,6 @@ async fn underwrapd_binary_start_and_read() {
             client_cert_file: Some(client_cert.clone()),
             client_key_file: Some(client_key.clone()),
         },
-        catalog_host: "binary-test".to_string(),
-        catalog_instance: String::new(),
-        allowed_users: Vec::new(),
         wrappers: {
             let mut m = HashMap::new();
             let echo = which_echo().unwrap_or_else(|| "/bin/true".to_string());
@@ -343,13 +340,13 @@ async fn underwrapd_binary_start_and_read() {
             store: "test".to_string(),
             document: underwrap_protocol::policy::PolicyDocument {
                 grants: vec![underwrap_protocol::policy::AgentGrant {
+                    client_instance: "inst_underwrap_local".to_string(),
                     wrapper: "w".to_string(),
-                    host: "binary-test".to_string(),
-                    user: crate::harness::current_username(),
+                    resource: "s/t".to_string(),
                     mode: underwrap_protocol::policy::WrapperApprovalMode::Unlocked,
+                    writable: false,
                     reason: None,
                 }],
-                ..Default::default()
             },
         })
         .send()

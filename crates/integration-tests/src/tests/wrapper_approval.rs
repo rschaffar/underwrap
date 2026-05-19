@@ -34,7 +34,7 @@ async fn per_call_approval_succeeds_with_valid_ed25519_signature() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
-    let mut grant = daemon.current_user_grant("gh-authorized");
+    let mut grant = daemon.current_grant("gh-authorized", "github/token");
     grant.mode = WrapperApprovalMode::PerCallApproval {
         approval_key: public_key_openssh,
     };
@@ -43,7 +43,6 @@ async fn per_call_approval_succeeds_with_valid_ed25519_signature() {
             "test",
             &PolicyDocument {
                 grants: vec![grant],
-                ..Default::default()
             },
         )
         .await
@@ -102,7 +101,7 @@ async fn per_call_approval_rejects_wrong_signature() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
-    let mut grant = daemon.current_user_grant("gh-authorized");
+    let mut grant = daemon.current_grant("gh-authorized", "github/token");
     grant.mode = WrapperApprovalMode::PerCallApproval {
         approval_key: authorized_openssh,
     };
@@ -111,7 +110,6 @@ async fn per_call_approval_rejects_wrong_signature() {
             "test",
             &PolicyDocument {
                 grants: vec![grant],
-                ..Default::default()
             },
         )
         .await
@@ -171,23 +169,23 @@ async fn per_call_approval_denies_without_matching_grant() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
-    // Policy has per-call approval mode for a DIFFERENT user; the
-    // current user has no grant at all and must be rejected before
-    // the approval round even fires.
+    // Policy has per-call approval mode for a DIFFERENT client
+    // instance; this daemon's instance has no grant at all and must
+    // be rejected before the approval round even fires.
     daemon
         .put_policy(
             "test",
             &PolicyDocument {
                 grants: vec![underwrap_protocol::policy::AgentGrant {
+                    client_instance: "some-other-instance".to_string(),
                     wrapper: "gh-authorized".to_string(),
-                    host: daemon.catalog_host().to_string(),
-                    user: "definitely-not-the-test-runner".to_string(),
+                    resource: "github/token".to_string(),
                     mode: WrapperApprovalMode::PerCallApproval {
                         approval_key: pubkey_openssh,
                     },
+                    writable: false,
                     reason: None,
                 }],
-                ..Default::default()
             },
         )
         .await

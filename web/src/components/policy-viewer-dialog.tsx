@@ -25,13 +25,11 @@ interface PolicyViewerDialogProps {
 
 /**
  * Read-only viewer for a store's `PolicyDocument`. The Matrix page
- * shows a derived `(wrapper, host, user)` grid that hides the
- * underlying document shape; this dialog renders the raw JSON the
- * backend stores, plus the global `writes_enabled` kill-switch as a
- * prominent badge.
+ * shows a derived `(wrapper, resource, client_instance)` grid that
+ * hides the underlying document shape; this dialog renders the raw
+ * JSON the backend stores, plus a quick count of writable grants.
  *
- * Editing intentionally stays in the Matrix view — see ticket 301
- * for the scope boundary.
+ * Editing intentionally stays in the Matrix view.
  */
 export function PolicyViewerDialog({
   storeName,
@@ -71,10 +69,8 @@ export function PolicyViewerDialog({
     }
   }
 
-  const filesWritable = policy.data?.document.files_writable ?? {};
-  const libsecretWritable = policy.data?.document.libsecret_writable ?? {};
-  const filesOnCount = Object.values(filesWritable).filter(Boolean).length;
-  const libsecretOnCount = Object.values(libsecretWritable).filter(Boolean).length;
+  const grants = policy.data?.document.grants ?? [];
+  const writableGrantCount = grants.filter((g) => g.writable).length;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -100,19 +96,13 @@ export function PolicyViewerDialog({
           <div className="space-y-3">
             <div className="flex items-center gap-3 text-xs">
               <span className="text-(--color-muted)">
-                Wrapper writes:
+                Writable grants:
               </span>
               <span
-                data-testid="writable-files-badge"
+                data-testid="writable-grants-badge"
                 className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-(--color-fg)"
               >
-                files: {filesOnCount} on
-              </span>
-              <span
-                data-testid="writable-libsecret-badge"
-                className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-(--color-fg)"
-              >
-                libsecret: {libsecretOnCount} on
+                {writableGrantCount} of {grants.length}
               </span>
             </div>
             <pre

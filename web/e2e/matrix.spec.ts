@@ -41,8 +41,8 @@ test("cell editor cycles a grant through all four modes and then removes it", as
 
   // Seed one grant directly via the admin API so the matrix has
   // something to render. The grant's tuple
-  // (wrapper, host, user) = (gh-authorized, alpha, robot) is the
-  // row we'll cycle in the UI.
+  // (client_instance, wrapper, resource) = (dev-laptop, gh-authorized,
+  // github/token) is the cell we'll cycle in the UI.
   const csrf = await csrfFromPage(page);
   const seed = await page.request.post(
     `${backendWithAdmin.baseUrl}/v1/admin/grants/upsert`,
@@ -55,10 +55,11 @@ test("cell editor cycles a grant through all four modes and then removes it", as
       data: {
         store: "default",
         grant: {
+          client_instance: "dev-laptop",
           wrapper: "gh-authorized",
-          host: "alpha",
-          user: "robot",
+          resource: "github/token",
           mode: { kind: "locked" },
+          writable: false,
         },
       },
     },
@@ -67,7 +68,9 @@ test("cell editor cycles a grant through all four modes and then removes it", as
 
   await page.goto(`${backendWithAdmin.baseUrl}/matrix?store=default`);
 
-  const cell = page.getByTestId("matrix-cell-gh-authorized-alpha-robot");
+  const cell = page.getByTestId(
+    "matrix-cell-gh-authorized-github/token-dev-laptop",
+  );
   await expect(cell).toBeVisible();
   await expect(cell.getByTestId("mode-locked")).toBeVisible();
 
@@ -118,7 +121,7 @@ test("cell editor cycles a grant through all four modes and then removes it", as
   ).toBeVisible();
 });
 
-test("raw policy viewer surfaces the live PolicyDocument and per-slot write-enabled counts", async ({
+test("raw policy viewer surfaces the live PolicyDocument and writable-grant count", async ({
   page,
   backendWithAdmin,
 }) => {
@@ -130,32 +133,28 @@ test("raw policy viewer surfaces the live PolicyDocument and per-slot write-enab
   const dlg = page.getByRole("dialog", { name: /raw policy: default/i });
   await expect(dlg).toBeVisible();
 
-  // Initial state: no grants, no writable resources for either slot.
-  await expect(dlg.getByTestId("writable-files-badge")).toHaveText(
-    /files: 0 on/i,
-  );
-  await expect(dlg.getByTestId("writable-libsecret-badge")).toHaveText(
-    /libsecret: 0 on/i,
-  );
+  // Initial state: no grants persisted, so 0 of 0 writable.
+  await expect(dlg.getByTestId("writable-grants-badge")).toHaveText(/0 of 0/i);
   const json = dlg.getByTestId("policy-json");
   await expect(json).toContainText('"grants"');
-  await expect(json).toContainText('"files_writable"');
-  await expect(json).toContainText('"libsecret_writable"');
 
-  // Close, flip one resource's files-writable flag on via the admin
-  // API, reopen — the badge re-fetches because the dialog opens
-  // with `staleTime: 0`.
+  // Close, upsert a writable grant via the admin API, reopen — the
+  // badge re-fetches because the dialog opens with `staleTime: 0`.
   await dlg.getByText("Close", { exact: true }).click();
   await expect(dlg).toBeHidden();
   const csrf = await csrfFromPage(page);
   const setResp = await page.request.post(
-    `${backendWithAdmin.baseUrl}/v1/admin/policy/write-permissions/set`,
+    `${backendWithAdmin.baseUrl}/v1/admin/grants/upsert`,
     {
       data: {
         store: "default",
-        resource: "github/token",
-        slot: "files",
-        enabled: true,
+        grant: {
+          client_instance: "dev-laptop",
+          wrapper: "gh-authorized",
+          resource: "github/token",
+          mode: { kind: "unlocked" },
+          writable: true,
+        },
       },
       headers: {
         "X-CSRF-Token": csrf,
@@ -167,10 +166,6 @@ test("raw policy viewer surfaces the live PolicyDocument and per-slot write-enab
 
   await page.getByRole("button", { name: /view raw policy/i }).click();
   const dlg2 = page.getByRole("dialog", { name: /raw policy: default/i });
-  await expect(dlg2.getByTestId("writable-files-badge")).toHaveText(
-    /files: 1 on/i,
-  );
-  await expect(dlg2.getByTestId("policy-json")).toContainText(
-    '"github/token": true',
-  );
+  await expect(dlg2.getByTestId("writable-grants-badge")).toHaveText(/1 of 1/i);
+  await expect(dlg2.getByTestId("policy-json")).toContainText('"writable": true');
 });

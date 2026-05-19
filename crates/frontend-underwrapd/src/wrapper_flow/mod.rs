@@ -104,7 +104,7 @@ async fn complete_read(
         });
     }
 
-    let approval_satisfied = match check_wrapper_mode(wrapper_name, peer_uid, state) {
+    let approval_satisfied = match check_wrapper_mode(wrapper_name, state) {
         Ok(ModeGate::Proceed) => false,
         Ok(ModeGate::NeedApproval(approval_key)) => {
             match run_approval_round(stream, wrapper_name, &approval_key, peer_uid, state).await? {
@@ -161,16 +161,11 @@ mod tests {
                     client_cert_file: None,
                     client_key_file: None,
                 },
-                catalog_host: "host-1".into(),
-                catalog_instance: "inst-1".into(),
-                allowed_users: Vec::new(),
                 wrappers: std::collections::HashMap::new(),
             },
             store: None,
-            enrollment_url: Some(
-                "https://backend.example.internal/enroll?host=host-1&instance=inst-1".into(),
-            ),
-            allowed_user_uids: std::collections::HashSet::new(),
+            enrollment_url: Some("https://backend.example.internal/enroll".into()),
+            client_instance: String::new(),
             pending_approvals: PendingApprovals::new(),
         };
 
@@ -181,7 +176,7 @@ mod tests {
             WrapperResponse::Error { code, message } => {
                 assert!(matches!(code, ErrorCode::Unauthorized));
                 assert!(message.contains("not enrolled yet"));
-                assert!(message.contains("/enroll?host=host-1&instance=inst-1"));
+                assert!(message.contains("/enroll"));
             }
             other => panic!("expected enrollment error, got {other:?}"),
         }
