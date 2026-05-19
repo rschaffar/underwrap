@@ -74,6 +74,7 @@ pub(crate) async fn handle_wrapper(
         &state,
         &result.snapshot,
         result.libsecret_access.as_ref(),
+        &result.resource_access,
     )
     .await;
 
@@ -101,6 +102,7 @@ async fn complete_read(
             },
             snapshot: read::BundleSnapshot::default(),
             libsecret_access: None,
+            resource_access: Vec::new(),
         });
     }
 
@@ -114,6 +116,7 @@ async fn complete_read(
                         response,
                         snapshot: read::BundleSnapshot::default(),
                         libsecret_access: None,
+                        resource_access: Vec::new(),
                     });
                 }
             }
@@ -123,6 +126,7 @@ async fn complete_read(
                 response,
                 snapshot: read::BundleSnapshot::default(),
                 libsecret_access: None,
+                resource_access: Vec::new(),
             });
         }
         Err(response) => {
@@ -130,6 +134,7 @@ async fn complete_read(
                 response,
                 snapshot: read::BundleSnapshot::default(),
                 libsecret_access: None,
+                resource_access: Vec::new(),
             });
         }
     };

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tracing::{error, warn};
 
 use underwrap_protocol::config::AccessMode;
-use underwrap_protocol::message::{ErrorCode, SecretBytes, WrapperResponse};
+use underwrap_protocol::message::{ErrorCode, ReadResourceBinding, SecretBytes, WrapperResponse};
 use underwrap_protocol::resource::{
     env_prefix, env_resource, files_resource, libsecret_resource, relative_to_prefix,
     validate_env_name,
@@ -30,6 +30,10 @@ pub(super) struct ReadResult {
     pub response: WrapperResponse,
     pub snapshot: BundleSnapshot,
     pub libsecret_access: Option<(String, AccessMode)>,
+    /// Per-resource access map captured during read evaluation,
+    /// used by the channel-setup stage to allocate wrapper-resource
+    /// channels with the right writability.
+    pub resource_access: Vec<(String, AccessMode)>,
 }
 
 /// Re-check every grant in the same policy document the mode gate
@@ -191,14 +195,51 @@ pub(super) fn process_read_for(
         Err(message) => return error_result(ErrorCode::Internal, message),
     };
 
+    // Compute one wrapper-resource binding per resource in scope.
+    // Writability is `writable_for` on the resource (the same predicate
+    // the per-slot access already uses); `libsecret` and
+    // `files_target_paths` are derived from the wrapper config.
+    let libsecret_id = wrapper_libsecret_resource(wrapper_def).map(str::to_string);
+    let mut files_paths_by_resource: HashMap<String, Vec<String>> = HashMap::new();
+    for projection in wrapper_file_bindings(wrapper_def) {
+        files_paths_by_resource
+            .entry(projection.resource_id.clone())
+            .or_default()
+            .extend(projection.target_paths.iter().cloned());
+    }
+    let mut resource_bindings = Vec::with_capacity(resource_ids.len());
+    let mut resource_access = Vec::with_capacity(resource_ids.len());
+    for resource_id in &resource_ids {
+        let access = if writable_for(
+            policy.as_ref(),
+            &state.client_instance,
+            &logical_name,
+            resource_id,
+        ) {
+            AccessMode::ReadWrite
+        } else {
+            AccessMode::ReadOnly
+        };
+        resource_access.push((resource_id.clone(), access));
+        resource_bindings.push(ReadResourceBinding {
+            resource_id: resource_id.clone(),
+            access,
+            libsecret: libsecret_id.as_deref() == Some(resource_id.as_str()),
+            files_target_paths: files_paths_by_resource
+                .remove(resource_id)
+                .unwrap_or_default(),
+        });
+    }
+
     ReadResult {
         response: WrapperResponse::ReadOk {
             env,
             directories: file_bindings,
-            resources: Vec::new(),
+            resources: resource_bindings,
         },
         snapshot,
         libsecret_access,
+        resource_access,
     }
 }
 
@@ -234,6 +275,7 @@ fn error_result(code: ErrorCode, message: String) -> ReadResult {
         response: WrapperResponse::Error { code, message },
         snapshot: BundleSnapshot::default(),
         libsecret_access: None,
+        resource_access: Vec::new(),
     }
 }
 
@@ -305,7 +347,9 @@ mod tests {
         let state = state_with_store(store);
         let result = process_read_for("gh-authorized", None, &state, current_uid(), true);
         match result.response {
-            WrapperResponse::ReadOk { env, directories, .. } => {
+            WrapperResponse::ReadOk {
+                env, directories, ..
+            } => {
                 assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
                 assert_eq!(directories.len(), 1);
                 assert_eq!(directories[0].resource_id, "gws/state");

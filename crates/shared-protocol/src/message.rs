@@ -19,7 +19,7 @@ pub use common::SecretBytes;
 pub use directory::{DirectoryRequest, DirectoryResponse};
 pub use errors::{DirectoryErrorCode, ErrorCode, SecretsdErrorCode};
 pub use secretsd::{SecretsdRequest, SecretsdResponse};
-pub use wrapper::{ReadDirectoryBinding, WrapperRequest, WrapperResponse};
+pub use wrapper::{ReadDirectoryBinding, ReadResourceBinding, WrapperRequest, WrapperResponse};
 pub use wrapper_resource::{ResourceErrorCode, WrapperResourceRequest, WrapperResourceResponse};
 
 #[cfg(test)]

@@ -15,6 +15,12 @@ use super::read::BundleSnapshot;
 /// [`super::read::process_read_for`]. Only called when the response is
 /// `ReadOk`, so no re-authorization is needed for initial reads. Write policy
 /// remains enforced by each channel's access mode, derived from backend policy.
+///
+/// The send order on the wire must match the order the wrapper expects:
+/// secretsd channel (if libsecret), then one directory channel per file
+/// binding (legacy), then one wrapper-resource channel per resource
+/// (new, per `resource_access`). `frontend-exec` consumes them in the
+/// same order.
 pub(super) async fn establish_scoped_channels(
     stream: &UnixStream,
     response: &WrapperResponse,
@@ -22,6 +28,7 @@ pub(super) async fn establish_scoped_channels(
     state: &State,
     snapshot: &BundleSnapshot,
     libsecret_access: Option<&(String, AccessMode)>,
+    resource_access: &[(String, AccessMode)],
 ) {
     let WrapperResponse::ReadOk { directories, .. } = response else {
         return;
@@ -65,6 +72,22 @@ pub(super) async fn establish_scoped_channels(
             }
             Err(e) => {
                 error!(wrapper = %wrapper_name, resource = %projection.resource_id, paths = ?projection.target_paths, err = %e, "failed to setup directory channel");
+            }
+        }
+    }
+
+    // One wrapper-resource channel per resource, in the same order the
+    // daemon emitted `WrapperResponse::ReadOk { resources, .. }`. The
+    // wrapper end consumes these after the legacy fds.
+    for (resource_id, access) in resource_access {
+        match setup_wrapper_resource_channel(stream, wrapper_name, resource_id, *access, state)
+            .await
+        {
+            Ok(()) => {
+                info!(wrapper = %wrapper_name, resource = %resource_id, ?access, "wrapper-resource channel established");
+            }
+            Err(e) => {
+                error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "failed to setup wrapper-resource channel");
             }
         }
     }
@@ -120,6 +143,35 @@ async fn setup_secretsd_channel(
             .await;
         });
     })
+    .await
+}
+
+async fn setup_wrapper_resource_channel(
+    stream: &UnixStream,
+    wrapper_name: &str,
+    resource_id: &str,
+    access: AccessMode,
+    state: &State,
+) -> Result<()> {
+    let store = state.store_arc();
+    let wrapper = wrapper_name.to_string();
+    let resource = resource_id.to_string();
+    setup_scoped_channel(
+        stream,
+        "wrapper-resource channel fd",
+        move |daemon_stream| {
+            tokio::spawn(async move {
+                crate::wrapper_resource_channel::run_channel(
+                    daemon_stream,
+                    store,
+                    wrapper,
+                    resource,
+                    access,
+                )
+                .await;
+            });
+        },
+    )
     .await
 }
 
