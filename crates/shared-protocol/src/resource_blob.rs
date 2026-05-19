@@ -56,6 +56,20 @@ pub struct LibsecretSection {
     pub collections: BTreeMap<String, Collection>,
 }
 
+impl LibsecretSection {
+    /// Serialize this section to JCS-canonical JSON bytes. Used by
+    /// the ns↔secretsd init/teardown pipes so the section can be
+    /// exchanged independently of the surrounding `ResourceBlob`.
+    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>> {
+        serde_jcs::to_vec(self).context("serializing libsecret section (JCS)")
+    }
+
+    /// Deserialize a section from JCS-canonical JSON bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        serde_json::from_slice(bytes).context("parsing libsecret section JSON")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collection {
     pub label: String,
@@ -167,6 +181,25 @@ mod tests {
             collections,
         };
         blob
+    }
+
+    #[test]
+    fn libsecret_section_round_trips_independently() {
+        let blob = populated_blob();
+        let section = blob.libsecret.clone();
+        let bytes = section.to_canonical_bytes().unwrap();
+        let decoded = LibsecretSection::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(decoded, section);
+        // Byte-stable on re-encode.
+        assert_eq!(decoded.to_canonical_bytes().unwrap(), bytes);
+    }
+
+    #[test]
+    fn empty_libsecret_section_round_trips() {
+        let section = LibsecretSection::default();
+        let bytes = section.to_canonical_bytes().unwrap();
+        let decoded = LibsecretSection::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(decoded, section);
     }
 
     #[test]
