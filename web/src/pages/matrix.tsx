@@ -24,8 +24,10 @@ import { Label } from "@/components/ui/label";
 import {
   type AdminAgentGrantsListResponse,
   type AdminCatalogGetResponse,
+  type AdminClientInstancesListResponse,
   type AdminStoresListResponse,
   type AgentGrant,
+  fetchClientInstances,
   fetchStores,
   postCatalogGet,
   postGrantDelete,
@@ -143,6 +145,20 @@ export function MatrixPage({ principal }: MatrixPageProps) {
     queryFn: () => postCatalogGet({ store: storeName! }),
     enabled: !!storeName,
   });
+  // The catalog and grants carry the runtime client *id*; the
+  // operator-facing column header shows the editable display name
+  // resolved from this list.
+  const clientInstancesList = useQuery<AdminClientInstancesListResponse>({
+    queryKey: ["admin", "client-instances"],
+    queryFn: fetchClientInstances,
+  });
+  const displayNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of clientInstancesList.data?.items ?? []) {
+      map.set(item.id, item.display_name);
+    }
+    return map;
+  }, [clientInstancesList.data]);
   const wrapperResources = useMemo(
     () => deriveWrapperResources(catalog.data, grants.data?.grants ?? []),
     [catalog.data, grants.data],
@@ -244,6 +260,7 @@ export function MatrixPage({ principal }: MatrixPageProps) {
         <MatrixTable
           wrapperResources={wrapperResources}
           clientInstances={clientInstances}
+          displayNameById={displayNameById}
           grantIndex={grantIndex}
           isAdmin={isAdmin}
           onCellClick={(wr, clientInstance, grant) =>
@@ -261,6 +278,9 @@ export function MatrixPage({ principal }: MatrixPageProps) {
         <EditCellDialog
           storeName={storeName}
           clientInstance={editing.clientInstance}
+          clientInstanceDisplayName={
+            displayNameById.get(editing.clientInstance) ?? editing.clientInstance
+          }
           wrapper={editing.wrapper}
           resource={editing.resource}
           existing={editing.grant}
@@ -283,12 +303,14 @@ export function MatrixPage({ principal }: MatrixPageProps) {
 function MatrixTable({
   wrapperResources,
   clientInstances,
+  displayNameById,
   grantIndex,
   isAdmin,
   onCellClick,
 }: {
   wrapperResources: WrapperResource[];
   clientInstances: string[];
+  displayNameById: Map<string, string>;
   grantIndex: Map<string, AgentGrant>;
   isAdmin: boolean;
   onCellClick: (
@@ -308,11 +330,16 @@ function MatrixTable({
             <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
               Resource
             </th>
-            {clientInstances.map((c) => (
-              <th key={c} className="px-3 py-2">
-                <div className="font-medium text-(--color-fg)">{c}</div>
-              </th>
-            ))}
+            {clientInstances.map((c) => {
+              const displayName = displayNameById.get(c) ?? c;
+              return (
+                <th key={c} className="px-3 py-2" title={c}>
+                  <div className="font-medium text-(--color-fg)">
+                    {displayName}
+                  </div>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
@@ -414,6 +441,7 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
 function EditCellDialog({
   storeName,
   clientInstance,
+  clientInstanceDisplayName,
   wrapper,
   resource,
   existing,
@@ -422,6 +450,7 @@ function EditCellDialog({
 }: {
   storeName: string;
   clientInstance: string;
+  clientInstanceDisplayName: string;
   wrapper: string;
   resource: string;
   existing: AgentGrant | null;
@@ -532,10 +561,12 @@ function EditCellDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {wrapper} / {resource} → {clientInstance}
+            {wrapper} / {resource} → {clientInstanceDisplayName}
           </DialogTitle>
           <DialogDescription>
-            Set the mode this client instance uses when calling{" "}
+            Set the mode{" "}
+            <span title={clientInstance}>{clientInstanceDisplayName}</span>{" "}
+            uses when calling{" "}
             <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{wrapper}</code>{" "}
             for resource{" "}
             <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{resource}</code>
