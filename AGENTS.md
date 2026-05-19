@@ -254,11 +254,47 @@ See `docs/security.md` "Design invariants" and "Secretsd channel" for security a
    bypassed
 5. The usual `ReadOk` / scoped-channel flow continues
 
+## Resource storage and writeback model
+
+Every resource is stored as **one** opaque blob at `resources/<id>` in
+the `StorageBackend`. The blob is JCS-canonical (RFC 8785) JSON
+carrying the resource's `env`, `files`, and `libsecret` sections (see
+`docs/backend.md` "Resource blob storage"). The wrapper-side per-call
+IPC verbs still exist, but writes during a run buffer in the daemon's
+in-memory bundle snapshot and are persisted as one atomic blob write
+when the channel closes.
+
+`WrapperResourcePairRecord` carries `last_used_at` (bumped on every
+successful runtime read) and `files_mount_paths` (refreshed from the
+wrapper config on every daemon startup register). The admin SPA's
+Wrappers matrix shows the relative-time label; the Secrets browser
+uses the mount paths to render `<mount>/<inner>` next to each file
+entry.
+
+The namespace's bind-mounted directory and tmpfs staging dir are
+**always read-write** to the target, regardless of grant. The backend
+remains the sole authority for write authorization: when an
+end-of-run writeback is rejected on a read-only grant, the wrapper
+emits one structured journal event plus one stderr line per affected
+resource (suppressible via `UNDERWRAP_SUPPRESS_READONLY_WARNING=1`).
+secretsd applies the same warning UX to libsecret writes; the D-Bus
+client sees its `SetSecret` as succeeding.
+
+`UNDERWRAP_SUPPRESS_READONLY_WARNING` is honored by `frontend-ns` and
+`frontend-secretsd`. It is **never** propagated into the target
+process's environment.
+
 ## Completed work
 
-The libsecret mode is implemented. See the architecture notes above and
-`docs/security.md` for the full design and security analysis.
+The libsecret mode is implemented. See the architecture notes above
+and `docs/security.md` for the full design and security analysis. The
+atomic resource-blob storage layout, last-used tracking, always-rw
+namespace mount, and read-only writeback warning have all landed
+(tickets/03_done/epic_atomic_resource_blobs.md).
 
 ## Planned work
 
-- None currently. See git log for recent libsecret mode implementation.
+- Wrapper-side rewrite to speak Checkout/Checkin/UsageSignal natively
+  and remove the legacy per-call IPC (tickets/01_todo/411, 413).
+- Documentation pass on architecture.md + security.md and a VM test
+  for the always-rw mount and warning behavior (tickets/01_todo/432).

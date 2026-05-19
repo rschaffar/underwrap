@@ -245,6 +245,35 @@ This principle matters most in:
 - privilege dropping
 - descriptor handling
 
+### 7. The backend is the sole write-authorization authority
+
+The namespace-side tmpfs staging dirs and bind mounts are always
+read-write to the target, even when the grant is read-only. This
+deliberately diverges from the previous "bind read-only into the
+namespace" design, which surfaced EROFS to target processes and broke
+tools that test-write before falling back (cache directories, git
+credential helpers, etc.).
+
+The backend remains the only authority that decides whether a change
+persists. When a wrapper attempts a writeback for a read-only-granted
+resource:
+
+- the daemon refuses the underlying storage write,
+- the wrapper drops the locally-buffered change,
+- the wrapper emits one structured `audit=writeback_rejected
+  reason=grant_readonly` event to stderr (captured by journald on
+  systemd units),
+- and writes one human-readable warning line to stderr unless
+  `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` is set on the wrapper's
+  environment. The suppression env var is never propagated into the
+  target process; it is a wrapper-owned signal only.
+
+The change in attack surface is small: a malicious target inside the
+namespace could already attempt writes to its bound directory under
+the old design; the only difference is whether the kernel rejects
+with EROFS at the syscall layer or the backend rejects at the IPC
+layer with an audit trail.
+
 ---
 
 ## Wrapper identity: setgid + effective GID

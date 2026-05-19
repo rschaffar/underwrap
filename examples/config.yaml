@@ -82,5 +82,14 @@ wrappers:
           # resource is bind-mounted at every entry; writes are serialized
           # through a single daemon channel so two mount points can never
           # race against each other.
+          #
+          # The namespace mount is always read-write for the target, even
+          # when the backend grant denies writes. The backend is the sole
+          # write authority: any modifications attempted on a read-only
+          # grant are dropped at the end-of-run writeback and the wrapper
+          # emits one journal event + one stderr line per affected
+          # resource. Set `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` on the
+          # wrapper invocation to silence the stderr line (the journal
+          # event is always emitted).
           paths:
             - .config/gws

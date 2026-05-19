@@ -301,6 +301,8 @@ pairs:
     resource: github/token
     created_by: { kind: client-instance, id: inst_dev_laptop }
     created_at: 1735690500
+    last_used_at: 1735770100
+    files_mount_paths: [".config/gh"]
 ```
 
 Provenance is set on first creation and never changes afterwards.
@@ -308,6 +310,63 @@ There is no edit endpoint; `delete` on either entity refuses when
 dependents exist (the response carries structured `blocked_by`
 counts plus a small sample so the SPA can render a clear "fix this
 first" message).
+
+`last_used_at` (unix seconds, `None` until first use) is bumped
+server-side on every successful runtime read against the pair's
+resource. The bump is idempotent at one-second resolution and never
+blocks a read.
+
+`files_mount_paths` is the set of target-home-relative paths the
+wrapper bind-mounts this resource's `files` slot at. The daemon
+reports the current value on every startup register; existing pair
+records are refreshed when the value changes (so editing a wrapper
+mount path is reflected in the SPA after the next daemon restart).
+The admin SPA uses this list to render `<mount>/<inner>` next to
+each stored file so operators can see where it lands at runtime.
+
+## Resource blob storage
+
+Every resource is stored as **one** opaque key in the
+`StorageBackend` at `resources/<resource_id>`. The value is the
+JCS-canonical (RFC 8785) JSON bytes of a `ResourceBlob` carrying the
+three slots inline:
+
+```json
+{
+  "schema_version": 1,
+  "env": { "GH_TOKEN": "<base64>" },
+  "files": { "config.toml": "<base64>" },
+  "libsecret": {
+    "aliases": { "default": "default" },
+    "collections": {
+      "default": {
+        "label": "Default", "created": 100, "modified": 200,
+        "items": {
+          "gh-cli": {
+            "label": "gh CLI", "content_type": "text/plain",
+            "created": 100, "modified": 200,
+            "attributes": { "server": "github.com" },
+            "secret": "<base64>"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`BTreeMap` everywhere keeps key order deterministic; combined with
+`serde_jcs` the canonical bytes are byte-identical for any two
+logically-equal blobs. Change detection at the wrapper end-of-run
+will be a byte comparison once the wrapper-side rewrite (story 410)
+lands; today the daemon still re-serializes on every flush.
+
+`PlainBackend` stores the blob as one file per resource;
+`EncryptedBackend` AEAD-encrypts the blob as one ciphertext with one
+nonce per resource. The per-key administrative endpoints
+(`/v1/admin/secret/{read,write,list,delete}`) keep the legacy
+`<resource>/<slot>/<inner>` address space but route through the blob
+via a load-modify-save shim.
 
 The `auto_create_wrapper_assets` flag on each client-instance record
 gates whether `POST /v1/runtime/wrappers/register` may insert new
