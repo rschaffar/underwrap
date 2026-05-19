@@ -7,7 +7,10 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecDirectoryBinding {
     pub resource_id: String,
-    pub target_path: String,
+    /// Target-home-relative paths at which the same staging directory
+    /// should be bind-mounted. A single `channel_fd` backs all of them
+    /// so writeback through one resource cannot race with itself.
+    pub target_paths: Vec<String>,
     pub access: AccessMode,
     pub channel_fd: u32,
 }
@@ -15,7 +18,7 @@ pub struct ExecDirectoryBinding {
 impl WireEncode for ExecDirectoryBinding {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         self.resource_id.encode(out)?;
-        self.target_path.encode(out)?;
+        self.target_paths.encode(out)?;
         self.access.encode(out)?;
         self.channel_fd.encode(out)
     }
@@ -25,7 +28,7 @@ impl WireDecode for ExecDirectoryBinding {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         Ok(Self {
             resource_id: String::decode(reader)?,
-            target_path: String::decode(reader)?,
+            target_paths: Vec::<String>::decode(reader)?,
             access: AccessMode::decode(reader)?,
             channel_fd: u32::decode(reader)?,
         })
@@ -69,7 +72,7 @@ mod tests {
     fn exec_directory_binding_roundtrip() {
         let binding = ExecDirectoryBinding {
             resource_id: "gws/state".to_string(),
-            target_path: ".config/gh".to_string(),
+            target_paths: vec![".config/gh".to_string()],
             access: AccessMode::ReadWrite,
             channel_fd: 12,
         };
@@ -111,13 +114,13 @@ mod tests {
             directories: vec![
                 ExecDirectoryBinding {
                     resource_id: "gws/state".to_string(),
-                    target_path: ".config/gh".to_string(),
+                    target_paths: vec![".config/gh".to_string()],
                     access: AccessMode::ReadWrite,
                     channel_fd: 10,
                 },
                 ExecDirectoryBinding {
                     resource_id: "aws/cache".to_string(),
-                    target_path: ".aws/sso/cache".to_string(),
+                    target_paths: vec![".aws/sso/cache".to_string(), ".cache/aws-sso".to_string()],
                     access: AccessMode::ReadOnly,
                     channel_fd: 11,
                 },

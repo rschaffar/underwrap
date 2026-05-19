@@ -145,7 +145,7 @@ Directory credentials reuse the same channel pattern as libsecret mode:
 underwrap-exec
   -> underwrap-ns
       -> namespace-private staging directory
-      -> bind-mount into $HOME/<configured-path>
+      -> bind-mount into $HOME/<configured-path>...
       -> target
 ```
 
@@ -153,6 +153,12 @@ For each directory binding, `underwrap-ns` materializes current backend
 files into a namespace-private staging directory, bind-mounts it into
 the target's home view (read-only when the binding is read-only), and
 syncs changes back to the backend after exit for read-write bindings.
+
+The same backend resource can be projected at multiple paths within one
+wrapper by configuring `files.paths` as a list. All listed paths share
+a single staging directory and daemon channel, so concurrent writes
+through different mount points are serialized through one writeback
+path and observers always see identical content at every mount.
 
 ## Crate layout
 

@@ -78,4 +78,9 @@ wrappers:
     resources:
       gws/state:
         files:
-          path: .config/gws
+          # One or more target-home-relative mount paths. The same backend
+          # resource is bind-mounted at every entry; writes are serialized
+          # through a single daemon channel so two mount points can never
+          # race against each other.
+          paths:
+            - .config/gws

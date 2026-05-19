@@ -100,8 +100,14 @@ async fn directory_bindings_are_returned_on_read() {
         WrapperResponse::ReadOk { env, directories } => {
             assert!(env.is_empty());
             assert_eq!(directories.len(), 2);
-            assert_eq!(directories[0].target_path, ".config/gws-a");
-            assert_eq!(directories[1].target_path, ".local/share/gws-b");
+            assert_eq!(
+                directories[0].target_paths,
+                vec![".config/gws-a".to_string()]
+            );
+            assert_eq!(
+                directories[1].target_paths,
+                vec![".local/share/gws-b".to_string()],
+            );
         }
         other => panic!("expected ReadOk, got {other:?}"),
     }

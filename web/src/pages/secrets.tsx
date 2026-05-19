@@ -183,10 +183,18 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
   );
   const grouped = useMemo(() => groupSecretIds(visibleIds), [visibleIds]);
 
+  // Resources the operator has added manually via "Create resource"
+  // but to which they haven't yet attached any secrets. The state is
+  // ephemeral — once the first entry is written the resource shows up
+  // naturally from the secret list, and a page reload drops empty
+  // entries that nobody filled in.
+  const [manualResources, setManualResources] = useState<string[]>([]);
+
   // Resources known to this store from any source: actually-stored
-  // secrets and catalog entries from wrappers that have registered.
-  // Listing empty resources from the catalog lets an admin seed
-  // entries BEFORE the wrapper writes its first secret.
+  // secrets, catalog entries from wrappers that have registered, and
+  // ad-hoc resources the operator just created in the UI. Empty
+  // resources let an admin seed entries BEFORE any wrapper has
+  // written its first secret.
   const allResources = useMemo<SecretResourceGroup[]>(() => {
     const byResource = new Map<string, SecretResourceGroup>();
     for (const g of grouped.resources) {
@@ -205,14 +213,20 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     for (const entry of catalog.data?.entries ?? []) {
       ensureEmpty(entry.resource);
     }
+    for (const resource of manualResources) {
+      ensureEmpty(resource);
+    }
     return [...byResource.values()].sort((a, b) =>
       a.resource.localeCompare(b.resource),
     );
-  }, [grouped.resources, catalog.data]);
+  }, [grouped.resources, catalog.data, manualResources]);
 
   const [revealing, setRevealing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<{ prefilledId?: string } | null>(
+    null,
+  );
+  const [creatingResource, setCreatingResource] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   if (!storeName) {
@@ -250,10 +264,10 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
           <Button
             type="button"
             size="sm"
-            onClick={() => setCreating(true)}
+            onClick={() => setCreatingResource(true)}
           >
             <Plus className="mr-1.5 h-4 w-4" aria-hidden />
-            Create secret
+            Create resource
           </Button>
           <label className="text-sm text-(--color-muted)">
             Store:{" "}
@@ -282,7 +296,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
       ) : allResources.length === 0 && grouped.unrecognized.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
           No resources are known to this store yet. Use{" "}
-          <strong className="text-(--color-fg)">Create secret</strong>{" "}
+          <strong className="text-(--color-fg)">Create resource</strong>{" "}
           to add one, or wait for a wrapper to register its catalog.
         </p>
       ) : (
@@ -295,6 +309,11 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
               onReveal={setRevealing}
               onEdit={setEditing}
               onDelete={setDeleting}
+              onAddEntry={(slot) =>
+                setCreating({
+                  prefilledId: `${group.resource}/${slot}/`,
+                })
+              }
             />
           ))}
           {grouped.unrecognized.length > 0 ? (
@@ -319,8 +338,21 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         <WriteSecretDialog
           storeName={storeName}
           mode="create"
+          prefilledSecretId={creating.prefilledId}
           wrapperChoices={wrapperChoices}
-          onClose={() => setCreating(false)}
+          onClose={() => setCreating(null)}
+        />
+      ) : null}
+      {creatingResource ? (
+        <CreateResourceDialog
+          existingResources={allResources.map((r) => r.resource)}
+          onClose={() => setCreatingResource(false)}
+          onCreated={(name) => {
+            setManualResources((prev) =>
+              prev.includes(name) ? prev : [...prev, name],
+            );
+            setCreatingResource(false);
+          }}
         />
       ) : null}
       {editing ? (
@@ -354,10 +386,12 @@ interface RowActions {
 function ResourceBlock({
   group,
   isAdmin,
+  onAddEntry,
   ...actions
 }: {
   group: SecretResourceGroup;
   isAdmin: boolean;
+  onAddEntry: (slot: SecretSlot) => void;
 } & RowActions) {
   const total = resourceCount(group);
   // The summary line shows which slots have content. It avoids
@@ -382,9 +416,16 @@ function ResourceBlock({
         </span>
       </summary>
       <div className="space-y-3 border-t border-(--color-line)/60 px-4 py-3">
-        <SlotSection slot="env" entries={group.env} isAdmin={isAdmin} {...actions} />
-        <SlotSection slot="files" entries={group.files} isAdmin={isAdmin} {...actions} />
-        <SlotSection slot="libsecret" entries={group.libsecret} isAdmin={isAdmin} {...actions} />
+        {SECRET_SLOTS.map((slot) => (
+          <SlotSection
+            key={slot}
+            slot={slot}
+            entries={group[slot]}
+            isAdmin={isAdmin}
+            onAdd={() => onAddEntry(slot)}
+            {...actions}
+          />
+        ))}
       </div>
     </details>
   );
@@ -394,11 +435,13 @@ function SlotSection({
   slot,
   entries,
   isAdmin: _isAdmin,
+  onAdd,
   ...actions
 }: {
   slot: SecretSlot;
   entries: SecretEntry[];
   isAdmin: boolean;
+  onAdd: () => void;
 } & RowActions) {
   return (
     <section data-testid={`slot-${slot}`} className="space-y-1">
@@ -406,6 +449,17 @@ function SlotSection({
         <h3 className="font-mono text-xs uppercase tracking-wide text-(--color-muted)">
           {slot}
         </h3>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-label={`Add ${slot} entry`}
+          data-testid={`slot-${slot}-add`}
+          onClick={onAdd}
+          className="h-6 px-1.5"
+        >
+          <Plus className="h-3.5 w-3.5" aria-hidden />
+        </Button>
       </div>
       {entries.length === 0 ? (
         <p className="pl-2 text-xs text-(--color-muted)/70">(none)</p>
@@ -648,12 +702,14 @@ function WriteSecretDialog({
   storeName,
   mode,
   existingId,
+  prefilledSecretId,
   wrapperChoices,
   onClose,
 }: {
   storeName: string;
   mode: "create" | "edit";
   existingId?: string;
+  prefilledSecretId?: string;
   wrapperChoices: string[];
   onClose: () => void;
 }) {
@@ -662,7 +718,7 @@ function WriteSecretDialog({
   const form = useForm<WriteValues>({
     resolver: zodResolver(writeSchema),
     defaultValues: {
-      secret_id: existingId ?? "",
+      secret_id: existingId ?? prefilledSecretId ?? "",
       wrapper: wrapperChoices[0] ?? "",
       material: "",
     },
@@ -809,6 +865,105 @@ function WriteSecretDialog({
                     ? "Create"
                     : "Save"}
               </Button>
+            </DialogFooter>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------- Create resource ----------
+
+const resourceSchema = z.object({
+  resource: z
+    .string()
+    .min(1, "Resource name is required.")
+    .refine((s) => !s.startsWith("__underwrap/"), {
+      message: "Reserved names starting with __underwrap/ cannot be used.",
+    })
+    .refine((s) => !s.startsWith("/") && !s.endsWith("/"), {
+      message: "Resource name must not start or end with a slash.",
+    })
+    .refine((s) => !/\/(env|files|libsecret)\//.test(`${s}/`), {
+      message:
+        "Resource name must not contain an env/files/libsecret slot segment.",
+    }),
+});
+type ResourceValues = z.infer<typeof resourceSchema>;
+
+function CreateResourceDialog({
+  existingResources,
+  onCreated,
+  onClose,
+}: {
+  existingResources: string[];
+  onCreated: (name: string) => void;
+  onClose: () => void;
+}) {
+  const form = useForm<ResourceValues>({
+    resolver: zodResolver(resourceSchema),
+    defaultValues: { resource: "" },
+  });
+  const known = useMemo(() => new Set(existingResources), [existingResources]);
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Create resource</DialogTitle>
+          <DialogDescription>
+            Add an empty resource block to this store. Use the{" "}
+            <strong className="text-(--color-fg)">+</strong> button on each
+            slot (env, files, libsecret) to populate it. The resource
+            disappears on reload until at least one entry is written.
+          </DialogDescription>
+        </DialogHeader>
+        <Form {...form}>
+          <form
+            onSubmit={form.handleSubmit((v) => {
+              if (known.has(v.resource)) {
+                form.setError("resource", {
+                  message: "A resource with that name already exists.",
+                });
+                return;
+              }
+              onCreated(v.resource);
+            })}
+            className="space-y-4"
+            noValidate
+          >
+            <FormField
+              control={form.control}
+              name="resource"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Resource name</FormLabel>
+                  <FormControl>
+                    <Input
+                      autoFocus
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      placeholder="e.g. github/token"
+                      data-testid="create-resource-input"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Slash-delimited path, without an{" "}
+                    <code>env</code>/<code>files</code>/<code>libsecret</code>{" "}
+                    slot suffix.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button type="submit">Create</Button>
             </DialogFooter>
           </form>
         </Form>

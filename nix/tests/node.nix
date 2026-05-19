@@ -314,27 +314,27 @@ in {
           };
           test-dir-write = {
             target = "${dirWriteScript}";
-            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
-            resources."test/dir-b".files.path = ".local/share/underwrap-dir-b";
+            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+            resources."test/dir-b".files.paths = [ ".local/share/underwrap-dir-b" ];
           };
           test-dir-read = {
             target = "${dirReadScript}";
-            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
-            resources."test/dir-b".files.path = ".local/share/underwrap-dir-b";
+            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+            resources."test/dir-b".files.paths = [ ".local/share/underwrap-dir-b" ];
           };
           test-dir-readonly-write = {
             target = "${dirWriteScript}";
-            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
-            resources."test/dir-b".files.path = ".local/share/underwrap-dir-b";
+            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+            resources."test/dir-b".files.paths = [ ".local/share/underwrap-dir-b" ];
           };
           test-dir-sleep = {
             target = "${dirSleepScript}";
-            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
-            resources."test/dir-b".files.path = ".local/share/underwrap-dir-b";
+            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+            resources."test/dir-b".files.paths = [ ".local/share/underwrap-dir-b" ];
           };
           test-dir-symlink = {
             target = "${dirSymlinkScript}";
-            resources."test/dir-a".files.path = ".config/underwrap-dir-a";
+            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
           };
         };
       };

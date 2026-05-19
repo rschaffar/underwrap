@@ -8,13 +8,21 @@ use underwrap_protocol::exec::ExecDirectoryBinding;
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{DirectoryRequest, DirectoryResponse};
 
+pub struct DirectoryMount {
+    pub target_mount_path: PathBuf,
+    pub created_mount_dirs: Vec<PathBuf>,
+}
+
 pub struct MountedDirectory {
     pub resource_id: String,
     pub access: AccessMode,
     pub channel_fd: i32,
-    pub target_mount_path: PathBuf,
+    /// All bind-mount targets backed by `staging_path`. A single backend
+    /// resource can be exposed at multiple namespace-local paths; they
+    /// all share the same staging directory and channel, so writes are
+    /// serialized through one writeback path.
+    pub mounts: Vec<DirectoryMount>,
     pub staging_path: PathBuf,
-    pub created_mount_dirs: Vec<PathBuf>,
     pub initial_files: BTreeSet<String>,
 }
 
@@ -25,9 +33,15 @@ pub fn prepare_directory_mounts(
 ) -> Result<Vec<MountedDirectory>, String> {
     let mut mounted = Vec::new();
     for (index, binding) in bindings.iter().enumerate() {
-        validate_relative_path(&binding.target_path)?;
-        let (target_mount_path, created_mount_dirs) =
-            ensure_mount_target(target_home, &binding.target_path)?;
+        if binding.target_paths.is_empty() {
+            return Err(format!(
+                "directory credential '{}' has no target paths",
+                binding.resource_id
+            ));
+        }
+        for target_path in &binding.target_paths {
+            validate_relative_path(target_path)?;
+        }
 
         let staging_path = staging_root.join(format!("dir-{index}"));
         std::fs::create_dir_all(&staging_path)
@@ -53,19 +67,28 @@ pub fn prepare_directory_mounts(
         if binding.access == AccessMode::ReadOnly {
             bind_mount_readonly_to_self(&staging_path)?;
         }
-        bind_mount_dir(
-            &staging_path,
-            &target_mount_path,
-            binding.access == AccessMode::ReadOnly,
-        )?;
+
+        let mut mounts = Vec::with_capacity(binding.target_paths.len());
+        for target_path in &binding.target_paths {
+            let (target_mount_path, created_mount_dirs) =
+                ensure_mount_target(target_home, target_path)?;
+            bind_mount_dir(
+                &staging_path,
+                &target_mount_path,
+                binding.access == AccessMode::ReadOnly,
+            )?;
+            mounts.push(DirectoryMount {
+                target_mount_path,
+                created_mount_dirs,
+            });
+        }
 
         mounted.push(MountedDirectory {
             resource_id: binding.resource_id.clone(),
             access: binding.access,
             channel_fd: binding.channel_fd as i32,
-            target_mount_path,
+            mounts,
             staging_path,
-            created_mount_dirs,
             initial_files,
         });
     }
@@ -93,15 +116,18 @@ pub fn close_directory_channel_fds_for_exec(directories: &[MountedDirectory]) {
 pub fn cleanup_directory_mounts(directories: &[MountedDirectory]) -> Result<(), String> {
     let mut first_error = None;
     for directory in directories.iter().rev() {
-        if let Err(e) = unmount_path(&directory.target_mount_path) {
-            first_error.get_or_insert(e);
-            continue;
-        }
-        for dir in directory.created_mount_dirs.iter().rev() {
-            if let Err(e) = std::fs::remove_dir(dir)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                first_error.get_or_insert(format!("removing mountpoint {}: {e}", dir.display()));
+        for mount in directory.mounts.iter().rev() {
+            if let Err(e) = unmount_path(&mount.target_mount_path) {
+                first_error.get_or_insert(e);
+                continue;
+            }
+            for dir in mount.created_mount_dirs.iter().rev() {
+                if let Err(e) = std::fs::remove_dir(dir)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    first_error
+                        .get_or_insert(format!("removing mountpoint {}: {e}", dir.display()));
+                }
             }
         }
     }

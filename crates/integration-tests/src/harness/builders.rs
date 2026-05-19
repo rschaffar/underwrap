@@ -35,10 +35,14 @@ pub fn wrapper(target: &str, resource_id: &str, _env_var: &str) -> WrapperDef {
 }
 
 pub fn files_resource(path: &str) -> ResourceUse {
+    files_resource_paths(&[path])
+}
+
+pub fn files_resource_paths(paths: &[&str]) -> ResourceUse {
     ResourceUse {
         env: false,
         files: Some(FilesUse {
-            path: path.to_string(),
+            paths: paths.iter().map(|p| (*p).to_string()).collect(),
         }),
         libsecret: false,
     }
@@ -59,6 +63,15 @@ mod tests {
     #[test]
     fn files_resource_builder_sets_path() {
         let usage = files_resource(".config/gws");
-        assert_eq!(usage.files.unwrap().path, ".config/gws");
+        assert_eq!(usage.files.unwrap().paths, vec![".config/gws".to_string()]);
+    }
+
+    #[test]
+    fn files_resource_paths_builder_carries_all_paths() {
+        let usage = files_resource_paths(&[".config/gws", ".local/share/gws"]);
+        assert_eq!(
+            usage.files.unwrap().paths,
+            vec![".config/gws".to_string(), ".local/share/gws".to_string()],
+        );
     }
 }

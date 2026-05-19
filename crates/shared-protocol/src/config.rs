@@ -174,8 +174,13 @@ pub struct ResourceUse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FilesUse {
-    /// Target-home-relative path for the files slot.
-    pub path: String,
+    /// Target-home-relative mount paths for the files slot. One backend
+    /// resource may project at multiple paths inside the namespace; they
+    /// all share a single daemon-managed staging directory and channel,
+    /// so reads observe identical content and writes are serialized
+    /// through one writeback path regardless of which mount the target
+    /// touched. Must contain at least one entry.
+    pub paths: Vec<String>,
 }
 
 /// Local capability derived from backend policy for a projected mutable slot.
@@ -235,7 +240,9 @@ wrappers:
         env: true
       gws/state:
         files:
-          path: .config/gws
+          paths:
+            - .config/gws
+            - .local/share/gws
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.wrappers.len(), 1);
@@ -244,8 +251,8 @@ wrappers:
         assert_eq!(w.resources.len(), 2);
         assert!(w.resources["github/token"].env);
         assert_eq!(
-            w.resources["gws/state"].files.as_ref().unwrap().path,
-            ".config/gws"
+            w.resources["gws/state"].files.as_ref().unwrap().paths,
+            vec![".config/gws".to_string(), ".local/share/gws".to_string()],
         );
     }
 
@@ -271,7 +278,7 @@ wrappers:
     }
 
     #[test]
-    fn files_projection_requires_path() {
+    fn files_projection_requires_paths() {
         let yaml = r#"
 backend:
   url: https://x
@@ -288,6 +295,6 @@ wrappers:
         files: {}
 "#;
         let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
-        assert!(err.to_string().contains("missing field `path`"));
+        assert!(err.to_string().contains("missing field `paths`"));
     }
 }

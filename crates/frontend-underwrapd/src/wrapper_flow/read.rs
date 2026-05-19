@@ -250,7 +250,7 @@ mod tests {
                                 ResourceUse {
                                     env: false,
                                     files: Some(FilesUse {
-                                        path: ".config/gcloud".to_string(),
+                                        paths: vec![".config/gcloud".to_string()],
                                     }),
                                     libsecret: false,
                                 },

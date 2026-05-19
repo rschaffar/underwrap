@@ -85,12 +85,18 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
                 libsecret_count += 1;
             }
             if let Some(files) = &usage.files {
-                validate_relative_credential_path(&files.path).with_context(|| {
-                    format!(
-                        "wrapper '{name}' projects resource '{resource_id}' files slot with invalid path"
-                    )
-                })?;
-                directory_paths.push(files.path.clone());
+                anyhow::ensure!(
+                    !files.paths.is_empty(),
+                    "wrapper '{name}' projects resource '{resource_id}' files slot with no paths"
+                );
+                for path in &files.paths {
+                    validate_relative_credential_path(path).with_context(|| {
+                        format!(
+                            "wrapper '{name}' projects resource '{resource_id}' files slot with invalid path"
+                        )
+                    })?;
+                    directory_paths.push(path.clone());
+                }
             }
         }
         for (i, left) in directory_paths.iter().enumerate() {

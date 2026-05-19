@@ -123,7 +123,7 @@ fn exec_via_ns(
         .enumerate()
         .map(|(index, binding)| ExecDirectoryBinding {
             resource_id: binding.metadata.resource_id.clone(),
-            target_path: binding.metadata.target_path.clone(),
+            target_paths: binding.metadata.target_paths.clone(),
             access: binding.metadata.access,
             channel_fd: (FIRST_DIRECTORY_CHANNEL_FD + index as i32) as u32,
         })

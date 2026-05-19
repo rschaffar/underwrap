@@ -61,10 +61,10 @@ pub(super) async fn establish_scoped_channels(
         .await
         {
             Ok(()) => {
-                info!(wrapper = %wrapper_name, resource = %projection.resource_id, path = %projection.target_path, "directory channel established");
+                info!(wrapper = %wrapper_name, resource = %projection.resource_id, paths = ?projection.target_paths, "directory channel established");
             }
             Err(e) => {
-                error!(wrapper = %wrapper_name, resource = %projection.resource_id, path = %projection.target_path, err = %e, "failed to setup directory channel");
+                error!(wrapper = %wrapper_name, resource = %projection.resource_id, paths = ?projection.target_paths, err = %e, "failed to setup directory channel");
             }
         }
     }

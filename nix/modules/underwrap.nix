@@ -16,8 +16,8 @@ let
     || lib.hasPrefix (right + "/") left;
 
   wrapperDirectoryPaths = wrapper:
-    lib.filter (path: path != null)
-      (lib.mapAttrsToList (_resource: use: if use.files == null then null else use.files.path)
+    lib.concatLists
+      (lib.mapAttrsToList (_resource: use: if use.files == null then [] else use.files.paths)
         wrapper.resources);
 
   # Per-instance helper functions. All names are prefixed with the instance name
@@ -113,7 +113,7 @@ let
           resources = lib.mapAttrs (_resource: use:
             ({ inherit (use) env libsecret; }
               // lib.optionalAttrs (use.files != null) {
-                files = { inherit (use.files) path; };
+                files = { inherit (use.files) paths; };
               })
           ) w.resources;
           socket = wrapperSocketPath name;
@@ -260,9 +260,16 @@ let
   # Submodule types.
   filesUseSubmodule = lib.types.submodule {
     options = {
-      path = lib.mkOption {
-        type = lib.types.str;
-        description = "Target-home-relative mount path for the resource files slot.";
+      paths = lib.mkOption {
+        type = lib.types.nonEmptyListOf lib.types.str;
+        description = ''
+          Target-home-relative mount paths for the resource files slot.
+          The same backend resource is bind-mounted at every path in the
+          list and they all share a single daemon channel, so reads
+          observe identical content and writes can never race against
+          themselves regardless of which mount the target writes to.
+        '';
+        example = [ ".config/gws" ".local/share/gws" ];
       };
     };
   };
@@ -277,7 +284,10 @@ let
       files = lib.mkOption {
         type = lib.types.nullOr filesUseSubmodule;
         default = null;
-        description = "Mount this resource's files slot at the given target-home-relative path.";
+        description = ''
+          Mount this resource's files slot at one or more target-home-relative
+          paths. See <option>files.paths</option>.
+        '';
       };
       libsecret = lib.mkOption {
         type = lib.types.bool;

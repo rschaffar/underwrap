@@ -12,7 +12,7 @@
  */
 import { test, expect, loginViaUi } from "./fixtures";
 
-test("admin always sees an enabled Create secret button (writes are unconditional)", async ({
+test("admin always sees an enabled Create resource button (writes are unconditional)", async ({
   page,
   backendWithAdmin,
 }) => {
@@ -24,7 +24,7 @@ test("admin always sees an enabled Create secret button (writes are unconditiona
   // anymore. Admin writes are always allowed.
   await expect(page.getByRole("status")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: /create secret/i }),
+    page.getByRole("button", { name: /create resource/i }),
   ).toBeEnabled();
 });
 
@@ -40,10 +40,29 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
     page.getByText(/no resources are known to this store yet/i),
   ).toBeVisible();
 
-  // Create a secret.
-  await page.getByRole("button", { name: /create secret/i }).click();
+  // Create the resource block first, then add an env entry to it via
+  // the per-slot "+" button.
+  await page.getByRole("button", { name: /create resource/i }).click();
+  const resourceDlg = page.getByRole("dialog", { name: /create resource/i });
+  await resourceDlg.getByTestId("create-resource-input").fill("github/token");
+  await resourceDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(resourceDlg).toBeHidden();
+
+  const resourceBlock = page.getByTestId("resource-block-github/token");
+  await expect(resourceBlock).toBeVisible();
+  await resourceBlock.locator("summary").click();
+
+  const envSection = resourceBlock.getByTestId("slot-env");
+  await envSection.getByTestId("slot-env-add").click();
   const createDlg = page.getByRole("dialog", { name: /create secret/i });
-  await createDlg.getByLabel("Secret ID").fill("github/token/env/GH_TOKEN");
+  // The dialog should have the secret ID prefilled with the resource
+  // and slot — the operator only needs to append the entry name.
+  await expect(createDlg.getByLabel("Secret ID")).toHaveValue(
+    "github/token/env/",
+  );
+  await createDlg
+    .getByLabel("Secret ID")
+    .fill("github/token/env/GH_TOKEN");
   // Wrapper field is free-form (the catalog is empty on a fresh
   // store, so the dialog falls back to a plain input).
   await createDlg.getByLabel(/wrapper context/i).fill("gh-authorized");
@@ -51,13 +70,6 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   await createDlg.getByRole("button", { name: /^create$/i }).click();
   await expect(createDlg).toBeHidden();
 
-  // The new secret shows up under the github/token resource block.
-  // The block is collapsed by default — expand it before reaching
-  // for the entry row.
-  const resourceBlock = page.getByTestId("resource-block-github/token");
-  await expect(resourceBlock).toBeVisible();
-  await resourceBlock.locator("summary").click();
-  const envSection = resourceBlock.getByTestId("slot-env");
   await expect(envSection.getByText("GH_TOKEN")).toBeVisible();
 
   // Reveal: the confirmation step gates the actual read.
@@ -109,10 +121,14 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   await delBtn.click();
   await expect(delDlg).toBeHidden();
 
-  // The secret is gone — the empty resource block disappears with it.
-  await expect(
-    page.getByTestId("resource-block-github/token"),
-  ).toHaveCount(0);
+  // The secret is gone. The resource block stays visible (the operator
+  // created it manually, so it sticks around for follow-up entries
+  // until the page is reloaded) but the env slot now reports empty.
+  const resourceBlockAfter = page.getByTestId("resource-block-github/token");
+  await expect(resourceBlockAfter).toBeVisible();
+  await expect(resourceBlockAfter.getByTestId("slot-env")).toHaveText(
+    /none/i,
+  );
 });
 
 // The wrapper-writable per-slot toggle moved off the Secrets page when

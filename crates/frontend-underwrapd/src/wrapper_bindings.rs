@@ -21,25 +21,21 @@ pub(crate) fn wrapper_env_resources(wrapper: &WrapperDef) -> Vec<&str> {
 pub(crate) fn wrapper_file_bindings(wrapper: &WrapperDef) -> Vec<FileProjection> {
     let mut out = Vec::new();
     for (resource_id, usage) in &wrapper.resources {
-        if let Some(FilesUse { path }) = &usage.files {
+        if let Some(FilesUse { paths }) = &usage.files {
             out.push(FileProjection {
                 resource_id: resource_id.clone(),
-                target_path: path.clone(),
+                target_paths: paths.clone(),
             });
         }
     }
-    out.sort_by(|a, b| {
-        a.target_path
-            .cmp(&b.target_path)
-            .then(a.resource_id.cmp(&b.resource_id))
-    });
+    out.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
     out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FileProjection {
     pub resource_id: String,
-    pub target_path: String,
+    pub target_paths: Vec<String>,
 }
 
 impl FileProjection {
@@ -49,7 +45,7 @@ impl FileProjection {
     ) -> ReadDirectoryBinding {
         ReadDirectoryBinding {
             resource_id: self.resource_id,
-            target_path: self.target_path,
+            target_paths: self.target_paths,
             access,
         }
     }
@@ -118,7 +114,10 @@ mod tests {
                 ResourceUse {
                     env: false,
                     files: Some(FilesUse {
-                        path: ".config/gcloud".to_string(),
+                        paths: vec![
+                            ".config/gcloud".to_string(),
+                            ".local/share/gcloud".to_string(),
+                        ],
                     }),
                     libsecret: false,
                 },
@@ -134,7 +133,10 @@ mod tests {
             wrapper_file_bindings(&wrapper),
             vec![FileProjection {
                 resource_id: "gws/state".to_string(),
-                target_path: ".config/gcloud".to_string(),
+                target_paths: vec![
+                    ".config/gcloud".to_string(),
+                    ".local/share/gcloud".to_string(),
+                ],
             }]
         );
     }
