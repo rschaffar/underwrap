@@ -7,6 +7,9 @@
 //! `HashMap` in the runtime store for cheap lookups) and on a few
 //! field encodings.
 
+// Wired into main.rs / dbus_service in the secretsd rewrite cutover.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use underwrap_protocol::message::SecretBytes;
