@@ -97,7 +97,9 @@ async fn directory_bindings_are_returned_on_read() {
     let daemon = TestDaemon::start(wrappers).await.unwrap();
     let resp = daemon.read_request("dir-w").await.unwrap();
     match resp {
-        WrapperResponse::ReadOk { env, directories } => {
+        WrapperResponse::ReadOk {
+            env, directories, ..
+        } => {
             assert!(env.is_empty());
             assert_eq!(directories.len(), 2);
             assert_eq!(

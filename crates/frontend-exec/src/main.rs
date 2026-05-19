@@ -245,6 +245,7 @@ fn exec_via_ns(
             env_passthrough: config.env_passthrough.clone(),
             env_set: config.env_set.clone(),
             directories: exec_directories,
+            resources: Vec::new(),
         };
         write_frame_sync(&mut pipe, &payload).context("writing env bindings to pipe")?;
         // pipe_write closed on drop.
@@ -431,7 +432,7 @@ fn request_secret(socket_path: &str, libsecret: bool) -> Result<ReadSecretResult
     }
 
     let (env_bindings, directories) = match response {
-        WrapperResponse::ReadOk { env, directories } => (env, directories),
+        WrapperResponse::ReadOk { env, directories, .. } => (env, directories),
         WrapperResponse::Error { code, message } => {
             bail!("daemon denied request ({code:?}): {message}");
         }

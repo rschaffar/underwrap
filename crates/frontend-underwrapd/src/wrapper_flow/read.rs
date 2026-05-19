@@ -195,6 +195,7 @@ pub(super) fn process_read_for(
         response: WrapperResponse::ReadOk {
             env,
             directories: file_bindings,
+            resources: Vec::new(),
         },
         snapshot,
         libsecret_access,
@@ -304,7 +305,7 @@ mod tests {
         let state = state_with_store(store);
         let result = process_read_for("gh-authorized", None, &state, current_uid(), true);
         match result.response {
-            WrapperResponse::ReadOk { env, directories } => {
+            WrapperResponse::ReadOk { env, directories, .. } => {
                 assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
                 assert_eq!(directories.len(), 1);
                 assert_eq!(directories[0].resource_id, "gws/state");
