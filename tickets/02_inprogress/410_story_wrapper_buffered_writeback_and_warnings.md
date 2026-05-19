@@ -2,6 +2,22 @@
 
 Parent: `epic_atomic_resource_blobs.md`
 
+## Progress
+
+- **Foundation landed (commit `bb609a2`)**: daemon-side
+  `wrapper_resource_channel` module serves `Checkout` / `Checkin` /
+  `UsageSignal` over an authenticated socketpair, with JCS
+  canonicality enforcement on `Checkin` and access-mode gating. 9 unit
+  tests cover all three verbs and the rejection paths. **No consumer
+  yet** — wrapper chain still uses the legacy per-call secretsd /
+  directory channels.
+
+The remaining tasks below need a cohesive design pass on the
+secretsd↔frontend-ns inter-process protocol before implementation:
+the new channel is per-resource, but the legacy channels are
+per-slot, so a parallel-with-legacy rollout is awkward and the right
+move is a single cutover commit (tasks 2–6 together).
+
 ## Outcome
 
 After this story, every wrapper invocation pulls its resource blob once
