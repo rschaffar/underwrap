@@ -5,5 +5,6 @@ pub mod ipc;
 pub mod message;
 pub mod policy;
 pub mod resource;
+pub mod resource_blob;
 pub mod scm_rights;
 pub mod service;

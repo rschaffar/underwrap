@@ -1,10 +1,29 @@
 use crate::config::AccessMode;
 use crate::ipc::{WireDecode, WireEncode, WireReader};
 use anyhow::{Result, anyhow};
+use base64::Engine;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Debug, Clone, Zeroize, ZeroizeOnDrop, PartialEq, Eq)]
 pub struct SecretBytes(pub(crate) Vec<u8>);
+
+impl Serialize for SecretBytes {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&self.0);
+        serializer.serialize_str(&encoded)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretBytes {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let encoded = <String as Deserialize>::deserialize(deserializer)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .map_err(serde::de::Error::custom)?;
+        Ok(SecretBytes(bytes))
+    }
+}
 
 impl SecretBytes {
     pub fn as_slice(&self) -> &[u8] {
