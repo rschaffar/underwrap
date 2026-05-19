@@ -89,6 +89,33 @@ pub fn secretsd_delete(wrapper: &str, item: &str) {
     info!(audit = "secretsd_delete", wrapper = wrapper, item = item,);
 }
 
+/// Audit event for a wrapper-resource channel Checkout.
+pub fn resource_checkout(wrapper: &str, resource: &str) {
+    info!(
+        audit = "resource_checkout",
+        wrapper = wrapper,
+        resource = resource,
+    );
+}
+
+/// Audit event for a wrapper-resource channel Checkin (accepted blob write).
+pub fn resource_checkin(wrapper: &str, resource: &str) {
+    info!(
+        audit = "resource_checkin",
+        wrapper = wrapper,
+        resource = resource,
+    );
+}
+
+/// Audit event for a wrapper-resource channel UsageSignal (no-op end-of-run ping).
+pub fn resource_usage_signal(wrapper: &str, resource: &str) {
+    info!(
+        audit = "resource_usage_signal",
+        wrapper = wrapper,
+        resource = resource,
+    );
+}
+
 /// Audit event for a denied wrapper-initiated write (secretsd or directory).
 ///
 /// Emitted when the policy gate refuses a `store.write` for the given

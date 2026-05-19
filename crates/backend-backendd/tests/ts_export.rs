@@ -39,13 +39,14 @@ use underwrap_protocol::service::{
     AdminAgentGrantsListResponse, AdminGrantKey, AdminOkResponse, AdminPairCreateRequest,
     AdminPairCreateResponse, AdminPairDeleteBlockers, AdminPairDeleteRequest,
     AdminPairDeleteResponse, AdminPairsListRequest, AdminPairsListResponse, AdminPolicyGetRequest,
-    AdminPolicyGetResponse, AdminPolicyPutRequest, AdminResourceCreateRequest,
-    AdminResourceCreateResponse, AdminResourceDeleteBlockers, AdminResourceDeleteRequest,
-    AdminResourceDeleteResponse, AdminResourcesListRequest, AdminResourcesListResponse,
-    AdminSecretDeleteRequest, AdminSecretDeleteResponse, AdminSecretListRequest,
-    AdminSecretListResponse, AdminSecretReadRequest, AdminSecretReadResponse,
-    AdminSecretWriteRequest, AdminUiOverviewResponse, AdminUiOverviewStore, AdminUiWrapperCounts,
-    ServiceWrapperResourcePair,
+    AdminPolicyGetResponse, AdminPolicyPutRequest, AdminResourceBlobGetRequest,
+    AdminResourceBlobGetResponse, AdminResourceBlobPutRequest, AdminResourceBlobPutResponse,
+    AdminResourceCreateRequest, AdminResourceCreateResponse, AdminResourceDeleteBlockers,
+    AdminResourceDeleteRequest, AdminResourceDeleteResponse, AdminResourcesListRequest,
+    AdminResourcesListResponse, AdminSecretDeleteRequest, AdminSecretDeleteResponse,
+    AdminSecretListRequest, AdminSecretListResponse, AdminSecretReadRequest,
+    AdminSecretReadResponse, AdminSecretWriteRequest, AdminUiOverviewResponse,
+    AdminUiOverviewStore, AdminUiWrapperCounts, ServiceWrapperResourcePair,
 };
 use underwrap_protocol::service::{
     AdminClientInstanceActionState, AdminClientInstanceCreateRequest,
@@ -181,6 +182,11 @@ fn ts_bindings_in_sync_with_rust() {
         AdminPairDeleteBlockers,
         AdminPairDeleteResponse,
         ServiceWrapperResourcePair,
+        // Admin resource blob round-trip (ticket 404)
+        AdminResourceBlobGetRequest,
+        AdminResourceBlobGetResponse,
+        AdminResourceBlobPutRequest,
+        AdminResourceBlobPutResponse,
     );
 
     if !drift.is_empty() {
