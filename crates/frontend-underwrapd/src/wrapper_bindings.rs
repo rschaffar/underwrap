@@ -1,5 +1,4 @@
 use underwrap_protocol::config::{FilesUse, ResourceUse, WrapperDef};
-use underwrap_protocol::message::ReadDirectoryBinding;
 
 pub(crate) fn wrapper_libsecret_resource(wrapper: &WrapperDef) -> Option<&str> {
     wrapper
@@ -36,19 +35,6 @@ pub(crate) fn wrapper_file_bindings(wrapper: &WrapperDef) -> Vec<FileProjection>
 pub(crate) struct FileProjection {
     pub resource_id: String,
     pub target_paths: Vec<String>,
-}
-
-impl FileProjection {
-    pub(crate) fn into_read_binding(
-        self,
-        access: underwrap_protocol::config::AccessMode,
-    ) -> ReadDirectoryBinding {
-        ReadDirectoryBinding {
-            resource_id: self.resource_id,
-            target_paths: self.target_paths,
-            access,
-        }
-    }
 }
 
 pub(crate) fn resource_has_projection(usage: &ResourceUse) -> bool {

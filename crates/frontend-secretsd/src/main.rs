@@ -4,18 +4,29 @@
 //! `org.freedesktop.secrets` on a private D-Bus session bus so that
 //! tools using libsecret (e.g., `gh`) can store and retrieve credentials.
 //!
-//! All secret storage goes through the daemon via an authenticated
-//! socketpair channel (fd 4), NOT to local files.
+//! The whole libsecret keyring for this run is loaded once at startup
+//! from a one-shot pipe (`--init-fd`) and kept in memory. Every D-Bus
+//! mutation is persisted by atomically rewriting `--state-path` to the
+//! current JCS-canonical bytes of the section; `underwrap-ns` reads
+//! the state file after waitpid to compose the end-of-run blob.
+//!
+//! No socket to the daemon. The kernel SIGKILLs the namespace siblings
+//! the moment PID 1 (the target) exits, so there is no opportunity for
+//! a graceful teardown handshake — every mutation must already be on
+//! disk by the time the D-Bus ack returns.
 
 use anyhow::{Context, Result, bail};
+use std::io::Read;
 use std::os::unix::io::FromRawFd;
-use std::os::unix::net::UnixStream as StdUnixStream;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
-mod channel;
 mod dbus_service;
 mod section_store;
+mod state;
+
+use underwrap_protocol::resource_blob::LibsecretSection;
 
 const WELL_KNOWN_NAME: &str = "org.freedesktop.secrets";
 const BASE_PATH: &str = "/org/freedesktop/secrets";
@@ -29,13 +40,15 @@ pub(crate) fn metadata_trace_enabled() -> bool {
 #[derive(Clone, Debug)]
 struct Args {
     bus_address: String,
-    channel_fd: i32,
+    init_fd: i32,
+    state_path: PathBuf,
     ready_fd: Option<i32>,
 }
 
 fn parse_args_from(args: &[String]) -> Result<Args> {
     let mut bus_address = None;
-    let mut channel_fd = None;
+    let mut init_fd = None;
+    let mut state_path = None;
     let mut ready_fd = None;
     let mut i = 1;
     while i < args.len() {
@@ -48,14 +61,22 @@ fn parse_args_from(args: &[String]) -> Result<Args> {
                         .clone(),
                 );
             }
-            "--channel-fd" => {
+            "--init-fd" => {
                 i += 1;
-                channel_fd = Some(
+                init_fd = Some(
                     args.get(i)
-                        .context("--channel-fd requires a value")?
+                        .context("--init-fd requires a value")?
                         .parse()
-                        .context("--channel-fd must be a number")?,
+                        .context("--init-fd must be a number")?,
                 );
+            }
+            "--state-path" => {
+                i += 1;
+                state_path = Some(PathBuf::from(
+                    args.get(i)
+                        .context("--state-path requires a value")?
+                        .clone(),
+                ));
             }
             "--ready-fd" => {
                 i += 1;
@@ -72,7 +93,8 @@ fn parse_args_from(args: &[String]) -> Result<Args> {
     }
     Ok(Args {
         bus_address: bus_address.context("--bus-address is required")?,
-        channel_fd: channel_fd.context("--channel-fd is required")?,
+        init_fd: init_fd.context("--init-fd is required")?,
+        state_path: state_path.context("--state-path is required")?,
         ready_fd,
     })
 }
@@ -80,6 +102,17 @@ fn parse_args_from(args: &[String]) -> Result<Args> {
 fn parse_args() -> Result<Args> {
     let args: Vec<String> = std::env::args().collect();
     parse_args_from(&args)
+}
+
+fn read_init_section(init_fd: i32) -> Result<LibsecretSection> {
+    let mut file = unsafe { std::fs::File::from_raw_fd(init_fd) };
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .context("reading initial libsecret section from --init-fd")?;
+    if bytes.is_empty() {
+        return Ok(LibsecretSection::default());
+    }
+    LibsecretSection::from_canonical_bytes(&bytes)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -90,7 +123,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // Set non-dumpable BEFORE reading any secrets from the channel.
+    // Set non-dumpable BEFORE reading any secrets from the init pipe.
     // This blocks /proc/<pid>/fd/ access from same-UID processes.
     let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
     if ret != 0 {
@@ -109,15 +142,18 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Open the channel to the daemon.
-    let channel_stream = unsafe { StdUnixStream::from_raw_fd(args.channel_fd) };
-    let channel: Arc<dyn channel::ChannelOps> =
-        Arc::new(channel::DaemonChannel::new(channel_stream));
+    // Read the entire libsecret section from the one-shot init pipe,
+    // then build the in-memory store. The pipe is closed implicitly
+    // when `read_init_section`'s `File` drops.
+    let section =
+        read_init_section(args.init_fd).context("loading libsecret section from --init-fd")?;
+    let store = Arc::new(RwLock::new(section_store::store_from_section(&section)));
+    let state_path = Arc::new(args.state_path.clone());
 
-    // Load initial state from the daemon (read _aliases and collections).
-    let store = Arc::new(RwLock::new(
-        channel::load_initial_state(&*channel).context("loading initial state from daemon")?,
-    ));
+    // Persist the initial state immediately so the ns parent observes a
+    // valid file even if no mutations happen during the run. A torn
+    // initial write would make the end-of-run read fail.
+    state::dump(&*store.read().await, &state_path).context("persisting initial libsecret state")?;
 
     // Connect to the private D-Bus session bus.
     let connection = zbus::ConnectionBuilder::address(args.bus_address.as_str())?
@@ -131,7 +167,7 @@ async fn main() -> Result<()> {
     );
 
     // Register the Secret Service on the bus.
-    let service = dbus_service::SecretService::new(store.clone(), channel.clone());
+    let service = dbus_service::SecretService::new(store.clone(), state_path.clone());
 
     connection
         .object_server()
@@ -139,14 +175,14 @@ async fn main() -> Result<()> {
         .await
         .context("registering Secret Service")?;
 
-    // Register the default collection.
+    // Register collections, items, aliases.
     {
         let state = store.read().await;
         for col_id in state.list_collections() {
             let col = dbus_service::CollectionInterface::new(
                 col_id.to_string(),
                 store.clone(),
-                channel.clone(),
+                state_path.clone(),
             );
             let path = format!("{BASE_PATH}/collection/{col_id}");
             match zbus::zvariant::ObjectPath::try_from(path.clone()) {
@@ -158,13 +194,12 @@ async fn main() -> Result<()> {
                 Err(e) => tracing::warn!(path, error = %e, "invalid collection object path"),
             }
 
-            // Register items.
             for item_id in state.list_items(col_id) {
                 let item = dbus_service::ItemInterface::new(
                     item_id.to_string(),
                     col_id.to_string(),
                     store.clone(),
-                    channel.clone(),
+                    state_path.clone(),
                 );
                 let item_path = format!("{BASE_PATH}/collection/{col_id}/{item_id}");
                 match zbus::zvariant::ObjectPath::try_from(item_path.clone()) {
@@ -178,12 +213,11 @@ async fn main() -> Result<()> {
             }
         }
 
-        // Register aliases.
         for (alias, col_id) in &state.aliases {
             let col = dbus_service::CollectionInterface::new(
                 col_id.clone(),
                 store.clone(),
-                channel.clone(),
+                state_path.clone(),
             );
             let alias_path = format!("{BASE_PATH}/aliases/{alias}");
             match zbus::zvariant::ObjectPath::try_from(alias_path.clone()) {
@@ -208,7 +242,6 @@ async fn main() -> Result<()> {
     // Signal readiness to underwrap-ns.
     if let Some(ready_fd) = args.ready_fd {
         use std::io::Write;
-        use std::os::unix::io::FromRawFd;
         let mut ready_file = unsafe { std::fs::File::from_raw_fd(ready_fd) };
         if let Err(e) = ready_file.write_all(b"R") {
             eprintln!("underwrap-secretsd: failed to signal readiness: {e}");
@@ -232,14 +265,20 @@ mod tests {
             "underwrap-secretsd".to_string(),
             "--bus-address".to_string(),
             "unix:path=/tmp/bus".to_string(),
-            "--channel-fd".to_string(),
-            "4".to_string(),
+            "--init-fd".to_string(),
+            "5".to_string(),
+            "--state-path".to_string(),
+            "/tmp/.underwrap-ns-bus/libsecret-state.jcs".to_string(),
             "--ready-fd".to_string(),
             "9".to_string(),
         ];
         let parsed = parse_args_from(&args).unwrap();
         assert_eq!(parsed.bus_address, "unix:path=/tmp/bus");
-        assert_eq!(parsed.channel_fd, 4);
+        assert_eq!(parsed.init_fd, 5);
+        assert_eq!(
+            parsed.state_path,
+            PathBuf::from("/tmp/.underwrap-ns-bus/libsecret-state.jcs")
+        );
         assert_eq!(parsed.ready_fd, Some(9));
     }
 
@@ -252,20 +291,32 @@ mod tests {
             "underwrap-secretsd".to_string(),
             "--bus-address".to_string(),
             "unix:path=/tmp/bus".to_string(),
-            "--channel-fd".to_string(),
+            "--init-fd".to_string(),
         ])
         .unwrap_err();
-        assert!(err.to_string().contains("--channel-fd requires a value"));
+        assert!(err.to_string().contains("--init-fd requires a value"));
 
         let err = parse_args_from(&[
             "underwrap-secretsd".to_string(),
             "--bus-address".to_string(),
             "unix:path=/tmp/bus".to_string(),
-            "--channel-fd".to_string(),
+            "--init-fd".to_string(),
             "nope".to_string(),
+            "--state-path".to_string(),
+            "/tmp/x".to_string(),
         ])
         .unwrap_err();
-        assert!(err.to_string().contains("--channel-fd must be a number"));
+        assert!(err.to_string().contains("--init-fd must be a number"));
+
+        let err = parse_args_from(&[
+            "underwrap-secretsd".to_string(),
+            "--bus-address".to_string(),
+            "unix:path=/tmp/bus".to_string(),
+            "--init-fd".to_string(),
+            "5".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("--state-path is required"));
 
         let err = parse_args_from(&["underwrap-secretsd".to_string(), "--bogus".to_string()])
             .unwrap_err();

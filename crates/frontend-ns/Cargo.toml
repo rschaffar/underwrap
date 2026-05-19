@@ -12,3 +12,6 @@ path = "src/main.rs"
 [dependencies]
 shared-protocol = { workspace = true }
 libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -72,94 +72,28 @@ pub(crate) fn parse_item_path(path: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex as StdMutex};
+    use std::path::PathBuf;
+    use std::sync::Arc;
     use tokio::sync::RwLock;
 
     use underwrap_secretsd_store::SecretStore;
 
     use super::SecretService;
-    use crate::channel::{ChannelOps, ItemMeta};
 
-    pub(crate) struct FakeChannel {
-        pub(crate) data: StdMutex<HashMap<String, Vec<u8>>>,
-        fail_delete: HashSet<String>,
-    }
-
-    impl FakeChannel {
-        pub(crate) fn new(data: HashMap<String, Vec<u8>>) -> Self {
-            Self {
-                data: StdMutex::new(data),
-                fail_delete: HashSet::new(),
-            }
-        }
-
-        pub(crate) fn with_failing_delete(mut self, key: &str) -> Self {
-            self.fail_delete.insert(key.to_string());
-            self
-        }
-    }
-
-    impl ChannelOps for FakeChannel {
-        fn read(
-            &self,
-            secret_id: &str,
-        ) -> anyhow::Result<Option<underwrap_protocol::message::SecretBytes>> {
-            Ok(self
-                .data
-                .lock()
-                .unwrap()
-                .get(secret_id)
-                .cloned()
-                .map(Into::into))
-        }
-
-        fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
-            self.data
-                .lock()
-                .unwrap()
-                .insert(secret_id.to_string(), material.to_vec());
-            Ok(())
-        }
-
-        fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
-            let prefix = format!("{prefix}/");
-            Ok(self
-                .data
-                .lock()
-                .unwrap()
-                .keys()
-                .filter(|k| k.starts_with(&prefix))
-                .cloned()
-                .collect())
-        }
-
-        fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
-            if self.fail_delete.contains(secret_id) {
-                anyhow::bail!("forced delete failure for {secret_id}");
-            }
-            Ok(self.data.lock().unwrap().remove(secret_id).is_some())
-        }
-    }
-
-    pub(crate) fn item_meta_json() -> Vec<u8> {
-        serde_json::to_vec(&ItemMeta {
-            content_type: "text/plain".to_string(),
-            attributes: HashMap::new(),
-            label: "Item".to_string(),
-            created: 1,
-            modified: 1,
-        })
-        .unwrap()
-    }
-
-    pub(crate) fn service_with_channel(
+    /// Build a `SecretService` with a temporary state path. Caller owns
+    /// the `TempDir`; dropping it cleans up the file.
+    pub(crate) fn service_with_state(
         store: SecretStore,
-        channel: Arc<dyn ChannelOps>,
-    ) -> (SecretService, Arc<RwLock<SecretStore>>) {
+    ) -> (SecretService, Arc<RwLock<SecretStore>>, tempfile::TempDir) {
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let state_path: Arc<PathBuf> = Arc::new(tempdir.path().join("libsecret-state.jcs"));
+        // Materialize an initial state file so tests can re-read it
+        // after the first mutation.
+        let initial = crate::section_store::section_from_store(&store);
+        std::fs::write(&*state_path, initial.to_canonical_bytes().unwrap()).unwrap();
         let store = Arc::new(RwLock::new(store));
-        let service = SecretService::new(store.clone(), channel);
-        (service, store)
+        let service = SecretService::new(store.clone(), state_path);
+        (service, store, tempdir)
     }
 }
 

@@ -1,9 +1,7 @@
 pub mod approval;
 pub mod audit;
-pub mod directory_channel;
 pub(crate) mod peer_auth;
 pub(crate) mod policy;
-pub mod secretsd_channel;
 pub mod server;
 pub(crate) mod startup;
 pub mod storage;

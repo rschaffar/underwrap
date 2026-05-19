@@ -76,7 +76,6 @@ mod tests {
             env: HashMap::from([("GH_TOKEN".to_string(), "ghp_test".into())]),
             env_passthrough: vec!["CUSTOM_PASSTHROUGH".to_string()],
             env_set: HashMap::from([("PATH".to_string(), "/trusted/bin".to_string())]),
-            directories: Vec::new(),
             resources: Vec::new(),
         }
     }
@@ -110,7 +109,6 @@ mod tests {
             env: HashMap::from([("BAD".to_string(), vec![0xff, 0xfe].into())]),
             env_passthrough: Vec::new(),
             env_set: HashMap::new(),
-            directories: Vec::new(),
             resources: Vec::new(),
         };
 

@@ -57,34 +57,6 @@ impl WireDecode for WrapperRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadDirectoryBinding {
-    pub resource_id: String,
-    /// Target-home-relative paths at which the same staging directory
-    /// should be bind-mounted. One backend channel backs all of these
-    /// mount points.
-    pub target_paths: Vec<String>,
-    pub access: AccessMode,
-}
-
-impl WireEncode for ReadDirectoryBinding {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        self.resource_id.encode(out)?;
-        self.target_paths.encode(out)?;
-        self.access.encode(out)
-    }
-}
-
-impl WireDecode for ReadDirectoryBinding {
-    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
-        Ok(Self {
-            resource_id: String::decode(reader)?,
-            target_paths: Vec::<String>::decode(reader)?,
-            access: AccessMode::decode(reader)?,
-        })
-    }
-}
-
 /// One resource in scope for this wrapper run, as announced by the
 /// daemon in `WrapperResponse::ReadOk`. The wrapper-resource channel
 /// fd is sent via SCM_RIGHTS immediately after the response, one fd
@@ -96,7 +68,8 @@ pub struct ReadResourceBinding {
     /// Whether secretsd should be launched for this resource.
     pub libsecret: bool,
     /// Target-home-relative paths at which the files staging dir for
-    /// this resource should be bind-mounted in the namespace.
+    /// this resource should be bind-mounted in the namespace. Empty
+    /// for resources without a `files` slot.
     pub files_target_paths: Vec<String>,
 }
 
@@ -124,10 +97,9 @@ impl WireDecode for ReadResourceBinding {
 pub enum WrapperResponse {
     ReadOk {
         env: std::collections::HashMap<String, SecretBytes>,
-        directories: Vec<ReadDirectoryBinding>,
         /// Wrapper-resource channel bindings. The daemon sends one
         /// fd via SCM_RIGHTS per entry, in the same order, after the
-        /// `ReadOk` response itself. Empty during the cutover phase.
+        /// `ReadOk` response itself.
         resources: Vec<ReadResourceBinding>,
     },
     /// The wrapper is in per-call approval mode. The caller must sign `nonce`
@@ -148,14 +120,9 @@ pub enum WrapperResponse {
 impl WireEncode for WrapperResponse {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {
-            Self::ReadOk {
-                env,
-                directories,
-                resources,
-            } => {
+            Self::ReadOk { env, resources } => {
                 0u8.encode(out)?;
                 env.encode(out)?;
-                directories.encode(out)?;
                 resources.encode(out)
             }
             Self::ApprovalRequired {
@@ -182,7 +149,6 @@ impl WireDecode for WrapperResponse {
         match u8::decode(reader)? {
             0 => Ok(Self::ReadOk {
                 env: std::collections::HashMap::<String, SecretBytes>::decode(reader)?,
-                directories: Vec::<ReadDirectoryBinding>::decode(reader)?,
                 resources: Vec::<ReadResourceBinding>::decode(reader)?,
             }),
             1 => Ok(Self::ApprovalRequired {

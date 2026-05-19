@@ -4,21 +4,23 @@
 //!
 //! 1. Verifies wrapper identity from effective GID (not argv[0])
 //! 2. Loads sidecar config by trusted executable basename
-//! 3. Connects to the wrapper socket, gets secret (daemon verifies egid)
+//! 3. Connects to the wrapper socket, gets env bindings and one
+//!    wrapper-resource channel fd per resource via SCM_RIGHTS
 //! 4. Drops all elevated privileges
-//! 5. Forks: parent writes secret to pipe, child execs underwrap-ns
-//! 6. underwrap-ns creates PID namespace and execs the target
+//! 5. Forks: parent writes ExecBundle to fd 3 pipe, child execs underwrap-ns
+//! 6. underwrap-ns drives Checkout on each channel, sets up libsecret/files
+//!    staging, then creates a fresh PID namespace and execs the target
 //!
-//! The secret passes through a pipe fd — never in env, argv, or filesystem
-//! between the two stages.
+//! Secret material flows through the pipe on fd 3 — never argv, env,
+//! or filesystem between the two stages.
 
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 
-use underwrap_protocol::exec::{ExecBundle, ExecDirectoryBinding, ExecResourceBinding};
+use underwrap_protocol::exec::{ExecBundle, ExecResourceBinding};
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{
-    ReadDirectoryBinding, ReadResourceBinding, SecretBytes, WrapperRequest, WrapperResponse,
+    ReadResourceBinding, SecretBytes, WrapperRequest, WrapperResponse,
 };
 
 mod ssh_agent;
@@ -28,15 +30,12 @@ use ssh_agent::sign_with_ssh_agent;
 const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
 
 /// Path to the underwrap-ns binary. Set by the NixOS module via sidecar config.
-/// Falls back to searching next to the current executable.
 const DEFAULT_NS_BINARY: &str = "/run/wrappers/bin/underwrap-ns";
-const FIRST_DIRECTORY_CHANNEL_FD: i32 = 10;
-const FIRST_RESOURCE_CHANNEL_FD: i32 = 20;
 
-struct ReceivedDirectoryBinding {
-    metadata: ReadDirectoryBinding,
-    channel_fd: i32,
-}
+/// First fd used to pass wrapper-resource channels into underwrap-ns.
+/// The exec bundle pipe takes fd 3; resource channels are mapped to
+/// 20, 21, 22, ... in the order the daemon emitted them.
+const FIRST_RESOURCE_CHANNEL_FD: i32 = 20;
 
 struct ReceivedResourceBinding {
     metadata: ReadResourceBinding,
@@ -45,8 +44,6 @@ struct ReceivedResourceBinding {
 
 type ReadSecretResult = (
     std::collections::HashMap<String, SecretBytes>,
-    Option<i32>,
-    Vec<ReceivedDirectoryBinding>,
     Vec<ReceivedResourceBinding>,
 );
 
@@ -62,10 +59,7 @@ fn main() -> Result<()> {
 
     let wrapper_config = load_wrapper_config(&config_name)?;
 
-    // Request secret from daemon (while still setgid — daemon checks egid).
-    // If libsecret mode, also receive the secretsd channel fd.
-    let (env_bindings, channel_fd, directory_bindings, resource_bindings) =
-        request_secret(&wrapper_config.wrapper_socket, wrapper_config.libsecret)?;
+    let (env_bindings, resource_bindings) = request_secret(&wrapper_config.wrapper_socket)?;
 
     // Drop all elevated privileges.
     drop_privilege()?;
@@ -83,23 +77,18 @@ fn main() -> Result<()> {
         &wrapper_config,
         &all_args,
         env_bindings,
-        channel_fd,
-        directory_bindings,
         resource_bindings,
     )
 }
 
-/// Fork, pipe env secret bindings to the child, child execs underwrap-ns.
+/// Fork, pipe ExecBundle to the child, child execs underwrap-ns.
 fn exec_via_ns(
     ns_binary: &str,
     config: &WrapperExecConfig,
     args: &[String],
     env_bindings: std::collections::HashMap<String, SecretBytes>,
-    channel_fd: Option<i32>,
-    directory_bindings: Vec<ReceivedDirectoryBinding>,
     resource_bindings: Vec<ReceivedResourceBinding>,
 ) -> Result<()> {
-    // Verify underwrap-ns exists before proceeding.
     if !std::path::Path::new(ns_binary).exists() {
         bail!(
             "underwrap-ns not found at {ns_binary}. \
@@ -118,7 +107,7 @@ fn exec_via_ns(
         );
     }
 
-    // Create pipe for secret transfer.
+    // Create pipe for the ExecBundle transfer.
     let mut pipe_fds = [0i32; 2];
     let ret = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
     if ret != 0 {
@@ -126,17 +115,6 @@ fn exec_via_ns(
         bail!("pipe() failed: {err}");
     }
     let (pipe_read, pipe_write) = (pipe_fds[0], pipe_fds[1]);
-
-    let exec_directories: Vec<ExecDirectoryBinding> = directory_bindings
-        .iter()
-        .enumerate()
-        .map(|(index, binding)| ExecDirectoryBinding {
-            resource_id: binding.metadata.resource_id.clone(),
-            target_paths: binding.metadata.target_paths.clone(),
-            access: binding.metadata.access,
-            channel_fd: (FIRST_DIRECTORY_CHANNEL_FD + index as i32) as u32,
-        })
-        .collect();
 
     let exec_resources: Vec<ExecResourceBinding> = resource_bindings
         .iter()
@@ -149,6 +127,8 @@ fn exec_via_ns(
             files_target_paths: binding.metadata.files_target_paths.clone(),
         })
         .collect();
+
+    let libsecret_in_scope = exec_resources.iter().any(|r| r.libsecret);
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -173,32 +153,7 @@ fn exec_via_ns(
             unsafe { libc::close(pipe_read) };
         }
 
-        // If we have a secretsd channel fd, move it to fd 4.
-        if let Some(ch_fd) = channel_fd
-            && ch_fd != 4
-        {
-            let ret = unsafe { libc::dup2(ch_fd, 4) };
-            if ret < 0 {
-                let err = std::io::Error::last_os_error();
-                eprintln!("underwrap-exec: dup2 channel fd failed: {err}");
-                std::process::exit(1);
-            }
-            unsafe { libc::close(ch_fd) };
-        }
-
-        for (binding, exec_binding) in directory_bindings.iter().zip(&exec_directories) {
-            let target_fd = exec_binding.channel_fd as i32;
-            if binding.channel_fd != target_fd {
-                let ret = unsafe { libc::dup2(binding.channel_fd, target_fd) };
-                if ret < 0 {
-                    let err = std::io::Error::last_os_error();
-                    eprintln!("underwrap-exec: dup2 directory channel fd failed: {err}");
-                    std::process::exit(1);
-                }
-            }
-            unsafe { libc::close(binding.channel_fd) };
-        }
-
+        // Map each wrapper-resource fd to its agreed slot (20+i).
         for (binding, exec_binding) in resource_bindings.iter().zip(&exec_resources) {
             let target_fd = exec_binding.channel_fd as i32;
             if binding.channel_fd != target_fd {
@@ -208,8 +163,8 @@ fn exec_via_ns(
                     eprintln!("underwrap-exec: dup2 wrapper-resource channel fd failed: {err}");
                     std::process::exit(1);
                 }
+                unsafe { libc::close(binding.channel_fd) };
             }
-            unsafe { libc::close(binding.channel_fd) };
         }
 
         // Build argv for underwrap-ns: <ns_binary> <target> [args...]
@@ -227,8 +182,7 @@ fn exec_via_ns(
         cmd.env_remove("UNDERWRAP_DEBUG_WRAPPER");
         cmd.env_remove("UNDERWRAP_DEBUG_ORIGINAL_TARGET");
         cmd.env_remove("UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA");
-        if config.libsecret {
-            // channel_fd is guaranteed Some here — we bail above if recv_fd fails.
+        if libsecret_in_scope {
             cmd.env("UNDERWRAP_LIBSECRET", "1");
             if let Some(ref bin) = config.dbus_daemon_binary {
                 cmd.env("UNDERWRAP_DBUS_DAEMON", bin);
@@ -257,23 +211,14 @@ fn exec_via_ns(
         std::process::exit(1);
     }
 
-    // === Parent: write env bindings to pipe, wait for child ===
+    // === Parent: write ExecBundle to pipe, wait for child ===
 
-    // Close read end.
     unsafe { libc::close(pipe_read) };
 
-    // Close channel fds in parent — only the child needs them at exec time.
-    if let Some(ch_fd) = channel_fd {
-        unsafe { libc::close(ch_fd) };
-    }
-    for binding in &directory_bindings {
-        unsafe { libc::close(binding.channel_fd) };
-    }
     for binding in &resource_bindings {
         unsafe { libc::close(binding.channel_fd) };
     }
 
-    // Write env bindings to pipe.
     {
         use std::os::unix::io::FromRawFd;
         let mut pipe = unsafe { std::fs::File::from_raw_fd(pipe_write) };
@@ -281,14 +226,12 @@ fn exec_via_ns(
             env: env_bindings,
             env_passthrough: config.env_passthrough.clone(),
             env_set: config.env_set.clone(),
-            directories: exec_directories,
             resources: exec_resources,
         };
-        write_frame_sync(&mut pipe, &payload).context("writing env bindings to pipe")?;
+        write_frame_sync(&mut pipe, &payload).context("writing exec bundle to pipe")?;
         // pipe_write closed on drop.
     }
 
-    // Wait for child.
     let mut status: libc::c_int = 0;
     let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
     if ret < 0 {
@@ -373,8 +316,6 @@ struct WrapperExecConfig {
     target: String,
     wrapper_socket: String,
     ns_binary: Option<String>,
-    /// Whether libsecret mode is enabled for this wrapper.
-    libsecret: bool,
     /// Path to the dbus-daemon binary (for libsecret mode).
     dbus_daemon_binary: Option<String>,
     /// Path to the underwrap-secretsd binary (for libsecret mode).
@@ -404,7 +345,12 @@ fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
         wrapper_socket: String,
         #[serde(default)]
         ns_binary: Option<String>,
+        // libsecret flag is left in the sidecar schema for backward
+        // compatibility with the existing NixOS module output, but the
+        // wrapper now determines libsecret-in-scope from the daemon's
+        // resource list, not from this flag.
         #[serde(default)]
+        #[allow(dead_code)]
         libsecret: bool,
         #[serde(default)]
         dbus_daemon_binary: Option<String>,
@@ -428,7 +374,6 @@ fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
         target: wf.target,
         wrapper_socket: wf.wrapper_socket,
         ns_binary: wf.ns_binary,
-        libsecret: wf.libsecret,
         dbus_daemon_binary: wf.dbus_daemon_binary,
         secretsd_binary: wf.secretsd_binary,
         env_passthrough: wf.env_passthrough,
@@ -436,10 +381,9 @@ fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
     })
 }
 
-/// Request credentials from the daemon. If `libsecret` is true, also
-/// receive the secretsd channel fd via SCM_RIGHTS.
-/// Returns (env_bindings, optional_channel_fd).
-fn request_secret(socket_path: &str, libsecret: bool) -> Result<ReadSecretResult> {
+/// Request credentials from the daemon. Returns env bindings plus one
+/// wrapper-resource channel fd per resource the daemon authorized.
+fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
@@ -468,12 +412,8 @@ fn request_secret(socket_path: &str, libsecret: bool) -> Result<ReadSecretResult
         response = read_frame_sync(&mut stream)?;
     }
 
-    let (env_bindings, directories, resources) = match response {
-        WrapperResponse::ReadOk {
-            env,
-            directories,
-            resources,
-        } => (env, directories, resources),
+    let (env_bindings, resources) = match response {
+        WrapperResponse::ReadOk { env, resources } => (env, resources),
         WrapperResponse::Error { code, message } => {
             bail!("daemon denied request ({code:?}): {message}");
         }
@@ -481,34 +421,6 @@ fn request_secret(socket_path: &str, libsecret: bool) -> Result<ReadSecretResult
             bail!("daemon issued a second approval challenge; refusing");
         }
     };
-
-    // If libsecret is enabled, the daemon sends the secretsd channel fd
-    // via SCM_RIGHTS immediately after the response.
-    // Failure is fatal — no fallback to non-libsecret mode.
-    let channel_fd = if libsecret {
-        match underwrap_protocol::scm_rights::recv_fd(&stream) {
-            Ok(fd) => Some(fd),
-            Err(e) => {
-                bail!("libsecret enabled but failed to receive secretsd channel fd: {e}");
-            }
-        }
-    } else {
-        None
-    };
-
-    let mut directory_bindings = Vec::with_capacity(directories.len());
-    for metadata in directories {
-        let fd = underwrap_protocol::scm_rights::recv_fd(&stream).with_context(|| {
-            format!(
-                "failed to receive directory channel fd for credential '{}'",
-                metadata.resource_id
-            )
-        })?;
-        directory_bindings.push(ReceivedDirectoryBinding {
-            metadata,
-            channel_fd: fd,
-        });
-    }
 
     let mut resource_bindings = Vec::with_capacity(resources.len());
     for metadata in resources {
@@ -524,12 +436,7 @@ fn request_secret(socket_path: &str, libsecret: bool) -> Result<ReadSecretResult
         });
     }
 
-    Ok((
-        env_bindings,
-        channel_fd,
-        directory_bindings,
-        resource_bindings,
-    ))
+    Ok((env_bindings, resource_bindings))
 }
 
 fn drop_privilege() -> Result<()> {

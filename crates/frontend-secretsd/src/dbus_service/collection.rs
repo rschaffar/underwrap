@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -9,20 +10,24 @@ use zbus::{
 
 use underwrap_secretsd_store::SecretStore;
 
-use crate::channel::{self, ChannelOps};
 use crate::metadata_trace_enabled;
+use crate::state;
 
 use super::{ItemInterface, Secret, empty_path, item_path};
 
 pub struct CollectionInterface {
     id: String,
     store: Arc<RwLock<SecretStore>>,
-    channel: Arc<dyn ChannelOps>,
+    state_path: Arc<PathBuf>,
 }
 
 impl CollectionInterface {
-    pub fn new(id: String, store: Arc<RwLock<SecretStore>>, channel: Arc<dyn ChannelOps>) -> Self {
-        Self { id, store, channel }
+    pub fn new(id: String, store: Arc<RwLock<SecretStore>>, state_path: Arc<PathBuf>) -> Self {
+        Self {
+            id,
+            store,
+            state_path,
+        }
     }
 }
 
@@ -30,41 +35,8 @@ impl CollectionInterface {
 impl CollectionInterface {
     async fn delete(&self) -> fdo::Result<ObjectPath<'_>> {
         let mut store = self.store.write().await;
-
-        let items = store.list_items(&self.id);
-        for item_id in &items {
-            let meta_key = format!("{}/{item_id}.meta", self.id);
-            let secret_key = format!("{}/{item_id}.secret", self.id);
-            let meta_deleted = self
-                .channel
-                .delete(&meta_key)
-                .map_err(|e| fdo::Error::Failed(format!("delete error for {meta_key}: {e}")))?;
-            let secret_deleted = self
-                .channel
-                .delete(&secret_key)
-                .map_err(|e| fdo::Error::Failed(format!("delete error for {secret_key}: {e}")))?;
-            if !meta_deleted || !secret_deleted {
-                return Err(fdo::Error::Failed(format!(
-                    "partial delete for item '{item_id}' in collection '{}': meta_deleted={meta_deleted}, secret_deleted={secret_deleted}",
-                    self.id,
-                )));
-            }
-        }
-        let collection_meta_key = format!("{}/_meta", self.id);
-        let collection_meta_deleted = self.channel.delete(&collection_meta_key).map_err(|e| {
-            fdo::Error::Failed(format!("delete error for {collection_meta_key}: {e}"))
-        })?;
-        if !collection_meta_deleted {
-            return Err(fdo::Error::Failed(format!(
-                "collection metadata delete reported not found for '{}'",
-                self.id,
-            )));
-        }
-
         store.delete_collection(&self.id);
-        channel::save_aliases(&*self.channel, &store)
-            .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
-
+        state::dump_or_log(&store, &self.state_path)?;
         Ok(empty_path())
     }
 
@@ -114,13 +86,16 @@ impl CollectionInterface {
         let (item_id, replaced) = {
             let mut store = self.store.write().await;
             let (id, replaced) = store
-                .create_item(&self.id, &label, &attrs, &[], &secret.content_type, replace)
+                .create_item(
+                    &self.id,
+                    &label,
+                    &attrs,
+                    &secret.value,
+                    &secret.content_type,
+                    replace,
+                )
                 .map_err(|e| fdo::Error::Failed(format!("create_item error: {e}")))?;
-
-            channel::save_item_with_secret(&*self.channel, &self.id, &id, &store, &secret.value)
-                .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
-            channel::save_collection_meta(&*self.channel, &self.id, &store)
-                .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
+            state::dump_or_log(&store, &self.state_path)?;
             (id, replaced)
         };
 
@@ -146,7 +121,7 @@ impl CollectionInterface {
                 item_id,
                 self.id.clone(),
                 self.store.clone(),
-                self.channel.clone(),
+                self.state_path.clone(),
             );
             if let Err(e) = object_server.at(&item_path, item).await {
                 tracing::warn!(path = %item_path, error = %e, "registering item interface failed");
@@ -179,8 +154,7 @@ impl CollectionInterface {
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_collection_label(&self.id, &label);
-        channel::save_collection_meta(&*self.channel, &self.id, &store)
-            .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
+        state::dump_or_log(&store, &self.state_path)?;
         Ok(())
     }
 
@@ -205,37 +179,35 @@ impl CollectionInterface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dbus_service::test_support::{FakeChannel, item_meta_json};
-    use std::collections::HashMap;
+    use crate::dbus_service::test_support::service_with_state;
+    use underwrap_protocol::resource_blob::LibsecretSection;
 
-    #[tokio::test]
-    async fn collection_delete_propagates_backend_error_and_keeps_state() {
+    fn store_with_collection() -> (String, SecretStore) {
         let mut store = SecretStore::new_default();
         let col_id = store.create_collection(Some("Test"), None);
-        let item_id = store
-            .create_item(
-                &col_id,
-                "Item",
-                &HashMap::new(),
-                b"secret",
-                "text/plain",
-                false,
-            )
-            .unwrap()
-            .0;
-        let channel: Arc<dyn ChannelOps> = Arc::new(
-            FakeChannel::new(HashMap::from([
-                (format!("{col_id}/{item_id}.meta"), item_meta_json()),
-                (format!("{col_id}/{item_id}.secret"), b"secret".to_vec()),
-                (format!("{col_id}/_meta"), b"{}".to_vec()),
-            ]))
-            .with_failing_delete(&format!("{col_id}/{item_id}.secret")),
-        );
-        let store = Arc::new(RwLock::new(store));
-        let col = CollectionInterface::new(col_id.clone(), store.clone(), channel);
+        (col_id, store)
+    }
 
-        let err = col.delete().await.unwrap_err();
-        assert!(matches!(err, fdo::Error::Failed(_)));
-        assert!(store.read().await.collections.contains_key(&col_id));
+    #[tokio::test]
+    async fn delete_removes_collection_and_persists_state() {
+        let (col_id, store) = store_with_collection();
+        // Drop the service immediately — we just need the side effects
+        // (state path created, initial dump written).
+        let (_service, store_arc, tempdir) = service_with_state(store);
+        let state_path = tempdir.path().join("libsecret-state.jcs");
+
+        let col = CollectionInterface::new(
+            col_id.clone(),
+            store_arc.clone(),
+            Arc::new(state_path.clone()),
+        );
+        let res = col.delete().await.unwrap();
+        assert_eq!(res.as_str(), "/");
+
+        assert!(!store_arc.read().await.collections.contains_key(&col_id));
+
+        let bytes = std::fs::read(&state_path).unwrap();
+        let section = LibsecretSection::from_canonical_bytes(&bytes).unwrap();
+        assert!(!section.collections.contains_key(&col_id));
     }
 }

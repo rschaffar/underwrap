@@ -72,8 +72,6 @@ pub(crate) async fn handle_wrapper(
         &result.response,
         wrapper_name,
         &state,
-        &result.snapshot,
-        result.libsecret_access.as_ref(),
         &result.resource_access,
     )
     .await;
@@ -100,8 +98,6 @@ async fn complete_read(
                 code: ErrorCode::Unauthorized,
                 message: crate::server::unenrolled_message(url),
             },
-            snapshot: read::BundleSnapshot::default(),
-            libsecret_access: None,
             resource_access: Vec::new(),
         });
     }
@@ -114,8 +110,6 @@ async fn complete_read(
                 ApprovalOutcome::Rejected(response) => {
                     return Ok(read::ReadResult {
                         response,
-                        snapshot: read::BundleSnapshot::default(),
-                        libsecret_access: None,
                         resource_access: Vec::new(),
                     });
                 }
@@ -124,16 +118,12 @@ async fn complete_read(
         Ok(ModeGate::Deny(response)) => {
             return Ok(read::ReadResult {
                 response,
-                snapshot: read::BundleSnapshot::default(),
-                libsecret_access: None,
                 resource_access: Vec::new(),
             });
         }
         Err(response) => {
             return Ok(read::ReadResult {
                 response,
-                snapshot: read::BundleSnapshot::default(),
-                libsecret_access: None,
                 resource_access: Vec::new(),
             });
         }

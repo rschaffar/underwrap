@@ -1,11 +1,22 @@
-use std::collections::BTreeSet;
-use std::os::fd::FromRawFd;
+//! Files-slot staging and bind-mount management for one resource.
+//!
+//! For every resource with `files_target_paths`, ns materializes the
+//! `files` section of the resource blob (from `Checkout`) into a
+//! per-resource staging tmpfs directory, then bind-mounts that staging
+//! directory at each target path. The staging tmpfs is always
+//! read-write to the target — write authorization is enforced
+//! server-side at `Checkin` time, not at the mount layer.
+//!
+//! At end of run, [`writeback`](crate::writeback) walks the tmpfs and
+//! composes the new `files` section that becomes part of the
+//! Checkin blob.
+
+use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use underwrap_protocol::exec::ExecDirectoryBinding;
-use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{DirectoryRequest, DirectoryResponse};
+use underwrap_protocol::message::SecretBytes;
+use underwrap_protocol::resource_blob::ResourceBlob;
 
 pub struct DirectoryMount {
     pub target_mount_path: PathBuf,
@@ -14,30 +25,39 @@ pub struct DirectoryMount {
 
 pub struct MountedDirectory {
     pub resource_id: String,
-    pub channel_fd: i32,
     /// All bind-mount targets backed by `staging_path`. A single backend
     /// resource can be exposed at multiple namespace-local paths; they
-    /// all share the same staging directory and channel, so writes are
-    /// serialized through one writeback path.
+    /// all share the same staging directory.
     pub mounts: Vec<DirectoryMount>,
     pub staging_path: PathBuf,
-    pub initial_files: BTreeSet<String>,
 }
 
+/// One resource's binding plus its decoded blob, ready to be staged.
+pub struct ResourceMountInput<'a> {
+    pub resource_id: &'a str,
+    pub blob: &'a ResourceBlob,
+    pub target_paths: &'a [String],
+}
+
+/// Materialize the `files` section of each resource's blob into a
+/// per-resource tmpfs staging directory under `staging_root`, then
+/// bind-mount that staging dir at every `target_path` (relative to
+/// `target_home`). The staging tmpfs is always read-write — the
+/// server gates persistence via the `Checkin` access mode.
 pub fn prepare_directory_mounts(
-    bindings: &[ExecDirectoryBinding],
+    inputs: &[ResourceMountInput<'_>],
     target_home: &Path,
     staging_root: &Path,
 ) -> Result<Vec<MountedDirectory>, String> {
     let mut mounted = Vec::new();
-    for (index, binding) in bindings.iter().enumerate() {
-        if binding.target_paths.is_empty() {
+    for (index, input) in inputs.iter().enumerate() {
+        if input.target_paths.is_empty() {
             return Err(format!(
-                "directory credential '{}' has no target paths",
-                binding.resource_id
+                "resource '{}' has no target paths but a files-slot binding",
+                input.resource_id
             ));
         }
-        for target_path in &binding.target_paths {
+        for target_path in input.target_paths {
             validate_relative_path(target_path)?;
         }
 
@@ -47,34 +67,16 @@ pub fn prepare_directory_mounts(
         std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| format!("setting permissions on {}: {e}", staging_path.display()))?;
 
-        let mut channel = DirectoryChannel::from_fd_dup(binding.channel_fd as i32)?;
-        let paths = channel.list_files()?;
-        let mut initial_files = BTreeSet::new();
-        for relative_path in paths {
-            validate_relative_path(&relative_path)?;
-            initial_files.insert(relative_path.clone());
-            let content = channel.read_file(&relative_path)?.ok_or_else(|| {
-                format!(
-                    "directory credential '{}' listed file '{}' but read returned no content",
-                    binding.resource_id, relative_path
-                )
-            })?;
-            materialize_file(&staging_path, &relative_path, &content)?;
+        for (relative_path, content) in &input.blob.files {
+            validate_relative_path(relative_path)?;
+            materialize_file(&staging_path, relative_path, content.as_slice())?;
         }
 
-        // The staging tmpfs and every bind mount are always writable
-        // for the target. The backend is the single source of truth
-        // for write authorization: any modifications attempted on a
-        // read-only grant are silently dropped at sync time (with a
-        // journal + stderr warning, suppressible via
-        // UNDERWRAP_SUPPRESS_READONLY_WARNING). Mounting the staging
-        // dir read-only would surface EROFS to the target and break
-        // tools that test-write before falling back.
-        let mut mounts = Vec::with_capacity(binding.target_paths.len());
-        for target_path in &binding.target_paths {
+        let mut mounts = Vec::with_capacity(input.target_paths.len());
+        for target_path in input.target_paths {
             let (target_mount_path, created_mount_dirs) =
                 ensure_mount_target(target_home, target_path)?;
-            bind_mount_dir(&staging_path, &target_mount_path, false)?;
+            bind_mount_dir(&staging_path, &target_mount_path)?;
             mounts.push(DirectoryMount {
                 target_mount_path,
                 created_mount_dirs,
@@ -82,43 +84,23 @@ pub fn prepare_directory_mounts(
         }
 
         mounted.push(MountedDirectory {
-            resource_id: binding.resource_id.clone(),
-            channel_fd: binding.channel_fd as i32,
+            resource_id: input.resource_id.to_string(),
             mounts,
             staging_path,
-            initial_files,
         });
     }
     Ok(mounted)
 }
 
-/// Outcome of one resource's end-of-run sync. Carried up so the
-/// caller can emit a single user-facing warning per affected
-/// resource (one journal event + one stderr line, suppressible).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SyncOutcome {
-    /// All changes (if any) were accepted by the backend.
-    Accepted,
-    /// The target modified files but the backend rejected the
-    /// writeback because the grant is not writable. Changes have
-    /// been dropped.
-    Rejected { resource_id: String },
-}
-
-pub fn sync_directory_mounts(directories: &[MountedDirectory]) -> Result<Vec<SyncOutcome>, String> {
-    let mut outcomes = Vec::with_capacity(directories.len());
-    for directory in directories {
-        outcomes.push(sync_directory(directory)?);
-    }
-    Ok(outcomes)
-}
-
-pub fn close_directory_channel_fds_for_exec(directories: &[MountedDirectory]) {
-    for directory in directories {
-        unsafe {
-            libc::close(directory.channel_fd);
-        }
-    }
+/// Walk the resource's staging tmpfs and produce a `files` section
+/// suitable for inclusion in the end-of-run Checkin blob. Returns a
+/// JCS-friendly `BTreeMap`.
+pub fn collect_staging_files(
+    directory: &MountedDirectory,
+) -> Result<BTreeMap<String, SecretBytes>, String> {
+    let mut out = BTreeMap::new();
+    collect_files_recursive(&directory.staging_path, &directory.staging_path, &mut out)?;
+    Ok(out)
 }
 
 pub fn cleanup_directory_mounts(directories: &[MountedDirectory]) -> Result<(), String> {
@@ -146,167 +128,10 @@ pub fn cleanup_directory_mounts(directories: &[MountedDirectory]) -> Result<(), 
     }
 }
 
-struct DirectoryChannel {
-    stream: std::os::unix::net::UnixStream,
-}
-
-impl DirectoryChannel {
-    fn from_fd_dup(fd: i32) -> Result<Self, String> {
-        let dup_fd = unsafe { libc::dup(fd) };
-        if dup_fd < 0 {
-            return Err(format!(
-                "dup({fd}) for directory channel failed: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(dup_fd) };
-        Ok(Self { stream })
-    }
-
-    fn list_files(&mut self) -> Result<Vec<String>, String> {
-        write_frame_sync(&mut self.stream, &DirectoryRequest::ListFiles)
-            .map_err(|e| format!("sending directory ListFiles request: {e}"))?;
-        let response: DirectoryResponse = read_frame_sync(&mut self.stream)
-            .map_err(|e| format!("reading directory ListFiles response: {e}"))?;
-        match response {
-            DirectoryResponse::ListFilesOk { paths } => Ok(paths),
-            DirectoryResponse::Error { code, message } => {
-                Err(format!("directory list error ({code:?}): {message}"))
-            }
-            other => Err(format!(
-                "unexpected directory ListFiles response: {other:?}"
-            )),
-        }
-    }
-
-    fn read_file(&mut self, path: &str) -> Result<Option<Vec<u8>>, String> {
-        write_frame_sync(
-            &mut self.stream,
-            &DirectoryRequest::ReadFile {
-                path: path.to_string(),
-            },
-        )
-        .map_err(|e| format!("sending directory ReadFile request for '{path}': {e}"))?;
-        let response: DirectoryResponse = read_frame_sync(&mut self.stream)
-            .map_err(|e| format!("reading directory ReadFile response for '{path}': {e}"))?;
-        match response {
-            DirectoryResponse::ReadFileOk { content } => Ok(content.map(Into::into)),
-            DirectoryResponse::Error { code, message } => Err(format!(
-                "directory read error ({code:?}) for '{path}': {message}"
-            )),
-            other => Err(format!("unexpected directory ReadFile response: {other:?}")),
-        }
-    }
-
-    /// Returns `Ok(true)` if accepted, `Ok(false)` if the backend
-    /// rejected the write because the grant is not writable. Other
-    /// errors propagate.
-    fn write_file(&mut self, path: &str, content: &[u8]) -> Result<bool, String> {
-        write_frame_sync(
-            &mut self.stream,
-            &DirectoryRequest::WriteFile {
-                path: path.to_string(),
-                content: content.into(),
-            },
-        )
-        .map_err(|e| format!("sending directory WriteFile request for '{path}': {e}"))?;
-        let response: DirectoryResponse = read_frame_sync(&mut self.stream)
-            .map_err(|e| format!("reading directory WriteFile response for '{path}': {e}"))?;
-        match response {
-            DirectoryResponse::WriteFileOk => Ok(true),
-            DirectoryResponse::Error {
-                code: underwrap_protocol::message::DirectoryErrorCode::Unauthorized,
-                ..
-            } => Ok(false),
-            DirectoryResponse::Error { code, message } => Err(format!(
-                "directory write error ({code:?}) for '{path}': {message}"
-            )),
-            other => Err(format!(
-                "unexpected directory WriteFile response: {other:?}"
-            )),
-        }
-    }
-
-    /// Returns `Ok(Some(existed))` if accepted, `Ok(None)` if the
-    /// backend rejected the delete because the grant is not writable.
-    fn delete_file(&mut self, path: &str) -> Result<Option<bool>, String> {
-        write_frame_sync(
-            &mut self.stream,
-            &DirectoryRequest::DeleteFile {
-                path: path.to_string(),
-            },
-        )
-        .map_err(|e| format!("sending directory DeleteFile request for '{path}': {e}"))?;
-        let response: DirectoryResponse = read_frame_sync(&mut self.stream)
-            .map_err(|e| format!("reading directory DeleteFile response for '{path}': {e}"))?;
-        match response {
-            DirectoryResponse::DeleteFileOk { existed } => Ok(Some(existed)),
-            DirectoryResponse::Error {
-                code: underwrap_protocol::message::DirectoryErrorCode::Unauthorized,
-                ..
-            } => Ok(None),
-            DirectoryResponse::Error { code, message } => Err(format!(
-                "directory delete error ({code:?}) for '{path}': {message}"
-            )),
-            other => Err(format!(
-                "unexpected directory DeleteFile response: {other:?}"
-            )),
-        }
-    }
-}
-
-fn sync_directory(directory: &MountedDirectory) -> Result<SyncOutcome, String> {
-    let mut channel = DirectoryChannel::from_fd_dup(directory.channel_fd)?;
-    let final_files = collect_managed_files(&directory.staging_path)?;
-    let mut rejected = false;
-
-    for relative_path in &final_files {
-        // Send every file. The staging dir was materialized from the
-        // backend at namespace start, so unchanged files re-send the
-        // same content (cheap; channel is local). Skipping unchanged
-        // entries would require a content hash per entry, which is
-        // story 410 follow-up work.
-        let bytes = std::fs::read(directory.staging_path.join(relative_path)).map_err(|e| {
-            format!(
-                "reading staged file {} for sync of '{}': {e}",
-                directory.staging_path.join(relative_path).display(),
-                directory.resource_id,
-            )
-        })?;
-        if !channel.write_file(relative_path, &bytes)? {
-            rejected = true;
-        }
-    }
-
-    for deleted in directory.initial_files.difference(&final_files) {
-        if channel.delete_file(deleted)?.is_none() {
-            rejected = true;
-        }
-    }
-
-    // When the grant denies writes, every write/delete is rejected
-    // and we treat the run as "modifications dropped". When the
-    // grant allows writes, no individual call should report
-    // Unauthorized (no per-file gating today).
-    if rejected {
-        Ok(SyncOutcome::Rejected {
-            resource_id: directory.resource_id.clone(),
-        })
-    } else {
-        Ok(SyncOutcome::Accepted)
-    }
-}
-
-fn collect_managed_files(root: &Path) -> Result<BTreeSet<String>, String> {
-    let mut out = BTreeSet::new();
-    collect_files_recursive(root, root, &mut out)?;
-    Ok(out)
-}
-
 fn collect_files_recursive(
     root: &Path,
     current: &Path,
-    out: &mut BTreeSet<String>,
+    out: &mut BTreeMap<String, SecretBytes>,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(current)
         .map_err(|e| format!("listing directory {}: {e}", current.display()))?;
@@ -333,7 +158,9 @@ fn collect_files_recursive(
                 .ok_or_else(|| format!("path {} is not valid UTF-8", path.display()))?
                 .to_string();
             validate_relative_path(&relative)?;
-            out.insert(relative);
+            let bytes = std::fs::read(&path)
+                .map_err(|e| format!("reading staged file {}: {e}", path.display()))?;
+            out.insert(relative, SecretBytes::from(bytes));
         } else {
             return Err(format!(
                 "managed directory '{}' contains unsupported entry type at {}",
@@ -405,7 +232,7 @@ fn ensure_mount_target(
     Ok((current, created))
 }
 
-fn bind_mount_dir(source: &Path, target: &Path, readonly: bool) -> Result<(), String> {
+fn bind_mount_dir(source: &Path, target: &Path) -> Result<(), String> {
     let source = path_to_cstring(source)?;
     let target = path_to_cstring(target)?;
     let ret = unsafe {
@@ -425,26 +252,6 @@ fn bind_mount_dir(source: &Path, target: &Path, readonly: bool) -> Result<(), St
             std::io::Error::last_os_error()
         ));
     }
-
-    if readonly {
-        let ret = unsafe {
-            libc::mount(
-                std::ptr::null(),
-                target.as_ptr(),
-                std::ptr::null(),
-                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
-                std::ptr::null(),
-            )
-        };
-        if ret != 0 {
-            return Err(format!(
-                "remounting {} read-only failed: {}",
-                target.to_string_lossy(),
-                std::io::Error::last_os_error()
-            ));
-        }
-    }
-
     Ok(())
 }
 
@@ -506,5 +313,25 @@ mod tests {
             );
         }
         assert!(validate_relative_path(".config/gws").is_ok());
+    }
+
+    #[test]
+    fn collect_staging_files_round_trips_files_section() {
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let staging = tempdir.path().join("dir-0");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(staging.join("sub")).unwrap();
+        std::fs::write(staging.join("a.txt"), b"alpha").unwrap();
+        std::fs::write(staging.join("sub").join("b.bin"), b"\x00\x01\x02").unwrap();
+
+        let directory = MountedDirectory {
+            resource_id: "test".to_string(),
+            mounts: Vec::new(),
+            staging_path: staging.clone(),
+        };
+        let files = collect_staging_files(&directory).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files.get("a.txt").unwrap().as_slice(), b"alpha");
+        assert_eq!(files.get("sub/b.bin").unwrap().as_slice(), b"\x00\x01\x02");
     }
 }

@@ -4,37 +4,6 @@ use crate::message::SecretBytes;
 use anyhow::Result;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecDirectoryBinding {
-    pub resource_id: String,
-    /// Target-home-relative paths at which the same staging directory
-    /// should be bind-mounted. A single `channel_fd` backs all of them
-    /// so writeback through one resource cannot race with itself.
-    pub target_paths: Vec<String>,
-    pub access: AccessMode,
-    pub channel_fd: u32,
-}
-
-impl WireEncode for ExecDirectoryBinding {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        self.resource_id.encode(out)?;
-        self.target_paths.encode(out)?;
-        self.access.encode(out)?;
-        self.channel_fd.encode(out)
-    }
-}
-
-impl WireDecode for ExecDirectoryBinding {
-    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
-        Ok(Self {
-            resource_id: String::decode(reader)?,
-            target_paths: Vec::<String>::decode(reader)?,
-            access: AccessMode::decode(reader)?,
-            channel_fd: u32::decode(reader)?,
-        })
-    }
-}
-
 /// One wrapper-resource binding flowing through the exec → ns
 /// handoff. `channel_fd` is the ns-side fd number that backs the
 /// authenticated socketpair to the daemon for this resource; ns
@@ -47,8 +16,8 @@ pub struct ExecResourceBinding {
     /// Whether secretsd should be launched for this resource.
     pub libsecret: bool,
     /// Target-home-relative paths at which the files staging dir for
-    /// this resource should be bind-mounted (always read-write at
-    /// the mount layer; the backend gates persistence).
+    /// this resource should be bind-mounted (always read-write at the
+    /// mount layer; the backend gates persistence).
     pub files_target_paths: Vec<String>,
 }
 
@@ -79,11 +48,9 @@ pub struct ExecBundle {
     pub env: HashMap<String, SecretBytes>,
     pub env_passthrough: Vec<String>,
     pub env_set: HashMap<String, String>,
-    pub directories: Vec<ExecDirectoryBinding>,
     /// Per-resource wrapper-resource channel bindings. One entry per
     /// resource in scope, each carrying the fd for the bulk-blob IPC
-    /// channel (`Checkout` / `Checkin` / `UsageSignal`). Empty during
-    /// the cutover phase until ns starts consuming the new channels.
+    /// channel (`Checkout` / `Checkin` / `UsageSignal`).
     pub resources: Vec<ExecResourceBinding>,
 }
 
@@ -92,7 +59,6 @@ impl WireEncode for ExecBundle {
         self.env.encode(out)?;
         self.env_passthrough.encode(out)?;
         self.env_set.encode(out)?;
-        self.directories.encode(out)?;
         self.resources.encode(out)
     }
 }
@@ -103,7 +69,6 @@ impl WireDecode for ExecBundle {
             env: HashMap::<String, SecretBytes>::decode(reader)?,
             env_passthrough: Vec::<String>::decode(reader)?,
             env_set: HashMap::<String, String>::decode(reader)?,
-            directories: Vec::<ExecDirectoryBinding>::decode(reader)?,
             resources: Vec::<ExecResourceBinding>::decode(reader)?,
         })
     }
@@ -115,16 +80,17 @@ mod tests {
     use crate::ipc::{decode_from_slice, encode_to_vec};
 
     #[test]
-    fn exec_directory_binding_roundtrip() {
-        let binding = ExecDirectoryBinding {
+    fn exec_resource_binding_roundtrip() {
+        let binding = ExecResourceBinding {
             resource_id: "gws/state".to_string(),
-            target_paths: vec![".config/gh".to_string()],
             access: AccessMode::ReadWrite,
-            channel_fd: 12,
+            channel_fd: 20,
+            libsecret: false,
+            files_target_paths: vec![".config/gh".to_string()],
         };
 
         let encoded = encode_to_vec(&binding).unwrap();
-        let decoded: ExecDirectoryBinding = decode_from_slice(&encoded).unwrap();
+        let decoded: ExecResourceBinding = decode_from_slice(&encoded).unwrap();
         assert_eq!(decoded, binding);
     }
 
@@ -134,7 +100,6 @@ mod tests {
             env: HashMap::new(),
             env_passthrough: Vec::new(),
             env_set: HashMap::new(),
-            directories: Vec::new(),
             resources: Vec::new(),
         };
 
@@ -158,20 +123,6 @@ mod tests {
                 ("PATH".to_string(), "/run/current-system/sw/bin".to_string()),
                 ("UNDERWRAP_LIBSECRET".to_string(), "1".to_string()),
             ]),
-            directories: vec![
-                ExecDirectoryBinding {
-                    resource_id: "gws/state".to_string(),
-                    target_paths: vec![".config/gh".to_string()],
-                    access: AccessMode::ReadWrite,
-                    channel_fd: 10,
-                },
-                ExecDirectoryBinding {
-                    resource_id: "aws/cache".to_string(),
-                    target_paths: vec![".aws/sso/cache".to_string(), ".cache/aws-sso".to_string()],
-                    access: AccessMode::ReadOnly,
-                    channel_fd: 11,
-                },
-            ],
             resources: vec![
                 ExecResourceBinding {
                     resource_id: "gws/state".to_string(),
@@ -201,7 +152,6 @@ mod tests {
             env: HashMap::from([("GH_TOKEN".to_string(), b"ghp_test".as_slice().into())]),
             env_passthrough: vec!["SSH_AUTH_SOCK".to_string()],
             env_set: HashMap::new(),
-            directories: Vec::new(),
             resources: Vec::new(),
         };
 

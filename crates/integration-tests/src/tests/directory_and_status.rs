@@ -97,17 +97,22 @@ async fn directory_bindings_are_returned_on_read() {
     let daemon = TestDaemon::start(wrappers).await.unwrap();
     let resp = daemon.read_request("dir-w").await.unwrap();
     match resp {
-        WrapperResponse::ReadOk {
-            env, directories, ..
-        } => {
+        WrapperResponse::ReadOk { env, resources } => {
             assert!(env.is_empty());
-            assert_eq!(directories.len(), 2);
+            // Files bindings ride inside the `resources` list now —
+            // one entry per resource, each carrying its
+            // `files_target_paths`.
+            let files: Vec<_> = resources
+                .iter()
+                .filter(|r| !r.files_target_paths.is_empty())
+                .collect();
+            assert_eq!(files.len(), 2);
             assert_eq!(
-                directories[0].target_paths,
+                files[0].files_target_paths,
                 vec![".config/gws-a".to_string()]
             );
             assert_eq!(
-                directories[1].target_paths,
+                files[1].files_target_paths,
                 vec![".local/share/gws-b".to_string()],
             );
         }

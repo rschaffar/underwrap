@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -10,8 +11,8 @@ use zbus::{
 use underwrap_secretsd_store::SecretStore;
 
 use crate::BASE_PATH;
-use crate::channel::{self, ChannelOps};
 use crate::metadata_trace_enabled;
+use crate::state;
 
 use super::{
     CollectionInterface, Secret, SessionInterface, collection_path, empty_path, item_path,
@@ -20,12 +21,12 @@ use super::{
 
 pub struct SecretService {
     store: Arc<RwLock<SecretStore>>,
-    channel: Arc<dyn ChannelOps>,
+    state_path: Arc<PathBuf>,
 }
 
 impl SecretService {
-    pub fn new(store: Arc<RwLock<SecretStore>>, channel: Arc<dyn ChannelOps>) -> Self {
-        Self { store, channel }
+    pub fn new(store: Arc<RwLock<SecretStore>>, state_path: Arc<PathBuf>) -> Self {
+        Self { store, state_path }
     }
 }
 
@@ -77,15 +78,12 @@ impl SecretService {
         let col_id = {
             let mut store = self.store.write().await;
             let id = store.create_collection(label.as_deref(), alias);
-            channel::save_aliases(&*self.channel, &store)
-                .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
-            channel::save_collection_meta(&*self.channel, &id, &store)
-                .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
+            state::dump_or_log(&store, &self.state_path)?;
             id
         };
 
         let path = collection_path(&col_id)?;
-        let col = CollectionInterface::new(col_id, self.store.clone(), self.channel.clone());
+        let col = CollectionInterface::new(col_id, self.store.clone(), self.state_path.clone());
         if let Err(e) = object_server.at(&path, col).await {
             tracing::warn!(%path, error = %e, "registering collection interface failed");
         }
@@ -141,16 +139,18 @@ impl SecretService {
 
         for item_path in items {
             if let Some((col_id, item_id)) = parse_item_path(item_path.as_str())
-                && let Ok(Some(secret)) = channel::read_item_secret(&*self.channel, col_id, item_id)
+                && let Some(item) = store
+                    .collections
+                    .get(col_id)
+                    .and_then(|c| c.items.get(item_id))
             {
-                let content_type = store
-                    .get_content_type(col_id, item_id)
-                    .unwrap_or("text/plain");
+                let content_type = item.content_type.clone();
+                let secret = item.secret.clone();
                 if metadata_trace_enabled() {
                     tracing::info!(
                         collection = col_id,
                         item = item_id,
-                        content_type,
+                        content_type = %content_type,
                         secret_len = secret.len(),
                         "secretsd Service.GetSecrets item"
                     );
@@ -161,7 +161,7 @@ impl SecretService {
                         session: session.to_owned().into(),
                         parameters: vec![],
                         value: secret,
-                        content_type: content_type.to_string(),
+                        content_type,
                     },
                 );
             }
@@ -206,8 +206,7 @@ impl SecretService {
                 "secretsd Service.SetAlias"
             );
         }
-        channel::save_aliases(&*self.channel, &store)
-            .map_err(|e| fdo::Error::Failed(format!("save error: {e}")))?;
+        state::dump_or_log(&store, &self.state_path)?;
         Ok(())
     }
 
@@ -225,15 +224,14 @@ impl SecretService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dbus_service::test_support::{FakeChannel, service_with_channel};
+    use crate::dbus_service::test_support::service_with_state;
+    use underwrap_protocol::resource_blob::LibsecretSection;
 
     #[tokio::test]
     async fn read_and_set_alias_roundtrip() {
         let mut store = SecretStore::new_default();
         let work_id = store.create_collection(Some("Work"), None);
-        let channel_impl = Arc::new(FakeChannel::new(HashMap::new()));
-        let channel: Arc<dyn ChannelOps> = channel_impl.clone();
-        let (service, store) = service_with_channel(store, channel);
+        let (service, store, _tempdir) = service_with_state(store);
 
         let path = service.read_alias("default").await.unwrap();
         assert_eq!(path.as_str(), format!("{BASE_PATH}/collection/default"));
@@ -248,19 +246,14 @@ mod tests {
         );
         assert_eq!(store.read().await.get_alias("work"), Some(work_id.as_str()));
 
-        let raw_aliases = channel_impl
-            .data
-            .lock()
-            .unwrap()
-            .get("_aliases")
-            .cloned()
-            .unwrap();
-        let aliases: HashMap<String, String> = serde_json::from_slice(&raw_aliases).unwrap();
-        assert_eq!(aliases.get("work"), Some(&work_id));
+        // The state file mirrors the in-memory store.
+        let bytes = std::fs::read(&*service.state_path).unwrap();
+        let section = LibsecretSection::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(section.aliases.get("work"), Some(&work_id));
     }
 
     #[tokio::test]
-    async fn search_items_and_get_secrets_use_store_metadata_and_channel_values() {
+    async fn search_items_and_get_secrets_use_in_memory_values() {
         let mut store = SecretStore::new_default();
         let attributes = HashMap::from([("service".to_string(), "github".to_string())]);
         let (item_id, _) = store
@@ -268,17 +261,13 @@ mod tests {
                 "default",
                 "GitHub",
                 &attributes,
-                b"ignored-by-service",
+                b"in-memory-secret",
                 "text/plain",
                 false,
             )
             .unwrap();
 
-        let channel: Arc<dyn ChannelOps> = Arc::new(FakeChannel::new(HashMap::from([(
-            format!("default/{item_id}.secret"),
-            b"backend-secret".to_vec(),
-        )])));
-        let (service, _) = service_with_channel(store, channel);
+        let (service, _, _tempdir) = service_with_state(store);
 
         let (unlocked, locked) = service.search_items(attributes).await.unwrap();
         assert!(locked.is_empty());
@@ -300,7 +289,7 @@ mod tests {
         let secret = secrets
             .get(&OwnedObjectPath::try_from(item_path_str.clone()).unwrap())
             .unwrap();
-        assert_eq!(secret.value, b"backend-secret");
+        assert_eq!(secret.value, b"in-memory-secret");
         assert_eq!(secret.content_type, "text/plain");
     }
 }

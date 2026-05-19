@@ -1,3 +1,16 @@
+//! Boot a private dbus-daemon and `underwrap-secretsd` inside the
+//! namespace and point the target at the private bus.
+//!
+//! The libsecret keyring for this run is provided as JCS-canonical
+//! section bytes (loaded by ns from the resource blob's `libsecret`
+//! section at Checkout time). ns writes those bytes into a one-shot
+//! pipe and passes the read end as `--init-fd` to secretsd; secretsd
+//! holds the section entirely in memory and persists each D-Bus
+//! mutation atomically to `--state-path` so ns can read the final
+//! state after the namespace dies.
+
+use std::io::Write;
+use std::path::Path;
 use std::process::Command;
 
 pub(crate) fn require_absolute_env_path(var_name: &str) -> Result<String, String> {
@@ -14,7 +27,8 @@ pub(crate) fn require_absolute_env_path(var_name: &str) -> Result<String, String
 pub(crate) fn setup_libsecret(
     cmd: &mut Command,
     secret_fd: i32,
-    channel_fd: i32,
+    section_bytes: &[u8],
+    state_path: &Path,
 ) -> Result<(), String> {
     let dbus_daemon = require_absolute_env_path("UNDERWRAP_DBUS_DAEMON")?;
     let secretsd = require_absolute_env_path("UNDERWRAP_SECRETSD")?;
@@ -43,6 +57,18 @@ pub(crate) fn setup_libsecret(
     }
     let (dbus_addr_read, dbus_addr_write) = (dbus_addr_fds[0], dbus_addr_fds[1]);
 
+    // One-shot init pipe carrying the libsecret section bytes. Writer
+    // closes after writing so secretsd sees EOF on the read end.
+    let mut init_fds = [0i32; 2];
+    let ret = unsafe { libc::pipe(init_fds.as_mut_ptr()) };
+    if ret != 0 {
+        return Err(format!(
+            "pipe() for libsecret init failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let (init_read, init_write) = (init_fds[0], init_fds[1]);
+
     let dbus_pid = unsafe { libc::fork() };
     if dbus_pid < 0 {
         return Err(format!(
@@ -53,10 +79,11 @@ pub(crate) fn setup_libsecret(
     if dbus_pid == 0 {
         unsafe {
             libc::close(secret_fd);
-            libc::close(channel_fd);
             libc::close(ready_read);
             libc::close(ready_write);
             libc::close(dbus_addr_read);
+            libc::close(init_read);
+            libc::close(init_write);
         }
         use std::os::unix::process::CommandExt;
         let err = Command::new(&dbus_daemon)
@@ -92,6 +119,11 @@ pub(crate) fn setup_libsecret(
         return Err("dbus-daemon did not print its address (crashed?)".to_string());
     }
 
+    let state_path_str = state_path
+        .to_str()
+        .ok_or_else(|| format!("--state-path {} is not valid UTF-8", state_path.display()))?
+        .to_string();
+
     let secretsd_pid = unsafe { libc::fork() };
     if secretsd_pid < 0 {
         return Err(format!(
@@ -103,13 +135,16 @@ pub(crate) fn setup_libsecret(
         unsafe {
             libc::close(secret_fd);
             libc::close(ready_read);
+            libc::close(init_write);
         }
         use std::os::unix::process::CommandExt;
         let err = Command::new(&secretsd)
             .arg("--bus-address")
             .arg(&actual_bus_address)
-            .arg("--channel-fd")
-            .arg(channel_fd.to_string())
+            .arg("--init-fd")
+            .arg(init_read.to_string())
+            .arg("--state-path")
+            .arg(&state_path_str)
             .arg("--ready-fd")
             .arg(ready_write.to_string())
             .stderr({
@@ -122,8 +157,19 @@ pub(crate) fn setup_libsecret(
         std::process::exit(1);
     }
 
-    unsafe { libc::close(channel_fd) };
-    unsafe { libc::close(ready_write) };
+    // Parent (ns): close fds the child owns and feed the init bytes.
+    unsafe {
+        libc::close(init_read);
+        libc::close(ready_write);
+    }
+    {
+        use std::os::unix::io::FromRawFd;
+        let mut writer = unsafe { std::fs::File::from_raw_fd(init_write) };
+        writer
+            .write_all(section_bytes)
+            .map_err(|e| format!("writing libsecret section to init pipe: {e}"))?;
+        // Dropping the writer closes the pipe so secretsd sees EOF.
+    }
 
     let mut ready_buf = [0u8; 1];
     loop {

@@ -5,10 +5,9 @@ use tracing::{error, warn};
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::message::{ErrorCode, ReadResourceBinding, SecretBytes, WrapperResponse};
 use underwrap_protocol::resource::{
-    env_prefix, env_resource, files_resource, libsecret_resource, relative_to_prefix,
-    validate_env_name,
+    env_resource, files_resource, libsecret_resource, validate_env_name,
 };
-use underwrap_store::{expand_blob_to_entries, load_resource_blob};
+use underwrap_store::load_resource_blob;
 
 use crate::audit;
 use crate::policy::{
@@ -20,16 +19,9 @@ use crate::wrapper_bindings::{
     wrapper_all_resources, wrapper_env_resources, wrapper_file_bindings, wrapper_libsecret_resource,
 };
 
-#[derive(Debug, Clone, Default)]
-pub(super) struct BundleSnapshot {
-    pub entries: HashMap<String, SecretBytes>,
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct ReadResult {
     pub response: WrapperResponse,
-    pub snapshot: BundleSnapshot,
-    pub libsecret_access: Option<(String, AccessMode)>,
     /// Per-resource access map captured during read evaluation,
     /// used by the channel-setup stage to allocate wrapper-resource
     /// channels with the right writability.
@@ -37,9 +29,9 @@ pub(super) struct ReadResult {
 }
 
 /// Re-check every grant in the same policy document the mode gate
-/// consulted, then fetch every resource the wrapper declares. When
-/// `approval_satisfied` is true the mode check is bypassed; the grants
-/// must still all exist.
+/// consulted, then build the per-resource bindings the wrapper needs to
+/// open one channel per resource. When `approval_satisfied` is true the
+/// mode check is bypassed; the grants must still all exist.
 pub(super) fn process_read_for(
     wrapper_name: &str,
     scope: Option<&str>,
@@ -110,95 +102,70 @@ pub(super) fn process_read_for(
         }
     }
 
-    // The grants pass. Each resource's per-grant `writable` flag
-    // decides whether the wrapper-side mutable slot (`files` /
-    // `libsecret`) is opened for writes.
+    // Compute a stable resource list (sorted by id) and emit one audit
+    // line per resource. The wrapper-resource channels are opened in
+    // this same order so the wrapper-side fd assignment is deterministic.
     let mut resource_ids: Vec<String> = Vec::new();
-    let mut env_resources = Vec::new();
     for resource_id in wrapper_env_resources(wrapper_def) {
         let _resource = env_resource(resource_id);
         audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
         if !resource_ids.iter().any(|r| r == resource_id) {
             resource_ids.push(resource_id.to_string());
         }
-        env_resources.push(resource_id.to_string());
     }
-
-    let mut file_bindings = Vec::new();
     for projection in wrapper_file_bindings(wrapper_def) {
         let _resource = files_resource(&projection.resource_id);
         audit::read_granted(wrapper_name, &projection.resource_id, Some(peer_uid), scope);
         if !resource_ids.iter().any(|r| r == &projection.resource_id) {
             resource_ids.push(projection.resource_id.clone());
         }
-        let access = if writable_for(
-            policy.as_ref(),
-            &state.client_instance,
-            &logical_name,
-            &projection.resource_id,
-        ) {
-            AccessMode::ReadWrite
-        } else {
-            AccessMode::ReadOnly
-        };
-        file_bindings.push(projection.into_read_binding(access));
     }
-
-    let mut libsecret_access = None;
     if let Some(resource_id) = wrapper_libsecret_resource(wrapper_def) {
         let _resource = libsecret_resource(resource_id);
         audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
         if !resource_ids.iter().any(|r| r == resource_id) {
             resource_ids.push(resource_id.to_string());
         }
-        let access = if writable_for(
-            policy.as_ref(),
-            &state.client_instance,
-            &logical_name,
-            resource_id,
-        ) {
-            AccessMode::ReadWrite
-        } else {
-            AccessMode::ReadOnly
-        };
-        libsecret_access = Some((resource_id.to_string(), access));
     }
 
+    // Build the env map by reading each env-eligible resource's blob
+    // and copying its `env` section.
     let store = state
         .store
         .as_ref()
         .expect("read flow only runs for enrolled instances");
-    let mut snapshot_entries: HashMap<String, SecretBytes> = HashMap::new();
-    for resource_id in &resource_ids {
+    let mut env: HashMap<String, SecretBytes> = HashMap::new();
+    for resource_id in wrapper_env_resources(wrapper_def) {
         let blob = match load_resource_blob(store.as_ref(), resource_id) {
-            Ok(blob) => blob,
+            Ok(b) => b,
             Err(e) => {
                 error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "resource blob load failed");
                 return error_result(ErrorCode::Internal, "internal storage error".to_string());
             }
         };
-        let entries = match expand_blob_to_entries(resource_id, &blob) {
-            Ok(entries) => entries,
-            Err(e) => {
-                error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "resource blob decode failed");
-                return error_result(ErrorCode::Internal, "internal storage error".to_string());
+        for (var_name, material) in &blob.env {
+            if let Err(reason) = validate_env_name(var_name) {
+                return error_result(
+                    ErrorCode::Internal,
+                    format!(
+                        "resource '{resource_id}' contains invalid env name '{var_name}' for wrapper '{wrapper_name}': {reason}"
+                    ),
+                );
             }
-        };
-        snapshot_entries.extend(entries);
+            if env.insert(var_name.clone(), material.clone()).is_some() {
+                return error_result(
+                    ErrorCode::Internal,
+                    format!(
+                        "duplicate env var '{var_name}' across resources for wrapper '{wrapper_name}'"
+                    ),
+                );
+            }
+        }
     }
-    let snapshot = BundleSnapshot {
-        entries: snapshot_entries,
-    };
 
-    let env = match build_env(wrapper_name, &env_resources, &snapshot) {
-        Ok(env) => env,
-        Err(message) => return error_result(ErrorCode::Internal, message),
-    };
-
-    // Compute one wrapper-resource binding per resource in scope.
-    // Writability is `writable_for` on the resource (the same predicate
-    // the per-slot access already uses); `libsecret` and
-    // `files_target_paths` are derived from the wrapper config.
+    // One wrapper-resource binding per resource in scope. `libsecret`
+    // and `files_target_paths` come from the wrapper config; writability
+    // comes from the grant.
     let libsecret_id = wrapper_libsecret_resource(wrapper_def).map(str::to_string);
     let mut files_paths_by_resource: HashMap<String, Vec<String>> = HashMap::new();
     for projection in wrapper_file_bindings(wrapper_def) {
@@ -234,47 +201,15 @@ pub(super) fn process_read_for(
     ReadResult {
         response: WrapperResponse::ReadOk {
             env,
-            directories: file_bindings,
             resources: resource_bindings,
         },
-        snapshot,
-        libsecret_access,
         resource_access,
     }
-}
-
-fn build_env(
-    wrapper_name: &str,
-    resources: &[String],
-    snapshot: &BundleSnapshot,
-) -> Result<HashMap<String, SecretBytes>, String> {
-    let mut env = HashMap::new();
-    for resource_id in resources {
-        let prefix = env_prefix(resource_id);
-        for (id, material) in &snapshot.entries {
-            let Some(var_name) = relative_to_prefix(id, &prefix) else {
-                continue;
-            };
-            validate_env_name(var_name).map_err(|reason| {
-                format!(
-                    "resource '{resource_id}' contains invalid env name '{var_name}' for wrapper '{wrapper_name}': {reason}"
-                )
-            })?;
-            if env.insert(var_name.to_string(), material.clone()).is_some() {
-                return Err(format!(
-                    "duplicate env var '{var_name}' across resources for wrapper '{wrapper_name}'"
-                ));
-            }
-        }
-    }
-    Ok(env)
 }
 
 fn error_result(code: ErrorCode, message: String) -> ReadResult {
     ReadResult {
         response: WrapperResponse::Error { code, message },
-        snapshot: BundleSnapshot::default(),
-        libsecret_access: None,
         resource_access: Vec::new(),
     }
 }
@@ -336,9 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn process_read_for_returns_env_and_directory_bindings_when_no_policy() {
-        // Empty document = fresh store = permissive (first-launch
-        // greenfield default).
+    fn process_read_for_returns_env_and_resource_bindings_when_no_policy() {
         let store: Arc<dyn underwrap_store::StorageBackend> =
             Arc::new(MemStore::with_entries(&[(
                 "github/token/env/GH_TOKEN",
@@ -347,12 +280,18 @@ mod tests {
         let state = state_with_store(store);
         let result = process_read_for("gh-authorized", None, &state, current_uid(), true);
         match result.response {
-            WrapperResponse::ReadOk {
-                env, directories, ..
-            } => {
+            WrapperResponse::ReadOk { env, resources } => {
                 assert_eq!(env.get("GH_TOKEN").unwrap(), &SecretBytes::from("ghp_test"));
-                assert_eq!(directories.len(), 1);
-                assert_eq!(directories[0].resource_id, "gws/state");
+                assert_eq!(resources.len(), 2);
+                let by_id: HashMap<&str, &ReadResourceBinding> = resources
+                    .iter()
+                    .map(|b| (b.resource_id.as_str(), b))
+                    .collect();
+                let dir = by_id.get("gws/state").unwrap();
+                assert_eq!(dir.files_target_paths, vec![".config/gcloud".to_string()]);
+                assert!(!dir.libsecret);
+                let env = by_id.get("github/token").unwrap();
+                assert!(env.files_target_paths.is_empty());
             }
             other => panic!("expected ReadOk, got {other:?}"),
         }
@@ -375,7 +314,6 @@ mod tests {
                 },
             ));
         let state = state_with_store(store);
-        // Missing grant for "gws/state" → invocation denied.
         let result = process_read_for("gh-authorized", None, &state, current_uid(), false);
         match result.response {
             WrapperResponse::Error { code, message } => {
