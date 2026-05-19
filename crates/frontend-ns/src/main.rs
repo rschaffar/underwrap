@@ -249,11 +249,56 @@ fn sync_and_cleanup_directories(
     if let Err(e) = staging_cleanup_result {
         return Err(format!("directory staging cleanup failed: {e}"));
     }
-    if let Err(e) = sync_result {
-        return Err(format!("directory sync failed: {e}"));
+    match sync_result {
+        Ok(outcomes) => report_sync_outcomes(&outcomes),
+        Err(e) => return Err(format!("directory sync failed: {e}")),
     }
 
     Ok(())
+}
+
+/// `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` silences the stderr line
+/// emitted when the backend rejects a directory writeback. The
+/// structured journal event is always logged.
+const SUPPRESS_READONLY_WARNING_ENV: &str = "UNDERWRAP_SUPPRESS_READONLY_WARNING";
+
+fn read_only_warning_suppressed() -> bool {
+    matches!(
+        std::env::var(SUPPRESS_READONLY_WARNING_ENV).as_deref(),
+        Ok("1")
+    )
+}
+
+fn report_sync_outcomes(outcomes: &[directory_credential::SyncOutcome]) {
+    let suppress = read_only_warning_suppressed();
+    for outcome in outcomes {
+        if let directory_credential::SyncOutcome::Rejected { resource_id } = outcome {
+            // Structured journal event: always emitted.
+            eprintln_journal_event(resource_id);
+            // Human-readable stderr line: suppressible.
+            if !suppress {
+                eprintln!(
+                    "underwrap: changes to resource '{resource_id}' were not \
+                     persisted (grant is read-only). Set \
+                     {SUPPRESS_READONLY_WARNING_ENV}=1 to silence this message.",
+                );
+            }
+        }
+    }
+}
+
+/// Emit the structured journal event. Uses tracing so the systemd
+/// journal sees `audit=writeback_rejected reason=grant_readonly
+/// resource=<id>` on the wrapper-ns process.
+fn eprintln_journal_event(resource_id: &str) {
+    // tracing-subscriber isn't installed in frontend-ns at the moment
+    // (no tracing init here), so the structured form lands on
+    // stderr-by-default. journald captures stderr from systemd units,
+    // which is the operational case. The line shape mirrors the
+    // audit events emitted by underwrapd.
+    eprintln!(
+        r#"{{"audit":"writeback_rejected","reason":"grant_readonly","resource":"{resource_id}"}}"#,
+    );
 }
 
 fn propagate_exit_status(status: libc::c_int) -> Result<(), String> {
