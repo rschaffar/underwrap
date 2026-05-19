@@ -2,14 +2,52 @@
 //!
 //! Provides read/write/list/delete operations that map to the daemon's
 //! StorageBackend via the secretsd channel protocol.
+//!
+//! When the backend rejects a write because the grant is not writable,
+//! the channel emits a one-time warning to journal + stderr (the
+//! stderr line is suppressible via `UNDERWRAP_SUPPRESS_READONLY_WARNING=1`)
+//! and reports success to the caller. The D-Bus libsecret client
+//! sees its `SetSecret` / `Delete` / `CreateItem` as succeeding so
+//! tools complete their UX flow; the warning makes the
+//! not-actually-persisted reality visible to the user.
 
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{SecretBytes, SecretsdRequest, SecretsdResponse};
+use underwrap_protocol::message::{
+    SecretBytes, SecretsdErrorCode, SecretsdRequest, SecretsdResponse,
+};
 use underwrap_secretsd_store::SecretStore;
+
+const SUPPRESS_READONLY_WARNING_ENV: &str = "UNDERWRAP_SUPPRESS_READONLY_WARNING";
+
+/// Tracks whether the per-process warning has already been emitted.
+/// secretsd serves exactly one libsecret resource for one wrapper run,
+/// so a single guard is enough to keep the warning one-shot.
+static READONLY_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Emit the one-time read-only writeback warning. The structured
+/// journal event is always written; the human-readable stderr line
+/// is silenced when the suppress env var is set.
+fn warn_readonly_writeback_once() {
+    if READONLY_WARNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    eprintln!(r#"{{"audit":"writeback_rejected","reason":"grant_readonly","source":"secretsd"}}"#);
+    let suppressed = matches!(
+        std::env::var(SUPPRESS_READONLY_WARNING_ENV).as_deref(),
+        Ok("1")
+    );
+    if !suppressed {
+        eprintln!(
+            "underwrap: libsecret writes were not persisted (grant is read-only). \
+             Set {SUPPRESS_READONLY_WARNING_ENV}=1 to silence this message.",
+        );
+    }
+}
 
 pub trait ChannelOps: Send + Sync {
     fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>>;
@@ -60,6 +98,13 @@ impl ChannelOps for DaemonChannel {
         let resp = self.send(&req)?;
         match resp {
             SecretsdResponse::WriteOk => Ok(()),
+            SecretsdResponse::Error {
+                code: SecretsdErrorCode::Unauthorized,
+                ..
+            } => {
+                warn_readonly_writeback_once();
+                Ok(())
+            }
             SecretsdResponse::Error { code, message } => {
                 bail!("daemon write error ({code:?}): {message}")
             }
@@ -88,6 +133,17 @@ impl ChannelOps for DaemonChannel {
         let resp = self.send(&req)?;
         match resp {
             SecretsdResponse::DeleteOk { existed } => Ok(existed),
+            SecretsdResponse::Error {
+                code: SecretsdErrorCode::Unauthorized,
+                ..
+            } => {
+                warn_readonly_writeback_once();
+                // The caller hasn't lost the entry from its local
+                // in-memory store, but as far as the operator's
+                // intent is concerned the entry is gone. Report
+                // "existed" so the D-Bus client doesn't retry.
+                Ok(true)
+            }
             SecretsdResponse::Error { code, message } => {
                 bail!("daemon delete error ({code:?}): {message}")
             }
