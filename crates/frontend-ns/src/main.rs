@@ -19,6 +19,7 @@ mod directory_credential;
 mod env;
 mod libsecret;
 mod mounts;
+mod resource_channel;
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -65,6 +66,11 @@ fn run() -> Result<(), String> {
     let mounted_directories =
         prepare_mounted_directories(&exec_bundle, has_directory_credentials, &target_home)?;
 
+    // Capture per-resource Checkout state for the end-of-run
+    // writeback decision. No-op when the daemon hasn't allocated
+    // any wrapper-resource channels yet.
+    let resource_channels = resource_channel::checkout_all(&exec_bundle.resources)?;
+
     let pid = fork_into_namespace()?;
     if pid == 0 {
         run_child(
@@ -72,10 +78,16 @@ fn run() -> Result<(), String> {
             target_args,
             &exec_bundle,
             &mounted_directories,
+            &resource_channels,
             libsecret_enabled,
         )
     } else {
-        run_parent(pid, &mounted_directories, has_directory_credentials)
+        run_parent(
+            pid,
+            &mounted_directories,
+            &resource_channels,
+            has_directory_credentials,
+        )
     }
 }
 
@@ -154,6 +166,7 @@ fn run_child(
     target_args: Vec<String>,
     exec_bundle: &ExecBundle,
     mounted_directories: &[directory_credential::MountedDirectory],
+    resource_channels: &[resource_channel::ResourceChannel],
     libsecret_enabled: bool,
 ) -> Result<(), String> {
     if libsecret_enabled {
@@ -182,6 +195,7 @@ fn run_child(
     }
 
     close_directory_channel_fds_for_exec(mounted_directories);
+    resource_channel::close_channel_fds_for_exec(resource_channels);
 
     let err = cmd.exec();
     Err(format!("exec failed: {err}"))
@@ -205,6 +219,7 @@ fn disable_core_dumps() -> Result<(), String> {
 fn run_parent(
     pid: libc::pid_t,
     mounted_directories: &[directory_credential::MountedDirectory],
+    _resource_channels: &[resource_channel::ResourceChannel],
     has_directory_credentials: bool,
 ) -> Result<(), String> {
     if !has_directory_credentials {
