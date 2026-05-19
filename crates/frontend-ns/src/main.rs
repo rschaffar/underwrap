@@ -20,6 +20,7 @@ mod env;
 mod libsecret;
 mod mounts;
 mod resource_channel;
+mod writeback;
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -219,7 +220,7 @@ fn disable_core_dumps() -> Result<(), String> {
 fn run_parent(
     pid: libc::pid_t,
     mounted_directories: &[directory_credential::MountedDirectory],
-    _resource_channels: &[resource_channel::ResourceChannel],
+    resource_channels: &[resource_channel::ResourceChannel],
     has_directory_credentials: bool,
 ) -> Result<(), String> {
     if !has_directory_credentials {
@@ -228,6 +229,13 @@ fn run_parent(
 
     let status = wait_for_child(pid)?;
     sync_and_cleanup_directories(mounted_directories, has_directory_credentials)?;
+
+    // Best-effort UsageSignal on each wrapper-resource channel.
+    // Errors here must not mask a target failure, so they go to
+    // stderr without changing the exit status.
+    if let Err(e) = writeback::signal_usage_for_all(resource_channels) {
+        eprintln!("underwrap-ns: end-of-run UsageSignal dispatch: {e}");
+    }
 
     if has_directory_credentials {
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;

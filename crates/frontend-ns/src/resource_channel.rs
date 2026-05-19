@@ -21,7 +21,7 @@ use underwrap_protocol::message::{WrapperResourceRequest, WrapperResourceRespons
 /// One resource's state captured at Checkout, used by the end-of-run
 /// writeback decision. The fd stays open until the namespace tears
 /// down; each IPC op `dup`s it into a temporary `UnixStream`.
-#[allow(dead_code)] // consumed by the end-of-run dispatch (story 410, task 413).
+#[allow(dead_code)] // some fields consumed in story 410 task 413 cutover.
 pub struct ResourceChannel {
     pub resource_id: String,
     pub channel_fd: i32,
