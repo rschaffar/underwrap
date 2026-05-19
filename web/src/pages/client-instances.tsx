@@ -17,6 +17,7 @@ import {
   type AdminClientInstanceDetailResponse,
   type AdminClientInstancesListResponse,
   type AdminStoresListResponse,
+  deleteClientInstance,
   fetchClientInstances,
   fetchStores,
   postClientInstanceCreate,
@@ -69,6 +70,8 @@ export function ClientInstancesPage({
     instance: AdminClientInstanceDetailResponse;
     nextStatus: "active" | "disabled";
   } | null>(null);
+  const [deleting, setDeleting] =
+    useState<AdminClientInstanceDetailResponse | null>(null);
 
   useEffect(() => {
     document.title = "underwrap — client instances";
@@ -149,6 +152,7 @@ export function ClientInstancesPage({
               {items.map((item) => {
                 const canDisable = isAdmin && item.actions.can_disable;
                 const canEnable = isAdmin && item.actions.can_enable;
+                const canDelete = isAdmin && item.actions.can_delete;
                 return (
                   <tr
                     key={item.id}
@@ -195,6 +199,15 @@ export function ClientInstancesPage({
                         >
                           {item.status === "active" ? "Disable" : "Re-enable"}
                         </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          disabled={!canDelete}
+                          title={!isAdmin ? "Only admins may manage client instances." : undefined}
+                          onClick={() => setDeleting(toDetail(item))}
+                        >
+                          Delete
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -236,6 +249,17 @@ export function ClientInstancesPage({
           onSuccess={async () => {
             await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
             setSettingStatus(null);
+          }}
+        />
+      ) : null}
+
+      {isAdmin && deleting ? (
+        <DeleteClientInstanceDialog
+          instance={deleting}
+          onClose={() => setDeleting(null)}
+          onSuccess={async () => {
+            await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
+            setDeleting(null);
           }}
         />
       ) : null}
@@ -511,6 +535,84 @@ function StatusBadge({ status }: { status: "active" | "disabled" }) {
     >
       {status}
     </span>
+  );
+}
+
+function DeleteClientInstanceDialog({
+  instance,
+  onClose,
+  onSuccess,
+}: {
+  instance: AdminClientInstanceDetailResponse;
+  onClose: () => void;
+  onSuccess: () => Promise<void>;
+}) {
+  const [confirmText, setConfirmText] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const mut = useMutation({
+    mutationFn: () => deleteClientInstance(instance.id),
+    onSuccess: async () => {
+      setSubmitError(null);
+      await onSuccess();
+    },
+    onError: (err) => setSubmitError(describeApiError(err)),
+  });
+
+  const canDelete = confirmText === instance.display_name && !mut.isPending;
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete client instance: {instance.display_name}</DialogTitle>
+          <DialogDescription>
+            This removes the client instance record permanently. The
+            client's registered certificate will no longer be accepted
+            for runtime requests. Type the display name to confirm.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="confirm-delete-name">
+              Type{" "}
+              <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
+                {instance.display_name}
+              </code>{" "}
+              to confirm
+            </Label>
+            <Input
+              id="confirm-delete-name"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              autoFocus
+              autoComplete="off"
+            />
+          </div>
+          {submitError ? (
+            <p
+              role="alert"
+              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+            >
+              {submitError}
+            </p>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={!canDelete}
+            onClick={() => mut.mutate()}
+          >
+            {mut.isPending ? "Deleting…" : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
