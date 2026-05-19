@@ -60,23 +60,6 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   const envSection = resourceBlock.getByTestId("slot-env");
   await expect(envSection.getByText("GH_TOKEN")).toBeVisible();
 
-  // env has no wrapper-side write path, so no wrapper-writable toggle.
-  await expect(
-    resourceBlock.getByTestId(
-      "wrapper-writable-env-github/token",
-    ),
-  ).toHaveCount(0);
-  // files + libsecret toggles ARE present (the resource has those
-  // slot containers even though they're empty).
-  await expect(
-    resourceBlock.getByTestId("wrapper-writable-files-github/token"),
-  ).toBeVisible();
-  await expect(
-    resourceBlock.getByTestId(
-      "wrapper-writable-libsecret-github/token",
-    ),
-  ).toBeVisible();
-
   // Reveal: the confirmation step gates the actual read.
   const row = envSection
     .getByText("GH_TOKEN")
@@ -132,37 +115,8 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   ).toHaveCount(0);
 });
 
-test("wrapper-writable toggle flips a files-slot permission and the change persists", async ({
-  page,
-  backendWithAdmin,
-}) => {
-  await loginViaUi(page, backendWithAdmin.baseUrl);
-  await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
-
-  // Seed at least one secret under a resource so the resource block
-  // appears.
-  await page.getByRole("button", { name: /create secret/i }).click();
-  const createDlg = page.getByRole("dialog", { name: /create secret/i });
-  await createDlg.getByLabel("Secret ID").fill("github/token/env/GH_TOKEN");
-  await createDlg.getByLabel(/wrapper context/i).fill("gh-authorized");
-  await createDlg.getByTestId("material-input").fill("value");
-  await createDlg.getByRole("button", { name: /^create$/i }).click();
-  await expect(createDlg).toBeHidden();
-
-  const block = page.getByTestId("resource-block-github/token");
-  await block.locator("summary").click();
-  const filesToggle = block.getByTestId("wrapper-writable-files-github/token");
-  await expect(filesToggle).not.toBeChecked();
-  await filesToggle.click();
-  await expect(filesToggle).toBeChecked();
-
-  // Reload — state must come from the backend, not the SPA cache.
-  await page.reload();
-  await page
-    .getByTestId("resource-block-github/token")
-    .locator("summary")
-    .click();
-  await expect(
-    page.getByTestId("wrapper-writable-files-github/token"),
-  ).toBeChecked();
-});
+// The wrapper-writable per-slot toggle moved off the Secrets page when
+// `writable` became a per-grant field; the equivalent affordance now
+// lives on the Matrix cell editor and is covered by
+// `matrix.spec.ts` "raw policy viewer surfaces the live PolicyDocument
+// and writable-grant count".

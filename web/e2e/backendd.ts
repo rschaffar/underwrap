@@ -139,18 +139,27 @@ export async function startBackend(
   const storeDir = join(tmpDir, "store");
   mkdirSync(storeDir);
 
-  // Per-store YAML files under a temp `stores.d/`. The 230 refactor
-  // moved store definitions out of the inline backend.yaml; each
-  // `<name>.yaml` is the `StoreDefinition` shape (storage config
-  // flattened in, with optional `description`/`created_at`).
-  const storesDir = join(tmpDir, "stores.d");
-  mkdirSync(storesDir);
-  const defaultStoreYaml = [
-    "backend: plain",
-    `dir: ${JSON.stringify(storeDir)}`,
-    "",
-  ].join("\n");
-  writeFileSync(join(storesDir, "default.yaml"), defaultStoreYaml);
+  // Pre-seed a single "default" store in the backend's stores
+  // registry. The registry is a single JSON document keyed on a
+  // stable internal id; we write it before the daemon starts so the
+  // first page render sees a store and doesn't redirect through the
+  // "no stores visible" empty state.
+  const storesFile = join(tmpDir, "stores.json");
+  writeFileSync(
+    storesFile,
+    JSON.stringify({
+      version: 1,
+      stores: [
+        {
+          id: "default",
+          name: "default",
+          description: "",
+          backend: "plain",
+          dir: storeDir,
+        },
+      ],
+    }),
+  );
 
   // `stores_data_root` for the create-store path. The store CRUD
   // tests need this to be set to exercise the create flow; pointing
@@ -158,39 +167,22 @@ export async function startBackend(
   const dataRootsDir = join(tmpDir, "data-root");
   mkdirSync(dataRootsDir);
 
-  // Per-test master-key directory for encrypted dynamic stores
-  // (ticket 234). The backend generates one file per store at
+  // Per-test master-key directory for encrypted dynamic stores.
+  // The backend generates one file per store at
   // `<keys_dir>/<store>.key` with mode 0600.
   const keysDir = join(tmpDir, "keys");
   mkdirSync(keysDir);
 
-  // Declarative stores live in a separate `stores.d/` directory the
-  // backend treats as read-only. We plant a `nixed` store here so the
-  // 235 e2e tests can assert the SPA disables edit/delete on
-  // declarative rows.
-  const declarativeStoresDir = join(tmpDir, "stores.d-declarative");
-  mkdirSync(declarativeStoresDir);
-  const declarativeStoreDir = join(tmpDir, "nixed");
-  mkdirSync(declarativeStoreDir);
-  writeFileSync(
-    join(declarativeStoresDir, "nixed.yaml"),
-    [
-      "backend: plain",
-      `dir: ${JSON.stringify(declarativeStoreDir)}`,
-      `description: ${JSON.stringify("Owned by Nix; mutate via flake.")}`,
-      "",
-    ].join("\n"),
-  );
-
   const configYaml = [
-    `stores_declarative_dir: ${JSON.stringify(declarativeStoresDir)}`,
-    `stores_dynamic_dir: ${JSON.stringify(storesDir)}`,
+    `stores_file: ${JSON.stringify(storesFile)}`,
+    `client_instances_file: ${JSON.stringify(join(tmpDir, "client-instances.json"))}`,
     `operators_file: ${JSON.stringify(join(tmpDir, "operators.json"))}`,
-    "admin:",
+    "https:",
     `  listen: "127.0.0.1:${port}"`,
     "  tls:",
     `    cert_file: ${JSON.stringify(certPath)}`,
     `    key_file: ${JSON.stringify(keyPath)}`,
+    "admin:",
     `  session_key_file: ${JSON.stringify(sessionKeyPath)}`,
     "  allowed_origins:",
     `    - "${baseUrl}"`,
