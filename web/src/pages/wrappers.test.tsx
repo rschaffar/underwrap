@@ -4,6 +4,7 @@ import { render } from "@testing-library/react";
 import {
   ModeBadge,
   deriveClientInstances,
+  formatRelativeFromEpoch,
   modeKind,
   sortPairs,
   wrapperResourceKey,
@@ -42,18 +43,21 @@ describe("derivation helpers", () => {
       resource: "jira/api",
       created_by: { kind: "operator", id: "op-1", username: "alice" },
       created_at: 100n,
+      last_used_at: null,
     },
     {
       wrapper: "aws-prod",
       resource: "aws/prod",
       created_by: { kind: "client-instance", id: "ci-runner" },
       created_at: 200n,
+      last_used_at: null,
     },
     {
       wrapper: "gh-authorized",
       resource: "github/token",
       created_by: { kind: "operator", id: "op-1", username: "alice" },
       created_at: 150n,
+      last_used_at: null,
     },
   ];
 
@@ -69,6 +73,23 @@ describe("derivation helpers", () => {
       "gh-authorized|github/token",
       "jira-readonly|jira/api",
     ]);
+  });
+
+  it("formatRelativeFromEpoch renders 'never' for null/undefined/zero", () => {
+    expect(formatRelativeFromEpoch(null)).toBe("never");
+    expect(formatRelativeFromEpoch(undefined)).toBe("never");
+    expect(formatRelativeFromEpoch(0n)).toBe("never");
+  });
+
+  it("formatRelativeFromEpoch renders a relative label for a recent epoch", () => {
+    // Anchor "now" so the test isn't time-sensitive. 90 seconds ago.
+    const now = 1_700_000_000_000;
+    const epoch = BigInt(now / 1000 - 90);
+    const label = formatRelativeFromEpoch(epoch, now);
+    // Intl.RelativeTimeFormat localizes the output. Just assert it
+    // contains a unit hint, not the exact phrasing.
+    expect(label.length).toBeGreaterThan(0);
+    expect(label).not.toBe("never");
   });
 
   it("modeKind unwraps the tag for each variant", () => {

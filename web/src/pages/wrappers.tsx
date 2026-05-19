@@ -81,6 +81,31 @@ function formatEpoch(epoch: bigint | number | undefined | null): string {
   return new Date(n * 1000).toLocaleDateString();
 }
 
+/** Format a u64 epoch as a relative time label ("3 min ago"). */
+export function formatRelativeFromEpoch(
+  epoch: bigint | number | null | undefined,
+  now: number = Date.now(),
+): string {
+  if (epoch === null || epoch === undefined) return "never";
+  const n = typeof epoch === "bigint" ? Number(epoch) : epoch;
+  if (!n) return "never";
+  const diffSecs = Math.round(now / 1000 - n);
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  const abs = Math.abs(diffSecs);
+  if (abs < 60) return rtf.format(-diffSecs, "second");
+  if (abs < 3600) return rtf.format(-Math.round(diffSecs / 60), "minute");
+  if (abs < 86400) return rtf.format(-Math.round(diffSecs / 3600), "hour");
+  return rtf.format(-Math.round(diffSecs / 86400), "day");
+}
+
+/** Format a u64 epoch as a full local ISO-style timestamp for tooltips. */
+function formatEpochFull(epoch: bigint | number | null | undefined): string {
+  if (epoch === null || epoch === undefined) return "never";
+  const n = typeof epoch === "bigint" ? Number(epoch) : epoch;
+  if (!n) return "never";
+  return new Date(n * 1000).toLocaleString();
+}
+
 /** Render an `EntityCreator` as a short human-readable label. */
 function describeCreator(creator: EntityCreator): string {
   switch (creator.kind) {
@@ -393,6 +418,9 @@ function PairsTable({
             <th className="bg-(--color-surface-0)/60 px-4 py-2 text-(--color-muted)">
               Provenance
             </th>
+            <th className="bg-(--color-surface-0)/60 px-4 py-2 text-(--color-muted)">
+              Last used
+            </th>
             {clientInstances.map((c) => {
               const displayName = displayNameById.get(c) ?? c;
               return (
@@ -433,6 +461,17 @@ function PairsTable({
                   by {describeCreator(pair.created_by)}
                   <br />
                   on {formatEpoch(pair.created_at)}
+                </td>
+                <td
+                  className="px-4 py-3 text-xs text-(--color-muted)"
+                  title={`Last used: ${formatEpochFull(pair.last_used_at)}`}
+                  data-testid={`wrappers-last-used-${pair.wrapper}-${pair.resource}`}
+                >
+                  {pair.last_used_at == null ? (
+                    <span className="opacity-60">never used</span>
+                  ) : (
+                    <>used {formatRelativeFromEpoch(pair.last_used_at)}</>
+                  )}
                 </td>
                 {clientInstances.map((c) => {
                   const key = `${c}|${pair.wrapper}|${pair.resource}`;
