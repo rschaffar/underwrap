@@ -24,7 +24,12 @@ use tracing::{error, info, warn};
 use underwrap_protocol::config::{StoreRecord, StoreRegistryDocument};
 use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument};
 
-use underwrap_store::StorageBackend;
+use underwrap_protocol::message::SecretBytes;
+use underwrap_protocol::resource::parse_secret_id;
+use underwrap_store::{
+    StorageBackend, blob_from_resource_entries, expand_blob_to_entries, load_resource_blob,
+    save_resource_blob,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpsTlsConfig {
@@ -1041,9 +1046,18 @@ fn runtime_read_gate(
     if secret_id.starts_with("__underwrap/") {
         return Ok(());
     }
-    let Some(resource) = underwrap_protocol::resource::resource_from_secret_id(secret_id) else {
+    let resource_owned: String;
+    let resource: &str = if let Some(rest) = secret_id.strip_prefix("resources/") {
+        rest
+    } else if let Some(r) = underwrap_protocol::resource::resource_from_secret_id(secret_id) {
+        resource_owned = r.to_string();
+        // Storing to a local then re-borrowing keeps the branch types
+        // aligned: both branches return `&str`.
+        let _ = &resource_owned;
+        r
+    } else {
         return Err(format!(
-            "secret id '{secret_id}' is not a canonical <resource>/<slot>/... id"
+            "secret id '{secret_id}' is not a canonical resource key"
         ));
     };
     // No policy document persisted yet → permissive greenfield
@@ -1165,6 +1179,103 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response<Ful
     )
 }
 
+/// Read a single per-key entry by translating through the resource
+/// blob layout. Falls back to raw `store.read` for non-slotted ids
+/// (reserved system documents).
+fn read_legacy_secret(store: &dyn StorageBackend, secret_id: &str) -> Result<Option<SecretBytes>> {
+    let Some(parsed) = parse_secret_id(secret_id) else {
+        return store.read(secret_id);
+    };
+    let blob = load_resource_blob(store, parsed.resource_id)?;
+    let entries = expand_blob_to_entries(parsed.resource_id, &blob)?;
+    Ok(entries.get(secret_id).cloned())
+}
+
+/// Write a single per-key entry by load-modify-save against the
+/// resource blob.
+fn write_legacy_secret(store: &dyn StorageBackend, secret_id: &str, material: &[u8]) -> Result<()> {
+    let Some(parsed) = parse_secret_id(secret_id) else {
+        return store.write(secret_id, material);
+    };
+    let blob = load_resource_blob(store, parsed.resource_id)?;
+    let mut entries = expand_blob_to_entries(parsed.resource_id, &blob)?;
+    entries.insert(secret_id.to_string(), SecretBytes::from(material.to_vec()));
+    let new_blob = blob_from_resource_entries(parsed.resource_id, &entries)?;
+    save_resource_blob(store, parsed.resource_id, &new_blob)
+}
+
+/// Delete a single per-key entry. Returns the existed flag.
+fn delete_legacy_secret(store: &dyn StorageBackend, secret_id: &str) -> Result<bool> {
+    let Some(parsed) = parse_secret_id(secret_id) else {
+        return store.delete(secret_id);
+    };
+    let blob = load_resource_blob(store, parsed.resource_id)?;
+    let mut entries = expand_blob_to_entries(parsed.resource_id, &blob)?;
+    let existed = entries.remove(secret_id).is_some();
+    if existed {
+        let new_blob = blob_from_resource_entries(parsed.resource_id, &entries)?;
+        save_resource_blob(store, parsed.resource_id, &new_blob)?;
+    }
+    Ok(existed)
+}
+
+/// List per-key entries matching `prefix`. Empty prefix lists every
+/// entry in every resource. System-reserved prefixes fall through to
+/// raw `store.list`.
+fn list_legacy_secrets(store: &dyn StorageBackend, prefix: &str) -> Result<Vec<String>> {
+    if prefix.starts_with("__underwrap/") || prefix == "__underwrap" {
+        return store.list(prefix);
+    }
+    // Identify which resource(s) the prefix touches.
+    let derived_resource_id: Option<String> = if prefix.is_empty() {
+        None
+    } else {
+        // If the prefix already targets a specific slot, the resource
+        // is everything before the slot marker.
+        let split_resource = ["/env", "/files", "/libsecret"]
+            .iter()
+            .filter_map(|marker| prefix.find(marker).map(|idx| &prefix[..idx]))
+            .min_by_key(|s| s.len())
+            .map(str::to_string);
+        // Otherwise the prefix may itself BE a resource id.
+        split_resource.or_else(|| Some(prefix.to_string()))
+    };
+
+    let mut keys: Vec<String> = Vec::new();
+    let resources: Vec<String> = if let Some(rid) = derived_resource_id {
+        vec![rid]
+    } else {
+        // List every resource blob currently in storage.
+        store
+            .list("resources/")?
+            .into_iter()
+            .filter_map(|k| k.strip_prefix("resources/").map(str::to_string))
+            .collect()
+    };
+    for resource_id in &resources {
+        let blob = load_resource_blob(store, resource_id)?;
+        let entries = expand_blob_to_entries(resource_id, &blob)?;
+        for key in entries.into_keys() {
+            if prefix.is_empty() || key == prefix || key.starts_with(&format!("{prefix}/")) {
+                keys.push(key);
+            }
+        }
+    }
+    keys.sort();
+    Ok(keys)
+}
+
+/// Count how many per-slot entries exist under `resource_name`, plus
+/// a small sample of ids for the structured "delete refused"
+/// response.
+fn resource_blob_entries(store: &dyn StorageBackend, resource_name: &str) -> Result<Vec<String>> {
+    let blob = load_resource_blob(store, resource_name)?;
+    let entries = expand_blob_to_entries(resource_name, &blob)?;
+    let mut ids: Vec<String> = entries.into_keys().collect();
+    ids.sort();
+    Ok(ids)
+}
+
 fn handle_admin_secret_write(
     state: &AdminRuntimeState,
     operator: &str,
@@ -1198,7 +1309,7 @@ fn handle_admin_secret_write(
     // policy document gate wrapper-side writes only — admins can't
     // be locked out of their own backend.
 
-    match store.write(&body.secret_id, &material) {
+    match write_legacy_secret(store.as_ref(), &body.secret_id, &material) {
         Ok(()) => {
             info!(
                 audit = "secret_stored",
@@ -1350,9 +1461,7 @@ fn apply_runtime_wrapper_register(
     request: &underwrap_protocol::service::ServiceWrapperRegisterRequest,
     now_epoch: u64,
 ) -> Result<underwrap_protocol::service::ServiceWrapperRegisterResponse> {
-    use underwrap_protocol::entities::{
-        EntityCreator, ResourceRecord, WrapperResourcePairRecord,
-    };
+    use underwrap_protocol::entities::{EntityCreator, ResourceRecord, WrapperResourcePairRecord};
     use underwrap_protocol::service::{
         ServiceWrapperRegisterReject, ServiceWrapperRegisterResponse, ServiceWrapperResourcePair,
     };
@@ -3989,21 +4098,8 @@ fn resource_secret_dependents(
     store: &dyn StorageBackend,
     resource_name: &str,
 ) -> Result<(u32, Vec<String>)> {
-    use underwrap_protocol::resource::{env_prefix, files_prefix, libsecret_prefix};
-    let prefixes = [
-        env_prefix(resource_name),
-        files_prefix(resource_name),
-        libsecret_prefix(resource_name),
-    ];
-    let mut ids: Vec<String> = Vec::new();
-    for prefix in &prefixes {
-        for id in store.list(prefix)? {
-            if id.starts_with(RESERVED_PREFIX) {
-                continue;
-            }
-            ids.push(id);
-        }
-    }
+    let mut ids = resource_blob_entries(store, resource_name)?;
+    ids.retain(|id| !id.starts_with(RESERVED_PREFIX));
     ids.sort();
     ids.dedup();
     let count = u32::try_from(ids.len()).unwrap_or(u32::MAX);
@@ -4284,9 +4380,8 @@ fn handle_admin_pairs_list(
     };
     match load_pairs_document(store.as_ref()) {
         Ok(mut doc) => {
-            doc.pairs.sort_by(|a, b| {
-                a.wrapper.cmp(&b.wrapper).then(a.resource.cmp(&b.resource))
-            });
+            doc.pairs
+                .sort_by(|a, b| a.wrapper.cmp(&b.wrapper).then(a.resource.cmp(&b.resource)));
             json_response(
                 StatusCode::OK,
                 &underwrap_protocol::service::AdminPairsListResponse { pairs: doc.pairs },
@@ -4341,9 +4436,7 @@ fn handle_admin_pair_create(
         return error_response(
             StatusCode::BAD_REQUEST,
             "unknown_resource",
-            &format!(
-                "resource '{resource}' must be created before a pair can reference it"
-            ),
+            &format!("resource '{resource}' must be created before a pair can reference it"),
         );
     }
     let mut pairs = match load_pairs_document(store.as_ref()) {
@@ -4935,7 +5028,7 @@ async fn handle_admin_request(
         .await
         {
             Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                Ok(store) => match store.read(&body.secret_id) {
+                Ok(store) => match read_legacy_secret(store.as_ref(), &body.secret_id) {
                     Ok(material) => json_response(
                         StatusCode::OK,
                         &underwrap_protocol::service::AdminSecretReadResponse {
@@ -4968,7 +5061,7 @@ async fn handle_admin_request(
                 .await
             {
                 Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match store.list(&body.prefix) {
+                    Ok(store) => match list_legacy_secrets(store.as_ref(), &body.prefix) {
                         Ok(ids) => json_response(
                             StatusCode::OK,
                             &underwrap_protocol::service::AdminSecretListResponse { ids },
@@ -4990,7 +5083,7 @@ async fn handle_admin_request(
                 .await
             {
                 Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match store.delete(&body.secret_id) {
+                    Ok(store) => match delete_legacy_secret(store.as_ref(), &body.secret_id) {
                         Ok(existed) => json_response(
                             StatusCode::OK,
                             &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
@@ -5083,14 +5176,14 @@ async fn handle_admin_request(
             Ok(body) => handle_admin_grant_delete(&state, &principal, &body),
             Err(response) => response,
         },
-        (&Method::POST, "/v1/admin/resources/list") => match parse_json_body::<
-            underwrap_protocol::service::AdminResourcesListRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_resources_list(&state, &principal, &body),
-            Err(response) => response,
-        },
+        (&Method::POST, "/v1/admin/resources/list") => {
+            match parse_json_body::<underwrap_protocol::service::AdminResourcesListRequest>(request)
+                .await
+            {
+                Ok(body) => handle_admin_resources_list(&state, &principal, &body),
+                Err(response) => response,
+            }
+        }
         (&Method::POST, "/v1/admin/resources/create") => match parse_json_body::<
             underwrap_protocol::service::AdminResourceCreateRequest,
         >(request)
@@ -5107,30 +5200,30 @@ async fn handle_admin_request(
             Ok(body) => handle_admin_resource_delete(&state, &principal, &body),
             Err(response) => response,
         },
-        (&Method::POST, "/v1/admin/pairs/list") => match parse_json_body::<
-            underwrap_protocol::service::AdminPairsListRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_pairs_list(&state, &principal, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/pairs/create") => match parse_json_body::<
-            underwrap_protocol::service::AdminPairCreateRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_pair_create(&state, &principal, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/pairs/delete") => match parse_json_body::<
-            underwrap_protocol::service::AdminPairDeleteRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_pair_delete(&state, &principal, &body),
-            Err(response) => response,
-        },
+        (&Method::POST, "/v1/admin/pairs/list") => {
+            match parse_json_body::<underwrap_protocol::service::AdminPairsListRequest>(request)
+                .await
+            {
+                Ok(body) => handle_admin_pairs_list(&state, &principal, &body),
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/admin/pairs/create") => {
+            match parse_json_body::<underwrap_protocol::service::AdminPairCreateRequest>(request)
+                .await
+            {
+                Ok(body) => handle_admin_pair_create(&state, &principal, &body),
+                Err(response) => response,
+            }
+        }
+        (&Method::POST, "/v1/admin/pairs/delete") => {
+            match parse_json_body::<underwrap_protocol::service::AdminPairDeleteRequest>(request)
+                .await
+            {
+                Ok(body) => handle_admin_pair_delete(&state, &principal, &body),
+                Err(response) => response,
+            }
+        }
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     };
     Ok(attach_csrf_cookie(response, &state, &auth))
@@ -5533,10 +5626,7 @@ mod tests {
             }
         }
         // Refusal path writes nothing.
-        assert_eq!(
-            load_resources_document(&store).unwrap().resources.len(),
-            0
-        );
+        assert_eq!(load_resources_document(&store).unwrap().resources.len(), 0);
         assert_eq!(load_pairs_document(&store).unwrap().pairs.len(), 0);
     }
 
@@ -5629,7 +5719,10 @@ mod tests {
         assert_eq!(resp.created_pairs.len(), 1);
         assert_eq!(resp.created_pairs[0].wrapper, "tf");
         let resources = load_resources_document(&store).unwrap();
-        assert_eq!(resources.resources[0].created_at, 10, "provenance untouched");
+        assert_eq!(
+            resources.resources[0].created_at, 10,
+            "provenance untouched"
+        );
     }
 
     fn test_operators_file() -> PathBuf {
@@ -7423,10 +7516,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(first.status(), StatusCode::OK);
         let dup = handle_admin_resource_create(&state, &p, &body);
         assert_eq!(dup.status(), StatusCode::CONFLICT);
-        assert_eq!(
-            response_body_json(dup)["code"],
-            "resource_already_exists"
-        );
+        assert_eq!(response_body_json(dup)["code"], "resource_already_exists");
     }
 
     #[test]
@@ -7461,7 +7551,10 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &underwrap_protocol::service::AdminResourcesListRequest { store: store_id },
         );
         assert_eq!(
-            response_body_json(list)["resources"].as_array().unwrap().len(),
+            response_body_json(list)["resources"]
+                .as_array()
+                .unwrap()
+                .len(),
             0
         );
     }
@@ -7492,12 +7585,17 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 resource: "github/token".into(),
             },
         );
-        // A secret under the resource.
+        // A secret under the resource. The legacy per-slot key shape
+        // routes through the blob shim and ends up inside the
+        // `resources/github/token` blob.
         {
             let reg = state.stores.read().unwrap();
-            reg.open[&store_id]
-                .write("github/token/env/GH_TOKEN", b"ghp_value")
-                .unwrap();
+            write_legacy_secret(
+                reg.open[&store_id].as_ref(),
+                "github/token/env/GH_TOKEN",
+                b"ghp_value",
+            )
+            .unwrap();
         }
         // A grant referencing the resource.
         {
@@ -7543,7 +7641,10 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &underwrap_protocol::service::AdminResourcesListRequest { store: store_id },
         );
         assert_eq!(
-            response_body_json(list)["resources"].as_array().unwrap().len(),
+            response_body_json(list)["resources"]
+                .as_array()
+                .unwrap()
+                .len(),
             1
         );
     }

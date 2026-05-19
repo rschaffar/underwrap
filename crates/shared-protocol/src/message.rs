@@ -12,12 +12,15 @@ mod errors;
 mod secretsd;
 #[path = "message/wrapper.rs"]
 mod wrapper;
+#[path = "message/wrapper_resource.rs"]
+mod wrapper_resource;
 
 pub use common::SecretBytes;
 pub use directory::{DirectoryRequest, DirectoryResponse};
 pub use errors::{DirectoryErrorCode, ErrorCode, SecretsdErrorCode};
 pub use secretsd::{SecretsdRequest, SecretsdResponse};
 pub use wrapper::{ReadDirectoryBinding, WrapperRequest, WrapperResponse};
+pub use wrapper_resource::{ResourceErrorCode, WrapperResourceRequest, WrapperResourceResponse};
 
 #[cfg(test)]
 mod tests {

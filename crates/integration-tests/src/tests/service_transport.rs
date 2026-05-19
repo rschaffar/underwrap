@@ -59,20 +59,16 @@ async fn service_mode_auto_creates_wrapper_assets_when_enabled() {
     // the resource and pair records with provenance pointing at the
     // calling client instance.
     let wrappers = one_wrapper_config();
-    let daemon =
-        TestDaemon::start_service_mode_with(wrappers, "local", "underwrap-local", true)
-            .await
-            .unwrap();
+    let daemon = TestDaemon::start_service_mode_with(wrappers, "local", "underwrap-local", true)
+        .await
+        .unwrap();
 
     let instance_id = daemon.client_instance().to_string();
 
     let resources = daemon.list_resources("test").await.unwrap();
     let pairs = daemon.list_pairs("test").await.unwrap();
     assert!(
-        resources
-            .resources
-            .iter()
-            .any(|r| r.name == "github/token"),
+        resources.resources.iter().any(|r| r.name == "github/token"),
         "auto-create on: resource github/token should appear; got {resources:?}",
     );
     assert!(
@@ -109,14 +105,23 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         .await
         .unwrap();
 
-    daemon.create_resource("test", "github/token").await.unwrap();
+    daemon
+        .create_resource("test", "github/token")
+        .await
+        .unwrap();
     daemon
         .store_secret("test", "gh-authorized", "github/token", "ghp_value")
         .await
         .unwrap();
 
-    let blocked = daemon.delete_resource("test", "github/token").await.unwrap();
-    assert!(!blocked.ok, "delete should be refused while dependents exist");
+    let blocked = daemon
+        .delete_resource("test", "github/token")
+        .await
+        .unwrap();
+    assert!(
+        !blocked.ok,
+        "delete should be refused while dependents exist"
+    );
     let blockers = blocked.blocked_by.expect("blockers present");
     assert!(blockers.secret_count >= 1, "secret blocker reported");
     assert!(blockers.grant_count >= 1, "grant blocker reported");
@@ -147,7 +152,10 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         resp.text().await.unwrap_or_default(),
     );
 
-    let ok = daemon.delete_resource("test", "github/token").await.unwrap();
+    let ok = daemon
+        .delete_resource("test", "github/token")
+        .await
+        .unwrap();
     assert!(ok.ok, "delete should succeed after blockers cleared");
 
     daemon.stop().await.unwrap();

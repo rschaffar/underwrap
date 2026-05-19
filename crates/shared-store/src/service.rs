@@ -14,9 +14,8 @@ use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::service::{
     ServiceDeleteRequest, ServiceDeleteResponse, ServiceErrorResponse, ServiceListRequest,
     ServiceListResponse, ServiceReadPrefixesRequest, ServiceReadPrefixesResponse,
-    ServiceReadRequest, ServiceReadResponse, ServiceStatusResponse,
-    ServiceWrapperRegisterRequest, ServiceWrapperRegisterResponse, ServiceWriteRequest,
-    ServiceWriteResponse,
+    ServiceReadRequest, ServiceReadResponse, ServiceStatusResponse, ServiceWrapperRegisterRequest,
+    ServiceWrapperRegisterResponse, ServiceWriteRequest, ServiceWriteResponse,
 };
 
 use crate::StorageBackend;
@@ -124,11 +123,9 @@ impl ServiceBackend {
                                 )));
                     }
                     Command::RegisterWrapperAssets { request, reply } => {
-                        let _ = reply.send(
-                            runtime.block_on(register_wrapper_assets_request(
-                                &client, &base_url, &request,
-                            )),
-                        );
+                        let _ = reply.send(runtime.block_on(register_wrapper_assets_request(
+                            &client, &base_url, &request,
+                        )));
                     }
                     Command::Delete { secret_id, reply } => {
                         let _ = reply

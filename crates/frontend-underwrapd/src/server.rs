@@ -11,7 +11,7 @@ use tracing::{error, info, warn};
 
 use underwrap_protocol::config::DaemonConfig;
 use underwrap_protocol::service::{
-    ServiceWrapperRegisterRequest, ServiceWrapperRegisterReject, ServiceWrapperResourcePair,
+    ServiceWrapperRegisterReject, ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
 };
 
 use crate::approval::PendingApprovals;

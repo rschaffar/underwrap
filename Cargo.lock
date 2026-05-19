@@ -2578,6 +2578,7 @@ dependencies = [
  "rand 0.8.5",
  "reqwest",
  "rustls",
+ "serde",
  "serde_json",
  "shared-protocol",
  "tempfile",

@@ -2,8 +2,9 @@
 //! authenticated socketpair.
 //!
 //! Initial reads are served from the one-shot bundle snapshot fetched during
-//! wrapper authorization. Mutations are written back to the backend store only
-//! when the backend policy-derived access mode is read-write.
+//! wrapper authorization. Mutations buffer in the in-memory snapshot and are
+//! persisted as a single `resources/<id>` blob write when the channel closes,
+//! provided backend policy granted write access for the files slot.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -18,7 +19,7 @@ use underwrap_protocol::message::{
     DirectoryErrorCode, DirectoryRequest, DirectoryResponse, SecretBytes,
 };
 use underwrap_protocol::resource::relative_to_prefix;
-use underwrap_store::StorageBackend;
+use underwrap_store::{StorageBackend, blob_from_resource_entries, save_resource_blob};
 
 pub async fn run_channel(
     stream: UnixStream,
@@ -38,10 +39,12 @@ pub async fn run_channel(
     );
 
     let entries = Arc::new(Mutex::new(entries));
+    let dirty = Arc::new(Mutex::new(false));
     if let Err(e) = channel_loop(
         stream,
-        store,
-        entries,
+        store.clone(),
+        entries.clone(),
+        dirty.clone(),
         &prefix,
         &wrapper_name,
         &resource_id,
@@ -52,13 +55,41 @@ pub async fn run_channel(
         debug!(resource = %resource_id, err = %e, "directory channel closed");
     }
 
+    let should_flush = *dirty.lock().unwrap();
+    if should_flush {
+        let snapshot = entries.lock().unwrap().clone();
+        match blob_from_resource_entries(&resource_id, &snapshot) {
+            Ok(blob) => match save_resource_blob(&*store, &resource_id, &blob) {
+                Ok(()) => debug!(
+                    wrapper = %wrapper_name,
+                    resource = %resource_id,
+                    "flushed directory changes to resource blob",
+                ),
+                Err(e) => error!(
+                    wrapper = %wrapper_name,
+                    resource = %resource_id,
+                    err = %e,
+                    "saving resource blob after directory channel close failed",
+                ),
+            },
+            Err(e) => error!(
+                wrapper = %wrapper_name,
+                resource = %resource_id,
+                err = %e,
+                "rebuilding resource blob after directory channel close failed",
+            ),
+        }
+    }
+
     info!(resource = %resource_id, "directory channel handler exited");
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn channel_loop(
     mut stream: UnixStream,
     store: Arc<dyn StorageBackend>,
     entries: Arc<Mutex<HashMap<String, SecretBytes>>>,
+    dirty: Arc<Mutex<bool>>,
     prefix: &str,
     wrapper_name: &str,
     resource_id: &str,
@@ -83,6 +114,7 @@ async fn channel_loop(
             &request,
             &*store,
             &entries,
+            &dirty,
             prefix,
             wrapper_name,
             resource_id,
@@ -92,10 +124,12 @@ async fn channel_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_request(
     request: &DirectoryRequest,
-    store: &dyn StorageBackend,
+    _store: &dyn StorageBackend,
     entries: &Mutex<HashMap<String, SecretBytes>>,
+    dirty: &Mutex<bool>,
     prefix: &str,
     wrapper_name: &str,
     resource_id: &str,
@@ -148,23 +182,13 @@ fn process_request(
                 };
             };
 
-            match store.write(&full_id, content.as_ref()) {
-                Ok(()) => {
-                    entries
-                        .lock()
-                        .unwrap()
-                        .insert(full_id.clone(), content.clone());
-                    debug!(resource = %resource_id, path = %path, size = content.as_ref().len(), "directory write");
-                    DirectoryResponse::WriteFileOk
-                }
-                Err(e) => {
-                    error!(resource = %resource_id, path = %path, err = %e, "directory write error");
-                    DirectoryResponse::Error {
-                        code: DirectoryErrorCode::Internal,
-                        message: format!("storage error: {e}"),
-                    }
-                }
-            }
+            entries
+                .lock()
+                .unwrap()
+                .insert(full_id.clone(), content.clone());
+            *dirty.lock().unwrap() = true;
+            debug!(resource = %resource_id, path = %path, size = content.as_ref().len(), "directory write");
+            DirectoryResponse::WriteFileOk
         }
         DirectoryRequest::DeleteFile { path } => {
             if access != AccessMode::ReadWrite {
@@ -188,20 +212,12 @@ fn process_request(
                 };
             };
 
-            match store.delete(&full_id) {
-                Ok(existed) => {
-                    entries.lock().unwrap().remove(&full_id);
-                    debug!(resource = %resource_id, path = %path, existed = existed, "directory delete");
-                    DirectoryResponse::DeleteFileOk { existed }
-                }
-                Err(e) => {
-                    error!(resource = %resource_id, path = %path, err = %e, "directory delete error");
-                    DirectoryResponse::Error {
-                        code: DirectoryErrorCode::Internal,
-                        message: format!("storage error: {e}"),
-                    }
-                }
+            let existed = entries.lock().unwrap().remove(&full_id).is_some();
+            if existed {
+                *dirty.lock().unwrap() = true;
             }
+            debug!(resource = %resource_id, path = %path, existed = existed, "directory delete");
+            DirectoryResponse::DeleteFileOk { existed }
         }
     }
 }
@@ -233,14 +249,20 @@ mod tests {
         )
     }
 
+    fn dirty() -> Mutex<bool> {
+        Mutex::new(false)
+    }
+
     #[test]
     fn list_and_read_use_snapshot() {
         let store = MemStore::with_entries(&[]);
         let entries = entries(&[("gws/state/files/token", b"abc")]);
+        let dirty = dirty();
         let resp = process_request(
             &DirectoryRequest::ListFiles,
             &store,
             &entries,
+            &dirty,
             "gws/state/files",
             "wrapper",
             "gws/state",
@@ -258,6 +280,7 @@ mod tests {
             },
             &store,
             &entries,
+            &dirty,
             "gws/state/files",
             "wrapper",
             "gws/state",
@@ -269,12 +292,14 @@ mod tests {
                 content: Some(SecretBytes::from("abc"))
             }
         );
+        assert!(!*dirty.lock().unwrap());
     }
 
     #[test]
     fn write_requires_backend_policy_derived_access() {
         let store = MemStore::with_entries(&[]);
         let entries = entries(&[]);
+        let dirty = dirty();
         let resp = process_request(
             &DirectoryRequest::WriteFile {
                 path: "token".to_string(),
@@ -282,6 +307,7 @@ mod tests {
             },
             &store,
             &entries,
+            &dirty,
             "gws/state/files",
             "wrapper",
             "gws/state",

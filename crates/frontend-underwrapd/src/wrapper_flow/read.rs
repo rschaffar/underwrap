@@ -5,9 +5,10 @@ use tracing::{error, warn};
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::message::{ErrorCode, SecretBytes, WrapperResponse};
 use underwrap_protocol::resource::{
-    env_prefix, env_resource, files_prefix, files_resource, libsecret_prefix, libsecret_resource,
-    relative_to_prefix, validate_env_name,
+    env_prefix, env_resource, files_resource, libsecret_resource, relative_to_prefix,
+    validate_env_name,
 };
+use underwrap_store::{expand_blob_to_entries, load_resource_blob};
 
 use crate::audit;
 use crate::policy::{
@@ -108,12 +109,14 @@ pub(super) fn process_read_for(
     // The grants pass. Each resource's per-grant `writable` flag
     // decides whether the wrapper-side mutable slot (`files` /
     // `libsecret`) is opened for writes.
-    let mut prefixes = Vec::new();
+    let mut resource_ids: Vec<String> = Vec::new();
     let mut env_resources = Vec::new();
     for resource_id in wrapper_env_resources(wrapper_def) {
         let _resource = env_resource(resource_id);
         audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
-        prefixes.push(env_prefix(resource_id));
+        if !resource_ids.iter().any(|r| r == resource_id) {
+            resource_ids.push(resource_id.to_string());
+        }
         env_resources.push(resource_id.to_string());
     }
 
@@ -121,7 +124,9 @@ pub(super) fn process_read_for(
     for projection in wrapper_file_bindings(wrapper_def) {
         let _resource = files_resource(&projection.resource_id);
         audit::read_granted(wrapper_name, &projection.resource_id, Some(peer_uid), scope);
-        prefixes.push(files_prefix(&projection.resource_id));
+        if !resource_ids.iter().any(|r| r == &projection.resource_id) {
+            resource_ids.push(projection.resource_id.clone());
+        }
         let access = if writable_for(
             policy.as_ref(),
             &state.client_instance,
@@ -139,7 +144,9 @@ pub(super) fn process_read_for(
     if let Some(resource_id) = wrapper_libsecret_resource(wrapper_def) {
         let _resource = libsecret_resource(resource_id);
         audit::read_granted(wrapper_name, resource_id, Some(peer_uid), scope);
-        prefixes.push(libsecret_prefix(resource_id));
+        if !resource_ids.iter().any(|r| r == resource_id) {
+            resource_ids.push(resource_id.to_string());
+        }
         let access = if writable_for(
             policy.as_ref(),
             &state.client_instance,
@@ -153,17 +160,30 @@ pub(super) fn process_read_for(
         libsecret_access = Some((resource_id.to_string(), access));
     }
 
-    let snapshot = match state
+    let store = state
         .store
         .as_ref()
-        .expect("read flow only runs for enrolled instances")
-        .read_prefixes(&prefixes)
-    {
-        Ok(entries) => BundleSnapshot { entries },
-        Err(e) => {
-            error!(wrapper = %wrapper_name, err = %e, "bundle read failed");
-            return error_result(ErrorCode::Internal, "internal storage error".to_string());
-        }
+        .expect("read flow only runs for enrolled instances");
+    let mut snapshot_entries: HashMap<String, SecretBytes> = HashMap::new();
+    for resource_id in &resource_ids {
+        let blob = match load_resource_blob(store.as_ref(), resource_id) {
+            Ok(blob) => blob,
+            Err(e) => {
+                error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "resource blob load failed");
+                return error_result(ErrorCode::Internal, "internal storage error".to_string());
+            }
+        };
+        let entries = match expand_blob_to_entries(resource_id, &blob) {
+            Ok(entries) => entries,
+            Err(e) => {
+                error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "resource blob decode failed");
+                return error_result(ErrorCode::Internal, "internal storage error".to_string());
+            }
+        };
+        snapshot_entries.extend(entries);
+    }
+    let snapshot = BundleSnapshot {
+        entries: snapshot_entries,
     };
 
     let env = match build_env(wrapper_name, &env_resources, &snapshot) {

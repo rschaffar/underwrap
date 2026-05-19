@@ -2,8 +2,9 @@
 //! authenticated socketpair.
 //!
 //! Initial reads are served from the one-shot bundle snapshot fetched during
-//! wrapper authorization. Mutations are written back only when backend policy
-//! granted write access for the libsecret slot.
+//! wrapper authorization. Mutations buffer in the in-memory snapshot and are
+//! persisted as a single `resources/<id>` blob write when the channel closes,
+//! provided backend policy granted write access for the libsecret slot.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -17,7 +18,7 @@ use underwrap_protocol::message::{
     SecretBytes, SecretsdErrorCode, SecretsdRequest, SecretsdResponse,
 };
 use underwrap_protocol::resource::relative_to_prefix;
-use underwrap_store::StorageBackend;
+use underwrap_store::{StorageBackend, blob_from_resource_entries, save_resource_blob};
 
 /// Run the secretsd channel handler loop on the daemon's end of the socketpair.
 pub async fn run_channel(
@@ -38,10 +39,12 @@ pub async fn run_channel(
     );
 
     let entries = Arc::new(Mutex::new(entries));
+    let dirty = Arc::new(Mutex::new(false));
     if let Err(e) = channel_loop(
         stream,
-        store,
-        entries,
+        store.clone(),
+        entries.clone(),
+        dirty.clone(),
         &prefix,
         &wrapper_name,
         &resource_id,
@@ -52,13 +55,45 @@ pub async fn run_channel(
         debug!(wrapper = %wrapper_name, err = %e, "secretsd channel closed");
     }
 
+    // Flush in-memory mutations to the resource blob in one atomic
+    // write. The grant write-access check already happened on every
+    // mutating request, so reaching here means at least one accepted
+    // mutation went through.
+    let should_flush = *dirty.lock().unwrap();
+    if should_flush {
+        let snapshot = entries.lock().unwrap().clone();
+        match blob_from_resource_entries(&resource_id, &snapshot) {
+            Ok(blob) => match save_resource_blob(&*store, &resource_id, &blob) {
+                Ok(()) => debug!(
+                    wrapper = %wrapper_name,
+                    resource = %resource_id,
+                    "flushed libsecret changes to resource blob",
+                ),
+                Err(e) => error!(
+                    wrapper = %wrapper_name,
+                    resource = %resource_id,
+                    err = %e,
+                    "saving resource blob after secretsd channel close failed",
+                ),
+            },
+            Err(e) => error!(
+                wrapper = %wrapper_name,
+                resource = %resource_id,
+                err = %e,
+                "rebuilding resource blob after secretsd channel close failed",
+            ),
+        }
+    }
+
     info!(wrapper = %wrapper_name, "secretsd channel handler exited");
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn channel_loop(
     mut stream: UnixStream,
     store: Arc<dyn StorageBackend>,
     entries: Arc<Mutex<HashMap<String, SecretBytes>>>,
+    dirty: Arc<Mutex<bool>>,
     prefix: &str,
     wrapper_name: &str,
     resource_id: &str,
@@ -83,6 +118,7 @@ async fn channel_loop(
             &request,
             &*store,
             &entries,
+            &dirty,
             prefix,
             wrapper_name,
             resource_id,
@@ -92,10 +128,12 @@ async fn channel_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_request(
     request: &SecretsdRequest,
-    store: &dyn StorageBackend,
+    _store: &dyn StorageBackend,
     entries: &Mutex<HashMap<String, SecretBytes>>,
+    dirty: &Mutex<bool>,
     prefix: &str,
     wrapper_name: &str,
     resource_id: &str,
@@ -142,24 +180,14 @@ fn process_request(
                 };
             };
 
-            match store.write(&full_id, material.as_ref()) {
-                Ok(()) => {
-                    entries
-                        .lock()
-                        .unwrap()
-                        .insert(full_id.clone(), material.clone());
-                    debug!(wrapper = %wrapper_name, id = %full_id, "secretsd write");
-                    crate::audit::secretsd_write(wrapper_name, secret_id);
-                    SecretsdResponse::WriteOk
-                }
-                Err(e) => {
-                    error!(wrapper = %wrapper_name, id = %full_id, err = %e, "secretsd write error");
-                    SecretsdResponse::Error {
-                        code: SecretsdErrorCode::Internal,
-                        message: format!("storage error: {e}"),
-                    }
-                }
-            }
+            entries
+                .lock()
+                .unwrap()
+                .insert(full_id.clone(), material.clone());
+            *dirty.lock().unwrap() = true;
+            debug!(wrapper = %wrapper_name, id = %full_id, "secretsd write");
+            crate::audit::secretsd_write(wrapper_name, secret_id);
+            SecretsdResponse::WriteOk
         }
 
         SecretsdRequest::List { prefix: rel_prefix } => {
@@ -214,21 +242,13 @@ fn process_request(
                 };
             };
 
-            match store.delete(&full_id) {
-                Ok(existed) => {
-                    entries.lock().unwrap().remove(&full_id);
-                    debug!(wrapper = %wrapper_name, id = %full_id, existed = existed, "secretsd delete");
-                    crate::audit::secretsd_delete(wrapper_name, secret_id);
-                    SecretsdResponse::DeleteOk { existed }
-                }
-                Err(e) => {
-                    error!(wrapper = %wrapper_name, id = %full_id, err = %e, "secretsd delete error");
-                    SecretsdResponse::Error {
-                        code: SecretsdErrorCode::Internal,
-                        message: format!("storage error: {e}"),
-                    }
-                }
+            let existed = entries.lock().unwrap().remove(&full_id).is_some();
+            if existed {
+                *dirty.lock().unwrap() = true;
             }
+            debug!(wrapper = %wrapper_name, id = %full_id, existed = existed, "secretsd delete");
+            crate::audit::secretsd_delete(wrapper_name, secret_id);
+            SecretsdResponse::DeleteOk { existed }
         }
     }
 }
@@ -264,16 +284,22 @@ mod tests {
         )
     }
 
+    fn dirty() -> Mutex<bool> {
+        Mutex::new(false)
+    }
+
     #[test]
     fn read_uses_snapshot() {
         let store = MemStore::with_entries(&[]);
         let entries = entries(&[("gh/libsecret/default/item.secret", b"s")]);
+        let dirty = dirty();
         let resp = process_request(
             &SecretsdRequest::Read {
                 secret_id: "default/item.secret".to_string(),
             },
             &store,
             &entries,
+            &dirty,
             "gh/libsecret",
             "wrapper",
             "gh",
@@ -285,12 +311,14 @@ mod tests {
                 material: Some(SecretBytes::from("s"))
             }
         );
+        assert!(!*dirty.lock().unwrap());
     }
 
     #[test]
     fn write_requires_backend_policy_derived_access() {
         let store = MemStore::with_entries(&[]);
         let entries = entries(&[]);
+        let dirty = dirty();
         let resp = process_request(
             &SecretsdRequest::Write {
                 secret_id: "default/item.secret".to_string(),
@@ -298,6 +326,7 @@ mod tests {
             },
             &store,
             &entries,
+            &dirty,
             "gh/libsecret",
             "wrapper",
             "gh",
@@ -310,5 +339,62 @@ mod tests {
                 ..
             }
         ));
+        assert!(!*dirty.lock().unwrap());
+    }
+
+    #[test]
+    fn write_marks_dirty_and_updates_entries_without_storage() {
+        let store = MemStore::with_entries(&[]);
+        let entries = entries(&[]);
+        let dirty = dirty();
+        let resp = process_request(
+            &SecretsdRequest::Write {
+                secret_id: "default/item.secret".to_string(),
+                material: SecretBytes::from("s"),
+            },
+            &store,
+            &entries,
+            &dirty,
+            "gh/libsecret",
+            "wrapper",
+            "gh",
+            AccessMode::ReadWrite,
+        );
+        assert!(matches!(resp, SecretsdResponse::WriteOk));
+        assert_eq!(
+            entries
+                .lock()
+                .unwrap()
+                .get("gh/libsecret/default/item.secret"),
+            Some(&SecretBytes::from("s"))
+        );
+        assert!(*dirty.lock().unwrap());
+    }
+
+    #[test]
+    fn delete_marks_dirty_when_entry_existed() {
+        let store = MemStore::with_entries(&[]);
+        let entries = entries(&[("gh/libsecret/default/item.secret", b"s")]);
+        let dirty = dirty();
+        let resp = process_request(
+            &SecretsdRequest::Delete {
+                secret_id: "default/item.secret".to_string(),
+            },
+            &store,
+            &entries,
+            &dirty,
+            "gh/libsecret",
+            "wrapper",
+            "gh",
+            AccessMode::ReadWrite,
+        );
+        assert!(matches!(resp, SecretsdResponse::DeleteOk { existed: true }));
+        assert!(
+            !entries
+                .lock()
+                .unwrap()
+                .contains_key("gh/libsecret/default/item.secret")
+        );
+        assert!(*dirty.lock().unwrap());
     }
 }
