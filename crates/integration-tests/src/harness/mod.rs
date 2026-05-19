@@ -14,7 +14,6 @@ use underwrap_protocol::config::*;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
 use underwrap_protocol::policy::{AgentGrant, PolicyDocument};
-use underwrap_protocol::service::CatalogEntry;
 
 mod builders;
 mod pki;
@@ -73,9 +72,21 @@ impl TestDaemon {
 
     /// Start a daemon against backend HTTPS service mode.
     pub async fn start_service_mode(
+        wrappers: HashMap<String, WrapperDef>,
+        client_name: &str,
+        accepted_principal: &str,
+    ) -> Result<Self> {
+        Self::start_service_mode_with(wrappers, client_name, accepted_principal, false).await
+    }
+
+    /// Variant that seeds the client-instance with
+    /// `auto_create_wrapper_assets` already flipped on so the startup
+    /// register call creates resource/pair records on first contact.
+    pub async fn start_service_mode_with(
         mut wrappers: HashMap<String, WrapperDef>,
         client_name: &str,
         accepted_principal: &str,
+        auto_create_wrapper_assets: bool,
     ) -> Result<Self> {
         let tempdir = tempfile::TempDir::new()?;
         let base = tempdir.path();
@@ -133,6 +144,7 @@ impl TestDaemon {
                 ready_cert_pem,
                 None,
             )?,
+            auto_create_wrapper_assets,
         };
         std::fs::write(
             &instances_file,
@@ -443,10 +455,13 @@ impl TestDaemon {
         Ok(())
     }
 
-    pub async fn get_catalog(&self, store: &str) -> Result<Vec<CatalogEntry>> {
+    pub async fn list_resources(
+        &self,
+        store: &str,
+    ) -> Result<underwrap_protocol::service::AdminResourcesListResponse> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/catalog/get")
-            .json(&underwrap_protocol::service::AdminCatalogGetRequest {
+            .admin_request(reqwest::Method::POST, "/v1/admin/resources/list")
+            .json(&underwrap_protocol::service::AdminResourcesListRequest {
                 store: store.to_string(),
             })
             .send()
@@ -456,8 +471,70 @@ impl TestDaemon {
             "admin API returned {}",
             response.status()
         );
-        let body: underwrap_protocol::service::AdminCatalogGetResponse = response.json().await?;
-        Ok(body.entries)
+        Ok(response.json().await?)
+    }
+
+    pub async fn create_resource(
+        &self,
+        store: &str,
+        name: &str,
+    ) -> Result<underwrap_protocol::service::AdminResourceCreateResponse> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/resources/create")
+            .json(&underwrap_protocol::service::AdminResourceCreateRequest {
+                store: store.to_string(),
+                name: name.to_string(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default(),
+        );
+        Ok(response.json().await?)
+    }
+
+    pub async fn delete_resource(
+        &self,
+        store: &str,
+        name: &str,
+    ) -> Result<underwrap_protocol::service::AdminResourceDeleteResponse> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/resources/delete")
+            .json(&underwrap_protocol::service::AdminResourceDeleteRequest {
+                store: store.to_string(),
+                name: name.to_string(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default(),
+        );
+        Ok(response.json().await?)
+    }
+
+    pub async fn list_pairs(
+        &self,
+        store: &str,
+    ) -> Result<underwrap_protocol::service::AdminPairsListResponse> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/pairs/list")
+            .json(&underwrap_protocol::service::AdminPairsListRequest {
+                store: store.to_string(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(response.json().await?)
     }
 
     pub async fn get_policy(&self, store: &str) -> Result<Option<PolicyDocument>> {

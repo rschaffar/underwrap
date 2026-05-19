@@ -30,14 +30,22 @@ use underwrap_backendd::server::{
     BootstrapRequest, BootstrapResponse, BootstrapStatusResponse, LoginRequest, LoginResponse,
     WhoamiResponse,
 };
+use underwrap_protocol::entities::{
+    EntityCreator, PairsDocument, ResourceRecord, ResourcesDocument, WrapperResourcePairRecord,
+};
 use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
 use underwrap_protocol::service::{
     AdminAgentGrantDeleteRequest, AdminAgentGrantUpsertRequest, AdminAgentGrantsListRequest,
-    AdminAgentGrantsListResponse, AdminCatalogGetRequest, AdminCatalogGetResponse, AdminOkResponse,
-    AdminPolicyGetRequest, AdminPolicyGetResponse, AdminPolicyPutRequest, AdminSecretDeleteRequest,
-    AdminSecretDeleteResponse, AdminSecretListRequest, AdminSecretListResponse,
-    AdminSecretReadRequest, AdminSecretReadResponse, AdminSecretWriteRequest,
-    AdminUiOverviewResponse, AdminUiOverviewStore, AdminUiWrapperCounts, CatalogEntry,
+    AdminAgentGrantsListResponse, AdminGrantKey, AdminOkResponse, AdminPairCreateRequest,
+    AdminPairCreateResponse, AdminPairDeleteBlockers, AdminPairDeleteRequest,
+    AdminPairDeleteResponse, AdminPairsListRequest, AdminPairsListResponse, AdminPolicyGetRequest,
+    AdminPolicyGetResponse, AdminPolicyPutRequest, AdminResourceCreateRequest,
+    AdminResourceCreateResponse, AdminResourceDeleteBlockers, AdminResourceDeleteRequest,
+    AdminResourceDeleteResponse, AdminResourcesListRequest, AdminResourcesListResponse,
+    AdminSecretDeleteRequest, AdminSecretDeleteResponse, AdminSecretListRequest,
+    AdminSecretListResponse, AdminSecretReadRequest, AdminSecretReadResponse,
+    AdminSecretWriteRequest, AdminUiOverviewResponse, AdminUiOverviewStore, AdminUiWrapperCounts,
+    ServiceWrapperResourcePair,
 };
 use underwrap_protocol::service::{
     AdminClientInstanceActionState, AdminClientInstanceCreateRequest,
@@ -104,13 +112,17 @@ fn ts_bindings_in_sync_with_rust() {
         AgentGrant,
         PolicyDocument,
         WrapperApprovalMode,
+        // shared-protocol::entities — resource/pair entity model
+        EntityCreator,
+        ResourceRecord,
+        ResourcesDocument,
+        WrapperResourcePairRecord,
+        PairsDocument,
         // shared-protocol::service admin DTOs
         AdminAgentGrantsListRequest,
         AdminAgentGrantsListResponse,
         AdminAgentGrantUpsertRequest,
         AdminAgentGrantDeleteRequest,
-        AdminCatalogGetRequest,
-        AdminCatalogGetResponse,
         AdminOkResponse,
         AdminPolicyGetRequest,
         AdminPolicyGetResponse,
@@ -152,7 +164,23 @@ fn ts_bindings_in_sync_with_rust() {
         AdminUiOverviewResponse,
         AdminUiOverviewStore,
         AdminUiWrapperCounts,
-        CatalogEntry,
+        // Admin Resource/Pair CRUD (ticket 384)
+        AdminGrantKey,
+        AdminResourcesListRequest,
+        AdminResourcesListResponse,
+        AdminResourceCreateRequest,
+        AdminResourceCreateResponse,
+        AdminResourceDeleteRequest,
+        AdminResourceDeleteBlockers,
+        AdminResourceDeleteResponse,
+        AdminPairsListRequest,
+        AdminPairsListResponse,
+        AdminPairCreateRequest,
+        AdminPairCreateResponse,
+        AdminPairDeleteRequest,
+        AdminPairDeleteBlockers,
+        AdminPairDeleteResponse,
+        ServiceWrapperResourcePair,
     );
 
     if !drift.is_empty() {

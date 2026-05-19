@@ -813,7 +813,6 @@ function DeleteUserDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [confirmText, setConfirmText] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const mut = useMutation({
     mutationFn: () => deleteUser(user.id),
@@ -823,16 +822,15 @@ function DeleteUserDialog({
     },
     onError: (err) => setSubmitError(describeApiError(err)),
   });
-  const canDelete =
-    confirmText === user.username && !mut.isPending && !isLastAdmin;
+  const canDelete = !mut.isPending && !isLastAdmin;
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Delete user: {user.username}</DialogTitle>
           <DialogDescription>
-            This removes the operator account. Any session it holds
-            is revoked server-side. Type the username to confirm.
+            This removes the operator account. Any session it holds is
+            revoked server-side.
           </DialogDescription>
         </DialogHeader>
         {isLastAdmin ? (
@@ -844,33 +842,14 @@ function DeleteUserDialog({
             delete it; promote another operator to admin first.
           </p>
         ) : null}
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="confirm-username">
-              Type{" "}
-              <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
-                {user.username}
-              </code>{" "}
-              to confirm
-            </Label>
-            <Input
-              id="confirm-username"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              autoFocus
-              autoComplete="off"
-              disabled={isLastAdmin}
-            />
-          </div>
-          {submitError ? (
-            <p
-              role="alert"
-              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-            >
-              {submitError}
-            </p>
-          ) : null}
-        </div>
+        {submitError ? (
+          <p
+            role="alert"
+            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+          >
+            {submitError}
+          </p>
+        ) : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel

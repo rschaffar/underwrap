@@ -84,6 +84,7 @@ describe("ClientInstancesPage", () => {
         status: "active" as const,
         last_seen_at: 1_700_000_000n,
         current_credential_fingerprint: "fp-work",
+        auto_create_wrapper_assets: false,
         actions: {
           can_edit_display_name: true,
           can_remap_store: true,
@@ -100,6 +101,7 @@ describe("ClientInstancesPage", () => {
         status: "disabled" as const,
         last_seen_at: undefined,
         current_credential_fingerprint: "fp-old",
+        auto_create_wrapper_assets: false,
         actions: {
           can_edit_display_name: true,
           can_remap_store: true,
@@ -127,6 +129,7 @@ describe("ClientInstancesPage", () => {
       last_seen_at: undefined,
       current_credential_fingerprint: "fp-new",
       current_credential_issued_at: undefined,
+      auto_create_wrapper_assets: false,
       actions: {
         can_edit_display_name: true,
         can_remap_store: true,
@@ -146,6 +149,7 @@ describe("ClientInstancesPage", () => {
       last_seen_at: id === "client_work" ? 1_700_000_000n : undefined,
       current_credential_fingerprint: id === "client_work" ? "fp-work" : "fp-old",
       current_credential_issued_at: undefined,
+      auto_create_wrapper_assets: false,
       actions: {
         can_edit_display_name: true,
         can_remap_store: true,
@@ -273,6 +277,27 @@ describe("ClientInstancesPage", () => {
 
     expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
       cert_pem: pem.trim(),
+    });
+  });
+
+  it("toggles auto-create wrapper assets via the edit dialog", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(
+      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+    );
+
+    const row = await screen.findByTestId("client-instance-row-client_work");
+    await user.click(within(row).getByRole("button", { name: /^edit$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /edit: work laptop/i });
+    // Default fixture has the flag off; the checkbox starts unchecked.
+    const checkbox = within(dialog).getByTestId("edit-auto-create");
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+    expect(checkbox).toBeChecked();
+    await user.click(within(dialog).getByRole("button", { name: /^save$/i }));
+
+    expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
+      auto_create_wrapper_assets: true,
     });
   });
 });

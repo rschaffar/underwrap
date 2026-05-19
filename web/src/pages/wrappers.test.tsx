@@ -4,11 +4,15 @@ import { render } from "@testing-library/react";
 import {
   ModeBadge,
   deriveClientInstances,
-  deriveWrapperResources,
   modeKind,
+  sortPairs,
   wrapperResourceKey,
-} from "./matrix";
-import type { AgentGrant, WrapperApprovalMode } from "@/api/client";
+} from "./wrappers";
+import type {
+  AgentGrant,
+  WrapperApprovalMode,
+  WrapperResourcePairRecord,
+} from "@/api/client";
 
 afterEach(() => {});
 
@@ -31,29 +35,36 @@ describe("derivation helpers", () => {
       reason: undefined,
     },
   ];
-  const catalog = {
-    entries: [
-      {
-        client_instance: "dev-laptop",
-        wrapper: "gh-authorized",
-        resource: "github/token",
-      },
-      {
-        client_instance: "dev-laptop",
-        wrapper: "jira-readonly",
-        resource: "jira/api",
-      },
-    ],
-  };
+
+  const pairs: WrapperResourcePairRecord[] = [
+    {
+      wrapper: "jira-readonly",
+      resource: "jira/api",
+      created_by: { kind: "operator", id: "op-1", username: "alice" },
+      created_at: 100n,
+    },
+    {
+      wrapper: "aws-prod",
+      resource: "aws/prod",
+      created_by: { kind: "client-instance", id: "ci-runner" },
+      created_at: 200n,
+    },
+    {
+      wrapper: "gh-authorized",
+      resource: "github/token",
+      created_by: { kind: "operator", id: "op-1", username: "alice" },
+      created_at: 150n,
+    },
+  ];
 
   it("deriveClientInstances dedupes and sorts", () => {
-    const instances = deriveClientInstances(catalog, grants);
+    const instances = deriveClientInstances(grants);
     expect(instances).toEqual(["ci-runner", "dev-laptop"]);
   });
 
-  it("deriveWrapperResources dedupes across catalog and grants", () => {
-    const pairs = deriveWrapperResources(catalog, grants);
-    expect(pairs.map(wrapperResourceKey)).toEqual([
+  it("sortPairs orders by (wrapper, resource)", () => {
+    const ordered = sortPairs(pairs);
+    expect(ordered.map((p) => wrapperResourceKey(p))).toEqual([
       "aws-prod|aws/prod",
       "gh-authorized|github/token",
       "jira-readonly|jira/api",

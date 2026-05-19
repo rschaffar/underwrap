@@ -13,11 +13,17 @@ vi.mock("@/api/client", async () => {
     ...actual,
     fetchStores: vi.fn(),
     postSecretList: vi.fn(),
-    postCatalogGet: vi.fn(),
+    postResourcesList: vi.fn(),
+    postPairsList: vi.fn(),
   };
 });
 
-import { fetchStores, postCatalogGet, postSecretList } from "@/api/client";
+import {
+  fetchStores,
+  postPairsList,
+  postResourcesList,
+  postSecretList,
+} from "@/api/client";
 
 function renderWithQuery(ui: React.ReactNode) {
   const qc = new QueryClient({
@@ -48,7 +54,12 @@ describe("SecretsPage", () => {
   beforeEach(() => {
     vi.mocked(fetchStores).mockReset();
     vi.mocked(postSecretList).mockReset();
-    vi.mocked(postCatalogGet).mockReset();
+    vi.mocked(postResourcesList).mockReset();
+    vi.mocked(postPairsList).mockReset();
+    // Default: empty resources + pairs documents. Individual tests
+    // override these when they need provenance or wrapper choices.
+    vi.mocked(postResourcesList).mockResolvedValue({ resources: [] });
+    vi.mocked(postPairsList).mockResolvedValue({ pairs: [] });
   });
 
   it("filters out reserved __underwrap/ secret IDs and groups the rest by resource", async () => {
@@ -63,8 +74,6 @@ describe("SecretsPage", () => {
         "aws/access-key/env/AWS_KEY",
       ],
     });
-    vi.mocked(postCatalogGet).mockResolvedValue({ entries: [] });
-
     renderWithQuery(<SecretsPage principal={null} />);
 
     // Resources show up as expandable blocks.
@@ -110,8 +119,6 @@ describe("SecretsPage", () => {
     vi.mocked(postSecretList).mockResolvedValue({
       ids: ["legacy-blob", "another/orphan"],
     });
-    vi.mocked(postCatalogGet).mockResolvedValue({ entries: [] });
-
     renderWithQuery(<SecretsPage principal={null} />);
 
     const block = await screen.findByTestId("resource-block-unrecognized");
@@ -119,18 +126,18 @@ describe("SecretsPage", () => {
     expect(within(block).getByText("another/orphan")).toBeInTheDocument();
   });
 
-  it("lists resources from the catalog even when they hold zero secrets", async () => {
-    // Critical for the bootstrap flow: an admin sees a resource
-    // block as soon as a wrapper has registered, so they can seed
-    // the first entries before the wrapper's first read.
+  it("lists resources from the backend even when they hold zero secrets", async () => {
+    // Critical for the seed flow: an admin sees a resource block as
+    // soon as a resource record exists, so they can write the first
+    // entries before the wrapper's first read.
     vi.mocked(fetchStores).mockResolvedValue(storesList);
     vi.mocked(postSecretList).mockResolvedValue({ ids: [] });
-    vi.mocked(postCatalogGet).mockResolvedValue({
-      entries: [
+    vi.mocked(postResourcesList).mockResolvedValue({
+      resources: [
         {
-          client_instance: "dev-laptop",
-          wrapper: "gh-libsecret",
-          resource: "github/gh",
+          name: "github/gh",
+          created_by: { kind: "operator", id: "op-1", username: "alice" },
+          created_at: 1_700_000_000n,
         },
       ],
     });
@@ -151,6 +158,10 @@ describe("SecretsPage", () => {
     expect(within(block).getByTestId("slot-libsecret")).toHaveTextContent(
       /none/i,
     );
+    // Provenance line rendered.
+    expect(
+      within(block).getByTestId("resource-provenance-github/gh"),
+    ).toHaveTextContent(/by alice/i);
   });
 });
 

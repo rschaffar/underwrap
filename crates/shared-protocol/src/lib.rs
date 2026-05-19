@@ -1,4 +1,5 @@
 pub mod config;
+pub mod entities;
 pub mod exec;
 pub mod ipc;
 pub mod message;

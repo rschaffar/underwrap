@@ -213,24 +213,64 @@ def boot_and_service_checks():
         f"remote={REMOTE_CLIENT_INSTANCE}"
     )
 
-    # Frontends auto-register catalog rows on daemon startup. The backend
-    # stamps each row with the mTLS-authenticated `client_instance` id so
-    # the admin UI can group wrapper/resource pairs by enrolled client.
-    local_catalog = admin_api(ADMIN_LOCAL, "/v1/admin/catalog/get", {"store": "local"})["entries"]
-    remote_catalog = admin_api(ADMIN_REMOTE, "/v1/admin/catalog/get", {"store": "remote"})["entries"]
+    # Resource and wrapper/resource-pair records are now first-class
+    # entities; wrappers auto-create them on register when the
+    # per-instance `auto_create_wrapper_assets` flag is on. The flag
+    # defaults off, so flip it on for both instances and restart the
+    # daemons to fire a fresh register call.
+    for url, instance_id, daemon_unit in (
+        (ADMIN_LOCAL, LOCAL_CLIENT_INSTANCE, "underwrapd-local.service"),
+        (ADMIN_REMOTE, REMOTE_CLIENT_INSTANCE, "underwrapd-tunnel.service"),
+    ):
+        admin_api(
+            url,
+            f"/v1/admin/client-instances/{instance_id}",
+            {"auto_create_wrapper_assets": True},
+            method="PUT",
+        )
+        machine.succeed(f"systemctl restart {daemon_unit}")
+        machine.wait_for_unit(daemon_unit)
+
+    # Give the daemons a moment to finish the startup register call.
+    machine.sleep(2)
+
+    local_resources = admin_api(
+        ADMIN_LOCAL, "/v1/admin/resources/list", {"store": "local"}
+    )["resources"]
+    local_pairs = admin_api(
+        ADMIN_LOCAL, "/v1/admin/pairs/list", {"store": "local"}
+    )["pairs"]
+    remote_resources = admin_api(
+        ADMIN_REMOTE, "/v1/admin/resources/list", {"store": "remote"}
+    )["resources"]
+    remote_pairs = admin_api(
+        ADMIN_REMOTE, "/v1/admin/pairs/list", {"store": "remote"}
+    )["pairs"]
+
     assert any(
-        entry["client_instance"] == LOCAL_CLIENT_INSTANCE
-        and entry["wrapper"] == "test-echo"
-        and entry["resource"] == "test/token"
-        for entry in local_catalog
-    ), f"missing local catalog row with client_instance/wrapper/resource fields: {local_catalog}"
+        r["name"] == "test/token"
+        and r["created_by"].get("kind") == "client-instance"
+        and r["created_by"].get("id") == LOCAL_CLIENT_INSTANCE
+        for r in local_resources
+    ), f"missing local resource record for test/token with client-instance provenance: {local_resources}"
     assert any(
-        entry["client_instance"] == REMOTE_CLIENT_INSTANCE
-        and entry["wrapper"] == "remote-echo"
-        and entry["resource"] == "remote/token"
-        for entry in remote_catalog
-    ), f"missing remote catalog row with client_instance/wrapper/resource fields: {remote_catalog}"
-    machine.log("PASS: frontend catalog rows register client_instance/wrapper/resource separately")
+        p["wrapper"] == "test-echo"
+        and p["resource"] == "test/token"
+        and p["created_by"].get("id") == LOCAL_CLIENT_INSTANCE
+        for p in local_pairs
+    ), f"missing local pair record (test-echo, test/token): {local_pairs}"
+    assert any(
+        r["name"] == "remote/token"
+        and r["created_by"].get("id") == REMOTE_CLIENT_INSTANCE
+        for r in remote_resources
+    ), f"missing remote resource record: {remote_resources}"
+    assert any(
+        p["wrapper"] == "remote-echo" and p["resource"] == "remote/token"
+        for p in remote_pairs
+    ), f"missing remote pair record: {remote_pairs}"
+    machine.log(
+        "PASS: wrapper assets auto-created with client-instance provenance after flag flip"
+    )
 
     # services.underwrap.hardenTargetHost defaults true; the module pins
     # kernel.yama.ptrace_scope=2 so a same-UID caller cannot inspect the
@@ -282,7 +322,7 @@ def local_store_and_basic_ops():
 
     # Every wrapper invocation needs a grant for
     # `(client_instance, wrapper, resource)`. Pre-seed Unlocked grants
-    # for the full test wrapper catalog so the subsequent test sections
+    # for the full wrapper/resource fixture so the subsequent test sections
     # can drive the wrappers without per-test boilerplate. Tests that
     # exercise the *absence* of a grant (or `Locked` / `UnlockedUntil`)
     # delete or replace these as they go.

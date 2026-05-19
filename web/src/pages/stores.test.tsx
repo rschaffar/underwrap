@@ -161,8 +161,8 @@ describe("StoresPage", () => {
     await user.click(buttons[1]!);
     const dlg = await screen.findByRole("dialog", { name: /delete store/i });
     const deleteBtn = within(dlg).getByRole("button", { name: /force delete/i });
-    expect(deleteBtn).toBeDisabled();
-    await user.type(within(dlg).getByLabelText(/type/i), "scratch");
+    // Force-delete button stays disabled until the operator ticks the
+    // "force delete" checkbox; the type-to-confirm gate is gone now.
     expect(deleteBtn).toBeDisabled();
     await user.click(within(dlg).getByLabelText(/force delete even if the store contains secrets/i));
     expect(deleteBtn).toBeEnabled();

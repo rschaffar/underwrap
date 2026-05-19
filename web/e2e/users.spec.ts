@@ -113,15 +113,11 @@ test("admin can delete a non-last-admin operator", async ({
   await createUser(page, "dave", "dave-initial-pw");
   const daveRow = await rowFor(page, "dave");
 
-  // Delete dave. The delete dialog requires typing the username to
-  // arm the destructive button — that's the UX contract we want to
-  // catch regressions on.
+  // Delete dave. The delete dialog uses a simple confirm/cancel —
+  // no type-to-confirm gate.
   await daveRow.getByRole("button", { name: /^delete$/i }).click();
   const delDlg = page.getByRole("dialog", { name: /delete user: dave/i });
-  // Confirm button is disabled until the username is typed.
   const confirm = delDlg.getByRole("button", { name: /^delete$/i });
-  await expect(confirm).toBeDisabled();
-  await delDlg.getByLabel(/type .* to confirm/i).fill("dave");
   await expect(confirm).toBeEnabled();
   await confirm.click();
   await expect(delDlg).toBeHidden();
@@ -159,10 +155,8 @@ test("delete dialog refuses to arm for the last remaining admin", async ({
     delDlg.getByRole("alert").filter({ hasText: /last remaining admin/i }),
   ).toBeVisible();
 
-  // The confirm input is disabled — even typing the username doesn't
-  // arm the destructive button.
-  const confirmInput = delDlg.getByLabel(/type .* to confirm/i);
-  await expect(confirmInput).toBeDisabled();
+  // The destructive button stays disabled regardless of any other
+  // input.
   const confirm = delDlg.getByRole("button", { name: /^delete$/i });
   await expect(confirm).toBeDisabled();
 });

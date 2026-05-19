@@ -43,15 +43,13 @@ test("admin can create, edit, and delete a dynamic store", async ({
   await expect(editDlg).toBeHidden();
   await expect(page.getByRole("cell", { name: "renamed-by-test" })).toBeVisible();
 
-  // Delete requires typing the exact name.
+  // Delete is a simple confirm/cancel — no type-to-confirm gate.
   await page
     .getByRole("row", { name: /\bscratch\b/ })
     .getByRole("button", { name: /delete/i })
     .click();
   const delDlg = page.getByRole("dialog", { name: /delete store: scratch/i });
   const deleteBtn = delDlg.getByRole("button", { name: /^delete$/i });
-  await expect(deleteBtn).toBeDisabled();
-  await delDlg.getByLabel(/type/i).fill("scratch");
   await expect(deleteBtn).toBeEnabled();
   await deleteBtn.click();
   await expect(delDlg).toBeHidden();
@@ -230,7 +228,6 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   const delDlg = page.getByRole("dialog", { name: /delete store: packed/i });
   const deleteBtn = delDlg.getByRole("button", { name: /^force delete$/i });
   await expect(deleteBtn).toBeDisabled();
-  await delDlg.getByLabel(/type/i).fill("packed");
   await delDlg.getByLabel(/force delete/i).check();
   await expect(deleteBtn).toBeEnabled();
   await deleteBtn.click();

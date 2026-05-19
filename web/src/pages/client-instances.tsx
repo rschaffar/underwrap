@@ -167,7 +167,8 @@ export function ClientInstancesPage({
                       <div className="text-xs">{item.current_store_id}</div>
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge status={item.status} />
+                      <StatusBadge status={item.status} />{" "}
+                      <AutoCreateBadge enabled={item.auto_create_wrapper_assets} />
                     </td>
                     <td className="px-4 py-3 text-(--color-muted)">{formatEpoch(item.last_seen_at)}</td>
                     <td className="px-4 py-3 text-right">
@@ -280,6 +281,7 @@ function CreateClientInstanceDialog({
   const [storeId, setStoreId] = useState(stores[0]?.id ?? "");
   const [status, setStatus] = useState<"active" | "disabled">("active");
   const [certPem, setCertPem] = useState("");
+  const [autoCreate, setAutoCreate] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const mut = useMutation({
@@ -360,6 +362,25 @@ function CreateClientInstanceDialog({
               className="flex w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
             />
           </div>
+          <label className="flex items-start gap-2 text-xs text-(--color-muted)">
+            <input
+              type="checkbox"
+              data-testid="create-auto-create"
+              checked={autoCreate}
+              onChange={(e) => setAutoCreate(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              <strong className="text-(--color-fg)">
+                Auto-create wrapper assets on register
+              </strong>
+              <br />
+              When on, this instance's wrappers may add new resources
+              and wrapper/resource pairs on startup. When off, the
+              backend refuses to create them and logs which entries it
+              expected.
+            </span>
+          </label>
           {submitError ? (
             <p
               role="alert"
@@ -382,6 +403,7 @@ function CreateClientInstanceDialog({
                 current_store_id: storeId,
                 status,
                 cert_pem: trimmedCert,
+                auto_create_wrapper_assets: autoCreate ? true : undefined,
               })
             }
           >
@@ -407,6 +429,9 @@ function EditClientInstanceDialog({
   const [displayName, setDisplayName] = useState(instance.display_name);
   const [storeId, setStoreId] = useState(instance.current_store_id);
   const [certPem, setCertPem] = useState("");
+  const [autoCreate, setAutoCreate] = useState(
+    instance.auto_create_wrapper_assets,
+  );
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const mut = useMutation({
@@ -414,6 +439,7 @@ function EditClientInstanceDialog({
       display_name?: string;
       current_store_id?: string;
       cert_pem?: string;
+      auto_create_wrapper_assets?: boolean;
     }) => putClientInstanceUpdate(instance.id, body),
     onSuccess: async () => {
       setSubmitError(null);
@@ -428,9 +454,10 @@ function EditClientInstanceDialog({
     trimmedDisplayName !== "" && trimmedDisplayName !== instance.display_name;
   const storeChanged = storeId !== instance.current_store_id;
   const certChanged = trimmedCert !== "";
+  const autoCreateChanged = autoCreate !== instance.auto_create_wrapper_assets;
   const canSubmit =
     trimmedDisplayName !== "" &&
-    (displayNameChanged || storeChanged || certChanged) &&
+    (displayNameChanged || storeChanged || certChanged || autoCreateChanged) &&
     !mut.isPending;
 
   return (
@@ -490,6 +517,23 @@ function EditClientInstanceDialog({
               Leave blank to keep the existing cert.
             </p>
           </div>
+          <label className="flex items-start gap-2 text-xs text-(--color-muted)">
+            <input
+              type="checkbox"
+              data-testid="edit-auto-create"
+              checked={autoCreate}
+              onChange={(e) => setAutoCreate(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              <strong className="text-(--color-fg)">
+                Auto-create wrapper assets on register
+              </strong>
+              <br />
+              When on, this instance's wrappers may add new resources
+              and wrapper/resource pairs on startup.
+            </span>
+          </label>
           {submitError ? (
             <p
               role="alert"
@@ -511,6 +555,9 @@ function EditClientInstanceDialog({
                 ...(displayNameChanged ? { display_name: trimmedDisplayName } : {}),
                 ...(storeChanged ? { current_store_id: storeId } : {}),
                 ...(certChanged ? { cert_pem: trimmedCert } : {}),
+                ...(autoCreateChanged
+                  ? { auto_create_wrapper_assets: autoCreate }
+                  : {}),
               })
             }
           >
@@ -538,6 +585,27 @@ function StatusBadge({ status }: { status: "active" | "disabled" }) {
   );
 }
 
+function AutoCreateBadge({ enabled }: { enabled: boolean }) {
+  return (
+    <span
+      className={
+        "inline-flex items-center rounded-md border px-2 py-0.5 text-xs " +
+        (enabled
+          ? "border-sky-500/30 bg-sky-500/10 text-sky-300"
+          : "border-(--color-line) bg-(--color-surface-1) text-(--color-muted)")
+      }
+      title={
+        enabled
+          ? "This instance's wrappers may auto-create resource and wrapper/resource-pair records on startup."
+          : "This instance's wrappers cannot auto-create resource or pair records. An admin must enable the flag or create them manually."
+      }
+      data-testid={`auto-create-badge-${enabled ? "on" : "off"}`}
+    >
+      {enabled ? "auto" : "manual"}
+    </span>
+  );
+}
+
 function DeleteClientInstanceDialog({
   instance,
   onClose,
@@ -547,7 +615,6 @@ function DeleteClientInstanceDialog({
   onClose: () => void;
   onSuccess: () => Promise<void>;
 }) {
-  const [confirmText, setConfirmText] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const mut = useMutation({
@@ -559,7 +626,7 @@ function DeleteClientInstanceDialog({
     onError: (err) => setSubmitError(describeApiError(err)),
   });
 
-  const canDelete = confirmText === instance.display_name && !mut.isPending;
+  const canDelete = !mut.isPending;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -569,35 +636,17 @@ function DeleteClientInstanceDialog({
           <DialogDescription>
             This removes the client instance record permanently. The
             client's registered certificate will no longer be accepted
-            for runtime requests. Type the display name to confirm.
+            for runtime requests.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="confirm-delete-name">
-              Type{" "}
-              <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
-                {instance.display_name}
-              </code>{" "}
-              to confirm
-            </Label>
-            <Input
-              id="confirm-delete-name"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              autoFocus
-              autoComplete="off"
-            />
-          </div>
-          {submitError ? (
-            <p
-              role="alert"
-              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-            >
-              {submitError}
-            </p>
-          ) : null}
-        </div>
+        {submitError ? (
+          <p
+            role="alert"
+            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+          >
+            {submitError}
+          </p>
+        ) : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel

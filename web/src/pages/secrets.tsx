@@ -26,16 +26,22 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  type AdminCatalogGetResponse,
+  type AdminPairsListResponse,
+  type AdminResourcesListResponse,
   type AdminSecretListResponse,
   type AdminSecretReadResponse,
   type AdminStoresListResponse,
+  type EntityCreator,
   fetchStores,
-  postCatalogGet,
+  postPairsList,
+  postResourceCreate,
+  postResourceDelete,
+  postResourcesList,
   postSecretDelete,
   postSecretList,
   postSecretRead,
   postSecretWrite,
+  type ResourceRecord,
   type WhoamiResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -158,19 +164,33 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     queryFn: () => postSecretList({ store: storeName!, prefix: "" }),
     enabled: !!storeName,
   });
-  // Catalog gives us the set of wrappers known to this store, which
-  // we use to populate the wrapper selector in the write dialog.
-  const catalog = useQuery<AdminCatalogGetResponse>({
-    queryKey: ["admin", "catalog", storeName],
-    queryFn: () => postCatalogGet({ store: storeName! }),
+  // Resources are first-class backend records — these drive the
+  // "empty resource" rows (resources that exist but have no secrets
+  // yet) and the provenance display. The pairs list seeds the wrapper
+  // selector in the write dialog.
+  const resourcesList = useQuery<AdminResourcesListResponse>({
+    queryKey: ["admin", "resources", storeName],
+    queryFn: () => postResourcesList({ store: storeName! }),
+    enabled: !!storeName,
+  });
+  const pairsList = useQuery<AdminPairsListResponse>({
+    queryKey: ["admin", "pairs", storeName],
+    queryFn: () => postPairsList({ store: storeName! }),
     enabled: !!storeName,
   });
   const isAdmin = !!(_principal?.authenticated && _principal.role === "admin");
   const wrapperChoices = useMemo(() => {
     const set = new Set<string>();
-    for (const e of catalog.data?.entries ?? []) set.add(e.wrapper);
+    for (const p of pairsList.data?.pairs ?? []) set.add(p.wrapper);
     return [...set].sort();
-  }, [catalog.data]);
+  }, [pairsList.data]);
+  const resourceProvenance = useMemo(() => {
+    const map = new Map<string, ResourceRecord>();
+    for (const r of resourcesList.data?.resources ?? []) {
+      map.set(r.name, r);
+    }
+    return map;
+  }, [resourcesList.data]);
 
   // Filter out reserved underwrap internal secret IDs so operators
   // don't accidentally read or delete them through this UI.
@@ -183,43 +203,30 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
   );
   const grouped = useMemo(() => groupSecretIds(visibleIds), [visibleIds]);
 
-  // Resources the operator has added manually via "Create resource"
-  // but to which they haven't yet attached any secrets. The state is
-  // ephemeral — once the first entry is written the resource shows up
-  // naturally from the secret list, and a page reload drops empty
-  // entries that nobody filled in.
-  const [manualResources, setManualResources] = useState<string[]>([]);
-
-  // Resources known to this store from any source: actually-stored
-  // secrets, catalog entries from wrappers that have registered, and
-  // ad-hoc resources the operator just created in the UI. Empty
-  // resources let an admin seed entries BEFORE any wrapper has
-  // written its first secret.
+  // Resources known to this store: every persisted resource record
+  // (which lives on the backend with provenance) plus any extra
+  // resources we observe in the secret list under a name not yet
+  // recorded. The second case shouldn't happen in normal operation,
+  // but tolerating it means a legacy import doesn't break the UI.
   const allResources = useMemo<SecretResourceGroup[]>(() => {
     const byResource = new Map<string, SecretResourceGroup>();
     for (const g of grouped.resources) {
       byResource.set(g.resource, g);
     }
-    const ensureEmpty = (resource: string) => {
-      if (!byResource.has(resource)) {
-        byResource.set(resource, {
-          resource,
+    for (const record of resourcesList.data?.resources ?? []) {
+      if (!byResource.has(record.name)) {
+        byResource.set(record.name, {
+          resource: record.name,
           env: [],
           files: [],
           libsecret: [],
         });
       }
-    };
-    for (const entry of catalog.data?.entries ?? []) {
-      ensureEmpty(entry.resource);
-    }
-    for (const resource of manualResources) {
-      ensureEmpty(resource);
     }
     return [...byResource.values()].sort((a, b) =>
       a.resource.localeCompare(b.resource),
     );
-  }, [grouped.resources, catalog.data, manualResources]);
+  }, [grouped.resources, resourcesList.data]);
 
   const [revealing, setRevealing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -228,6 +235,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
   );
   const [creatingResource, setCreatingResource] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [deletingResource, setDeletingResource] = useState<string | null>(null);
 
   if (!storeName) {
     return (
@@ -297,7 +305,8 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         <p className="text-sm text-(--color-muted)">
           No resources are known to this store yet. Use{" "}
           <strong className="text-(--color-fg)">Create resource</strong>{" "}
-          to add one, or wait for a wrapper to register its catalog.
+          to add one, or wait for a wrapper to auto-create one on
+          startup (when its client instance is opted in).
         </p>
       ) : (
         <div className="space-y-2">
@@ -305,10 +314,12 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
             <ResourceBlock
               key={group.resource}
               group={group}
+              provenance={resourceProvenance.get(group.resource)}
               isAdmin={isAdmin}
               onReveal={setRevealing}
               onEdit={setEditing}
               onDelete={setDeleting}
+              onDeleteResource={() => setDeletingResource(group.resource)}
               onAddEntry={(slot) =>
                 setCreating({
                   prefilledId: `${group.resource}/${slot}/`,
@@ -345,14 +356,9 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
       ) : null}
       {creatingResource ? (
         <CreateResourceDialog
+          storeName={storeName}
           existingResources={allResources.map((r) => r.resource)}
           onClose={() => setCreatingResource(false)}
-          onCreated={(name) => {
-            setManualResources((prev) =>
-              prev.includes(name) ? prev : [...prev, name],
-            );
-            setCreatingResource(false);
-          }}
         />
       ) : null}
       {editing ? (
@@ -371,6 +377,13 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
           onClose={() => setDeleting(null)}
         />
       ) : null}
+      {deletingResource ? (
+        <DeleteResourceDialog
+          storeName={storeName}
+          resourceName={deletingResource}
+          onClose={() => setDeletingResource(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -385,13 +398,17 @@ interface RowActions {
 
 function ResourceBlock({
   group,
+  provenance,
   isAdmin,
   onAddEntry,
+  onDeleteResource,
   ...actions
 }: {
   group: SecretResourceGroup;
+  provenance: ResourceRecord | undefined;
   isAdmin: boolean;
   onAddEntry: (slot: SecretSlot) => void;
+  onDeleteResource: () => void;
 } & RowActions) {
   const total = resourceCount(group);
   // The summary line shows which slots have content. It avoids
@@ -400,6 +417,11 @@ function ResourceBlock({
   const summary = SECRET_SLOTS.filter((slot) => group[slot].length > 0)
     .map((slot) => `${slot} (${group[slot].length})`)
     .join(" · ");
+  const provenanceLabel = provenance ? describeCreator(provenance.created_by) : null;
+  const provenanceDate =
+    provenance && Number(provenance.created_at)
+      ? new Date(Number(provenance.created_at) * 1000)
+      : null;
   return (
     <details
       data-testid={`resource-block-${group.resource}`}
@@ -411,9 +433,40 @@ function ResourceBlock({
           aria-hidden
         />
         <span className="font-mono text-(--color-fg)">{group.resource}</span>
+        {provenanceLabel ? (
+          <span
+            className="text-xs text-(--color-muted)"
+            title={
+              provenanceDate
+                ? `Created ${provenanceDate.toISOString()} by ${provenanceLabel}`
+                : undefined
+            }
+            data-testid={`resource-provenance-${group.resource}`}
+          >
+            · by {provenanceLabel}
+            {provenanceDate ? ` on ${provenanceDate.toLocaleDateString()}` : null}
+          </span>
+        ) : null}
         <span className="ml-auto text-xs text-(--color-muted)">
           {total === 0 ? "empty" : summary}
         </span>
+        {isAdmin && provenance ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={`Delete resource ${group.resource}`}
+            data-testid={`resource-delete-${group.resource}`}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onDeleteResource();
+            }}
+            className="h-7 px-2"
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden />
+          </Button>
+        ) : null}
       </summary>
       <div className="space-y-3 border-t border-(--color-line)/60 px-4 py-3">
         {SECRET_SLOTS.map((slot) => (
@@ -429,6 +482,15 @@ function ResourceBlock({
       </div>
     </details>
   );
+}
+
+function describeCreator(creator: EntityCreator): string {
+  switch (creator.kind) {
+    case "operator":
+      return creator.username;
+    case "client-instance":
+      return `client ${creator.id}`;
+  }
 }
 
 function SlotSection({
@@ -822,7 +884,7 @@ function WriteSecretDialog({
                   </FormControl>
                   <FormDescription>
                     Used for backend write authorization. Free-form
-                    when the catalog is empty.
+                    when no wrapper/resource pairs are registered yet.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -893,19 +955,33 @@ const resourceSchema = z.object({
 type ResourceValues = z.infer<typeof resourceSchema>;
 
 function CreateResourceDialog({
+  storeName,
   existingResources,
-  onCreated,
   onClose,
 }: {
+  storeName: string;
   existingResources: string[];
-  onCreated: (name: string) => void;
   onClose: () => void;
 }) {
+  const qc = useQueryClient();
   const form = useForm<ResourceValues>({
     resolver: zodResolver(resourceSchema),
     defaultValues: { resource: "" },
   });
   const known = useMemo(() => new Set(existingResources), [existingResources]);
+  const mut = useMutation({
+    mutationFn: (name: string) =>
+      postResourceCreate({ store: storeName, name }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({
+        queryKey: ["admin", "resources", storeName],
+      });
+      onClose();
+    },
+    onError: (err) => {
+      form.setError("resource", { message: describeApiError(err) });
+    },
+  });
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -913,10 +989,9 @@ function CreateResourceDialog({
         <DialogHeader>
           <DialogTitle>Create resource</DialogTitle>
           <DialogDescription>
-            Add an empty resource block to this store. Use the{" "}
+            Add a resource record to this store. Use the{" "}
             <strong className="text-(--color-fg)">+</strong> button on each
-            slot (env, files, libsecret) to populate it. The resource
-            disappears on reload until at least one entry is written.
+            slot (env, files, libsecret) to populate it.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -928,7 +1003,7 @@ function CreateResourceDialog({
                 });
                 return;
               }
-              onCreated(v.resource);
+              mut.mutate(v.resource);
             })}
             className="space-y-4"
             noValidate
@@ -963,7 +1038,9 @@ function CreateResourceDialog({
               <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
               </Button>
-              <Button type="submit">Create</Button>
+              <Button type="submit" disabled={mut.isPending}>
+                {mut.isPending ? "Creating…" : "Create"}
+              </Button>
             </DialogFooter>
           </form>
         </Form>
@@ -984,7 +1061,6 @@ function DeleteSecretDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [confirmText, setConfirmText] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const mut = useMutation({
     mutationFn: () =>
@@ -997,7 +1073,6 @@ function DeleteSecretDialog({
     },
     onError: (err) => setSubmitError(describeApiError(err)),
   });
-  const canDelete = confirmText === secretId && !mut.isPending;
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
@@ -1005,38 +1080,17 @@ function DeleteSecretDialog({
           <DialogTitle>Delete secret</DialogTitle>
           <DialogDescription>
             Removes <code>{secretId}</code> from <code>{storeName}</code>.
-            Type the secret ID to confirm.
+            This cannot be undone.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="confirm-secret-id">
-              Type{" "}
-              <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
-                {secretId}
-              </code>{" "}
-              to confirm
-            </Label>
-            <Input
-              id="confirm-secret-id"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              autoFocus
-              autoComplete="off"
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-            />
-          </div>
-          {submitError ? (
-            <p
-              role="alert"
-              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-            >
-              {submitError}
-            </p>
-          ) : null}
-        </div>
+        {submitError ? (
+          <p
+            role="alert"
+            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+          >
+            {submitError}
+          </p>
+        ) : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
@@ -1044,8 +1098,135 @@ function DeleteSecretDialog({
           <Button
             type="button"
             variant="destructive"
-            disabled={!canDelete}
+            disabled={mut.isPending}
             onClick={() => mut.mutate()}
+          >
+            {mut.isPending ? "Deleting…" : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------- Delete resource ----------
+
+function DeleteResourceDialog({
+  storeName,
+  resourceName,
+  onClose,
+}: {
+  storeName: string;
+  resourceName: string;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const mut = useMutation({
+    mutationFn: () =>
+      postResourceDelete({ store: storeName, name: resourceName }),
+  });
+  async function onDelete() {
+    setSubmitError(null);
+    try {
+      const result = await mut.mutateAsync();
+      if (result.ok) {
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ["admin", "resources", storeName] }),
+          qc.invalidateQueries({ queryKey: ["admin", "secrets", storeName] }),
+          qc.invalidateQueries({ queryKey: ["admin", "pairs", storeName] }),
+        ]);
+        onClose();
+      }
+      // result.ok === false → backend reported blockers; rendered below.
+    } catch (e) {
+      setSubmitError(describeApiError(e));
+    }
+  }
+  const blockers = mut.data?.blocked_by;
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete resource: {resourceName}</DialogTitle>
+          <DialogDescription>
+            Removes the resource record. The backend refuses if any
+            secrets, wrapper/resource pairs, or grants still reference
+            this resource.
+          </DialogDescription>
+        </DialogHeader>
+        {blockers ? (
+          <div
+            role="alert"
+            className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+            data-testid="resource-delete-blockers"
+          >
+            <p>Cannot delete — the following still reference this resource:</p>
+            <ul className="list-disc pl-5">
+              {blockers.secret_count > 0 ? (
+                <li>
+                  <strong>{blockers.secret_count}</strong> secret
+                  {blockers.secret_count === 1 ? "" : "s"}
+                  {blockers.sample_secret_ids.length > 0 ? (
+                    <>
+                      {" "}
+                      (e.g.{" "}
+                      <code className="font-mono">
+                        {blockers.sample_secret_ids.join(", ")}
+                      </code>
+                      )
+                    </>
+                  ) : null}
+                </li>
+              ) : null}
+              {blockers.pair_count > 0 ? (
+                <li>
+                  <strong>{blockers.pair_count}</strong> wrapper/resource
+                  pair{blockers.pair_count === 1 ? "" : "s"}
+                  {blockers.sample_pairs.length > 0 ? (
+                    <>
+                      {" "}
+                      (e.g.{" "}
+                      <code className="font-mono">
+                        {blockers.sample_pairs
+                          .map((p) => `${p.wrapper}/${p.resource}`)
+                          .join(", ")}
+                      </code>
+                      )
+                    </>
+                  ) : null}
+                </li>
+              ) : null}
+              {blockers.grant_count > 0 ? (
+                <li>
+                  <strong>{blockers.grant_count}</strong> grant
+                  {blockers.grant_count === 1 ? "" : "s"}
+                </li>
+              ) : null}
+            </ul>
+            <p className="text-amber-200/80">
+              Clear those dependents first, then try again.
+            </p>
+          </div>
+        ) : null}
+        {submitError ? (
+          <p
+            role="alert"
+            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+          >
+            {submitError}
+          </p>
+        ) : null}
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={mut.isPending}
+            onClick={() => void onDelete()}
+            data-testid="resource-delete-confirm"
           >
             {mut.isPending ? "Deleting…" : "Delete"}
           </Button>

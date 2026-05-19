@@ -195,6 +195,7 @@ async fn underwrapd_binary_start_and_read() {
             None,
         )
         .unwrap(),
+        auto_create_wrapper_assets: false,
     };
     std::fs::write(
         &client_instances_file,

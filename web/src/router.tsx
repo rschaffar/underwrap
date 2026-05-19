@@ -14,7 +14,7 @@ import { AppShell } from "@/components/app-shell";
 import { Dashboard } from "@/pages/dashboard";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
-import { MatrixPage } from "@/pages/matrix";
+import { WrappersPage } from "@/pages/wrappers";
 import { SecretsPage } from "@/pages/secrets";
 import { StoresPage } from "@/pages/stores";
 import { ClientInstancesPage } from "@/pages/client-instances";
@@ -155,7 +155,7 @@ const appLayoutRoute = new Route({
 // consumes.
 export const APP_ROUTE_PATHS = [
   "/",
-  "/matrix",
+  "/wrappers",
   "/secrets",
   "/stores",
   "/client-instances",
@@ -232,12 +232,12 @@ const profileRoute = new Route({
   },
 });
 
-const matrixRoute = new Route({
+const wrappersRoute = new Route({
   getParentRoute: () => appLayoutRoute,
-  path: "/matrix",
-  component: function MatrixRouteComponent() {
-    const ctx = matrixRoute.useRouteContext();
-    return <MatrixPage principal={ctx.principal} />;
+  path: "/wrappers",
+  component: function WrappersRouteComponent() {
+    const ctx = wrappersRoute.useRouteContext();
+    return <WrappersPage principal={ctx.principal} />;
   },
 });
 
@@ -343,7 +343,7 @@ export function safeNextPath(next: string | null): string | null {
 // list ordered the same way as `APP_ROUTE_PATHS` for readability.
 export const appRoutes = [
   indexRoute,
-  matrixRoute,
+  wrappersRoute,
   secretsRoute,
   storesRoute,
   clientInstancesRoute,

@@ -12,10 +12,11 @@ use std::sync::mpsc;
 use underwrap_protocol::config::BackendServiceConfig;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::service::{
-    CatalogEntry, ServiceCatalogPutRequest, ServiceCatalogPutResponse, ServiceDeleteRequest,
-    ServiceDeleteResponse, ServiceErrorResponse, ServiceListRequest, ServiceListResponse,
-    ServiceReadPrefixesRequest, ServiceReadPrefixesResponse, ServiceReadRequest,
-    ServiceReadResponse, ServiceStatusResponse, ServiceWriteRequest, ServiceWriteResponse,
+    ServiceDeleteRequest, ServiceDeleteResponse, ServiceErrorResponse, ServiceListRequest,
+    ServiceListResponse, ServiceReadPrefixesRequest, ServiceReadPrefixesResponse,
+    ServiceReadRequest, ServiceReadResponse, ServiceStatusResponse,
+    ServiceWrapperRegisterRequest, ServiceWrapperRegisterResponse, ServiceWriteRequest,
+    ServiceWriteResponse,
 };
 
 use crate::StorageBackend;
@@ -38,9 +39,9 @@ enum Command {
         prefixes: Vec<String>,
         reply: mpsc::Sender<Result<HashMap<String, SecretBytes>>>,
     },
-    RegisterCatalog {
-        entries: Vec<CatalogEntry>,
-        reply: mpsc::Sender<Result<()>>,
+    RegisterWrapperAssets {
+        request: ServiceWrapperRegisterRequest,
+        reply: mpsc::Sender<Result<ServiceWrapperRegisterResponse>>,
     },
     Delete {
         secret_id: String,
@@ -122,10 +123,11 @@ impl ServiceBackend {
                                     &client, &base_url, &prefixes,
                                 )));
                     }
-                    Command::RegisterCatalog { entries, reply } => {
+                    Command::RegisterWrapperAssets { request, reply } => {
                         let _ = reply.send(
-                            runtime
-                                .block_on(register_catalog_request(&client, &base_url, &entries)),
+                            runtime.block_on(register_wrapper_assets_request(
+                                &client, &base_url, &request,
+                            )),
                         );
                     }
                     Command::Delete { secret_id, reply } => {
@@ -253,28 +255,25 @@ async fn read_prefixes_request(
     Ok(out)
 }
 
-async fn register_catalog_request(
+async fn register_wrapper_assets_request(
     client: &reqwest::Client,
     base_url: &str,
-    entries: &[CatalogEntry],
-) -> Result<()> {
+    request: &ServiceWrapperRegisterRequest,
+) -> Result<ServiceWrapperRegisterResponse> {
     let response = client
-        .post(endpoint(base_url, "/v1/catalog/put"))
+        .post(endpoint(base_url, "/v1/runtime/wrappers/register"))
         .header(CONTENT_TYPE, "application/json")
-        .json(&ServiceCatalogPutRequest {
-            entries: entries.to_vec(),
-        })
+        .json(request)
         .send()
         .await
-        .context("sending backend catalog registration request")?;
+        .context("sending backend wrapper register request")?;
     if !response.status().is_success() {
         bail!(parse_error(response).await);
     }
-    let _: ServiceCatalogPutResponse = response
-        .json()
+    response
+        .json::<ServiceWrapperRegisterResponse>()
         .await
-        .context("decoding backend catalog registration response")?;
-    Ok(())
+        .context("decoding backend wrapper register response")
 }
 
 async fn delete_request(client: &reqwest::Client, base_url: &str, secret_id: &str) -> Result<bool> {
@@ -397,16 +396,19 @@ impl StorageBackend for ServiceBackend {
             .context("receiving read-prefixes response from service backend worker")?
     }
 
-    fn register_catalog(&self, entries: &[CatalogEntry]) -> Result<()> {
+    fn register_wrapper_assets(
+        &self,
+        request: &ServiceWrapperRegisterRequest,
+    ) -> Result<ServiceWrapperRegisterResponse> {
         let (tx, rx) = mpsc::channel();
         self.sender
-            .send(Command::RegisterCatalog {
-                entries: entries.to_vec(),
+            .send(Command::RegisterWrapperAssets {
+                request: request.clone(),
                 reply: tx,
             })
-            .context("sending register-catalog command to service backend worker")?;
+            .context("sending register-wrapper-assets command to service backend worker")?;
         rx.recv()
-            .context("receiving register-catalog response from service backend worker")?
+            .context("receiving register-wrapper-assets response from service backend worker")?
     }
 
     fn principal(&self) -> Result<String> {

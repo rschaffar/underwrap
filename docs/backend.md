@@ -127,7 +127,15 @@ The HTTPS service exposes the small surface `underwrapd` needs, all over
 - `POST /v1/write` — `{secret_id, material_b64}`
 - `POST /v1/list` — `{prefix}` → `{ids}`
 - `POST /v1/delete` — `{secret_id}` → `{existed}`
-- `POST /v1/catalog/put` — frontend auto-registration of `(host, user, wrapper, resource)` rows for UI use
+- `POST /v1/runtime/wrappers/register` — frontend auto-registration of
+  `(wrapper, resource)` pairs. The backend reads the calling
+  client-instance's `auto_create_wrapper_assets` flag to decide whether
+  missing Resource and Wrapper/Resource Pair records may be created on
+  this principal's behalf. Returns the list of newly-created entities,
+  or a structured `AutoCreateDisabled` refusal listing what would have
+  been created. The endpoint is upsert-only: existing entities are
+  never modified, removals never happen, and `created_by` is set once
+  on first sight.
 
 Store selection is implicit in the authenticated principal. There is no
 store name in the request body. Operators create runtime client
@@ -175,6 +183,14 @@ session cookies; state-changing requests must also satisfy the CSRF and
 - `POST /v1/admin/grants/upsert` — create or update one grant by
   `(wrapper, host, user)`
 - `POST /v1/admin/grants/delete` — remove a grant by tuple
+- `POST /v1/admin/resources/{list,create,delete}` — manage the
+  Resource records that own provenance for resource names. `delete`
+  refuses with structured `blocked_by` counts when secrets, pairs, or
+  grants still reference the resource.
+- `POST /v1/admin/pairs/{list,create,delete}` — manage the
+  Wrapper/Resource Pair records. `create` refuses if the referenced
+  resource doesn't exist or if `(wrapper, resource)` is already taken;
+  `delete` refuses when any grant references the pair.
 - `POST /v1/admin/policy/writes-enabled/get` — read the per-store
   write toggle
 - `POST /v1/admin/policy/writes-enabled/set` — flip the per-store
@@ -258,6 +274,46 @@ gate via the `AccessMode::ReadWrite` projection.
 3. Serve every resource the wrapper's declaration lists. The libsecret
    slot is projected `ReadOnly` if `writes_enabled = false`, `ReadWrite`
    otherwise.
+
+## Resources and Wrapper/Resource Pairs
+
+Resources and `(wrapper, resource)` pairs are first-class backend
+entities, one persisted collection of each per store. Each record
+carries write-once provenance:
+
+```yaml
+# __underwrap/resources/document
+version: 1
+resources:
+  - name: github/token
+    created_by: { kind: operator, id: op-1, username: alice }
+    created_at: 1735689600
+  - name: gws/state
+    created_by: { kind: client-instance, id: inst_dev_laptop }
+    created_at: 1735690500
+```
+
+```yaml
+# __underwrap/pairs/document
+version: 1
+pairs:
+  - wrapper: gh-authorized
+    resource: github/token
+    created_by: { kind: client-instance, id: inst_dev_laptop }
+    created_at: 1735690500
+```
+
+Provenance is set on first creation and never changes afterwards.
+There is no edit endpoint; `delete` on either entity refuses when
+dependents exist (the response carries structured `blocked_by`
+counts plus a small sample so the SPA can render a clear "fix this
+first" message).
+
+The `auto_create_wrapper_assets` flag on each client-instance record
+gates whether `POST /v1/runtime/wrappers/register` may insert new
+records on that principal's behalf. The flag defaults off; an admin
+must flip it on per instance before its wrappers can register new
+resources or pairs on startup.
 
 ## Per-call approval flow
 

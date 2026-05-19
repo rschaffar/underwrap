@@ -12,7 +12,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -213,8 +213,6 @@ struct AdminRuntimeState {
     operator_collection_lock: std::sync::Mutex<()>,
 }
 
-const CATALOG_DOCUMENT_SECRET_ID: &str = "__underwrap/catalog/document";
-
 fn log_admin_event(
     action: &str,
     operator: &str,
@@ -234,15 +232,6 @@ fn log_admin_event(
         result = %result,
         "admin event"
     );
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct StoredCatalogEntry {
-    /// The mTLS-authenticated runtime client instance id that
-    /// published this entry.
-    client_instance: String,
-    wrapper: String,
-    resource: String,
 }
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
@@ -970,21 +959,32 @@ async fn handle_service_request(
                 Err(response) => response,
             }
         }
-        (&Method::POST, "/v1/catalog/put") => match parse_json_body::<
-            underwrap_protocol::service::ServiceCatalogPutRequest,
+        (&Method::POST, "/v1/runtime/wrappers/register") => match parse_json_body::<
+            underwrap_protocol::service::ServiceWrapperRegisterRequest,
         >(request)
         .await
         {
             Ok(body) => {
-                match replace_catalog_entries_for_principal(&*store, &principal, &body.entries) {
-                    Ok(()) => json_response(
-                        StatusCode::OK,
-                        &underwrap_protocol::service::ServiceCatalogPutResponse { ok: true },
-                    ),
+                let auto_create_enabled = state
+                    .client_instances
+                    .read()
+                    .unwrap()
+                    .get(&principal)
+                    .map(|r| r.auto_create_wrapper_assets)
+                    .unwrap_or(false);
+                let now = crate::operators::now_epoch_secs();
+                match apply_runtime_wrapper_register(
+                    &*store,
+                    &principal,
+                    auto_create_enabled,
+                    &body,
+                    now,
+                ) {
+                    Ok(response) => json_response(StatusCode::OK, &response),
                     Err(e) => error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "internal",
-                        &format!("catalog storage error: {e}"),
+                        &format!("runtime register storage error: {e}"),
                     ),
                 }
             }
@@ -1215,13 +1215,6 @@ fn handle_admin_secret_write(
     }
 }
 
-fn load_catalog_document(store: &dyn StorageBackend) -> Result<Vec<StoredCatalogEntry>> {
-    let Some(material) = store.read(CATALOG_DOCUMENT_SECRET_ID)? else {
-        return Ok(Vec::new());
-    };
-    serde_json::from_slice(material.as_ref()).context("parsing backend catalog document")
-}
-
 fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyDocument> {
     match store.read(POLICY_DOCUMENT_SECRET_ID)? {
         Some(material) => {
@@ -1231,19 +1224,79 @@ fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyDocument> {
     }
 }
 
+fn load_resources_document(
+    store: &dyn StorageBackend,
+) -> Result<underwrap_protocol::entities::ResourcesDocument> {
+    use underwrap_protocol::entities::{
+        ENTITY_SCHEMA_VERSION, RESOURCES_DOCUMENT_SECRET_ID, ResourcesDocument,
+    };
+    match store.read(RESOURCES_DOCUMENT_SECRET_ID)? {
+        Some(material) => {
+            let doc: ResourcesDocument = serde_json::from_slice(material.as_ref())
+                .context("parsing backend resources document")?;
+            anyhow::ensure!(
+                doc.version == ENTITY_SCHEMA_VERSION,
+                "unsupported resources document version {}",
+                doc.version,
+            );
+            Ok(doc)
+        }
+        None => Ok(ResourcesDocument::default()),
+    }
+}
+
+fn save_resources_document(
+    store: &dyn StorageBackend,
+    doc: &underwrap_protocol::entities::ResourcesDocument,
+) -> Result<()> {
+    use underwrap_protocol::entities::RESOURCES_DOCUMENT_SECRET_ID;
+    store.write(
+        RESOURCES_DOCUMENT_SECRET_ID,
+        serde_json::to_vec(doc)?.as_slice(),
+    )
+}
+
+fn load_pairs_document(
+    store: &dyn StorageBackend,
+) -> Result<underwrap_protocol::entities::PairsDocument> {
+    use underwrap_protocol::entities::{
+        ENTITY_SCHEMA_VERSION, PAIRS_DOCUMENT_SECRET_ID, PairsDocument,
+    };
+    match store.read(PAIRS_DOCUMENT_SECRET_ID)? {
+        Some(material) => {
+            let doc: PairsDocument = serde_json::from_slice(material.as_ref())
+                .context("parsing backend pairs document")?;
+            anyhow::ensure!(
+                doc.version == ENTITY_SCHEMA_VERSION,
+                "unsupported pairs document version {}",
+                doc.version,
+            );
+            Ok(doc)
+        }
+        None => Ok(PairsDocument::default()),
+    }
+}
+
+fn save_pairs_document(
+    store: &dyn StorageBackend,
+    doc: &underwrap_protocol::entities::PairsDocument,
+) -> Result<()> {
+    use underwrap_protocol::entities::PAIRS_DOCUMENT_SECRET_ID;
+    store.write(
+        PAIRS_DOCUMENT_SECRET_ID,
+        serde_json::to_vec(doc)?.as_slice(),
+    )
+}
+
 fn admin_ui_overview_for_store(
     store_name: &str,
     store: &dyn StorageBackend,
     _now_epoch: u64,
 ) -> Result<underwrap_protocol::service::AdminUiOverviewStore> {
-    let catalog = load_catalog_document(store)?;
+    let resources = load_resources_document(store)?;
     let policy = load_policy_document(store)?;
 
-    let resource_count = catalog
-        .iter()
-        .map(|entry| entry.resource.clone())
-        .collect::<BTreeSet<_>>()
-        .len();
+    let resource_count = resources.resources.len();
 
     // Bucket every agent grant by its current mode. The grant key is
     // `(client_instance, wrapper, resource)` so this count reflects
@@ -1282,38 +1335,108 @@ fn admin_ui_overview_for_store(
     })
 }
 
-fn store_catalog_document(
+/// Apply a `POST /v1/runtime/wrappers/register` request.
+///
+/// Computes the diff between the request's pairs and what's already
+/// in the resource/pair documents, then either auto-creates the
+/// missing entities (if the calling client instance is opted in) or
+/// returns a structured refusal listing what would have been created.
+/// On the happy path the documents are written back; on the refusal
+/// path the store is untouched.
+fn apply_runtime_wrapper_register(
     store: &dyn StorageBackend,
-    entries: &[StoredCatalogEntry],
-) -> Result<()> {
-    store.write(
-        CATALOG_DOCUMENT_SECRET_ID,
-        serde_json::to_vec(entries)?.as_slice(),
-    )
-}
+    client_instance_id: &str,
+    auto_create_enabled: bool,
+    request: &underwrap_protocol::service::ServiceWrapperRegisterRequest,
+    now_epoch: u64,
+) -> Result<underwrap_protocol::service::ServiceWrapperRegisterResponse> {
+    use underwrap_protocol::entities::{
+        EntityCreator, ResourceRecord, WrapperResourcePairRecord,
+    };
+    use underwrap_protocol::service::{
+        ServiceWrapperRegisterReject, ServiceWrapperRegisterResponse, ServiceWrapperResourcePair,
+    };
 
-fn replace_catalog_entries_for_principal(
-    store: &dyn StorageBackend,
-    client_instance: &str,
-    entries: &[underwrap_protocol::service::CatalogEntry],
-) -> Result<()> {
-    let mut existing = load_catalog_document(store)?;
-    existing.retain(|entry| entry.client_instance != client_instance);
-    for entry in entries {
-        existing.push(StoredCatalogEntry {
-            client_instance: client_instance.to_string(),
-            wrapper: entry.wrapper.clone(),
-            resource: entry.resource.clone(),
+    let mut resources = load_resources_document(store)?;
+    let mut pairs = load_pairs_document(store)?;
+
+    // Resolve missing resource names first so a single resource named
+    // by several pairs doesn't get reported multiple times.
+    let mut missing_resources_set: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    for pair in &request.pairs {
+        if resources.find(&pair.resource).is_none() {
+            missing_resources_set.insert(pair.resource.clone());
+        }
+    }
+    let missing_pairs: Vec<ServiceWrapperResourcePair> = request
+        .pairs
+        .iter()
+        .filter(|p| pairs.find(&p.wrapper, &p.resource).is_none())
+        .map(|p| ServiceWrapperResourcePair {
+            wrapper: p.wrapper.clone(),
+            resource: p.resource.clone(),
+        })
+        .collect();
+
+    if missing_resources_set.is_empty() && missing_pairs.is_empty() {
+        return Ok(ServiceWrapperRegisterResponse::default());
+    }
+
+    if !auto_create_enabled {
+        return Ok(ServiceWrapperRegisterResponse {
+            created_resources: Vec::new(),
+            created_pairs: Vec::new(),
+            rejected: Some(ServiceWrapperRegisterReject::AutoCreateDisabled {
+                missing_resources: missing_resources_set.into_iter().collect(),
+                missing_pairs,
+            }),
         });
     }
-    existing.sort_by(|a, b| {
-        a.client_instance
-            .cmp(&b.client_instance)
-            .then(a.wrapper.cmp(&b.wrapper))
-            .then(a.resource.cmp(&b.resource))
-    });
-    existing.dedup();
-    store_catalog_document(store, &existing)
+
+    let creator = EntityCreator::ClientInstance {
+        id: client_instance_id.to_string(),
+    };
+
+    let mut created_resources: Vec<String> = Vec::new();
+    for name in &missing_resources_set {
+        // `insert` rejects duplicates; the missing-set above guarantees
+        // none, so unwrap is safe.
+        resources
+            .insert(ResourceRecord {
+                name: name.clone(),
+                created_by: creator.clone(),
+                created_at: now_epoch,
+            })
+            .expect("missing-set guarantees no duplicate");
+        created_resources.push(name.clone());
+    }
+
+    let mut created_pairs: Vec<ServiceWrapperResourcePair> = Vec::new();
+    for pair in &missing_pairs {
+        pairs
+            .insert(WrapperResourcePairRecord {
+                wrapper: pair.wrapper.clone(),
+                resource: pair.resource.clone(),
+                created_by: creator.clone(),
+                created_at: now_epoch,
+            })
+            .expect("missing-set guarantees no duplicate");
+        created_pairs.push(pair.clone());
+    }
+
+    if !created_resources.is_empty() {
+        save_resources_document(store, &resources)?;
+    }
+    if !created_pairs.is_empty() {
+        save_pairs_document(store, &pairs)?;
+    }
+
+    Ok(ServiceWrapperRegisterResponse {
+        created_resources,
+        created_pairs,
+        rejected: None,
+    })
 }
 
 fn admin_store(state: &AdminRuntimeState, store: &str) -> Result<Arc<dyn StorageBackend>> {
@@ -3394,6 +3517,7 @@ fn admin_client_instance_list_item(
         status: client_instance_status_to_wire(record.status),
         last_seen_at: record.last_seen_at,
         current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
+        auto_create_wrapper_assets: record.auto_create_wrapper_assets,
         actions,
     }
 }
@@ -3412,6 +3536,7 @@ fn admin_client_instance_detail(
         last_seen_at: record.last_seen_at,
         current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
         current_credential_issued_at: record.current_credential.issued_at,
+        auto_create_wrapper_assets: record.auto_create_wrapper_assets,
         actions,
     }
 }
@@ -3580,6 +3705,7 @@ fn do_admin_client_instance_create(
         status: client_instance_status_from_wire(body.status),
         last_seen_at: None,
         current_credential,
+        auto_create_wrapper_assets: body.auto_create_wrapper_assets.unwrap_or(false),
     };
     instances.insert(id.clone(), record.clone());
     if let Err(e) =
@@ -3724,6 +3850,9 @@ fn do_admin_client_instance_update(
         }
         updated.current_credential = new_credential;
     }
+    if let Some(flag) = body.auto_create_wrapper_assets {
+        updated.auto_create_wrapper_assets = flag;
+    }
     instances.insert(id.to_string(), updated.clone());
     if let Err(e) =
         crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
@@ -3844,6 +3973,534 @@ fn write_admin_grant_audit(
         None,
         result,
     );
+}
+
+// ===== Admin Resource and Pair CRUD =====
+//
+// Six endpoints behind `/v1/admin/resources/*` and
+// `/v1/admin/pairs/*`. All require an authenticated admin operator;
+// reads return store-scoped data, writes set provenance on create,
+// deletes refuse with structured blockers when dependents exist.
+
+const ENTITY_DEPENDENT_SAMPLE_LIMIT: usize = 5;
+const RESERVED_PREFIX: &str = "__underwrap/";
+
+fn resource_secret_dependents(
+    store: &dyn StorageBackend,
+    resource_name: &str,
+) -> Result<(u32, Vec<String>)> {
+    use underwrap_protocol::resource::{env_prefix, files_prefix, libsecret_prefix};
+    let prefixes = [
+        env_prefix(resource_name),
+        files_prefix(resource_name),
+        libsecret_prefix(resource_name),
+    ];
+    let mut ids: Vec<String> = Vec::new();
+    for prefix in &prefixes {
+        for id in store.list(prefix)? {
+            if id.starts_with(RESERVED_PREFIX) {
+                continue;
+            }
+            ids.push(id);
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    let count = u32::try_from(ids.len()).unwrap_or(u32::MAX);
+    ids.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+    Ok((count, ids))
+}
+
+#[allow(clippy::result_large_err)]
+fn handle_admin_resources_list(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: &underwrap_protocol::service::AdminResourcesListRequest,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may list resources",
+        );
+    }
+    let store = match admin_store_for_principal(state, principal, &body.store) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match load_resources_document(store.as_ref()) {
+        Ok(mut doc) => {
+            doc.resources.sort_by(|a, b| a.name.cmp(&b.name));
+            json_response(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminResourcesListResponse {
+                    resources: doc.resources,
+                },
+            )
+        }
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("loading resources document: {e:#}"),
+        ),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn handle_admin_resource_create(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: &underwrap_protocol::service::AdminResourceCreateRequest,
+) -> Response<Full<Bytes>> {
+    use underwrap_protocol::entities::{EntityCreator, ResourceRecord};
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may create resources",
+        );
+    }
+    let name = body.name.trim();
+    if name.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_resource_name",
+            "resource name must be non-empty",
+        );
+    }
+    let store = match admin_store_for_principal(state, principal, &body.store) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let mut doc = match load_resources_document(store.as_ref()) {
+        Ok(d) => d,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading resources document: {e:#}"),
+            );
+        }
+    };
+    if doc.find(name).is_some() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "resource_already_exists",
+            &format!("resource '{name}' already exists"),
+        );
+    }
+    let record = ResourceRecord {
+        name: name.to_string(),
+        created_by: EntityCreator::Operator {
+            id: principal.id.clone(),
+            username: principal.username.clone(),
+        },
+        created_at: crate::operators::now_epoch_secs(),
+    };
+    doc.insert(record.clone())
+        .expect("find returned None just above");
+    if let Err(e) = save_resources_document(store.as_ref(), &doc) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("persisting resources document: {e:#}"),
+        );
+    }
+    log_admin_event(
+        "resource.create",
+        &principal.username,
+        None,
+        Some(name),
+        None,
+        None,
+        "success",
+    );
+    json_response(
+        StatusCode::OK,
+        &underwrap_protocol::service::AdminResourceCreateResponse { resource: record },
+    )
+}
+
+#[allow(clippy::result_large_err)]
+fn handle_admin_resource_delete(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: &underwrap_protocol::service::AdminResourceDeleteRequest,
+) -> Response<Full<Bytes>> {
+    use underwrap_protocol::service::{
+        AdminGrantKey, AdminResourceDeleteBlockers, AdminResourceDeleteResponse,
+        ServiceWrapperResourcePair,
+    };
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may delete resources",
+        );
+    }
+    let store = match admin_store_for_principal(state, principal, &body.store) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let mut doc = match load_resources_document(store.as_ref()) {
+        Ok(d) => d,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading resources document: {e:#}"),
+            );
+        }
+    };
+    if doc.find(&body.name).is_none() {
+        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown resource");
+    }
+
+    let (secret_count, sample_secret_ids) =
+        match resource_secret_dependents(store.as_ref(), &body.name) {
+            Ok(v) => v,
+            Err(e) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &format!("scanning resource dependents: {e:#}"),
+                );
+            }
+        };
+
+    let pairs = match load_pairs_document(store.as_ref()) {
+        Ok(p) => p,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading pairs document: {e:#}"),
+            );
+        }
+    };
+    let dependent_pairs: Vec<ServiceWrapperResourcePair> = pairs
+        .pairs_for_resource(&body.name)
+        .map(|p| ServiceWrapperResourcePair {
+            wrapper: p.wrapper.clone(),
+            resource: p.resource.clone(),
+        })
+        .collect();
+    let pair_count = u32::try_from(dependent_pairs.len()).unwrap_or(u32::MAX);
+    let mut sample_pairs = dependent_pairs;
+    sample_pairs.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+
+    let policy = match load_policy_document_or_default(store.as_ref()) {
+        Ok(p) => p,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading policy document: {e:#}"),
+            );
+        }
+    };
+    let dependent_grants: Vec<AdminGrantKey> = policy
+        .grants
+        .iter()
+        .filter(|g| g.resource == body.name)
+        .map(|g| AdminGrantKey {
+            client_instance: g.client_instance.clone(),
+            wrapper: g.wrapper.clone(),
+            resource: g.resource.clone(),
+        })
+        .collect();
+    let grant_count = u32::try_from(dependent_grants.len()).unwrap_or(u32::MAX);
+    let mut sample_grants = dependent_grants;
+    sample_grants.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+
+    if secret_count > 0 || pair_count > 0 || grant_count > 0 {
+        log_admin_event(
+            "resource.delete",
+            &principal.username,
+            None,
+            Some(&body.name),
+            None,
+            None,
+            "blocked",
+        );
+        return json_response(
+            StatusCode::OK,
+            &AdminResourceDeleteResponse {
+                ok: false,
+                blocked_by: Some(AdminResourceDeleteBlockers {
+                    secret_count,
+                    sample_secret_ids,
+                    pair_count,
+                    sample_pairs,
+                    grant_count,
+                    sample_grants,
+                }),
+            },
+        );
+    }
+
+    doc.remove(&body.name);
+    if let Err(e) = save_resources_document(store.as_ref(), &doc) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("persisting resources document: {e:#}"),
+        );
+    }
+    log_admin_event(
+        "resource.delete",
+        &principal.username,
+        None,
+        Some(&body.name),
+        None,
+        None,
+        "success",
+    );
+    json_response(
+        StatusCode::OK,
+        &AdminResourceDeleteResponse {
+            ok: true,
+            blocked_by: None,
+        },
+    )
+}
+
+#[allow(clippy::result_large_err)]
+fn handle_admin_pairs_list(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: &underwrap_protocol::service::AdminPairsListRequest,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may list wrapper/resource pairs",
+        );
+    }
+    let store = match admin_store_for_principal(state, principal, &body.store) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match load_pairs_document(store.as_ref()) {
+        Ok(mut doc) => {
+            doc.pairs.sort_by(|a, b| {
+                a.wrapper.cmp(&b.wrapper).then(a.resource.cmp(&b.resource))
+            });
+            json_response(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminPairsListResponse { pairs: doc.pairs },
+            )
+        }
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("loading pairs document: {e:#}"),
+        ),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn handle_admin_pair_create(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: &underwrap_protocol::service::AdminPairCreateRequest,
+) -> Response<Full<Bytes>> {
+    use underwrap_protocol::entities::{EntityCreator, WrapperResourcePairRecord};
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may create wrapper/resource pairs",
+        );
+    }
+    let wrapper = body.wrapper.trim();
+    let resource = body.resource.trim();
+    if wrapper.is_empty() || resource.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_pair",
+            "wrapper and resource must both be non-empty",
+        );
+    }
+    let store = match admin_store_for_principal(state, principal, &body.store) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let resources = match load_resources_document(store.as_ref()) {
+        Ok(d) => d,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading resources document: {e:#}"),
+            );
+        }
+    };
+    if resources.find(resource).is_none() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "unknown_resource",
+            &format!(
+                "resource '{resource}' must be created before a pair can reference it"
+            ),
+        );
+    }
+    let mut pairs = match load_pairs_document(store.as_ref()) {
+        Ok(d) => d,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading pairs document: {e:#}"),
+            );
+        }
+    };
+    if pairs.find(wrapper, resource).is_some() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "pair_already_exists",
+            &format!("pair ({wrapper}, {resource}) already exists"),
+        );
+    }
+    let record = WrapperResourcePairRecord {
+        wrapper: wrapper.to_string(),
+        resource: resource.to_string(),
+        created_by: EntityCreator::Operator {
+            id: principal.id.clone(),
+            username: principal.username.clone(),
+        },
+        created_at: crate::operators::now_epoch_secs(),
+    };
+    pairs
+        .insert(record.clone())
+        .expect("find returned None just above");
+    if let Err(e) = save_pairs_document(store.as_ref(), &pairs) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("persisting pairs document: {e:#}"),
+        );
+    }
+    log_admin_event(
+        "pair.create",
+        &principal.username,
+        Some(wrapper),
+        Some(resource),
+        None,
+        None,
+        "success",
+    );
+    json_response(
+        StatusCode::OK,
+        &underwrap_protocol::service::AdminPairCreateResponse { pair: record },
+    )
+}
+
+#[allow(clippy::result_large_err)]
+fn handle_admin_pair_delete(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: &underwrap_protocol::service::AdminPairDeleteRequest,
+) -> Response<Full<Bytes>> {
+    use underwrap_protocol::service::{
+        AdminGrantKey, AdminPairDeleteBlockers, AdminPairDeleteResponse,
+    };
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may delete wrapper/resource pairs",
+        );
+    }
+    let store = match admin_store_for_principal(state, principal, &body.store) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let mut doc = match load_pairs_document(store.as_ref()) {
+        Ok(d) => d,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading pairs document: {e:#}"),
+            );
+        }
+    };
+    if doc.find(&body.wrapper, &body.resource).is_none() {
+        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown pair");
+    }
+
+    let policy = match load_policy_document_or_default(store.as_ref()) {
+        Ok(p) => p,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading policy document: {e:#}"),
+            );
+        }
+    };
+    let dependent_grants: Vec<AdminGrantKey> = policy
+        .grants
+        .iter()
+        .filter(|g| g.wrapper == body.wrapper && g.resource == body.resource)
+        .map(|g| AdminGrantKey {
+            client_instance: g.client_instance.clone(),
+            wrapper: g.wrapper.clone(),
+            resource: g.resource.clone(),
+        })
+        .collect();
+    let grant_count = u32::try_from(dependent_grants.len()).unwrap_or(u32::MAX);
+    let mut sample_grants = dependent_grants;
+    sample_grants.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+
+    if grant_count > 0 {
+        log_admin_event(
+            "pair.delete",
+            &principal.username,
+            Some(&body.wrapper),
+            Some(&body.resource),
+            None,
+            None,
+            "blocked",
+        );
+        return json_response(
+            StatusCode::OK,
+            &AdminPairDeleteResponse {
+                ok: false,
+                blocked_by: Some(AdminPairDeleteBlockers {
+                    grant_count,
+                    sample_grants,
+                }),
+            },
+        );
+    }
+
+    doc.remove(&body.wrapper, &body.resource);
+    if let Err(e) = save_pairs_document(store.as_ref(), &doc) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("persisting pairs document: {e:#}"),
+        );
+    }
+    log_admin_event(
+        "pair.delete",
+        &principal.username,
+        Some(&body.wrapper),
+        Some(&body.resource),
+        None,
+        None,
+        "success",
+    );
+    json_response(
+        StatusCode::OK,
+        &AdminPairDeleteResponse {
+            ok: true,
+            blocked_by: None,
+        },
+    )
 }
 
 #[allow(clippy::result_large_err)]
@@ -4347,34 +5004,6 @@ async fn handle_admin_request(
                 Err(response) => response,
             }
         }
-        (&Method::POST, "/v1/admin/catalog/get") => {
-            match parse_json_body::<underwrap_protocol::service::AdminCatalogGetRequest>(request)
-                .await
-            {
-                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match load_catalog_document(store.as_ref()) {
-                        Ok(entries) => json_response(
-                            StatusCode::OK,
-                            &underwrap_protocol::service::AdminCatalogGetResponse {
-                                entries: entries
-                                    .into_iter()
-                                    .map(|entry| underwrap_protocol::service::CatalogEntry {
-                                        client_instance: entry.client_instance,
-                                        wrapper: entry.wrapper,
-                                        resource: entry.resource,
-                                    })
-                                    .collect(),
-                            },
-                        ),
-                        Err(e) => {
-                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
-                        }
-                    },
-                    Err(resp) => resp,
-                },
-                Err(response) => response,
-            }
-        }
         (&Method::POST, "/v1/admin/policy/get") => {
             match parse_json_body::<underwrap_protocol::service::AdminPolicyGetRequest>(request)
                 .await
@@ -4452,6 +5081,54 @@ async fn handle_admin_request(
         .await
         {
             Ok(body) => handle_admin_grant_delete(&state, &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/resources/list") => match parse_json_body::<
+            underwrap_protocol::service::AdminResourcesListRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_resources_list(&state, &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/resources/create") => match parse_json_body::<
+            underwrap_protocol::service::AdminResourceCreateRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_resource_create(&state, &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/resources/delete") => match parse_json_body::<
+            underwrap_protocol::service::AdminResourceDeleteRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_resource_delete(&state, &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/pairs/list") => match parse_json_body::<
+            underwrap_protocol::service::AdminPairsListRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_pairs_list(&state, &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/pairs/create") => match parse_json_body::<
+            underwrap_protocol::service::AdminPairCreateRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_pair_create(&state, &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/pairs/delete") => match parse_json_body::<
+            underwrap_protocol::service::AdminPairDeleteRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_pair_delete(&state, &principal, &body),
             Err(response) => response,
         },
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
@@ -4659,6 +5336,73 @@ mod tests {
     }
 
     #[test]
+    fn resources_document_roundtrips_through_load_save() {
+        use underwrap_protocol::entities::{
+            EntityCreator, RESOURCES_DOCUMENT_SECRET_ID, ResourceRecord, ResourcesDocument,
+        };
+        let store = TestStore::new();
+        assert_eq!(
+            load_resources_document(&store).unwrap(),
+            ResourcesDocument::default(),
+        );
+        let mut doc = ResourcesDocument::default();
+        doc.insert(ResourceRecord {
+            name: "github/token".into(),
+            created_by: EntityCreator::Operator {
+                id: "op-1".into(),
+                username: "alice".into(),
+            },
+            created_at: 1_700_000_000,
+        })
+        .unwrap();
+        save_resources_document(&store, &doc).unwrap();
+        assert_eq!(load_resources_document(&store).unwrap(), doc);
+
+        // Force an unsupported version on disk: load must refuse.
+        store
+            .write(
+                RESOURCES_DOCUMENT_SECRET_ID,
+                br#"{"version": 999, "resources": []}"#,
+            )
+            .unwrap();
+        let err = load_resources_document(&store).unwrap_err();
+        assert!(err.to_string().contains("unsupported resources document"));
+    }
+
+    #[test]
+    fn pairs_document_roundtrips_through_load_save() {
+        use underwrap_protocol::entities::{
+            EntityCreator, PAIRS_DOCUMENT_SECRET_ID, PairsDocument, WrapperResourcePairRecord,
+        };
+        let store = TestStore::new();
+        assert_eq!(
+            load_pairs_document(&store).unwrap(),
+            PairsDocument::default(),
+        );
+        let mut doc = PairsDocument::default();
+        doc.insert(WrapperResourcePairRecord {
+            wrapper: "gh-comment".into(),
+            resource: "github/token".into(),
+            created_by: EntityCreator::ClientInstance {
+                id: "client-7".into(),
+            },
+            created_at: 42,
+        })
+        .unwrap();
+        save_pairs_document(&store, &doc).unwrap();
+        assert_eq!(load_pairs_document(&store).unwrap(), doc);
+
+        store
+            .write(
+                PAIRS_DOCUMENT_SECRET_ID,
+                br#"{"version": 999, "pairs": []}"#,
+            )
+            .unwrap();
+        let err = load_pairs_document(&store).unwrap_err();
+        assert!(err.to_string().contains("unsupported pairs document"));
+    }
+
+    #[test]
     fn put_policy_document_rejects_invalid_json() {
         let stores = HashMap::from([(
             "work".to_string(),
@@ -4670,63 +5414,222 @@ mod tests {
     }
 
     #[test]
-    fn replace_catalog_entries_replaces_only_one_principal_slice() {
+    fn runtime_register_noops_when_nothing_is_missing_regardless_of_flag() {
+        use underwrap_protocol::service::{
+            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
+        };
         let store = TestStore::new();
-        replace_catalog_entries_for_principal(
+        // Seed with the flag on.
+        apply_runtime_wrapper_register(
             &store,
-            "principal-a",
-            &[
-                underwrap_protocol::service::CatalogEntry {
-                    client_instance: String::new(),
-                    wrapper: "gh-authorized".to_string(),
-                    resource: "gh/main".to_string(),
-                },
-                underwrap_protocol::service::CatalogEntry {
-                    client_instance: String::new(),
-                    wrapper: "gws-castlabs".to_string(),
-                    resource: "gws/castlabs".to_string(),
-                },
-            ],
+            "inst_a",
+            true,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![ServiceWrapperResourcePair {
+                    wrapper: "gh".into(),
+                    resource: "github/token".into(),
+                }],
+            },
+            10,
         )
         .unwrap();
-        replace_catalog_entries_for_principal(
+        // Now register the same pair set with the flag off: nothing is
+        // missing, so the call succeeds with no refusal.
+        let resp = apply_runtime_wrapper_register(
             &store,
-            "principal-b",
-            &[underwrap_protocol::service::CatalogEntry {
-                client_instance: String::new(),
-                wrapper: "gh-authorized".to_string(),
-                resource: "gh/main".to_string(),
-            }],
+            "inst_a",
+            false,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![ServiceWrapperResourcePair {
+                    wrapper: "gh".into(),
+                    resource: "github/token".into(),
+                }],
+            },
+            20,
         )
         .unwrap();
-        replace_catalog_entries_for_principal(
+        assert!(resp.created_resources.is_empty());
+        assert!(resp.created_pairs.is_empty());
+        assert!(resp.rejected.is_none());
+    }
+
+    #[test]
+    fn runtime_register_noops_when_nothing_is_missing() {
+        use underwrap_protocol::service::{
+            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
+        };
+        let store = TestStore::new();
+        // Seed an existing resource + pair so the second register
+        // call has nothing to do.
+        apply_runtime_wrapper_register(
             &store,
-            "principal-a",
-            &[underwrap_protocol::service::CatalogEntry {
-                client_instance: String::new(),
-                wrapper: "confluence".to_string(),
-                resource: "confluence/main".to_string(),
-            }],
+            "inst_a",
+            true,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![ServiceWrapperResourcePair {
+                    wrapper: "gh".into(),
+                    resource: "github/token".into(),
+                }],
+            },
+            10,
         )
         .unwrap();
 
-        let entries = load_catalog_document(&store).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(
-            entries
-                .iter()
-                .any(|e| e.client_instance == "principal-a" && e.wrapper == "confluence")
+        let resp = apply_runtime_wrapper_register(
+            &store,
+            "inst_a",
+            true,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![ServiceWrapperResourcePair {
+                    wrapper: "gh".into(),
+                    resource: "github/token".into(),
+                }],
+            },
+            20,
+        )
+        .unwrap();
+        assert!(resp.created_resources.is_empty());
+        assert!(resp.created_pairs.is_empty());
+        assert!(resp.rejected.is_none());
+        // The provenance from the first call is untouched.
+        let pairs = load_pairs_document(&store).unwrap();
+        assert_eq!(pairs.pairs[0].created_at, 10);
+    }
+
+    #[test]
+    fn runtime_register_refuses_when_auto_create_disabled_and_lists_missing() {
+        use underwrap_protocol::service::{
+            ServiceWrapperRegisterReject, ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
+        };
+        let store = TestStore::new();
+        let resp = apply_runtime_wrapper_register(
+            &store,
+            "inst_a",
+            false,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![
+                    ServiceWrapperResourcePair {
+                        wrapper: "gh".into(),
+                        resource: "github/token".into(),
+                    },
+                    ServiceWrapperResourcePair {
+                        wrapper: "tf".into(),
+                        resource: "github/token".into(),
+                    },
+                ],
+            },
+            10,
+        )
+        .unwrap();
+        assert!(resp.created_resources.is_empty());
+        assert!(resp.created_pairs.is_empty());
+        match resp.rejected.expect("rejected response") {
+            ServiceWrapperRegisterReject::AutoCreateDisabled {
+                missing_resources,
+                missing_pairs,
+            } => {
+                assert_eq!(missing_resources, vec!["github/token".to_string()]);
+                assert_eq!(missing_pairs.len(), 2);
+            }
+        }
+        // Refusal path writes nothing.
+        assert_eq!(
+            load_resources_document(&store).unwrap().resources.len(),
+            0
         );
-        assert!(
-            entries
-                .iter()
-                .any(|e| e.client_instance == "principal-b" && e.wrapper == "gh-authorized")
-        );
-        assert!(
-            !entries
-                .iter()
-                .any(|e| e.client_instance == "principal-a" && e.wrapper == "gh-authorized")
-        );
+        assert_eq!(load_pairs_document(&store).unwrap().pairs.len(), 0);
+    }
+
+    #[test]
+    fn runtime_register_creates_missing_when_auto_create_enabled() {
+        use underwrap_protocol::entities::EntityCreator;
+        use underwrap_protocol::service::{
+            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
+        };
+        let store = TestStore::new();
+        let resp = apply_runtime_wrapper_register(
+            &store,
+            "inst_a",
+            true,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![
+                    ServiceWrapperResourcePair {
+                        wrapper: "gh".into(),
+                        resource: "github/token".into(),
+                    },
+                    ServiceWrapperResourcePair {
+                        wrapper: "tf".into(),
+                        resource: "github/token".into(),
+                    },
+                ],
+            },
+            42,
+        )
+        .unwrap();
+        assert!(resp.rejected.is_none());
+        assert_eq!(resp.created_resources, vec!["github/token".to_string()]);
+        assert_eq!(resp.created_pairs.len(), 2);
+
+        let resources = load_resources_document(&store).unwrap();
+        assert_eq!(resources.resources.len(), 1);
+        match &resources.resources[0].created_by {
+            EntityCreator::ClientInstance { id } => assert_eq!(id, "inst_a"),
+            _ => panic!("expected ClientInstance creator"),
+        }
+        assert_eq!(resources.resources[0].created_at, 42);
+
+        let pairs = load_pairs_document(&store).unwrap();
+        assert_eq!(pairs.pairs.len(), 2);
+    }
+
+    #[test]
+    fn runtime_register_only_creates_truly_missing_entries() {
+        use underwrap_protocol::service::{
+            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
+        };
+        let store = TestStore::new();
+        // First call creates everything for inst_a.
+        apply_runtime_wrapper_register(
+            &store,
+            "inst_a",
+            true,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![ServiceWrapperResourcePair {
+                    wrapper: "gh".into(),
+                    resource: "github/token".into(),
+                }],
+            },
+            10,
+        )
+        .unwrap();
+
+        // Second call from inst_b adds a new pair on the existing
+        // resource. The resource record is left alone, the new pair
+        // gets created.
+        let resp = apply_runtime_wrapper_register(
+            &store,
+            "inst_b",
+            true,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![
+                    ServiceWrapperResourcePair {
+                        wrapper: "gh".into(),
+                        resource: "github/token".into(),
+                    },
+                    ServiceWrapperResourcePair {
+                        wrapper: "tf".into(),
+                        resource: "github/token".into(),
+                    },
+                ],
+            },
+            20,
+        )
+        .unwrap();
+        assert!(resp.created_resources.is_empty(), "resource already there");
+        assert_eq!(resp.created_pairs.len(), 1);
+        assert_eq!(resp.created_pairs[0].wrapper, "tf");
+        let resources = load_resources_document(&store).unwrap();
+        assert_eq!(resources.resources[0].created_at, 10, "provenance untouched");
     }
 
     fn test_operators_file() -> PathBuf {
@@ -5120,6 +6023,7 @@ mod tests {
                     cert_pem: "pem".to_string(),
                     issued_at: None,
                 },
+                auto_create_wrapper_assets: false,
             },
         );
         AdminRuntimeState {
@@ -6240,6 +7144,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                     cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
                     issued_at: Some(1),
                 },
+                auto_create_wrapper_assets: false,
             },
         );
 
@@ -6307,6 +7212,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 status: AdminClientInstanceStatus::Active,
                 cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
                 issued_at: Some(111),
+                auto_create_wrapper_assets: None,
             },
         );
         assert_eq!(create.status(), StatusCode::OK);
@@ -6340,6 +7246,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 current_store_id: Some(other_id.clone()),
                 status: Some(AdminClientInstanceStatus::Disabled),
                 cert_pem: None,
+                auto_create_wrapper_assets: None,
             },
         );
         assert_eq!(update.status(), StatusCode::OK);
@@ -6365,6 +7272,416 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     }
 
     #[test]
+    fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let store_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                description: None,
+            },
+        );
+
+        // Default: when the create request omits the flag the stored
+        // value is false and the detail/list response reports it.
+        let create = do_admin_client_instance_create(
+            &state,
+            &p,
+            AdminClientInstanceCreateRequest {
+                display_name: "default-flag".into(),
+                current_store_id: store_id.clone(),
+                status: AdminClientInstanceStatus::Active,
+                cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
+                issued_at: None,
+                auto_create_wrapper_assets: None,
+            },
+        );
+        assert_eq!(create.status(), StatusCode::OK);
+        let created = response_body_json(create);
+        assert_eq!(created["auto_create_wrapper_assets"], false);
+        let id = created["id"].as_str().unwrap().to_string();
+
+        // Update toggles it on.
+        let toggled = do_admin_client_instance_update(
+            &state,
+            &p,
+            &id,
+            AdminClientInstanceUpdateRequest {
+                display_name: None,
+                current_store_id: None,
+                status: None,
+                cert_pem: None,
+                auto_create_wrapper_assets: Some(true),
+            },
+        );
+        assert_eq!(toggled.status(), StatusCode::OK);
+        let toggled_body = response_body_json(toggled);
+        assert_eq!(toggled_body["auto_create_wrapper_assets"], true);
+
+        // Persisted across a fresh load.
+        let reloaded = crate::runtime_clients::load_client_instances(&state.client_instances_file)
+            .expect("reload client instances");
+        assert!(reloaded.get(&id).unwrap().auto_create_wrapper_assets);
+
+        // Update without the flag leaves it alone.
+        let kept = do_admin_client_instance_update(
+            &state,
+            &p,
+            &id,
+            AdminClientInstanceUpdateRequest {
+                display_name: Some("renamed".into()),
+                current_store_id: None,
+                status: None,
+                cert_pem: None,
+                auto_create_wrapper_assets: None,
+            },
+        );
+        assert_eq!(kept.status(), StatusCode::OK);
+        assert_eq!(response_body_json(kept)["auto_create_wrapper_assets"], true);
+
+        // And it can be toggled back off explicitly.
+        let off = do_admin_client_instance_update(
+            &state,
+            &p,
+            &id,
+            AdminClientInstanceUpdateRequest {
+                display_name: None,
+                current_store_id: None,
+                status: None,
+                cert_pem: None,
+                auto_create_wrapper_assets: Some(false),
+            },
+        );
+        assert_eq!(off.status(), StatusCode::OK);
+        assert_eq!(response_body_json(off)["auto_create_wrapper_assets"], false);
+    }
+
+    // ===== Admin Resource and Pair CRUD (ticket 384) =====
+
+    fn entity_test_state_with_store(tmp: &std::path::Path) -> (AdminRuntimeState, String) {
+        let state = crud_state(tmp);
+        let p = admin_principal(&[]);
+        let id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                description: None,
+            },
+        );
+        (state, id)
+    }
+
+    #[test]
+    fn admin_resource_create_then_list_round_trip_with_operator_provenance() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+
+        let create = handle_admin_resource_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourceCreateRequest {
+                store: store_id.clone(),
+                name: "github/token".into(),
+            },
+        );
+        assert_eq!(create.status(), StatusCode::OK);
+        let body = response_body_json(create);
+        assert_eq!(body["resource"]["name"], "github/token");
+        assert_eq!(body["resource"]["created_by"]["kind"], "operator");
+        assert_eq!(body["resource"]["created_by"]["username"], "alice");
+
+        let list = handle_admin_resources_list(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourcesListRequest {
+                store: store_id.clone(),
+            },
+        );
+        let list_body = response_body_json(list);
+        let resources = list_body["resources"].as_array().unwrap();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0]["name"], "github/token");
+    }
+
+    #[test]
+    fn admin_resource_create_refuses_duplicate_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+        let body = underwrap_protocol::service::AdminResourceCreateRequest {
+            store: store_id,
+            name: "github/token".into(),
+        };
+        let first = handle_admin_resource_create(&state, &p, &body);
+        assert_eq!(first.status(), StatusCode::OK);
+        let dup = handle_admin_resource_create(&state, &p, &body);
+        assert_eq!(dup.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_body_json(dup)["code"],
+            "resource_already_exists"
+        );
+    }
+
+    #[test]
+    fn admin_resource_delete_succeeds_when_no_dependents() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+        handle_admin_resource_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourceCreateRequest {
+                store: store_id.clone(),
+                name: "github/token".into(),
+            },
+        );
+        let del = handle_admin_resource_delete(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourceDeleteRequest {
+                store: store_id.clone(),
+                name: "github/token".into(),
+            },
+        );
+        assert_eq!(del.status(), StatusCode::OK);
+        let body = response_body_json(del);
+        assert_eq!(body["ok"], true);
+        assert!(body.get("blocked_by").is_none() || body["blocked_by"].is_null());
+
+        let list = handle_admin_resources_list(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourcesListRequest { store: store_id },
+        );
+        assert_eq!(
+            response_body_json(list)["resources"].as_array().unwrap().len(),
+            0
+        );
+    }
+
+    #[test]
+    fn admin_resource_delete_refuses_with_structured_blockers() {
+        use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+
+        // Resource exists.
+        handle_admin_resource_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourceCreateRequest {
+                store: store_id.clone(),
+                name: "github/token".into(),
+            },
+        );
+        // Pair references it.
+        handle_admin_pair_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminPairCreateRequest {
+                store: store_id.clone(),
+                wrapper: "gh".into(),
+                resource: "github/token".into(),
+            },
+        );
+        // A secret under the resource.
+        {
+            let reg = state.stores.read().unwrap();
+            reg.open[&store_id]
+                .write("github/token/env/GH_TOKEN", b"ghp_value")
+                .unwrap();
+        }
+        // A grant referencing the resource.
+        {
+            let reg = state.stores.read().unwrap();
+            save_policy_document(
+                reg.open[&store_id].as_ref(),
+                &PolicyDocument {
+                    grants: vec![AgentGrant {
+                        client_instance: "inst_a".into(),
+                        wrapper: "gh".into(),
+                        resource: "github/token".into(),
+                        mode: WrapperApprovalMode::Unlocked,
+                        writable: false,
+                        reason: None,
+                    }],
+                },
+            )
+            .unwrap();
+        }
+
+        let del = handle_admin_resource_delete(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourceDeleteRequest {
+                store: store_id.clone(),
+                name: "github/token".into(),
+            },
+        );
+        assert_eq!(del.status(), StatusCode::OK);
+        let body = response_body_json(del);
+        assert_eq!(body["ok"], false);
+        let blockers = &body["blocked_by"];
+        assert_eq!(blockers["secret_count"], 1);
+        assert_eq!(blockers["pair_count"], 1);
+        assert_eq!(blockers["grant_count"], 1);
+        assert_eq!(blockers["sample_pairs"][0]["wrapper"], "gh");
+        assert_eq!(blockers["sample_grants"][0]["client_instance"], "inst_a");
+
+        // Resource is still present.
+        let list = handle_admin_resources_list(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourcesListRequest { store: store_id },
+        );
+        assert_eq!(
+            response_body_json(list)["resources"].as_array().unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn admin_pair_create_requires_existing_resource_and_refuses_duplicates() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+
+        // No resource → 400 unknown_resource.
+        let missing = handle_admin_pair_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminPairCreateRequest {
+                store: store_id.clone(),
+                wrapper: "gh".into(),
+                resource: "github/token".into(),
+            },
+        );
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_body_json(missing)["code"], "unknown_resource");
+
+        handle_admin_resource_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourceCreateRequest {
+                store: store_id.clone(),
+                name: "github/token".into(),
+            },
+        );
+        let create = handle_admin_pair_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminPairCreateRequest {
+                store: store_id.clone(),
+                wrapper: "gh".into(),
+                resource: "github/token".into(),
+            },
+        );
+        assert_eq!(create.status(), StatusCode::OK);
+
+        let dup = handle_admin_pair_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminPairCreateRequest {
+                store: store_id.clone(),
+                wrapper: "gh".into(),
+                resource: "github/token".into(),
+            },
+        );
+        assert_eq!(dup.status(), StatusCode::CONFLICT);
+        assert_eq!(response_body_json(dup)["code"], "pair_already_exists");
+    }
+
+    #[test]
+    fn admin_pair_delete_refuses_when_grants_reference_the_pair() {
+        use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+
+        handle_admin_resource_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourceCreateRequest {
+                store: store_id.clone(),
+                name: "r".into(),
+            },
+        );
+        handle_admin_pair_create(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminPairCreateRequest {
+                store: store_id.clone(),
+                wrapper: "gh".into(),
+                resource: "r".into(),
+            },
+        );
+        {
+            let reg = state.stores.read().unwrap();
+            save_policy_document(
+                reg.open[&store_id].as_ref(),
+                &PolicyDocument {
+                    grants: vec![AgentGrant {
+                        client_instance: "inst_a".into(),
+                        wrapper: "gh".into(),
+                        resource: "r".into(),
+                        mode: WrapperApprovalMode::Unlocked,
+                        writable: false,
+                        reason: None,
+                    }],
+                },
+            )
+            .unwrap();
+        }
+
+        let del = handle_admin_pair_delete(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminPairDeleteRequest {
+                store: store_id.clone(),
+                wrapper: "gh".into(),
+                resource: "r".into(),
+            },
+        );
+        assert_eq!(del.status(), StatusCode::OK);
+        let body = response_body_json(del);
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["blocked_by"]["grant_count"], 1);
+        assert_eq!(body["blocked_by"]["sample_grants"][0]["wrapper"], "gh");
+    }
+
+    #[test]
+    fn non_admin_cannot_manage_resources_or_pairs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let op = operator_principal(&[&store_id]);
+        let list = handle_admin_resources_list(
+            &state,
+            &op,
+            &underwrap_protocol::service::AdminResourcesListRequest {
+                store: store_id.clone(),
+            },
+        );
+        assert_eq!(list.status(), StatusCode::FORBIDDEN);
+        let create = handle_admin_resource_create(
+            &state,
+            &op,
+            &underwrap_protocol::service::AdminResourceCreateRequest {
+                store: store_id,
+                name: "r".into(),
+            },
+        );
+        assert_eq!(create.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
     fn non_admin_cannot_manage_client_instances() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
@@ -6387,6 +7704,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 status: AdminClientInstanceStatus::Active,
                 cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
                 issued_at: None,
+                auto_create_wrapper_assets: None,
             },
         );
         assert_eq!(create.status(), StatusCode::FORBIDDEN);

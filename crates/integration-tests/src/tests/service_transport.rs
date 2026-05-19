@@ -29,20 +29,126 @@ async fn service_mode_roundtrip_reads_secret() {
 }
 
 #[tokio::test]
-async fn service_mode_registers_catalog_entries_on_startup() {
+async fn service_mode_refuses_auto_create_when_disabled() {
+    // Fixture defaults: client instance has auto_create_wrapper_assets
+    // off. The daemon's startup register call must not create resource
+    // or pair records; the backend responds with AutoCreateDisabled,
+    // and the documents stay empty.
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start_service_mode(wrappers, "local", "underwrap-local")
         .await
         .unwrap();
 
-    let entries = daemon.get_catalog("test").await.unwrap();
+    let resources = daemon.list_resources("test").await.unwrap();
+    let pairs = daemon.list_pairs("test").await.unwrap();
     assert!(
-        entries
-            .iter()
-            .any(|e| e.client_instance == daemon.client_instance()
-                && e.wrapper == "gh-authorized"
-                && e.resource == "github/token")
+        resources.resources.is_empty(),
+        "auto-create off: no resources should be created, got {resources:?}",
     );
+    assert!(
+        pairs.pairs.is_empty(),
+        "auto-create off: no pairs should be created, got {pairs:?}",
+    );
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn service_mode_auto_creates_wrapper_assets_when_enabled() {
+    // With auto-create on at daemon startup, the register call creates
+    // the resource and pair records with provenance pointing at the
+    // calling client instance.
+    let wrappers = one_wrapper_config();
+    let daemon =
+        TestDaemon::start_service_mode_with(wrappers, "local", "underwrap-local", true)
+            .await
+            .unwrap();
+
+    let instance_id = daemon.client_instance().to_string();
+
+    let resources = daemon.list_resources("test").await.unwrap();
+    let pairs = daemon.list_pairs("test").await.unwrap();
+    assert!(
+        resources
+            .resources
+            .iter()
+            .any(|r| r.name == "github/token"),
+        "auto-create on: resource github/token should appear; got {resources:?}",
+    );
+    assert!(
+        pairs
+            .pairs
+            .iter()
+            .any(|p| p.wrapper == "gh-authorized" && p.resource == "github/token"),
+        "auto-create on: pair (gh-authorized, github/token) should appear; got {pairs:?}",
+    );
+    // Provenance must point at the calling client instance.
+    let resource = resources
+        .resources
+        .iter()
+        .find(|r| r.name == "github/token")
+        .unwrap();
+    match &resource.created_by {
+        underwrap_protocol::entities::EntityCreator::ClientInstance { id } => {
+            assert_eq!(id, &instance_id);
+        }
+        other => panic!("expected ClientInstance creator, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn admin_resource_delete_refuses_when_secrets_still_present() {
+    // Admin creates a resource, writes a secret under it (which the
+    // harness helper also seeds a grant for), attempts to delete:
+    // backend responds with structured blockers. After both the
+    // secret and the grant are cleared, delete succeeds.
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start_service_mode(wrappers, "local", "underwrap-local")
+        .await
+        .unwrap();
+
+    daemon.create_resource("test", "github/token").await.unwrap();
+    daemon
+        .store_secret("test", "gh-authorized", "github/token", "ghp_value")
+        .await
+        .unwrap();
+
+    let blocked = daemon.delete_resource("test", "github/token").await.unwrap();
+    assert!(!blocked.ok, "delete should be refused while dependents exist");
+    let blockers = blocked.blocked_by.expect("blockers present");
+    assert!(blockers.secret_count >= 1, "secret blocker reported");
+    assert!(blockers.grant_count >= 1, "grant blocker reported");
+
+    // Clear the seeded grant.
+    daemon
+        .put_policy(
+            "test",
+            &underwrap_protocol::policy::PolicyDocument::default(),
+        )
+        .await
+        .unwrap();
+
+    // Remove the secret. The harness writes secrets under
+    // `<resource>/env/TEST_TOKEN` (see `env_secret_id`).
+    let resp = daemon
+        .admin_request(reqwest::Method::POST, "/v1/admin/secret/delete")
+        .json(&underwrap_protocol::service::AdminSecretDeleteRequest {
+            store: "test".into(),
+            secret_id: "github/token/env/TEST_TOKEN".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "secret delete must succeed: {}",
+        resp.text().await.unwrap_or_default(),
+    );
+
+    let ok = daemon.delete_resource("test", "github/token").await.unwrap();
+    assert!(ok.ok, "delete should succeed after blockers cleared");
 
     daemon.stop().await.unwrap();
 }

@@ -8,6 +8,12 @@ import {
   postBootstrap,
   postLogin,
   postLogout,
+  postPairCreate,
+  postPairDelete,
+  postPairsList,
+  postResourceCreate,
+  postResourceDelete,
+  postResourcesList,
 } from "./client";
 
 function mockResponse(
@@ -157,5 +163,75 @@ describe("auth endpoint helpers", () => {
       ["/v1/admin/auth/logout", "POST"],
       ["/v1/admin/auth/bootstrap", "POST"],
     ]);
+  });
+});
+
+describe("resources and pairs admin helpers", () => {
+  it("each helper hits the documented POST route with the request body", async () => {
+    const calls: Array<{ path: string; method: string; body: unknown }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const body = init?.body
+          ? JSON.parse(init.body as string)
+          : undefined;
+        calls.push({
+          path: String(input),
+          method: init?.method ?? "GET",
+          body,
+        });
+        // All responses follow the same shape: stub with the empty-list /
+        // ok shapes; tests below only verify request wiring, not response
+        // contents.
+        if (String(input).endsWith("/resources/list")) {
+          return mockResponse(200, { resources: [] });
+        }
+        if (String(input).endsWith("/pairs/list")) {
+          return mockResponse(200, { pairs: [] });
+        }
+        if (String(input).endsWith("/resources/create")) {
+          return mockResponse(200, {
+            resource: {
+              name: "r",
+              created_by: { kind: "operator", id: "op", username: "a" },
+              created_at: 1,
+            },
+          });
+        }
+        if (String(input).endsWith("/pairs/create")) {
+          return mockResponse(200, {
+            pair: {
+              wrapper: "gh",
+              resource: "r",
+              created_by: { kind: "operator", id: "op", username: "a" },
+              created_at: 1,
+            },
+          });
+        }
+        return mockResponse(200, { ok: true });
+      },
+    );
+
+    await postResourcesList({ store: "work" });
+    await postResourceCreate({ store: "work", name: "github/token" });
+    await postResourceDelete({ store: "work", name: "github/token" });
+    await postPairsList({ store: "work" });
+    await postPairCreate({ store: "work", wrapper: "gh", resource: "r" });
+    await postPairDelete({ store: "work", wrapper: "gh", resource: "r" });
+
+    expect(calls.map((c) => [c.path, c.method])).toEqual([
+      ["/v1/admin/resources/list", "POST"],
+      ["/v1/admin/resources/create", "POST"],
+      ["/v1/admin/resources/delete", "POST"],
+      ["/v1/admin/pairs/list", "POST"],
+      ["/v1/admin/pairs/create", "POST"],
+      ["/v1/admin/pairs/delete", "POST"],
+    ]);
+    expect(calls[0]!.body).toEqual({ store: "work" });
+    expect(calls[1]!.body).toEqual({ store: "work", name: "github/token" });
+    expect(calls[4]!.body).toEqual({
+      store: "work",
+      wrapper: "gh",
+      resource: "r",
+    });
   });
 });

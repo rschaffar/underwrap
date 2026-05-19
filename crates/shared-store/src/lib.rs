@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use underwrap_protocol::config::{BackendServiceConfig, StorageConfig};
 use underwrap_protocol::message::SecretBytes;
-use underwrap_protocol::service::CatalogEntry;
+use underwrap_protocol::service::{ServiceWrapperRegisterRequest, ServiceWrapperRegisterResponse};
 
 /// The storage backend trait.
 ///
@@ -68,9 +68,18 @@ pub trait StorageBackend: Send + Sync {
         Ok(out)
     }
 
-    /// Publish the frontend's wrapper/resource catalog to the backend.
-    fn register_catalog(&self, _entries: &[CatalogEntry]) -> Result<()> {
-        Ok(())
+    /// Register the daemon's `(wrapper, resource)` pairs with the
+    /// backend. The backend gates auto-creation on the calling client
+    /// instance's `auto_create_wrapper_assets` flag and returns either
+    /// the list of newly-created entities or a structured refusal.
+    ///
+    /// The default implementation is a no-op: only the HTTPS backend
+    /// has anything to send.
+    fn register_wrapper_assets(
+        &self,
+        _request: &ServiceWrapperRegisterRequest,
+    ) -> Result<ServiceWrapperRegisterResponse> {
+        Ok(ServiceWrapperRegisterResponse::default())
     }
 
     /// Return the runtime client instance id the backend authenticates

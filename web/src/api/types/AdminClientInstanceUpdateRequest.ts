@@ -7,4 +7,9 @@ export type AdminClientInstanceUpdateRequest = { display_name?: string, current_
  * parses it, validates it as a fresh client cert, replaces
  * `current_credential`, and updates the stored fingerprint.
  */
-cert_pem?: string, };
+cert_pem?: string, 
+/**
+ * New value for `auto_create_wrapper_assets`. Omit to leave
+ * unchanged.
+ */
+auto_create_wrapper_assets?: boolean, };

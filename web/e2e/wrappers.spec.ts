@@ -1,16 +1,15 @@
 /**
- * Matrix page e2e (ticket 250).
+ * Wrappers page e2e (ticket 392).
  *
- * Exercises the agent-grant model end-to-end from the SPA: cell-
- * editor flows for each of the four modes, removing a grant, and a
- * refresh that preserves the URL `?store=` selection. Per-resource
- * wrapper-write toggles live on the Secrets page, not here.
+ * Exercises the wrapper/resource-pair + agent-grant model end-to-end
+ * from the SPA: pair creation through the dialog, cell-editor flows
+ * for each of the four grant modes, removing a grant, and a refresh
+ * that preserves the URL `?store=` selection.
  */
 import { test, expect, loginViaUi } from "./fixtures";
 
-/** Fetch the live `X-CSRF-Token` cookie from the page so the admin
- *  API requests we drive directly carry the same double-submit token
- *  the SPA would. */
+/** Fetch the live `X-CSRF-Token` cookie so admin API requests we drive
+ *  directly carry the same double-submit token the SPA would. */
 async function csrfFromPage(page: import("@playwright/test").Page): Promise<string> {
   const cookies = await page.context().cookies();
   const csrf = cookies.find((c) => c.name === "__Host-uw-csrf");
@@ -18,18 +17,49 @@ async function csrfFromPage(page: import("@playwright/test").Page): Promise<stri
   return csrf.value;
 }
 
-test("matrix page loads and renders empty for an empty catalog", async ({
+async function seedPair(
+  page: import("@playwright/test").Page,
+  baseUrl: string,
+  store: string,
+  wrapper: string,
+  resource: string,
+): Promise<void> {
+  const csrf = await csrfFromPage(page);
+  // The admin pair-create requires the resource to exist first.
+  const r = await page.request.post(
+    `${baseUrl}/v1/admin/resources/create`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf,
+        Origin: baseUrl,
+      },
+      data: { store, name: resource },
+    },
+  );
+  expect([200, 409], `seed resource: ${await r.text()}`).toContain(r.status());
+  const p = await page.request.post(`${baseUrl}/v1/admin/pairs/create`, {
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrf,
+      Origin: baseUrl,
+    },
+    data: { store, wrapper, resource },
+  });
+  expect([200, 409], `seed pair: ${await p.text()}`).toContain(p.status());
+}
+
+test("wrappers page loads and shows the empty-pairs message on a fresh store", async ({
   page,
   backendWithAdmin,
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
-  await page.goto(`${backendWithAdmin.baseUrl}/matrix`);
+  await page.goto(`${backendWithAdmin.baseUrl}/wrappers`);
 
-  await expect(page.getByRole("heading", { name: /^matrix$/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^wrappers$/i })).toBeVisible();
 
-  // Empty fixture: no agents register, so the catalog is empty.
   await expect(
-    page.getByText(/matrix is empty for this store/i),
+    page.getByText(/no wrapper\/resource pairs are registered/i),
   ).toBeVisible();
 });
 
@@ -39,10 +69,15 @@ test("cell editor cycles a grant through all four modes and then removes it", as
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
 
-  // Seed one grant directly via the admin API so the matrix has
-  // something to render. The grant's tuple
-  // (client_instance, wrapper, resource) = (dev-laptop, gh-authorized,
-  // github/token) is the cell we'll cycle in the UI.
+  // Seed a pair record so the table has a row to drive grants against.
+  await seedPair(
+    page,
+    backendWithAdmin.baseUrl,
+    "default",
+    "gh-authorized",
+    "github/token",
+  );
+  // Seed an initial grant so the cell starts non-empty.
   const csrf = await csrfFromPage(page);
   const seed = await page.request.post(
     `${backendWithAdmin.baseUrl}/v1/admin/grants/upsert`,
@@ -66,24 +101,18 @@ test("cell editor cycles a grant through all four modes and then removes it", as
   );
   expect(seed.status(), `seed: ${await seed.text()}`).toBe(200);
 
-  await page.goto(`${backendWithAdmin.baseUrl}/matrix?store=default`);
+  await page.goto(`${backendWithAdmin.baseUrl}/wrappers?store=default`);
 
   const cell = page.getByTestId(
-    "matrix-cell-gh-authorized-github/token-dev-laptop",
+    "wrappers-cell-gh-authorized-github/token-dev-laptop",
   );
   await expect(cell).toBeVisible();
   await expect(cell.getByTestId("mode-locked")).toBeVisible();
 
-  // Cycle the cell through every mode in turn.
   async function setMode(mode: string) {
     await cell.click();
     const dlg = page.getByRole("dialog");
     await expect(dlg).toBeVisible();
-    const radios = dlg.getByTestId("mode-radio-group");
-    // The radio inputs are sr-only; clicking the label is the
-    // intended gesture, but Playwright's strict mode wants a
-    // single result. Click the input itself with `force: true`
-    // to bypass the visibility check.
     await page
       .getByTestId(`mode-radio-${mode}`)
       .click({ force: true });
@@ -108,17 +137,32 @@ test("cell editor cycles a grant through all four modes and then removes it", as
   await setMode("locked");
   await expect(cell.getByTestId("mode-locked")).toBeVisible();
 
-  // Remove the grant. With no catalog entries seeded by an agent
-  // and no other grants on this principal, the row+column collapse
-  // and the matrix falls back to the empty-state copy.
+  // Remove the grant. The pair row remains visible because the pair
+  // record is independent of any grants on it.
   await cell.click();
   const dlg = page.getByRole("dialog");
   await dlg.getByTestId("grant-remove").click();
   await expect(dlg).toBeHidden();
-  await expect(cell).toBeHidden();
-  await expect(
-    page.getByText(/matrix is empty for this store/i),
-  ).toBeVisible();
+});
+
+test("admin can create a wrapper/resource pair through the dialog", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  await page.goto(`${backendWithAdmin.baseUrl}/wrappers?store=default`);
+
+  await page.getByTestId("wrappers-create-pair").click();
+  const dlg = page.getByRole("dialog", { name: /create wrapper\/resource pair/i });
+  await expect(dlg).toBeVisible();
+  await dlg.getByLabel(/wrapper name/i).fill("gh-authorized");
+  await dlg.getByTestId("pair-new-resource").fill("github/token");
+  await dlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(dlg).toBeHidden();
+
+  // The pair row is now visible in the table.
+  await expect(page.getByRole("cell", { name: "gh-authorized" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "github/token" })).toBeVisible();
 });
 
 test("raw policy viewer surfaces the live PolicyDocument and writable-grant count", async ({
@@ -126,23 +170,23 @@ test("raw policy viewer surfaces the live PolicyDocument and writable-grant coun
   backendWithAdmin,
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
-  await page.goto(`${backendWithAdmin.baseUrl}/matrix`);
+  await page.goto(`${backendWithAdmin.baseUrl}/wrappers`);
 
-  // Open the viewer. The button is exposed on the Matrix header.
   await page.getByRole("button", { name: /view raw policy/i }).click();
   const dlg = page.getByRole("dialog", { name: /raw policy: default/i });
   await expect(dlg).toBeVisible();
 
-  // Initial state: no grants persisted, so 0 of 0 writable.
   await expect(dlg.getByTestId("writable-grants-badge")).toHaveText(/0 of 0/i);
   const json = dlg.getByTestId("policy-json");
   await expect(json).toContainText('"grants"');
 
-  // Close, upsert a writable grant via the admin API, reopen — the
-  // badge re-fetches because the dialog opens with `staleTime: 0`.
   await dlg.getByText("Close", { exact: true }).click();
   await expect(dlg).toBeHidden();
+
   const csrf = await csrfFromPage(page);
+  // Pair must exist before a grant can render on the wrappers page,
+  // but the raw policy viewer reads policy.grants directly so the
+  // upsert below is sufficient to bump the writable count.
   const setResp = await page.request.post(
     `${backendWithAdmin.baseUrl}/v1/admin/grants/upsert`,
     {

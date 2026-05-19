@@ -7,6 +7,7 @@ import {
   KeyRound,
   Plus,
   FileText,
+  Trash2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -23,22 +24,30 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   type AdminAgentGrantsListResponse,
-  type AdminCatalogGetResponse,
   type AdminClientInstancesListResponse,
+  type AdminPairsListResponse,
+  type AdminResourcesListResponse,
   type AdminStoresListResponse,
   type AgentGrant,
+  type EntityCreator,
   fetchClientInstances,
   fetchStores,
-  postCatalogGet,
   postGrantDelete,
   postGrantUpsert,
   postGrantsList,
+  postPairCreate,
+  postPairDelete,
+  postPairsList,
+  postResourceCreate,
+  postResourcesList,
+  type ResourceRecord,
   type WhoamiResponse,
   type WrapperApprovalMode,
+  type WrapperResourcePairRecord,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
-interface MatrixPageProps {
+interface WrappersPageProps {
   principal: WhoamiResponse | null;
 }
 
@@ -54,7 +63,7 @@ export function modeKind(mode: WrapperApprovalMode): ModeKind {
   return mode.kind as ModeKind;
 }
 
-/** A `(wrapper, resource)` pair — one row in the matrix. */
+/** A `(wrapper, resource)` pair — one row in the table. */
 export interface WrapperResource {
   wrapper: string;
   resource: string;
@@ -64,70 +73,66 @@ export function wrapperResourceKey(wr: WrapperResource): string {
   return `${wr.wrapper}|${wr.resource}`;
 }
 
-/** Collect every distinct runtime client instance mentioned in the catalog
- *  + grants list, sorted for deterministic table rendering. */
-export function deriveClientInstances(
-  catalog: AdminCatalogGetResponse | undefined,
-  grants: AgentGrant[],
-): string[] {
-  const set = new Set<string>();
-  for (const e of catalog?.entries ?? []) {
-    if (e.client_instance) set.add(e.client_instance);
+/** Format a u64 epoch (from ts-rs `bigint`) as a short local date. */
+function formatEpoch(epoch: bigint | number | undefined | null): string {
+  if (epoch === undefined || epoch === null) return "—";
+  const n = typeof epoch === "bigint" ? Number(epoch) : epoch;
+  if (!n) return "—";
+  return new Date(n * 1000).toLocaleDateString();
+}
+
+/** Render an `EntityCreator` as a short human-readable label. */
+function describeCreator(creator: EntityCreator): string {
+  switch (creator.kind) {
+    case "operator":
+      return creator.username;
+    case "client-instance":
+      return `client ${creator.id}`;
   }
+}
+
+/** Collect every distinct runtime client instance mentioned in grants. */
+export function deriveClientInstances(grants: AgentGrant[]): string[] {
+  const set = new Set<string>();
   for (const g of grants) set.add(g.client_instance);
   return [...set].sort();
 }
 
-/** Collect every distinct `(wrapper, resource)` pair mentioned in the
- *  catalog + grants list, sorted. */
-export function deriveWrapperResources(
-  catalog: AdminCatalogGetResponse | undefined,
-  grants: AgentGrant[],
-): WrapperResource[] {
-  const map = new Map<string, WrapperResource>();
-  for (const e of catalog?.entries ?? []) {
-    const wr = { wrapper: e.wrapper, resource: e.resource };
-    map.set(wrapperResourceKey(wr), wr);
-  }
-  for (const g of grants) {
-    const wr = { wrapper: g.wrapper, resource: g.resource };
-    map.set(wrapperResourceKey(wr), wr);
-  }
-  return [...map.values()].sort((a, b) =>
+/** Sort pair records into the (wrapper, resource) order the table renders. */
+export function sortPairs(
+  pairs: WrapperResourcePairRecord[],
+): WrapperResourcePairRecord[] {
+  return [...pairs].sort((a, b) =>
     a.wrapper === b.wrapper
       ? a.resource.localeCompare(b.resource)
       : a.wrapper.localeCompare(b.wrapper),
   );
 }
 
-export function MatrixPage({ principal }: MatrixPageProps) {
+export function WrappersPage({ principal }: WrappersPageProps) {
   useEffect(() => {
-    document.title = "underwrap — matrix";
+    document.title = "underwrap — wrappers";
   }, []);
 
   const isAdmin = !!(principal?.authenticated && principal.role === "admin");
+  const qc = useQueryClient();
 
-  // Stores → pick first granted by default. Admin sees everything.
   const stores = useQuery<AdminStoresListResponse>({
     queryKey: ["admin", "stores"],
     queryFn: fetchStores,
   });
-  // URL-persisted store selector: `?store=name`.
   const initialStore = (() => {
     if (typeof window === "undefined") return null;
     return new URLSearchParams(window.location.search).get("store");
   })();
   const [storeName, setStoreName] = useState<string | null>(initialStore);
 
-  // When the stores list lands, default the selector to its first
-  // entry if we don't already have a URL hint.
   useEffect(() => {
     if (storeName) return;
     const first = stores.data?.items[0]?.id;
     if (first) setStoreName(first);
   }, [storeName, stores.data]);
 
-  // Keep the URL in sync so a refresh preserves the selection.
   useEffect(() => {
     if (!storeName) return;
     const url = new URL(window.location.href);
@@ -140,12 +145,17 @@ export function MatrixPage({ principal }: MatrixPageProps) {
     queryFn: () => postGrantsList({ store: storeName! }),
     enabled: !!storeName,
   });
-  const catalog = useQuery<AdminCatalogGetResponse>({
-    queryKey: ["admin", "catalog", storeName],
-    queryFn: () => postCatalogGet({ store: storeName! }),
+  const pairs = useQuery<AdminPairsListResponse>({
+    queryKey: ["admin", "pairs", storeName],
+    queryFn: () => postPairsList({ store: storeName! }),
     enabled: !!storeName,
   });
-  // The catalog and grants carry the runtime client *id*; the
+  const resources = useQuery<AdminResourcesListResponse>({
+    queryKey: ["admin", "resources", storeName],
+    queryFn: () => postResourcesList({ store: storeName! }),
+    enabled: !!storeName,
+  });
+  // The pairs and grants reference client instances by id; the
   // operator-facing column header shows the editable display name
   // resolved from this list.
   const clientInstancesList = useQuery<AdminClientInstancesListResponse>({
@@ -159,13 +169,13 @@ export function MatrixPage({ principal }: MatrixPageProps) {
     }
     return map;
   }, [clientInstancesList.data]);
-  const wrapperResources = useMemo(
-    () => deriveWrapperResources(catalog.data, grants.data?.grants ?? []),
-    [catalog.data, grants.data],
+  const pairRecords = useMemo(
+    () => sortPairs(pairs.data?.pairs ?? []),
+    [pairs.data],
   );
   const clientInstances = useMemo(
-    () => deriveClientInstances(catalog.data, grants.data?.grants ?? []),
-    [catalog.data, grants.data],
+    () => deriveClientInstances(grants.data?.grants ?? []),
+    [grants.data],
   );
 
   /** Map `(client_instance, wrapper, resource)` → grant. */
@@ -184,11 +194,20 @@ export function MatrixPage({ principal }: MatrixPageProps) {
     grant: AgentGrant | null;
   } | null>(null);
   const [rawOpen, setRawOpen] = useState(false);
+  const [creatingPair, setCreatingPair] = useState(false);
+  const [deletingPair, setDeletingPair] =
+    useState<WrapperResourcePairRecord | null>(null);
+
+  function invalidatePairsAndGrants() {
+    if (!storeName) return;
+    qc.invalidateQueries({ queryKey: ["admin", "pairs", storeName] });
+    qc.invalidateQueries({ queryKey: ["admin", "grants", storeName] });
+  }
 
   if (!storeName) {
     return (
       <div className="space-y-4">
-        <h2 className="text-xl font-semibold text-(--color-fg)">Matrix</h2>
+        <h2 className="text-xl font-semibold text-(--color-fg)">Wrappers</h2>
         {stores.isLoading ? (
           <p className="text-sm text-(--color-muted)">Loading…</p>
         ) : (
@@ -208,16 +227,25 @@ export function MatrixPage({ principal }: MatrixPageProps) {
     <div className="space-y-6">
       <header className="flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-(--color-fg)">Matrix</h2>
+          <h2 className="text-xl font-semibold text-(--color-fg)">Wrappers</h2>
           <p className="mt-1 text-sm text-(--color-muted)">
-            Agent grants for each{" "}
-            <code className="rounded bg-(--color-surface-1) px-1 py-0.5 text-xs">
-              (client-instance, wrapper, resource)
-            </code>{" "}
-            tuple. Click a cell to set or change the mode.
+            Wrapper/resource pairs registered with the backend, and the
+            agent grant each runtime client instance holds against them.
+            Click a cell to set or change the grant mode.
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {isAdmin ? (
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => setCreatingPair(true)}
+              data-testid="wrappers-create-pair"
+            >
+              <Plus className="mr-1.5 h-4 w-4" aria-hidden />
+              Create pair
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="ghost"
@@ -230,7 +258,7 @@ export function MatrixPage({ principal }: MatrixPageProps) {
           <label className="text-sm text-(--color-muted)">
             Store:{" "}
             <select
-              data-testid="matrix-store-select"
+              data-testid="wrappers-store-select"
               value={storeName}
               onChange={(e) => setStoreName(e.target.value)}
               className="ml-1 rounded-md border border-(--color-line) bg-(--color-surface-0) px-2 py-1 text-sm text-(--color-fg)"
@@ -245,20 +273,22 @@ export function MatrixPage({ principal }: MatrixPageProps) {
         </div>
       </header>
 
-      {grants.isLoading || catalog.isLoading ? (
-        <p className="text-sm text-(--color-muted)">Loading matrix…</p>
-      ) : grants.error || catalog.error ? (
+      {grants.isLoading || pairs.isLoading ? (
+        <p className="text-sm text-(--color-muted)">Loading wrappers…</p>
+      ) : grants.error || pairs.error ? (
         <p role="alert" className="text-sm text-rose-300">
-          {describeApiError(grants.error ?? catalog.error)}
+          {describeApiError(grants.error ?? pairs.error)}
         </p>
-      ) : wrapperResources.length === 0 || clientInstances.length === 0 ? (
+      ) : pairRecords.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
-          The matrix is empty for this store. Once an agent registers with the
-          backend, its row appears here.
+          No wrapper/resource pairs are registered for this store yet.
+          {isAdmin
+            ? " Use Create pair to add one, or enable auto-create on a client instance so its wrappers register on startup."
+            : " Ask an admin to add one, or enable auto-create for a client instance."}
         </p>
       ) : (
-        <MatrixTable
-          wrapperResources={wrapperResources}
+        <PairsTable
+          pairs={pairRecords}
           clientInstances={clientInstances}
           displayNameById={displayNameById}
           grantIndex={grantIndex}
@@ -271,6 +301,7 @@ export function MatrixPage({ principal }: MatrixPageProps) {
               grant,
             })
           }
+          onDeletePair={(pair) => setDeletingPair(pair)}
         />
       )}
 
@@ -289,6 +320,33 @@ export function MatrixPage({ principal }: MatrixPageProps) {
         />
       ) : null}
 
+      {creatingPair ? (
+        <CreatePairDialog
+          storeName={storeName}
+          existingResources={resources.data?.resources ?? []}
+          existingPairs={pairRecords}
+          onClose={() => setCreatingPair(false)}
+          onCreated={() => {
+            invalidatePairsAndGrants();
+            qc.invalidateQueries({ queryKey: ["admin", "resources", storeName] });
+            setCreatingPair(false);
+          }}
+        />
+      ) : null}
+
+      {deletingPair ? (
+        <DeletePairDialog
+          storeName={storeName}
+          pair={deletingPair}
+          displayNameById={displayNameById}
+          onClose={() => setDeletingPair(null)}
+          onDeleted={() => {
+            invalidatePairsAndGrants();
+            setDeletingPair(null);
+          }}
+        />
+      ) : null}
+
       <PolicyViewerDialog
         storeName={storeName}
         open={rawOpen}
@@ -300,15 +358,16 @@ export function MatrixPage({ principal }: MatrixPageProps) {
 
 // ---------- Subcomponents ----------
 
-function MatrixTable({
-  wrapperResources,
+function PairsTable({
+  pairs,
   clientInstances,
   displayNameById,
   grantIndex,
   isAdmin,
   onCellClick,
+  onDeletePair,
 }: {
-  wrapperResources: WrapperResource[];
+  pairs: WrapperResourcePairRecord[];
   clientInstances: string[];
   displayNameById: Map<string, string>;
   grantIndex: Map<string, AgentGrant>;
@@ -318,6 +377,7 @@ function MatrixTable({
     clientInstance: string,
     grant: AgentGrant | null,
   ) => void;
+  onDeletePair: (pair: WrapperResourcePairRecord) => void;
 }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-(--color-line)">
@@ -330,6 +390,9 @@ function MatrixTable({
             <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
               Resource
             </th>
+            <th className="bg-(--color-surface-0)/60 px-4 py-2 text-(--color-muted)">
+              Provenance
+            </th>
             {clientInstances.map((c) => {
               const displayName = displayNameById.get(c) ?? c;
               return (
@@ -340,40 +403,71 @@ function MatrixTable({
                 </th>
               );
             })}
+            {isAdmin ? <th className="px-3 py-2" /> : null}
           </tr>
         </thead>
         <tbody>
-          {wrapperResources.map((wr) => (
-            <tr
-              key={wrapperResourceKey(wr)}
-              className="border-t border-(--color-line) align-middle"
-            >
-              <th
-                scope="row"
-                className="sticky left-0 z-10 bg-(--color-surface-0)/40 px-4 py-3 text-left font-medium text-(--color-fg)"
+          {pairs.map((pair) => {
+            const wr: WrapperResource = {
+              wrapper: pair.wrapper,
+              resource: pair.resource,
+            };
+            return (
+              <tr
+                key={wrapperResourceKey(wr)}
+                className="border-t border-(--color-line) align-middle"
               >
-                {wr.wrapper}
-              </th>
-              <td className="px-4 py-3 text-(--color-muted)">{wr.resource}</td>
-              {clientInstances.map((c) => {
-                const key = `${c}|${wr.wrapper}|${wr.resource}`;
-                const grant = grantIndex.get(key) ?? null;
-                return (
-                  <td key={key} className="px-3 py-3">
-                    <button
+                <th
+                  scope="row"
+                  className="sticky left-0 z-10 bg-(--color-surface-0)/40 px-4 py-3 text-left font-medium text-(--color-fg)"
+                >
+                  {pair.wrapper}
+                </th>
+                <td className="px-4 py-3 text-(--color-muted)">{pair.resource}</td>
+                <td
+                  className="px-4 py-3 text-xs text-(--color-muted)"
+                  title={`Created ${new Date(
+                    Number(pair.created_at) * 1000,
+                  ).toISOString()} by ${describeCreator(pair.created_by)}`}
+                >
+                  by {describeCreator(pair.created_by)}
+                  <br />
+                  on {formatEpoch(pair.created_at)}
+                </td>
+                {clientInstances.map((c) => {
+                  const key = `${c}|${pair.wrapper}|${pair.resource}`;
+                  const grant = grantIndex.get(key) ?? null;
+                  return (
+                    <td key={key} className="px-3 py-3">
+                      <button
+                        type="button"
+                        data-testid={`wrappers-cell-${pair.wrapper}-${pair.resource}-${c}`}
+                        onClick={() => onCellClick(wr, c, grant)}
+                        disabled={!isAdmin}
+                        className="min-h-11 min-w-[5rem] rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-1 text-xs hover:bg-(--color-surface-0) disabled:opacity-60"
+                      >
+                        <CellContent grant={grant} />
+                      </button>
+                    </td>
+                  );
+                })}
+                {isAdmin ? (
+                  <td className="px-3 py-3">
+                    <Button
                       type="button"
-                      data-testid={`matrix-cell-${wr.wrapper}-${wr.resource}-${c}`}
-                      onClick={() => onCellClick(wr, c, grant)}
-                      disabled={!isAdmin}
-                      className="min-h-11 min-w-[5rem] rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-1 text-xs hover:bg-(--color-surface-0) disabled:opacity-60"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Delete pair ${pair.wrapper} / ${pair.resource}`}
+                      data-testid={`wrappers-delete-pair-${pair.wrapper}-${pair.resource}`}
+                      onClick={() => onDeletePair(pair)}
                     >
-                      <CellContent grant={grant} />
-                    </button>
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    </Button>
                   </td>
-                );
-              })}
-            </tr>
-          ))}
+                ) : null}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -436,6 +530,280 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
   }
 }
 
+// ---------- Create pair ----------
+
+function CreatePairDialog({
+  storeName,
+  existingResources,
+  existingPairs,
+  onClose,
+  onCreated,
+}: {
+  storeName: string;
+  existingResources: ResourceRecord[];
+  existingPairs: WrapperResourcePairRecord[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [wrapper, setWrapper] = useState("");
+  const [resource, setResource] = useState<string>(
+    existingResources[0]?.name ?? "",
+  );
+  const [creatingNewResource, setCreatingNewResource] = useState(
+    existingResources.length === 0,
+  );
+  const [newResourceName, setNewResourceName] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const createResource = useMutation({
+    mutationFn: (name: string) => postResourceCreate({ store: storeName, name }),
+  });
+  const createPair = useMutation({
+    mutationFn: (vars: { wrapper: string; resource: string }) =>
+      postPairCreate({
+        store: storeName,
+        wrapper: vars.wrapper,
+        resource: vars.resource,
+      }),
+  });
+
+  async function onSave() {
+    setSubmitError(null);
+    const w = wrapper.trim();
+    if (!w) {
+      setSubmitError("Wrapper name is required.");
+      return;
+    }
+    let chosenResource = resource;
+    if (creatingNewResource) {
+      const r = newResourceName.trim();
+      if (!r) {
+        setSubmitError("Resource name is required.");
+        return;
+      }
+      try {
+        const created = await createResource.mutateAsync(r);
+        chosenResource = created.resource.name;
+      } catch (e) {
+        setSubmitError(describeApiError(e));
+        return;
+      }
+    }
+    if (!chosenResource) {
+      setSubmitError("Pick or create a resource.");
+      return;
+    }
+    if (
+      existingPairs.some(
+        (p) => p.wrapper === w && p.resource === chosenResource,
+      )
+    ) {
+      setSubmitError(`Pair (${w}, ${chosenResource}) already exists.`);
+      return;
+    }
+    try {
+      await createPair.mutateAsync({ wrapper: w, resource: chosenResource });
+      onCreated();
+    } catch (e) {
+      setSubmitError(describeApiError(e));
+    }
+  }
+
+  const pending = createResource.isPending || createPair.isPending;
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Create wrapper/resource pair</DialogTitle>
+          <DialogDescription>
+            A wrapper/resource pair is the unit grants reference. Each
+            registered pair becomes a row in the table.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="pair-wrapper">Wrapper name</Label>
+            <Input
+              id="pair-wrapper"
+              value={wrapper}
+              onChange={(e) => setWrapper(e.target.value)}
+              placeholder="e.g. gh-authorized"
+              autoFocus
+              autoComplete="off"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Resource</Label>
+            {existingResources.length > 0 ? (
+              <div className="flex items-center gap-2 text-sm">
+                <label className="inline-flex items-center gap-1.5">
+                  <input
+                    type="radio"
+                    name="resource-mode"
+                    checked={!creatingNewResource}
+                    onChange={() => setCreatingNewResource(false)}
+                  />
+                  Pick existing
+                </label>
+                <label className="inline-flex items-center gap-1.5">
+                  <input
+                    type="radio"
+                    name="resource-mode"
+                    checked={creatingNewResource}
+                    onChange={() => setCreatingNewResource(true)}
+                  />
+                  Create new
+                </label>
+              </div>
+            ) : null}
+            {creatingNewResource ? (
+              <Input
+                data-testid="pair-new-resource"
+                value={newResourceName}
+                onChange={(e) => setNewResourceName(e.target.value)}
+                placeholder="e.g. github/token"
+                autoComplete="off"
+              />
+            ) : (
+              <select
+                data-testid="pair-resource-select"
+                value={resource}
+                onChange={(e) => setResource(e.target.value)}
+                className="block w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-2 py-1.5 text-sm text-(--color-fg)"
+              >
+                {existingResources.map((r) => (
+                  <option key={r.name} value={r.name}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          {submitError ? (
+            <p
+              role="alert"
+              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+            >
+              {submitError}
+            </p>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => void onSave()} disabled={pending}>
+            {pending ? "Creating…" : "Create"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------- Delete pair ----------
+
+function DeletePairDialog({
+  storeName,
+  pair,
+  displayNameById,
+  onClose,
+  onDeleted,
+}: {
+  storeName: string;
+  pair: WrapperResourcePairRecord;
+  displayNameById: Map<string, string>;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const mut = useMutation({
+    mutationFn: () =>
+      postPairDelete({
+        store: storeName,
+        wrapper: pair.wrapper,
+        resource: pair.resource,
+      }),
+  });
+
+  async function onDelete() {
+    setSubmitError(null);
+    try {
+      const result = await mut.mutateAsync();
+      if (result.ok) {
+        onDeleted();
+      }
+      // result.ok === false means the backend refused; render the
+      // blockers inline (handled below from `mut.data`).
+    } catch (e) {
+      setSubmitError(describeApiError(e));
+    }
+  }
+
+  const blockers = mut.data?.blocked_by;
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            Delete pair: {pair.wrapper} / {pair.resource}
+          </DialogTitle>
+          <DialogDescription>
+            Removes the wrapper/resource pair record. Any grants that
+            reference this pair must be removed first.
+          </DialogDescription>
+        </DialogHeader>
+        {blockers ? (
+          <div
+            role="alert"
+            className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+          >
+            Cannot delete — {blockers.grant_count} grant
+            {blockers.grant_count === 1 ? "" : "s"} still reference this pair:
+            <ul className="mt-1 list-disc pl-5">
+              {blockers.sample_grants.map((g) => (
+                <li
+                  key={`${g.client_instance}|${g.wrapper}|${g.resource}`}
+                  className="font-mono"
+                >
+                  {displayNameById.get(g.client_instance) ?? g.client_instance}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-amber-200/80">
+              Clear those grants on the matrix above, then try again.
+            </p>
+          </div>
+        ) : null}
+        {submitError ? (
+          <p
+            role="alert"
+            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+          >
+            {submitError}
+          </p>
+        ) : null}
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={() => void onDelete()}
+            disabled={mut.isPending}
+            data-testid="wrappers-delete-pair-confirm"
+          >
+            {mut.isPending ? "Deleting…" : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ---------- Cell editor ----------
 
 function EditCellDialog({
@@ -468,8 +836,6 @@ function EditCellDialog({
       );
       return toDatetimeLocal(new Date(epoch * 1000));
     }
-    // Default deadline: now + 30 minutes, in the visitor's local
-    // timezone for the <input type="datetime-local">.
     return toDatetimeLocal(new Date(Date.now() + 30 * 60 * 1000));
   });
   const [approvalKey, setApprovalKey] = useState<string>(() => {
@@ -532,9 +898,6 @@ function EditCellDialog({
           setSubmitError("Pick a valid deadline.");
           return;
         }
-        // ts-rs types `until_epoch` as `bigint` (u64 in Rust), but
-        // JSON has no BigInt — over the wire it must be a plain
-        // number, which serde happily deserialises into u64.
         mode = {
           kind: "unlocked-until",
           until_epoch: Math.floor(until / 1000),

@@ -38,6 +38,13 @@ pub struct ClientInstanceRecord {
     pub last_seen_at: Option<u64>,
     /// Exactly one current credential for this logical instance.
     pub current_credential: CurrentCredentialRecord,
+    /// When set, this instance's wrappers may auto-create resource
+    /// and wrapper/resource-pair records on the runtime register
+    /// endpoint. Off by default; an admin must flip it on explicitly.
+    /// Pre-existing records on disk that predate this field default
+    /// to `false`.
+    #[serde(default)]
+    pub auto_create_wrapper_assets: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -268,6 +275,7 @@ mod tests {
             last_seen_at: Some(123),
             current_credential: current_credential_from_pem(sample_cert_pem(id), Some(100))
                 .unwrap(),
+            auto_create_wrapper_assets: false,
         }
     }
 

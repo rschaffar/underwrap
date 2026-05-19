@@ -2,4 +2,9 @@
 import type { AdminClientInstanceActionState } from "./AdminClientInstanceActionState";
 import type { AdminClientInstanceStatus } from "./AdminClientInstanceStatus";
 
-export type AdminClientInstanceDetailResponse = { id: string, display_name: string, current_store_id: string, current_store_name: string, status: AdminClientInstanceStatus, last_seen_at?: bigint, current_credential_fingerprint: string, current_credential_issued_at?: bigint, actions: AdminClientInstanceActionState, };
+export type AdminClientInstanceDetailResponse = { id: string, display_name: string, current_store_id: string, current_store_name: string, status: AdminClientInstanceStatus, last_seen_at?: bigint, current_credential_fingerprint: string, current_credential_issued_at?: bigint, 
+/**
+ * Whether this instance is allowed to auto-create resource and
+ * wrapper/resource-pair records on the runtime register endpoint.
+ */
+auto_create_wrapper_assets: boolean, actions: AdminClientInstanceActionState, };

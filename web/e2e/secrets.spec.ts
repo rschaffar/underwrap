@@ -35,7 +35,7 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
 
-  // Empty initial list — fresh store with no catalog entries yet.
+  // Empty initial list — fresh store with no resource records.
   await expect(
     page.getByText(/no resources are known to this store yet/i),
   ).toBeVisible();
@@ -63,8 +63,8 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   await createDlg
     .getByLabel("Secret ID")
     .fill("github/token/env/GH_TOKEN");
-  // Wrapper field is free-form (the catalog is empty on a fresh
-  // store, so the dialog falls back to a plain input).
+  // Wrapper field is free-form (no pair records are registered on a
+  // fresh store, so the dialog falls back to a plain input).
   await createDlg.getByLabel(/wrapper context/i).fill("gh-authorized");
   await createDlg.getByTestId("material-input").fill("ghp_secret_value_v1");
   await createDlg.getByRole("button", { name: /^create$/i }).click();
@@ -111,19 +111,17 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   );
   await page.getByText("Close", { exact: true }).click();
 
-  // Delete: type-to-confirm gates the destructive button.
+  // Delete: simple confirm/cancel dialog.
   await row.getByRole("button", { name: /^delete$/i }).click();
   const delDlg = page.getByRole("dialog", { name: /delete secret/i });
   const delBtn = delDlg.getByRole("button", { name: /^delete$/i });
-  await expect(delBtn).toBeDisabled();
-  await delDlg.getByLabel(/type .* to confirm/i).fill("github/token/env/GH_TOKEN");
   await expect(delBtn).toBeEnabled();
   await delBtn.click();
   await expect(delDlg).toBeHidden();
 
-  // The secret is gone. The resource block stays visible (the operator
-  // created it manually, so it sticks around for follow-up entries
-  // until the page is reloaded) but the env slot now reports empty.
+  // The secret is gone. The resource block stays visible (the
+  // resource is a backend record now and outlives its secrets) but
+  // the env slot reports empty.
   const resourceBlockAfter = page.getByTestId("resource-block-github/token");
   await expect(resourceBlockAfter).toBeVisible();
   await expect(resourceBlockAfter.getByTestId("slot-env")).toHaveText(
@@ -134,5 +132,56 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
 // The wrapper-writable per-slot toggle moved off the Secrets page when
 // `writable` became a per-grant field; the equivalent affordance now
 // lives on the Matrix cell editor and is covered by
-// `matrix.spec.ts` "raw policy viewer surfaces the live PolicyDocument
+// `wrappers.spec.ts` "raw policy viewer surfaces the live PolicyDocument
 // and writable-grant count".
+
+test("admin deletes a resource via the simple confirm dialog after refusal clears", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
+
+  // Seed a resource and a secret under it so the first delete attempt
+  // is refused with a structured blocker.
+  await page.getByRole("button", { name: /create resource/i }).click();
+  const resourceDlg = page.getByRole("dialog", { name: /create resource/i });
+  await resourceDlg.getByTestId("create-resource-input").fill("seeded/res");
+  await resourceDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(resourceDlg).toBeHidden();
+
+  const block = page.getByTestId("resource-block-seeded/res");
+  await expect(block).toBeVisible();
+  await block.locator("summary").click();
+  await block.getByTestId("slot-env").getByTestId("slot-env-add").click();
+  const createDlg = page.getByRole("dialog", { name: /create secret/i });
+  await createDlg.getByLabel("Secret ID").fill("seeded/res/env/EXAMPLE");
+  await createDlg.getByLabel(/wrapper context/i).fill("seed-wrapper");
+  await createDlg.getByTestId("material-input").fill("v1");
+  await createDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(createDlg).toBeHidden();
+
+  // First delete attempt: backend refuses, blockers render inline.
+  await block.getByTestId("resource-delete-seeded/res").click();
+  const delDlg = page.getByRole("dialog", { name: /delete resource: seeded\/res/i });
+  await delDlg.getByTestId("resource-delete-confirm").click();
+  await expect(delDlg.getByTestId("resource-delete-blockers")).toBeVisible();
+  await delDlg.getByRole("button", { name: /^cancel$/i }).click();
+  await expect(delDlg).toBeHidden();
+
+  // Clear the secret, then re-attempt: delete succeeds, block vanishes.
+  const row = block
+    .getByTestId("slot-env")
+    .getByText("EXAMPLE")
+    .locator("xpath=ancestor::li");
+  await row.getByRole("button", { name: /^delete$/i }).click();
+  const secretDelDlg = page.getByRole("dialog", { name: /delete secret/i });
+  await secretDelDlg.getByRole("button", { name: /^delete$/i }).click();
+  await expect(secretDelDlg).toBeHidden();
+
+  await block.getByTestId("resource-delete-seeded/res").click();
+  const delDlg2 = page.getByRole("dialog", { name: /delete resource: seeded\/res/i });
+  await delDlg2.getByTestId("resource-delete-confirm").click();
+  await expect(delDlg2).toBeHidden();
+  await expect(page.getByTestId("resource-block-seeded/res")).toHaveCount(0);
+});

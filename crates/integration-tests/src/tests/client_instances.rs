@@ -64,6 +64,7 @@ async fn disabling_runtime_client_instance_blocks_fresh_runtime_connections() {
                 current_store_id: None,
                 status: Some(AdminClientInstanceStatus::Disabled),
                 cert_pem: None,
+                auto_create_wrapper_assets: None,
             },
         )
         .await
@@ -113,6 +114,7 @@ async fn disabling_runtime_client_instance_blocks_next_wrapper_read_without_rest
                 current_store_id: None,
                 status: Some(AdminClientInstanceStatus::Disabled),
                 cert_pem: None,
+                auto_create_wrapper_assets: None,
             },
         )
         .await
@@ -205,6 +207,7 @@ async fn remapping_runtime_client_instance_changes_store_on_next_wrapper_read_wi
                 current_store_id: Some(other_store_id),
                 status: None,
                 cert_pem: None,
+                auto_create_wrapper_assets: None,
             },
         )
         .await

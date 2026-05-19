@@ -127,8 +127,6 @@ import type {
   AdminAgentGrantUpsertRequest,
   AdminAgentGrantsListRequest,
   AdminAgentGrantsListResponse,
-  AdminCatalogGetRequest,
-  AdminCatalogGetResponse,
   AdminClientInstanceActionState,
   AdminClientInstanceCreateRequest,
   AdminClientInstanceDetailResponse,
@@ -136,11 +134,26 @@ import type {
   AdminClientInstancesListResponse,
   AdminClientInstanceStatus,
   AdminClientInstanceUpdateRequest,
+  AdminGrantKey,
   AdminOkResponse,
   AdminOkUserResponse,
+  AdminPairCreateRequest,
+  AdminPairCreateResponse,
+  AdminPairDeleteBlockers,
+  AdminPairDeleteRequest,
+  AdminPairDeleteResponse,
+  AdminPairsListRequest,
+  AdminPairsListResponse,
   AdminPasswordChangeRequest,
   AdminPolicyGetRequest,
   AdminPolicyGetResponse,
+  AdminResourceCreateRequest,
+  AdminResourceCreateResponse,
+  AdminResourceDeleteBlockers,
+  AdminResourceDeleteRequest,
+  AdminResourceDeleteResponse,
+  AdminResourcesListRequest,
+  AdminResourcesListResponse,
   AdminSecretDeleteRequest,
   AdminSecretDeleteResponse,
   AdminSecretListRequest,
@@ -165,11 +178,14 @@ import type {
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
-  CatalogEntry,
+  EntityCreator,
   LoginRequest,
   LoginResponse,
+  ResourceRecord,
+  ServiceWrapperResourcePair,
   WhoamiResponse,
   WrapperApprovalMode,
+  WrapperResourcePairRecord,
 } from "@/api/types";
 
 export type {
@@ -177,8 +193,6 @@ export type {
   AdminAgentGrantUpsertRequest,
   AdminAgentGrantsListRequest,
   AdminAgentGrantsListResponse,
-  AdminCatalogGetRequest,
-  AdminCatalogGetResponse,
   AdminClientInstanceActionState,
   AdminClientInstanceCreateRequest,
   AdminClientInstanceDetailResponse,
@@ -186,11 +200,26 @@ export type {
   AdminClientInstancesListResponse,
   AdminClientInstanceStatus,
   AdminClientInstanceUpdateRequest,
+  AdminGrantKey,
   AdminOkResponse,
   AdminOkUserResponse,
+  AdminPairCreateRequest,
+  AdminPairCreateResponse,
+  AdminPairDeleteBlockers,
+  AdminPairDeleteRequest,
+  AdminPairDeleteResponse,
+  AdminPairsListRequest,
+  AdminPairsListResponse,
   AdminPasswordChangeRequest,
   AdminPolicyGetRequest,
   AdminPolicyGetResponse,
+  AdminResourceCreateRequest,
+  AdminResourceCreateResponse,
+  AdminResourceDeleteBlockers,
+  AdminResourceDeleteRequest,
+  AdminResourceDeleteResponse,
+  AdminResourcesListRequest,
+  AdminResourcesListResponse,
   AdminSecretDeleteRequest,
   AdminSecretDeleteResponse,
   AdminSecretListRequest,
@@ -215,11 +244,14 @@ export type {
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
-  CatalogEntry,
+  EntityCreator,
   LoginRequest,
   LoginResponse,
+  ResourceRecord,
+  ServiceWrapperResourcePair,
   WhoamiResponse,
   WrapperApprovalMode,
+  WrapperResourcePairRecord,
 };
 
 export function fetchWhoami(): Promise<WhoamiResponse> {
@@ -472,12 +504,57 @@ export function postGrantDelete(
   });
 }
 
-// ----- Catalog (admin) -----
+// ----- Resources and wrapper/resource pairs (ticket 384) -----
 
-export function postCatalogGet(
-  body: AdminCatalogGetRequest,
-): Promise<AdminCatalogGetResponse> {
-  return apiJson<AdminCatalogGetResponse>("/v1/admin/catalog/get", {
+export function postResourcesList(
+  body: AdminResourcesListRequest,
+): Promise<AdminResourcesListResponse> {
+  return apiJson<AdminResourcesListResponse>("/v1/admin/resources/list", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postResourceCreate(
+  body: AdminResourceCreateRequest,
+): Promise<AdminResourceCreateResponse> {
+  return apiJson<AdminResourceCreateResponse>("/v1/admin/resources/create", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postResourceDelete(
+  body: AdminResourceDeleteRequest,
+): Promise<AdminResourceDeleteResponse> {
+  return apiJson<AdminResourceDeleteResponse>("/v1/admin/resources/delete", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postPairsList(
+  body: AdminPairsListRequest,
+): Promise<AdminPairsListResponse> {
+  return apiJson<AdminPairsListResponse>("/v1/admin/pairs/list", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postPairCreate(
+  body: AdminPairCreateRequest,
+): Promise<AdminPairCreateResponse> {
+  return apiJson<AdminPairCreateResponse>("/v1/admin/pairs/create", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postPairDelete(
+  body: AdminPairDeleteRequest,
+): Promise<AdminPairDeleteResponse> {
+  return apiJson<AdminPairDeleteResponse>("/v1/admin/pairs/delete", {
     method: "POST",
     json: body,
   });

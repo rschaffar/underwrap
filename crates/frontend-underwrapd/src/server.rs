@@ -10,7 +10,9 @@ use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
 use underwrap_protocol::config::DaemonConfig;
-use underwrap_protocol::service::CatalogEntry;
+use underwrap_protocol::service::{
+    ServiceWrapperRegisterRequest, ServiceWrapperRegisterReject, ServiceWrapperResourcePair,
+};
 
 use crate::approval::PendingApprovals;
 use crate::startup::{bind_socket, build_wrapper_gid_map, next_listener_result, validate_config};
@@ -44,24 +46,45 @@ impl State {
     }
 }
 
-fn register_catalog(store: &dyn StorageBackend, config: &DaemonConfig) -> Result<()> {
-    let mut entries = Vec::new();
+fn register_wrapper_assets(store: &dyn StorageBackend, config: &DaemonConfig) -> Result<()> {
+    let mut pairs = Vec::new();
     for (wrapper_name, wrapper) in &config.wrappers {
         let logical_name = wrapper
             .logical_name
             .clone()
             .unwrap_or_else(|| wrapper_name.clone());
         for resource in wrapper.resources.keys() {
-            entries.push(CatalogEntry {
-                // The backend fills `client_instance` from the active
-                // mTLS session; leave it blank on the wire.
-                client_instance: String::new(),
+            pairs.push(ServiceWrapperResourcePair {
                 wrapper: logical_name.clone(),
                 resource: resource.clone(),
             });
         }
     }
-    store.register_catalog(&entries)
+    let response = store.register_wrapper_assets(&ServiceWrapperRegisterRequest { pairs })?;
+    match response.rejected {
+        None => {
+            if !response.created_resources.is_empty() || !response.created_pairs.is_empty() {
+                info!(
+                    created_resources = response.created_resources.len(),
+                    created_pairs = response.created_pairs.len(),
+                    "backend auto-created wrapper assets on register",
+                );
+            }
+        }
+        Some(ServiceWrapperRegisterReject::AutoCreateDisabled {
+            missing_resources,
+            missing_pairs,
+        }) => {
+            warn!(
+                missing_resources = missing_resources.len(),
+                missing_pairs = missing_pairs.len(),
+                "backend refused wrapper register: auto-create disabled for this client instance — \
+                 an admin must enable `auto_create_wrapper_assets` on this instance, or create the \
+                 missing resources and pairs manually",
+            );
+        }
+    }
+    Ok(())
 }
 
 fn build_enrollment_url(config: &DaemonConfig) -> String {
@@ -115,9 +138,9 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
     if let Some(store) = store.as_ref()
-        && let Err(e) = register_catalog(store.as_ref(), &config)
+        && let Err(e) = register_wrapper_assets(store.as_ref(), &config)
     {
-        warn!(err = %e, "catalog registration failed; continuing without backend catalog refresh");
+        warn!(err = %e, "wrapper asset registration failed; continuing without backend register");
     }
 
     let state = Arc::new(State {

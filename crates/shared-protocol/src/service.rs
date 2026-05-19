@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::entities::{ResourceRecord, WrapperResourcePairRecord};
 use crate::policy::{AgentGrant, PolicyDocument};
 
 // ===== Users admin API (ticket 240) =====
@@ -143,33 +144,60 @@ pub struct ServiceListResponse {
     pub ids: Vec<String>,
 }
 
-/// One wrapper/resource pair declared by a runtime client instance.
-///
-/// The mTLS-authenticated client instance id is the only client-side
-/// identifier — it is filled in by the backend from the active TLS
-/// session rather than self-reported, so the wire-side struct carries
-/// only `(wrapper, resource)`. The stored/admin-facing form includes
-/// `client_instance` (see [`StoredCatalogEntry`] in the backend).
+// ===== Runtime wrapper register =====
+//
+// `POST /v1/runtime/wrappers/register` is the auto-create endpoint
+// wrappers hit at daemon startup. The backend reads the calling
+// client-instance's `auto_create_wrapper_assets` flag to decide whether
+// missing resources and pairs may be inserted on this principal's
+// behalf. The endpoint is upsert-only — existing entities are never
+// modified, removals never happen, and provenance is set once on
+// first sight.
+
+/// One `(wrapper, resource)` pair on the wire. The minimal payload
+/// needed to drive auto-create; the persisted shape adds provenance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct CatalogEntry {
-    /// The mTLS-authenticated runtime client instance id this entry
-    /// belongs to. Clients leave this empty on `POST /v1/catalog/put`;
-    /// the backend fills it in from the active TLS session.
-    #[serde(default)]
-    pub client_instance: String,
+pub struct ServiceWrapperResourcePair {
     pub wrapper: String,
     pub resource: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceCatalogPutRequest {
-    pub entries: Vec<CatalogEntry>,
+pub struct ServiceWrapperRegisterRequest {
+    pub pairs: Vec<ServiceWrapperResourcePair>,
 }
 
+/// Reason a register call was rejected at the policy gate. Today the
+/// only reason is "this client instance is not opted-in"; the variant
+/// is structured so we can add more reasons without breaking clients.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceCatalogPutResponse {
-    pub ok: bool,
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ServiceWrapperRegisterReject {
+    /// The calling client instance does not have
+    /// `auto_create_wrapper_assets` enabled. Lists the entities that
+    /// would have been created so the operator can see what's missing
+    /// without flipping the flag blindly.
+    AutoCreateDisabled {
+        missing_resources: Vec<String>,
+        missing_pairs: Vec<ServiceWrapperResourcePair>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ServiceWrapperRegisterResponse {
+    /// Resources that were newly created on this call. Empty when
+    /// every named resource already existed.
+    #[serde(default)]
+    pub created_resources: Vec<String>,
+    /// Pairs that were newly created on this call.
+    #[serde(default)]
+    pub created_pairs: Vec<ServiceWrapperResourcePair>,
+    /// Populated when the call was refused; in that case no
+    /// `created_*` entries are produced and the backend writes
+    /// nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<ServiceWrapperRegisterReject>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -389,6 +417,11 @@ pub struct AdminClientInstanceListItem {
     #[ts(optional)]
     pub last_seen_at: Option<u64>,
     pub current_credential_fingerprint: String,
+    /// Whether this instance is allowed to auto-create resource and
+    /// wrapper/resource-pair records when its wrappers register on
+    /// startup. Defaults to `false` for newly-created instances.
+    #[serde(default)]
+    pub auto_create_wrapper_assets: bool,
     pub actions: AdminClientInstanceActionState,
 }
 
@@ -413,6 +446,10 @@ pub struct AdminClientInstanceDetailResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub current_credential_issued_at: Option<u64>,
+    /// Whether this instance is allowed to auto-create resource and
+    /// wrapper/resource-pair records on the runtime register endpoint.
+    #[serde(default)]
+    pub auto_create_wrapper_assets: bool,
     pub actions: AdminClientInstanceActionState,
 }
 
@@ -426,6 +463,11 @@ pub struct AdminClientInstanceCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub issued_at: Option<u64>,
+    /// Initial value for `auto_create_wrapper_assets`. Defaults to
+    /// `false` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auto_create_wrapper_assets: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -446,6 +488,11 @@ pub struct AdminClientInstanceUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub cert_pem: Option<String>,
+    /// New value for `auto_create_wrapper_assets`. Omit to leave
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auto_create_wrapper_assets: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -529,18 +576,6 @@ pub struct AdminSecretDeleteResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct AdminCatalogGetRequest {
-    pub store: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct AdminCatalogGetResponse {
-    pub entries: Vec<CatalogEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
 pub struct AdminPolicyGetRequest {
     pub store: String,
 }
@@ -598,6 +633,135 @@ pub struct AdminAgentGrantDeleteRequest {
 pub struct AdminOkResponse {
     pub ok: bool,
 }
+
+// ===== Admin resource and wrapper/resource-pair CRUD =====
+//
+// One Resource and one Pair collection per store. Delete refuses when
+// any dependent exists; the refusal response carries enough structured
+// detail for the SPA to point the operator at the exact blocker.
+
+/// The composite key for a grant. Used in delete-refusal responses so
+/// the SPA can render a "you must clear these grants first" list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminGrantKey {
+    pub client_instance: String,
+    pub wrapper: String,
+    pub resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourcesListRequest {
+    pub store: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourcesListResponse {
+    pub resources: Vec<ResourceRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceCreateRequest {
+    pub store: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceCreateResponse {
+    pub resource: ResourceRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceDeleteRequest {
+    pub store: String,
+    pub name: String,
+}
+
+/// Counts plus a short sample of names per dependent kind. The sample
+/// is capped server-side so a heavily-used resource doesn't return
+/// thousands of strings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, Default)]
+#[ts(export)]
+pub struct AdminResourceDeleteBlockers {
+    pub secret_count: u32,
+    #[serde(default)]
+    pub sample_secret_ids: Vec<String>,
+    pub pair_count: u32,
+    #[serde(default)]
+    pub sample_pairs: Vec<ServiceWrapperResourcePair>,
+    pub grant_count: u32,
+    #[serde(default)]
+    pub sample_grants: Vec<AdminGrantKey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceDeleteResponse {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub blocked_by: Option<AdminResourceDeleteBlockers>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminPairsListRequest {
+    pub store: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminPairsListResponse {
+    pub pairs: Vec<WrapperResourcePairRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminPairCreateRequest {
+    pub store: String,
+    pub wrapper: String,
+    pub resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminPairCreateResponse {
+    pub pair: WrapperResourcePairRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminPairDeleteRequest {
+    pub store: String,
+    pub wrapper: String,
+    pub resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, Default)]
+#[ts(export)]
+pub struct AdminPairDeleteBlockers {
+    pub grant_count: u32,
+    #[serde(default)]
+    pub sample_grants: Vec<AdminGrantKey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminPairDeleteResponse {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub blocked_by: Option<AdminPairDeleteBlockers>,
+}
+
+// `ServiceWrapperResourcePair` is shared between the runtime register
+// endpoint and the admin delete-blocker shape; the persisted record
+// adds provenance fields on top.
 
 #[cfg(test)]
 mod tests {

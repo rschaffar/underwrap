@@ -2,4 +2,10 @@
 import type { AdminClientInstanceActionState } from "./AdminClientInstanceActionState";
 import type { AdminClientInstanceStatus } from "./AdminClientInstanceStatus";
 
-export type AdminClientInstanceListItem = { id: string, display_name: string, current_store_id: string, current_store_name: string, status: AdminClientInstanceStatus, last_seen_at?: bigint, current_credential_fingerprint: string, actions: AdminClientInstanceActionState, };
+export type AdminClientInstanceListItem = { id: string, display_name: string, current_store_id: string, current_store_name: string, status: AdminClientInstanceStatus, last_seen_at?: bigint, current_credential_fingerprint: string, 
+/**
+ * Whether this instance is allowed to auto-create resource and
+ * wrapper/resource-pair records when its wrappers register on
+ * startup. Defaults to `false` for newly-created instances.
+ */
+auto_create_wrapper_assets: boolean, actions: AdminClientInstanceActionState, };

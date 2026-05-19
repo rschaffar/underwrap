@@ -109,6 +109,7 @@ story tickets and give both story and task tickets these ordered numeric prefixe
 - `crates/backend-backendd/src/web.rs` — embedded SPA hosting via `rust-embed`
 - `crates/backend-backendd/src/operators.rs` — operator records + Principal + role/grant model
 - `crates/shared-protocol/src/policy.rs` — `PolicyDocument`, `AgentGrant`, `WrapperApprovalMode`
+- `crates/shared-protocol/src/entities.rs` — `ResourceRecord`, `WrapperResourcePairRecord`, `EntityCreator` (first-class entities with provenance)
 - `crates/shared-store/src/service.rs` — mTLS HTTPS backend client
 - `web/src/router.tsx` — TanStack Router setup; the SPA's auth/bootstrap guard lives here
 - `nix/modules/underwrap.nix` — frontend NixOS module (generates wrappers, sockets, services)

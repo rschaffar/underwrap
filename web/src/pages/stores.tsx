@@ -704,7 +704,6 @@ function DeleteStoreDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [confirmText, setConfirmText] = useState("");
   const [force, setForce] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [cleanupHint, setCleanupHint] = useState<string | null>(null);
@@ -730,7 +729,6 @@ function DeleteStoreDialog({
     !store.actions.can_force_delete &&
     store.usage.mapped_client_instance_count > 0;
   const canDelete =
-    confirmText === store.name &&
     !mut.isPending &&
     (store.actions.can_delete_now || (store.actions.can_force_delete && force));
   if (cleanupHint) {
@@ -763,7 +761,6 @@ function DeleteStoreDialog({
           <DialogDescription>
             This removes the store definition and stops the backend
             from serving it. Secret material on disk is not touched.
-            Type the store name to confirm.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -781,18 +778,6 @@ function DeleteStoreDialog({
               directory in place for manual follow-up.
             </p>
           ) : null}
-          <div className="space-y-1.5">
-            <Label htmlFor="confirm-name">
-              Type <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{store.name}</code> to confirm
-            </Label>
-            <Input
-              id="confirm-name"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              autoFocus
-              autoComplete="off"
-            />
-          </div>
           {store.actions.can_force_delete ? (
             <label className="flex items-center gap-2 text-xs text-(--color-muted)">
               <input
