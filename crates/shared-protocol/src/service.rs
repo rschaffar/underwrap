@@ -161,6 +161,13 @@ pub struct ServiceListResponse {
 pub struct ServiceWrapperResourcePair {
     pub wrapper: String,
     pub resource: String,
+    /// Target-home-relative mount paths the wrapper bind-mounts this
+    /// resource's `files` slot at. Empty when the wrapper does not
+    /// project `files` for this resource. Mount paths are runtime
+    /// metadata: the backend persists them on the pair record so the
+    /// admin SPA can render the resolved location of a stored file.
+    #[serde(default)]
+    pub files_mount_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1518,13 +1518,27 @@ fn apply_runtime_wrapper_register(
         .pairs
         .iter()
         .filter(|p| pairs.find(&p.wrapper, &p.resource).is_none())
-        .map(|p| ServiceWrapperResourcePair {
-            wrapper: p.wrapper.clone(),
-            resource: p.resource.clone(),
-        })
+        .cloned()
         .collect();
 
-    if missing_resources_set.is_empty() && missing_pairs.is_empty() {
+    // Refresh `files_mount_paths` on existing pairs from the latest
+    // daemon-reported config. This lets the SPA show accurate mount
+    // locations even when an operator edits wrapper mount paths
+    // between daemon restarts.
+    let mut refreshed = false;
+    for incoming in &request.pairs {
+        if let Some(existing) = pairs
+            .pairs
+            .iter_mut()
+            .find(|p| p.wrapper == incoming.wrapper && p.resource == incoming.resource)
+            && existing.files_mount_paths != incoming.files_mount_paths
+        {
+            existing.files_mount_paths = incoming.files_mount_paths.clone();
+            refreshed = true;
+        }
+    }
+
+    if missing_resources_set.is_empty() && missing_pairs.is_empty() && !refreshed {
         return Ok(ServiceWrapperRegisterResponse::default());
     }
 
@@ -1566,6 +1580,7 @@ fn apply_runtime_wrapper_register(
                 created_by: creator.clone(),
                 created_at: now_epoch,
                 last_used_at: None,
+                files_mount_paths: pair.files_mount_paths.clone(),
             })
             .expect("missing-set guarantees no duplicate");
         created_pairs.push(pair.clone());
@@ -1574,7 +1589,7 @@ fn apply_runtime_wrapper_register(
     if !created_resources.is_empty() {
         save_resources_document(store, &resources)?;
     }
-    if !created_pairs.is_empty() {
+    if !created_pairs.is_empty() || refreshed {
         save_pairs_document(store, &pairs)?;
     }
 
@@ -4316,6 +4331,7 @@ fn handle_admin_resource_delete(
         .map(|p| ServiceWrapperResourcePair {
             wrapper: p.wrapper.clone(),
             resource: p.resource.clone(),
+            files_mount_paths: p.files_mount_paths.clone(),
         })
         .collect();
     let pair_count = u32::try_from(dependent_pairs.len()).unwrap_or(u32::MAX);
@@ -4502,6 +4518,7 @@ fn handle_admin_pair_create(
         },
         created_at: crate::operators::now_epoch_secs(),
         last_used_at: None,
+        files_mount_paths: Vec::new(),
     };
     pairs
         .insert(record.clone())
@@ -5519,6 +5536,7 @@ mod tests {
             },
             created_at: 42,
             last_used_at: None,
+            files_mount_paths: Vec::new(),
         })
         .unwrap();
         save_pairs_document(&store, &doc).unwrap();
@@ -5560,6 +5578,7 @@ mod tests {
                 pairs: vec![ServiceWrapperResourcePair {
                     wrapper: "gh".into(),
                     resource: "github/token".into(),
+                    files_mount_paths: Vec::new(),
                 }],
             },
             10,
@@ -5575,6 +5594,7 @@ mod tests {
                 pairs: vec![ServiceWrapperResourcePair {
                     wrapper: "gh".into(),
                     resource: "github/token".into(),
+                    files_mount_paths: Vec::new(),
                 }],
             },
             20,
@@ -5601,6 +5621,7 @@ mod tests {
                 pairs: vec![ServiceWrapperResourcePair {
                     wrapper: "gh".into(),
                     resource: "github/token".into(),
+                    files_mount_paths: Vec::new(),
                 }],
             },
             10,
@@ -5615,6 +5636,7 @@ mod tests {
                 pairs: vec![ServiceWrapperResourcePair {
                     wrapper: "gh".into(),
                     resource: "github/token".into(),
+                    files_mount_paths: Vec::new(),
                 }],
             },
             20,
@@ -5643,10 +5665,12 @@ mod tests {
                     ServiceWrapperResourcePair {
                         wrapper: "gh".into(),
                         resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
                     },
                     ServiceWrapperResourcePair {
                         wrapper: "tf".into(),
                         resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
                     },
                 ],
             },
@@ -5685,10 +5709,12 @@ mod tests {
                     ServiceWrapperResourcePair {
                         wrapper: "gh".into(),
                         resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
                     },
                     ServiceWrapperResourcePair {
                         wrapper: "tf".into(),
                         resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
                     },
                 ],
             },
@@ -5726,6 +5752,7 @@ mod tests {
                 pairs: vec![ServiceWrapperResourcePair {
                     wrapper: "gh".into(),
                     resource: "github/token".into(),
+                    files_mount_paths: Vec::new(),
                 }],
             },
             10,
@@ -5744,10 +5771,12 @@ mod tests {
                     ServiceWrapperResourcePair {
                         wrapper: "gh".into(),
                         resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
                     },
                     ServiceWrapperResourcePair {
                         wrapper: "tf".into(),
                         resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
                     },
                 ],
             },
@@ -7709,6 +7738,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 },
                 created_at: 100,
                 last_used_at: None,
+                files_mount_paths: Vec::new(),
             })
             .unwrap();
         pairs
@@ -7720,6 +7750,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 },
                 created_at: 100,
                 last_used_at: None,
+                files_mount_paths: Vec::new(),
             })
             .unwrap();
         save_pairs_document(store, &pairs).unwrap();

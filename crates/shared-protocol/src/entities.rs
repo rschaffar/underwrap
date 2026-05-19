@@ -84,6 +84,12 @@ pub struct ResourceRecord {
 /// `last_used_at` is bumped server-side on every successful runtime
 /// read against the pair. `None` means the pair has never been used
 /// since the record was created.
+///
+/// `files_mount_paths` is the set of target-home-relative paths the
+/// wrapper bind-mounts this resource's `files` slot at, last
+/// reported by the daemon during register. Empty for pairs whose
+/// wrapper does not project `files`. The SPA uses it to render the
+/// resolved location of a stored file (mount + inner path).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct WrapperResourcePairRecord {
@@ -93,6 +99,8 @@ pub struct WrapperResourcePairRecord {
     pub created_at: u64,
     #[serde(default)]
     pub last_used_at: Option<u64>,
+    #[serde(default)]
+    pub files_mount_paths: Vec<String>,
 }
 
 /// Store-backed resources document. Missing-document-means-empty
@@ -265,6 +273,7 @@ mod tests {
             created_by: ci("client-7"),
             created_at: 42,
             last_used_at: None,
+            files_mount_paths: Vec::new(),
         })
         .unwrap();
         let json = serde_json::to_string(&doc).unwrap();
@@ -316,6 +325,7 @@ mod tests {
             created_by: ci("c1"),
             created_at: 1,
             last_used_at: None,
+            files_mount_paths: Vec::new(),
         })
         .unwrap();
         let err = doc
@@ -325,6 +335,7 @@ mod tests {
                 created_by: ci("c2"),
                 created_at: 2,
                 last_used_at: None,
+                files_mount_paths: Vec::new(),
             })
             .unwrap_err();
         assert_eq!(err, InsertError::Duplicate);
@@ -335,6 +346,7 @@ mod tests {
             created_by: ci("c1"),
             created_at: 3,
             last_used_at: None,
+            files_mount_paths: Vec::new(),
         })
         .unwrap();
         assert_eq!(doc.pairs.len(), 2);
@@ -349,6 +361,7 @@ mod tests {
             created_by: ci("c1"),
             created_at: 1,
             last_used_at: None,
+            files_mount_paths: Vec::new(),
         })
         .unwrap();
         doc.insert(WrapperResourcePairRecord {
@@ -357,6 +370,7 @@ mod tests {
             created_by: ci("c1"),
             created_at: 2,
             last_used_at: None,
+            files_mount_paths: Vec::new(),
         })
         .unwrap();
         doc.insert(WrapperResourcePairRecord {
@@ -365,6 +379,7 @@ mod tests {
             created_by: ci("c1"),
             created_at: 3,
             last_used_at: None,
+            files_mount_paths: Vec::new(),
         })
         .unwrap();
         let mut wrappers: Vec<_> = doc
@@ -394,6 +409,7 @@ mod tests {
             created_by: ci("c1"),
             created_at: 1,
             last_used_at: None,
+            files_mount_paths: Vec::new(),
         })
         .unwrap();
         assert!(p.remove("gh", "r"));

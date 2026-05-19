@@ -44,6 +44,7 @@ describe("derivation helpers", () => {
       created_by: { kind: "operator", id: "op-1", username: "alice" },
       created_at: 100n,
       last_used_at: null,
+      files_mount_paths: [],
     },
     {
       wrapper: "aws-prod",
@@ -51,6 +52,7 @@ describe("derivation helpers", () => {
       created_by: { kind: "client-instance", id: "ci-runner" },
       created_at: 200n,
       last_used_at: null,
+      files_mount_paths: [],
     },
     {
       wrapper: "gh-authorized",
@@ -58,6 +60,7 @@ describe("derivation helpers", () => {
       created_by: { kind: "operator", id: "op-1", username: "alice" },
       created_at: 150n,
       last_used_at: null,
+      files_mount_paths: [],
     },
   ];
 

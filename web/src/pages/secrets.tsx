@@ -192,6 +192,24 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     return map;
   }, [resourcesList.data]);
 
+  /**
+   * Map from resource name to the wrappers that project its `files`
+   * slot, plus the target-home-relative paths each wrapper mounts it
+   * at. Used by SlotSection (slot=files) to render the resolved
+   * location for each stored file.
+   */
+  const fileMountsByResource = useMemo(() => {
+    const map = new Map<string, Array<{ wrapper: string; paths: string[] }>>();
+    for (const p of pairsList.data?.pairs ?? []) {
+      if (p.files_mount_paths.length === 0) continue;
+      const list = map.get(p.resource) ?? [];
+      list.push({ wrapper: p.wrapper, paths: p.files_mount_paths });
+      map.set(p.resource, list);
+    }
+    for (const arr of map.values()) arr.sort((a, b) => a.wrapper.localeCompare(b.wrapper));
+    return map;
+  }, [pairsList.data]);
+
   // Filter out reserved underwrap internal secret IDs so operators
   // don't accidentally read or delete them through this UI.
   // The backend already rejects writes for the policy ID with a clear
@@ -315,6 +333,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
               key={group.resource}
               group={group}
               provenance={resourceProvenance.get(group.resource)}
+              fileMounts={fileMountsByResource.get(group.resource) ?? []}
               isAdmin={isAdmin}
               onReveal={setRevealing}
               onEdit={setEditing}
@@ -399,6 +418,7 @@ interface RowActions {
 function ResourceBlock({
   group,
   provenance,
+  fileMounts,
   isAdmin,
   onAddEntry,
   onDeleteResource,
@@ -406,6 +426,7 @@ function ResourceBlock({
 }: {
   group: SecretResourceGroup;
   provenance: ResourceRecord | undefined;
+  fileMounts: Array<{ wrapper: string; paths: string[] }>;
   isAdmin: boolean;
   onAddEntry: (slot: SecretSlot) => void;
   onDeleteResource: () => void;
@@ -474,6 +495,7 @@ function ResourceBlock({
             key={slot}
             slot={slot}
             entries={group[slot]}
+            fileMounts={slot === "files" ? fileMounts : []}
             isAdmin={isAdmin}
             onAdd={() => onAddEntry(slot)}
             {...actions}
@@ -496,12 +518,14 @@ function describeCreator(creator: EntityCreator): string {
 function SlotSection({
   slot,
   entries,
+  fileMounts,
   isAdmin: _isAdmin,
   onAdd,
   ...actions
 }: {
   slot: SecretSlot;
   entries: SecretEntry[];
+  fileMounts: Array<{ wrapper: string; paths: string[] }>;
   isAdmin: boolean;
   onAdd: () => void;
 } & RowActions) {
@@ -530,14 +554,28 @@ function SlotSection({
           {entries.map((entry) => (
             <li
               key={entry.id}
-              className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-(--color-surface-1)/50"
+              className="flex flex-col gap-1 rounded-md px-2 py-1.5 hover:bg-(--color-surface-1)/50 sm:flex-row sm:items-center sm:gap-2"
             >
-              <span
-                className="font-mono text-xs text-(--color-fg)"
-                title={entry.id}
-              >
-                {entry.name}
-              </span>
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span
+                  className="font-mono text-xs text-(--color-fg)"
+                  title={entry.id}
+                >
+                  {entry.name}
+                </span>
+                {slot === "files" && fileMounts.length > 0 ? (
+                  <span
+                    className="font-mono text-[10px] text-(--color-muted)"
+                    data-testid={`file-mounts-${entry.id}`}
+                  >
+                    {fileMounts
+                      .flatMap((m) =>
+                        m.paths.map((p) => `${p}/${entry.name} (${m.wrapper})`),
+                      )
+                      .join(" · ")}
+                  </span>
+                ) : null}
+              </div>
               <div className="ml-auto inline-flex gap-2">
                 <EntryActions entry={entry} {...actions} />
               </div>
