@@ -28,17 +28,14 @@ test("admin creates an operator → operator login restricts what they see and l
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
 
-  // Plant a granted store + an ungranted store. We do this via the
-  // admin API rather than the create-store UI because the goal is to
-  // exercise the multi-user flow, not the stores CRUD path.
+  // Plant a granted store + an ungranted store. The backend now
+  // auto-derives the data directory from `stores_data_root`, so the
+  // create dialog only needs a name.
   await page.goto(`${backendWithAdmin.baseUrl}/stores`);
   for (const name of ["granted", "secret"]) {
     await page.getByRole("button", { name: /create store/i }).click();
     const createDlg = page.getByRole("dialog", { name: /create store/i });
     await createDlg.getByLabel("Name").fill(name);
-    await createDlg
-      .getByLabel(/data directory/i)
-      .fill(`${backendWithAdmin.dataRoot}/${name}`);
     await createDlg.getByRole("button", { name: /^create$/i }).click();
     await expect(createDlg).toBeHidden();
   }

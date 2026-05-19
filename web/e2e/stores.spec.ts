@@ -27,13 +27,14 @@ test("admin can create, edit, and delete a dynamic store", async ({
   await createDlg.getByLabel("Description (optional)").fill("e2e scratch");
   await createDlg.getByRole("button", { name: /^create$/i }).click();
   await expect(createDlg).toBeHidden();
-  await expect(
-    page.getByRole("cell", { name: "scratch", exact: true }),
-  ).toBeVisible();
+  // Each row's name cell renders the display name plus the
+  // backend-assigned store id underneath, so the accessible name is
+  // "scratch store_<hex>" and exact-match doesn't apply.
+  await expect(page.getByRole("row", { name: /\bscratch\b/ })).toBeVisible();
 
   // Edit description.
   await page
-    .getByRole("row", { name: /scratch/ })
+    .getByRole("row", { name: /\bscratch\b/ })
     .getByRole("button", { name: /edit/i })
     .click();
   const editDlg = page.getByRole("dialog", { name: /edit store: scratch/i });
@@ -44,7 +45,7 @@ test("admin can create, edit, and delete a dynamic store", async ({
 
   // Delete requires typing the exact name.
   await page
-    .getByRole("row", { name: /scratch/ })
+    .getByRole("row", { name: /\bscratch\b/ })
     .getByRole("button", { name: /delete/i })
     .click();
   const delDlg = page.getByRole("dialog", { name: /delete store: scratch/i });
@@ -54,9 +55,7 @@ test("admin can create, edit, and delete a dynamic store", async ({
   await expect(deleteBtn).toBeEnabled();
   await deleteBtn.click();
   await expect(delDlg).toBeHidden();
-  await expect(
-    page.getByRole("cell", { name: "scratch", exact: true }),
-  ).toBeHidden();
+  await expect(page.getByRole("row", { name: /\bscratch\b/ })).toHaveCount(0);
 });
 
 test("creating an encrypted store reveals the master key once and leaves no traces in storage", async ({
@@ -93,9 +92,7 @@ test("creating an encrypted store reveals the master key once and leaves no trac
   await expect(confirmBtn).toBeEnabled();
   await confirmBtn.click();
   await expect(reveal).toBeHidden();
-  await expect(
-    page.getByRole("cell", { name: "vault", exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole("row", { name: /\bvault\b/ })).toBeVisible();
 
   // Storage must be clean: no localStorage / sessionStorage entry,
   // no cookie, and the URL must not carry the key value.
@@ -159,23 +156,9 @@ test("rotate-key flow surfaces a fresh key once for an existing encrypted store"
   await expect(reveal).toBeHidden();
 });
 
-test("declarative store row exposes disabled edit/delete with a tooltip", async ({
-  page,
-  backendWithAdmin,
-}) => {
-  await loginViaUi(page, backendWithAdmin.baseUrl);
-  await page.goto(`${backendWithAdmin.baseUrl}/stores`);
-
-  const row = page.getByRole("row", { name: /nixed/ });
-  const editBtn = row.getByRole("button", { name: /edit/i });
-  const deleteBtn = row.getByRole("button", { name: /delete/i });
-  await expect(editBtn).toBeDisabled();
-  await expect(deleteBtn).toBeDisabled();
-  await expect(editBtn).toHaveAttribute(
-    "title",
-    /declarative store/i,
-  );
-});
+// Declarative-vs-dynamic stores no longer exist as a backend
+// concept — all stores live in the one JSON registry — so there is
+// nothing to test for the "row is locked because nixed it" case.
 
 test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   page,
@@ -193,9 +176,9 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   await expect(createDlg).toBeHidden();
 
   // Post a secret directly so we have something on disk to test the
-  // force-delete path against. Admin writes are unconditional under
-  // the per-resource permission model, so no writes_enabled toggle
-  // is needed first.
+  // force-delete path against. Stores are addressed by their internal
+  // `id` (a generated `store_<hex>` slug); look that up from the
+  // admin listing first so the secret write hits the right backend.
   await page.evaluate(async () => {
     const csrf = document.cookie
       .split(";")
@@ -203,6 +186,13 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
       .find((part) => part.startsWith("__Host-uw-csrf="))
       ?.slice("__Host-uw-csrf=".length);
     if (!csrf) throw new Error("no csrf cookie on page");
+    const list = await fetch("/v1/admin/stores", { credentials: "include" });
+    if (!list.ok) {
+      throw new Error(`admin/stores list failed: ${list.status}`);
+    }
+    const body = (await list.json()) as { items: Array<{ id: string; name: string }> };
+    const packed = body.items.find((s) => s.name === "packed");
+    if (!packed) throw new Error("'packed' store not found in stores list");
     const res = await fetch("/v1/admin/secret/write", {
       method: "POST",
       credentials: "include",
@@ -211,7 +201,7 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
         "X-CSRF-Token": csrf,
       },
       body: JSON.stringify({
-        store: "packed",
+        store: packed.id,
         wrapper: "ignored",
         secret_id: "marker",
         material_b64: btoa("hello"),
@@ -222,14 +212,23 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
     }
   });
 
-  // Open delete dialog. Without force, the API rejects with
-  // store_not_empty; tick the force checkbox and confirm.
+  // The stores list is cached by tanstack-query, so refresh it
+  // before opening the delete dialog — the SPA derives the
+  // can_force_delete / can_delete_now action flags from the cached
+  // list item, and they only flip once the backend re-reports
+  // `has_secrets`.
+  await page.reload();
+
+  // Open delete dialog. Because the store now contains a secret, the
+  // backend reports `can_delete_now=false` and `can_force_delete=true`
+  // so the SPA relabels the submit button to "Force delete" and shows
+  // the explicit acknowledgement checkbox.
   await page
-    .getByRole("row", { name: /packed/ })
+    .getByRole("row", { name: /\bpacked\b/ })
     .getByRole("button", { name: /delete/i })
     .click();
   const delDlg = page.getByRole("dialog", { name: /delete store: packed/i });
-  const deleteBtn = delDlg.getByRole("button", { name: /^delete$/i });
+  const deleteBtn = delDlg.getByRole("button", { name: /^force delete$/i });
   await expect(deleteBtn).toBeDisabled();
   await delDlg.getByLabel(/type/i).fill("packed");
   await delDlg.getByLabel(/force delete/i).check();
@@ -242,9 +241,7 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   await expect(storeDeletedDlg).toBeVisible();
   await expect(storeDeletedDlg.getByText(/packed/).first()).toBeVisible();
   await storeDeletedDlg.getByText("Close", { exact: true }).click();
-  await expect(
-    page.getByRole("cell", { name: "packed", exact: true }),
-  ).toBeHidden();
+  await expect(page.getByRole("row", { name: /\bpacked\b/ })).toHaveCount(0);
 });
 
 test("non-admin operator sees the nav item hidden", async ({
