@@ -689,6 +689,36 @@ pub struct AdminResourceDeleteRequest {
     pub name: String,
 }
 
+/// Request whole-blob get/put for a resource.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceBlobGetRequest {
+    pub store: String,
+    pub name: String,
+}
+
+/// JCS-canonical JSON bytes of the resource blob, base64-encoded for
+/// HTTP transport.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceBlobGetResponse {
+    pub blob_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceBlobPutRequest {
+    pub store: String,
+    pub name: String,
+    pub blob_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceBlobPutResponse {
+    pub ok: bool,
+}
+
 /// Counts plus a short sample of names per dependent kind. The sample
 /// is capped server-side so a heavily-used resource doesn't return
 /// thousands of strings.

@@ -4195,6 +4195,116 @@ fn handle_admin_resources_list(
 }
 
 #[allow(clippy::result_large_err)]
+fn handle_admin_resource_blob_get(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: &underwrap_protocol::service::AdminResourceBlobGetRequest,
+) -> Response<Full<Bytes>> {
+    let store = match admin_store_for_principal(state, principal, &body.store) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let blob = match load_resource_blob(store.as_ref(), &body.name) {
+        Ok(b) => b,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading resource blob: {e:#}"),
+            );
+        }
+    };
+    let bytes = match blob.to_canonical_bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("canonicalizing resource blob: {e:#}"),
+            );
+        }
+    };
+    json_response(
+        StatusCode::OK,
+        &underwrap_protocol::service::AdminResourceBlobGetResponse {
+            blob_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        },
+    )
+}
+
+fn handle_admin_resource_blob_put(
+    state: &AdminRuntimeState,
+    operator: &str,
+    principal: &crate::operators::Principal,
+    body: &underwrap_protocol::service::AdminResourceBlobPutRequest,
+) -> Response<Full<Bytes>> {
+    use underwrap_protocol::resource_blob::ResourceBlob;
+    let store = match admin_store_for_principal(state, principal, &body.store) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let blob_bytes = match base64::engine::general_purpose::STANDARD.decode(&body.blob_b64) {
+        Ok(b) => b,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("blob_b64 is not valid base64: {e}"),
+            );
+        }
+    };
+    let blob = match ResourceBlob::from_canonical_bytes(&blob_bytes) {
+        Ok(b) => b,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_blob",
+                &format!("decoding resource blob: {e:#}"),
+            );
+        }
+    };
+    // Enforce that the caller sent already-canonical bytes. The
+    // wrapper-side does this naturally via serde_jcs; admin clients
+    // must as well.
+    let canonical = match blob.to_canonical_bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("canonicalizing resource blob: {e:#}"),
+            );
+        }
+    };
+    if canonical != blob_bytes {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "noncanonical_blob",
+            "blob_b64 is not JCS-canonical; re-encode via serde_jcs",
+        );
+    }
+    if let Err(e) = save_resource_blob(store.as_ref(), &body.name, &blob) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("saving resource blob: {e:#}"),
+        );
+    }
+    log_admin_event(
+        "resource.blob.put",
+        operator,
+        None,
+        Some(&body.name),
+        None,
+        None,
+        "success",
+    );
+    json_response(
+        StatusCode::OK,
+        &underwrap_protocol::service::AdminResourceBlobPutResponse { ok: true },
+    )
+}
+
 fn handle_admin_resource_create(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
@@ -5253,6 +5363,22 @@ async fn handle_admin_request(
         .await
         {
             Ok(body) => handle_admin_resource_delete(&state, &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/resources/blob/get") => match parse_json_body::<
+            underwrap_protocol::service::AdminResourceBlobGetRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_resource_blob_get(&state, &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/resources/blob/put") => match parse_json_body::<
+            underwrap_protocol::service::AdminResourceBlobPutRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_resource_blob_put(&state, &operator, &principal, &body),
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/pairs/list") => {

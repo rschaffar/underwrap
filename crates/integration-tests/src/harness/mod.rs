@@ -518,6 +518,45 @@ impl TestDaemon {
         Ok(response.json().await?)
     }
 
+    pub async fn get_resource_blob(
+        &self,
+        store: &str,
+        name: &str,
+    ) -> Result<underwrap_protocol::service::AdminResourceBlobGetResponse> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/resources/blob/get")
+            .json(&underwrap_protocol::service::AdminResourceBlobGetRequest {
+                store: store.to_string(),
+                name: name.to_string(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default(),
+        );
+        Ok(response.json().await?)
+    }
+
+    pub async fn put_resource_blob(
+        &self,
+        store: &str,
+        name: &str,
+        blob_b64: &str,
+    ) -> Result<reqwest::Response> {
+        Ok(self
+            .admin_request(reqwest::Method::POST, "/v1/admin/resources/blob/put")
+            .json(&underwrap_protocol::service::AdminResourceBlobPutRequest {
+                store: store.to_string(),
+                name: name.to_string(),
+                blob_b64: blob_b64.to_string(),
+            })
+            .send()
+            .await?)
+    }
+
     pub async fn create_pair(
         &self,
         store: &str,
