@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 
 mod channel;
 mod dbus_service;
+mod section_store;
 
 const WELL_KNOWN_NAME: &str = "org.freedesktop.secrets";
 const BASE_PATH: &str = "/org/freedesktop/secrets";
