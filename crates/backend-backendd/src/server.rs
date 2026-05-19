@@ -1085,7 +1085,43 @@ fn runtime_read_gate(
             grant.wrapper
         ));
     }
+    // Bump last_used_at on the matched pair. Failure here is
+    // non-fatal — it must never block a successful read.
+    if let Err(e) = bump_pair_last_used(store, &grant.wrapper, resource) {
+        warn!(
+            audit = "pair_last_used_bump_failed",
+            principal = %principal,
+            wrapper = %grant.wrapper,
+            resource = %resource,
+            err = %e,
+        );
+    }
     Ok(())
+}
+
+/// Set `last_used_at` on the `(wrapper, resource)` pair to the
+/// current wall-clock second. Idempotent at one-second resolution:
+/// the pairs document is only rewritten if the new timestamp differs
+/// from the stored one.
+fn bump_pair_last_used(store: &dyn StorageBackend, wrapper: &str, resource: &str) -> Result<()> {
+    let now = crate::operators::now_epoch_secs();
+    let mut doc = load_pairs_document(store)?;
+    let Some(pair) = doc
+        .pairs
+        .iter_mut()
+        .find(|p| p.wrapper == wrapper && p.resource == resource)
+    else {
+        // No pair record means nothing to bump. This can happen if
+        // the pair was deleted while a wrapper invocation was in
+        // flight, or in the greenfield case where no entities have
+        // been created yet.
+        return Ok(());
+    };
+    if pair.last_used_at == Some(now) {
+        return Ok(());
+    }
+    pair.last_used_at = Some(now);
+    save_pairs_document(store, &doc)
 }
 
 /// Gate a prefix request (`/v1/list`, `/v1/read-prefixes`). A bare
@@ -1529,6 +1565,7 @@ fn apply_runtime_wrapper_register(
                 resource: pair.resource.clone(),
                 created_by: creator.clone(),
                 created_at: now_epoch,
+                last_used_at: None,
             })
             .expect("missing-set guarantees no duplicate");
         created_pairs.push(pair.clone());
@@ -4464,6 +4501,7 @@ fn handle_admin_pair_create(
             username: principal.username.clone(),
         },
         created_at: crate::operators::now_epoch_secs(),
+        last_used_at: None,
     };
     pairs
         .insert(record.clone())
@@ -5480,6 +5518,7 @@ mod tests {
                 id: "client-7".into(),
             },
             created_at: 42,
+            last_used_at: None,
         })
         .unwrap();
         save_pairs_document(&store, &doc).unwrap();
@@ -7647,6 +7686,63 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn bump_pair_last_used_sets_timestamp_only_on_matching_pair() {
+        use underwrap_protocol::entities::{EntityCreator, WrapperResourcePairRecord};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let store_arc = {
+            let reg = state.stores.read().unwrap();
+            reg.open[&store_id].clone()
+        };
+        let store: &dyn StorageBackend = store_arc.as_ref();
+
+        let mut pairs = load_pairs_document(store).unwrap();
+        pairs
+            .insert(WrapperResourcePairRecord {
+                wrapper: "gh".into(),
+                resource: "github/token".into(),
+                created_by: EntityCreator::ClientInstance {
+                    id: "inst_a".into(),
+                },
+                created_at: 100,
+                last_used_at: None,
+            })
+            .unwrap();
+        pairs
+            .insert(WrapperResourcePairRecord {
+                wrapper: "tf".into(),
+                resource: "github/token".into(),
+                created_by: EntityCreator::ClientInstance {
+                    id: "inst_a".into(),
+                },
+                created_at: 100,
+                last_used_at: None,
+            })
+            .unwrap();
+        save_pairs_document(store, &pairs).unwrap();
+
+        bump_pair_last_used(store, "gh", "github/token").unwrap();
+
+        let after = load_pairs_document(store).unwrap();
+        let gh = after.find("gh", "github/token").unwrap();
+        let tf = after.find("tf", "github/token").unwrap();
+        assert!(gh.last_used_at.is_some(), "matched pair should be bumped");
+        assert!(tf.last_used_at.is_none(), "other pair must not be bumped");
+    }
+
+    #[test]
+    fn bump_pair_last_used_silent_when_no_pair() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let store_arc = {
+            let reg = state.stores.read().unwrap();
+            reg.open[&store_id].clone()
+        };
+        // No pair record for (gh, github/token) → no-op, no error.
+        bump_pair_last_used(store_arc.as_ref(), "gh", "github/token").unwrap();
     }
 
     #[test]

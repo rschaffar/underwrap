@@ -160,6 +160,7 @@ mod client_instances;
 mod daemon;
 mod directory_and_status;
 mod grants;
+mod last_used;
 mod policy;
 mod service_transport;
 mod store_read;

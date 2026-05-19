@@ -518,6 +518,30 @@ impl TestDaemon {
         Ok(response.json().await?)
     }
 
+    pub async fn create_pair(
+        &self,
+        store: &str,
+        wrapper: &str,
+        resource: &str,
+    ) -> Result<underwrap_protocol::service::AdminPairCreateResponse> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/pairs/create")
+            .json(&underwrap_protocol::service::AdminPairCreateRequest {
+                store: store.to_string(),
+                wrapper: wrapper.to_string(),
+                resource: resource.to_string(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default(),
+        );
+        Ok(response.json().await?)
+    }
+
     pub async fn list_pairs(
         &self,
         store: &str,

@@ -7,5 +7,9 @@ import type { EntityCreator } from "./EntityCreator";
  * `resource` references a [`ResourceRecord`] by name; the admin
  * create endpoint refuses to create a pair whose resource is not
  * already present.
+ *
+ * `last_used_at` is bumped server-side on every successful runtime
+ * read against the pair. `None` means the pair has never been used
+ * since the record was created.
  */
-export type WrapperResourcePairRecord = { wrapper: string, resource: string, created_by: EntityCreator, created_at: bigint, };
+export type WrapperResourcePairRecord = { wrapper: string, resource: string, created_by: EntityCreator, created_at: bigint, last_used_at: bigint | null, };

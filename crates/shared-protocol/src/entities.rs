@@ -80,6 +80,10 @@ pub struct ResourceRecord {
 /// `resource` references a [`ResourceRecord`] by name; the admin
 /// create endpoint refuses to create a pair whose resource is not
 /// already present.
+///
+/// `last_used_at` is bumped server-side on every successful runtime
+/// read against the pair. `None` means the pair has never been used
+/// since the record was created.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct WrapperResourcePairRecord {
@@ -87,6 +91,8 @@ pub struct WrapperResourcePairRecord {
     pub resource: String,
     pub created_by: EntityCreator,
     pub created_at: u64,
+    #[serde(default)]
+    pub last_used_at: Option<u64>,
 }
 
 /// Store-backed resources document. Missing-document-means-empty
@@ -258,6 +264,7 @@ mod tests {
             resource: "github/token".into(),
             created_by: ci("client-7"),
             created_at: 42,
+            last_used_at: None,
         })
         .unwrap();
         let json = serde_json::to_string(&doc).unwrap();
@@ -308,6 +315,7 @@ mod tests {
             resource: "r".into(),
             created_by: ci("c1"),
             created_at: 1,
+            last_used_at: None,
         })
         .unwrap();
         let err = doc
@@ -316,6 +324,7 @@ mod tests {
                 resource: "r".into(),
                 created_by: ci("c2"),
                 created_at: 2,
+                last_used_at: None,
             })
             .unwrap_err();
         assert_eq!(err, InsertError::Duplicate);
@@ -325,6 +334,7 @@ mod tests {
             resource: "r2".into(),
             created_by: ci("c1"),
             created_at: 3,
+            last_used_at: None,
         })
         .unwrap();
         assert_eq!(doc.pairs.len(), 2);
@@ -338,6 +348,7 @@ mod tests {
             resource: "r".into(),
             created_by: ci("c1"),
             created_at: 1,
+            last_used_at: None,
         })
         .unwrap();
         doc.insert(WrapperResourcePairRecord {
@@ -345,6 +356,7 @@ mod tests {
             resource: "r".into(),
             created_by: ci("c1"),
             created_at: 2,
+            last_used_at: None,
         })
         .unwrap();
         doc.insert(WrapperResourcePairRecord {
@@ -352,6 +364,7 @@ mod tests {
             resource: "other".into(),
             created_by: ci("c1"),
             created_at: 3,
+            last_used_at: None,
         })
         .unwrap();
         let mut wrappers: Vec<_> = doc
@@ -380,6 +393,7 @@ mod tests {
             resource: "r".into(),
             created_by: ci("c1"),
             created_at: 1,
+            last_used_at: None,
         })
         .unwrap();
         assert!(p.remove("gh", "r"));
