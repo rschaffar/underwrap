@@ -4,19 +4,50 @@ Parent: `epic_atomic_resource_blobs.md`
 
 ## Progress
 
-- **Foundation landed (commit `bb609a2`)**: daemon-side
-  `wrapper_resource_channel` module serves `Checkout` / `Checkin` /
-  `UsageSignal` over an authenticated socketpair, with JCS
-  canonicality enforcement on `Checkin` and access-mode gating. 9 unit
-  tests cover all three verbs and the rejection paths. **No consumer
-  yet** — wrapper chain still uses the legacy per-call secretsd /
-  directory channels.
+The wrapper-resource channel is now wired end-to-end and exercises
+`Checkout` + `UsageSignal` during real wrapper runs:
 
-The remaining tasks below need a cohesive design pass on the
-secretsd↔frontend-ns inter-process protocol before implementation:
-the new channel is per-resource, but the legacy channels are
-per-slot, so a parallel-with-legacy rollout is awkward and the right
-move is a single cutover commit (tasks 2–6 together).
+- `bb609a2` — daemon-side `wrapper_resource_channel` handler.
+- `a692d25` — `ExecResourceBinding` / `ReadResourceBinding` wire
+  types added to `shared-protocol`.
+- `dda5b4c` — daemon establishes wrapper-resource channels per
+  resource and ships fds via SCM_RIGHTS; `frontend-exec` receives
+  them into fd 20+i and forwards via `ExecBundle`.
+- `171aae9` — `frontend-ns` opens each channel and sends `Checkout`
+  at startup, capturing `(original_canonical, writable)` plus
+  libsecret/files metadata. Channel fds are closed in the child
+  before exec.
+- `a55a861` — `frontend-ns` dispatches `UsageSignal` per resource
+  after waitpid. Errors go to stderr without masking the target's
+  exit status.
+
+**Still legacy-driven**: actual write persistence still flows through
+the per-call `SecretsdRequest`/`DirectoryRequest` channels and their
+end-of-channel blob flush. `Checkin` is not yet dispatched.
+
+### Remaining cutover (tasks 4 + 5 finish + 6)
+
+The cleanest path is one atomic cutover commit that:
+
+1. Rewrites `frontend-secretsd` to receive its `LibsecretSection`
+   bytes from a pipe fed by `frontend-ns` at startup, holds the
+   section in memory, mutates from D-Bus without any per-call IPC,
+   and writes its current section back to `frontend-ns` over a
+   teardown pipe on signal. Removes the daemon-channel arg
+   (`--channel-fd`) entirely.
+2. Has `frontend-ns` compose the final `ResourceBlob` at end-of-run
+   from the captured Checkout state (env), the tmpfs files tree, and
+   secretsd's returned `LibsecretSection`. JCS-canonicalize, byte-
+   compare against `original_canonical`, dispatch one of:
+   - equal → `UsageSignal` (already wired);
+   - changed + writable → `Checkin(new_canonical)`;
+   - changed + not writable, or `Checkin` returns `Unauthorized` →
+     stderr+journal warning + `UsageSignal`.
+3. Removes `SecretsdRequest`/`Response`, `DirectoryRequest`/`Response`
+   types and the corresponding daemon channel modules.
+
+This is the work blocked by needing a focused design pass on the
+ns↔secretsd pipe protocol. The wire-level foundation is in.
 
 ## Outcome
 
