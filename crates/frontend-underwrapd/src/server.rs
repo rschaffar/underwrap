@@ -91,6 +91,19 @@ fn register_wrapper_assets(store: &dyn StorageBackend, config: &DaemonConfig) ->
     Ok(())
 }
 
+/// Open the backend client and read the mTLS-bound client instance id
+/// from `/v1/status`. Returns `Err` if either the TLS handshake or the
+/// status round-trip fails — used by [`run`] to fall back to
+/// unenrolled mode rather than aborting startup.
+fn open_and_identify(config: &DaemonConfig) -> Result<(Arc<dyn StorageBackend>, String)> {
+    let store: Arc<dyn StorageBackend> =
+        Arc::from(underwrap_store::open_backend_client(&config.backend)?);
+    let principal = store
+        .principal()
+        .context("learning own runtime client instance id from backend /v1/status")?;
+    Ok((store, principal))
+}
+
 fn build_enrollment_url(config: &DaemonConfig) -> String {
     format!("{}/enroll", config.backend.url.trim_end_matches('/'),)
 }
@@ -118,26 +131,42 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
         (Some(cert), Some(key)) => !cert.exists() || !key.exists(),
         _ => true,
     };
-    let enrollment_url = if unenrolled {
-        Some(build_enrollment_url(&config))
-    } else {
-        None
-    };
-
     // Open the backend client when enrolled, and learn the
     // mTLS-bound client instance id by hitting `/v1/status` once at
     // startup. The id is used to look up grants in the per-store
     // policy document.
-    let (store, client_instance): (Option<Arc<dyn StorageBackend>>, String) = if unenrolled {
-        (None, String::new())
+    //
+    // A failure here means the cert/key are on disk but the backend
+    // does not (yet) accept this client — most often because the
+    // operator hasn't pasted the cert PEM into the admin UI yet. We
+    // log a warning that points at the enrollment docs and fall back
+    // to the same unenrolled state as when the credential files are
+    // missing, so the daemon comes up and wrappers print the
+    // enrollment URL on every invocation.
+    let (store, client_instance, enrollment_url): (
+        Option<Arc<dyn StorageBackend>>,
+        String,
+        Option<String>,
+    ) = if unenrolled {
+        (None, String::new(), Some(build_enrollment_url(&config)))
     } else {
-        let store: Arc<dyn StorageBackend> =
-            Arc::from(underwrap_store::open_backend_client(&config.backend)?);
-        let principal = store
-            .principal()
-            .context("learning own runtime client instance id from backend /v1/status")?;
-        info!(client_instance = %principal, "enrolled with backend");
-        (Some(store), principal)
+        match open_and_identify(&config) {
+            Ok((s, p)) => {
+                info!(client_instance = %p, "enrolled with backend");
+                (Some(s), p, None)
+            }
+            Err(e) => {
+                warn!(
+                    err = %e,
+                    "backend did not accept this client's credential — the daemon is starting in \
+                     unenrolled mode. Run `underwrap-keygen --instance-config <instance.yaml>` if the \
+                     credential is missing, then paste the resulting PEM into the admin UI as a new \
+                     client instance (see docs/getting-started.md \"Enroll the instance\"). Wrapper \
+                     invocations will print the enrollment URL until this succeeds.",
+                );
+                (None, String::new(), Some(build_enrollment_url(&config)))
+            }
+        }
     };
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
