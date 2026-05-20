@@ -171,7 +171,6 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     }
     return map;
   }, [clientInstancesList.data]);
-  const isAdmin = !!(_principal?.authenticated && _principal.role === "admin");
   const resourceProvenance = useMemo(() => {
     const map = new Map<string, ResourceRecord>();
     for (const r of resourcesList.data?.resources ?? []) {
@@ -307,7 +306,6 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
               group={group}
               provenance={resourceProvenance.get(group.resource_id)}
               displayNameById={displayNameById}
-              isAdmin={isAdmin}
               onReveal={(entry) =>
                 setRevealing({
                   resource_id: group.resource_id,
@@ -413,7 +411,6 @@ function ResourceBlock({
   group,
   provenance,
   displayNameById,
-  isAdmin,
   onAddEntry,
   onDeleteResource,
   onRenameResource,
@@ -422,7 +419,6 @@ function ResourceBlock({
   group: SecretResourceGroup;
   provenance: ResourceRecord | undefined;
   displayNameById: Map<string, string>;
-  isAdmin: boolean;
   onAddEntry: (slot: SecretSlot) => void;
   onDeleteResource: () => void;
   onRenameResource: () => void;
@@ -483,7 +479,7 @@ function ResourceBlock({
         <span className="ml-auto text-xs text-(--color-muted)">
           {total === 0 ? "empty" : summary}
         </span>
-        {isAdmin && provenance ? (
+        {provenance ? (
           <>
             <Button
               type="button"
@@ -524,7 +520,6 @@ function ResourceBlock({
             key={slot}
             slot={slot}
             entries={group[slot]}
-            isAdmin={isAdmin}
             onAdd={() => onAddEntry(slot)}
             {...actions}
           />
@@ -549,13 +544,11 @@ function describeCreator(
 function SlotSection({
   slot,
   entries,
-  isAdmin: _isAdmin,
   onAdd,
   ...actions
 }: {
   slot: SecretSlot;
   entries: SecretEntry[];
-  isAdmin: boolean;
   onAdd: () => void;
 } & RowActions) {
   return (

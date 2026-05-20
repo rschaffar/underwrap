@@ -209,7 +209,7 @@ LOCAL_WRAPPER_RESOURCES = {
 
 # Each wrapper now projects exactly one resource, so no secondary
 # grants are needed.
-LOCAL_WRAPPER_EXTRA_RESOURCES = {}
+LOCAL_WRAPPER_EXTRA_RESOURCES: dict[str, list[str]] = {}
 
 REMOTE_WRAPPER_RESOURCES = {
     "remote-echo": "remote/token",

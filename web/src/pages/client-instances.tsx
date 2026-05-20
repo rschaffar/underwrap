@@ -28,10 +28,6 @@ import { describeApiError } from "@/lib/error-message";
 
 type ClientStatusFilter = "all" | "active" | "disabled";
 
-export function canManageClientInstances(p: WhoamiResponse | null): boolean {
-  return !!(p && p.authenticated && p.role === "admin");
-}
-
 function formatEpoch(epoch?: bigint | number): string {
   if (epoch === undefined) return "Never";
   const n = typeof epoch === "bigint" ? Number(epoch) : epoch;
@@ -55,13 +51,10 @@ function statusMatches(
   return filter === "all" || item.status === filter;
 }
 
-export function ClientInstancesPage({
-  principal,
-}: {
-  principal: WhoamiResponse | null;
-}) {
+export function ClientInstancesPage(_props: {
+  principal?: WhoamiResponse | null;
+} = {}) {
   const qc = useQueryClient();
-  const isAdmin = canManageClientInstances(principal);
   const [statusFilter, setStatusFilter] = useState<ClientStatusFilter>("all");
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] =
@@ -119,8 +112,6 @@ export function ClientInstancesPage({
           </div>
           <Button
             type="button"
-            disabled={!isAdmin}
-            title={!isAdmin ? "Only admins may create client instances." : undefined}
             onClick={() => setCreating(true)}
           >
             Create client instance
@@ -150,9 +141,9 @@ export function ClientInstancesPage({
             </thead>
             <tbody>
               {items.map((item) => {
-                const canDisable = isAdmin && item.actions.can_disable;
-                const canEnable = isAdmin && item.actions.can_enable;
-                const canDelete = isAdmin && item.actions.can_delete;
+                const canDisable = item.actions.can_disable;
+                const canEnable = item.actions.can_enable;
+                const canDelete = item.actions.can_delete;
                 return (
                   <tr
                     key={item.id}
@@ -176,12 +167,6 @@ export function ClientInstancesPage({
                         <Button
                           variant="ghost"
                           size="sm"
-                          disabled={!isAdmin}
-                          title={
-                            !isAdmin
-                              ? "Only admins may manage client instances."
-                              : undefined
-                          }
                           onClick={() => setEditing(toDetail(item))}
                         >
                           Edit
@@ -190,7 +175,6 @@ export function ClientInstancesPage({
                           variant={canDisable ? "destructive" : "ghost"}
                           size="sm"
                           disabled={!canDisable && !canEnable}
-                          title={!isAdmin ? "Only admins may manage client instances." : undefined}
                           onClick={() =>
                             setSettingStatus({
                               instance: toDetail(item),
@@ -204,7 +188,6 @@ export function ClientInstancesPage({
                           variant="destructive"
                           size="sm"
                           disabled={!canDelete}
-                          title={!isAdmin ? "Only admins may manage client instances." : undefined}
                           onClick={() => setDeleting(toDetail(item))}
                         >
                           Delete
@@ -219,7 +202,7 @@ export function ClientInstancesPage({
         </div>
       )}
 
-      {isAdmin && creating && storesQuery.data ? (
+      {creating && storesQuery.data ? (
         <CreateClientInstanceDialog
           stores={storesQuery.data.items}
           onClose={() => setCreating(false)}
@@ -230,7 +213,7 @@ export function ClientInstancesPage({
         />
       ) : null}
 
-      {isAdmin && editing && storesQuery.data ? (
+      {editing && storesQuery.data ? (
         <EditClientInstanceDialog
           instance={editing}
           stores={storesQuery.data.items}
@@ -242,7 +225,7 @@ export function ClientInstancesPage({
         />
       ) : null}
 
-      {isAdmin && settingStatus ? (
+      {settingStatus ? (
         <SetStatusDialog
           instance={settingStatus.instance}
           nextStatus={settingStatus.nextStatus}
@@ -254,7 +237,7 @@ export function ClientInstancesPage({
         />
       ) : null}
 
-      {isAdmin && deleting ? (
+      {deleting ? (
         <DeleteClientInstanceDialog
           instance={deleting}
           onClose={() => setDeleting(null)}

@@ -176,7 +176,7 @@ export async function startBackend(
   const configYaml = [
     `stores_file: ${JSON.stringify(storesFile)}`,
     `client_instances_file: ${JSON.stringify(join(tmpDir, "client-instances.json"))}`,
-    `operators_file: ${JSON.stringify(join(tmpDir, "operators.json"))}`,
+    `users_file: ${JSON.stringify(join(tmpDir, "users.json"))}`,
     "https:",
     `  listen: "127.0.0.1:${port}"`,
     "  tls:",

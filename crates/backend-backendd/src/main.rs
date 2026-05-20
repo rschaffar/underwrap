@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-use underwrap_backendd::{operators, server};
+use underwrap_backendd::{server, users};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -33,18 +33,17 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum AdminCommand {
-    /// Offline recovery: append (or refuse-on-conflict) an admin
-    /// operator directly to the backend-managed operator-state file.
-    /// Use when nobody can log in to the running daemon. This
-    /// subcommand intentionally does NOT touch the
-    /// bootstrap-completed sentinel: it's the escape hatch for the
-    /// locked-out case, not a replacement for the online bootstrap
-    /// flow.
+    /// Offline recovery: append (or refuse-on-conflict) a user
+    /// directly to the backend-managed user-state file. Use when
+    /// nobody can log in to the running daemon. This subcommand
+    /// intentionally does NOT touch the bootstrap-completed sentinel:
+    /// it's the escape hatch for the locked-out case, not a
+    /// replacement for the online bootstrap flow.
     ///
     /// Requires physical/file-system access to the backend state dir.
     /// The password is read from stdin to keep it out of the process
     /// argv (which would otherwise leak to `/proc/<pid>/cmdline`).
-    RecoverOperator {
+    RecoverUser {
         /// Username to add. Will be normalised (trimmed + lowercased).
         #[arg(long)]
         username: String,
@@ -119,53 +118,51 @@ async fn main() -> Result<()> {
 }
 
 fn run_admin(cmd: AdminCommand, config: server::BackendConfig) -> Result<()> {
-    let operators_file = config.operators_file();
+    let users_file = config.users_file();
     match cmd {
-        AdminCommand::RecoverOperator { username } => {
+        AdminCommand::RecoverUser { username } => {
             let mut password = String::new();
             std::io::stdin()
                 .read_line(&mut password)
                 .context("reading password from stdin")?;
             let password = password.trim_end_matches(['\r', '\n']).to_string();
-            recover_operator(&operators_file, &username, &password)?;
-            info!(path = %operators_file.display(), username = %username, "recover-operator: admin added");
+            recover_user(&users_file, &username, &password)?;
+            info!(path = %users_file.display(), username = %username, "recover-user: user added");
             Ok(())
         }
     }
 }
 
-/// Add an admin operator to the on-disk collection. Refuses if an
-/// operator with the same username already exists. Doesn't touch the
+/// Add a user to the on-disk collection. Refuses if a user with the
+/// same username already exists. Doesn't touch the
 /// bootstrap-completed sentinel — recovery is intentionally not a
 /// substitute for the online bootstrap (which is what locks the
 /// endpoint going forward).
-fn recover_operator(path: &Path, username: &str, password: &str) -> Result<()> {
+fn recover_user(path: &Path, username: &str, password: &str) -> Result<()> {
     if password.is_empty() {
-        anyhow::bail!("recover-operator: password must not be empty");
+        anyhow::bail!("recover-user: password must not be empty");
     }
-    let normalised = operators::normalise_username(username);
+    let normalised = users::normalise_username(username);
     if normalised.is_empty() {
-        anyhow::bail!("recover-operator: username must not be empty");
+        anyhow::bail!("recover-user: username must not be empty");
     }
-    let mut collection = operators::load(path)?;
+    let mut collection = users::load(path)?;
     if collection.find_by_username(&normalised).is_some() {
         anyhow::bail!(
-            "recover-operator: operator '{}' already exists; refusing to overwrite",
+            "recover-user: user '{}' already exists; refusing to overwrite",
             normalised
         );
     }
     let hash = underwrap_backendd::auth::hash_password(password)?;
-    let now = operators::now_epoch_secs();
-    collection.add(operators::OperatorRecord {
-        id: operators::new_operator_id(),
+    let now = users::now_epoch_secs();
+    collection.add(users::UserRecord {
+        id: users::new_user_id(),
         username: normalised,
         password_hash: hash,
-        role: operators::OperatorRole::Admin,
-        granted_stores: Vec::new(),
         created_at: now,
         password_changed_at: now,
     })?;
-    operators::save(path, &collection)?;
+    users::save(path, &collection)?;
     Ok(())
 }
 
@@ -216,7 +213,7 @@ stores:
             r#"
 stores_file: /var/u/stores.json
 client_instances_file: /var/u/client-instances.json
-operators_file: /var/u/operators.json
+users_file: /var/u/users.json
 "#,
         )
         .unwrap();
@@ -229,65 +226,61 @@ operators_file: /var/u/operators.json
             std::path::PathBuf::from("/var/u/client-instances.json"),
         );
         assert_eq!(
-            config.operators_file(),
-            std::path::PathBuf::from("/var/u/operators.json"),
+            config.users_file(),
+            std::path::PathBuf::from("/var/u/users.json"),
         );
     }
 
     #[test]
-    fn cli_parses_recover_operator_subcommand() {
+    fn cli_parses_recover_user_subcommand() {
         let cli = Cli::parse_from([
             "underwrap-backendd",
             "admin",
-            "recover-operator",
+            "recover-user",
             "--username",
             "Alice",
         ]);
         match cli.command {
-            Some(Command::Admin(AdminCommand::RecoverOperator { username })) => {
+            Some(Command::Admin(AdminCommand::RecoverUser { username })) => {
                 assert_eq!(username, "Alice");
             }
-            _ => panic!(
-                "expected recover-operator subcommand, got {:?}",
-                cli.command
-            ),
+            _ => panic!("expected recover-user subcommand, got {:?}", cli.command),
         }
     }
 
     #[test]
-    fn recover_operator_writes_admin_to_empty_state_file() {
+    fn recover_user_writes_user_to_empty_state_file() {
         let dir = tempfile::TempDir::new().unwrap();
-        let operators_file = dir.path().join("operators.json");
+        let users_file = dir.path().join("users.json");
 
-        recover_operator(&operators_file, "Alice", "hunter2").unwrap();
+        recover_user(&users_file, "Alice", "hunter2").unwrap();
 
-        // Read it back: operator landed in the state file with admin
-        // role and a verifiable password.
-        let coll = operators::load(&operators_file).unwrap();
-        let op = coll.find_by_username("alice").unwrap();
-        assert_eq!(op.role, operators::OperatorRole::Admin);
+        // Read it back: user landed in the state file with a
+        // verifiable password.
+        let coll = users::load(&users_file).unwrap();
+        let u = coll.find_by_username("alice").unwrap();
         assert!(underwrap_backendd::auth::verify_password(
-            &op.password_hash,
+            &u.password_hash,
             "hunter2"
         ));
         // Sentinel is NOT set — recovery deliberately stays "offline".
-        assert!(!operators::bootstrap_completed(&operators_file).unwrap());
+        assert!(!users::bootstrap_completed(&users_file).unwrap());
     }
 
     #[test]
-    fn recover_operator_refuses_existing_username() {
+    fn recover_user_refuses_existing_username() {
         let dir = tempfile::TempDir::new().unwrap();
-        let operators_file = dir.path().join("operators.json");
-        recover_operator(&operators_file, "alice", "p1").unwrap();
-        let err = recover_operator(&operators_file, "Alice", "p2").unwrap_err();
+        let users_file = dir.path().join("users.json");
+        recover_user(&users_file, "alice", "p1").unwrap();
+        let err = recover_user(&users_file, "Alice", "p2").unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 
     #[test]
-    fn recover_operator_rejects_empty_password() {
+    fn recover_user_rejects_empty_password() {
         let dir = tempfile::TempDir::new().unwrap();
-        let operators_file = dir.path().join("operators.json");
-        let err = recover_operator(&operators_file, "alice", "").unwrap_err();
+        let users_file = dir.path().join("users.json");
+        let err = recover_user(&users_file, "alice", "").unwrap_err();
         assert!(err.to_string().contains("password"));
     }
 }

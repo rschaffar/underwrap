@@ -152,7 +152,7 @@ impl TestDaemon {
         let backend_config = underwrap_backendd::server::BackendConfig {
             stores_file: Some(stores_file),
             client_instances_file: Some(instances_file),
-            operators_file: Some(base.join("operators.json")),
+            users_file: Some(base.join("users.json")),
             https: Some(underwrap_backendd::server::HttpsConfig {
                 listen: format!("127.0.0.1:{https_port}"),
                 tls: underwrap_backendd::server::HttpsTlsConfig {

@@ -223,7 +223,7 @@ in {
         cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
           stores_file = "/var/lib/underwrap-backend/stores.json";
           client_instances_file = "/var/lib/underwrap-backend/client-instances.json";
-          operators_file = "/var/lib/underwrap-backend/operators.json";
+          users_file = "/var/lib/underwrap-backend/users.json";
           https = {
             listen = "127.0.0.1:18444";
             tls = {
@@ -306,7 +306,7 @@ in {
         cfg = pkgs.writeText "underwrap-local-backend.yaml" (builtins.toJSON {
           stores_file = "/var/lib/underwrap-backend-local/stores.json";
           client_instances_file = "/var/lib/underwrap-backend-local/client-instances.json";
-          operators_file = "/var/lib/underwrap-backend-local/operators.json";
+          users_file = "/var/lib/underwrap-backend-local/users.json";
           https = {
             listen = "127.0.0.1:18443";
             tls = {

@@ -38,13 +38,10 @@ import {
 import { describeApiError } from "@/lib/error-message";
 
 interface StoresPageProps {
-  /** Whoami payload from the root router context — drives admin-gating. */
-  principal: WhoamiResponse | null;
-}
-
-/** True when the current principal is allowed to mutate stores. */
-export function canMutateStores(p: WhoamiResponse | null): boolean {
-  return !!(p && p.authenticated && p.role === "admin");
+  /** Whoami payload from the root router context. Currently unused — all
+   *  authenticated users have full access — but retained so the route
+   *  call sites don't need to change. */
+  principal?: WhoamiResponse | null;
 }
 
 function toStoreDetail(
@@ -66,9 +63,7 @@ function toStoreDetail(
 
 function storeEditDisabledTitle(
   item: AdminStoresListResponse["items"][number],
-  isAdmin: boolean,
 ): string | undefined {
-  if (!isAdmin) return "Only admins may manage stores.";
   if (!item.actions.can_edit_metadata) {
     return "Store metadata cannot currently be edited.";
   }
@@ -77,9 +72,7 @@ function storeEditDisabledTitle(
 
 function storeDeleteTitle(
   item: AdminStoresListResponse["items"][number],
-  isAdmin: boolean,
 ): string | undefined {
-  if (!isAdmin) return "Only admins may manage stores.";
   if (item.actions.can_delete_now) return undefined;
   if (item.actions.can_force_delete) {
     return "Store contains secrets — a force delete confirmation is required.";
@@ -91,8 +84,7 @@ function storeDeleteTitle(
   return "Store cannot currently be deleted.";
 }
 
-export function StoresPage({ principal }: StoresPageProps) {
-  const isAdmin = canMutateStores(principal);
+export function StoresPage(_props: StoresPageProps = {}) {
   useEffect(() => {
     document.title = "underwrap — stores";
   }, []);
@@ -124,9 +116,7 @@ export function StoresPage({ principal }: StoresPageProps) {
             them here.
           </p>
         </div>
-        {isAdmin ? (
-          <Button onClick={() => setCreateOpen(true)}>Create store</Button>
-        ) : null}
+        <Button onClick={() => setCreateOpen(true)}>Create store</Button>
       </header>
 
       {isLoading ? (
@@ -138,7 +128,6 @@ export function StoresPage({ principal }: StoresPageProps) {
       ) : (
         <StoresTable
           items={data?.items ?? []}
-          isAdmin={isAdmin}
           onEdit={(item) => setEditing(toStoreDetail(item))}
           onDelete={(item) => setDeleting(toStoreDetail(item))}
           onUnlock={(item) => setUnlocking(toStoreDetail(item))}
@@ -146,31 +135,31 @@ export function StoresPage({ principal }: StoresPageProps) {
         />
       )}
 
-      {isAdmin && createOpen ? (
+      {createOpen ? (
         <CreateStoreDialog
           open={createOpen}
           onClose={() => setCreateOpen(false)}
         />
       ) : null}
-      {isAdmin && editing ? (
+      {editing ? (
         <EditStoreDialog
           store={editing}
           onClose={() => setEditing(null)}
         />
       ) : null}
-      {isAdmin && deleting ? (
+      {deleting ? (
         <DeleteStoreDialog
           store={deleting}
           onClose={() => setDeleting(null)}
         />
       ) : null}
-      {isAdmin && unlocking ? (
+      {unlocking ? (
         <UnlockStoreDialog
           store={unlocking}
           onClose={() => setUnlocking(null)}
         />
       ) : null}
-      {isAdmin && locking ? (
+      {locking ? (
         <LockStoreDialog
           store={locking}
           onClose={() => setLocking(null)}
@@ -182,7 +171,6 @@ export function StoresPage({ principal }: StoresPageProps) {
 
 interface StoresTableProps {
   items: AdminStoresListResponse["items"];
-  isAdmin: boolean;
   onEdit: (item: AdminStoresListResponse["items"][number]) => void;
   onDelete: (item: AdminStoresListResponse["items"][number]) => void;
   onUnlock: (item: AdminStoresListResponse["items"][number]) => void;
@@ -191,7 +179,6 @@ interface StoresTableProps {
 
 function StoresTable({
   items,
-  isAdmin,
   onEdit,
   onDelete,
   onUnlock,
@@ -217,11 +204,11 @@ function StoresTable({
         </thead>
         <tbody>
           {items.map((item) => {
-            const canEdit = isAdmin && item.actions.can_edit_metadata;
+            const canEdit = item.actions.can_edit_metadata;
             const canDelete =
-              isAdmin && (item.actions.can_delete_now || item.actions.can_force_delete);
-            const canUnlock = isAdmin && item.actions.can_unlock;
-            const canLock = isAdmin && item.actions.can_lock;
+              item.actions.can_delete_now || item.actions.can_force_delete;
+            const canUnlock = item.actions.can_unlock;
+            const canLock = item.actions.can_lock;
             return (
               <tr
                 key={item.id}
@@ -300,7 +287,7 @@ function StoresTable({
                       variant="ghost"
                       size="sm"
                       disabled={!canEdit}
-                      title={storeEditDisabledTitle(item, isAdmin)}
+                      title={storeEditDisabledTitle(item)}
                       onClick={() => onEdit(item)}
                     >
                       Edit
@@ -309,7 +296,7 @@ function StoresTable({
                       variant="destructive"
                       size="sm"
                       disabled={!canDelete}
-                      title={storeDeleteTitle(item, isAdmin)}
+                      title={storeDeleteTitle(item)}
                       onClick={() => onDelete(item)}
                     >
                       Delete
@@ -666,7 +653,7 @@ function EditStoreDialog({
                 store.locked
                   ? "Unlock the store first."
                   : !canRotate
-                    ? "Only admins may rotate the master key."
+                    ? "This store does not support key rotation."
                     : undefined
               }
               onClick={() => rotate.mutate()}

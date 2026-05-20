@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { ShieldCheck, UserCog } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -24,14 +23,11 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   type AdminUserCreateRequest,
   type AdminUserDetailResponse,
-  type AdminUserRole,
   type AdminUsersListResponse,
   deleteUser,
-  fetchStores,
   fetchUsers,
   postUserCreate,
   postUserResetPassword,
@@ -42,15 +38,8 @@ import { describeApiError } from "@/lib/error-message";
 
 interface UsersPageProps {
   /** Whoami payload from the router context. Used to mark the current
-   *  operator with "(you)" and to keep them from removing themselves
-   *  as the last admin. */
+   *  user with "(you)" and to disable self-delete when alone. */
   principal: WhoamiResponse | null;
-}
-
-/** True when the current principal is an admin. Server enforces this
- *  too; this just hides UI controls the user couldn't successfully use. */
-export function canManageUsers(p: WhoamiResponse | null): boolean {
-  return !!(p && p.authenticated && p.role === "admin");
 }
 
 export function UsersPage({ principal }: UsersPageProps) {
@@ -58,21 +47,11 @@ export function UsersPage({ principal }: UsersPageProps) {
     document.title = "underwrap — users";
   }, []);
 
-  const isAdmin = canManageUsers(principal);
   const meUsername = principal?.username ?? null;
 
   const { data, error, isLoading } = useQuery<AdminUsersListResponse>({
     queryKey: ["admin", "users"],
     queryFn: fetchUsers,
-    enabled: isAdmin,
-  });
-  // The grant editor needs the list of stores currently available.
-  // We fetch it eagerly so the create/edit dialogs don't show an
-  // empty multi-select while waiting.
-  const storesQuery = useQuery({
-    queryKey: ["admin", "stores"],
-    queryFn: fetchStores,
-    enabled: isAdmin,
   });
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -84,25 +63,6 @@ export function UsersPage({ principal }: UsersPageProps) {
     null,
   );
 
-  if (!isAdmin) {
-    // The router's beforeLoad redirects unauthenticated visitors away
-    // from /users; this branch only fires for an authenticated
-    // *operator*-role caller who hit /users directly. Show a friendly
-    // message rather than a blank table.
-    return (
-      <div className="space-y-4">
-        <h2 className="text-xl font-semibold text-(--color-fg)">Users</h2>
-        <p
-          role="alert"
-          className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
-        >
-          Only admin operators can manage users.
-        </p>
-      </div>
-    );
-  }
-
-  const availableStores = (storesQuery.data?.items ?? []).map((s) => s.name);
   const users = data?.users ?? [];
 
   return (
@@ -111,9 +71,8 @@ export function UsersPage({ principal }: UsersPageProps) {
         <div>
           <h2 className="text-xl font-semibold text-(--color-fg)">Users</h2>
           <p className="mt-1 text-sm text-(--color-muted)">
-            Operator accounts that can sign in to this admin UI.
-            Admins can manage every store; operators are restricted to
-            the stores granted here.
+            Accounts that can sign in to this admin UI. Every user has
+            full access — there are no roles or per-store restrictions.
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)}>Create user</Button>
@@ -138,18 +97,12 @@ export function UsersPage({ principal }: UsersPageProps) {
       {createOpen ? (
         <CreateUserDialog
           open={createOpen}
-          availableStores={availableStores}
           onClose={() => setCreateOpen(false)}
         />
       ) : null}
       {editing ? (
         <EditUserDialog
           user={editing}
-          availableStores={availableStores}
-          isLastAdmin={
-            editing.role === "admin" &&
-            users.filter((u) => u.role === "admin").length <= 1
-          }
           onClose={() => setEditing(null)}
         />
       ) : null}
@@ -162,10 +115,7 @@ export function UsersPage({ principal }: UsersPageProps) {
       {deleting ? (
         <DeleteUserDialog
           user={deleting}
-          isLastAdmin={
-            deleting.role === "admin" &&
-            users.filter((u) => u.role === "admin").length <= 1
-          }
+          isLastUser={users.length <= 1}
           onClose={() => setDeleting(null)}
         />
       ) : null}
@@ -174,27 +124,6 @@ export function UsersPage({ principal }: UsersPageProps) {
 }
 
 // ---------- Helpers ----------
-
-function RoleBadge({ role }: { role: AdminUserRole }) {
-  const isAdmin = role === "admin";
-  return (
-    <span
-      className={
-        "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs " +
-        (isAdmin
-          ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
-          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300")
-      }
-    >
-      {isAdmin ? (
-        <ShieldCheck className="h-3 w-3" aria-hidden />
-      ) : (
-        <UserCog className="h-3 w-3" aria-hidden />
-      )}
-      {role}
-    </span>
-  );
-}
 
 function formatEpoch(epoch: bigint | number): string {
   // u64 fields come over the wire as bigint; the visible Date range
@@ -232,8 +161,6 @@ function UsersTable({
         <thead className="bg-(--color-surface-0)/60 text-xs uppercase tracking-wide text-(--color-muted)">
           <tr>
             <th className="px-4 py-2">Username</th>
-            <th className="px-4 py-2">Role</th>
-            <th className="px-4 py-2">Granted stores</th>
             <th className="px-4 py-2">Created</th>
             <th className="px-4 py-2">Password changed</th>
             <th className="px-4 py-2 text-right">Actions</th>
@@ -254,27 +181,6 @@ function UsersTable({
                       (you)
                     </span>
                   ) : null}
-                </td>
-                <td className="px-4 py-3">
-                  <RoleBadge role={u.role} />
-                </td>
-                <td className="px-4 py-3 text-(--color-muted)">
-                  {u.role === "admin" ? (
-                    <span className="text-xs italic">all stores</span>
-                  ) : u.granted_stores.length === 0 ? (
-                    <span className="text-xs italic">none</span>
-                  ) : (
-                    <div className="flex flex-wrap gap-1">
-                      {u.granted_stores.map((s) => (
-                        <span
-                          key={s}
-                          className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-1.5 py-0.5 text-xs"
-                        >
-                          {s}
-                        </span>
-                      ))}
-                    </div>
-                  )}
                 </td>
                 <td className="px-4 py-3 text-(--color-muted)">
                   {formatEpoch(u.created_at)}
@@ -316,59 +222,6 @@ function UsersTable({
   );
 }
 
-// ---------- Grant editor (shared by create/edit) ----------
-
-interface GrantEditorProps {
-  value: string[];
-  available: string[];
-  disabled?: boolean;
-  onChange: (next: string[]) => void;
-}
-
-function GrantEditor({ value, available, disabled, onChange }: GrantEditorProps) {
-  const set = new Set(value);
-  function toggle(name: string) {
-    const next = new Set(set);
-    if (next.has(name)) next.delete(name);
-    else next.add(name);
-    onChange([...next].sort());
-  }
-  if (available.length === 0) {
-    return (
-      <p className="text-xs text-(--color-muted)">
-        No stores configured yet. Create one under Stores first.
-      </p>
-    );
-  }
-  return (
-    <div className="flex flex-wrap gap-2">
-      {available.map((name) => {
-        const checked = set.has(name);
-        return (
-          <label
-            key={name}
-            className={
-              "inline-flex cursor-pointer items-center gap-1 rounded-md border px-2 py-1 text-xs " +
-              (checked
-                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                : "border-(--color-line) bg-(--color-surface-1) text-(--color-fg)")
-            }
-          >
-            <input
-              type="checkbox"
-              className="sr-only"
-              checked={checked}
-              disabled={disabled}
-              onChange={() => toggle(name)}
-            />
-            {name}
-          </label>
-        );
-      })}
-    </div>
-  );
-}
-
 // ---------- Create ----------
 
 const createSchema = z
@@ -382,7 +235,6 @@ const createSchema = z
       ),
     password: z.string().min(8, "Use at least 8 characters."),
     confirm: z.string(),
-    role: z.enum(["admin", "operator"]),
   })
   .refine((v) => v.password === v.confirm, {
     path: ["confirm"],
@@ -392,23 +244,19 @@ type CreateValues = z.infer<typeof createSchema>;
 
 function CreateUserDialog({
   open,
-  availableStores,
   onClose,
 }: {
   open: boolean;
-  availableStores: string[];
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [grants, setGrants] = useState<string[]>([]);
   const form = useForm<CreateValues>({
     resolver: zodResolver(createSchema),
     defaultValues: {
       username: "",
       password: "",
       confirm: "",
-      role: "operator",
     },
   });
   const create = useMutation({
@@ -424,23 +272,16 @@ function CreateUserDialog({
     create.mutate({
       username: values.username,
       password: values.password,
-      role: values.role,
-      // Admins always see everything server-side; we don't send an
-      // explicit grant list for admins because the server would just
-      // ignore it for authorization purposes.
-      granted_stores: values.role === "admin" ? [] : grants,
     });
   }
-  const role = form.watch("role");
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Create user</DialogTitle>
           <DialogDescription>
-            New operators land with the chosen role and an Argon2id
-            password hash. The password is sent over TLS, hashed
-            server-side, and never echoed back.
+            The password is sent over TLS, hashed server-side with
+            Argon2id, and never echoed back.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -497,38 +338,6 @@ function CreateUserDialog({
                 </FormItem>
               )}
             />
-            <FormField
-              control={form.control}
-              name="role"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Role</FormLabel>
-                  <FormControl>
-                    <select
-                      {...field}
-                      className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
-                    >
-                      <option value="operator">operator</option>
-                      <option value="admin">admin</option>
-                    </select>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            {role === "operator" ? (
-              <div className="space-y-1.5">
-                <Label>Granted stores</Label>
-                <GrantEditor
-                  value={grants}
-                  available={availableStores}
-                  onChange={setGrants}
-                />
-                <p className="text-xs text-(--color-muted)">
-                  Operators can only see and act on stores granted here.
-                </p>
-              </div>
-            ) : null}
             {submitError ? (
               <p
                 role="alert"
@@ -562,60 +371,41 @@ const editSchema = z.object({
       /^[a-z0-9][a-z0-9_-]*$/,
       "Use lowercase letters, digits, '-' or '_'; must start with a letter or digit.",
     ),
-  role: z.enum(["admin", "operator"]),
 });
 type EditValues = z.infer<typeof editSchema>;
 
 function EditUserDialog({
   user,
-  availableStores,
-  isLastAdmin,
   onClose,
 }: {
   user: AdminUserDetailResponse;
-  availableStores: string[];
-  isLastAdmin: boolean;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [grants, setGrants] = useState<string[]>(user.granted_stores ?? []);
   const form = useForm<EditValues>({
     resolver: zodResolver(editSchema),
-    defaultValues: { username: user.username, role: user.role },
+    defaultValues: { username: user.username },
   });
   const mut = useMutation({
-    mutationFn: (body: { username: string; role: AdminUserRole }) =>
-      putUserUpdate(user.id, {
-        username: body.username,
-        role: body.role,
-        granted_stores: body.role === "admin" ? [] : grants,
-      }),
+    mutationFn: (body: { username: string }) =>
+      putUserUpdate(user.id, { username: body.username }),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "users"] });
       onClose();
     },
     onError: (err) => setSubmitError(describeApiError(err)),
   });
-  const role = form.watch("role");
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Edit user: {user.username}</DialogTitle>
           <DialogDescription>
-            Change username, role, or per-store grants. Use the
-            separate “Reset password” action to change a user's
-            password.
+            Rename the user. Use the separate “Reset password” action
+            to change a password.
           </DialogDescription>
         </DialogHeader>
-        {isLastAdmin ? (
-          <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-            This is the last remaining admin. The role select is
-            locked because demoting it would leave the backend
-            without an administrator.
-          </p>
-        ) : null}
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit((v) => {
@@ -644,36 +434,6 @@ function EditUserDialog({
                 </FormItem>
               )}
             />
-            <FormField
-              control={form.control}
-              name="role"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Role</FormLabel>
-                  <FormControl>
-                    <select
-                      {...field}
-                      disabled={isLastAdmin}
-                      className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg) disabled:opacity-60"
-                    >
-                      <option value="operator">operator</option>
-                      <option value="admin">admin</option>
-                    </select>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            {role === "operator" ? (
-              <div className="space-y-1.5">
-                <Label>Granted stores</Label>
-                <GrantEditor
-                  value={grants}
-                  available={availableStores}
-                  onChange={setGrants}
-                />
-              </div>
-            ) : null}
             {submitError ? (
               <p
                 role="alert"
@@ -805,11 +565,11 @@ function ResetPasswordDialog({
 
 function DeleteUserDialog({
   user,
-  isLastAdmin,
+  isLastUser,
   onClose,
 }: {
   user: AdminUserDetailResponse;
-  isLastAdmin: boolean;
+  isLastUser: boolean;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -822,24 +582,24 @@ function DeleteUserDialog({
     },
     onError: (err) => setSubmitError(describeApiError(err)),
   });
-  const canDelete = !mut.isPending && !isLastAdmin;
+  const canDelete = !mut.isPending && !isLastUser;
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Delete user: {user.username}</DialogTitle>
           <DialogDescription>
-            This removes the operator account. Any session it holds is
-            revoked server-side.
+            This removes the account. Any session it holds is revoked
+            server-side.
           </DialogDescription>
         </DialogHeader>
-        {isLastAdmin ? (
+        {isLastUser ? (
           <p
             role="alert"
             className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
           >
-            This is the last remaining admin. The backend refuses to
-            delete it; promote another operator to admin first.
+            This is the last remaining user. The backend refuses to
+            delete it; create another user first.
           </p>
         ) : null}
         {submitError ? (

@@ -130,10 +130,8 @@ const appLayoutRoute = new Route({
   id: "app",
   component: function AppLayoutComponent() {
     const navigate = useNavigate();
-    const ctx = appLayoutRoute.useRouteContext();
     return (
       <AppShell
-        role={ctx.principal?.role}
         onLogout={async () => {
           // Delegate the actual POST to the `/logout` route so there's
           // one place that knows how to revoke + clear caches + redirect.
@@ -184,16 +182,6 @@ const storesRoute = new Route({
 const clientInstancesRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/client-instances",
-  beforeLoad: ({ context }) => {
-    const ctx = context as RouterContext;
-    if (
-      ctx.principal &&
-      ctx.principal.authenticated &&
-      ctx.principal.role !== "admin"
-    ) {
-      throw redirect({ to: "/" });
-    }
-  },
   component: function ClientInstancesRouteComponent() {
     const ctx = clientInstancesRoute.useRouteContext();
     return <ClientInstancesPage principal={ctx.principal} />;
@@ -203,20 +191,6 @@ const clientInstancesRoute = new Route({
 const usersRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/users",
-  beforeLoad: ({ context }) => {
-    // Server-side authz is the source of truth (the admin API itself
-    // 403s non-admin requests). The router redirect is UX only —
-    // sending an operator-role visitor back to the dashboard avoids
-    // the brief flash of an empty Users page.
-    const ctx = context as RouterContext;
-    if (
-      ctx.principal &&
-      ctx.principal.authenticated &&
-      ctx.principal.role !== "admin"
-    ) {
-      throw redirect({ to: "/" });
-    }
-  },
   component: function UsersRouteComponent() {
     const ctx = usersRoute.useRouteContext();
     return <UsersPage principal={ctx.principal} />;

@@ -323,7 +323,7 @@ impl SessionRevocations {
     /// deleted, so a still-unexpired cookie can't outlive the change.
     pub fn revoke_username(&self, username: &str, now: u64) {
         let mut guard = self.username_floor.lock().unwrap();
-        guard.insert(crate::operators::normalise_username(username), now);
+        guard.insert(crate::users::normalise_username(username), now);
     }
 
     /// Returns true while the session id is in the set AND has not
@@ -343,7 +343,7 @@ impl SessionRevocations {
     pub fn is_user_floor_revoked(&self, username: &str, issued_at: u64) -> bool {
         let guard = self.username_floor.lock().unwrap();
         guard
-            .get(&crate::operators::normalise_username(username))
+            .get(&crate::users::normalise_username(username))
             .is_some_and(|floor| issued_at < *floor)
     }
 

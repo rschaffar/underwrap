@@ -81,12 +81,11 @@ pub struct BackendConfig {
     /// `/var/lib/underwrap-backend/client-instances.json`.
     #[serde(default)]
     pub client_instances_file: Option<PathBuf>,
-    /// Path of the backend-managed operator-state file. Missing files
-    /// are treated as an empty operator collection with bootstrap
-    /// incomplete. Defaults to
-    /// [`crate::operators::DEFAULT_OPERATORS_FILE`].
+    /// Path of the backend-managed user-state file. Missing files are
+    /// treated as an empty user collection with bootstrap incomplete.
+    /// Defaults to [`crate::users::DEFAULT_USERS_FILE`].
     #[serde(default)]
-    pub operators_file: Option<PathBuf>,
+    pub users_file: Option<PathBuf>,
     #[serde(default)]
     pub https: Option<HttpsConfig>,
     #[serde(default)]
@@ -108,11 +107,11 @@ impl BackendConfig {
             .unwrap_or_else(|| PathBuf::from("/var/lib/underwrap-backend/client-instances.json"))
     }
 
-    /// Resolve [`Self::operators_file`] or the project default.
-    pub fn operators_file(&self) -> PathBuf {
-        self.operators_file
+    /// Resolve [`Self::users_file`] or the project default.
+    pub fn users_file(&self) -> PathBuf {
+        self.users_file
             .clone()
-            .unwrap_or_else(|| PathBuf::from(crate::operators::DEFAULT_OPERATORS_FILE))
+            .unwrap_or_else(|| PathBuf::from(crate::users::DEFAULT_USERS_FILE))
     }
 }
 
@@ -275,7 +274,7 @@ struct AdminRuntimeState {
     /// Where to read the SPA bundle from when serving non-API paths.
     web_source: crate::web::WebAssetSource,
     /// Path of the backend-managed operator-state file.
-    operators_file: PathBuf,
+    users_file: PathBuf,
     /// 32-byte AEAD key used to encrypt session cookies.
     session_key: [u8; crate::auth::SESSION_KEY_LEN],
     /// Configured session lifetime in seconds.
@@ -299,7 +298,7 @@ struct AdminRuntimeState {
     /// cycles so two concurrent admin requests (e.g. two user
     /// renames) can't observe and overwrite each other's intermediate
     /// state (ticket 240). Held across `load` → mutate → `save`.
-    operator_collection_lock: std::sync::Mutex<()>,
+    user_collection_lock: std::sync::Mutex<()>,
 }
 
 fn log_admin_event(
@@ -326,7 +325,7 @@ fn log_admin_event(
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores_file = config.stores_file();
     let client_instances_file = config.client_instances_file();
-    let operators_file = config.operators_file();
+    let users_file = config.users_file();
     let definitions = load_store_records(&stores_file)?;
     let state_map = open_initial_stores(&definitions)?;
     let store_registry = Arc::new(std::sync::RwLock::new(StoreRegistry {
@@ -363,7 +362,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             admin_enabled: admin_config.is_some(),
             allowed_origins: admin_config.and_then(|cfg| cfg.allowed_origins.clone()),
             web_source: crate::web::WebAssetSource::from_env(),
-            operators_file: operators_file.clone(),
+            users_file: users_file.clone(),
             session_key,
             session_lifetime_secs: admin_config
                 .and_then(|cfg| cfg.session_lifetime_secs)
@@ -372,7 +371,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
-            operator_collection_lock: std::sync::Mutex::new(()),
+            user_collection_lock: std::sync::Mutex::new(()),
         });
         {
             let snapshot = state.stores.read().unwrap();
@@ -1109,7 +1108,7 @@ async fn handle_service_request(
                     .get(&principal)
                     .map(|r| r.auto_create_wrapper_assets)
                     .unwrap_or(false);
-                let now = crate::operators::now_epoch_secs();
+                let now = crate::users::now_epoch_secs();
                 match apply_runtime_wrapper_register(
                     &*store,
                     &principal,
@@ -1239,7 +1238,7 @@ fn runtime_read_gate(
 /// the pairs document is only rewritten if the new timestamp differs
 /// from the stored one.
 fn bump_pair_last_used(store: &dyn StorageBackend, wrapper: &str, resource_id: &str) -> Result<()> {
-    let now = crate::operators::now_epoch_secs();
+    let now = crate::users::now_epoch_secs();
     let mut doc = load_pairs_document(store)?;
     let Some(pair) = doc
         .pairs
@@ -1380,7 +1379,11 @@ fn read_resource_entry(store: &dyn StorageBackend, secret_id: &str) -> Result<Op
 
 /// Write a single per-key entry by load-modify-save against the
 /// resource blob.
-fn write_resource_entry(store: &dyn StorageBackend, secret_id: &str, material: &[u8]) -> Result<()> {
+fn write_resource_entry(
+    store: &dyn StorageBackend,
+    secret_id: &str,
+    material: &[u8],
+) -> Result<()> {
     let Some(parsed) = parse_secret_id(secret_id) else {
         return store.write(secret_id, material);
     };
@@ -1522,13 +1525,12 @@ fn handle_admin_secret_write(
 
     let store = match admin_store(state, &body.store) {
         Ok(store) => store,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+        Err(resp) => return resp,
     };
 
-    // Admin writes are always allowed once the operator's per-store
-    // access has been checked. Per-resource write permissions on the
-    // policy document gate wrapper-side writes only — admins can't
-    // be locked out of their own backend.
+    // Admin writes are always allowed. Per-resource write permissions
+    // on the policy document gate wrapper-side writes only — admin
+    // sessions can't be locked out of their own backend.
 
     match write_resource_entry(store.as_ref(), &secret_id, &material) {
         Ok(()) => {
@@ -1569,7 +1571,7 @@ fn handle_admin_secret_rename(
     };
     let store = match admin_store(state, &body.store) {
         Ok(store) => store,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+        Err(resp) => return resp,
     };
     let blob = match load_resource_blob(store.as_ref(), &body.resource_id) {
         Ok(b) => b,
@@ -1977,42 +1979,14 @@ fn generate_resource_id() -> String {
     )
 }
 
-fn admin_store(state: &AdminRuntimeState, store: &str) -> Result<Arc<dyn StorageBackend>> {
-    state
-        .stores
-        .read()
-        .unwrap()
-        .unlocked_backend(store)
-        .map_err(|e| match e {
-            RegistryLookupError::Locked => {
-                anyhow::anyhow!("store '{store}' is locked; unlock it before this admin operation")
-            }
-            RegistryLookupError::NotFound => anyhow::anyhow!("unknown store '{store}'"),
-        })
-}
-
-/// Resolve a store reference for an authenticated request. Returns
-/// 404 not_found when either the store doesn't exist or the principal
-/// lacks a grant for it. Collapsing both into the same response code
-/// prevents operators from probing the store catalogue.
-///
-/// Ungranted-access attempts by non-admin principals are still logged
-/// to journald/stdout, but no longer persisted as backend audit-history
-/// records.
+/// Resolve a store reference for an authenticated request. Any
+/// authenticated user can address any store; the helper just returns
+/// the live backend or the appropriate not-found / locked response.
 #[allow(clippy::result_large_err)]
-fn admin_store_for_principal(
+fn admin_store(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
     store: &str,
 ) -> std::result::Result<Arc<dyn StorageBackend>, Response<Full<Bytes>>> {
-    if !principal.has_store_access(store) {
-        emit_denied_grant_log(state, principal, store);
-        return Err(error_response(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "unknown store",
-        ));
-    }
     match state.stores.read().unwrap().unlocked_backend(store) {
         Ok(s) => Ok(s),
         Err(RegistryLookupError::Locked) => Err(store_locked_response(store)),
@@ -2024,59 +1998,35 @@ fn admin_store_for_principal(
     }
 }
 
-/// Log an operator probing a store they do not have a grant for.
-fn emit_denied_grant_log(
-    _state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
-    store: &str,
-) {
-    // Admins bypass grant filtering by design; if has_store_access
-    // returned false here, the principal is an operator. We assert
-    // that invariant in debug builds so a future refactor doesn't
-    // accidentally start filtering admin requests too.
-    debug_assert!(!principal.is_admin());
-    let resource = format!("store:{store}");
-    log_admin_event(
-        "store.access",
-        &principal.username,
-        None,
-        Some(resource.as_str()),
-        None,
-        None,
-        "denied_grant",
-    );
-}
-
 /// Build a [`Principal`] from an authenticated request. We re-read the
-/// operator collection so role and grants are always current.
+/// user collection so the current username (after a rename) is always
+/// reflected.
 #[allow(clippy::result_large_err)]
 fn resolve_principal(
     state: &AdminRuntimeState,
     auth: &AdminAuth,
-) -> std::result::Result<crate::operators::Principal, Response<Full<Bytes>>> {
+) -> std::result::Result<crate::users::Principal, Response<Full<Bytes>>> {
     let payload = auth.session();
-    let collection = match crate::operators::load(&state.operators_file) {
+    let collection = match crate::users::load(&state.users_file) {
         Ok(c) => c,
         Err(e) => {
-            warn!(err = %e, "could not load operator collection");
+            warn!(err = %e, "could not load user collection");
             return Err(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
-                "operator collection unavailable",
+                "user collection unavailable",
             ));
         }
     };
     match collection.find_by_username(&payload.username) {
-        Some(op) => Ok(crate::operators::Principal {
-            id: op.id.clone(),
-            username: op.username.clone(),
-            role: op.role,
-            granted_stores: op.granted_stores.clone(),
+        Some(u) => Ok(crate::users::Principal {
+            id: u.id.clone(),
+            username: u.username.clone(),
         }),
         None => Err(error_response(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
-            "session refers to an operator that no longer exists",
+            "session refers to a user that no longer exists",
         )),
     }
 }
@@ -2189,7 +2139,6 @@ pub struct LoginRequest {
 #[ts(export)]
 pub struct LoginResponse {
     pub username: String,
-    pub role: crate::operators::OperatorRole,
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -2202,9 +2151,6 @@ pub struct WhoamiResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub username: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub role: Option<crate::operators::OperatorRole>,
 }
 
 async fn handle_admin_login(
@@ -2217,7 +2163,7 @@ async fn handle_admin_login(
         Err(resp) => return resp,
     };
 
-    let username_norm = crate::operators::normalise_username(&body.username);
+    let username_norm = crate::users::normalise_username(&body.username);
     if username_norm.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -2242,14 +2188,14 @@ async fn handle_admin_login(
         );
     }
 
-    let collection = match crate::operators::load(&state.operators_file) {
+    let collection = match crate::users::load(&state.users_file) {
         Ok(c) => c,
         Err(e) => {
-            warn!(err = %e, "login: failed to read operator collection");
+            warn!(err = %e, "login: failed to read user collection");
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
-                "operator collection unavailable",
+                "user collection unavailable",
             );
         }
     };
@@ -2258,12 +2204,12 @@ async fn handle_admin_login(
     // independent of user existence.
     let lookup = collection.find_by_username(&username_norm);
     let hash_to_check = lookup
-        .map(|o| o.password_hash.as_str())
+        .map(|u| u.password_hash.as_str())
         .unwrap_or(crate::auth::DUMMY_PASSWORD_HASH);
     let password_ok = crate::auth::verify_password(hash_to_check, &body.password);
 
-    let operator = match (lookup, password_ok) {
-        (Some(op), true) => op,
+    let user = match (lookup, password_ok) {
+        (Some(u), true) => u,
         _ => {
             info!(username = %username_norm, "login failed");
             return error_response(
@@ -2279,8 +2225,8 @@ async fn handle_admin_login(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let payload = crate::auth::new_session_payload(
-        operator.id.clone(),
-        operator.username.clone(),
+        user.id.clone(),
+        user.username.clone(),
         now,
         state.session_lifetime_secs,
     );
@@ -2307,15 +2253,10 @@ async fn handle_admin_login(
     );
 
     state.login_rate_limiter.reset(&username_norm);
-    info!(
-        username = %operator.username,
-        role = ?operator.role,
-        "login succeeded"
-    );
+    info!(username = %user.username, "login succeeded");
 
     let body = LoginResponse {
-        username: operator.username.clone(),
-        role: operator.role,
+        username: user.username.clone(),
     };
     let body_bytes = serde_json::to_vec(&body).expect("serializing login response");
     Response::builder()
@@ -2344,7 +2285,6 @@ pub struct BootstrapStatusResponse {
 #[ts(export)]
 pub struct BootstrapResponse {
     pub username: String,
-    pub role: crate::operators::OperatorRole,
 }
 
 /// Handle `GET /v1/admin/auth/bootstrap/status`. Public endpoint:
@@ -2353,8 +2293,8 @@ pub struct BootstrapResponse {
 /// Anything else (operators exist, sentinel set, store error) yields
 /// `false` — the SPA's response is to show the login page.
 fn handle_admin_bootstrap_status(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
-    let sentinel_set = crate::operators::bootstrap_completed(&state.operators_file).unwrap_or(true);
-    let collection_empty = crate::operators::load(&state.operators_file)
+    let sentinel_set = crate::users::bootstrap_completed(&state.users_file).unwrap_or(true);
+    let collection_empty = crate::users::load(&state.users_file)
         .map(|c| c.is_empty())
         .unwrap_or(false);
     json_response(
@@ -2379,7 +2319,7 @@ async fn handle_admin_bootstrap(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    let username_norm = crate::operators::normalise_username(&body.username);
+    let username_norm = crate::users::normalise_username(&body.username);
     if username_norm.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -2396,11 +2336,11 @@ async fn handle_admin_bootstrap(
     }
 
     // Serialise concurrent bootstrap attempts: two callers must not
-    // both see "operators empty + sentinel unset" before either has
+    // both see "users empty + sentinel unset" before either has
     // written. The lock is held across the whole sequence.
     let _guard = state.bootstrap_lock.lock().unwrap();
 
-    match crate::operators::bootstrap_completed(&state.operators_file) {
+    match crate::users::bootstrap_completed(&state.users_file) {
         Ok(true) => {
             audit_bootstrap_attempt(state, &username_norm, "bootstrap_already_completed");
             return error_response(
@@ -2420,27 +2360,27 @@ async fn handle_admin_bootstrap(
         }
     }
 
-    let collection = match crate::operators::load(&state.operators_file) {
+    let collection = match crate::users::load(&state.users_file) {
         Ok(c) => c,
         Err(e) => {
-            warn!(err = %e, "bootstrap: loading operator collection failed");
+            warn!(err = %e, "bootstrap: loading user collection failed");
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
-                "operator collection unavailable",
+                "user collection unavailable",
             );
         }
     };
     if !collection.is_empty() {
-        audit_bootstrap_attempt(state, &username_norm, "operators_already_exist");
+        audit_bootstrap_attempt(state, &username_norm, "users_already_exist");
         return error_response(
             StatusCode::CONFLICT,
-            "operators_already_exist",
-            "an operator already exists; bootstrap requires an empty operator collection",
+            "users_already_exist",
+            "a user already exists; bootstrap requires an empty user collection",
         );
     }
 
-    let now = crate::operators::now_epoch_secs();
+    let now = crate::users::now_epoch_secs();
     let password_hash = match crate::auth::hash_password(&body.password) {
         Ok(h) => h,
         Err(e) => {
@@ -2452,16 +2392,14 @@ async fn handle_admin_bootstrap(
             );
         }
     };
-    let record = crate::operators::OperatorRecord {
-        id: crate::operators::new_operator_id(),
+    let record = crate::users::UserRecord {
+        id: crate::users::new_user_id(),
         username: username_norm.clone(),
         password_hash,
-        role: crate::operators::OperatorRole::Admin,
-        granted_stores: Vec::new(),
         created_at: now,
         password_changed_at: now,
     };
-    let mut new_collection = crate::operators::OperatorCollection::default();
+    let mut new_collection = crate::users::UserCollection::default();
     if let Err(e) = new_collection.add(record.clone()) {
         warn!(err = %e, "bootstrap: building collection failed");
         return error_response(
@@ -2470,17 +2408,17 @@ async fn handle_admin_bootstrap(
             &e.to_string(),
         );
     }
-    if let Err(e) = crate::operators::save(&state.operators_file, &new_collection) {
-        warn!(err = %e, "bootstrap: writing operator collection failed");
+    if let Err(e) = crate::users::save(&state.users_file, &new_collection) {
+        warn!(err = %e, "bootstrap: writing user collection failed");
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
-            "could not persist operator",
+            "could not persist user",
         );
     }
-    if let Err(e) = crate::operators::mark_bootstrap_completed(
-        &state.operators_file,
-        &crate::operators::BootstrapSentinel {
+    if let Err(e) = crate::users::mark_bootstrap_completed(
+        &state.users_file,
+        &crate::users::BootstrapSentinel {
             completed_at: now,
             by_username: record.username.clone(),
         },
@@ -2522,10 +2460,9 @@ async fn handle_admin_bootstrap(
         state.session_lifetime_secs,
         state.cookies_secure,
     );
-    info!(username = %record.username, "bootstrap: first admin created");
+    info!(username = %record.username, "bootstrap: first user created");
     let body = BootstrapResponse {
         username: record.username.clone(),
-        role: record.role,
     };
     let body_bytes = serde_json::to_vec(&body).expect("serializing bootstrap response");
     Response::builder()
@@ -2596,7 +2533,6 @@ fn handle_admin_whoami(
             &WhoamiResponse {
                 authenticated: false,
                 username: None,
-                role: None,
             },
         );
     };
@@ -2612,72 +2548,50 @@ fn handle_admin_whoami(
                 &WhoamiResponse {
                     authenticated: false,
                     username: None,
-                    role: None,
                 },
             );
         }
     };
-    // Resolve the current role from the collection in case it has
-    // changed since the session was issued.
-    let collection = crate::operators::load(&state.operators_file).unwrap_or_default();
-    let role = collection
-        .find_by_username(&payload.username)
-        .map(|o| o.role);
+    // Confirm the username still resolves to a live user record; a
+    // deleted user invalidates the session.
+    let collection = crate::users::load(&state.users_file).unwrap_or_default();
+    let exists = collection.find_by_username(&payload.username).is_some();
     json_response(
         StatusCode::OK,
         &WhoamiResponse {
-            authenticated: role.is_some(),
+            authenticated: exists,
             username: Some(payload.username),
-            role,
         },
     )
 }
 
-// ===== Users CRUD (ticket 240) =====
+// ===== Users CRUD =====
 //
-// Operator records are stored in the backend-managed operator-state
-// file (see `crate::operators`). Every mutation goes through
-// `mutate_collection` so the read-modify-write race against
-// concurrent admin requests is closed by the operator-collection
-// mutex and the uniqueness / last-admin invariants live in one place.
+// User records are stored in the backend-managed user-state file (see
+// `crate::users`). Every mutation goes through `mutate_collection` so
+// the read-modify-write race against concurrent admin requests is
+// closed by the user-collection mutex and the uniqueness / last-user
+// invariants live in one place.
 
 use underwrap_protocol::service::{
     AdminOkUserResponse, AdminPasswordChangeRequest, AdminUserCreateRequest,
-    AdminUserDetailResponse, AdminUserListItem, AdminUserResetPasswordRequest, AdminUserRole,
+    AdminUserDetailResponse, AdminUserListItem, AdminUserResetPasswordRequest,
     AdminUserUpdateRequest, AdminUsersListResponse,
 };
 
-fn user_role_to_wire(role: crate::operators::OperatorRole) -> AdminUserRole {
-    match role {
-        crate::operators::OperatorRole::Admin => AdminUserRole::Admin,
-        crate::operators::OperatorRole::Operator => AdminUserRole::Operator,
-    }
-}
-
-fn user_role_from_wire(role: AdminUserRole) -> crate::operators::OperatorRole {
-    match role {
-        AdminUserRole::Admin => crate::operators::OperatorRole::Admin,
-        AdminUserRole::Operator => crate::operators::OperatorRole::Operator,
-    }
-}
-
-fn user_list_item(record: &crate::operators::OperatorRecord) -> AdminUserListItem {
+fn user_list_item(record: &crate::users::UserRecord) -> AdminUserListItem {
     AdminUserListItem {
         id: record.id.clone(),
         username: record.username.clone(),
-        role: user_role_to_wire(record.role),
-        granted_stores: record.granted_stores.clone(),
         created_at: record.created_at,
         password_changed_at: record.password_changed_at,
     }
 }
 
-fn user_detail(record: &crate::operators::OperatorRecord) -> AdminUserDetailResponse {
+fn user_detail(record: &crate::users::UserRecord) -> AdminUserDetailResponse {
     AdminUserDetailResponse {
         id: record.id.clone(),
         username: record.username.clone(),
-        role: user_role_to_wire(record.role),
-        granted_stores: record.granted_stores.clone(),
         created_at: record.created_at,
         password_changed_at: record.password_changed_at,
     }
@@ -2685,7 +2599,7 @@ fn user_detail(record: &crate::operators::OperatorRecord) -> AdminUserDetailResp
 
 fn write_admin_user_audit(
     _state: &AdminRuntimeState,
-    actor: &crate::operators::Principal,
+    actor: &crate::users::Principal,
     target_username: &str,
     action: &str,
     result: &str,
@@ -2702,72 +2616,50 @@ fn write_admin_user_audit(
     );
 }
 
-/// Read-modify-write on the operator collection, serialised across
-/// concurrent admin requests via `operator_collection_lock`. The
-/// closure may mutate the collection in-place; on `Ok(_)` we persist
-/// and return whatever the closure returned. On `Err(_)` the
-/// collection is *not* persisted.
+/// Read-modify-write on the user collection, serialised across
+/// concurrent admin requests via `user_collection_lock`. The closure
+/// may mutate the collection in-place; on `Ok(_)` we persist and
+/// return whatever the closure returned. On `Err(_)` the collection is
+/// *not* persisted.
 fn mutate_collection<T, F>(state: &AdminRuntimeState, f: F) -> Result<T>
 where
-    F: FnOnce(&mut crate::operators::OperatorCollection) -> Result<T>,
+    F: FnOnce(&mut crate::users::UserCollection) -> Result<T>,
 {
-    let _guard = state.operator_collection_lock.lock().unwrap();
-    let mut collection = crate::operators::load(&state.operators_file)?;
+    let _guard = state.user_collection_lock.lock().unwrap();
+    let mut collection = crate::users::load(&state.users_file)?;
     let out = f(&mut collection)?;
-    crate::operators::save(&state.operators_file, &collection)?;
+    crate::users::save(&state.users_file, &collection)?;
     Ok(out)
 }
 
 #[allow(clippy::result_large_err)]
-fn handle_admin_users_list(
-    state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
-) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may list users",
-        );
-    }
-    let collection = match crate::operators::load(&state.operators_file) {
+fn handle_admin_users_list(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
+    let collection = match crate::users::load(&state.users_file) {
         Ok(c) => c,
         Err(e) => {
             warn!(err = %e, "users.list: collection unreadable");
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
-                "operator collection unavailable",
+                "user collection unavailable",
             );
         }
     };
-    let mut users: Vec<AdminUserListItem> =
-        collection.operators.iter().map(user_list_item).collect();
+    let mut users: Vec<AdminUserListItem> = collection.users.iter().map(user_list_item).collect();
     users.sort_by(|a, b| a.username.cmp(&b.username));
     json_response(StatusCode::OK, &AdminUsersListResponse { users })
 }
 
 #[allow(clippy::result_large_err)]
-fn handle_admin_user_detail(
-    state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
-    id: &str,
-) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may inspect user records",
-        );
-    }
-    let collection = match crate::operators::load(&state.operators_file) {
+fn handle_admin_user_detail(state: &AdminRuntimeState, id: &str) -> Response<Full<Bytes>> {
+    let collection = match crate::users::load(&state.users_file) {
         Ok(c) => c,
         Err(e) => {
             warn!(err = %e, "users.detail: collection unreadable");
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
-                "operator collection unavailable",
+                "user collection unavailable",
             );
         }
     };
@@ -2780,16 +2672,9 @@ fn handle_admin_user_detail(
 #[allow(clippy::result_large_err)]
 async fn handle_admin_user_create(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may create users",
-        );
-    }
     let body = match parse_json_body::<AdminUserCreateRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -2800,16 +2685,9 @@ async fn handle_admin_user_create(
 #[allow(clippy::result_large_err)]
 fn do_admin_user_create(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: AdminUserCreateRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may create users",
-        );
-    }
     if body.password.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -2817,7 +2695,7 @@ fn do_admin_user_create(
             "password must not be empty",
         );
     }
-    let username_norm = crate::operators::normalise_username(&body.username);
+    let username_norm = crate::users::normalise_username(&body.username);
     if username_norm.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -2836,13 +2714,11 @@ fn do_admin_user_create(
             );
         }
     };
-    let now = crate::operators::now_epoch_secs();
-    let record = crate::operators::OperatorRecord {
-        id: crate::operators::new_operator_id(),
+    let now = crate::users::now_epoch_secs();
+    let record = crate::users::UserRecord {
+        id: crate::users::new_user_id(),
         username: username_norm.clone(),
         password_hash,
-        role: user_role_from_wire(body.role),
-        granted_stores: body.granted_stores.clone(),
         created_at: now,
         password_changed_at: now,
     };
@@ -2871,17 +2747,10 @@ fn do_admin_user_create(
 #[allow(clippy::result_large_err)]
 async fn handle_admin_user_update(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     id: &str,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may update users",
-        );
-    }
     let body = match parse_json_body::<AdminUserUpdateRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -2892,31 +2761,18 @@ async fn handle_admin_user_update(
 #[allow(clippy::result_large_err)]
 fn do_admin_user_update(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     id: &str,
     body: AdminUserUpdateRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may update users",
-        );
-    }
     let id_owned = id.to_string();
     let result = mutate_collection(state, |c| {
         if c.find_by_id(&id_owned).is_none() {
             anyhow::bail!("not_found");
         }
-        let updated = c.update(&id_owned, |op| {
+        let updated = c.update(&id_owned, |u| {
             if let Some(username) = &body.username {
-                op.username = username.clone();
-            }
-            if let Some(role) = body.role {
-                op.role = user_role_from_wire(role);
-            }
-            if let Some(grants) = &body.granted_stores {
-                op.granted_stores = grants.clone();
+                u.username = username.clone();
             }
         })?;
         Ok(updated.clone())
@@ -2939,12 +2795,6 @@ fn do_admin_user_update(
                 error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
             } else if msg.contains("already exists") {
                 error_response(StatusCode::CONFLICT, "username_already_exists", &msg)
-            } else if msg.contains("last_admin_protected") {
-                error_response(
-                    StatusCode::CONFLICT,
-                    "last_admin_protected",
-                    "cannot demote the last remaining admin",
-                )
             } else {
                 error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg)
             }
@@ -2955,17 +2805,10 @@ fn do_admin_user_update(
 #[allow(clippy::result_large_err)]
 async fn handle_admin_user_reset_password(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     id: &str,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may reset passwords",
-        );
-    }
     let body = match parse_json_body::<AdminUserResetPasswordRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -2989,14 +2832,14 @@ async fn handle_admin_user_reset_password(
         }
     };
     let id_owned = id.to_string();
-    let now = crate::operators::now_epoch_secs();
+    let now = crate::users::now_epoch_secs();
     let result = mutate_collection(state, |c| {
         if c.find_by_id(&id_owned).is_none() {
             anyhow::bail!("not_found");
         }
-        let updated = c.update(&id_owned, |op| {
-            op.password_hash = new_hash.clone();
-            op.password_changed_at = now;
+        let updated = c.update(&id_owned, |u| {
+            u.password_hash = new_hash.clone();
+            u.password_changed_at = now;
         })?;
         Ok(updated.username.clone())
     });
@@ -3035,18 +2878,11 @@ async fn handle_admin_user_reset_password(
 #[allow(clippy::result_large_err)]
 fn handle_admin_user_delete(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     id: &str,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may delete users",
-        );
-    }
     let id_owned = id.to_string();
-    let now = crate::operators::now_epoch_secs();
+    let now = crate::users::now_epoch_secs();
     let result = mutate_collection(state, |c| {
         if c.find_by_id(&id_owned).is_none() {
             anyhow::bail!("not_found");
@@ -3072,11 +2908,11 @@ fn handle_admin_user_delete(
             write_admin_user_audit(state, principal, &id_owned, "user.delete", "failure");
             if msg.contains("not_found") {
                 error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
-            } else if msg.contains("last_admin_protected") {
+            } else if msg.contains("last_user_protected") {
                 error_response(
                     StatusCode::CONFLICT,
-                    "last_admin_protected",
-                    "cannot delete the last remaining admin",
+                    "last_user_protected",
+                    "cannot delete the last remaining user",
                 )
             } else {
                 error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg)
@@ -3086,12 +2922,12 @@ fn handle_admin_user_delete(
 }
 
 /// `POST /v1/admin/auth/password` — self-service password change for
-/// the currently authenticated operator. Requires the current password
-/// as proof-of-possession.
+/// the currently authenticated user. Requires the current password as
+/// proof-of-possession.
 #[allow(clippy::result_large_err)]
 async fn handle_admin_password_change(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     let body = match parse_json_body::<AdminPasswordChangeRequest>(request).await {
@@ -3105,24 +2941,24 @@ async fn handle_admin_password_change(
             "new password must not be empty",
         );
     }
-    let collection = match crate::operators::load(&state.operators_file) {
+    let collection = match crate::users::load(&state.users_file) {
         Ok(c) => c,
         Err(e) => {
             warn!(err = %e, "auth.password: collection unreadable");
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
-                "operator collection unavailable",
+                "user collection unavailable",
             );
         }
     };
     let current_hash = match collection.find_by_id(&principal.id) {
-        Some(op) => op.password_hash.clone(),
+        Some(u) => u.password_hash.clone(),
         None => {
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
-                "session refers to an operator that no longer exists",
+                "session refers to a user that no longer exists",
             );
         }
     };
@@ -3152,14 +2988,14 @@ async fn handle_admin_password_change(
         }
     };
     let id_owned = principal.id.clone();
-    let now = crate::operators::now_epoch_secs();
+    let now = crate::users::now_epoch_secs();
     let result = mutate_collection(state, |c| {
         if c.find_by_id(&id_owned).is_none() {
             anyhow::bail!("not_found");
         }
-        c.update(&id_owned, |op| {
-            op.password_hash = new_hash.clone();
-            op.password_changed_at = now;
+        c.update(&id_owned, |u| {
+            u.password_hash = new_hash.clone();
+            u.password_changed_at = now;
         })?;
         Ok(())
     });
@@ -3251,12 +3087,11 @@ fn admin_store_usage(
 }
 
 fn admin_store_actions(
-    principal: &crate::operators::Principal,
     loaded: &LoadedStoreRecord,
     usage: &AdminStoreUsageSummary,
     locked: bool,
 ) -> AdminStoreActionState {
-    let can_manage = principal.is_admin();
+    let can_manage = true;
     let is_encrypted = matches!(
         &loaded.record.storage,
         underwrap_protocol::config::StorageConfig::Encrypted { .. }
@@ -3348,16 +3183,12 @@ fn admin_store_usage_for_locked(
     }
 }
 
-fn handle_admin_stores_list(
-    state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
-) -> Response<Full<Bytes>> {
+fn handle_admin_stores_list(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
     type Visible = (String, LoadedStoreRecord, Option<Arc<dyn StorageBackend>>);
     let visible: Vec<Visible> = {
         let reg = state.stores.read().unwrap();
         reg.records
             .iter()
-            .filter(|(id, _)| principal.has_store_access(id))
             .map(|(id, loaded)| {
                 let backend = reg.state.get(id).and_then(|s| s.backend()).cloned();
                 (id.clone(), loaded.clone(), backend)
@@ -3373,7 +3204,7 @@ fn handle_admin_stores_list(
             },
             None => (admin_store_usage_for_locked(state, &id), true),
         };
-        let actions = admin_store_actions(principal, &loaded, &usage, locked);
+        let actions = admin_store_actions(&loaded, &usage, locked);
         items.push(admin_store_list_item(&loaded, locked, usage, actions));
     }
     items.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
@@ -3381,14 +3212,7 @@ fn handle_admin_stores_list(
 }
 
 #[allow(clippy::result_large_err)]
-fn handle_admin_store_detail(
-    state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
-    name: &str,
-) -> Response<Full<Bytes>> {
-    if !principal.has_store_access(name) {
-        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
-    }
+fn handle_admin_store_detail(state: &AdminRuntimeState, name: &str) -> Response<Full<Bytes>> {
     let (loaded, handle, locked) = {
         let reg = state.stores.read().unwrap();
         let Some(loaded) = reg.records.get(name) else {
@@ -3413,7 +3237,7 @@ fn handle_admin_store_detail(
         },
         None => admin_store_usage_for_locked(state, name),
     };
-    let actions = admin_store_actions(principal, &loaded, &usage, locked);
+    let actions = admin_store_actions(&loaded, &usage, locked);
     json_response(
         StatusCode::OK,
         &admin_store_detail(&state.stores_file, &loaded, locked, usage, actions),
@@ -3449,16 +3273,9 @@ fn resolve_store_dir(
 #[allow(clippy::result_large_err)]
 async fn handle_admin_store_create(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may create stores",
-        );
-    }
     let body = match parse_json_body::<AdminStoreCreateRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -3473,16 +3290,9 @@ async fn handle_admin_store_create(
 #[allow(clippy::result_large_err)]
 fn do_admin_store_create(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: AdminStoreCreateRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may create stores",
-        );
-    }
     let visible_name = match validate_store_name(&body.name) {
         Ok(name) => name,
         Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_store_name", msg),
@@ -3592,7 +3402,7 @@ fn do_admin_store_create(
         id: store_id.clone(),
         name: visible_name,
         description: body.description.clone(),
-        created_at: Some(crate::operators::now_epoch_secs()),
+        created_at: Some(crate::users::now_epoch_secs()),
         storage,
     };
 
@@ -3617,7 +3427,7 @@ fn do_admin_store_create(
         mapped_client_instance_count: 0,
         has_secrets: false,
     };
-    let actions = admin_store_actions(principal, &loaded, &usage, false);
+    let actions = admin_store_actions(&loaded, &usage, false);
     json_response(
         StatusCode::OK,
         &AdminStoreCreateResponse {
@@ -3665,17 +3475,10 @@ fn create_data_dir_secure(dir: &Path) -> Result<()> {
 #[allow(clippy::result_large_err)]
 async fn handle_admin_store_update(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     name: &str,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may update stores",
-        );
-    }
     let body = match parse_json_body::<AdminStoreUpdateRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -3686,17 +3489,10 @@ async fn handle_admin_store_update(
 #[allow(clippy::result_large_err)]
 fn do_admin_store_update(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     name: &str,
     body: AdminStoreUpdateRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may update stores",
-        );
-    }
     let updated = {
         let reg = state.stores.read().unwrap();
         let Some(loaded) = reg.records.get(name) else {
@@ -3766,7 +3562,7 @@ fn do_admin_store_update(
         },
         None => admin_store_usage_for_locked(state, name),
     };
-    let actions = admin_store_actions(principal, &loaded, &usage, locked);
+    let actions = admin_store_actions(&loaded, &usage, locked);
     json_response(
         StatusCode::OK,
         &admin_store_detail(&state.stores_file, &loaded, locked, usage, actions),
@@ -3776,17 +3572,10 @@ fn do_admin_store_update(
 #[allow(clippy::result_large_err)]
 fn handle_admin_store_delete(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     name: &str,
     force: bool,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may delete stores",
-        );
-    }
     let (store_handle, dir_for_hint, locked) = {
         let reg = state.stores.read().unwrap();
         let Some(loaded) = reg.records.get(name) else {
@@ -3910,17 +3699,9 @@ fn rotation_lock(state: &AdminRuntimeState, store_id: &str) -> Arc<tokio::sync::
 /// first.
 async fn handle_admin_store_rotate_key(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     name: &str,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may rotate store keys",
-        );
-    }
-
     let (mut updated_record, dir, current_backend) = {
         let reg = state.stores.read().unwrap();
         let Some(loaded) = reg.records.get(name) else {
@@ -4153,7 +3934,7 @@ fn reencrypt_into(
     to: &dyn StorageBackend,
     stage_dir: &Path,
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     store_name: &str,
 ) -> std::result::Result<(), Response<Full<Bytes>>> {
     let ids = match from.list("") {
@@ -4247,17 +4028,10 @@ fn reencrypt_into(
 /// structured `key_mismatch` code.
 async fn handle_admin_store_unlock(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     name: &str,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may unlock stores",
-        );
-    }
     let body = match parse_json_body::<underwrap_protocol::service::AdminStoreUnlockRequest>(
         request,
     )
@@ -4272,17 +4046,10 @@ async fn handle_admin_store_unlock(
 #[allow(clippy::result_large_err)]
 fn do_admin_store_unlock(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     name: &str,
     body: underwrap_protocol::service::AdminStoreUnlockRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may unlock stores",
-        );
-    }
     let dir = {
         let reg = state.stores.read().unwrap();
         let Some(loaded) = reg.records.get(name) else {
@@ -4381,16 +4148,9 @@ fn do_admin_store_unlock(
 #[allow(clippy::result_large_err)]
 fn handle_admin_store_lock(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     name: &str,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may lock stores",
-        );
-    }
     let mut reg = state.stores.write().unwrap();
     let Some(loaded) = reg.records.get(name) else {
         return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
@@ -4418,7 +4178,7 @@ fn handle_admin_store_lock(
 
 fn write_admin_store_audit(
     _state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     store_name: &str,
     action: &str,
     result: &str,
@@ -4458,10 +4218,9 @@ fn client_instance_status_from_wire(
 }
 
 fn admin_client_instance_actions(
-    principal: &crate::operators::Principal,
     record: &crate::runtime_clients::ClientInstanceRecord,
 ) -> AdminClientInstanceActionState {
-    let can_manage = principal.is_admin();
+    let can_manage = true;
     AdminClientInstanceActionState {
         can_edit_display_name: can_manage,
         can_remap_store: can_manage,
@@ -4521,17 +4280,7 @@ fn admin_client_instance_detail(
     }
 }
 
-fn handle_admin_client_instances_list(
-    state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
-) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may list client instances",
-        );
-    }
+fn handle_admin_client_instances_list(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
     let store_names = current_store_names(state);
     let mut items = Vec::new();
     for record in state.client_instances.read().unwrap().values() {
@@ -4542,7 +4291,7 @@ fn handle_admin_client_instances_list(
                 "client instance references an unknown store",
             );
         };
-        let actions = admin_client_instance_actions(principal, record);
+        let actions = admin_client_instance_actions(record);
         items.push(admin_client_instance_list_item(
             record,
             current_store_name,
@@ -4555,16 +4304,8 @@ fn handle_admin_client_instances_list(
 
 fn handle_admin_client_instance_detail(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
     id: &str,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may inspect client instances",
-        );
-    }
     let store_names = current_store_names(state);
     match state.client_instances.read().unwrap().get(id) {
         Some(record) => {
@@ -4576,7 +4317,7 @@ fn handle_admin_client_instance_detail(
                     "client instance references an unknown store",
                 );
             };
-            let actions = admin_client_instance_actions(principal, record);
+            let actions = admin_client_instance_actions(record);
             json_response(
                 StatusCode::OK,
                 &admin_client_instance_detail(record, current_store_name, actions),
@@ -4592,16 +4333,9 @@ fn handle_admin_client_instance_detail(
 
 async fn handle_admin_client_instance_create(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may create client instances",
-        );
-    }
     let body = match parse_json_body::<AdminClientInstanceCreateRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -4611,16 +4345,9 @@ async fn handle_admin_client_instance_create(
 
 fn do_admin_client_instance_create(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: AdminClientInstanceCreateRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may create client instances",
-        );
-    }
     let display_name = match validate_store_name(&body.display_name) {
         Ok(v) => v,
         Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_display_name", msg),
@@ -4720,7 +4447,7 @@ fn do_admin_client_instance_create(
             }
         }
     };
-    let actions = admin_client_instance_actions(principal, &record);
+    let actions = admin_client_instance_actions(&record);
     json_response(
         StatusCode::OK,
         &admin_client_instance_detail(&record, current_store_name, actions),
@@ -4729,17 +4456,10 @@ fn do_admin_client_instance_create(
 
 async fn handle_admin_client_instance_update(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     id: &str,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may update client instances",
-        );
-    }
     let body = match parse_json_body::<AdminClientInstanceUpdateRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -4749,17 +4469,10 @@ async fn handle_admin_client_instance_update(
 
 fn do_admin_client_instance_update(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     id: &str,
     body: AdminClientInstanceUpdateRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may update client instances",
-        );
-    }
     let mut instances = state.client_instances.write().unwrap();
     let Some(existing) = instances.get(id).cloned() else {
         return error_response(
@@ -4807,7 +4520,7 @@ fn do_admin_client_instance_update(
         updated.status = client_instance_status_from_wire(status);
     }
     if let Some(cert_pem) = body.cert_pem {
-        let now = crate::operators::now_epoch_secs();
+        let now = crate::users::now_epoch_secs();
         let new_credential =
             match crate::runtime_clients::current_credential_from_pem(cert_pem, Some(now)) {
                 Ok(current) => current,
@@ -4876,7 +4589,7 @@ fn do_admin_client_instance_update(
             }
         }
     };
-    let actions = admin_client_instance_actions(principal, &updated);
+    let actions = admin_client_instance_actions(&updated);
     json_response(
         StatusCode::OK,
         &admin_client_instance_detail(&updated, current_store_name, actions),
@@ -4885,16 +4598,9 @@ fn do_admin_client_instance_update(
 
 fn handle_admin_client_instance_delete(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     id: &str,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may delete client instances",
-        );
-    }
     let mut instances = state.client_instances.write().unwrap();
     let Some(removed) = instances.remove(id) else {
         return error_response(
@@ -4993,7 +4699,7 @@ fn drop_client_instance_permissions(
 
 fn write_admin_permission_audit(
     _state: &AdminRuntimeState,
-    actor: &crate::operators::Principal,
+    actor: &crate::users::Principal,
     store_name: &str,
     permission: &underwrap_protocol::policy::WrapperPermission,
     action: &str,
@@ -5040,17 +4746,9 @@ fn resource_secret_dependents(
 #[allow(clippy::result_large_err)]
 fn handle_admin_resources_list(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
     body: &underwrap_protocol::service::AdminResourcesListRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may list resources",
-        );
-    }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5075,10 +4773,9 @@ fn handle_admin_resources_list(
 #[allow(clippy::result_large_err)]
 fn handle_admin_resource_blob_get(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
     body: &underwrap_protocol::service::AdminResourceBlobGetRequest,
 ) -> Response<Full<Bytes>> {
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5113,11 +4810,10 @@ fn handle_admin_resource_blob_get(
 fn handle_admin_resource_blob_put(
     state: &AdminRuntimeState,
     operator: &str,
-    principal: &crate::operators::Principal,
     body: &underwrap_protocol::service::AdminResourceBlobPutRequest,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::resource_blob::ResourceBlob;
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5185,17 +4881,10 @@ fn handle_admin_resource_blob_put(
 
 fn handle_admin_resource_create(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminResourceCreateRequest,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::entities::{EntityCreator, ResourceRecord};
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may create resources",
-        );
-    }
     let name = body.name.trim();
     if name.is_empty() {
         return error_response(
@@ -5204,7 +4893,7 @@ fn handle_admin_resource_create(
             "resource name must be non-empty",
         );
     }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5232,7 +4921,7 @@ fn handle_admin_resource_create(
             id: principal.id.clone(),
             username: principal.username.clone(),
         },
-        created_at: crate::operators::now_epoch_secs(),
+        created_at: crate::users::now_epoch_secs(),
     };
     doc.insert(record.clone())
         .expect("find returned None just above");
@@ -5261,21 +4950,14 @@ fn handle_admin_resource_create(
 #[allow(clippy::result_large_err)]
 fn handle_admin_resource_delete(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminResourceDeleteRequest,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::service::{
         AdminResourceDeleteBlockers, AdminResourceDeleteResponse, AdminWrapperPermissionKey,
         ServiceWrapperResourcePair,
     };
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may delete resources",
-        );
-    }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5410,17 +5092,10 @@ fn handle_admin_resource_delete(
 #[allow(clippy::result_large_err)]
 fn handle_admin_resource_rename(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminResourceRenameRequest,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::entities::InsertError;
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may rename resources",
-        );
-    }
     let new_name = body.new_name.trim();
     if new_name.is_empty() {
         return error_response(
@@ -5429,7 +5104,7 @@ fn handle_admin_resource_rename(
             "new_name must be non-empty",
         );
     }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5485,17 +5160,9 @@ fn handle_admin_resource_rename(
 #[allow(clippy::result_large_err)]
 fn handle_admin_pairs_list(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
     body: &underwrap_protocol::service::AdminPairsListRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may list wrapper/resource pairs",
-        );
-    }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5522,17 +5189,10 @@ fn handle_admin_pairs_list(
 #[allow(clippy::result_large_err)]
 fn handle_admin_pair_create(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminPairCreateRequest,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::entities::{EntityCreator, WrapperResourcePairRecord};
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may create wrapper/resource pairs",
-        );
-    }
     let wrapper = body.wrapper.trim();
     let resource_id = body.resource_id.trim();
     if wrapper.is_empty() || resource_id.is_empty() {
@@ -5542,7 +5202,7 @@ fn handle_admin_pair_create(
             "wrapper and resource_id must both be non-empty",
         );
     }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5587,7 +5247,7 @@ fn handle_admin_pair_create(
             id: principal.id.clone(),
             username: principal.username.clone(),
         },
-        created_at: crate::operators::now_epoch_secs(),
+        created_at: crate::users::now_epoch_secs(),
         last_used_at: None,
         files_mount_paths: Vec::new(),
     };
@@ -5619,20 +5279,13 @@ fn handle_admin_pair_create(
 #[allow(clippy::result_large_err)]
 fn handle_admin_pair_delete(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminPairDeleteRequest,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::service::{
         AdminPairDeleteBlockers, AdminPairDeleteResponse, AdminWrapperPermissionKey,
     };
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may delete wrapper/resource pairs",
-        );
-    }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5725,10 +5378,9 @@ fn handle_admin_pair_delete(
 #[allow(clippy::result_large_err)]
 fn handle_admin_wrapper_permissions_list(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
     body: &underwrap_protocol::service::AdminWrapperPermissionsListRequest,
 ) -> Response<Full<Bytes>> {
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5746,17 +5398,10 @@ fn handle_admin_wrapper_permissions_list(
 #[allow(clippy::result_large_err)]
 fn handle_admin_wrapper_permission_upsert(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminWrapperPermissionUpsertRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may mutate wrapper permissions",
-        );
-    }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5824,17 +5469,10 @@ fn handle_admin_wrapper_permission_upsert(
 #[allow(clippy::result_large_err)]
 fn handle_admin_wrapper_permission_delete(
     state: &AdminRuntimeState,
-    principal: &crate::operators::Principal,
+    principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminWrapperPermissionDeleteRequest,
 ) -> Response<Full<Bytes>> {
-    if !principal.is_admin() {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only admins may mutate wrapper permissions",
-        );
-    }
-    let store = match admin_store_for_principal(state, principal, &body.store) {
+    let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
@@ -5958,10 +5596,9 @@ async fn handle_admin_request(
         Ok(p) => p,
         Err(resp) => return Ok(resp),
     };
-    let operator = principal.username.clone();
+    let actor = principal.username.clone();
     info!(
-        operator = %operator,
-        role = ?principal.role,
+        user = %actor,
         method = %request.method(),
         path = request.uri().path(),
         "admin request"
@@ -6043,7 +5680,7 @@ async fn handle_admin_request(
             let id = rest.to_string();
             match *request.method() {
                 Method::GET => {
-                    return Ok(handle_admin_user_detail(&state, &principal, &id));
+                    return Ok(handle_admin_user_detail(&state, &id));
                 }
                 Method::PUT => {
                     return Ok(handle_admin_user_update(&state, &principal, &id, request).await);
@@ -6072,7 +5709,7 @@ async fn handle_admin_request(
         let id = id.to_string();
         match *request.method() {
             Method::GET => {
-                return Ok(handle_admin_client_instance_detail(&state, &principal, &id));
+                return Ok(handle_admin_client_instance_detail(&state, &id));
             }
             Method::PUT => {
                 return Ok(
@@ -6102,7 +5739,7 @@ async fn handle_admin_request(
         let name = name.to_string();
         match *request.method() {
             Method::GET => {
-                return Ok(handle_admin_store_detail(&state, &principal, &name));
+                return Ok(handle_admin_store_detail(&state, &name));
             }
             Method::PUT => {
                 return Ok(handle_admin_store_update(&state, &principal, &name, request).await);
@@ -6130,7 +5767,7 @@ async fn handle_admin_request(
 
     let response = match (request.method(), request.uri().path()) {
         (&Method::GET, "/v1/admin/users") => {
-            return Ok(handle_admin_users_list(&state, &principal));
+            return Ok(handle_admin_users_list(&state));
         }
         (&Method::POST, "/v1/admin/users") => {
             return Ok(handle_admin_user_create(&state, &principal, request).await);
@@ -6139,13 +5776,13 @@ async fn handle_admin_request(
             return Ok(handle_admin_password_change(&state, &principal, request).await);
         }
         (&Method::GET, "/v1/admin/stores") => {
-            return Ok(handle_admin_stores_list(&state, &principal));
+            return Ok(handle_admin_stores_list(&state));
         }
         (&Method::POST, "/v1/admin/stores") => {
             return Ok(handle_admin_store_create(&state, &principal, request).await);
         }
         (&Method::GET, "/v1/admin/client-instances") => {
-            return Ok(handle_admin_client_instances_list(&state, &principal));
+            return Ok(handle_admin_client_instances_list(&state));
         }
         (&Method::POST, "/v1/admin/client-instances") => {
             return Ok(handle_admin_client_instance_create(&state, &principal, request).await);
@@ -6166,7 +5803,6 @@ async fn handle_admin_request(
                 let reg = state.stores.read().unwrap();
                 reg.state
                     .iter()
-                    .filter(|(name, _)| principal.has_store_access(name))
                     .filter_map(|(name, state)| {
                         state.backend().map(|b| (name.clone(), Arc::clone(b)))
                     })
@@ -6198,7 +5834,7 @@ async fn handle_admin_request(
                         Ok(id) => id,
                         Err(resp) => return Ok(resp),
                     };
-                match admin_store_for_principal(&state, &principal, &body.store) {
+                match admin_store(&state, &body.store) {
                     Ok(store) => match read_resource_entry(store.as_ref(), &secret_id) {
                         Ok(material) => json_response(
                             StatusCode::OK,
@@ -6222,8 +5858,8 @@ async fn handle_admin_request(
             match parse_json_body::<underwrap_protocol::service::AdminSecretWriteRequest>(request)
                 .await
             {
-                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(_) => handle_admin_secret_write(&state, &operator, body),
+                Ok(body) => match admin_store(&state, &body.store) {
+                    Ok(_) => handle_admin_secret_write(&state, &actor, body),
                     Err(resp) => resp,
                 },
                 Err(response) => response,
@@ -6233,7 +5869,7 @@ async fn handle_admin_request(
             match parse_json_body::<underwrap_protocol::service::AdminSecretListRequest>(request)
                 .await
             {
-                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(body) => match admin_store(&state, &body.store) {
                     Ok(store) => {
                         match list_secret_entries(store.as_ref(), body.resource_id.as_deref()) {
                             Ok(entries) => json_response(
@@ -6268,7 +5904,7 @@ async fn handle_admin_request(
                         Ok(id) => id,
                         Err(resp) => return Ok(resp),
                     };
-                    match admin_store_for_principal(&state, &principal, &body.store) {
+                    match admin_store(&state, &body.store) {
                         Ok(store) => match delete_resource_entry(store.as_ref(), &secret_id) {
                             Ok(existed) => json_response(
                                 StatusCode::OK,
@@ -6290,8 +5926,8 @@ async fn handle_admin_request(
             match parse_json_body::<underwrap_protocol::service::AdminSecretRenameRequest>(request)
                 .await
             {
-                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(_) => handle_admin_secret_rename(&state, &operator, body),
+                Ok(body) => match admin_store(&state, &body.store) {
+                    Ok(_) => handle_admin_secret_rename(&state, &actor, body),
                     Err(resp) => resp,
                 },
                 Err(response) => response,
@@ -6301,7 +5937,7 @@ async fn handle_admin_request(
             match parse_json_body::<underwrap_protocol::service::AdminPolicyGetRequest>(request)
                 .await
             {
-                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                Ok(body) => match admin_store(&state, &body.store) {
                     Ok(store) => {
                         let read_result =
                             store.read(POLICY_DOCUMENT_SECRET_ID).and_then(|m| match m {
@@ -6332,7 +5968,7 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+            Ok(body) => match admin_store(&state, &body.store) {
                 Ok(store) => {
                     let write_result = serde_json::to_vec(&body.document)
                         .map_err(anyhow::Error::from)
@@ -6357,7 +5993,7 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => handle_admin_wrapper_permissions_list(&state, &principal, &body),
+            Ok(body) => handle_admin_wrapper_permissions_list(&state, &body),
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/wrapper-permissions/upsert") => match parse_json_body::<
@@ -6380,7 +6016,7 @@ async fn handle_admin_request(
             match parse_json_body::<underwrap_protocol::service::AdminResourcesListRequest>(request)
                 .await
             {
-                Ok(body) => handle_admin_resources_list(&state, &principal, &body),
+                Ok(body) => handle_admin_resources_list(&state, &body),
                 Err(response) => response,
             }
         }
@@ -6413,7 +6049,7 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => handle_admin_resource_blob_get(&state, &principal, &body),
+            Ok(body) => handle_admin_resource_blob_get(&state, &body),
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/resources/blob/put") => match parse_json_body::<
@@ -6421,14 +6057,14 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => handle_admin_resource_blob_put(&state, &operator, &principal, &body),
+            Ok(body) => handle_admin_resource_blob_put(&state, &actor, &body),
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/pairs/list") => {
             match parse_json_body::<underwrap_protocol::service::AdminPairsListRequest>(request)
                 .await
             {
-                Ok(body) => handle_admin_pairs_list(&state, &principal, &body),
+                Ok(body) => handle_admin_pairs_list(&state, &body),
                 Err(response) => response,
             }
         }
@@ -7133,10 +6769,10 @@ mod tests {
         );
     }
 
-    fn test_operators_file() -> PathBuf {
+    fn test_users_file() -> PathBuf {
         std::env::temp_dir().join(format!(
             "underwrap-server-test-operators-{}.json",
-            crate::operators::new_operator_id()
+            crate::users::new_user_id()
         ))
     }
 
@@ -7158,14 +6794,14 @@ mod tests {
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
-            operators_file: test_operators_file(),
+            users_file: test_users_file(),
             session_key: [0u8; crate::auth::SESSION_KEY_LEN],
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
-            operator_collection_lock: std::sync::Mutex::new(()),
+            user_collection_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -7336,21 +6972,19 @@ mod tests {
     // ---------- Login + whoami end-to-end against the real handler ----------
 
     fn seeded_admin_state(username: &str, password: &str) -> AdminRuntimeState {
-        let operators_file = test_operators_file();
-        let mut collection = crate::operators::OperatorCollection::default();
+        let users_file = test_users_file();
+        let mut collection = crate::users::UserCollection::default();
         let hash = crate::auth::hash_password(password).unwrap();
         collection
-            .add(crate::operators::OperatorRecord {
-                id: crate::operators::new_operator_id(),
+            .add(crate::users::UserRecord {
+                id: crate::users::new_user_id(),
                 username: username.to_string(),
                 password_hash: hash,
-                role: crate::operators::OperatorRole::Admin,
-                granted_stores: Vec::new(),
                 created_at: 1000,
                 password_changed_at: 1000,
             })
             .unwrap();
-        crate::operators::save(&operators_file, &collection).unwrap();
+        crate::users::save(&users_file, &collection).unwrap();
         let mut session_key = [0u8; crate::auth::SESSION_KEY_LEN];
         for (i, b) in session_key.iter_mut().enumerate() {
             *b = i as u8;
@@ -7365,14 +6999,14 @@ mod tests {
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
-            operators_file,
+            users_file,
             session_key,
             session_lifetime_secs: 3600,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
-            operator_collection_lock: std::sync::Mutex::new(()),
+            user_collection_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -7384,7 +7018,7 @@ mod tests {
     #[tokio::test]
     async fn login_password_pipeline_succeeds_and_round_trips_cookie() {
         let state = seeded_admin_state("alice", "hunter2");
-        let collection = crate::operators::load(&state.operators_file).unwrap();
+        let collection = crate::users::load(&state.users_file).unwrap();
         let op = collection.find_by_username("alice").unwrap();
         assert!(crate::auth::verify_password(&op.password_hash, "hunter2"));
         assert!(!crate::auth::verify_password(&op.password_hash, "wrong"));
@@ -7407,7 +7041,7 @@ mod tests {
         // selects the dummy hash, keeping wall-clock behaviour
         // consistent with the real-user path.
         let state = seeded_admin_state("alice", "hunter2");
-        let collection = crate::operators::load(&state.operators_file).unwrap();
+        let collection = crate::users::load(&state.users_file).unwrap();
         assert!(collection.find_by_username("eve").is_none());
         assert!(!crate::auth::verify_password(
             crate::auth::DUMMY_PASSWORD_HASH,
@@ -7416,7 +7050,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn whoami_resolves_role_from_collection() {
+    async fn whoami_resolves_username_from_collection() {
         let state = seeded_admin_state("alice", "hunter2");
         let key = state.session_key;
         // `handle_admin_whoami` reads SystemTime::now() internally, so
@@ -7443,7 +7077,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["authenticated"], true);
         assert_eq!(parsed["username"], "alice");
-        assert_eq!(parsed["role"], "admin");
+        assert!(
+            parsed.get("role").is_none(),
+            "wire shape must not carry a role"
+        );
     }
 
     #[tokio::test]
@@ -7491,18 +7128,6 @@ mod tests {
             );
         }
         (headers, payload)
-    }
-
-    fn principal(
-        role: crate::operators::OperatorRole,
-        grants: &[&str],
-    ) -> crate::operators::Principal {
-        crate::operators::Principal {
-            id: "id".into(),
-            username: "alice".into(),
-            role,
-            granted_stores: grants.iter().map(|s| (*s).to_string()).collect(),
-        }
     }
 
     fn service_state_with_runtime_client(
@@ -7560,14 +7185,14 @@ mod tests {
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
-            operators_file: test_operators_file(),
+            users_file: test_users_file(),
             session_key: [0u8; crate::auth::SESSION_KEY_LEN],
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
-            operator_collection_lock: std::sync::Mutex::new(()),
+            user_collection_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -7617,11 +7242,10 @@ mod tests {
     }
 
     #[test]
-    fn admin_store_for_principal_admin_can_access_existing_store() {
+    fn admin_store_resolves_existing_store() {
         let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
         let state = test_admin_state(HashMap::from([("work".to_string(), store.clone())]));
-        let p = principal(crate::operators::OperatorRole::Admin, &[]);
-        assert!(admin_store_for_principal(&state, &p, "work").is_ok());
+        assert!(admin_store(&state, "work").is_ok());
     }
 
     fn expect_404(result: std::result::Result<Arc<dyn StorageBackend>, Response<Full<Bytes>>>) {
@@ -7632,75 +7256,40 @@ mod tests {
     }
 
     #[test]
-    fn admin_store_for_principal_admin_sees_unknown_store_as_404() {
+    fn admin_store_unknown_store_returns_404() {
         let state = test_admin_state(HashMap::new());
-        let p = principal(crate::operators::OperatorRole::Admin, &[]);
-        expect_404(admin_store_for_principal(&state, &p, "missing"));
+        expect_404(admin_store(&state, "missing"));
     }
 
     #[test]
-    fn admin_store_for_principal_operator_without_grant_returns_404_not_403() {
-        // Don't leak the existence of stores the operator can't reach:
-        // ungranted-but-existing must look identical to truly-missing.
-        let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-        let state = test_admin_state(HashMap::from([("work".to_string(), store.clone())]));
-        let p = principal(crate::operators::OperatorRole::Operator, &[]);
-        expect_404(admin_store_for_principal(&state, &p, "work"));
-        expect_404(admin_store_for_principal(&state, &p, "nope"));
-    }
-
-    #[test]
-    fn admin_store_for_principal_operator_with_grant_sees_only_that_store() {
-        let store_a: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-        let store_b: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-        let state = test_admin_state(HashMap::from([
-            ("alpha".to_string(), store_a.clone()),
-            ("beta".to_string(), store_b),
-        ]));
-        let p = principal(crate::operators::OperatorRole::Operator, &["alpha"]);
-        assert!(admin_store_for_principal(&state, &p, "alpha").is_ok());
-        expect_404(admin_store_for_principal(&state, &p, "beta"));
-    }
-
-    #[test]
-    fn resolve_principal_session_uses_operator_collection_role_and_grants() {
+    fn resolve_principal_session_resolves_username_from_collection() {
         let state = seeded_admin_state("alice", "hunter2");
-        // Re-seed collection so alice has Operator role with one grant.
-        let operators_file = state.operators_file.clone();
-        let mut collection = crate::operators::OperatorCollection::default();
+        let users_file = state.users_file.clone();
+        let mut collection = crate::users::UserCollection::default();
         let hash = crate::auth::hash_password("hunter2").unwrap();
         collection
-            .add(crate::operators::OperatorRecord {
-                id: crate::operators::new_operator_id(),
+            .add(crate::users::UserRecord {
+                id: crate::users::new_user_id(),
                 username: "alice".into(),
                 password_hash: hash,
-                role: crate::operators::OperatorRole::Operator,
-                granted_stores: vec!["work".into()],
                 created_at: 1000,
                 password_changed_at: 1000,
             })
             .unwrap();
-        crate::operators::save(&operators_file, &collection).unwrap();
+        crate::users::save(&users_file, &collection).unwrap();
 
         let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
         let auth = AdminAuth(payload);
         let p = resolve_principal(&state, &auth).unwrap();
         assert_eq!(p.username, "alice");
-        assert!(!p.is_admin());
-        assert!(p.has_store_access("work"));
-        assert!(!p.has_store_access("other"));
     }
 
     #[test]
-    fn resolve_principal_session_fails_when_operator_was_deleted() {
+    fn resolve_principal_session_fails_when_user_was_deleted() {
         // Cookie says "alice" but the collection has no record of her.
         let state = seeded_admin_state("alice", "hunter2");
         // Save an empty collection over alice's slot.
-        crate::operators::save(
-            &state.operators_file,
-            &crate::operators::OperatorCollection::default(),
-        )
-        .unwrap();
+        crate::users::save(&state.users_file, &crate::users::UserCollection::default()).unwrap();
         let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), 1000, 3600);
         let auth = AdminAuth(payload);
         match resolve_principal(&state, &auth) {
@@ -7728,14 +7317,14 @@ mod tests {
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
-            operators_file: test_operators_file(),
+            users_file: test_users_file(),
             session_key: key,
             session_lifetime_secs: 3600,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
-            operator_collection_lock: std::sync::Mutex::new(()),
+            user_collection_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -7759,9 +7348,9 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_status_false_when_sentinel_set() {
         let state = fresh_bootstrap_state();
-        crate::operators::mark_bootstrap_completed(
-            &state.operators_file,
-            &crate::operators::BootstrapSentinel {
+        crate::users::mark_bootstrap_completed(
+            &state.users_file,
+            &crate::users::BootstrapSentinel {
                 completed_at: 1000,
                 by_username: "alice".into(),
             },
@@ -7774,19 +7363,17 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_status_false_when_operators_exist_even_without_sentinel() {
         let state = fresh_bootstrap_state();
-        let mut collection = crate::operators::OperatorCollection::default();
+        let mut collection = crate::users::UserCollection::default();
         collection
-            .add(crate::operators::OperatorRecord {
-                id: crate::operators::new_operator_id(),
+            .add(crate::users::UserRecord {
+                id: crate::users::new_user_id(),
                 username: "alice".into(),
                 password_hash: crate::auth::hash_password("p").unwrap(),
-                role: crate::operators::OperatorRole::Admin,
-                granted_stores: Vec::new(),
                 created_at: 1000,
                 password_changed_at: 1000,
             })
             .unwrap();
-        crate::operators::save(&state.operators_file, &collection).unwrap();
+        crate::users::save(&state.users_file, &collection).unwrap();
         let body = read_json(handle_admin_bootstrap_status(&state)).await;
         assert_eq!(body["bootstrap_required"], false);
     }
@@ -7803,7 +7390,7 @@ mod tests {
         // Mirror the validation in `handle_admin_bootstrap` minus the
         // request-body parsing, which `parse_json_body` already covers.
         let session_key = state.session_key;
-        let username_norm = crate::operators::normalise_username(username);
+        let username_norm = crate::users::normalise_username(username);
         if username_norm.is_empty() || password.is_empty() {
             return error_response(
                 StatusCode::BAD_REQUEST,
@@ -7812,7 +7399,7 @@ mod tests {
             );
         }
         let _guard = state.bootstrap_lock.lock().unwrap();
-        if crate::operators::bootstrap_completed(&state.operators_file).unwrap_or(true) {
+        if crate::users::bootstrap_completed(&state.users_file).unwrap_or(true) {
             audit_bootstrap_attempt(state, &username_norm, "bootstrap_already_completed");
             return error_response(
                 StatusCode::CONFLICT,
@@ -7820,32 +7407,30 @@ mod tests {
                 "already done",
             );
         }
-        let collection = crate::operators::load(&state.operators_file).unwrap();
+        let collection = crate::users::load(&state.users_file).unwrap();
         if !collection.is_empty() {
-            audit_bootstrap_attempt(state, &username_norm, "operators_already_exist");
+            audit_bootstrap_attempt(state, &username_norm, "users_already_exist");
             return error_response(
                 StatusCode::CONFLICT,
-                "operators_already_exist",
+                "users_already_exist",
                 "already populated",
             );
         }
-        let now = crate::operators::now_epoch_secs();
+        let now = crate::users::now_epoch_secs();
         let hash = crate::auth::hash_password(password).unwrap();
-        let record = crate::operators::OperatorRecord {
-            id: crate::operators::new_operator_id(),
+        let record = crate::users::UserRecord {
+            id: crate::users::new_user_id(),
             username: username_norm.clone(),
             password_hash: hash,
-            role: crate::operators::OperatorRole::Admin,
-            granted_stores: Vec::new(),
             created_at: now,
             password_changed_at: now,
         };
-        let mut new_collection = crate::operators::OperatorCollection::default();
+        let mut new_collection = crate::users::UserCollection::default();
         new_collection.add(record.clone()).unwrap();
-        crate::operators::save(&state.operators_file, &new_collection).unwrap();
-        crate::operators::mark_bootstrap_completed(
-            &state.operators_file,
-            &crate::operators::BootstrapSentinel {
+        crate::users::save(&state.users_file, &new_collection).unwrap();
+        crate::users::mark_bootstrap_completed(
+            &state.users_file,
+            &crate::users::BootstrapSentinel {
                 completed_at: now,
                 by_username: record.username.clone(),
             },
@@ -7884,12 +7469,11 @@ mod tests {
         let resp = run_bootstrap(&state, "alice", "hunter2");
         assert_eq!(resp.status(), StatusCode::OK);
         // Sentinel is set.
-        assert!(crate::operators::bootstrap_completed(&state.operators_file).unwrap());
-        // Operator is created with admin role.
-        let collection = crate::operators::load(&state.operators_file).unwrap();
-        let op = collection.find_by_username("alice").unwrap();
-        assert_eq!(op.role, crate::operators::OperatorRole::Admin);
-        assert!(crate::auth::verify_password(&op.password_hash, "hunter2"));
+        assert!(crate::users::bootstrap_completed(&state.users_file).unwrap());
+        // First user record is created.
+        let collection = crate::users::load(&state.users_file).unwrap();
+        let u = collection.find_by_username("alice").unwrap();
+        assert!(crate::auth::verify_password(&u.password_hash, "hunter2"));
         // Session + CSRF cookies present.
         let cookies: Vec<String> = resp
             .headers()
@@ -7912,29 +7496,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_refuses_when_operators_exist_without_sentinel() {
-        // This is the "CLI recovery happened first" case: an admin
+    async fn bootstrap_refuses_when_users_exist_without_sentinel() {
+        // This is the "CLI recovery happened first" case: a user
         // exists, but the sentinel was never set. The online flow
-        // must still refuse with operators_already_exist.
+        // must still refuse with users_already_exist.
         let state = fresh_bootstrap_state();
-        let mut collection = crate::operators::OperatorCollection::default();
+        let mut collection = crate::users::UserCollection::default();
         collection
-            .add(crate::operators::OperatorRecord {
-                id: crate::operators::new_operator_id(),
+            .add(crate::users::UserRecord {
+                id: crate::users::new_user_id(),
                 username: "rescuer".into(),
                 password_hash: crate::auth::hash_password("rescue").unwrap(),
-                role: crate::operators::OperatorRole::Admin,
-                granted_stores: Vec::new(),
                 created_at: 1000,
                 password_changed_at: 1000,
             })
             .unwrap();
-        crate::operators::save(&state.operators_file, &collection).unwrap();
+        crate::users::save(&state.users_file, &collection).unwrap();
 
         let resp = run_bootstrap(&state, "newbie", "x");
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = read_json(resp).await;
-        assert_eq!(body["code"], "operators_already_exist");
+        assert_eq!(body["code"], "users_already_exist");
     }
 
     #[tokio::test]
@@ -7955,8 +7537,8 @@ mod tests {
         assert_eq!(ok_count, 1, "exactly one bootstrap must win: {statuses:?}");
         assert_eq!(conflict_count, 1, "the loser must see 409: {statuses:?}");
         // Sentinel is set and collection has exactly one operator.
-        assert!(crate::operators::bootstrap_completed(&state.operators_file).unwrap());
-        let collection = crate::operators::load(&state.operators_file).unwrap();
+        assert!(crate::users::bootstrap_completed(&state.users_file).unwrap());
+        let collection = crate::users::load(&state.users_file).unwrap();
         assert_eq!(collection.len(), 1);
     }
 
@@ -8121,25 +7703,15 @@ mod tests {
 
     // ===== Stores CRUD (ticket 231) =====
 
-    fn admin_principal(stores: &[&str]) -> crate::operators::Principal {
-        crate::operators::Principal {
+    fn admin_principal(_stores: &[&str]) -> crate::users::Principal {
+        crate::users::Principal {
             id: "admin-id".into(),
             username: "alice".into(),
-            role: crate::operators::OperatorRole::Admin,
-            granted_stores: stores.iter().map(|s| s.to_string()).collect(),
-        }
-    }
-    fn operator_principal(stores: &[&str]) -> crate::operators::Principal {
-        crate::operators::Principal {
-            id: "op-id".into(),
-            username: "bob".into(),
-            role: crate::operators::OperatorRole::Operator,
-            granted_stores: stores.iter().map(|s| s.to_string()).collect(),
         }
     }
 
     /// Build an `AdminRuntimeState` wired up for CRUD tests: a
-    /// dedicated store registry, operator-state file, and one allowed
+    /// dedicated store registry, user-state file, and one allowed
     /// data root, all under the supplied tempdir.
     fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
         let dynamic_dir = tmp.join("stores.d");
@@ -8156,20 +7728,20 @@ mod tests {
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
-            operators_file: tmp.join("operators.json"),
+            users_file: tmp.join("users.json"),
             session_key: [0u8; crate::auth::SESSION_KEY_LEN],
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure: false,
             login_rate_limiter: crate::auth::RateLimiter::new(),
             session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
-            operator_collection_lock: std::sync::Mutex::new(()),
+            user_collection_lock: std::sync::Mutex::new(()),
         }
     }
 
     fn create_store_for_test(
         state: &AdminRuntimeState,
-        principal: &crate::operators::Principal,
+        principal: &crate::users::Principal,
         body: AdminStoreCreateRequest,
     ) -> String {
         let resp = do_admin_store_create(state, principal, body);
@@ -8267,7 +7839,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     fn list_returns_empty_when_nothing_configured() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
-        let resp = handle_admin_stores_list(&state, &admin_principal(&[]));
+        let resp = handle_admin_stores_list(&state);
         assert_eq!(resp.status(), StatusCode::OK);
         let body = response_body_json(resp);
         assert_eq!(body["items"].as_array().unwrap().len(), 0);
@@ -8301,7 +7873,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let registry_json = std::fs::read_to_string(&state.stores_file).unwrap();
         assert!(registry_json.contains(&store_id));
         // The runtime registry sees it.
-        let resp = handle_admin_stores_list(&state, &p);
+        let resp = handle_admin_stores_list(&state);
         let body = response_body_json(resp);
         let items = body["items"].as_array().unwrap();
         assert_eq!(items.len(), 1);
@@ -8314,7 +7886,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(items[0]["actions"]["can_delete_now"], true);
         assert_eq!(items[0]["actions"]["can_force_delete"], false);
         // Detail.
-        let resp = handle_admin_store_detail(&state, &p, &store_id);
+        let resp = handle_admin_store_detail(&state, &store_id);
         let body = response_body_json(resp);
         assert_eq!(body["__status"], 200);
         assert_eq!(body["dir"], expected_dir.to_string_lossy().to_string());
@@ -8333,7 +7905,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             },
         );
         assert_eq!(resp.status(), StatusCode::OK);
-        let resp = handle_admin_store_detail(&state, &p, &store_id);
+        let resp = handle_admin_store_detail(&state, &store_id);
         assert_eq!(response_body_json(resp)["description"], "renamed");
         // Clearing description with an empty string nulls it out.
         let resp = do_admin_store_update(
@@ -8346,7 +7918,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             },
         );
         assert_eq!(resp.status(), StatusCode::OK);
-        let resp = handle_admin_store_detail(&state, &p, &store_id);
+        let resp = handle_admin_store_detail(&state, &store_id);
         let body = response_body_json(resp);
         assert!(!body.as_object().unwrap().contains_key("description"));
         // Delete (empty store).
@@ -8397,38 +7969,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = response_body_json(resp);
         assert_eq!(body["code"], "store_name_already_exists");
-    }
-
-    #[test]
-    fn non_admin_cannot_create_or_update_or_delete() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state = crud_state(tmp.path());
-        let op = operator_principal(&["work"]);
-        // Create
-        let resp = do_admin_store_create(
-            &state,
-            &op,
-            AdminStoreCreateRequest {
-                name: "work".into(),
-                backend: AdminStoreBackendKind::Plain,
-                description: None,
-            },
-        );
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-        // Update
-        let resp = do_admin_store_update(
-            &state,
-            &op,
-            "work",
-            AdminStoreUpdateRequest {
-                name: None,
-                description: Some("hi".into()),
-            },
-        );
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-        // Delete
-        let resp = handle_admin_store_delete(&state, &op, "work", true);
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
@@ -8551,7 +8091,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
 
         // The detail response carries the data dir and `locked=false`
         // but never echoes the key value.
-        let resp = handle_admin_store_detail(&state, &p, &store_id);
+        let resp = handle_admin_store_detail(&state, &store_id);
         let body = response_body_json(resp);
         assert_eq!(body["backend"], "encrypted");
         assert_eq!(body["locked"], false);
@@ -8622,7 +8162,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         }
 
         // Detail GET still does not leak the key value.
-        let resp = handle_admin_store_detail(&state, &p, &store_id);
+        let resp = handle_admin_store_detail(&state, &store_id);
         let body = response_body_json(resp);
         let body_str = serde_json::to_string(&body).unwrap();
         assert!(!body_str.contains(&new_key));
@@ -8671,7 +8211,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn rotate_key_requires_admin_and_succeeds() {
+    async fn rotate_key_succeeds_on_unlocked_encrypted_store() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         let p = admin_principal(&[]);
@@ -8684,11 +8224,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 description: None,
             },
         );
-        // Non-admin gets 403.
-        let op = operator_principal(&[&store_id]);
-        let resp = handle_admin_store_rotate_key(&state, &op, &store_id).await;
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-
         let resp = handle_admin_store_rotate_key(&state, &p, &store_id).await;
         assert_eq!(resp.status(), StatusCode::OK);
     }
@@ -8912,12 +8447,12 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             .to_string();
         // Fresh encrypted store has only the canary; admin view must
         // not flag it as having secrets.
-        let detail = response_body_json(handle_admin_store_detail(&state, &p, &store_id));
+        let detail = response_body_json(handle_admin_store_detail(&state, &store_id));
         assert_eq!(detail["usage"]["has_secrets"], false);
     }
 
     #[test]
-    fn store_management_view_reflects_usage_and_principal_capabilities() {
+    fn store_management_view_reflects_usage_for_authenticated_user() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         let admin = admin_principal(&[]);
@@ -8965,7 +8500,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             },
         );
 
-        let list = response_body_json(handle_admin_stores_list(&state, &admin));
+        let list = response_body_json(handle_admin_stores_list(&state));
         let items = list["items"].as_array().unwrap();
         let plain = items.iter().find(|item| item["id"] == plain_id).unwrap();
         assert_eq!(plain["usage"]["mapped_client_instance_count"], 1);
@@ -8986,11 +8521,10 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(encrypted["actions"]["can_delete_now"], false);
         assert_eq!(encrypted["actions"]["can_force_delete"], true);
 
-        let operator = operator_principal(&[&plain_id]);
-        let detail = response_body_json(handle_admin_store_detail(&state, &operator, &plain_id));
+        let detail = response_body_json(handle_admin_store_detail(&state, &plain_id));
         assert_eq!(detail["usage"]["mapped_client_instance_count"], 1);
         assert_eq!(detail["usage"]["has_secrets"], true);
-        assert_eq!(detail["actions"]["can_edit_metadata"], false);
+        assert_eq!(detail["actions"]["can_edit_metadata"], true);
         assert_eq!(detail["actions"]["can_rotate_key"], false);
         assert_eq!(detail["actions"]["can_delete_now"], false);
         assert_eq!(detail["actions"]["can_force_delete"], false);
@@ -9043,7 +8577,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(created["actions"]["can_enable"], false);
         assert_eq!(created["actions"]["can_delete"], true);
 
-        let list = handle_admin_client_instances_list(&state, &p);
+        let list = handle_admin_client_instances_list(&state);
         let list_body = response_body_json(list);
         assert_eq!(list_body["items"].as_array().unwrap().len(), 1);
         assert_eq!(list_body["items"][0]["id"], client_id);
@@ -9075,7 +8609,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(updated["actions"]["can_disable"], false);
         assert_eq!(updated["actions"]["can_enable"], true);
 
-        let list_after_disable = response_body_json(handle_admin_client_instances_list(&state, &p));
+        let list_after_disable = response_body_json(handle_admin_client_instances_list(&state));
         assert_eq!(list_after_disable["items"].as_array().unwrap().len(), 1);
         assert_eq!(list_after_disable["items"][0]["id"], client_id);
         assert_eq!(list_after_disable["items"][0]["status"], "disabled");
@@ -9302,7 +8836,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     /// subsequent id-addressed calls against the same resource.
     fn create_resource_id_for_test(
         state: &AdminRuntimeState,
-        principal: &crate::operators::Principal,
+        principal: &crate::users::Principal,
         store_id: &str,
         name: &str,
     ) -> String {
@@ -9343,7 +8877,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
 
         let list = handle_admin_resources_list(
             &state,
-            &p,
             &underwrap_protocol::service::AdminResourcesListRequest {
                 store: store_id.clone(),
             },
@@ -9391,7 +8924,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
 
         let list = handle_admin_resources_list(
             &state,
-            &p,
             &underwrap_protocol::service::AdminResourcesListRequest { store: store_id },
         );
         assert_eq!(
@@ -9427,7 +8959,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         // List confirms the rename.
         let list = handle_admin_resources_list(
             &state,
-            &p,
             &underwrap_protocol::service::AdminResourcesListRequest { store: store_id },
         );
         let resources = response_body_json(list)["resources"].clone();
@@ -9611,7 +9142,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         // Resource is still present.
         let list = handle_admin_resources_list(
             &state,
-            &p,
             &underwrap_protocol::service::AdminResourcesListRequest { store: store_id },
         );
         assert_eq!(
@@ -9771,96 +9301,31 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(body["blocked_by"]["sample_permissions"][0]["wrapper"], "gh");
     }
 
-    #[test]
-    fn non_admin_cannot_manage_resources_or_pairs() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let (state, store_id) = entity_test_state_with_store(tmp.path());
-        let op = operator_principal(&[&store_id]);
-        let list = handle_admin_resources_list(
-            &state,
-            &op,
-            &underwrap_protocol::service::AdminResourcesListRequest {
-                store: store_id.clone(),
-            },
-        );
-        assert_eq!(list.status(), StatusCode::FORBIDDEN);
-        let create = handle_admin_resource_create(
-            &state,
-            &op,
-            &underwrap_protocol::service::AdminResourceCreateRequest {
-                store: store_id,
-                name: "r".into(),
-            },
-        );
-        assert_eq!(create.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[test]
-    fn non_admin_cannot_manage_client_instances() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state = crud_state(tmp.path());
-        let store_id = create_store_for_test(
-            &state,
-            &admin_principal(&[]),
-            AdminStoreCreateRequest {
-                name: "work".into(),
-                backend: AdminStoreBackendKind::Plain,
-                description: None,
-            },
-        );
-        let op = operator_principal(&[&store_id]);
-        let create = do_admin_client_instance_create(
-            &state,
-            &op,
-            AdminClientInstanceCreateRequest {
-                display_name: "laptop-work".into(),
-                current_store_id: store_id.clone(),
-                status: AdminClientInstanceStatus::Active,
-                cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
-                issued_at: None,
-                auto_create_wrapper_assets: None,
-            },
-        );
-        assert_eq!(create.status(), StatusCode::FORBIDDEN);
-        assert_eq!(
-            handle_admin_client_instances_list(&state, &op).status(),
-            StatusCode::FORBIDDEN
-        );
-        assert_eq!(
-            handle_admin_client_instance_detail(&state, &op, "missing").status(),
-            StatusCode::FORBIDDEN
-        );
-    }
-
-    // ===== Users CRUD (ticket 240) =====
+    // ===== Users CRUD =====
 
     fn seed_admin_into(state: &AdminRuntimeState, username: &str) -> String {
         // Returns the operator id of the seeded admin so tests can
         // build a principal that refers to a real record.
-        let mut c = crate::operators::OperatorCollection::default();
+        let mut c = crate::users::UserCollection::default();
         let hash = crate::auth::hash_password("seed-pass").unwrap();
-        let now = crate::operators::now_epoch_secs();
-        let id = crate::operators::new_operator_id();
-        c.add(crate::operators::OperatorRecord {
+        let now = crate::users::now_epoch_secs();
+        let id = crate::users::new_user_id();
+        c.add(crate::users::UserRecord {
             id: id.clone(),
             username: username.into(),
             password_hash: hash,
-            role: crate::operators::OperatorRole::Admin,
-            granted_stores: Vec::new(),
             created_at: now,
             password_changed_at: now,
         })
         .unwrap();
-        crate::operators::save(&state.operators_file, &c).unwrap();
+        crate::users::save(&state.users_file, &c).unwrap();
         id
     }
 
-    fn admin_principal_with_id(id: &str) -> crate::operators::Principal {
-        crate::operators::Principal {
+    fn admin_principal_with_id(id: &str) -> crate::users::Principal {
+        crate::users::Principal {
             id: id.into(),
             username: "alice".into(),
-            role: crate::operators::OperatorRole::Admin,
-            granted_stores: Vec::new(),
         }
     }
 
@@ -9876,8 +9341,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             underwrap_protocol::service::AdminUserCreateRequest {
                 username: "bob".into(),
                 password: "hunter2-bob".into(),
-                role: underwrap_protocol::service::AdminUserRole::Operator,
-                granted_stores: vec!["work".into()],
             },
         );
         assert_eq!(resp.status(), StatusCode::OK);
@@ -9898,12 +9361,14 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             "create response must not expose the password_hash field: {body_str}",
         );
         assert_eq!(body["username"], "bob");
-        assert_eq!(body["role"], "operator");
-        assert_eq!(body["granted_stores"][0], "work");
+        assert!(
+            body.get("role").is_none(),
+            "wire shape must not carry a role"
+        );
 
-        // The record landed in the operator collection.
-        let collection = crate::operators::load(&state.operators_file).unwrap();
-        assert_eq!(collection.operators.len(), 2);
+        // The record landed in the user collection.
+        let collection = crate::users::load(&state.users_file).unwrap();
+        assert_eq!(collection.users.len(), 2);
         assert!(collection.find_by_username("bob").is_some());
     }
 
@@ -9916,8 +9381,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let req = || underwrap_protocol::service::AdminUserCreateRequest {
             username: "Alice".into(), // collides after normalisation
             password: "any-pass".into(),
-            role: underwrap_protocol::service::AdminUserRole::Operator,
-            granted_stores: Vec::new(),
         };
         let resp = do_admin_user_create(&state, &p, req());
         assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -9936,8 +9399,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             underwrap_protocol::service::AdminUserCreateRequest {
                 username: "bob".into(),
                 password: String::new(),
-                role: underwrap_protocol::service::AdminUserRole::Operator,
-                granted_stores: Vec::new(),
             },
         );
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -9957,12 +9418,10 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 underwrap_protocol::service::AdminUserCreateRequest {
                     username: u.into(),
                     password: format!("{u}-pass"),
-                    role: underwrap_protocol::service::AdminUserRole::Operator,
-                    granted_stores: Vec::new(),
                 },
             );
         }
-        let resp = handle_admin_users_list(&state, &p);
+        let resp = handle_admin_users_list(&state);
         assert_eq!(resp.status(), StatusCode::OK);
         let body = response_body_json(resp);
         let body_str = serde_json::to_string(&body).unwrap();
@@ -9973,17 +9432,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     }
 
     #[test]
-    fn non_admin_cannot_list_users() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state = crud_state(tmp.path());
-        seed_admin_into(&state, "alice");
-        let op = operator_principal(&["work"]);
-        let resp = handle_admin_users_list(&state, &op);
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[test]
-    fn user_update_changes_role_and_grants() {
+    fn user_update_renames_user() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         seed_admin_into(&state, "alice");
@@ -9994,8 +9443,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             underwrap_protocol::service::AdminUserCreateRequest {
                 username: "bob".into(),
                 password: "x".into(),
-                role: underwrap_protocol::service::AdminUserRole::Operator,
-                granted_stores: Vec::new(),
             },
         );
         let bob_id = response_body_json(create_resp)["id"]
@@ -10007,19 +9454,16 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &p,
             &bob_id,
             underwrap_protocol::service::AdminUserUpdateRequest {
-                username: None,
-                role: Some(underwrap_protocol::service::AdminUserRole::Admin),
-                granted_stores: Some(vec!["work".into(), "vault".into()]),
+                username: Some("robert".into()),
             },
         );
         assert_eq!(resp.status(), StatusCode::OK);
         let body = response_body_json(resp);
-        assert_eq!(body["role"], "admin");
-        assert_eq!(body["granted_stores"].as_array().unwrap().len(), 2);
+        assert_eq!(body["username"], "robert");
     }
 
     #[test]
-    fn user_delete_refuses_last_admin() {
+    fn user_delete_refuses_last_user() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         let alice_id = seed_admin_into(&state, "alice");
@@ -10027,34 +9471,14 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let resp = handle_admin_user_delete(&state, &p, &alice_id);
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = response_body_json(resp);
-        assert_eq!(body["code"], "last_admin_protected");
+        assert_eq!(body["code"], "last_user_protected");
         // Record still in the collection.
-        let collection = crate::operators::load(&state.operators_file).unwrap();
+        let collection = crate::users::load(&state.users_file).unwrap();
         assert!(collection.find_by_id(&alice_id).is_some());
     }
 
     #[test]
-    fn user_update_refuses_demoting_last_admin() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state = crud_state(tmp.path());
-        let alice_id = seed_admin_into(&state, "alice");
-        let p = admin_principal_with_id(&alice_id);
-        let resp = do_admin_user_update(
-            &state,
-            &p,
-            &alice_id,
-            underwrap_protocol::service::AdminUserUpdateRequest {
-                username: None,
-                role: Some(underwrap_protocol::service::AdminUserRole::Operator),
-                granted_stores: None,
-            },
-        );
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        assert_eq!(response_body_json(resp)["code"], "last_admin_protected");
-    }
-
-    #[test]
-    fn user_delete_succeeds_when_another_admin_exists() {
+    fn user_delete_succeeds_when_another_user_exists() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         let alice_id = seed_admin_into(&state, "alice");
@@ -10065,8 +9489,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             underwrap_protocol::service::AdminUserCreateRequest {
                 username: "second".into(),
                 password: "x".into(),
-                role: underwrap_protocol::service::AdminUserRole::Admin,
-                granted_stores: Vec::new(),
             },
         );
         let second_id = response_body_json(create)["id"]
@@ -10089,8 +9511,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             underwrap_protocol::service::AdminUserCreateRequest {
                 username: "bob".into(),
                 password: "old-pass".into(),
-                role: underwrap_protocol::service::AdminUserRole::Operator,
-                granted_stores: Vec::new(),
             },
         );
         let bob_id = response_body_json(create)["id"]
@@ -10098,7 +9518,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             .unwrap()
             .to_string();
 
-        let hash_before = crate::operators::load(&state.operators_file)
+        let hash_before = crate::users::load(&state.users_file)
             .unwrap()
             .find_by_id(&bob_id)
             .unwrap()
@@ -10113,18 +9533,18 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         // an `async` wrapper would need a runtime; we mimic the
         // server logic here instead.
         let new_hash = crate::auth::hash_password("new-pass").unwrap();
-        let now = crate::operators::now_epoch_secs();
+        let now = crate::users::now_epoch_secs();
         mutate_collection(&state, |c| {
-            c.update(&bob_id, |op| {
-                op.password_hash = new_hash.clone();
-                op.password_changed_at = now;
+            c.update(&bob_id, |u| {
+                u.password_hash = new_hash.clone();
+                u.password_changed_at = now;
             })?;
             Ok(())
         })
         .unwrap();
         state.session_revocations.revoke_username("bob", now);
 
-        let hash_after = crate::operators::load(&state.operators_file)
+        let hash_after = crate::users::load(&state.users_file)
             .unwrap()
             .find_by_id(&bob_id)
             .unwrap()
@@ -10140,39 +9560,11 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     }
 
     #[test]
-    fn operator_probing_ungranted_store_gets_404() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state = crud_state(tmp.path());
-        // Seed a store and an operator with no grants.
-        seed_admin_into(&state, "alice");
-        let admin = admin_principal(&[]);
-        do_admin_store_create(
-            &state,
-            &admin,
-            AdminStoreCreateRequest {
-                name: "private".into(),
-                backend: AdminStoreBackendKind::Plain,
-                description: None,
-            },
-        );
-        // Operator with no grant for `private`.
-        let op = operator_principal(&[]);
-        // List filtering hides ungranted stores from the operator.
-        let resp = handle_admin_stores_list(&state, &op);
-        let body = response_body_json(resp);
-        assert_eq!(body["items"].as_array().unwrap().len(), 0);
-        let resp = handle_admin_store_detail(&state, &op, "private");
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let result = admin_store_for_principal(&state, &op, "private");
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn debug_redacts_password_hash_in_collection_logging() {
         // Regression: when we tracing!(?collection) the hash must
-        // never appear. The `Debug` impl on `OperatorRecord` redacts
-        // it, but the easiest check is to format the loaded
-        // collection after every mutation and grep.
+        // never appear. The `Debug` impl on `UserRecord` redacts it,
+        // but the easiest check is to format the loaded collection
+        // after every mutation and grep.
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         seed_admin_into(&state, "alice");
@@ -10182,11 +9574,9 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             underwrap_protocol::service::AdminUserCreateRequest {
                 username: "bob".into(),
                 password: "x".into(),
-                role: underwrap_protocol::service::AdminUserRole::Operator,
-                granted_stores: Vec::new(),
             },
         );
-        let collection = crate::operators::load(&state.operators_file).unwrap();
+        let collection = crate::users::load(&state.users_file).unwrap();
         let formatted = format!("{collection:?}");
         assert!(
             !formatted.contains("$argon2"),

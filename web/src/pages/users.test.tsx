@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { UsersPage, canManageUsers } from "./users";
+import { UsersPage } from "./users";
 
 function mockJson(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -32,16 +32,12 @@ const sampleUsers = {
     {
       id: "id-alice",
       username: "alice",
-      role: "admin",
-      granted_stores: [],
       created_at: 1700_000_000,
       password_changed_at: 1700_000_000,
     },
     {
       id: "id-bob",
       username: "bob",
-      role: "operator",
-      granted_stores: ["work"],
       created_at: 1710_000_000,
       password_changed_at: 1710_000_000,
     },
@@ -72,38 +68,14 @@ function mockUsersAndStoresFetch() {
   });
 }
 
-describe("permission helper", () => {
-  it("only admin operators can manage users", () => {
-    expect(canManageUsers({ authenticated: true, role: "admin" })).toBe(true);
-    expect(canManageUsers({ authenticated: true, role: "operator" })).toBe(
-      false,
-    );
-    expect(canManageUsers({ authenticated: false })).toBe(false);
-    expect(canManageUsers(null)).toBe(false);
-  });
-});
-
 describe("UsersPage", () => {
-  it("hides the manage UI for non-admin sessions", () => {
-    render(
-      withQuery(
-        <UsersPage principal={{ authenticated: true, role: "operator" }} />,
-      ),
-    );
-    expect(
-      screen.queryByRole("button", { name: /create user/i }),
-    ).toBeNull();
-    expect(screen.getByRole("alert").textContent).toMatch(/admin/i);
-  });
-
-  it("admin sees the table with the (you) marker on their own row", async () => {
+  it("shows the table with the (you) marker on the signed-in user's row", async () => {
     mockUsersAndStoresFetch();
     render(
       withQuery(
         <UsersPage
           principal={{
             authenticated: true,
-            role: "admin",
             username: "alice",
           }}
         />,
@@ -117,15 +89,36 @@ describe("UsersPage", () => {
     expect(bobRow.textContent ?? "").not.toMatch(/you/i);
   });
 
-  it("delete dialog disables the destructive button when targeting the last admin", async () => {
+  it("delete dialog disables the destructive button when targeting the last user", async () => {
     const user = userEvent.setup();
     mockUsersAndStoresFetch();
+    // Single-user fixture so the page treats it as the last user.
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/v1/admin/users")) {
+        return Promise.resolve(
+          mockJson(200, {
+            users: [
+              {
+                id: "id-alice",
+                username: "alice",
+                created_at: 1700_000_000,
+                password_changed_at: 1700_000_000,
+              },
+            ],
+          }),
+        );
+      }
+      if (url.includes("/v1/admin/stores")) {
+        return Promise.resolve(mockJson(200, sampleStoresList));
+      }
+      return Promise.resolve(mockJson(404, { code: "not_found" }));
+    });
     render(
       withQuery(
         <UsersPage
           principal={{
             authenticated: true,
-            role: "admin",
             username: "alice",
           }}
         />,
@@ -139,7 +132,7 @@ describe("UsersPage", () => {
     const dlg = await screen.findByRole("dialog", {
       name: /delete user: alice/i,
     });
-    expect(dlg.textContent).toMatch(/last remaining admin/i);
+    expect(dlg.textContent).toMatch(/last remaining user/i);
     const deleteBtns = Array.from(
       dlg.querySelectorAll<HTMLButtonElement>("button"),
     );
@@ -156,7 +149,6 @@ describe("UsersPage", () => {
         <UsersPage
           principal={{
             authenticated: true,
-            role: "admin",
             username: "alice",
           }}
         />,

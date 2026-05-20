@@ -61,10 +61,10 @@ inline in this config (changed in ticket 230). All paths are absolute.
 ```yaml
 # Optional — defaults kick in when omitted. Missing registry files are
 # treated as empty, so the backend can boot before the first store,
-# operator, or runtime client exists.
+# user, or runtime client exists.
 stores_file: /var/lib/underwrap-backend/stores.json
 client_instances_file: /var/lib/underwrap-backend/client-instances.json
-operators_file: /var/lib/underwrap-backend/operators.json
+users_file: /var/lib/underwrap-backend/users.json
 
 https:
   listen: 127.0.0.1:18443

@@ -3,10 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import {
-  ClientInstancesPage,
-  canManageClientInstances,
-} from "./client-instances";
+import { ClientInstancesPage } from "./client-instances";
 
 vi.mock("@/api/client", async () => {
   const actual = await vi.importActual<typeof import("@/api/client")>("@/api/client");
@@ -32,15 +29,6 @@ function renderWithQuery(ui: React.ReactNode) {
   });
   return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
 }
-
-describe("canManageClientInstances", () => {
-  it("is admin-only", () => {
-    expect(canManageClientInstances({ authenticated: true, role: "admin" })).toBe(true);
-    expect(canManageClientInstances({ authenticated: true, role: "operator" })).toBe(false);
-    expect(canManageClientInstances({ authenticated: false })).toBe(false);
-    expect(canManageClientInstances(null)).toBe(false);
-  });
-});
 
 describe("ClientInstancesPage", () => {
   const stores = {
@@ -168,7 +156,7 @@ describe("ClientInstancesPage", () => {
 
   it("shows display name, store, and status for each instance", async () => {
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+      <ClientInstancesPage principal={{ authenticated: true }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -180,7 +168,7 @@ describe("ClientInstancesPage", () => {
   it("keeps disabled instances visible and filterable", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+      <ClientInstancesPage principal={{ authenticated: true }} />,
     );
 
     await screen.findByTestId("client-instance-row-client_work");
@@ -195,7 +183,7 @@ describe("ClientInstancesPage", () => {
   it("remaps an instance to another store from the unified edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+      <ClientInstancesPage principal={{ authenticated: true }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -212,7 +200,7 @@ describe("ClientInstancesPage", () => {
   it("disables an active instance via the confirmation dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+      <ClientInstancesPage principal={{ authenticated: true }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -228,7 +216,7 @@ describe("ClientInstancesPage", () => {
   it("creates a client instance via the create dialog using a pasted cert PEM", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+      <ClientInstancesPage principal={{ authenticated: true }} />,
     );
 
     await screen.findByTestId("client-instance-row-client_work");
@@ -252,7 +240,7 @@ describe("ClientInstancesPage", () => {
   it("renames an instance via the unified edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+      <ClientInstancesPage principal={{ authenticated: true }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -271,7 +259,7 @@ describe("ClientInstancesPage", () => {
   it("replaces the registered cert via the unified edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+      <ClientInstancesPage principal={{ authenticated: true }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -289,7 +277,7 @@ describe("ClientInstancesPage", () => {
   it("toggles auto-create wrapper assets via the edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true, role: "admin" }} />,
+      <ClientInstancesPage principal={{ authenticated: true }} />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");

@@ -38,21 +38,21 @@ flow exclusively.
 
 ## Surface today
 
-| Page                | Path        | Role required |
+| Page                | Path        | Visible to    |
 | ------------------- | ----------- | ------------- |
-| Dashboard           | `/`         | any operator  |
-| Wrapper permissions | `/wrappers` | any operator  |
-| Stores              | `/stores`   | admin         |
-| Users               | `/users`    | admin         |
-| Profile             | `/profile`  | any operator  |
+| Dashboard           | `/`         | any user      |
+| Wrapper permissions | `/wrappers` | any user      |
+| Stores              | `/stores`   | any user      |
+| Users               | `/users`    | any user      |
+| Profile             | `/profile`  | any user      |
 | Login               | `/login`    | unauthenticated |
 | Bootstrap           | `/bootstrap`| empty backend |
 
-Operators see only the stores they have been granted access to.
-Admins see everything. The Wrapper permissions tab lets admins set
-the `(client_instance, wrapper, resource)` permission mode and toggle
-its `writable` flag — see [backend docs](backend.md#policy-model) for
-the underlying model.
+Authorisation is flat: any authenticated user can perform any admin
+action. The Wrapper permissions tab sets the
+`(client_instance, wrapper, resource)` permission mode and toggles its
+`writable` flag — see [backend docs](backend.md#policy-model) for the
+underlying model.
 
 ## Local development
 

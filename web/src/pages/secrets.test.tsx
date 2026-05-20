@@ -118,7 +118,6 @@ describe("SecretsPage", () => {
         principal={{
           authenticated: true,
           username: "alice",
-          role: "admin",
         }}
       />,
     );

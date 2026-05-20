@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { StoresPage, canMutateStores } from "./stores";
+import { StoresPage } from "./stores";
 
 function mockJson(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -21,21 +21,6 @@ function withQuery(node: React.ReactElement) {
 
 afterEach(() => {
   vi.restoreAllMocks();
-});
-
-describe("permission helpers", () => {
-  it("admins may mutate; everyone else may not", () => {
-    expect(
-      canMutateStores({ authenticated: true, role: "admin" }),
-    ).toBe(true);
-    expect(
-      canMutateStores({ authenticated: true, role: "operator" }),
-    ).toBe(false);
-    expect(
-      canMutateStores({ authenticated: false }),
-    ).toBe(false);
-    expect(canMutateStores(null)).toBe(false);
-  });
 });
 
 describe("StoresPage", () => {
@@ -95,24 +80,6 @@ describe("StoresPage", () => {
     ],
   };
 
-  it("hides the create button for non-admins", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockJson(200, sampleList),
-    );
-    render(
-      withQuery(
-        <StoresPage
-          principal={{ authenticated: true, role: "operator" }}
-        />,
-      ),
-    );
-    // Wait for the table to render.
-    await screen.findByText(/^work$/);
-    expect(
-      screen.queryByRole("button", { name: /create store/i }),
-    ).toBeNull();
-  });
-
   it("enables edit/delete on mutable rows when actions allow it", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockJson(200, sampleList),
@@ -120,7 +87,7 @@ describe("StoresPage", () => {
     render(
       withQuery(
         <StoresPage
-          principal={{ authenticated: true, role: "admin" }}
+          principal={{ authenticated: true }}
         />,
       ),
     );
@@ -138,7 +105,7 @@ describe("StoresPage", () => {
     render(
       withQuery(
         <StoresPage
-          principal={{ authenticated: true, role: "admin" }}
+          principal={{ authenticated: true }}
         />,
       ),
     );
@@ -160,7 +127,7 @@ describe("StoresPage", () => {
     render(
       withQuery(
         <StoresPage
-          principal={{ authenticated: true, role: "admin" }}
+          principal={{ authenticated: true }}
         />,
       ),
     );
@@ -184,7 +151,7 @@ describe("StoresPage", () => {
     render(
       withQuery(
         <StoresPage
-          principal={{ authenticated: true, role: "admin" }}
+          principal={{ authenticated: true }}
         />,
       ),
     );
@@ -219,7 +186,7 @@ describe("StoresPage", () => {
     render(
       withQuery(
         <StoresPage
-          principal={{ authenticated: true, role: "admin" }}
+          principal={{ authenticated: true }}
         />,
       ),
     );
@@ -254,7 +221,7 @@ describe("StoresPage", () => {
     render(
       withQuery(
         <StoresPage
-          principal={{ authenticated: true, role: "admin" }}
+          principal={{ authenticated: true }}
         />,
       ),
     );

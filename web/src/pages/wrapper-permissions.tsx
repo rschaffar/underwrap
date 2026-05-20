@@ -48,7 +48,7 @@ import {
 import { describeApiError } from "@/lib/error-message";
 
 interface WrapperPermissionsPageProps {
-  principal: WhoamiResponse | null;
+  principal?: WhoamiResponse | null;
 }
 
 /** Canonical kebab string for a permission mode. */
@@ -178,12 +178,11 @@ export function groupPairsByResource(
     .sort((a, b) => a.resource.localeCompare(b.resource));
 }
 
-export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProps) {
+export function WrapperPermissionsPage(_props: WrapperPermissionsPageProps = {}) {
   useEffect(() => {
     document.title = "underwrap — wrapper permissions";
   }, []);
 
-  const isAdmin = !!(principal?.authenticated && principal.role === "admin");
   const qc = useQueryClient();
 
   const stores = useQuery<AdminStoresListResponse>({
@@ -322,17 +321,15 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {isAdmin ? (
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => setCreatingPair(true)}
-              data-testid="wrappers-create-pair"
-            >
-              <Plus className="mr-1.5 h-4 w-4" aria-hidden />
-              Create pair
-            </Button>
-          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => setCreatingPair(true)}
+            data-testid="wrappers-create-pair"
+          >
+            <Plus className="mr-1.5 h-4 w-4" aria-hidden />
+            Create pair
+          </Button>
           <Button
             type="button"
             variant="ghost"
@@ -371,9 +368,7 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
       ) : pairRecords.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
           No wrapper/resource pairs are registered for this store yet.
-          {isAdmin
-            ? " Use Create pair to add one, or enable auto-create on a client instance so its wrappers register on startup."
-            : " Ask an admin to add one, or enable auto-create for a client instance."}
+          {" "}Use Create pair to add one, or enable auto-create on a client instance so its wrappers register on startup.
         </p>
       ) : (
         <ResourceGroupedPairsTable
@@ -382,7 +377,6 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
           displayNameById={displayNameById}
           resourceNameById={resourceNameById}
           permissionIndex={permissionIndex}
-          isAdmin={isAdmin}
           onCellClick={(wr, clientInstance, permission) =>
             setEditing({
               clientInstance,
@@ -408,7 +402,6 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
             resourceNameById.get(editing.resource_id) ?? editing.resource_id
           }
           existing={editing.permission}
-          canEdit={isAdmin}
           onClose={() => setEditing(null)}
         />
       ) : null}
@@ -460,7 +453,6 @@ function ResourceGroupedPairsTable({
   displayNameById,
   resourceNameById,
   permissionIndex,
-  isAdmin,
   onCellClick,
   onDeletePair,
 }: {
@@ -469,7 +461,6 @@ function ResourceGroupedPairsTable({
   displayNameById: Map<string, string>;
   resourceNameById: Map<string, string>;
   permissionIndex: Map<string, WrapperPermission>;
-  isAdmin: boolean;
   onCellClick: (
     wr: WrapperResource,
     clientInstance: string,
@@ -499,7 +490,7 @@ function ResourceGroupedPairsTable({
                 </th>
               );
             })}
-            {isAdmin ? <th className="px-3 py-2" /> : null}
+            <th className="px-3 py-2" />
           </tr>
         </thead>
         <tbody>
@@ -561,7 +552,6 @@ function ResourceGroupedPairsTable({
                           type="button"
                           data-testid={`wrappers-cell-${pair.wrapper}-${pair.resource_id}-${c}`}
                           onClick={() => onCellClick(wr, c, permission)}
-                          disabled={!isAdmin}
                           className="min-h-11 min-w-[5rem] rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-1 text-xs hover:bg-(--color-surface-0) disabled:opacity-60"
                         >
                           <CellContent permission={permission} />
@@ -569,22 +559,20 @@ function ResourceGroupedPairsTable({
                       </td>
                     );
                   })}
-                  {isAdmin ? (
-                    <td className="px-3 py-3">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Delete pair ${pair.wrapper} / ${
-                          resourceNameById.get(pair.resource_id) ?? pair.resource_id
-                        }`}
-                        data-testid={`wrappers-delete-pair-${pair.wrapper}-${pair.resource_id}`}
-                        onClick={() => onDeletePair(pair)}
-                      >
-                        <Trash2 className="h-4 w-4" aria-hidden />
-                      </Button>
-                    </td>
-                  ) : null}
+                  <td className="px-3 py-3">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Delete pair ${pair.wrapper} / ${
+                        resourceNameById.get(pair.resource_id) ?? pair.resource_id
+                      }`}
+                      data-testid={`wrappers-delete-pair-${pair.wrapper}-${pair.resource_id}`}
+                      onClick={() => onDeletePair(pair)}
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    </Button>
+                  </td>
                 </tr>
               );
             }),
@@ -943,7 +931,6 @@ function EditCellDialog({
   resourceId,
   resourceName,
   existing,
-  canEdit,
   onClose,
 }: {
   storeName: string;
@@ -953,7 +940,6 @@ function EditCellDialog({
   resourceId: string;
   resourceName: string;
   existing: WrapperPermission | null;
-  canEdit: boolean;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -1073,17 +1059,8 @@ function EditCellDialog({
             fresh ssh-agent signature.
           </DialogDescription>
         </DialogHeader>
-        {!canEdit ? (
-          <p
-            role="alert"
-            className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
-          >
-            Only admin operators can change permissions.
-          </p>
-        ) : null}
         <div className="space-y-4">
           <fieldset
-            disabled={!canEdit}
             className="flex flex-wrap gap-2"
             data-testid="mode-radio-group"
           >
@@ -1120,7 +1097,6 @@ function EditCellDialog({
                 type="datetime-local"
                 value={untilLocal}
                 onChange={(e) => setUntilLocal(e.target.value)}
-                disabled={!canEdit}
               />
             </div>
           ) : null}
@@ -1132,7 +1108,6 @@ function EditCellDialog({
                 rows={3}
                 value={approvalKey}
                 onChange={(e) => setApprovalKey(e.target.value)}
-                disabled={!canEdit}
                 spellCheck={false}
                 className="block w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
                 placeholder="ssh-ed25519 AAAA..."
@@ -1144,7 +1119,6 @@ function EditCellDialog({
               type="checkbox"
               data-testid="permission-writable"
               checked={writable}
-              disabled={!canEdit}
               onChange={(e) => setWritable(e.target.checked)}
             />
             Allow wrapper-side writes for this resource (files / libsecret slots)
@@ -1155,7 +1129,6 @@ function EditCellDialog({
               id="reason"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              disabled={!canEdit}
             />
           </div>
           {submitError ? (
@@ -1168,7 +1141,7 @@ function EditCellDialog({
           ) : null}
         </div>
         <DialogFooter className="sm:justify-between">
-          {existing && canEdit ? (
+          {existing ? (
             <Button
               type="button"
               variant="destructive"
@@ -1189,7 +1162,7 @@ function EditCellDialog({
             <Button
               type="button"
               onClick={onSave}
-              disabled={!canEdit || upsert.isPending}
+              disabled={upsert.isPending}
               data-testid="permission-save"
             >
               {upsert.isPending ? "Saving…" : "Save"}

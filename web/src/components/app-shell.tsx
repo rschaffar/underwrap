@@ -34,38 +34,25 @@ interface NavItem {
   // destination requires updating `APP_ROUTE_PATHS` in router.tsx,
   // which in turn is asserted to match the live route tree.
   href: AppRoutePath;
-  /** Hide this nav item unless the role string is admin. */
-  adminOnly?: boolean;
 }
 
 export const NAV: NavItem[] = [
   { label: "Dashboard", icon: LayoutDashboard, href: "/" },
   { label: "Wrapper permissions", icon: Grid3x3, href: "/wrappers" },
   { label: "Secrets", icon: KeyRound, href: "/secrets" },
-  { label: "Stores", icon: Lock, href: "/stores", adminOnly: true },
-  {
-    label: "Client Instances",
-    icon: Monitor,
-    href: "/client-instances",
-    adminOnly: true,
-  },
-  { label: "Users", icon: Users, href: "/users", adminOnly: true },
+  { label: "Stores", icon: Lock, href: "/stores" },
+  { label: "Client Instances", icon: Monitor, href: "/client-instances" },
+  { label: "Users", icon: Users, href: "/users" },
   { label: "Profile", icon: UserCircle, href: "/profile" },
 ];
 
-function Sidebar({
-  onNavigate,
-  role,
-}: {
-  onNavigate?: () => void;
-  role?: string;
-}) {
+function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <nav aria-label="Primary" className="flex h-full flex-col gap-1 p-3">
       <div className="px-3 py-4 text-sm font-semibold tracking-wide text-(--color-muted) uppercase">
         underwrap
       </div>
-      {NAV.filter((n) => !n.adminOnly || role === "admin").map(({ label, icon: Icon, href }) => (
+      {NAV.map(({ label, icon: Icon, href }) => (
         <a
           key={label}
           href={href}
@@ -84,15 +71,9 @@ interface AppShellProps {
   children: ReactNode;
   /** Optional sign-out callback. When omitted the logout button is hidden. */
   onLogout?: () => void | Promise<void>;
-  /**
-   * Role string from `whoami`. Drives admin-only nav-item visibility.
-   * Omit for the unauthenticated case (no nav items rendered for
-   * admin-only entries).
-   */
-  role?: string;
 }
 
-export function AppShell({ children, onLogout, role }: AppShellProps) {
+export function AppShell({ children, onLogout }: AppShellProps) {
   const { theme, toggle } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -121,10 +102,7 @@ export function AppShell({ children, onLogout, role }: AppShellProps) {
                 Top-level sections of the underwrap admin UI.
               </SheetDescription>
             </SheetHeader>
-            <Sidebar
-              onNavigate={() => setDrawerOpen(false)}
-              role={role}
-            />
+            <Sidebar onNavigate={() => setDrawerOpen(false)} />
           </SheetContent>
         </Sheet>
 
@@ -159,7 +137,7 @@ export function AppShell({ children, onLogout, role }: AppShellProps) {
           aria-label="Sidebar"
           className="sticky top-14 hidden h-[calc(100vh-3.5rem)] w-60 shrink-0 border-r border-(--color-line) bg-(--color-surface-0)/50 md:block"
         >
-          <Sidebar role={role} />
+          <Sidebar />
         </aside>
         <main className="min-w-0 flex-1 p-6">{children}</main>
       </div>

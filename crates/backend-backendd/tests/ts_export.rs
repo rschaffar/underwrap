@@ -25,7 +25,6 @@ use std::path::PathBuf;
 
 use ts_rs::TS;
 
-use underwrap_backendd::operators::OperatorRole;
 use underwrap_backendd::server::{
     BootstrapRequest, BootstrapResponse, BootstrapStatusResponse, LoginRequest, LoginResponse,
     WhoamiResponse,
@@ -44,7 +43,7 @@ use underwrap_protocol::service::{
     AdminStoreDetailResponse, AdminStoreListItem, AdminStoreRotateKeyResponse,
     AdminStoreUnlockRequest, AdminStoreUpdateRequest, AdminStoreUsageSummary,
     AdminStoresListResponse, AdminUserCreateRequest, AdminUserDetailResponse, AdminUserListItem,
-    AdminUserResetPasswordRequest, AdminUserRole, AdminUserUpdateRequest, AdminUsersListResponse,
+    AdminUserResetPasswordRequest, AdminUserUpdateRequest, AdminUsersListResponse,
 };
 use underwrap_protocol::service::{
     AdminOkResponse, AdminPairCreateRequest, AdminPairCreateResponse, AdminPairDeleteBlockers,
@@ -111,7 +110,6 @@ fn ts_bindings_in_sync_with_rust() {
         LoginRequest,
         LoginResponse,
         WhoamiResponse,
-        OperatorRole,
         // shared-protocol::policy types reachable from admin DTOs
         WrapperPermission,
         PolicyDocument,
@@ -159,7 +157,6 @@ fn ts_bindings_in_sync_with_rust() {
         AdminClientInstanceDetailResponse,
         AdminClientInstanceCreateRequest,
         AdminClientInstanceUpdateRequest,
-        AdminUserRole,
         AdminUserListItem,
         AdminUsersListResponse,
         AdminUserDetailResponse,
