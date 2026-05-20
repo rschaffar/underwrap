@@ -3953,6 +3953,7 @@ fn do_admin_client_instance_update(
             "unknown client instance",
         );
     };
+    let old_store_id = existing.current_store_id.clone();
     let mut updated = existing;
     if let Some(display_name) = body.display_name {
         let display_name = match validate_store_name(&display_name) {
@@ -4026,6 +4027,16 @@ fn do_admin_client_instance_update(
             StatusCode::INTERNAL_SERVER_ERROR,
             "write_client_instances_failed",
             &format!("{e:#}"),
+        );
+    }
+    drop(instances);
+    if old_store_id != updated.current_store_id
+        && let Err(e) = drop_client_instance_permissions(state, &old_store_id, id)
+    {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("clearing prior-store permissions: {e:#}"),
         );
     }
     log_admin_event(
@@ -4115,6 +4126,30 @@ fn save_policy_document(store: &dyn StorageBackend, doc: &PolicyDocument) -> Res
         POLICY_DOCUMENT_SECRET_ID,
         serde_json::to_vec(doc)?.as_slice(),
     )
+}
+
+/// Strip every wrapper permission whose `client_instance` matches
+/// `client_instance_id` from the policy document of `store_id`. Used
+/// when a client instance is reassigned to a different store, so its
+/// authorizations on the previous store do not silently resurface if
+/// it is ever remapped back.
+fn drop_client_instance_permissions(
+    state: &AdminRuntimeState,
+    store_id: &str,
+    client_instance_id: &str,
+) -> Result<()> {
+    let store = match state.stores.read().unwrap().open.get(store_id).cloned() {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    let mut doc = load_policy_document_or_default(store.as_ref())?;
+    let before = doc.permissions.len();
+    doc.permissions
+        .retain(|p| p.client_instance != client_instance_id);
+    if doc.permissions.len() == before {
+        return Ok(());
+    }
+    save_policy_document(store.as_ref(), &doc)
 }
 
 fn write_admin_permission_audit(

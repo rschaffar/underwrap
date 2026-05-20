@@ -123,6 +123,29 @@ export function deriveClientInstances(permissions: WrapperPermission[]): string[
   return [...set].sort();
 }
 
+/**
+ * Compute the set of client-instance columns for the table.
+ *
+ * Primary source is the list of client instances currently bound to
+ * `storeId` — so an admin can grant permissions to any connected
+ * instance even before it has any rows. Permissions whose
+ * `client_instance` is not in that set (stale rows from a previous
+ * store binding, etc.) are still surfaced so they remain visible and
+ * removable.
+ */
+export function clientInstancesForStore(
+  storeId: string,
+  instances: ReadonlyArray<{ id: string; current_store_id: string }>,
+  permissions: WrapperPermission[],
+): string[] {
+  const set = new Set<string>();
+  for (const i of instances) {
+    if (i.current_store_id === storeId) set.add(i.id);
+  }
+  for (const p of permissions) set.add(p.client_instance);
+  return [...set].sort();
+}
+
 /** Sort pair records into the (wrapper, resource) order the table renders. */
 export function sortPairs(
   pairs: WrapperResourcePairRecord[],
@@ -199,8 +222,15 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
     [pairs.data],
   );
   const clientInstances = useMemo(
-    () => deriveClientInstances(permissions.data?.permissions ?? []),
-    [permissions.data],
+    () =>
+      storeName
+        ? clientInstancesForStore(
+            storeName,
+            clientInstancesList.data?.items ?? [],
+            permissions.data?.permissions ?? [],
+          )
+        : deriveClientInstances(permissions.data?.permissions ?? []),
+    [storeName, clientInstancesList.data, permissions.data],
   );
 
   /** Map `(client_instance, wrapper, resource)` → permission. */
