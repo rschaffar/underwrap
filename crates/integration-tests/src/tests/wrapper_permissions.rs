@@ -1,5 +1,7 @@
 use super::*;
+use base64::Engine;
 use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
+use underwrap_protocol::service::{ServiceDeleteRequest, ServiceWriteRequest};
 
 #[tokio::test]
 async fn upsert_permission_allows_read_against_fresh_store() {

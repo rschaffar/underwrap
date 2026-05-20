@@ -380,6 +380,29 @@ impl TestDaemon {
         Ok(response.json().await?)
     }
 
+    /// Build an mTLS-authenticated reqwest client that authenticates as
+    /// this daemon's runtime client instance. Tests use it to bypass
+    /// the daemon entirely and call backend `/v1/*` endpoints directly,
+    /// e.g. to prove the backend gates writes server-side regardless
+    /// of what the client tries to send.
+    pub fn direct_service_client(&self) -> Result<reqwest::Client> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let ca_pem = std::fs::read(&self.service_ca_cert)?;
+        let cert_pem = std::fs::read(&self.service_client_cert)?;
+        let key_pem = std::fs::read(&self.service_client_key)?;
+        let mut identity_pem = cert_pem;
+        identity_pem.extend_from_slice(&key_pem);
+        Ok(reqwest::Client::builder()
+            .use_rustls_tls()
+            .add_root_certificate(reqwest::Certificate::from_pem(&ca_pem)?)
+            .identity(reqwest::Identity::from_pem(&identity_pem)?)
+            .build()?)
+    }
+
+    pub fn service_url(&self) -> &str {
+        &self.service_url
+    }
+
     pub async fn create_store(
         &self,
         body: &underwrap_protocol::service::AdminStoreCreateRequest,
