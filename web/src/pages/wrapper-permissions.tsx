@@ -369,28 +369,22 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
             : " Ask an admin to add one, or enable auto-create for a client instance."}
         </p>
       ) : (
-        <div className="space-y-6">
-          {groupPairsByResource(pairRecords).map((group) => (
-            <ResourcePairsTable
-              key={group.resource}
-              resource={group.resource}
-              pairs={group.pairs}
-              clientInstances={clientInstances}
-              displayNameById={displayNameById}
-              permissionIndex={permissionIndex}
-              isAdmin={isAdmin}
-              onCellClick={(wr, clientInstance, permission) =>
-                setEditing({
-                  clientInstance,
-                  wrapper: wr.wrapper,
-                  resource: wr.resource,
-                  permission,
-                })
-              }
-              onDeletePair={(pair) => setDeletingPair(pair)}
-            />
-          ))}
-        </div>
+        <ResourceGroupedPairsTable
+          groups={groupPairsByResource(pairRecords)}
+          clientInstances={clientInstances}
+          displayNameById={displayNameById}
+          permissionIndex={permissionIndex}
+          isAdmin={isAdmin}
+          onCellClick={(wr, clientInstance, permission) =>
+            setEditing({
+              clientInstance,
+              wrapper: wr.wrapper,
+              resource: wr.resource,
+              permission,
+            })
+          }
+          onDeletePair={(pair) => setDeletingPair(pair)}
+        />
       )}
 
       {editing ? (
@@ -446,9 +440,8 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
 
 // ---------- Subcomponents ----------
 
-function ResourcePairsTable({
-  resource,
-  pairs,
+function ResourceGroupedPairsTable({
+  groups,
   clientInstances,
   displayNameById,
   permissionIndex,
@@ -456,8 +449,7 @@ function ResourcePairsTable({
   onCellClick,
   onDeletePair,
 }: {
-  resource: string;
-  pairs: WrapperResourcePairRecord[];
+  groups: { resource: string; pairs: WrapperResourcePairRecord[] }[];
   clientInstances: string[];
   displayNameById: Map<string, string>;
   permissionIndex: Map<string, WrapperPermission>;
@@ -470,41 +462,33 @@ function ResourcePairsTable({
   onDeletePair: (pair: WrapperResourcePairRecord) => void;
 }) {
   return (
-    <section
-      className="space-y-2"
-      data-testid={`wrappers-resource-table-${resource}`}
-    >
-      <h3 className="text-sm font-medium text-(--color-fg)">
-        Resource:{" "}
-        <code className="rounded bg-(--color-surface-1) px-1.5 py-0.5 text-xs">
-          {resource}
-        </code>
-      </h3>
-      <div className="overflow-x-auto rounded-xl border border-(--color-line)">
-        <table className="min-w-full text-left text-sm">
-          <thead className="bg-(--color-surface-0)/60 text-xs uppercase tracking-wide text-(--color-muted)">
-            <tr>
-              <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
-                Wrapper
-              </th>
-              <th className="bg-(--color-surface-0)/60 px-4 py-2 text-(--color-muted)">
-                Last used
-              </th>
-              {clientInstances.map((c) => {
-                const displayName = displayNameById.get(c) ?? c;
-                return (
-                  <th key={c} className="px-3 py-2" title={c}>
-                    <div className="font-medium text-(--color-fg)">
-                      {displayName}
-                    </div>
-                  </th>
-                );
-              })}
-              {isAdmin ? <th className="px-3 py-2" /> : null}
-            </tr>
-          </thead>
-          <tbody>
-            {pairs.map((pair) => {
+    <div className="overflow-x-auto rounded-xl border border-(--color-line)">
+      <table className="min-w-full text-left text-sm">
+        <thead className="bg-(--color-surface-0)/60 text-xs uppercase tracking-wide text-(--color-muted)">
+          <tr>
+            <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
+              Resource
+            </th>
+            <th className="bg-(--color-surface-0)/60 px-4 py-2">Wrapper</th>
+            <th className="bg-(--color-surface-0)/60 px-4 py-2 text-(--color-muted)">
+              Last used
+            </th>
+            {clientInstances.map((c) => {
+              const displayName = displayNameById.get(c) ?? c;
+              return (
+                <th key={c} className="px-3 py-2" title={c}>
+                  <div className="font-medium text-(--color-fg)">
+                    {displayName}
+                  </div>
+                </th>
+              );
+            })}
+            {isAdmin ? <th className="px-3 py-2" /> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {groups.flatMap((group) =>
+            group.pairs.map((pair, indexWithinGroup) => {
               const wr: WrapperResource = {
                 wrapper: pair.wrapper,
                 resource: pair.resource,
@@ -512,19 +496,34 @@ function ResourcePairsTable({
               const provenance = `Created ${formatEpochFull(
                 pair.created_at,
               )} by ${describeCreator(pair.created_by, displayNameById)}`;
+              const isFirstInGroup = indexWithinGroup === 0;
               return (
                 <tr
                   key={wrapperResourceKey(wr)}
-                  className="border-t border-(--color-line) align-middle"
+                  className={
+                    "align-middle " +
+                    (isFirstInGroup ? "border-t-2 border-(--color-line)" : "")
+                  }
                 >
-                  <th
-                    scope="row"
-                    className="sticky left-0 z-10 bg-(--color-surface-0)/40 px-4 py-3 text-left font-medium text-(--color-fg)"
+                  {isFirstInGroup ? (
+                    <th
+                      scope="rowgroup"
+                      rowSpan={group.pairs.length}
+                      className="sticky left-0 z-10 bg-(--color-surface-0)/40 px-4 py-3 text-left align-top font-medium text-(--color-fg)"
+                      data-testid={`wrappers-resource-${group.resource}`}
+                    >
+                      <code className="rounded bg-(--color-surface-1) px-1.5 py-0.5 text-xs">
+                        {group.resource}
+                      </code>
+                    </th>
+                  ) : null}
+                  <td
+                    className="px-4 py-3 font-medium text-(--color-fg)"
                     title={provenance}
                     data-testid={`wrappers-provenance-${pair.wrapper}-${pair.resource}`}
                   >
                     {pair.wrapper}
-                  </th>
+                  </td>
                   <td
                     className="px-4 py-3 text-xs text-(--color-muted)"
                     title={`Last used: ${formatEpochFull(pair.last_used_at)}`}
@@ -569,11 +568,11 @@ function ResourcePairsTable({
                   ) : null}
                 </tr>
               );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </section>
+            }),
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
