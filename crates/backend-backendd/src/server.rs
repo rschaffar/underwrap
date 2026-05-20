@@ -1287,7 +1287,7 @@ fn list_legacy_secrets(store: &dyn StorageBackend, prefix: &str) -> Result<Vec<S
     } else {
         // List every resource blob currently in storage.
         store
-            .list("resources/")?
+            .list("resources")?
             .into_iter()
             .filter_map(|k| k.strip_prefix("resources/").map(str::to_string))
             .collect()
