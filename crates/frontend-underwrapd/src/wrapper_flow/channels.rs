@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
+use std::sync::Arc;
 use tokio::net::UnixStream;
 use tracing::{error, info};
 
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::message::WrapperResponse;
 
-use crate::server::State;
+use crate::server::{Enrolled, State};
 
 /// Set up the single wrapper-resource channel for the resource the
 /// daemon authorized in `process_read_for`. Only called when the
@@ -18,6 +19,7 @@ pub(super) async fn establish_scoped_channels(
     response: &WrapperResponse,
     wrapper_name: &str,
     state: &State,
+    enrolled: &Enrolled,
     resource_access: Option<&(String, AccessMode)>,
 ) {
     let WrapperResponse::ReadOk { .. } = response else {
@@ -27,7 +29,16 @@ pub(super) async fn establish_scoped_channels(
         return;
     };
 
-    match setup_wrapper_resource_channel(stream, wrapper_name, resource_id, *access, state).await {
+    match setup_wrapper_resource_channel(
+        stream,
+        wrapper_name,
+        resource_id,
+        *access,
+        state,
+        enrolled,
+    )
+    .await
+    {
         Ok(()) => {
             info!(wrapper = %wrapper_name, resource = %resource_id, ?access, "wrapper-resource channel established");
         }
@@ -66,8 +77,9 @@ async fn setup_wrapper_resource_channel(
     resource_id: &str,
     access: AccessMode,
     state: &State,
+    enrolled: &Enrolled,
 ) -> Result<()> {
-    let store = state.store_arc();
+    let store = Arc::clone(&enrolled.store);
     let logical_name = state
         .config
         .wrappers
@@ -78,7 +90,7 @@ async fn setup_wrapper_resource_channel(
         wrapper_name: wrapper_name.to_string(),
         resource_id: resource_id.to_string(),
         access,
-        client_instance: state.client_instance.clone(),
+        client_instance: enrolled.client_instance.clone(),
         logical_name,
     };
     setup_scoped_channel(

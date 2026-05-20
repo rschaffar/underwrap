@@ -23,38 +23,130 @@ use underwrap_store::StorageBackend;
 const MAX_CONNECTIONS: usize = 128;
 
 /// Shared daemon state passed to connection handlers.
+///
+/// Enrollment (backend client + principal id + resource-id map) is
+/// resolved lazily on the first wrapper request that needs it and then
+/// cached. There is no startup-time enroll/unenroll fork: a transient
+/// backend hiccup at boot does not pin the daemon into an "unenrolled"
+/// mode, and a backend restart after the daemon enrolled doesn't
+/// matter because the cached state still works for new connections.
 pub(crate) struct State {
     pub(crate) config: DaemonConfig,
-    pub(crate) store: Option<Arc<dyn StorageBackend>>,
-    pub(crate) enrollment_url: Option<String>,
-    /// The backend-assigned runtime client instance id this daemon
-    /// authenticates as over mTLS. Empty for unenrolled instances —
-    /// the daemon refuses wrapper requests in that state anyway, so
-    /// the field is only consulted on the enrolled path.
-    pub(crate) client_instance: String,
-    /// Per-wrapper-name → backend-resolved resource id. Populated from
-    /// the register response so the wrapper-resource channel can address
-    /// `resources/<id>` (and the daemon's policy lookup can match by
-    /// the same stable id) without re-resolving on every read.
-    pub(crate) resource_ids: std::collections::HashMap<String, String>,
+    enrollment: std::sync::Mutex<Option<Enrolled>>,
     pub(crate) pending_approvals: PendingApprovals,
 }
 
+/// Cheap-to-clone snapshot of everything the daemon needs to be talking
+/// to a live backend.
+#[derive(Clone)]
+pub(crate) struct Enrolled {
+    pub(crate) store: Arc<dyn StorageBackend>,
+    /// The backend-assigned runtime client instance id this daemon
+    /// authenticates as over mTLS.
+    pub(crate) client_instance: String,
+    /// Per-wrapper-name → backend-resolved resource id. Populated by the
+    /// register response so the wrapper-resource channel can address
+    /// `resources/<id>` and the policy lookup can match by the same
+    /// stable id.
+    pub(crate) resource_ids: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum EnrollmentError {
+    /// The cert/key files configured for this instance aren't on disk
+    /// yet. The operator hasn't run `underwrap-keygen` for this
+    /// instance, or the keygen output landed somewhere else.
+    MissingCredential,
+    /// The backend rejected the handshake or `/v1/status` round-trip.
+    /// Most often: backend is down, mTLS material is no longer
+    /// accepted, or the operator hasn't pasted the cert PEM into the
+    /// admin UI yet.
+    Backend(anyhow::Error),
+    /// The backend accepted us but rejected the wrapper-asset register
+    /// call (typically auto-create is disabled and the wrapper's
+    /// resource doesn't exist yet).
+    RegisterAssets(anyhow::Error),
+}
+
 impl State {
-    /// Resolve the backend resource id this `wrapper_name` should
-    /// address. Prefers the register-time cache; on cache miss reads
-    /// the backend's resources document and looks up by the wrapper
-    /// config's resource name. Returns `None` only when neither the
-    /// cache nor the catalog can resolve the wrapper (typical for
-    /// unenrolled daemons, or when the resource hasn't been created
-    /// on the backend yet).
-    pub(crate) fn resource_id_for_wrapper(&self, wrapper_name: &str) -> Option<String> {
+    /// Build a fresh, unenrolled `State`. Enrollment happens lazily on
+    /// the first wrapper request via [`State::ensure_enrolled`].
+    pub(crate) fn new(config: DaemonConfig) -> Self {
+        Self {
+            config,
+            enrollment: std::sync::Mutex::new(None),
+            pending_approvals: PendingApprovals::new(),
+        }
+    }
+
+    /// Return the URL the wrapper should send the operator to when the
+    /// daemon can't enroll itself.
+    pub(crate) fn enrollment_url(&self) -> String {
+        build_enrollment_url(&self.config)
+    }
+
+    /// Try to populate (or return the cached) [`Enrolled`] snapshot.
+    /// On failure we leave the cache empty so the next wrapper request
+    /// retries — this is what makes the daemon self-heal across a
+    /// backend restart or a delayed cert paste.
+    pub(crate) fn ensure_enrolled(&self) -> Result<Enrolled, EnrollmentError> {
+        // Fast path: somebody already enrolled.
+        if let Some(e) = self.enrollment.lock().unwrap().as_ref() {
+            return Ok(e.clone());
+        }
+        let mut guard = self.enrollment.lock().unwrap();
+        if let Some(e) = guard.as_ref() {
+            return Ok(e.clone());
+        }
+        let credential_on_disk = matches!(
+            (
+                self.config.backend.client_cert_file.as_ref(),
+                self.config.backend.client_key_file.as_ref(),
+            ),
+            (Some(c), Some(k)) if c.exists() && k.exists(),
+        );
+        if !credential_on_disk {
+            return Err(EnrollmentError::MissingCredential);
+        }
+        let (store, client_instance) =
+            open_and_identify(&self.config).map_err(EnrollmentError::Backend)?;
+        let resource_ids = register_wrapper_assets(store.as_ref(), &self.config)
+            .map_err(EnrollmentError::RegisterAssets)?;
+        let enrolled = Enrolled {
+            store,
+            client_instance,
+            resource_ids,
+        };
+        *guard = Some(enrolled.clone());
+        Ok(enrolled)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_enrolled_for_test(config: DaemonConfig, enrolled: Enrolled) -> Self {
+        Self {
+            config,
+            enrollment: std::sync::Mutex::new(Some(enrolled)),
+            pending_approvals: PendingApprovals::new(),
+        }
+    }
+}
+
+impl Enrolled {
+    /// Resolve the backend resource id `wrapper_name` should address.
+    /// Prefers the register-time cache; on cache miss falls back to
+    /// reading the backend's resources document and looking up by the
+    /// wrapper config's resource name.
+    pub(crate) fn resource_id_for_wrapper(
+        &self,
+        config: &DaemonConfig,
+        wrapper_name: &str,
+    ) -> Option<String> {
         if let Some(id) = self.resource_ids.get(wrapper_name) {
             return Some(id.clone());
         }
-        let store = self.store.as_ref()?;
-        let wrapper = self.config.wrappers.get(wrapper_name)?;
-        let material = store
+        let wrapper = config.wrappers.get(wrapper_name)?;
+        let material = self
+            .store
             .read(underwrap_protocol::entities::RESOURCES_DOCUMENT_SECRET_ID)
             .ok()
             .flatten()?;
@@ -64,17 +156,6 @@ impl State {
             .iter()
             .find(|r| r.name == wrapper.resource)
             .map(|r| r.id.clone())
-    }
-}
-
-impl State {
-    /// Get a clone of the storage backend Arc for sharing with channel handlers.
-    pub(crate) fn store_arc(&self) -> Arc<dyn StorageBackend> {
-        Arc::clone(
-            self.store
-                .as_ref()
-                .expect("storage backend is only available for enrolled instances"),
-        )
     }
 }
 
@@ -159,7 +240,10 @@ fn open_and_identify(config: &DaemonConfig) -> Result<(Arc<dyn StorageBackend>, 
 }
 
 fn build_enrollment_url(config: &DaemonConfig) -> String {
-    format!("{}/enroll", config.backend.url.trim_end_matches('/'),)
+    format!(
+        "{}/client-instances",
+        config.backend.url.trim_end_matches('/'),
+    )
 }
 
 pub(crate) fn unenrolled_message(url: &str) -> String {
@@ -172,78 +256,37 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     // Validate config at startup: every wrapper.secret must reference a declared secret.
     validate_config(&config)?;
 
-    // An instance is "unenrolled" when its client credential isn't on disk
-    // yet. The NixOS module always sets `client_cert_file` / `client_key_file`
-    // to per-instance paths, but those files only appear after the operator
-    // runs `underwrap-keygen --instance-config /etc/underwrap/instances/<inst>.yaml`.
-    // Missing-file → friendly enrollment guidance; populated → open the
-    // backend client normally.
-    let unenrolled = match (
-        config.backend.client_cert_file.as_ref(),
-        config.backend.client_key_file.as_ref(),
-    ) {
-        (Some(cert), Some(key)) => !cert.exists() || !key.exists(),
-        _ => true,
-    };
-    // Open the backend client when enrolled, and learn the
-    // mTLS-bound client instance id by hitting `/v1/status` once at
-    // startup. The id is used to look up grants in the per-store
-    // policy document.
+    // The daemon enrolls lazily on the first wrapper request that
+    // needs the backend, and retries on subsequent requests if the
+    // attempt fails. That means a backend that is down at boot, or a
+    // credential that hasn't been pasted into the admin UI yet, no
+    // longer pins us into a permanent "unenrolled" state — and a
+    // backend restart after a successful enrollment is invisible: the
+    // cached state still works for new connections.
     //
-    // A failure here means the cert/key are on disk but the backend
-    // does not (yet) accept this client — most often because the
-    // operator hasn't pasted the cert PEM into the admin UI yet. We
-    // log a warning that points at the enrollment docs and fall back
-    // to the same unenrolled state as when the credential files are
-    // missing, so the daemon comes up and wrappers print the
-    // enrollment URL on every invocation.
-    let (store, client_instance, enrollment_url): (
-        Option<Arc<dyn StorageBackend>>,
-        String,
-        Option<String>,
-    ) = if unenrolled {
-        (None, String::new(), Some(build_enrollment_url(&config)))
-    } else {
-        match open_and_identify(&config) {
-            Ok((s, p)) => {
-                info!(client_instance = %p, "enrolled with backend");
-                (Some(s), p, None)
-            }
-            Err(e) => {
-                warn!(
-                    err = %e,
-                    "backend did not accept this client's credential — the daemon is starting in \
-                     unenrolled mode. Run `underwrap-keygen --instance-config <instance.yaml>` if the \
-                     credential is missing, then paste the resulting PEM into the admin UI as a new \
-                     client instance (see docs/getting-started.md \"Enroll the instance\"). Wrapper \
-                     invocations will print the enrollment URL until this succeeds.",
-                );
-                (None, String::new(), Some(build_enrollment_url(&config)))
-            }
-        }
-    };
-
+    // We still *try* once at startup, best-effort, so the
+    // auto-create-wrapper-assets register call lands as soon as
+    // possible. Failure here is just an `info!` log; the lazy retry
+    // path picks up the slack on the first wrapper invocation.
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
-    let resource_ids = if let Some(store) = store.as_ref() {
-        match register_wrapper_assets(store.as_ref(), &config) {
-            Ok(map) => map,
-            Err(e) => {
-                warn!(err = %e, "wrapper asset registration failed; continuing without backend register");
-                std::collections::HashMap::new()
-            }
-        }
-    } else {
-        std::collections::HashMap::new()
-    };
-
-    let state = Arc::new(State {
-        config: config.clone(),
-        store,
-        enrollment_url,
-        client_instance,
-        resource_ids,
-        pending_approvals: PendingApprovals::new(),
-    });
+    let state = Arc::new(State::new(config.clone()));
+    match state.ensure_enrolled() {
+        Ok(snapshot) => info!(
+            client_instance = %snapshot.client_instance,
+            "enrolled with backend at startup",
+        ),
+        Err(EnrollmentError::MissingCredential) => info!(
+            "client credential not yet on disk; daemon will retry enrollment on the next wrapper request",
+        ),
+        Err(EnrollmentError::Backend(e)) => warn!(
+            err = %format!("{e:#}"),
+            "backend not reachable at startup; daemon will retry enrollment on the next wrapper request",
+        ),
+        Err(EnrollmentError::RegisterAssets(e)) => warn!(
+            err = %format!("{e:#}"),
+            "wrapper asset registration failed at startup; daemon will retry on the next wrapper request",
+        ),
+    }
 
     let mut tasks = JoinSet::new();
 
@@ -317,10 +360,9 @@ mod tests {
     use underwrap_protocol::config::BackendServiceConfig;
 
     /// `open_and_identify` must return `Err` when the TLS material is
-    /// invalid, so [`run`] can demote the daemon to unenrolled mode
-    /// instead of aborting startup. Symmetric with the unenrolled-on-disk
-    /// path: a credential the backend rejects should behave the same as
-    /// a credential that isn't there yet.
+    /// invalid. `State::ensure_enrolled` surfaces this as
+    /// `EnrollmentError::Backend` so the wrapper sees the enrollment
+    /// URL message, and a later call retries automatically.
     #[test]
     fn open_and_identify_errors_on_invalid_credential() {
         let dir = tempfile::tempdir().unwrap();
@@ -343,5 +385,96 @@ mod tests {
             wrappers: Default::default(),
         };
         assert!(open_and_identify(&config).is_err());
+    }
+
+    #[test]
+    fn ensure_enrolled_reports_missing_credential_when_files_absent() {
+        let config = DaemonConfig {
+            backend: BackendServiceConfig {
+                url: "https://backend.example.invalid".into(),
+                ca_file: None,
+                client_cert_file: None,
+                client_key_file: None,
+            },
+            wrappers: Default::default(),
+        };
+        let state = State::new(config);
+        assert!(matches!(
+            state.ensure_enrolled(),
+            Err(EnrollmentError::MissingCredential),
+        ));
+        // And it stays not-enrolled — no caching of the failure.
+        assert!(matches!(
+            state.ensure_enrolled(),
+            Err(EnrollmentError::MissingCredential),
+        ));
+    }
+
+    /// The startup enroll/unenroll fork is gone: a failed enrollment
+    /// attempt must NOT be cached, so the daemon self-heals as soon as
+    /// the operator drops the cert files in place (or the backend
+    /// comes back). We simulate that by creating the cert/key files
+    /// between two `ensure_enrolled` calls — the first reports
+    /// `MissingCredential`, the second progresses past that check and
+    /// fails further along (because there is no real backend), but
+    /// crucially the failure mode changes, proving the gate moved.
+    #[test]
+    fn ensure_enrolled_retries_after_credential_appears_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("ca.pem");
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        let config = DaemonConfig {
+            backend: BackendServiceConfig {
+                url: "https://backend.invalid:8443".into(),
+                ca_file: Some(ca.clone()),
+                client_cert_file: Some(cert.clone()),
+                client_key_file: Some(key.clone()),
+            },
+            wrappers: Default::default(),
+        };
+        let state = State::new(config);
+
+        // First call: cert files don't exist yet.
+        assert!(matches!(
+            state.ensure_enrolled(),
+            Err(EnrollmentError::MissingCredential),
+        ));
+
+        // Drop the files in place — like `underwrap-keygen` would.
+        for path in [&ca, &cert, &key] {
+            std::fs::File::create(path)
+                .unwrap()
+                .write_all(b"not-a-real-cert")
+                .unwrap();
+        }
+
+        // Second call: gets past the cert-file gate and now fails at the
+        // backend layer (TLS material is bogus, host is unreachable).
+        // The change in failure mode is what proves the daemon retries
+        // instead of staying pinned on the earlier verdict.
+        match state.ensure_enrolled() {
+            Err(EnrollmentError::Backend(_)) => {}
+            Err(other) => panic!("expected Backend failure on retry, got {other:?}"),
+            Ok(_) => panic!("expected Backend failure on retry, got Ok"),
+        }
+    }
+
+    #[test]
+    fn enrollment_url_points_at_client_instances_page() {
+        let config = DaemonConfig {
+            backend: BackendServiceConfig {
+                url: "https://backend.example.invalid/".into(),
+                ca_file: None,
+                client_cert_file: None,
+                client_key_file: None,
+            },
+            wrappers: Default::default(),
+        };
+        let state = State::new(config);
+        assert_eq!(
+            state.enrollment_url(),
+            "https://backend.example.invalid/client-instances",
+        );
     }
 }

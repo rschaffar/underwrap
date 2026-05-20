@@ -4896,20 +4896,42 @@ fn handle_admin_client_instance_delete(
         );
     }
     let mut instances = state.client_instances.write().unwrap();
-    if instances.remove(id).is_none() {
+    let Some(removed) = instances.remove(id) else {
         return error_response(
             StatusCode::NOT_FOUND,
             "not_found",
             "unknown client instance",
         );
-    }
+    };
     if let Err(e) =
         crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
     {
+        // Roll the in-memory state back so the next request sees the same
+        // view as the on-disk file.
+        instances.insert(id.to_string(), removed);
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "write_client_instances_failed",
             &format!("{e:#}"),
+        );
+    }
+    drop(instances);
+    // Cascade: strip every wrapper permission keyed on this client
+    // instance id from the policy document of the store the instance
+    // was last bound to. Without this, the rows linger forever as
+    // "stale" entries that the SPA renders as nameless columns in the
+    // wrapper-permissions table and that grant the same authorization
+    // back if the same client instance id is ever reused.
+    if let Err(e) = drop_client_instance_permissions(state, &removed.current_store_id, id) {
+        // Best-effort: log and continue. The instance is already gone from
+        // the registry, so leaving orphaned policy rows is preferable to
+        // failing the delete (and leaving the operator with no way to
+        // remove the client instance at all).
+        tracing::warn!(
+            client_instance = %id,
+            store = %removed.current_store_id,
+            err = %format!("{e:#}"),
+            "failed to strip wrapper permissions for deleted client instance",
         );
     }
     log_admin_event(
@@ -9064,6 +9086,109 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let delete_client = handle_admin_client_instance_delete(&state, &p, &client_id);
         assert_eq!(delete_client.status(), StatusCode::OK);
         assert_eq!(response_body_json(delete_client)["ok"], true);
+    }
+
+    #[test]
+    fn client_instance_delete_cascades_to_wrapper_permissions() {
+        use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
+        use underwrap_protocol::service::AdminWrapperPermissionUpsertRequest;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let store_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                description: None,
+            },
+        );
+
+        // Two distinct client instances on the same store: only the
+        // first one is deleted, so the second one's permission must
+        // survive the cascade. The fingerprint uniqueness check in the
+        // runtime client registry forces us to bypass the create API
+        // (which validates a real PEM) and seed records directly.
+        let doomed_id = "doomed".to_string();
+        let survivor_id = "survivor".to_string();
+        {
+            let mut instances = state.client_instances.write().unwrap();
+            for (id, fp) in [(&doomed_id, "fp-doomed"), (&survivor_id, "fp-survivor")] {
+                instances.insert(
+                    id.clone(),
+                    crate::runtime_clients::ClientInstanceRecord {
+                        id: id.clone(),
+                        display_name: format!("{id}-laptop"),
+                        current_store_id: store_id.clone(),
+                        status: crate::runtime_clients::ClientInstanceStatus::Active,
+                        last_seen_at: None,
+                        current_credential: crate::runtime_clients::CurrentCredentialRecord {
+                            cert_fingerprint: fp.into(),
+                            cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
+                            issued_at: Some(1),
+                        },
+                        auto_create_wrapper_assets: false,
+                    },
+                );
+            }
+            crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
+                .unwrap();
+        }
+
+        // The admin API addresses stores by id (the SPA's `storeName`
+        // state is misleadingly named — it carries the store id).
+        for instance in [&doomed_id, &survivor_id] {
+            let upsert = handle_admin_wrapper_permission_upsert(
+                &state,
+                &p,
+                &AdminWrapperPermissionUpsertRequest {
+                    store: store_id.clone(),
+                    permission: WrapperPermission {
+                        client_instance: instance.clone(),
+                        wrapper: "gh".into(),
+                        resource_id: "github/token".into(),
+                        mode: WrapperApprovalMode::Unlocked,
+                        writable: false,
+                        reason: None,
+                    },
+                },
+            );
+            assert_eq!(upsert.status(), StatusCode::OK);
+        }
+
+        let before = load_policy_document_or_default(
+            state
+                .stores
+                .read()
+                .unwrap()
+                .expect_unlocked(&store_id)
+                .as_ref(),
+        )
+        .unwrap();
+        assert_eq!(before.permissions.len(), 2);
+
+        let delete = handle_admin_client_instance_delete(&state, &p, &doomed_id);
+        assert_eq!(delete.status(), StatusCode::OK);
+
+        // The doomed instance's permission is gone; the survivor's
+        // remains so we know we cascaded by id, not by store-wide nuke.
+        let after = load_policy_document_or_default(
+            state
+                .stores
+                .read()
+                .unwrap()
+                .expect_unlocked(&store_id)
+                .as_ref(),
+        )
+        .unwrap();
+        assert_eq!(
+            after.permissions.len(),
+            1,
+            "only the survivor's permission should remain: {after:?}",
+        );
+        assert_eq!(after.permissions[0].client_instance, survivor_id);
     }
 
     #[test]

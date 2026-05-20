@@ -9,7 +9,7 @@ use underwrap_protocol::message::{ErrorCode, WrapperRequest, WrapperResponse};
 use crate::approval::{self, IssuedChallenge};
 use crate::audit;
 use crate::policy::{InvocationDecision, evaluate_invocation, load_policy_document};
-use crate::server::State;
+use crate::server::{Enrolled, State};
 
 const WRAPPER_APPROVAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -25,6 +25,7 @@ pub(super) enum ModeGate {
 pub(super) fn check_wrapper_mode(
     wrapper_name: &str,
     state: &State,
+    enrolled: &Enrolled,
 ) -> Result<ModeGate, WrapperResponse> {
     let wrapper_def = match state.config.wrappers.get(wrapper_name) {
         Some(w) => w,
@@ -40,13 +41,7 @@ pub(super) fn check_wrapper_mode(
         .clone()
         .unwrap_or_else(|| wrapper_name.to_string());
 
-    let document = match load_policy_document(
-        state
-            .store
-            .as_ref()
-            .expect("approval checks only run for enrolled instances")
-            .as_ref(),
-    ) {
+    let document = match load_policy_document(enrolled.store.as_ref()) {
         Ok(doc) => doc,
         Err(e) => {
             error!(wrapper = %wrapper_name, err = %e, "policy lookup error");
@@ -61,12 +56,12 @@ pub(super) fn check_wrapper_mode(
     // not by the operator-facing name in the wrapper config. Fall
     // back to the name when register-time resolution didn't populate
     // a mapping for this wrapper.
-    let resource_id = state
-        .resource_id_for_wrapper(wrapper_name)
+    let resource_id = enrolled
+        .resource_id_for_wrapper(&state.config, wrapper_name)
         .unwrap_or_else(|| wrapper_def.resource.clone());
     match evaluate_invocation(
         document.as_ref(),
-        &state.client_instance,
+        &enrolled.client_instance,
         &logical_name,
         &resource_id,
     ) {

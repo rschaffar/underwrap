@@ -14,15 +14,19 @@ use crate::policy::{
     InvocationDecision, evaluate_invocation, evaluate_invocation_after_approval,
     load_policy_document, writable_for,
 };
-use crate::server::State;
+use crate::server::{Enrolled, State};
 use crate::wrapper_bindings::wrapper_file_paths;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct ReadResult {
     pub response: WrapperResponse,
     /// Resource id + access for the single channel the wrapper-flow
     /// will open. `None` when the response is not `ReadOk`.
     pub resource_access: Option<(String, AccessMode)>,
+    /// The enrolled snapshot used to compute the read. Carried through
+    /// so the channel handler runs against the same backend handle
+    /// we authorized against. `None` for early-exit error paths.
+    pub enrolled: Option<Enrolled>,
 }
 
 /// Re-check the grant the mode gate consulted, then build the single
@@ -33,6 +37,7 @@ pub(super) fn process_read_for(
     wrapper_name: &str,
     scope: Option<&str>,
     state: &State,
+    enrolled: &Enrolled,
     peer_uid: u32,
     approval_satisfied: bool,
 ) -> ReadResult {
@@ -47,13 +52,7 @@ pub(super) fn process_read_for(
         }
     };
 
-    let policy = match load_policy_document(
-        state
-            .store
-            .as_ref()
-            .expect("read flow only runs for enrolled instances")
-            .as_ref(),
-    ) {
+    let policy = match load_policy_document(enrolled.store.as_ref()) {
         Ok(doc) => doc,
         Err(e) => {
             error!(wrapper = %wrapper_name, err = %e, "failed to load policy document");
@@ -67,27 +66,27 @@ pub(super) fn process_read_for(
         .unwrap_or_else(|| wrapper_name.to_string());
     // The daemon addresses the resource by its stable backend id;
     // `wrapper_def.resource` is the operator-facing name from the
-    // wrapper config. The register call at startup populated
-    // `state.resource_ids` with the resolved id. If the resolution
+    // wrapper config. The register call populates the snapshot's
+    // `resource_ids` cache with the resolved id. If the resolution
     // hasn't happened (e.g. auto-create disabled and the resource
     // doesn't exist on the backend yet), fall back to the name so
     // legacy / pre-id-split fixtures keep working — the read will
     // simply fail downstream against an unknown blob.
-    let resource_id = state
-        .resource_id_for_wrapper(wrapper_name)
+    let resource_id = enrolled
+        .resource_id_for_wrapper(&state.config, wrapper_name)
         .unwrap_or_else(|| wrapper_def.resource.clone());
 
     let decision = if approval_satisfied {
         evaluate_invocation_after_approval(
             policy.as_ref(),
-            &state.client_instance,
+            &enrolled.client_instance,
             &logical_name,
             &resource_id,
         )
     } else {
         evaluate_invocation(
             policy.as_ref(),
-            &state.client_instance,
+            &enrolled.client_instance,
             &logical_name,
             &resource_id,
         )
@@ -126,13 +125,10 @@ pub(super) fn process_read_for(
 
     // Build the env map by reading the resource's blob and copying its
     // `env` section when the wrapper opts into the env slot.
-    let store = state
-        .store
-        .as_ref()
-        .expect("read flow only runs for enrolled instances");
+    let store = enrolled.store.as_ref();
     let mut env: HashMap<String, SecretBytes> = HashMap::new();
     if wrapper_def.env {
-        let blob = match load_resource_blob(store.as_ref(), &resource_id) {
+        let blob = match load_resource_blob(store, &resource_id) {
             Ok(b) => b,
             Err(e) => {
                 if let Some(locked) = e.downcast_ref::<underwrap_store::ServiceStoreLocked>() {
@@ -158,7 +154,7 @@ pub(super) fn process_read_for(
 
     let access = if writable_for(
         policy.as_ref(),
-        &state.client_instance,
+        &enrolled.client_instance,
         &logical_name,
         &resource_id,
     ) {
@@ -179,6 +175,7 @@ pub(super) fn process_read_for(
             files_target_paths,
         },
         resource_access: Some((resource_id, access)),
+        enrolled: None,
     }
 }
 
@@ -186,13 +183,13 @@ fn error_result(code: ErrorCode, message: String) -> ReadResult {
     ReadResult {
         response: WrapperResponse::Error { code, message },
         resource_access: None,
+        enrolled: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::approval;
     use crate::test_support::MemStore;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -200,28 +197,27 @@ mod tests {
     use underwrap_protocol::config::{BackendServiceConfig, FilesUse, WrapperDef};
     use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
 
-    fn state_with_store(store: Arc<dyn underwrap_store::StorageBackend>) -> State {
-        State {
-            config: underwrap_protocol::config::DaemonConfig {
-                backend: BackendServiceConfig::default(),
-                wrappers: HashMap::from([(
-                    "gh-authorized".to_string(),
-                    WrapperDef {
-                        target: PathBuf::from("/usr/bin/gh"),
-                        logical_name: None,
-                        resource: "github/token".to_string(),
-                        env: true,
-                        files: Some(FilesUse {
-                            paths: vec![".config/gh".to_string()],
-                        }),
-                        libsecret: false,
-                        socket: PathBuf::from("/tmp/test.sock"),
-                        group: "test-group".to_string(),
-                    },
-                )]),
-            },
-            store: Some(store),
-            enrollment_url: None,
+    fn fixture(store: Arc<dyn underwrap_store::StorageBackend>) -> (State, Enrolled) {
+        let config = underwrap_protocol::config::DaemonConfig {
+            backend: BackendServiceConfig::default(),
+            wrappers: HashMap::from([(
+                "gh-authorized".to_string(),
+                WrapperDef {
+                    target: PathBuf::from("/usr/bin/gh"),
+                    logical_name: None,
+                    resource: "github/token".to_string(),
+                    env: true,
+                    files: Some(FilesUse {
+                        paths: vec![".config/gh".to_string()],
+                    }),
+                    libsecret: false,
+                    socket: PathBuf::from("/tmp/test.sock"),
+                    group: "test-group".to_string(),
+                },
+            )]),
+        };
+        let enrolled = Enrolled {
+            store,
             client_instance: "dev-laptop".to_string(),
             // Tests pre-bind the wrapper's resource to the same string
             // they use as the resource id in policy permissions / blob
@@ -231,8 +227,9 @@ mod tests {
                 "gh-authorized".to_string(),
                 "github/token".to_string(),
             )]),
-            pending_approvals: approval::PendingApprovals::new(),
-        }
+        };
+        let state = State::new_enrolled_for_test(config, enrolled.clone());
+        (state, enrolled)
     }
 
     fn current_uid() -> u32 {
@@ -255,8 +252,15 @@ mod tests {
                     }],
                 },
             ));
-        let state = state_with_store(store);
-        let result = process_read_for("gh-authorized", None, &state, current_uid(), true);
+        let (state, enrolled) = fixture(store);
+        let result = process_read_for(
+            "gh-authorized",
+            None,
+            &state,
+            &enrolled,
+            current_uid(),
+            true,
+        );
         match result.response {
             WrapperResponse::ReadOk {
                 env,
@@ -290,8 +294,15 @@ mod tests {
                     }],
                 },
             ));
-        let state = state_with_store(store);
-        let result = process_read_for("gh-authorized", None, &state, current_uid(), false);
+        let (state, enrolled) = fixture(store);
+        let result = process_read_for(
+            "gh-authorized",
+            None,
+            &state,
+            &enrolled,
+            current_uid(),
+            false,
+        );
         match result.response {
             WrapperResponse::Error { code, message } => {
                 assert!(matches!(code, ErrorCode::Unauthorized));
@@ -317,8 +328,15 @@ mod tests {
                     }],
                 },
             ));
-        let state = state_with_store(store);
-        let result = process_read_for("gh-authorized", None, &state, current_uid(), false);
+        let (state, enrolled) = fixture(store);
+        let result = process_read_for(
+            "gh-authorized",
+            None,
+            &state,
+            &enrolled,
+            current_uid(),
+            false,
+        );
         assert!(matches!(result.response, WrapperResponse::ReadOk { .. }));
     }
 
@@ -338,8 +356,15 @@ mod tests {
                     }],
                 },
             ));
-        let state = state_with_store(store);
-        let result = process_read_for("gh-authorized", None, &state, current_uid(), true);
+        let (state, enrolled) = fixture(store);
+        let result = process_read_for(
+            "gh-authorized",
+            None,
+            &state,
+            &enrolled,
+            current_uid(),
+            true,
+        );
         match result.response {
             WrapperResponse::Error { message, .. } => {
                 assert!(message.contains("invalid env name"));
