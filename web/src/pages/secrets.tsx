@@ -37,10 +37,12 @@ import {
   fetchStores,
   postResourceCreate,
   postResourceDelete,
+  postResourceRename,
   postResourcesList,
   postSecretDelete,
   postSecretList,
   postSecretRead,
+  postSecretRename,
   postSecretWrite,
   type ResourceRecord,
   type ResourceSlot,
@@ -224,6 +226,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
   const [creatingResource, setCreatingResource] = useState(false);
   const [deleting, setDeleting] = useState<SecretAddress | null>(null);
   const [deletingResource, setDeletingResource] = useState<string | null>(null);
+  const [renamingResource, setRenamingResource] = useState<string | null>(null);
 
   if (!storeName) {
     return (
@@ -327,6 +330,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
                 })
               }
               onDeleteResource={() => setDeletingResource(group.resource_id)}
+              onRenameResource={() => setRenamingResource(group.resource_id)}
               onAddEntry={(slot) =>
                 setCreating({ resource_id: group.resource_id, slot })
               }
@@ -382,6 +386,17 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
           onClose={() => setDeletingResource(null)}
         />
       ) : null}
+      {renamingResource ? (
+        <RenameResourceDialog
+          storeName={storeName}
+          resourceId={renamingResource}
+          currentName={
+            resourceNameById.get(renamingResource) ?? renamingResource
+          }
+          existingNames={(resourcesList.data?.resources ?? []).map((r) => r.name)}
+          onClose={() => setRenamingResource(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -401,6 +416,7 @@ function ResourceBlock({
   isAdmin,
   onAddEntry,
   onDeleteResource,
+  onRenameResource,
   ...actions
 }: {
   group: SecretResourceGroup;
@@ -409,6 +425,7 @@ function ResourceBlock({
   isAdmin: boolean;
   onAddEntry: (slot: SecretSlot) => void;
   onDeleteResource: () => void;
+  onRenameResource: () => void;
 } & RowActions) {
   const total = resourceCount(group);
   // The summary line shows which slots have content. It avoids
@@ -424,6 +441,9 @@ function ResourceBlock({
     provenance && Number(provenance.created_at)
       ? new Date(Number(provenance.created_at) * 1000)
       : null;
+  // Display the operator-facing name when the catalog knows about
+  // this resource; orphan groups fall back to the id.
+  const displayLabel = provenance?.name ?? group.resource_id;
   return (
     <details
       data-testid={`resource-block-${group.resource_id}`}
@@ -434,7 +454,12 @@ function ResourceBlock({
           className="h-4 w-4 transition-transform group-open:rotate-90"
           aria-hidden
         />
-        <span className="font-mono text-(--color-fg)">{group.resource_id}</span>
+        <span
+          className="font-mono text-(--color-fg)"
+          title={`id: ${group.resource_id}`}
+        >
+          {displayLabel}
+        </span>
         {provenanceLabel ? (
           <span
             className="text-xs text-(--color-muted)"
@@ -453,21 +478,38 @@ function ResourceBlock({
           {total === 0 ? "empty" : summary}
         </span>
         {isAdmin && provenance ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label={`Delete resource ${group.resource_id}`}
-            data-testid={`resource-delete-${group.resource_id}`}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onDeleteResource();
-            }}
-            className="h-7 px-2"
-          >
-            <Trash2 className="h-3.5 w-3.5" aria-hidden />
-          </Button>
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label={`Rename resource ${displayLabel}`}
+              data-testid={`resource-rename-${group.resource_id}`}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRenameResource();
+              }}
+              className="h-7 px-2"
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label={`Delete resource ${displayLabel}`}
+              data-testid={`resource-delete-${group.resource_id}`}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onDeleteResource();
+              }}
+              className="h-7 px-2"
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden />
+            </Button>
+          </>
         ) : null}
       </summary>
       <div className="space-y-3 border-t border-(--color-line)/60 px-4 py-3">
@@ -761,36 +803,35 @@ function WriteSecretDialog({
         material_b64: btoa(v.material),
       }),
   });
-  const deleteMut = useMutation({
-    mutationFn: (key: string) =>
-      postSecretDelete({
+  // The atomic /v1/admin/secret/rename does load-blob → swap-entry →
+  // save in one handler, so a key change can never leave the operator
+  // with two rows visible. Used only on the edit-with-key-change path.
+  const renameMut = useMutation({
+    mutationFn: (v: { from_key: string; to_key: string; material?: string }) =>
+      postSecretRename({
         store: storeName,
         resource_id: address.resource_id,
         slot: address.slot,
-        key,
+        from_key: v.from_key,
+        to_key: v.to_key,
+        material_b64: v.material === undefined ? undefined : btoa(v.material),
       }),
   });
 
   async function onSubmit(v: WriteValues) {
     setSubmitError(null);
     try {
-      await writeMut.mutateAsync(v);
-      // Rename path: edit + key changed → delete the old entry.
-      // Best-effort — if this fails the new entry already landed and
-      // the operator sees both rows until they delete the stale one
-      // by hand.
       if (mode === "edit" && v.key !== address.key) {
-        try {
-          await deleteMut.mutateAsync(address.key);
-        } catch (e) {
-          setSubmitError(
-            `New entry saved as ${v.key}, but deleting the old ${address.key} failed: ${describeApiError(e)}`,
-          );
-          await qc.invalidateQueries({
-            queryKey: ["admin", "secrets", storeName],
-          });
-          return;
-        }
+        // Atomic rename. Material is always supplied on submit (the
+        // textarea is required), so we send it along; the backend
+        // overwrites in the same step.
+        await renameMut.mutateAsync({
+          from_key: address.key,
+          to_key: v.key,
+          material: v.material,
+        });
+      } else {
+        await writeMut.mutateAsync(v);
       }
       await qc.invalidateQueries({ queryKey: ["admin", "secrets", storeName] });
       onClose();
@@ -799,7 +840,7 @@ function WriteSecretDialog({
     }
   }
 
-  const pending = writeMut.isPending || deleteMut.isPending;
+  const pending = writeMut.isPending || renameMut.isPending;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -1083,6 +1124,133 @@ function DeleteSecretDialog({
             {mut.isPending ? "Deleting…" : "Delete"}
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------- Rename resource ----------
+
+const renameResourceSchema = z.object({
+  new_name: z
+    .string()
+    .trim()
+    .min(1, "New name is required.")
+    .refine((s) => !s.startsWith("__underwrap"), {
+      message: "Names starting with '__underwrap' are reserved.",
+    }),
+});
+type RenameResourceValues = z.infer<typeof renameResourceSchema>;
+
+/**
+ * Rename the operator-facing label of a resource. The backend id and
+ * every reference to it (pair records, wrapper permissions, on-disk
+ * blob key) stay put — this is a metadata flip.
+ */
+function RenameResourceDialog({
+  storeName,
+  resourceId,
+  currentName,
+  existingNames,
+  onClose,
+}: {
+  storeName: string;
+  resourceId: string;
+  currentName: string;
+  existingNames: string[];
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const form = useForm<RenameResourceValues>({
+    resolver: zodResolver(renameResourceSchema),
+    defaultValues: { new_name: currentName },
+  });
+  const otherNames = useMemo(
+    () => new Set(existingNames.filter((n) => n !== currentName)),
+    [existingNames, currentName],
+  );
+  const mut = useMutation({
+    mutationFn: (new_name: string) =>
+      postResourceRename({ store: storeName, id: resourceId, new_name }),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["admin", "resources", storeName] }),
+        qc.invalidateQueries({ queryKey: ["admin", "pairs", storeName] }),
+        qc.invalidateQueries({
+          queryKey: ["admin", "wrapper-permissions", storeName],
+        }),
+      ]);
+      onClose();
+    },
+    onError: (err) => {
+      form.setError("new_name", { message: describeApiError(err) });
+    },
+  });
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Rename resource</DialogTitle>
+          <DialogDescription>
+            Change the operator-facing name. The backend id and every
+            pair/permission/secret reference stay put — this is a
+            metadata flip, not a move.
+          </DialogDescription>
+        </DialogHeader>
+        <Form {...form}>
+          <form
+            onSubmit={form.handleSubmit((v) => {
+              const next = v.new_name.trim();
+              if (next === currentName) {
+                onClose();
+                return;
+              }
+              if (otherNames.has(next)) {
+                form.setError("new_name", {
+                  message: "Another resource already uses that name.",
+                });
+                return;
+              }
+              mut.mutate(next);
+            })}
+            className="space-y-4"
+            noValidate
+          >
+            <FormField
+              control={form.control}
+              name="new_name"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>New name</FormLabel>
+                  <FormControl>
+                    <Input
+                      autoFocus
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      data-testid="rename-resource-input"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Current: <code>{currentName}</code>. Wrapper configs
+                    referencing the old name will need updating.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={mut.isPending}>
+                {mut.isPending ? "Renaming…" : "Rename"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   );

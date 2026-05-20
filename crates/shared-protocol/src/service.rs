@@ -607,6 +607,27 @@ pub struct AdminSecretDeleteRequest {
     pub key: String,
 }
 
+/// Move an entry within a resource blob from `from_key` to `to_key`,
+/// optionally overwriting its material. The whole operation is one
+/// atomic load-modify-save of the resource blob — there is no
+/// intermediate "both entries exist" window.
+///
+/// `material_b64 = None` means "keep the existing material under
+/// `from_key`"; `Some(_)` overwrites in the same step. Rename refuses
+/// when `to_key` already exists (callers must delete it explicitly).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminSecretRenameRequest {
+    pub store: String,
+    pub resource_id: String,
+    pub slot: ResourceSlot,
+    pub from_key: String,
+    pub to_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub material_b64: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminSecretDeleteResponse {

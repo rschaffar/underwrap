@@ -1402,6 +1402,99 @@ fn handle_admin_secret_write(
     }
 }
 
+/// Atomically rename a per-slot entry inside a resource blob.
+/// One load-modify-save of the resource blob: the previous key is
+/// removed and the new key is inserted in the same in-memory pass,
+/// so disk never holds both entries (or neither) — `atomic_write`
+/// in the storage layer guarantees the file flip is a single rename.
+/// Optionally overwrites material in the same step.
+fn handle_admin_secret_rename(
+    state: &AdminRuntimeState,
+    operator: &str,
+    body: underwrap_protocol::service::AdminSecretRenameRequest,
+) -> Response<Full<Bytes>> {
+    let from_id =
+        match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.from_key) {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
+    let to_id =
+        match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.to_key) {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
+    let store = match admin_store(state, &body.store) {
+        Ok(store) => store,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    let blob = match load_resource_blob(store.as_ref(), &body.resource_id) {
+        Ok(b) => b,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    let mut entries = match expand_blob_to_entries(&body.resource_id, &blob) {
+        Ok(m) => m,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+
+    // The from-entry must exist; the to-entry must not (unless this
+    // is a same-key rename, which collapses to a pure material write).
+    let same_key = from_id == to_id;
+    let Some(existing) = entries.get(&from_id).cloned() else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            &format!("no entry under {from_id}"),
+        );
+    };
+    if !same_key && entries.contains_key(&to_id) {
+        return error_response(
+            StatusCode::CONFLICT,
+            "target_key_exists",
+            &format!("target key {to_id} already exists; delete it first"),
+        );
+    }
+
+    // Resolve material: caller-provided overrides; else carry the
+    // existing value across.
+    let new_material: SecretBytes = match body.material_b64 {
+        None => existing,
+        Some(b64) => match base64::engine::general_purpose::STANDARD.decode(&b64) {
+            Ok(bytes) => SecretBytes::from(bytes),
+            Err(e) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    &format!("invalid base64 payload: {e}"),
+                );
+            }
+        },
+    };
+
+    if !same_key {
+        entries.remove(&from_id);
+    }
+    entries.insert(to_id.clone(), new_material);
+
+    let new_blob = match blob_from_resource_entries(&body.resource_id, &entries) {
+        Ok(b) => b,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    };
+    if let Err(e) = save_resource_blob(store.as_ref(), &body.resource_id, &new_blob) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+    }
+    info!(
+        audit = "secret_renamed",
+        operator = %operator,
+        store = %body.store,
+        from = %from_id,
+        to = %to_id,
+    );
+    json_response(
+        StatusCode::OK,
+        &underwrap_protocol::service::AdminOkResponse { ok: true },
+    )
+}
+
 fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyDocument> {
     match store.read(POLICY_DOCUMENT_SECRET_ID)? {
         Some(material) => {
@@ -4648,6 +4741,81 @@ fn handle_admin_resource_delete(
 }
 
 #[allow(clippy::result_large_err)]
+fn handle_admin_resource_rename(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    body: &underwrap_protocol::service::AdminResourceRenameRequest,
+) -> Response<Full<Bytes>> {
+    use underwrap_protocol::entities::InsertError;
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may rename resources",
+        );
+    }
+    let new_name = body.new_name.trim();
+    if new_name.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_resource_name",
+            "new_name must be non-empty",
+        );
+    }
+    let store = match admin_store_for_principal(state, principal, &body.store) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let mut doc = match load_resources_document(store.as_ref()) {
+        Ok(d) => d,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading resources document: {e:#}"),
+            );
+        }
+    };
+    match doc.rename(&body.id, new_name) {
+        Ok(true) => {}
+        Ok(false) => {
+            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown resource");
+        }
+        Err(InsertError::Duplicate) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "resource_already_exists",
+                &format!("resource name '{new_name}' is already taken"),
+            );
+        }
+    }
+    let updated = doc
+        .find_by_id(&body.id)
+        .expect("rename above returned Ok(true)")
+        .clone();
+    if let Err(e) = save_resources_document(store.as_ref(), &doc) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("persisting resources document: {e:#}"),
+        );
+    }
+    log_admin_event(
+        "resource.rename",
+        &principal.username,
+        None,
+        Some(&body.id),
+        None,
+        None,
+        "success",
+    );
+    json_response(
+        StatusCode::OK,
+        &underwrap_protocol::service::AdminResourceRenameResponse { resource: updated },
+    )
+}
+
+#[allow(clippy::result_large_err)]
 fn handle_admin_pairs_list(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
@@ -5415,6 +5583,17 @@ async fn handle_admin_request(
                 Err(response) => response,
             }
         }
+        (&Method::POST, "/v1/admin/secret/rename") => {
+            match parse_json_body::<underwrap_protocol::service::AdminSecretRenameRequest>(request)
+                .await
+            {
+                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(_) => handle_admin_secret_rename(&state, &operator, body),
+                    Err(resp) => resp,
+                },
+                Err(response) => response,
+            }
+        }
         (&Method::POST, "/v1/admin/policy/get") => {
             match parse_json_body::<underwrap_protocol::service::AdminPolicyGetRequest>(request)
                 .await
@@ -5516,6 +5695,14 @@ async fn handle_admin_request(
         .await
         {
             Ok(body) => handle_admin_resource_delete(&state, &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/admin/resources/rename") => match parse_json_body::<
+            underwrap_protocol::service::AdminResourceRenameRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_admin_resource_rename(&state, &principal, &body),
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/resources/blob/get") => match parse_json_body::<
@@ -7922,6 +8109,141 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 .len(),
             0
         );
+    }
+
+    #[test]
+    fn admin_resource_rename_flips_name_and_keeps_id() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+        let resource_id = create_resource_id_for_test(&state, &p, &store_id, "github/token");
+
+        let resp = handle_admin_resource_rename(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourceRenameRequest {
+                store: store_id.clone(),
+                id: resource_id.clone(),
+                new_name: "github/main".into(),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_body_json(resp);
+        assert_eq!(body["resource"]["id"], resource_id);
+        assert_eq!(body["resource"]["name"], "github/main");
+
+        // List confirms the rename.
+        let list = handle_admin_resources_list(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourcesListRequest { store: store_id },
+        );
+        let resources = response_body_json(list)["resources"].clone();
+        assert_eq!(resources[0]["id"], resource_id);
+        assert_eq!(resources[0]["name"], "github/main");
+    }
+
+    #[test]
+    fn admin_resource_rename_refuses_when_target_name_taken() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+        let a = create_resource_id_for_test(&state, &p, &store_id, "a");
+        let _b = create_resource_id_for_test(&state, &p, &store_id, "b");
+
+        let resp = handle_admin_resource_rename(
+            &state,
+            &p,
+            &underwrap_protocol::service::AdminResourceRenameRequest {
+                store: store_id.clone(),
+                id: a,
+                new_name: "b".into(),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_body_json(resp)["code"],
+            "resource_already_exists"
+        );
+    }
+
+    #[test]
+    fn admin_secret_rename_moves_entry_atomically() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+        let resource_id = create_resource_id_for_test(&state, &p, &store_id, "github/token");
+
+        // Seed an entry.
+        let write = handle_admin_secret_write(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminSecretWriteRequest {
+                store: store_id.clone(),
+                resource_id: resource_id.clone(),
+                slot: underwrap_protocol::resource::ResourceSlot::Files,
+                key: "config.yaml".into(),
+                material_b64: base64::engine::general_purpose::STANDARD.encode("v1"),
+            },
+        );
+        assert_eq!(write.status(), StatusCode::OK);
+
+        // Rename without changing material.
+        let rename = handle_admin_secret_rename(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminSecretRenameRequest {
+                store: store_id.clone(),
+                resource_id: resource_id.clone(),
+                slot: underwrap_protocol::resource::ResourceSlot::Files,
+                from_key: "config.yaml".into(),
+                to_key: "config.json".into(),
+                material_b64: None,
+            },
+        );
+        assert_eq!(rename.status(), StatusCode::OK);
+
+        // The new key holds the original material; the old key is gone.
+        let entries =
+            list_secret_entries(state.stores.read().unwrap().open[&store_id].as_ref(), None)
+                .unwrap();
+        let keys: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, vec!["config.json"]);
+    }
+
+    #[test]
+    fn admin_secret_rename_refuses_when_target_exists() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (state, store_id) = entity_test_state_with_store(tmp.path());
+        let p = admin_principal(&[]);
+        let resource_id = create_resource_id_for_test(&state, &p, &store_id, "r");
+        for k in ["a", "b"] {
+            let _ = handle_admin_secret_write(
+                &state,
+                "alice",
+                underwrap_protocol::service::AdminSecretWriteRequest {
+                    store: store_id.clone(),
+                    resource_id: resource_id.clone(),
+                    slot: underwrap_protocol::resource::ResourceSlot::Files,
+                    key: k.into(),
+                    material_b64: base64::engine::general_purpose::STANDARD.encode(k),
+                },
+            );
+        }
+        let resp = handle_admin_secret_rename(
+            &state,
+            "alice",
+            underwrap_protocol::service::AdminSecretRenameRequest {
+                store: store_id.clone(),
+                resource_id: resource_id.clone(),
+                slot: underwrap_protocol::resource::ResourceSlot::Files,
+                from_key: "a".into(),
+                to_key: "b".into(),
+                material_b64: None,
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(response_body_json(resp)["code"], "target_key_exists");
     }
 
     #[test]

@@ -147,6 +147,8 @@ import type {
   AdminResourceDeleteBlockers,
   AdminResourceDeleteRequest,
   AdminResourceDeleteResponse,
+  AdminResourceRenameRequest,
+  AdminResourceRenameResponse,
   AdminResourcesListRequest,
   AdminResourcesListResponse,
   AdminSecretDeleteRequest,
@@ -156,6 +158,7 @@ import type {
   AdminSecretListResponse,
   AdminSecretReadRequest,
   AdminSecretReadResponse,
+  AdminSecretRenameRequest,
   AdminSecretWriteRequest,
   AdminStoreCreateRequest,
   AdminStoreCreateResponse,
@@ -215,6 +218,8 @@ export type {
   AdminResourceDeleteBlockers,
   AdminResourceDeleteRequest,
   AdminResourceDeleteResponse,
+  AdminResourceRenameRequest,
+  AdminResourceRenameResponse,
   AdminResourcesListRequest,
   AdminResourcesListResponse,
   AdminSecretDeleteRequest,
@@ -224,6 +229,7 @@ export type {
   AdminSecretListResponse,
   AdminSecretReadRequest,
   AdminSecretReadResponse,
+  AdminSecretRenameRequest,
   AdminSecretWriteRequest,
   AdminStoreCreateRequest,
   AdminStoreCreateResponse,
@@ -502,6 +508,15 @@ export function postSecretDelete(
   });
 }
 
+export function postSecretRename(
+  body: AdminSecretRenameRequest,
+): Promise<AdminOkResponse> {
+  return apiJson<AdminOkResponse>("/v1/admin/secret/rename", {
+    method: "POST",
+    json: body,
+  });
+}
+
 export function postWrapperPermissionDelete(
   body: AdminWrapperPermissionDeleteRequest,
 ): Promise<AdminOkResponse> {
@@ -535,6 +550,15 @@ export function postResourceDelete(
   body: AdminResourceDeleteRequest,
 ): Promise<AdminResourceDeleteResponse> {
   return apiJson<AdminResourceDeleteResponse>("/v1/admin/resources/delete", {
+    method: "POST",
+    json: body,
+  });
+}
+
+export function postResourceRename(
+  body: AdminResourceRenameRequest,
+): Promise<AdminResourceRenameResponse> {
+  return apiJson<AdminResourceRenameResponse>("/v1/admin/resources/rename", {
     method: "POST",
     json: body,
   });

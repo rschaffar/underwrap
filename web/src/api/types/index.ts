@@ -42,6 +42,7 @@ export type { AdminSecretListRequest } from "./AdminSecretListRequest";
 export type { AdminSecretListResponse } from "./AdminSecretListResponse";
 export type { AdminSecretReadRequest } from "./AdminSecretReadRequest";
 export type { AdminSecretReadResponse } from "./AdminSecretReadResponse";
+export type { AdminSecretRenameRequest } from "./AdminSecretRenameRequest";
 export type { AdminSecretWriteRequest } from "./AdminSecretWriteRequest";
 export type { AdminStoreActionState } from "./AdminStoreActionState";
 export type { AdminStoreBackendKind } from "./AdminStoreBackendKind";
