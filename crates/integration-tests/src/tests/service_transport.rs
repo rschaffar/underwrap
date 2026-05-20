@@ -165,23 +165,32 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
 }
 
 #[tokio::test]
-async fn service_mode_rejects_unmapped_client_principal_at_startup() {
+async fn service_mode_starts_unenrolled_when_backend_rejects_client_principal() {
     // A daemon presenting a client cert the backend doesn't recognise
-    // can't usefully serve anything — the backend authenticates every
-    // request by mTLS fingerprint. The daemon refuses to start
-    // (binding wrapper sockets) in this state so reads can never
-    // accidentally succeed.
+    // still comes up — it logs a warning and binds wrapper sockets in
+    // an unenrolled state so the operator can see and fix the
+    // misconfiguration. Wrapper reads in this state must return
+    // `Unauthorized` with the enrollment guidance, never a secret
+    // value.
     let wrappers = one_wrapper_config();
-    let result = TestDaemon::start_service_mode(wrappers, "tunnel", "underwrap-local").await;
-    let err = match result {
-        Ok(_) => panic!("daemon must refuse to start without a recognised client principal"),
-        Err(e) => e,
-    };
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("wrapper-gh-authorized.sock")
-            || msg.contains("path never appeared")
-            || msg.contains("client instance"),
-        "unexpected startup error: {msg}",
-    );
+    let daemon = TestDaemon::start_service_mode(wrappers, "tunnel", "underwrap-local")
+        .await
+        .expect("daemon must start even when its credential is unrecognised");
+
+    let resp = daemon.read_request("gh-authorized").await.unwrap();
+    match resp {
+        WrapperResponse::Error { code, message } => {
+            assert!(
+                matches!(code, ErrorCode::Unauthorized),
+                "expected Unauthorized, got {code:?}",
+            );
+            assert!(
+                message.contains("not enrolled"),
+                "expected enrollment guidance in message, got {message:?}",
+            );
+        }
+        other => panic!("expected Error with Unauthorized, got {other:?}"),
+    }
+
+    daemon.stop().await.unwrap();
 }
