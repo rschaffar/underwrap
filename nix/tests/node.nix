@@ -60,6 +60,33 @@ let
     ${pkgs.coreutils}/bin/cat "$HOME/.local/share/underwrap-dir-b/meta" >/dev/null
     exec ${pkgs.coreutils}/bin/sleep "''${1:-300}"
   '';
+  # Writes a file, signals readiness via a marker file, then sleeps.
+  # The test driver flips the grant during the sleep window and then
+  # sends SIGTERM so ns dispatches Checkin against the flipped grant.
+  dirWriteThenSleepScript = pkgs.writeShellScript "dir-write-then-sleep-target" ''
+    set -eu
+    ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
+    printf 'flip-attempt' > "$HOME/.config/underwrap-dir-a/token"
+    # Mark write completion so the test driver can flip the grant
+    # before ns dispatches end-of-run writeback.
+    ${pkgs.coreutils}/bin/touch /tmp/dir-write-then-sleep.ready
+    exec ${pkgs.coreutils}/bin/sleep "''${1:-30}"
+  '';
+  # Always-writable namespace mount probe: touches a file under the
+  # bound directory regardless of grant. The wrapper exits 0 if the
+  # mount accepted the write — the backend may still drop it at
+  # Checkin time, which is asserted separately.
+  dirTouchScript = pkgs.writeShellScript "dir-touch-target" ''
+    set -eu
+    ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
+    ${pkgs.coreutils}/bin/touch "$HOME/.config/underwrap-dir-a/touch-probe"
+  '';
+  # Prints its environment so a test can assert that no internal
+  # underwrap-* vars leak into the target.
+  dirEnvProbeScript = pkgs.writeShellScript "dir-env-probe-target" ''
+    set -eu
+    ${pkgs.coreutils}/bin/env
+  '';
   dirSymlinkScript = pkgs.writeShellScript "dir-symlink-target" ''
     set -eu
     ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
@@ -334,6 +361,21 @@ in {
           };
           test-dir-symlink = {
             target = "${dirSymlinkScript}";
+            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+          };
+          # Used by the atomic-writeback grant-flip scenario.
+          test-dir-write-then-sleep = {
+            target = "${dirWriteThenSleepScript}";
+            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+          };
+          # Used by the always-writable namespace mount scenario.
+          test-dir-touch = {
+            target = "${dirTouchScript}";
+            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+          };
+          # Used by the suppression-env-var-target-isolation scenario.
+          test-dir-env-probe = {
+            target = "${dirEnvProbeScript}";
             resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
           };
         };

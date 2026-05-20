@@ -86,3 +86,40 @@ Python; add the following scenarios with appropriate isolation:
 - Performance benchmarking.
 - Multi-namespace concurrent-wrapper races (covered by integration
   tests in 405 / 415 with deterministic barriers).
+
+## Status note (2026-05-20)
+
+The six scenarios listed above are implemented as a `local_atomic_writeback()`
+function in `nix/tests/test.py` and ride on three new wrapper targets in
+`nix/tests/node.nix`:
+
+- `test-dir-write-then-sleep` (grant-flip scenario)
+- `test-dir-touch` (always-writable mount)
+- `test-dir-env-probe` (env-clear regression for the suppression env var)
+
+The daemon-side change required by scenario 6 — emitting
+`reason=server_rejected` (not `grant_readonly`) when ns observes a Checkin
+rejection vs a local-only read-only drop — is also in place
+(`frontend-ns/src/main.rs::report_outcomes`).
+
+`nix build .#checks.x86_64-linux.vm-test` does **not** yet pass — but the
+failure is pre-existing and unrelated to story 410 / task 432. The VM
+test's `backend.yaml` (in `nix/tests/node.nix`) still uses the
+`stores_declarative_dir` / bearer-token config shape that
+`crates/backend-backendd/src/server.rs` no longer accepts (see commit
+`56b8880 Remove stale declarative backend store surface`). The test
+fails at boot with `underwrap-backendd.service` Permission-denied
+on `/var/lib/underwrap-backend/stores.json`.
+
+A separate ticket should rebuild the VM-test bootstrap to:
+
+1. Materialize `stores.json` + `client-instances.json` + `operators.json`
+   via `systemd.tmpfiles` so the backend can read them.
+2. Move the test's `admin_api(...)` helper from `Authorization: Bearer ...`
+   to operator-session-cookie + CSRF, mirroring `bootstrap_admin` in
+   `crates/integration-tests/src/harness/readiness.rs`.
+3. Drop the `tokens.ops.token_file` and `service.clients.*` keys from
+   the test's `backend.yaml`.
+
+Once that infrastructure repair lands, the existing
+`local_atomic_writeback()` scenarios should pass without further changes.

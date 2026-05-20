@@ -94,6 +94,34 @@ def admin_delete_grant(url, store, client_instance, wrapper, resource):
     )
 
 
+def admin_get_blob(url, store, resource):
+    """Fetch a resource blob's canonical bytes via the admin API.
+
+    Returns the raw base64 string the API surfaces so the caller can
+    do byte-equal comparisons between runs without re-canonicalizing.
+    """
+    return admin_api(
+        url,
+        "/v1/admin/resources/blob/get",
+        {"store": store, "name": resource},
+    )["blob_b64"]
+
+
+def admin_list_pairs(url, store):
+    return admin_api(
+        url,
+        "/v1/admin/pairs/list",
+        {"store": store},
+    )["pairs"]
+
+
+def find_pair(pairs, wrapper, resource):
+    for p in pairs:
+        if p["wrapper"] == wrapper and p["resource"] == resource:
+            return p
+    return None
+
+
 # Wrapper -> resource id mapping for the local instance. Each test
 # wrapper has a single declared resource; the grant key includes the
 # resource so the daemon can distinguish per-resource policy.
@@ -112,6 +140,9 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-dir-readonly-write": "test/dir-a",
     "test-dir-sleep": "test/dir-a",
     "test-dir-symlink": "test/dir-a",
+    "test-dir-write-then-sleep": "test/dir-a",
+    "test-dir-touch": "test/dir-a",
+    "test-dir-env-probe": "test/dir-a",
 }
 
 # The directory wrappers map a second resource (`test/dir-b`); after
@@ -957,6 +988,16 @@ def local_directory_credentials():
     machine.fail(su("/run/wrappers/bin/local-test-dir-symlink"))
     machine.log("PASS: directory sync rejects symlinks in managed trees")
 
+    # Seed the per-grant `writable=true` for the wrappers used by
+    # the atomic-writeback scenarios (story 410 / ticket 432). They
+    # share the dir-a / dir-b resources, so the helper flips both.
+    for wrapper in [
+        "test-dir-write-then-sleep",
+        "test-dir-touch",
+        "test-dir-env-probe",
+    ]:
+        grant_local_unlocked(wrapper)
+
     # While a libsecret wrapper is running, the private bus must also remain
     # inaccessible to a same-UID host process.
     machine.succeed(
@@ -976,6 +1017,326 @@ def local_directory_credentials():
     machine.log("PASS: same-UID host process cannot list private libsecret runtime directories or see the bus socket")
     machine.execute("pkill -u testuser -f local-test-libsecret || true")
     time.sleep(0.5)
+
+
+def local_atomic_writeback():
+    # ============================================================
+    # LOCAL INSTANCE: atomic resource-blob writeback decision tree
+    # (story 410 / ticket 432)
+    #
+    # End-to-end coverage of the wrapper-resource Checkout / Checkin /
+    # UsageSignal / drop+warn paths. Each scenario starts from a
+    # known-good blob seeded via `test-dir-write seed` and drives a
+    # wrapper that exercises one decision-tree arm.
+    # ============================================================
+
+    DIR_A = "test/dir-a"
+    DIR_B = "test/dir-b"
+
+    def reset_blob_state():
+        """Re-seed the dir-a / dir-b blobs to a known state. The
+        `test-dir-write seed` script writes a deterministic set of
+        files via the writable grant; we then re-fetch the blob bytes
+        so subsequent scenarios can byte-compare against this baseline."""
+        grant_local_unlocked("test-dir-write")
+        machine.succeed(su("/run/wrappers/bin/local-test-dir-write seed"))
+        return (
+            admin_get_blob(ADMIN_LOCAL, "local", DIR_A),
+            admin_get_blob(ADMIN_LOCAL, "local", DIR_B),
+        )
+
+    def journal_lines_since(boot_offset, *, units=None, grep=None):
+        """Capture journal output emitted since `boot_offset` (a
+        cursor string from journalctl -o export --show-cursor=)."""
+        units_args = ""
+        if units:
+            units_args = " ".join(f"-u {u}" for u in units) + " "
+        cmd = f"journalctl --no-pager --after-cursor={shlex.quote(boot_offset)} {units_args}--output=cat"
+        if grep:
+            cmd += f" | grep -F {shlex.quote(grep)} || true"
+        return machine.succeed(cmd).strip().split("\n") if machine.succeed(cmd).strip() else []
+
+    def journal_cursor():
+        """Snapshot the current journal cursor so a follow-up call to
+        journal_lines_since() can scope its grep to events after this
+        point. journalctl prints the cursor on stderr with -o export
+        --show-cursor; the simplest reliable form is to read the very
+        last entry's cursor via -n 1 -o export."""
+        out = machine.succeed("journalctl -n 1 -o export --no-pager")
+        for line in out.splitlines():
+            if line.startswith("__CURSOR="):
+                return line[len("__CURSOR=") :]
+        raise AssertionError(f"journalctl produced no cursor: {out!r}")
+
+    # ----------------------------------------------------------
+    # Scenario 1: clean run with no changes
+    # Wrapper reads the bound files but never writes. Backend blob
+    # bytes are byte-identical after the run. Journal contains no
+    # writeback_rejected event. `last_used_at` is bumped.
+    # ----------------------------------------------------------
+    baseline_a, baseline_b = reset_blob_state()
+    grant_local_unlocked("test-dir-read")
+
+    before_pairs = admin_list_pairs(ADMIN_LOCAL, "local")
+    before_pair = find_pair(before_pairs, "test-dir-read", DIR_A)
+    before_last_used = before_pair["last_used_at"] if before_pair else None
+
+    cursor = journal_cursor()
+    machine.succeed(su("/run/wrappers/bin/local-test-dir-read"))
+    time.sleep(0.5)
+
+    after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
+    after_b = admin_get_blob(ADMIN_LOCAL, "local", DIR_B)
+    assert after_a == baseline_a, "scenario 1: dir-a blob changed after clean run"
+    assert after_b == baseline_b, "scenario 1: dir-b blob changed after clean run"
+
+    rejected = machine.succeed(
+        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
+        "| grep -F 'writeback_rejected' || true"
+    ).strip()
+    assert rejected == "", f"scenario 1: unexpected writeback_rejected event: {rejected!r}"
+
+    after_pairs = admin_list_pairs(ADMIN_LOCAL, "local")
+    after_pair = find_pair(after_pairs, "test-dir-read", DIR_A)
+    assert after_pair is not None and after_pair["last_used_at"] is not None, (
+        f"scenario 1: last_used_at not bumped for (test-dir-read, dir-a): {after_pair}"
+    )
+    if before_last_used is not None:
+        assert after_pair["last_used_at"] >= before_last_used, (
+            "scenario 1: last_used_at regressed"
+        )
+    machine.log("PASS: scenario 1 — clean run leaves backend blob unchanged, last_used bumped")
+
+    # ----------------------------------------------------------
+    # Scenario 2: changed run with writable grant — Checkin path
+    # The `test-dir-write update` wrapper rewrites the seeded files;
+    # the backend blob's bytes change accordingly, and a second run
+    # via `test-dir-read` sees the new content.
+    # ----------------------------------------------------------
+    machine.succeed(su("/run/wrappers/bin/local-test-dir-write update"))
+    time.sleep(0.5)
+    updated_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
+    assert updated_a != baseline_a, (
+        "scenario 2: dir-a blob did not change after writable update run"
+    )
+    output = machine.succeed(su("/run/wrappers/bin/local-test-dir-read")).strip().split("\n")
+    assert output[0].strip() == "token-updated", (
+        f"scenario 2: second run did not observe new dir-a content: {output}"
+    )
+    machine.log("PASS: scenario 2 — writable Checkin persists, second run observes new state")
+
+    # ----------------------------------------------------------
+    # Scenario 3: changed run with read-only grant — quiet drop
+    # The `test-dir-readonly-write` wrapper writes mutations through a
+    # grant with `writable=false`. The daemon emits no Checkin (ns
+    # has writable=false from Checkout), the backend blob is
+    # unchanged, the journal carries `writeback_rejected reason=grant_readonly`,
+    # and stderr contains the human-readable line.
+    # ----------------------------------------------------------
+    baseline_a, baseline_b = reset_blob_state()
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-dir-readonly-write",
+        DIR_A,
+        {"kind": "unlocked"},
+        writable=False,
+    )
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-dir-readonly-write",
+        DIR_B,
+        {"kind": "unlocked"},
+        writable=False,
+    )
+
+    cursor = journal_cursor()
+    stderr_capture = machine.succeed(
+        su(
+            "/run/wrappers/bin/local-test-dir-readonly-write update 2>/tmp/ro-stderr.log "
+            "&& cat /tmp/ro-stderr.log"
+        )
+    )
+    time.sleep(0.5)
+
+    after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
+    after_b = admin_get_blob(ADMIN_LOCAL, "local", DIR_B)
+    assert after_a == baseline_a, "scenario 3: dir-a blob changed despite read-only grant"
+    assert after_b == baseline_b, "scenario 3: dir-b blob changed despite read-only grant"
+
+    journal_grep = machine.succeed(
+        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
+        "| grep -F 'writeback_rejected' || true"
+    ).strip()
+    assert 'reason":"grant_readonly"' in journal_grep, (
+        f"scenario 3: missing grant_readonly journal event: {journal_grep!r}"
+    )
+
+    assert "grant is read-only" in stderr_capture, (
+        f"scenario 3: missing human-readable stderr warning: {stderr_capture!r}"
+    )
+    machine.log(
+        "PASS: scenario 3 — read-only grant drops mutations with journal + stderr warning"
+    )
+
+    # ----------------------------------------------------------
+    # Scenario 4: suppression env var
+    # Same setup as scenario 3 but with UNDERWRAP_SUPPRESS_READONLY_WARNING=1
+    # in the wrapper's environment. Journal still records the event;
+    # stderr does not carry the human-readable line; the target
+    # process does NOT see the env var (env_clear whitelist).
+    # ----------------------------------------------------------
+    baseline_a, baseline_b = reset_blob_state()
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-dir-readonly-write",
+        DIR_A,
+        {"kind": "unlocked"},
+        writable=False,
+    )
+
+    cursor = journal_cursor()
+    stderr_capture = machine.succeed(
+        "su testuser -s /bin/sh -c '"
+        "UNDERWRAP_SUPPRESS_READONLY_WARNING=1 "
+        "/run/wrappers/bin/local-test-dir-readonly-write update 2>/tmp/ro-stderr.log; "
+        "cat /tmp/ro-stderr.log'"
+    )
+    time.sleep(0.5)
+
+    journal_grep = machine.succeed(
+        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
+        "| grep -F 'writeback_rejected' || true"
+    ).strip()
+    assert 'reason":"grant_readonly"' in journal_grep, (
+        f"scenario 4: missing journal event even with suppression set: {journal_grep!r}"
+    )
+    assert "grant is read-only" not in stderr_capture, (
+        f"scenario 4: human-readable stderr line leaked despite suppression env: {stderr_capture!r}"
+    )
+
+    # Env clear: the target must not see UNDERWRAP_SUPPRESS_READONLY_WARNING
+    # (or any other UNDERWRAP_*) propagated from the wrapper invocation
+    # environment.
+    grant_local_unlocked("test-dir-env-probe")
+    target_env = machine.succeed(
+        "su testuser -s /bin/sh -c '"
+        "UNDERWRAP_SUPPRESS_READONLY_WARNING=1 "
+        "/run/wrappers/bin/local-test-dir-env-probe'"
+    )
+    leaked = [
+        line for line in target_env.splitlines() if line.startswith("UNDERWRAP_")
+    ]
+    assert leaked == [], (
+        f"scenario 4: UNDERWRAP_* vars leaked into target environment: {leaked}"
+    )
+    machine.log(
+        "PASS: scenario 4 — suppression silences stderr, journal still records, target sees no UNDERWRAP_*"
+    )
+
+    # ----------------------------------------------------------
+    # Scenario 5: always-writable namespace mount
+    # Even with a read-only grant, the in-namespace bind mount is RW
+    # to the target. A `touch` inside the bound directory must exit 0
+    # (the kernel allowed the write); the file does not persist to
+    # the backend (covered by scenario 3's blob check, repeated here).
+    # ----------------------------------------------------------
+    baseline_a, _ = reset_blob_state()
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-dir-touch",
+        DIR_A,
+        {"kind": "unlocked"},
+        writable=False,
+    )
+    # touch on the bound directory under a read-only grant — must
+    # succeed (target sees a writable mount).
+    machine.succeed(su("/run/wrappers/bin/local-test-dir-touch"))
+    after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
+    assert after_a == baseline_a, (
+        "scenario 5: read-only-grant touch persisted to backend"
+    )
+    machine.log("PASS: scenario 5 — read-only grant accepts target touch, drops it at writeback")
+
+    # ----------------------------------------------------------
+    # Scenario 6: server-side reject on mid-run grant flip
+    # Wrapper Checkouts a writable grant, then the test driver flips
+    # the grant to writable=false while the target sleeps. On exit,
+    # ns dispatches Checkin against the now-stale grant; the daemon
+    # re-evaluates the policy and returns Unauthorized. The journal
+    # carries `writeback_rejected reason=server_rejected` and the
+    # backend blob is unchanged.
+    # ----------------------------------------------------------
+    baseline_a, _ = reset_blob_state()
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-dir-write-then-sleep",
+        DIR_A,
+        {"kind": "unlocked"},
+        writable=True,
+    )
+
+    machine.execute("rm -f /tmp/dir-write-then-sleep.ready")
+    cursor = journal_cursor()
+    machine.succeed(
+        "su testuser -s /bin/sh -c '"
+        "setsid /run/wrappers/bin/local-test-dir-write-then-sleep 30 "
+        ">/tmp/wts-stdout.log 2>/tmp/wts-stderr.log </dev/null &'"
+    )
+
+    # Wait for the target to finish writing.
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        rc = machine.execute("test -e /tmp/dir-write-then-sleep.ready")[0]
+        if rc == 0:
+            break
+        time.sleep(0.2)
+    else:
+        raise AssertionError("scenario 6: target never signaled write completion")
+
+    # Flip the grant to read-only mid-run.
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-dir-write-then-sleep",
+        DIR_A,
+        {"kind": "unlocked"},
+        writable=False,
+    )
+
+    # Send SIGTERM so the target exits and ns runs writeback.
+    machine.execute("pkill -TERM -u testuser -f dir-write-then-sleep-target || true")
+    # Give ns time to dispatch Checkin and the daemon to respond.
+    time.sleep(3)
+
+    after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
+    assert after_a == baseline_a, "scenario 6: backend blob changed despite mid-run flip"
+
+    journal_grep = machine.succeed(
+        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
+        "| grep -F 'writeback_rejected' || true"
+    ).strip()
+    assert 'reason":"server_rejected"' in journal_grep, (
+        f"scenario 6: missing server_rejected journal event: {journal_grep!r}"
+    )
+
+    stderr_capture = machine.succeed("cat /tmp/wts-stderr.log || true")
+    assert "grant is read-only" in stderr_capture, (
+        f"scenario 6: missing human-readable stderr warning: {stderr_capture!r}"
+    )
+    machine.log(
+        "PASS: scenario 6 — server rejects Checkin after mid-run grant flip, journal records server_rejected"
+    )
 
 
 def remote_service_lifecycle():
@@ -1175,6 +1536,7 @@ local_proc_isolation_libsecret_mode()
 local_libsecret_mode()
 local_go_keyring_compatibility()
 local_directory_credentials()
+local_atomic_writeback()
 remote_service_lifecycle()
 instance_isolation()
 local_backend_policy_control_center()

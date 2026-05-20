@@ -362,13 +362,17 @@ fn read_only_warning_suppressed() -> bool {
 fn report_outcomes(outcomes: &[WritebackOutcome]) {
     let suppress = read_only_warning_suppressed();
     for outcome in outcomes {
-        let resource_id = match outcome {
+        let (resource_id, reason) = match outcome {
             WritebackOutcome::Unchanged | WritebackOutcome::Persisted => continue,
-            WritebackOutcome::RejectedReadOnly { resource_id }
-            | WritebackOutcome::DroppedReadOnly { resource_id } => resource_id,
+            // Wrapper-local decision: the Checkout's writability bit
+            // was already false, so no Checkin was attempted.
+            WritebackOutcome::DroppedReadOnly { resource_id } => (resource_id, "grant_readonly"),
+            // Server-side rejection: Checkin was sent but the daemon
+            // refused it (e.g. the grant flipped mid-run).
+            WritebackOutcome::RejectedReadOnly { resource_id } => (resource_id, "server_rejected"),
         };
         eprintln!(
-            r#"{{"audit":"writeback_rejected","reason":"grant_readonly","resource":"{resource_id}"}}"#,
+            r#"{{"audit":"writeback_rejected","reason":"{reason}","resource":"{resource_id}"}}"#,
         );
         if !suppress {
             eprintln!(
