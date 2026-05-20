@@ -47,10 +47,13 @@ describe("StoresPage", () => {
         backend: "encrypted" as const,
         description: "Primary store",
         created_at: undefined,
+        locked: false,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
           can_edit_metadata: true,
           can_rotate_key: true,
+          can_unlock: false,
+          can_lock: true,
           can_delete_now: true,
           can_force_delete: false,
         },
@@ -61,10 +64,13 @@ describe("StoresPage", () => {
         backend: "plain" as const,
         description: undefined,
         created_at: 100,
+        locked: false,
         usage: { mapped_client_instance_count: 0, has_secrets: true },
         actions: {
           can_edit_metadata: true,
           can_rotate_key: false,
+          can_unlock: false,
+          can_lock: false,
           can_delete_now: false,
           can_force_delete: true,
         },
@@ -75,10 +81,13 @@ describe("StoresPage", () => {
         backend: "encrypted" as const,
         description: "In use",
         created_at: 200,
+        locked: true,
         usage: { mapped_client_instance_count: 2, has_secrets: true },
         actions: {
           can_edit_metadata: true,
-          can_rotate_key: true,
+          can_rotate_key: false,
+          can_unlock: true,
+          can_lock: false,
           can_delete_now: false,
           can_force_delete: false,
         },
@@ -168,6 +177,76 @@ describe("StoresPage", () => {
     expect(deleteBtn).toBeEnabled();
   });
 
+  it("shows a Locked badge and Unlock button for locked encrypted stores", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockJson(200, sampleList),
+    );
+    render(
+      withQuery(
+        <StoresPage
+          principal={{ authenticated: true, role: "admin" }}
+        />,
+      ),
+    );
+    const sharedRow = (await screen.findByText("shared")).closest("tr")!;
+    expect(
+      sharedRow.querySelector('[data-testid="store-status-store_shared"]')!
+        .textContent,
+    ).toMatch(/locked/i);
+    expect(
+      sharedRow.querySelector('[data-testid="store-unlock-store_shared"]'),
+    ).toBeTruthy();
+    // Rotate is disabled for locked stores — opening the edit dialog
+    // and ticking the box is not enough to enable the rotate button.
+    expect(
+      sharedRow.querySelector('[data-testid="store-lock-store_shared"]'),
+    ).toBeFalsy();
+  });
+
+  it("submits the hex key via postStoreUnlock when the operator unlocks a store", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock.mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.endsWith("/v1/admin/stores")) {
+        return mockJson(200, sampleList);
+      }
+      if (url.includes("/unlock")) {
+        return mockJson(200, { ok: true });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const user = userEvent.setup();
+    render(
+      withQuery(
+        <StoresPage
+          principal={{ authenticated: true, role: "admin" }}
+        />,
+      ),
+    );
+    const unlockBtn = await screen.findByTestId("store-unlock-store_shared");
+    await user.click(unlockBtn);
+    const dlg = await screen.findByTestId("store-unlock-dialog");
+    const input = dlg.querySelector(
+      '[data-testid="store-unlock-key"]',
+    ) as HTMLInputElement;
+    const sampleHex =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    await user.type(input, sampleHex);
+    const submit = await screen.findByTestId("store-unlock-submit");
+    await user.click(submit);
+
+    // Assert that postStoreUnlock fired against the right path with
+    // the right body.
+    const callsToUnlock = fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/v1/admin/stores/store_shared/unlock"),
+    );
+    expect(callsToUnlock).toHaveLength(1);
+    const init = callsToUnlock[0]?.[1] as RequestInit | undefined;
+    expect(init?.method).toBe("POST");
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({ key_hex: sampleHex });
+  });
+
   it("disables delete when a store is still mapped to client instances", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockJson(200, sampleList),
@@ -180,8 +259,11 @@ describe("StoresPage", () => {
       ),
     );
     const sharedRow = (await screen.findByText("shared")).closest("tr")!;
-    const buttons = sharedRow.querySelectorAll("button");
-    const deleteBtn = buttons[1]!;
+    // Look up Delete by name rather than position — the row may also
+    // include an Unlock button when the store is locked.
+    const deleteBtn = within(sharedRow as HTMLElement).getByRole("button", {
+      name: /^delete$/i,
+    }) as HTMLButtonElement;
     expect(deleteBtn).toBeDisabled();
     expect(deleteBtn).toHaveAttribute(
       "title",

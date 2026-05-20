@@ -29,7 +29,9 @@ import {
   deleteStore,
   fetchStores,
   postStoreCreate,
+  postStoreLock,
   postStoreRotateKey,
+  postStoreUnlock,
   putStoreUpdate,
   type WhoamiResponse,
 } from "@/api/client";
@@ -52,7 +54,7 @@ function toStoreDetail(
     id: item.id,
     name: item.name,
     backend: item.backend,
-    key_file: undefined,
+    locked: item.locked,
     description: item.description,
     created_at: item.created_at,
     dir: "",
@@ -105,6 +107,12 @@ export function StoresPage({ principal }: StoresPageProps) {
   const [deleting, setDeleting] = useState<AdminStoreDetailResponse | null>(
     null,
   );
+  const [unlocking, setUnlocking] = useState<AdminStoreDetailResponse | null>(
+    null,
+  );
+  const [locking, setLocking] = useState<AdminStoreDetailResponse | null>(
+    null,
+  );
 
   return (
     <div className="space-y-6">
@@ -133,6 +141,8 @@ export function StoresPage({ principal }: StoresPageProps) {
           isAdmin={isAdmin}
           onEdit={(item) => setEditing(toStoreDetail(item))}
           onDelete={(item) => setDeleting(toStoreDetail(item))}
+          onUnlock={(item) => setUnlocking(toStoreDetail(item))}
+          onLock={(item) => setLocking(toStoreDetail(item))}
         />
       )}
 
@@ -154,6 +164,18 @@ export function StoresPage({ principal }: StoresPageProps) {
           onClose={() => setDeleting(null)}
         />
       ) : null}
+      {isAdmin && unlocking ? (
+        <UnlockStoreDialog
+          store={unlocking}
+          onClose={() => setUnlocking(null)}
+        />
+      ) : null}
+      {isAdmin && locking ? (
+        <LockStoreDialog
+          store={locking}
+          onClose={() => setLocking(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -163,9 +185,18 @@ interface StoresTableProps {
   isAdmin: boolean;
   onEdit: (item: AdminStoresListResponse["items"][number]) => void;
   onDelete: (item: AdminStoresListResponse["items"][number]) => void;
+  onUnlock: (item: AdminStoresListResponse["items"][number]) => void;
+  onLock: (item: AdminStoresListResponse["items"][number]) => void;
 }
 
-function StoresTable({ items, isAdmin, onEdit, onDelete }: StoresTableProps) {
+function StoresTable({
+  items,
+  isAdmin,
+  onEdit,
+  onDelete,
+  onUnlock,
+  onLock,
+}: StoresTableProps) {
   if (items.length === 0) {
     return (
       <p className="text-sm text-(--color-muted)">No stores configured.</p>
@@ -178,6 +209,7 @@ function StoresTable({ items, isAdmin, onEdit, onDelete }: StoresTableProps) {
           <tr>
             <th className="px-4 py-2">Name</th>
             <th className="px-4 py-2">Backend</th>
+            <th className="px-4 py-2">Status</th>
             <th className="px-4 py-2">Usage</th>
             <th className="px-4 py-2">Description</th>
             <th className="px-4 py-2 text-right">Actions</th>
@@ -188,6 +220,8 @@ function StoresTable({ items, isAdmin, onEdit, onDelete }: StoresTableProps) {
             const canEdit = isAdmin && item.actions.can_edit_metadata;
             const canDelete =
               isAdmin && (item.actions.can_delete_now || item.actions.can_force_delete);
+            const canUnlock = isAdmin && item.actions.can_unlock;
+            const canLock = isAdmin && item.actions.can_lock;
             return (
               <tr
                 key={item.id}
@@ -200,13 +234,41 @@ function StoresTable({ items, isAdmin, onEdit, onDelete }: StoresTableProps) {
                 <td className="px-4 py-3 text-(--color-muted)">
                   {item.backend}
                 </td>
+                <td className="px-4 py-3">
+                  {item.locked ? (
+                    <span
+                      data-testid={`store-status-${item.id}`}
+                      className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-200"
+                    >
+                      locked
+                    </span>
+                  ) : item.backend === "encrypted" ? (
+                    <span
+                      data-testid={`store-status-${item.id}`}
+                      className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-200"
+                    >
+                      unlocked
+                    </span>
+                  ) : (
+                    <span
+                      data-testid={`store-status-${item.id}`}
+                      className="text-xs text-(--color-muted)"
+                    >
+                      —
+                    </span>
+                  )}
+                </td>
                 <td className="px-4 py-3 text-(--color-muted)">
                   <div>
                     {item.usage.mapped_client_instance_count} client
                     {item.usage.mapped_client_instance_count === 1 ? "" : "s"}
                   </div>
                   <div className="text-xs">
-                    {item.usage.has_secrets ? "contains secrets" : "empty"}
+                    {item.locked
+                      ? "contents unknown while locked"
+                      : item.usage.has_secrets
+                        ? "contains secrets"
+                        : "empty"}
                   </div>
                 </td>
                 <td className="px-4 py-3 text-(--color-muted)">
@@ -214,6 +276,26 @@ function StoresTable({ items, isAdmin, onEdit, onDelete }: StoresTableProps) {
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="inline-flex gap-2">
+                    {canUnlock ? (
+                      <Button
+                        variant="default"
+                        size="sm"
+                        data-testid={`store-unlock-${item.id}`}
+                        onClick={() => onUnlock(item)}
+                      >
+                        Unlock
+                      </Button>
+                    ) : null}
+                    {canLock ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        data-testid={`store-lock-${item.id}`}
+                        onClick={() => onLock(item)}
+                      >
+                        Lock
+                      </Button>
+                    ) : null}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -312,11 +394,11 @@ function CreateStoreDialog({
         title={`Encryption key for ${revealKey.storeName}`}
         description={
           <>
-            This is the only time the master key will be shown. Copy and
-            store it somewhere safe (a password manager, an offline
-            vault). The backend keeps the key file readable only by its
-            own user; you do not need a copy to operate the store —
-            keeping one is just an escape hatch for disaster recovery.
+            This is the only time the master key will be shown. The
+            backend keeps it only in process memory — copy it into a
+            password manager or other offline vault now, because you
+            will need to paste it back to unlock this store after every
+            backend restart.
           </>
         }
         keyHex={revealKey.keyHex}
@@ -374,10 +456,12 @@ function CreateStoreDialog({
             />
             {form.watch("backend") === "encrypted" ? (
               <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                The backend will generate a fresh 32-byte master key,
-                write it to its keys directory with mode 0600, and show
-                it to you once after creation. Save it somewhere safe —
-                it cannot be retrieved afterwards.
+                The backend will generate a fresh 32-byte master key
+                in memory and show it to you once after creation. The
+                key is <strong>never written to disk</strong>; you must
+                save it somewhere safe yourself. After any backend
+                restart the store is locked until an admin re-enters
+                this key.
               </p>
             ) : null}
             <FormField
@@ -535,26 +619,34 @@ function EditStoreDialog({
             </DialogFooter>
           </form>
         </Form>
-        {canRotate ? (
+        {store.backend === "encrypted" ? (
           <div className="mt-6 space-y-3 rounded-md border border-(--color-line) bg-(--color-surface-1) p-4">
             <h3 className="text-sm font-semibold text-(--color-fg)">
               Rotate master key
             </h3>
             <p className="text-xs text-(--color-muted)">
-              Generates a fresh 32-byte master key and replaces the
-              existing key file. Secrets already stored under this
-              store will no longer be decryptable through this backend
-              — re-encrypt them offline first if you need to keep them.
+              Mints a fresh 32-byte master key and re-encrypts every
+              resource in this store under it. Writes are briefly
+              blocked while the data directory is swapped; reads
+              continue throughout. The new key is shown once after the
+              rotation completes — save it before closing the dialog.
             </p>
+            {store.locked ? (
+              <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                The store is locked. Unlock it first; rotation needs
+                the current key to read existing ciphertext.
+              </p>
+            ) : null}
             <label className="flex items-start gap-2 text-xs text-(--color-muted)">
               <input
                 type="checkbox"
+                disabled={store.locked}
                 checked={rotateConfirm}
                 onChange={(e) => setRotateConfirm(e.target.checked)}
               />
               <span>
-                I understand existing secrets will become unreadable
-                through this backend.
+                I understand every resource will be re-encrypted and a
+                new master key will be issued.
               </span>
             </label>
             {rotateWarning ? (
@@ -569,7 +661,14 @@ function EditStoreDialog({
               type="button"
               variant="destructive"
               size="sm"
-              disabled={!rotateConfirm || rotate.isPending}
+              disabled={!canRotate || store.locked || !rotateConfirm || rotate.isPending}
+              title={
+                store.locked
+                  ? "Unlock the store first."
+                  : !canRotate
+                    ? "Only admins may rotate the master key."
+                    : undefined
+              }
               onClick={() => rotate.mutate()}
             >
               {rotate.isPending ? "Rotating…" : "Rotate key"}
@@ -687,6 +786,199 @@ function KeyRevealDialog({
             onClick={onClose}
           >
             Done
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------- Unlock / Lock ----------
+
+const unlockSchema = z.object({
+  key_hex: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-fA-F]{64}$/, "Master key must be exactly 64 hex characters."),
+});
+type UnlockValues = z.infer<typeof unlockSchema>;
+
+/**
+ * Dialog for unlocking an encrypted store. The operator pastes the
+ * 64-character hex master key that was issued at create / rotate
+ * time. The hex value lives only in the form state for the duration
+ * of the dialog and is wiped via `form.reset()` on success or
+ * dismissal — never logged, persisted, or echoed back to the server
+ * outside the unlock request itself.
+ */
+function UnlockStoreDialog({
+  store,
+  onClose,
+}: {
+  store: AdminStoreDetailResponse;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const form = useForm<UnlockValues>({
+    resolver: zodResolver(unlockSchema),
+    defaultValues: { key_hex: "" },
+  });
+  const unlock = useMutation({
+    mutationFn: (key_hex: string) => postStoreUnlock(store.id, { key_hex }),
+    onSuccess: async () => {
+      form.reset({ key_hex: "" });
+      await qc.invalidateQueries({ queryKey: ["admin", "stores"] });
+      onClose();
+    },
+    onError: (err) => setSubmitError(describeApiError(err)),
+  });
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) {
+          form.reset({ key_hex: "" });
+          onClose();
+        }
+      }}
+    >
+      <DialogContent data-testid="store-unlock-dialog">
+        <DialogHeader>
+          <DialogTitle>Unlock store: {store.name}</DialogTitle>
+          <DialogDescription>
+            Paste the 64-character hex master key issued when this
+            store was created (or last rotated). Until the store is
+            unlocked, wrapper requests against it fail with
+            <code className="mx-1 rounded bg-(--color-surface-1) px-1 py-0.5 text-xs">store_locked</code>.
+          </DialogDescription>
+        </DialogHeader>
+        <Form {...form}>
+          <form
+            onSubmit={form.handleSubmit((v) => {
+              setSubmitError(null);
+              unlock.mutate(v.key_hex.trim());
+            })}
+            className="space-y-4"
+            noValidate
+          >
+            <FormField
+              control={form.control}
+              name="key_hex"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Master key (hex)</FormLabel>
+                  <FormControl>
+                    <Input
+                      autoFocus
+                      autoComplete="off"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      data-testid="store-unlock-key"
+                      className="font-mono text-xs"
+                      placeholder={"0".repeat(64)}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            {submitError ? (
+              <p
+                role="alert"
+                data-testid="store-unlock-error"
+                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+              >
+                {submitError}
+              </p>
+            ) : null}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  form.reset({ key_hex: "" });
+                  onClose();
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                data-testid="store-unlock-submit"
+                disabled={unlock.isPending}
+              >
+                {unlock.isPending ? "Unlocking…" : "Unlock"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Confirmation dialog for locking an encrypted store. Drops the
+ * backend's in-memory master key so subsequent wrapper requests fail
+ * with `store_locked` until an admin unlocks again.
+ */
+function LockStoreDialog({
+  store,
+  onClose,
+}: {
+  store: AdminStoreDetailResponse;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const lock = useMutation({
+    mutationFn: () => postStoreLock(store.id),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["admin", "stores"] });
+      onClose();
+    },
+    onError: (err) => setSubmitError(describeApiError(err)),
+  });
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent data-testid="store-lock-dialog">
+        <DialogHeader>
+          <DialogTitle>Lock store: {store.name}</DialogTitle>
+          <DialogDescription>
+            Locking drops the backend's in-memory master key for this
+            store. Wrappers will receive
+            <code className="mx-1 rounded bg-(--color-surface-1) px-1 py-0.5 text-xs">store_locked</code>
+            until you unlock again by re-pasting the master key.
+          </DialogDescription>
+        </DialogHeader>
+        {submitError ? (
+          <p
+            role="alert"
+            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+          >
+            {submitError}
+          </p>
+        ) : null}
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            data-testid="store-lock-submit"
+            disabled={lock.isPending}
+            onClick={() => {
+              setSubmitError(null);
+              lock.mutate();
+            }}
+          >
+            {lock.isPending ? "Locking…" : "Lock"}
           </Button>
         </DialogFooter>
       </DialogContent>

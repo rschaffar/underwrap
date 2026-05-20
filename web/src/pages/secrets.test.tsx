@@ -40,10 +40,13 @@ describe("SecretsPage", () => {
         name: "default",
         backend: "plain" as const,
         created_at: 0n,
+        locked: false,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
           can_edit_metadata: true,
           can_rotate_key: false,
+          can_unlock: false,
+          can_lock: false,
           can_delete_now: true,
           can_force_delete: false,
         },

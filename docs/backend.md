@@ -78,11 +78,13 @@ admin:
   # under. Each new store lands at `<stores_data_root>/<store_id>/`.
   # Unset disables store creation.
   stores_data_root: /var/lib/underwrap-backend/data
-  # Where the admin API writes master-key files for encrypted dynamic
-  # stores (one file per store, mode 0600). Defaults to
-  # /var/lib/underwrap-backend/keys.
-  keys_dir: /var/lib/underwrap-backend/keys
 ```
+
+Encrypted stores no longer have a `keys_dir` knob: the 32-byte master
+key is generated in memory at store-creation time, displayed once in
+the create-store response, and never written to disk. After a backend
+restart every encrypted store boots locked until an operator submits
+the key via `POST /v1/admin/stores/{id}/unlock`.
 
 ### Store registry
 
@@ -158,21 +160,41 @@ session cookies; state-changing requests must also satisfy the CSRF and
 - `GET /v1/admin/client-instances/{id}`, `PUT`, `DELETE` — detail,
   update (including replacing `cert_pem` to rotate the credential), and
   delete.
-- `GET /v1/admin/stores` — list of backend-managed stores
+- `GET /v1/admin/stores` — list of backend-managed stores. Each item
+  carries a `locked: bool` field; encrypted stores boot locked after
+  every backend restart and stay locked until an admin unlocks them.
 - `POST /v1/admin/stores` — create a store. For
-  `backend = "encrypted"` the backend auto-generates a 32-byte master
-  key, writes it to `<keys_dir>/<store>.key` with mode 0600, and
-  returns the key value **exactly once** in the response as
-  `key_hex`. Subsequent reads never include the key.
+  `backend = "encrypted"` the backend mints a fresh 32-byte master
+  key in memory, writes a small unlock canary into the data
+  directory (encrypted under that key), and returns the key value
+  **exactly once** in the response as `key_hex`. Subsequent reads
+  never include the key. The key never touches disk; operators are
+  solely responsible for storing it.
 - `GET /v1/admin/stores/{name}`, `PUT`, `DELETE` — store detail /
-  update / delete.
+  update / delete. Locked stores can only be deleted with
+  `?force=true` (the backend cannot inspect their contents to verify
+  emptiness while locked).
+- `POST /v1/admin/stores/{id}/unlock` — body `{key_hex}`. Decrypts
+  the unlock canary with the supplied key to verify it; on success
+  installs the backend in the registry's `Unlocked` state. Returns
+  `200 {ok: true}`. Failure cases:
+  - `400 invalid_key_hex` — value is not 64 hex characters.
+  - `400 store_not_encrypted` — store is plain; nothing to unlock.
+  - `403 key_mismatch` — key did not decrypt the canary; the
+    registry stays locked.
+  - `409 already_unlocked` — call is racing with another unlock.
+- `POST /v1/admin/stores/{id}/lock` — drops the in-memory backend so
+  subsequent runtime requests fail with `store_locked`. Idempotent:
+  re-locking an already-locked store is a noop success.
 - `POST /v1/admin/stores/{name}/rotate-key` — generate a fresh
-  master key for an encrypted store, replace the key file
-  atomically, reopen the backend, and return the new key value once.
-  **Limitation:** v1 of rotation does not re-encrypt existing
-  ciphertext, so secrets already stored under the store become
-  unreadable through this backend. Re-encrypt them offline first if
-  you need to keep them.
+  master key for an encrypted store, decrypt every resource under
+  the current key and re-encrypt it under the new one, swap the
+  data directory atomically, and return the new key value **exactly
+  once**. Writes against the store are briefly serialized behind a
+  per-store rotation mutex; reads continue throughout. Refuses with
+  `503 store_locked` if the store is locked (rotation needs the
+  current key to read existing ciphertext) and `409 not_encrypted`
+  on plain stores.
 - `POST /v1/admin/secret/{read,write,list,delete}` — direct access to any
   store's key-value surface. `write` and `delete` gate on
   [`writes_enabled`](#global-write-lock) and reject with

@@ -165,6 +165,7 @@ import type {
   AdminStoreDeleteResponse,
   AdminStoreDetailResponse,
   AdminStoreRotateKeyResponse,
+  AdminStoreUnlockRequest,
   AdminStoreUpdateRequest,
   AdminStoresListResponse,
   AdminUserCreateRequest,
@@ -236,6 +237,7 @@ export type {
   AdminStoreDeleteResponse,
   AdminStoreDetailResponse,
   AdminStoreRotateKeyResponse,
+  AdminStoreUnlockRequest,
   AdminStoreUpdateRequest,
   AdminStoresListResponse,
   AdminUserCreateRequest,
@@ -316,6 +318,34 @@ export function postStoreRotateKey(
 ): Promise<AdminStoreRotateKeyResponse> {
   return apiJson<AdminStoreRotateKeyResponse>(
     `/v1/admin/stores/${encodeURIComponent(storeId)}/rotate-key`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * Unlock an encrypted store by submitting its 64-character hex master
+ * key. The hex value is held only in this function's call frame —
+ * never read into a long-lived variable, written to storage, or
+ * embedded in the URL.
+ */
+export function postStoreUnlock(
+  storeId: string,
+  body: AdminStoreUnlockRequest,
+): Promise<void> {
+  return apiJson<void>(
+    `/v1/admin/stores/${encodeURIComponent(storeId)}/unlock`,
+    { method: "POST", json: body },
+  );
+}
+
+/**
+ * Lock an encrypted store, dropping the in-memory master key. Runtime
+ * requests against the store will fail with `store_locked` until an
+ * admin unlocks it again.
+ */
+export function postStoreLock(storeId: string): Promise<void> {
+  return apiJson<void>(
+    `/v1/admin/stores/${encodeURIComponent(storeId)}/lock`,
     { method: "POST" },
   );
 }

@@ -1406,6 +1406,243 @@ def local_atomic_writeback():
     )
 
 
+def encrypted_store_in_memory_keys():
+    """Verifies the in-memory-master-key flow end-to-end against the
+    local backend's admin API.
+
+    Phases:
+      1. Create a fresh encrypted store via the admin API and capture
+         the one-shot hex key from the create response. The store
+         must not leave a `.key` file anywhere under the backend's
+         state directory.
+      2. Seed a known plaintext through the admin secret-write
+         endpoint and verify it round-trips through admin secret-read.
+      3. Restart `underwrap-backendd-local`. After the restart the
+         store boots locked — admin secret-read must return
+         `store_locked`.
+      4. Unlock with the wrong hex — refused with `key_mismatch`,
+         store stays locked.
+      5. Unlock with the right hex — succeeds. Secret round-trips
+         again under the original key.
+      6. Rotate the key — every resource is re-encrypted under a
+         fresh master key. The original plaintext still reads back.
+      7. Restart again — store locks. Unlocking with the *old* key
+         is refused; unlocking with the *new* key succeeds.
+      8. Explicit lock — admin lock endpoint drops the in-memory key
+         and subsequent reads fail with `store_locked` until unlock.
+    """
+    machine.log("encrypted_store_in_memory_keys: starting")
+
+    # ---- 1. create the store --------------------------------------
+    create_resp = admin_api(
+        ADMIN_LOCAL,
+        "/v1/admin/stores",
+        {"name": "vault", "backend": "encrypted"},
+    )
+    store_id = create_resp["store"]["id"]
+    key_hex_original = create_resp["key_hex"]
+    assert isinstance(key_hex_original, str) and len(key_hex_original) == 64
+    assert create_resp["store"]["locked"] is False
+    assert create_resp["store"]["backend"] == "encrypted"
+
+    # No master-key file lands on disk anywhere under the backend's
+    # state directories. Use `find` to surface any accidental .key
+    # files anywhere reachable.
+    stray = machine.succeed(
+        "find /var/lib/underwrap-backend-local /run/underwrap-backend-local "
+        "-name '*.key' 2>/dev/null || true"
+    ).strip()
+    assert stray == "", f"unexpected on-disk .key files: {stray}"
+
+    # ---- 2. seed a known plaintext and verify round-trip ----------
+    # Admin secret writes/reads route through the resource blob shim
+    # without requiring a pre-existing resource record, so we can
+    # exercise the store's encryption without first wiring up
+    # resources / pairs / grants.
+    resource_id = "vault/greeting"
+    slot_payload = base64.b64encode(b"hello-locked").decode()
+    admin_api(
+        ADMIN_LOCAL,
+        "/v1/admin/secret/write",
+        {
+            "store": store_id,
+            "resource_id": resource_id,
+            "slot": "env",
+            "key": "GREETING",
+            "material_b64": slot_payload,
+        },
+    )
+
+    def read_secret():
+        return admin_api(
+            ADMIN_LOCAL,
+            "/v1/admin/secret/read",
+            {
+                "store": store_id,
+                "resource_id": resource_id,
+                "slot": "env",
+                "key": "GREETING",
+            },
+        )
+
+    assert read_secret()["material_b64"] == slot_payload, (
+        "unencrypted round-trip failed"
+    )
+
+    # ---- 3. restart → boots locked --------------------------------
+    machine.succeed("systemctl restart underwrap-backendd-local")
+    machine.wait_for_unit("underwrap-backendd-local.service")
+    # The admin listener takes a moment to come back up.
+    machine.wait_until_succeeds(
+        f"curl -fsS --cacert {CA_CERT} "
+        f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
+    )
+    # We have to re-bootstrap our session against the listener
+    # because in-memory session state was reset.
+    bootstrap_admin_session(ADMIN_LOCAL)
+
+    stores_after_restart = admin_api(
+        ADMIN_LOCAL, "/v1/admin/stores", None, method="GET"
+    )["items"]
+    locked_item = next(s for s in stores_after_restart if s["id"] == store_id)
+    assert locked_item["locked"] is True, (
+        f"store must boot locked: {locked_item}"
+    )
+    assert locked_item["actions"]["can_unlock"] is True
+    assert locked_item["actions"]["can_lock"] is False
+
+    locked_read = admin_api_expect_status(
+        ADMIN_LOCAL,
+        "/v1/admin/secret/read",
+        {
+            "store": store_id,
+            "resource_id": resource_id,
+            "slot": "env",
+            "key": "GREETING",
+        },
+        status=503,
+    )
+    assert locked_read["code"] == "store_locked", locked_read
+
+    # ---- 4. unlock with wrong hex → key_mismatch ------------------
+    wrong_unlock = admin_api_expect_status(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/unlock",
+        {"key_hex": "0" * 64},
+        status=403,
+    )
+    assert wrong_unlock["code"] == "key_mismatch", wrong_unlock
+    stores_still_locked = admin_api(
+        ADMIN_LOCAL, "/v1/admin/stores", None, method="GET"
+    )["items"]
+    assert next(s for s in stores_still_locked if s["id"] == store_id)[
+        "locked"
+    ] is True, "wrong-hex unlock must not transition the registry"
+
+    # ---- 5. unlock with right hex → succeeds ----------------------
+    admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/unlock",
+        {"key_hex": key_hex_original},
+    )
+    assert read_secret()["material_b64"] == slot_payload, (
+        "round-trip after unlock failed"
+    )
+
+    # ---- 6. rotate key → existing plaintext still readable --------
+    rotate_resp = admin_api(
+        ADMIN_LOCAL, f"/v1/admin/stores/{store_id}/rotate-key", {}
+    )
+    key_hex_rotated = rotate_resp["key_hex"]
+    assert key_hex_rotated != key_hex_original
+    assert len(key_hex_rotated) == 64
+    assert read_secret()["material_b64"] == slot_payload, (
+        "round-trip after rotate-key failed"
+    )
+
+    # ---- 7. restart → locked, old key refused, new key unlocks ----
+    machine.succeed("systemctl restart underwrap-backendd-local")
+    machine.wait_for_unit("underwrap-backendd-local.service")
+    machine.wait_until_succeeds(
+        f"curl -fsS --cacert {CA_CERT} "
+        f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
+    )
+    bootstrap_admin_session(ADMIN_LOCAL)
+    old_key_attempt = admin_api_expect_status(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/unlock",
+        {"key_hex": key_hex_original},
+        status=403,
+    )
+    assert old_key_attempt["code"] == "key_mismatch", old_key_attempt
+    admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/unlock",
+        {"key_hex": key_hex_rotated},
+    )
+    assert read_secret()["material_b64"] == slot_payload
+
+    # ---- 8. explicit lock --------------------------------------------
+    admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/lock",
+        {},
+    )
+    locked_after_lock = admin_api_expect_status(
+        ADMIN_LOCAL,
+        "/v1/admin/secret/read",
+        {
+            "store": store_id,
+            "resource_id": resource_id,
+            "slot": "env",
+            "key": "GREETING",
+        },
+        status=503,
+    )
+    assert locked_after_lock["code"] == "store_locked"
+
+    # Restore for any later tests / leave the store unlocked at the end.
+    admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/unlock",
+        {"key_hex": key_hex_rotated},
+    )
+
+    machine.log("PASS: encrypted store keeps master keys in memory only")
+
+
+def admin_api_expect_status(url, path, payload, *, status):
+    """Like `admin_api` but expects a specific non-2xx status and
+    returns the decoded JSON error body. Used by the
+    encrypted-store-locked tests where the interesting case is the
+    `code` field on a 4xx / 5xx response.
+    """
+    is_state_changing = True
+    cookie_jar = _COOKIE_JAR.get(url)
+    csrf = _CSRF_TOKEN.get(url)
+    cmd = [
+        "curl", "-sS",
+        "-o", "/tmp/admin-err-body",
+        "-w", "%{http_code}",
+        "--cacert", CA_CERT,
+        "-b", cookie_jar,
+        "-X", "POST",
+        "-H", f"Origin: {url}",
+    ]
+    if is_state_changing:
+        cmd += ["-H", f"X-CSRF-Token: {csrf}"]
+    if payload is not None:
+        cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(payload)]
+    cmd += [f"{url}{path}"]
+    quoted = " ".join(shlex.quote(part) for part in cmd)
+    code = machine.succeed(quoted).strip()
+    assert code == str(status), (
+        f"expected HTTP {status} from {path}, got {code}"
+    )
+    body = machine.succeed("cat /tmp/admin-err-body")
+    return json.loads(body) if body.strip() else {}
+
+
 def remote_service_lifecycle():
     # ============================================================
     # REMOTE INSTANCE: backend service lifecycle
@@ -1608,5 +1845,6 @@ remote_service_lifecycle()
 instance_isolation()
 local_backend_policy_control_center()
 local_backend_managed_grants()
+encrypted_store_in_memory_keys()
 audit_and_no_secret_leaks()
 
