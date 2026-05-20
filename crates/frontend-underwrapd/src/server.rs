@@ -248,3 +248,39 @@ async fn accept_wrapper_loop(
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use underwrap_protocol::config::BackendServiceConfig;
+
+    /// `open_and_identify` must return `Err` when the TLS material is
+    /// invalid, so [`run`] can demote the daemon to unenrolled mode
+    /// instead of aborting startup. Symmetric with the unenrolled-on-disk
+    /// path: a credential the backend rejects should behave the same as
+    /// a credential that isn't there yet.
+    #[test]
+    fn open_and_identify_errors_on_invalid_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("ca.pem");
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        for path in [&ca, &cert, &key] {
+            std::fs::File::create(path)
+                .unwrap()
+                .write_all(b"not-a-cert")
+                .unwrap();
+        }
+        let config = DaemonConfig {
+            backend: BackendServiceConfig {
+                url: "https://backend.invalid:8443".into(),
+                ca_file: Some(ca),
+                client_cert_file: Some(cert),
+                client_key_file: Some(key),
+            },
+            wrappers: Default::default(),
+        };
+        assert!(open_and_identify(&config).is_err());
+    }
+}
