@@ -1192,18 +1192,19 @@ fn runtime_read_gate(
             "secret id '{secret_id}' is not a canonical resource key"
         ));
     };
-    // No policy document persisted yet → permissive greenfield
-    // default. As soon as an operator writes any document (even an
-    // empty one) the daemon is locked down to whatever's been
-    // explicitly granted.
-    let raw = store
+    // Deny-by-default: an absent policy document is treated like an
+    // empty one. The wrapper-register handler seeds a `Locked`
+    // permission for every new `(client_instance, wrapper, resource)`
+    // pair, so a missing document here always means "no permission has
+    // been granted yet".
+    let doc = match store
         .read(POLICY_DOCUMENT_SECRET_ID)
-        .map_err(|e| format!("loading policy: {e}"))?;
-    let Some(material) = raw else {
-        return Ok(());
+        .map_err(|e| format!("loading policy: {e}"))?
+    {
+        Some(material) => serde_json::from_slice::<PolicyDocument>(material.as_ref())
+            .map_err(|e| format!("parsing policy: {e}"))?,
+        None => PolicyDocument::default(),
     };
-    let doc: PolicyDocument =
-        serde_json::from_slice(material.as_ref()).map_err(|e| format!("parsing policy: {e}"))?;
     let Some(permission) = doc
         .permissions
         .iter()
@@ -1284,14 +1285,14 @@ fn runtime_prefix_gate(
         // itself. Bare `<resource_id>` listings are still gated.
         _ => prefix,
     };
-    let raw = store
+    let doc = match store
         .read(POLICY_DOCUMENT_SECRET_ID)
-        .map_err(|e| format!("loading policy: {e}"))?;
-    let Some(material) = raw else {
-        return Ok(());
+        .map_err(|e| format!("loading policy: {e}"))?
+    {
+        Some(material) => serde_json::from_slice::<PolicyDocument>(material.as_ref())
+            .map_err(|e| format!("parsing policy: {e}"))?,
+        None => PolicyDocument::default(),
     };
-    let doc: PolicyDocument =
-        serde_json::from_slice(material.as_ref()).map_err(|e| format!("parsing policy: {e}"))?;
     let Some(permission) = doc
         .permissions
         .iter()
@@ -1778,6 +1779,7 @@ fn apply_runtime_wrapper_register(
     now_epoch: u64,
 ) -> Result<underwrap_protocol::service::ServiceWrapperRegisterResponse> {
     use underwrap_protocol::entities::{EntityCreator, ResourceRecord, WrapperResourcePairRecord};
+    use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
     use underwrap_protocol::service::{
         ServiceWrapperRegisterReject, ServiceWrapperRegisterResponse, ServiceWrapperResourcePair,
     };
@@ -1837,7 +1839,53 @@ fn apply_runtime_wrapper_register(
         .cloned()
         .collect();
 
+    // Auto-seed a `Locked` permission for every incoming
+    // `(client_instance, wrapper, resource_id)` whose resource id is
+    // already resolved (i.e. the resource exists or is about to be
+    // created on this call). This makes "default = locked" a backend
+    // invariant: a freshly-registered daemon's wrappers show up in the
+    // admin SPA as locked rows, and reads/writes deny until an
+    // operator unlocks them explicitly. Idempotent on re-register.
+    //
+    // We compute the seed list now but only persist it on the
+    // committing branches below — the refusal branch leaves the store
+    // untouched.
+    let seed_locked_permissions = |policy: &mut PolicyDocument,
+                                   resolved: &std::collections::HashMap<String, String>|
+     -> bool {
+        let mut dirty = false;
+        for incoming in &request.pairs {
+            let Some(rid) = resolved.get(&incoming.resource) else {
+                continue;
+            };
+            let already = policy.permissions.iter().any(|p| {
+                p.client_instance == client_instance_id
+                    && p.wrapper == incoming.wrapper
+                    && p.resource_id == *rid
+            });
+            if !already {
+                policy.permissions.push(WrapperPermission {
+                    client_instance: client_instance_id.to_string(),
+                    wrapper: incoming.wrapper.clone(),
+                    resource_id: rid.clone(),
+                    mode: WrapperApprovalMode::Locked,
+                    writable: false,
+                    reason: None,
+                });
+                dirty = true;
+            }
+        }
+        dirty
+    };
+
     if missing_resources_set.is_empty() && missing_pairs.is_empty() && !refreshed {
+        // Even the no-op fast path may need to seed Locked permissions
+        // for a new `client_instance` re-using pairs that an earlier
+        // instance already created.
+        let mut policy = load_policy_document_or_default(store)?;
+        if seed_locked_permissions(&mut policy, &resolved_resource_ids) {
+            save_policy_document(store, &policy)?;
+        }
         return Ok(ServiceWrapperRegisterResponse {
             resolved_resource_ids,
             ..Default::default()
@@ -1895,11 +1943,17 @@ fn apply_runtime_wrapper_register(
         created_pairs.push(pair.clone());
     }
 
+    let mut policy = load_policy_document_or_default(store)?;
+    let policy_dirty = seed_locked_permissions(&mut policy, &resolved_resource_ids);
+
     if !created_resources.is_empty() {
         save_resources_document(store, &resources)?;
     }
     if !created_pairs.is_empty() || refreshed {
         save_pairs_document(store, &pairs)?;
+    }
+    if policy_dirty {
+        save_policy_document(store, &policy)?;
     }
 
     Ok(ServiceWrapperRegisterResponse {
@@ -6884,6 +6938,176 @@ mod tests {
         assert_eq!(
             resources.resources[0].created_at, 10,
             "provenance untouched"
+        );
+    }
+
+    #[test]
+    fn runtime_register_seeds_locked_permissions_by_default() {
+        use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
+        use underwrap_protocol::service::{
+            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
+        };
+
+        let store = TestStore::new();
+        // A fresh register call creates the resource, the pair, and
+        // seeds one `Locked` wrapper permission per incoming pair.
+        let resp = apply_runtime_wrapper_register(
+            &store,
+            "inst_a",
+            true,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![
+                    ServiceWrapperResourcePair {
+                        wrapper: "gh".into(),
+                        resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
+                    },
+                    ServiceWrapperResourcePair {
+                        wrapper: "tf".into(),
+                        resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
+                    },
+                ],
+            },
+            42,
+        )
+        .unwrap();
+        assert!(resp.rejected.is_none());
+        let rid = resp.resolved_resource_ids["github/token"].clone();
+
+        let policy = load_policy_document_or_default(&store).unwrap();
+        assert_eq!(policy.permissions.len(), 2);
+        for perm in &policy.permissions {
+            assert_eq!(perm.client_instance, "inst_a");
+            assert_eq!(perm.resource_id, rid);
+            assert!(matches!(perm.mode, WrapperApprovalMode::Locked));
+            assert!(!perm.writable, "default must be read-only too");
+            assert!(perm.reason.is_none());
+        }
+        let mut wrappers: Vec<&str> = policy
+            .permissions
+            .iter()
+            .map(|p| p.wrapper.as_str())
+            .collect();
+        wrappers.sort();
+        assert_eq!(wrappers, vec!["gh", "tf"]);
+
+        // Re-registering the same set is idempotent: no duplicate
+        // permission rows, and a prior operator unlock survives.
+        save_policy_document(
+            &store,
+            &PolicyDocument {
+                permissions: vec![
+                    WrapperPermission {
+                        client_instance: "inst_a".into(),
+                        wrapper: "gh".into(),
+                        resource_id: rid.clone(),
+                        mode: WrapperApprovalMode::Unlocked,
+                        writable: true,
+                        reason: Some("unlocked by operator".into()),
+                    },
+                    WrapperPermission {
+                        client_instance: "inst_a".into(),
+                        wrapper: "tf".into(),
+                        resource_id: rid.clone(),
+                        mode: WrapperApprovalMode::Locked,
+                        writable: false,
+                        reason: None,
+                    },
+                ],
+            },
+        )
+        .unwrap();
+
+        apply_runtime_wrapper_register(
+            &store,
+            "inst_a",
+            true,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![
+                    ServiceWrapperResourcePair {
+                        wrapper: "gh".into(),
+                        resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
+                    },
+                    ServiceWrapperResourcePair {
+                        wrapper: "tf".into(),
+                        resource: "github/token".into(),
+                        files_mount_paths: Vec::new(),
+                    },
+                ],
+            },
+            99,
+        )
+        .unwrap();
+        let after = load_policy_document_or_default(&store).unwrap();
+        assert_eq!(after.permissions.len(), 2, "no duplicates on re-register");
+        let gh = after
+            .permissions
+            .iter()
+            .find(|p| p.wrapper == "gh")
+            .unwrap();
+        assert!(
+            matches!(gh.mode, WrapperApprovalMode::Unlocked),
+            "operator unlock survives re-register"
+        );
+        assert!(gh.writable);
+        assert_eq!(gh.reason.as_deref(), Some("unlocked by operator"));
+
+        // A second client_instance registering the same (already
+        // existing) pair gets its own Locked permission seeded — the
+        // pair exists, but `inst_b` had no grant for it.
+        apply_runtime_wrapper_register(
+            &store,
+            "inst_b",
+            true,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![ServiceWrapperResourcePair {
+                    wrapper: "gh".into(),
+                    resource: "github/token".into(),
+                    files_mount_paths: Vec::new(),
+                }],
+            },
+            100,
+        )
+        .unwrap();
+        let cross = load_policy_document_or_default(&store).unwrap();
+        let inst_b_perm = cross
+            .permissions
+            .iter()
+            .find(|p| p.client_instance == "inst_b" && p.wrapper == "gh")
+            .expect("inst_b should get its own locked permission");
+        assert!(matches!(inst_b_perm.mode, WrapperApprovalMode::Locked));
+        assert!(!inst_b_perm.writable);
+    }
+
+    #[test]
+    fn runtime_register_refusal_does_not_seed_permissions() {
+        use underwrap_protocol::service::{
+            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
+        };
+
+        let store = TestStore::new();
+        let resp = apply_runtime_wrapper_register(
+            &store,
+            "inst_a",
+            false,
+            &ServiceWrapperRegisterRequest {
+                pairs: vec![ServiceWrapperResourcePair {
+                    wrapper: "gh".into(),
+                    resource: "github/token".into(),
+                    files_mount_paths: Vec::new(),
+                }],
+            },
+            10,
+        )
+        .unwrap();
+        assert!(resp.rejected.is_some());
+        // Refusal leaves every document untouched, including the
+        // policy document.
+        assert!(
+            store.read(POLICY_DOCUMENT_SECRET_ID).unwrap().is_none(),
+            "refusal path must not write a policy document"
         );
     }
 

@@ -239,12 +239,21 @@ mod tests {
     }
 
     #[test]
-    fn process_read_for_returns_env_and_binding_when_no_policy() {
+    fn process_read_for_returns_env_and_binding_when_permission_unlocked() {
         let store: Arc<dyn underwrap_store::StorageBackend> =
-            Arc::new(MemStore::with_entries(&[(
-                "github/token/env/GH_TOKEN",
-                b"ghp_test",
-            )]));
+            Arc::new(MemStore::with_entries_and_policy(
+                &[("github/token/env/GH_TOKEN", b"ghp_test")],
+                PolicyDocument {
+                    permissions: vec![WrapperPermission {
+                        client_instance: "dev-laptop".into(),
+                        wrapper: "gh-authorized".into(),
+                        resource_id: "github/token".into(),
+                        mode: WrapperApprovalMode::Unlocked,
+                        writable: false,
+                        reason: None,
+                    }],
+                },
+            ));
         let state = state_with_store(store);
         let result = process_read_for("gh-authorized", None, &state, current_uid(), true);
         match result.response {
@@ -315,10 +324,19 @@ mod tests {
     #[test]
     fn invalid_backend_env_name_fails_closed() {
         let store: Arc<dyn underwrap_store::StorageBackend> =
-            Arc::new(MemStore::with_entries(&[(
-                "github/token/env/LD_PRELOAD",
-                b"evil",
-            )]));
+            Arc::new(MemStore::with_entries_and_policy(
+                &[("github/token/env/LD_PRELOAD", b"evil")],
+                PolicyDocument {
+                    permissions: vec![WrapperPermission {
+                        client_instance: "dev-laptop".into(),
+                        wrapper: "gh-authorized".into(),
+                        resource_id: "github/token".into(),
+                        mode: WrapperApprovalMode::Unlocked,
+                        writable: false,
+                        reason: None,
+                    }],
+                },
+            ));
         let state = state_with_store(store);
         let result = process_read_for("gh-authorized", None, &state, current_uid(), true);
         match result.response {

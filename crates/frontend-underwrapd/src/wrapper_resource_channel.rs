@@ -343,6 +343,24 @@ mod tests {
         }
     }
 
+    /// Build a policy document with one writable, unlocked permission
+    /// for the canonical test tuple `(dev-laptop, wrapper, github/token)`.
+    /// The deny-by-default gate requires every reachable test scenario
+    /// to declare its permission explicitly.
+    fn writable_policy() -> underwrap_protocol::policy::PolicyDocument {
+        use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
+        PolicyDocument {
+            permissions: vec![WrapperPermission {
+                client_instance: "dev-laptop".into(),
+                wrapper: "wrapper".into(),
+                resource_id: "github/token".into(),
+                mode: WrapperApprovalMode::Unlocked,
+                writable: true,
+                reason: None,
+            }],
+        }
+    }
+
     #[test]
     fn checkout_returns_canonical_bytes_and_writability() {
         let store = MemStore::with_entries(&[("github/token/env/GH_TOKEN", b"ghp_old")]);
@@ -384,7 +402,7 @@ mod tests {
 
     #[test]
     fn checkin_persists_canonical_blob_when_writable() {
-        let store = MemStore::with_entries(&[]);
+        let store = MemStore::with_entries_and_policy(&[], writable_policy());
         let mut blob = ResourceBlob::empty();
         blob.env
             .insert("GH_TOKEN".into(), SecretBytes::from("ghp_new"));
@@ -449,7 +467,7 @@ mod tests {
 
     #[test]
     fn checkin_rejects_non_canonical_bytes() {
-        let store = MemStore::with_entries(&[]);
+        let store = MemStore::with_entries_and_policy(&[], writable_policy());
         // Hand-crafted JSON with keys in non-canonical order — same
         // shape as the admin PUT noncanonical-blob test.
         let noncanonical =
@@ -472,7 +490,7 @@ mod tests {
 
     #[test]
     fn checkin_rejects_undecodable_bytes() {
-        let store = MemStore::with_entries(&[]);
+        let store = MemStore::with_entries_and_policy(&[], writable_policy());
         let resp = handle_checkin(
             b"not json".to_vec(),
             &store,
@@ -493,7 +511,7 @@ mod tests {
         // for an otherwise valid ResourceBlob carrying an unsupported
         // schema version. ResourceBlob::from_canonical_bytes refuses
         // unknown versions, so the channel surfaces InvalidRequest.
-        let store = MemStore::with_entries(&[]);
+        let store = MemStore::with_entries_and_policy(&[], writable_policy());
         let bytes =
             br#"{"env":{},"files":{},"libsecret":{"aliases":{},"collections":{}},"schema_version":999}"#
                 .to_vec();

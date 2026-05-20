@@ -21,6 +21,17 @@ async fn read_before_store_returns_empty_env() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
 
+    // Daemon registration seeds a `Locked` permission for every
+    // wrapper-resource pair; unlock it so the test can exercise the
+    // read path on a resource that has never been written.
+    daemon
+        .upsert_permission(
+            "test",
+            &daemon.current_permission("gh-authorized", "github/token"),
+        )
+        .await
+        .unwrap();
+
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     match resp {
         WrapperResponse::ReadOk { env, .. } => assert!(env.is_empty()),

@@ -10,6 +10,12 @@
 //!   serve proceeds;
 //! - otherwise the invocation proceeds and the daemon serves the
 //!   wrapper's resource.
+//!
+//! An absent policy document is treated identically to an empty one
+//! (deny-by-default). The backend's wrapper-register handler seeds a
+//! `Locked` permission for every new `(client_instance, wrapper,
+//! resource)` pair, so a freshly-bootstrapped store also denies until
+//! an operator unlocks each pair explicitly.
 
 use anyhow::{Context, Result};
 use underwrap_protocol::policy::{
@@ -46,13 +52,15 @@ pub(crate) fn evaluate_invocation(
     wrapper: &str,
     resource: &str,
 ) -> InvocationDecision {
-    // No document persisted yet — fresh store, greenfield permissive
-    // default so a new install works out of the box. An *explicit*
-    // empty document (operator wrote one with `permissions: []`) is a
-    // commitment to manage access and is strict — the resource must
-    // have its own permission before reads succeed.
+    // Deny-by-default: an absent policy document is treated like an
+    // empty one. The backend's wrapper-register handler seeds a
+    // `Locked` permission for every new `(client_instance, wrapper,
+    // resource)` pair, so a missing document at this layer always
+    // means "no permission has been granted yet".
     let Some(doc) = document else {
-        return InvocationDecision::Allow;
+        return InvocationDecision::Deny {
+            reason: format!("no permission for ({client_instance}, '{wrapper}', '{resource}')"),
+        };
     };
 
     let Some(permission) = doc.find_permission(client_instance, wrapper, resource) else {
@@ -89,39 +97,37 @@ pub(crate) fn evaluate_invocation_after_approval(
     wrapper: &str,
     resource: &str,
 ) -> InvocationDecision {
+    let revoked = || InvocationDecision::Deny {
+        reason: format!(
+            "permission for ({client_instance}, '{wrapper}', '{resource}') was revoked"
+        ),
+    };
     let Some(doc) = document else {
-        return InvocationDecision::Allow;
+        return revoked();
     };
     if doc
         .find_permission(client_instance, wrapper, resource)
         .is_none()
     {
-        return InvocationDecision::Deny {
-            reason: format!(
-                "permission for ({client_instance}, '{wrapper}', '{resource}') was revoked"
-            ),
-        };
+        return revoked();
     }
     InvocationDecision::Allow
 }
 
 /// Whether the wrapper may write through the resource channel for
 /// `(client_instance, wrapper, resource)`. Returns `false` when no
-/// permission exists; defaults to `true` only when the whole policy
-/// document is absent (fresh store, greenfield permissive default).
+/// permission exists or when the policy document itself is absent —
+/// writes follow the same deny-by-default rule as reads.
 pub(crate) fn writable_for(
     document: Option<&PolicyDocument>,
     client_instance: &str,
     wrapper: &str,
     resource: &str,
 ) -> bool {
-    match document {
-        None => true,
-        Some(doc) => doc
-            .find_permission(client_instance, wrapper, resource)
-            .map(|p: &WrapperPermission| p.writable)
-            .unwrap_or(false),
-    }
+    document
+        .and_then(|doc| doc.find_permission(client_instance, wrapper, resource))
+        .map(|p: &WrapperPermission| p.writable)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -146,11 +152,20 @@ mod tests {
     }
 
     #[test]
-    fn no_document_is_permissive() {
-        assert_eq!(
-            evaluate_invocation(None, "dev", "gh", "github/token"),
-            InvocationDecision::Allow,
-        );
+    fn no_document_denies_by_default() {
+        match evaluate_invocation(None, "dev", "gh", "github/token") {
+            InvocationDecision::Deny { reason } => assert!(reason.contains("no permission")),
+            other => panic!("expected Deny, got {other:?}"),
+        }
+        assert!(!writable_for(None, "dev", "gh", "github/token"));
+    }
+
+    #[test]
+    fn no_document_after_approval_denies() {
+        match evaluate_invocation_after_approval(None, "dev", "gh", "github/token") {
+            InvocationDecision::Deny { reason } => assert!(reason.contains("revoked")),
+            other => panic!("expected Deny, got {other:?}"),
+        }
     }
 
     #[test]

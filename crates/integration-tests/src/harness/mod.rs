@@ -299,10 +299,10 @@ impl TestDaemon {
 
     /// Write a secret through the backend admin API.
     ///
-    /// Tests typically run against a fresh store with no policy document, so
-    /// the admin write gate auto-allows. The `wrapper` parameter is required
-    /// by the request shape but is only consulted when a policy document
-    /// exists; pass any wrapper name from the test fixture.
+    /// The admin write path is gated by operator session auth, not by
+    /// the wrapper policy; the `wrapper` argument is here so the helper
+    /// can also seed an `Unlocked` `WrapperPermission` for the read
+    /// flow under test (the daemon-side gate is deny-by-default).
     pub async fn store_secret(
         &self,
         store: &str,

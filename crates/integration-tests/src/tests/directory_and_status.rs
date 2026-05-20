@@ -84,6 +84,12 @@ async fn directory_binding_is_returned_on_read() {
     wrappers.insert("dir-w".to_string(), wrapper_def);
 
     let daemon = TestDaemon::start(wrappers).await.unwrap();
+    // Daemon registration seeds a `Locked` permission; unlock it so
+    // the read flow can be exercised against the empty resource.
+    daemon
+        .upsert_permission("test", &daemon.current_permission("dir-w", "gws/state"))
+        .await
+        .unwrap();
     let resp = daemon.read_request("dir-w").await.unwrap();
     match resp {
         WrapperResponse::ReadOk {
