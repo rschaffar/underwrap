@@ -102,9 +102,10 @@ let
     runtimeConfig = {
       backend = {
         url = inst.backend.url;
-        ca_file = inst.backend.caFile;
         client_cert_file = clientCertPath;
         client_key_file = clientKeyPath;
+      } // lib.optionalAttrs (inst.backend.caFile != null) {
+        ca_file = inst.backend.caFile;
       };
       wrappers = lib.mapAttrs' (name: w:
         lib.nameValuePair (fullWrapperName name) {
@@ -354,8 +355,14 @@ let
         description = "Backend service URL, e.g. https://backend.example.internal:8443.";
       };
       caFile = lib.mkOption {
-        type = lib.types.either lib.types.path lib.types.str;
-        description = "CA certificate file used to verify the backend service certificate.";
+        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+        default = null;
+        description = ''
+          CA certificate file used to verify the backend service
+          certificate. Leave as `null` when the backend uses a
+          publicly-trusted (WebPKI) certificate; the system root
+          store will be used in that case.
+        '';
       };
     };
   };

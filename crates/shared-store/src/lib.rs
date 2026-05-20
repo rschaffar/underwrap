@@ -146,16 +146,16 @@ mod tests {
     }
 
     #[test]
-    fn open_backend_client_rejects_missing_service_tls_settings() {
+    fn open_backend_client_rejects_missing_client_identity() {
         let err = match open_backend_client(&BackendServiceConfig {
             url: "https://backend.example.internal".to_string(),
             ca_file: None,
             client_cert_file: None,
             client_key_file: None,
         }) {
-            Ok(_) => panic!("expected open to fail without TLS material"),
+            Ok(_) => panic!("expected open to fail without client identity"),
             Err(err) => err,
         };
-        assert!(err.to_string().contains("ca_file"));
+        assert!(err.to_string().contains("client_cert_file"));
     }
 }

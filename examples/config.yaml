@@ -10,6 +10,9 @@
 
 backend:
   url: https://backend.example.internal:8443
+  # ca_file is optional. Set it when the backend uses an internal CA
+  # (the common case). Omit it if the backend serves a publicly-trusted
+  # (WebPKI) certificate — the system root store will be used.
   ca_file: /etc/underwrap/backend-ca.pem
   client_cert_file: /var/lib/underwrap/client.pem
   client_key_file: /var/lib/underwrap/client.key

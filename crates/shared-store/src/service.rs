@@ -58,10 +58,6 @@ pub struct ServiceBackend {
 impl ServiceBackend {
     pub fn open(config: &BackendServiceConfig) -> Result<Self> {
         let base_url = config.url.clone();
-        let ca_path = config
-            .ca_file
-            .as_ref()
-            .context("backend requires ca_file")?;
         let cert_path = config
             .client_cert_file
             .as_ref()
@@ -71,8 +67,6 @@ impl ServiceBackend {
             .as_ref()
             .context("backend requires client_key_file")?;
 
-        let ca_pem = fs::read(ca_path)
-            .with_context(|| format!("reading backend ca file {}", ca_path.display()))?;
         let cert_pem = fs::read(cert_path)
             .with_context(|| format!("reading backend client cert file {}", cert_path.display()))?;
         let key_pem = fs::read(key_path)
@@ -81,12 +75,17 @@ impl ServiceBackend {
         identity_pem.extend_from_slice(&key_pem);
 
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .use_rustls_tls()
-            .add_root_certificate(Certificate::from_pem(&ca_pem).context("parsing backend CA PEM")?)
-            .identity(Identity::from_pem(&identity_pem).context("parsing backend identity PEM")?)
-            .build()
-            .context("building backend HTTPS client")?;
+            .identity(Identity::from_pem(&identity_pem).context("parsing backend identity PEM")?);
+        if let Some(ca_path) = config.ca_file.as_ref() {
+            let ca_pem = fs::read(ca_path)
+                .with_context(|| format!("reading backend ca file {}", ca_path.display()))?;
+            builder = builder.add_root_certificate(
+                Certificate::from_pem(&ca_pem).context("parsing backend CA PEM")?,
+            );
+        }
+        let client = builder.build().context("building backend HTTPS client")?;
 
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {

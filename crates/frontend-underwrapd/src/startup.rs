@@ -44,10 +44,6 @@ pub(crate) fn resolve_group_gid(name: &str) -> Result<u32> {
 pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
     anyhow::ensure!(!config.backend.url.is_empty(), "backend.url must be set");
     anyhow::ensure!(
-        config.backend.ca_file.is_some(),
-        "backend.ca_file is required"
-    );
-    anyhow::ensure!(
         config.backend.client_cert_file.is_some() == config.backend.client_key_file.is_some(),
         "backend.client_cert_file and backend.client_key_file must either both be set or both be omitted"
     );
