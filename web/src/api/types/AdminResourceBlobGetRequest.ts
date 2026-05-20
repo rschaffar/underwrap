@@ -3,4 +3,4 @@
 /**
  * Request whole-blob get/put for a resource.
  */
-export type AdminResourceBlobGetRequest = { store: string, name: string, };
+export type AdminResourceBlobGetRequest = { store: string, id: string, };

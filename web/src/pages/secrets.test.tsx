@@ -64,10 +64,10 @@ describe("SecretsPage", () => {
     vi.mocked(fetchStores).mockResolvedValue(storesList);
     vi.mocked(postSecretList).mockResolvedValue({
       entries: [
-        { resource: "github/token", slot: "env", key: "GH_TOKEN" },
-        { resource: "github/token", slot: "env", key: "GH_USERNAME" },
-        { resource: "github/gh", slot: "libsecret", key: "credential" },
-        { resource: "aws/access-key", slot: "env", key: "AWS_KEY" },
+        { resource_id: "github/token", slot: "env", key: "GH_TOKEN" },
+        { resource_id: "github/token", slot: "env", key: "GH_USERNAME" },
+        { resource_id: "github/gh", slot: "libsecret", key: "credential" },
+        { resource_id: "aws/access-key", slot: "env", key: "AWS_KEY" },
       ],
     });
     renderWithQuery(<SecretsPage principal={null} />);
@@ -102,6 +102,7 @@ describe("SecretsPage", () => {
     vi.mocked(postResourcesList).mockResolvedValue({
       resources: [
         {
+          id: "res_gh",
           name: "github/gh",
           created_by: { kind: "operator", id: "op-1", username: "alice" },
           created_at: 1_700_000_000n,
@@ -119,13 +120,13 @@ describe("SecretsPage", () => {
       />,
     );
 
-    const block = await screen.findByTestId("resource-block-github/gh");
+    const block = await screen.findByTestId("resource-block-res_gh");
     expect(block).toBeInTheDocument();
     expect(within(block).getByTestId("slot-libsecret")).toHaveTextContent(
       /none/i,
     );
     expect(
-      within(block).getByTestId("resource-provenance-github/gh"),
+      within(block).getByTestId("resource-provenance-res_gh"),
     ).toHaveTextContent(/by alice/i);
   });
 
@@ -135,6 +136,7 @@ describe("SecretsPage", () => {
     vi.mocked(postResourcesList).mockResolvedValue({
       resources: [
         {
+          id: "res_auto",
           name: "auto/created",
           created_by: { kind: "client-instance", id: "inst_abc123" },
           created_at: 1_700_000_000n,
@@ -165,7 +167,7 @@ describe("SecretsPage", () => {
     renderWithQuery(<SecretsPage principal={null} />);
 
     const provenance = await screen.findByTestId(
-      "resource-provenance-auto/created",
+      "resource-provenance-res_auto",
     );
     expect(provenance.textContent).toMatch(/shame01/);
     expect(provenance.textContent).not.toMatch(/inst_abc123/);
@@ -175,18 +177,18 @@ describe("SecretsPage", () => {
 describe("groupSecretEntries", () => {
   it("buckets by resource and sorts each slot by key", () => {
     const groups = groupSecretEntries([
-      { resource: "github/token", slot: "env", key: "GH_USERNAME" },
-      { resource: "github/token", slot: "env", key: "GH_TOKEN" },
-      { resource: "github/token", slot: "files", key: "config.json" },
-      { resource: "github/gh", slot: "libsecret", key: "credential" },
-      { resource: "aws/access-key", slot: "env", key: "AWS_KEY" },
+      { resource_id: "github/token", slot: "env", key: "GH_USERNAME" },
+      { resource_id: "github/token", slot: "env", key: "GH_TOKEN" },
+      { resource_id: "github/token", slot: "files", key: "config.json" },
+      { resource_id: "github/gh", slot: "libsecret", key: "credential" },
+      { resource_id: "aws/access-key", slot: "env", key: "AWS_KEY" },
     ]);
-    expect(groups.map((r) => r.resource)).toEqual([
+    expect(groups.map((r) => r.resource_id)).toEqual([
       "aws/access-key",
       "github/gh",
       "github/token",
     ]);
-    const token = groups.find((r) => r.resource === "github/token")!;
+    const token = groups.find((r) => r.resource_id === "github/token")!;
     expect(token.env.map((e) => e.key)).toEqual(["GH_TOKEN", "GH_USERNAME"]);
     expect(token.files.map((e) => e.key)).toEqual(["config.json"]);
     expect(token.libsecret).toEqual([]);

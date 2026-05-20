@@ -343,7 +343,7 @@ impl TestDaemon {
             .admin_request(reqwest::Method::POST, "/v1/admin/secret/write")
             .json(&underwrap_protocol::service::AdminSecretWriteRequest {
                 store: store.to_string(),
-                resource: resource_id.to_string(),
+                resource_id: resource_id.to_string(),
                 slot: underwrap_protocol::resource::ResourceSlot::Env,
                 key: FIXTURE_ENV_KEY.into(),
                 material_b64: base64::engine::general_purpose::STANDARD.encode(material.as_bytes()),
@@ -497,13 +497,13 @@ impl TestDaemon {
     pub async fn delete_resource(
         &self,
         store: &str,
-        name: &str,
+        id: &str,
     ) -> Result<underwrap_protocol::service::AdminResourceDeleteResponse> {
         let response = self
             .admin_request(reqwest::Method::POST, "/v1/admin/resources/delete")
             .json(&underwrap_protocol::service::AdminResourceDeleteRequest {
                 store: store.to_string(),
-                name: name.to_string(),
+                id: id.to_string(),
             })
             .send()
             .await?;
@@ -519,13 +519,13 @@ impl TestDaemon {
     pub async fn get_resource_blob(
         &self,
         store: &str,
-        name: &str,
+        id: &str,
     ) -> Result<underwrap_protocol::service::AdminResourceBlobGetResponse> {
         let response = self
             .admin_request(reqwest::Method::POST, "/v1/admin/resources/blob/get")
             .json(&underwrap_protocol::service::AdminResourceBlobGetRequest {
                 store: store.to_string(),
-                name: name.to_string(),
+                id: id.to_string(),
             })
             .send()
             .await?;
@@ -541,14 +541,14 @@ impl TestDaemon {
     pub async fn put_resource_blob(
         &self,
         store: &str,
-        name: &str,
+        id: &str,
         blob_b64: &str,
     ) -> Result<reqwest::Response> {
         Ok(self
             .admin_request(reqwest::Method::POST, "/v1/admin/resources/blob/put")
             .json(&underwrap_protocol::service::AdminResourceBlobPutRequest {
                 store: store.to_string(),
-                name: name.to_string(),
+                id: id.to_string(),
                 blob_b64: blob_b64.to_string(),
             })
             .send()
@@ -559,14 +559,14 @@ impl TestDaemon {
         &self,
         store: &str,
         wrapper: &str,
-        resource: &str,
+        resource_id: &str,
     ) -> Result<underwrap_protocol::service::AdminPairCreateResponse> {
         let response = self
             .admin_request(reqwest::Method::POST, "/v1/admin/pairs/create")
             .json(&underwrap_protocol::service::AdminPairCreateRequest {
                 store: store.to_string(),
                 wrapper: wrapper.to_string(),
-                resource: resource.to_string(),
+                resource_id: resource_id.to_string(),
             })
             .send()
             .await?;
@@ -663,7 +663,7 @@ impl TestDaemon {
         store: &str,
         client_instance: &str,
         wrapper: &str,
-        resource: &str,
+        resource_id: &str,
     ) -> Result<()> {
         let response = self
             .admin_request(
@@ -675,7 +675,7 @@ impl TestDaemon {
                     store: store.to_string(),
                     client_instance: client_instance.to_string(),
                     wrapper: wrapper.to_string(),
-                    resource: resource.to_string(),
+                    resource_id: resource_id.to_string(),
                 },
             )
             .send()
@@ -689,13 +689,13 @@ impl TestDaemon {
     }
 
     /// Convenience: build an `Unlocked` wrapper permission for the
-    /// given wrapper + resource on this harness's mTLS-bound client
+    /// given wrapper + resource_id on this harness's mTLS-bound client
     /// instance. Used by almost every read-flow test.
-    pub fn current_permission(&self, wrapper: &str, resource: &str) -> WrapperPermission {
+    pub fn current_permission(&self, wrapper: &str, resource_id: &str) -> WrapperPermission {
         WrapperPermission {
             client_instance: self.client_instance.clone(),
             wrapper: wrapper.to_string(),
-            resource: resource.to_string(),
+            resource_id: resource_id.to_string(),
             mode: underwrap_protocol::policy::WrapperApprovalMode::Unlocked,
             writable: false,
             reason: None,

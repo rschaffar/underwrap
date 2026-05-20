@@ -23,7 +23,7 @@ describe("derivation helpers", () => {
     {
       client_instance: "dev-laptop",
       wrapper: "gh-authorized",
-      resource: "github/token",
+      resource_id: "github/token",
       mode: { kind: "unlocked" } as WrapperApprovalMode,
       writable: false,
       reason: undefined,
@@ -31,7 +31,7 @@ describe("derivation helpers", () => {
     {
       client_instance: "ci-runner",
       wrapper: "aws-prod",
-      resource: "aws/prod",
+      resource_id: "aws/prod",
       mode: { kind: "locked" } as WrapperApprovalMode,
       writable: false,
       reason: undefined,
@@ -41,7 +41,7 @@ describe("derivation helpers", () => {
   const pairs: WrapperResourcePairRecord[] = [
     {
       wrapper: "jira-readonly",
-      resource: "jira/api",
+      resource_id: "jira/api",
       created_by: { kind: "operator", id: "op-1", username: "alice" },
       created_at: 100n,
       last_used_at: null,
@@ -49,7 +49,7 @@ describe("derivation helpers", () => {
     },
     {
       wrapper: "aws-prod",
-      resource: "aws/prod",
+      resource_id: "aws/prod",
       created_by: { kind: "client-instance", id: "ci-runner" },
       created_at: 200n,
       last_used_at: null,
@@ -57,7 +57,7 @@ describe("derivation helpers", () => {
     },
     {
       wrapper: "gh-authorized",
-      resource: "github/token",
+      resource_id: "github/token",
       created_by: { kind: "operator", id: "op-1", username: "alice" },
       created_at: 150n,
       last_used_at: null,
@@ -84,7 +84,7 @@ describe("derivation helpers", () => {
       ...pairs,
       {
         wrapper: "gh-cli",
-        resource: "github/token",
+        resource_id: "github/token",
         created_by: { kind: "operator", id: "op-1", username: "alice" },
         created_at: 175n,
         last_used_at: null,

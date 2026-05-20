@@ -4,11 +4,13 @@ import type { WrapperApprovalMode } from "./WrapperApprovalMode";
 /**
  * One per-store wrapper permission.
  *
- * The tuple `(client_instance, wrapper, resource)` is the unique key;
- * persistence layers MUST reject duplicates with the stable error code
- * `duplicate_permission`.
+ * The tuple `(client_instance, wrapper, resource_id)` is the unique
+ * key; persistence layers MUST reject duplicates with the stable
+ * error code `duplicate_permission`. `resource_id` is the stable
+ * backend id, so renaming a resource preserves every permission
+ * that references it.
  */
-export type WrapperPermission = { client_instance: string, wrapper: string, resource: string, mode: WrapperApprovalMode, 
+export type WrapperPermission = { client_instance: string, wrapper: string, resource_id: string, mode: WrapperApprovalMode, 
 /**
  * Whether the wrapper may write to this resource through the
  * secretsd channel. Applies to the `files` and `libsecret` slots;

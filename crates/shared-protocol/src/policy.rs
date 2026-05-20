@@ -57,15 +57,17 @@ pub enum WrapperApprovalMode {
 
 /// One per-store wrapper permission.
 ///
-/// The tuple `(client_instance, wrapper, resource)` is the unique key;
-/// persistence layers MUST reject duplicates with the stable error code
-/// `duplicate_permission`.
+/// The tuple `(client_instance, wrapper, resource_id)` is the unique
+/// key; persistence layers MUST reject duplicates with the stable
+/// error code `duplicate_permission`. `resource_id` is the stable
+/// backend id, so renaming a resource preserves every permission
+/// that references it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct WrapperPermission {
     pub client_instance: String,
     pub wrapper: String,
-    pub resource: String,
+    pub resource_id: String,
     #[serde(default)]
     pub mode: WrapperApprovalMode,
     /// Whether the wrapper may write to this resource through the
@@ -101,15 +103,17 @@ pub enum SecretSlot {
 }
 
 impl PolicyDocument {
-    /// Look up the permission for `(client_instance, wrapper, resource)`.
+    /// Look up the permission for `(client_instance, wrapper, resource_id)`.
     pub fn find_permission(
         &self,
         client_instance: &str,
         wrapper: &str,
-        resource: &str,
+        resource_id: &str,
     ) -> Option<&WrapperPermission> {
         self.permissions.iter().find(|p| {
-            p.client_instance == client_instance && p.wrapper == wrapper && p.resource == resource
+            p.client_instance == client_instance
+                && p.wrapper == wrapper
+                && p.resource_id == resource_id
         })
     }
 
@@ -124,10 +128,10 @@ impl PolicyDocument {
         &self,
         client_instance: &str,
         wrapper: &str,
-        resource: &str,
+        resource_id: &str,
         now_epoch: u64,
     ) -> Option<PolicyDecision> {
-        let permission = self.find_permission(client_instance, wrapper, resource)?;
+        let permission = self.find_permission(client_instance, wrapper, resource_id)?;
         Some(decide(permission, now_epoch))
     }
 
@@ -135,9 +139,9 @@ impl PolicyDocument {
         &self,
         client_instance: &str,
         wrapper: &str,
-        resource: &str,
+        resource_id: &str,
     ) -> Option<PolicyDecision> {
-        self.evaluate_permission_at(client_instance, wrapper, resource, now_epoch_secs())
+        self.evaluate_permission_at(client_instance, wrapper, resource_id, now_epoch_secs())
     }
 
     /// After the caller has satisfied a per-call approval round, the mode
@@ -148,17 +152,17 @@ impl PolicyDocument {
         &self,
         client_instance: &str,
         wrapper: &str,
-        resource: &str,
+        resource_id: &str,
     ) -> Option<PolicyDecision> {
-        self.find_permission(client_instance, wrapper, resource)
+        self.find_permission(client_instance, wrapper, resource_id)
             .map(|_| PolicyDecision::Allow)
     }
 
-    /// True when the wrapper is permitted to write to `resource` (any
-    /// slot with a wrapper-side write path). Defaults to `false`
+    /// True when the wrapper is permitted to write to `resource_id`
+    /// (any slot with a wrapper-side write path). Defaults to `false`
     /// (no permission → not writable).
-    pub fn writable_for(&self, client_instance: &str, wrapper: &str, resource: &str) -> bool {
-        self.find_permission(client_instance, wrapper, resource)
+    pub fn writable_for(&self, client_instance: &str, wrapper: &str, resource_id: &str) -> bool {
+        self.find_permission(client_instance, wrapper, resource_id)
             .map(|p| p.writable)
             .unwrap_or(false)
     }
@@ -178,7 +182,7 @@ fn decide(permission: &WrapperPermission, now_epoch: u64) -> PolicyDecision {
                 PolicyDecision::Deny {
                     reason: format!(
                         "permission for '{}'/'{}' expired at epoch {until_epoch}, now {now_epoch}",
-                        permission.wrapper, permission.resource
+                        permission.wrapper, permission.resource_id
                     ),
                 }
             } else {
@@ -207,7 +211,7 @@ mod tests {
             permissions: vec![WrapperPermission {
                 client_instance: "dev-laptop".to_string(),
                 wrapper: "gh-comment".to_string(),
-                resource: "github/token".to_string(),
+                resource_id: "res_token".to_string(),
                 mode,
                 writable: false,
                 reason: None,
@@ -226,7 +230,7 @@ mod tests {
         let mut doc = doc_with_permission(WrapperApprovalMode::Locked);
         doc.permissions[0].reason = Some("revoked".into());
         match doc
-            .evaluate_permission_at("dev-laptop", "gh-comment", "github/token", 100)
+            .evaluate_permission_at("dev-laptop", "gh-comment", "res_token", 100)
             .unwrap()
         {
             PolicyDecision::Deny { reason } => assert_eq!(reason, "revoked"),
@@ -238,7 +242,7 @@ mod tests {
     fn unlocked_permission_allows() {
         let doc = doc_with_permission(WrapperApprovalMode::Unlocked);
         assert_eq!(
-            doc.evaluate_permission_at("dev-laptop", "gh-comment", "github/token", 100)
+            doc.evaluate_permission_at("dev-laptop", "gh-comment", "res_token", 100)
                 .unwrap(),
             PolicyDecision::Allow,
         );
@@ -248,12 +252,12 @@ mod tests {
     fn unlocked_until_permission_allows_then_denies_lazily() {
         let doc = doc_with_permission(WrapperApprovalMode::UnlockedUntil { until_epoch: 200 });
         assert_eq!(
-            doc.evaluate_permission_at("dev-laptop", "gh-comment", "github/token", 199)
+            doc.evaluate_permission_at("dev-laptop", "gh-comment", "res_token", 199)
                 .unwrap(),
             PolicyDecision::Allow,
         );
         assert!(matches!(
-            doc.evaluate_permission_at("dev-laptop", "gh-comment", "github/token", 201)
+            doc.evaluate_permission_at("dev-laptop", "gh-comment", "res_token", 201)
                 .unwrap(),
             PolicyDecision::Deny { .. }
         ));
@@ -265,7 +269,7 @@ mod tests {
             approval_key: "ssh-ed25519 AAAA".into(),
         });
         match doc
-            .evaluate_permission_at("dev-laptop", "gh-comment", "github/token", 100)
+            .evaluate_permission_at("dev-laptop", "gh-comment", "res_token", 100)
             .unwrap()
         {
             PolicyDecision::NeedsApproval { approval_key } => {
@@ -281,14 +285,14 @@ mod tests {
             approval_key: "k".into(),
         });
         assert_eq!(
-            doc.evaluate_permission_after_approval("dev-laptop", "gh-comment", "github/token")
+            doc.evaluate_permission_after_approval("dev-laptop", "gh-comment", "res_token")
                 .unwrap(),
             PolicyDecision::Allow,
         );
         let empty = PolicyDocument::default();
         assert!(
             empty
-                .evaluate_permission_after_approval("dev-laptop", "gh-comment", "github/token")
+                .evaluate_permission_after_approval("dev-laptop", "gh-comment", "res_token")
                 .is_none()
         );
     }
@@ -302,9 +306,9 @@ mod tests {
     #[test]
     fn writable_honours_per_permission_flag() {
         let mut doc = doc_with_permission(WrapperApprovalMode::Unlocked);
-        assert!(!doc.writable_for("dev-laptop", "gh-comment", "github/token"));
+        assert!(!doc.writable_for("dev-laptop", "gh-comment", "res_token"));
         doc.permissions[0].writable = true;
-        assert!(doc.writable_for("dev-laptop", "gh-comment", "github/token"));
+        assert!(doc.writable_for("dev-laptop", "gh-comment", "res_token"));
     }
 
     #[test]
@@ -314,7 +318,7 @@ mod tests {
                 WrapperPermission {
                     client_instance: "a".into(),
                     wrapper: "w1".into(),
-                    resource: "r1".into(),
+                    resource_id: "r1".into(),
                     mode: WrapperApprovalMode::Locked,
                     writable: false,
                     reason: Some("r".into()),
@@ -322,7 +326,7 @@ mod tests {
                 WrapperPermission {
                     client_instance: "a".into(),
                     wrapper: "w2".into(),
-                    resource: "r2".into(),
+                    resource_id: "r2".into(),
                     mode: WrapperApprovalMode::UnlockedUntil { until_epoch: 42 },
                     writable: true,
                     reason: None,
@@ -330,7 +334,7 @@ mod tests {
                 WrapperPermission {
                     client_instance: "b".into(),
                     wrapper: "w3".into(),
-                    resource: "r3".into(),
+                    resource_id: "r3".into(),
                     mode: WrapperApprovalMode::PerCallApproval {
                         approval_key: "ssh-ed25519 AAAA".into(),
                     },

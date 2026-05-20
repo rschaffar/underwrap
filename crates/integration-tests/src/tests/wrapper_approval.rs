@@ -179,7 +179,7 @@ async fn per_call_approval_denies_without_matching_grant() {
                 permissions: vec![underwrap_protocol::policy::WrapperPermission {
                     client_instance: "some-other-instance".to_string(),
                     wrapper: "gh-authorized".to_string(),
-                    resource: "github/token".to_string(),
+                    resource_id: "github/token".to_string(),
                     mode: WrapperApprovalMode::PerCallApproval {
                         approval_key: pubkey_openssh,
                     },

@@ -4,4 +4,4 @@ import type { ResourceSlot } from "./ResourceSlot";
 /**
  * One per-slot entry as listed by the admin surface.
  */
-export type AdminSecretEntry = { resource: string, slot: ResourceSlot, key: string, };
+export type AdminSecretEntry = { resource_id: string, slot: ResourceSlot, key: string, };

@@ -63,14 +63,14 @@ export function modeKind(mode: WrapperApprovalMode): ModeKind {
   return mode.kind as ModeKind;
 }
 
-/** A `(wrapper, resource)` pair — one row in the table. */
+/** A `(wrapper, resource_id)` pair — one row in the table. */
 export interface WrapperResource {
   wrapper: string;
-  resource: string;
+  resource_id: string;
 }
 
 export function wrapperResourceKey(wr: WrapperResource): string {
-  return `${wr.wrapper}|${wr.resource}`;
+  return `${wr.wrapper}|${wr.resource_id}`;
 }
 
 /** Format a u64 epoch as a relative time label ("3 min ago"). */
@@ -145,13 +145,13 @@ export function clientInstancesForStore(
   return [...set].sort();
 }
 
-/** Sort pair records into the (wrapper, resource) order the table renders. */
+/** Sort pair records into the (wrapper, resource_id) order the table renders. */
 export function sortPairs(
   pairs: WrapperResourcePairRecord[],
 ): WrapperResourcePairRecord[] {
   return [...pairs].sort((a, b) =>
     a.wrapper === b.wrapper
-      ? a.resource.localeCompare(b.resource)
+      ? a.resource_id.localeCompare(b.resource_id)
       : a.wrapper.localeCompare(b.wrapper),
   );
 }
@@ -166,9 +166,9 @@ export function groupPairsByResource(
 ): { resource: string; pairs: WrapperResourcePairRecord[] }[] {
   const buckets = new Map<string, WrapperResourcePairRecord[]>();
   for (const p of pairs) {
-    const arr = buckets.get(p.resource);
+    const arr = buckets.get(p.resource_id);
     if (arr) arr.push(p);
-    else buckets.set(p.resource, [p]);
+    else buckets.set(p.resource_id, [p]);
   }
   return [...buckets.entries()]
     .map(([resource, group]) => ({
@@ -258,7 +258,7 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
   const permissionIndex = useMemo(() => {
     const map = new Map<string, WrapperPermission>();
     for (const p of permissions.data?.permissions ?? []) {
-      map.set(`${p.client_instance}|${p.wrapper}|${p.resource}`, p);
+      map.set(`${p.client_instance}|${p.wrapper}|${p.resource_id}`, p);
     }
     return map;
   }, [permissions.data]);
@@ -266,7 +266,7 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
   const [editing, setEditing] = useState<{
     clientInstance: string;
     wrapper: string;
-    resource: string;
+    resource_id: string;
     permission: WrapperPermission | null;
   } | null>(null);
   const [rawOpen, setRawOpen] = useState(false);
@@ -379,7 +379,7 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
             setEditing({
               clientInstance,
               wrapper: wr.wrapper,
-              resource: wr.resource,
+              resource_id: wr.resource_id,
               permission,
             })
           }
@@ -395,7 +395,7 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
             displayNameById.get(editing.clientInstance) ?? editing.clientInstance
           }
           wrapper={editing.wrapper}
-          resource={editing.resource}
+          resourceId={editing.resource_id}
           existing={editing.permission}
           canEdit={isAdmin}
           onClose={() => setEditing(null)}
@@ -491,7 +491,7 @@ function ResourceGroupedPairsTable({
             group.pairs.map((pair, indexWithinGroup) => {
               const wr: WrapperResource = {
                 wrapper: pair.wrapper,
-                resource: pair.resource,
+                resource_id: pair.resource_id,
               };
               const provenance = `Created ${formatEpochFull(
                 pair.created_at,
@@ -520,14 +520,14 @@ function ResourceGroupedPairsTable({
                   <td
                     className="px-4 py-3 font-medium text-(--color-fg)"
                     title={provenance}
-                    data-testid={`wrappers-provenance-${pair.wrapper}-${pair.resource}`}
+                    data-testid={`wrappers-provenance-${pair.wrapper}-${pair.resource_id}`}
                   >
                     {pair.wrapper}
                   </td>
                   <td
                     className="px-4 py-3 text-xs text-(--color-muted)"
                     title={`Last used: ${formatEpochFull(pair.last_used_at)}`}
-                    data-testid={`wrappers-last-used-${pair.wrapper}-${pair.resource}`}
+                    data-testid={`wrappers-last-used-${pair.wrapper}-${pair.resource_id}`}
                   >
                     {pair.last_used_at == null ? (
                       <span className="opacity-60">never used</span>
@@ -536,13 +536,13 @@ function ResourceGroupedPairsTable({
                     )}
                   </td>
                   {clientInstances.map((c) => {
-                    const key = `${c}|${pair.wrapper}|${pair.resource}`;
+                    const key = `${c}|${pair.wrapper}|${pair.resource_id}`;
                     const permission = permissionIndex.get(key) ?? null;
                     return (
                       <td key={key} className="px-3 py-3">
                         <button
                           type="button"
-                          data-testid={`wrappers-cell-${pair.wrapper}-${pair.resource}-${c}`}
+                          data-testid={`wrappers-cell-${pair.wrapper}-${pair.resource_id}-${c}`}
                           onClick={() => onCellClick(wr, c, permission)}
                           disabled={!isAdmin}
                           className="min-h-11 min-w-[5rem] rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-1 text-xs hover:bg-(--color-surface-0) disabled:opacity-60"
@@ -558,8 +558,8 @@ function ResourceGroupedPairsTable({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        aria-label={`Delete pair ${pair.wrapper} / ${pair.resource}`}
-                        data-testid={`wrappers-delete-pair-${pair.wrapper}-${pair.resource}`}
+                        aria-label={`Delete pair ${pair.wrapper} / ${pair.resource_id}`}
+                        data-testid={`wrappers-delete-pair-${pair.wrapper}-${pair.resource_id}`}
                         onClick={() => onDeletePair(pair)}
                       >
                         <Trash2 className="h-4 w-4" aria-hidden />
@@ -651,8 +651,11 @@ function CreatePairDialog({
   onCreated: () => void;
 }) {
   const [wrapper, setWrapper] = useState("");
-  const [resource, setResource] = useState<string>(
-    existingResources[0]?.name ?? "",
+  // The selector tracks the backend resource id directly. The label
+  // shown to the operator is resolved from `existingResources` (id →
+  // name).
+  const [resourceId, setResourceId] = useState<string>(
+    existingResources[0]?.id ?? "",
   );
   const [creatingNewResource, setCreatingNewResource] = useState(
     existingResources.length === 0,
@@ -664,11 +667,11 @@ function CreatePairDialog({
     mutationFn: (name: string) => postResourceCreate({ store: storeName, name }),
   });
   const createPair = useMutation({
-    mutationFn: (vars: { wrapper: string; resource: string }) =>
+    mutationFn: (vars: { wrapper: string; resource_id: string }) =>
       postPairCreate({
         store: storeName,
         wrapper: vars.wrapper,
-        resource: vars.resource,
+        resource_id: vars.resource_id,
       }),
   });
 
@@ -679,7 +682,7 @@ function CreatePairDialog({
       setSubmitError("Wrapper name is required.");
       return;
     }
-    let chosenResource = resource;
+    let chosenResourceId = resourceId;
     if (creatingNewResource) {
       const r = newResourceName.trim();
       if (!r) {
@@ -688,26 +691,26 @@ function CreatePairDialog({
       }
       try {
         const created = await createResource.mutateAsync(r);
-        chosenResource = created.resource.name;
+        chosenResourceId = created.resource.id;
       } catch (e) {
         setSubmitError(describeApiError(e));
         return;
       }
     }
-    if (!chosenResource) {
+    if (!chosenResourceId) {
       setSubmitError("Pick or create a resource.");
       return;
     }
     if (
       existingPairs.some(
-        (p) => p.wrapper === w && p.resource === chosenResource,
+        (p) => p.wrapper === w && p.resource_id === chosenResourceId,
       )
     ) {
-      setSubmitError(`Pair (${w}, ${chosenResource}) already exists.`);
+      setSubmitError(`Pair (${w}, ${chosenResourceId}) already exists.`);
       return;
     }
     try {
-      await createPair.mutateAsync({ wrapper: w, resource: chosenResource });
+      await createPair.mutateAsync({ wrapper: w, resource_id: chosenResourceId });
       onCreated();
     } catch (e) {
       setSubmitError(describeApiError(e));
@@ -773,12 +776,12 @@ function CreatePairDialog({
             ) : (
               <select
                 data-testid="pair-resource-select"
-                value={resource}
-                onChange={(e) => setResource(e.target.value)}
+                value={resourceId}
+                onChange={(e) => setResourceId(e.target.value)}
                 className="block w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-2 py-1.5 text-sm text-(--color-fg)"
               >
                 {existingResources.map((r) => (
-                  <option key={r.name} value={r.name}>
+                  <option key={r.id} value={r.id}>
                     {r.name}
                   </option>
                 ))}
@@ -828,7 +831,7 @@ function DeletePairDialog({
       postPairDelete({
         store: storeName,
         wrapper: pair.wrapper,
-        resource: pair.resource,
+        resource_id: pair.resource_id,
       }),
   });
 
@@ -853,7 +856,7 @@ function DeletePairDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            Delete pair: {pair.wrapper} / {pair.resource}
+            Delete pair: {pair.wrapper} / {pair.resource_id}
           </DialogTitle>
           <DialogDescription>
             Removes the wrapper/resource pair record. Any wrapper
@@ -870,7 +873,7 @@ function DeletePairDialog({
             <ul className="mt-1 list-disc pl-5">
               {blockers.sample_permissions.map((p) => (
                 <li
-                  key={`${p.client_instance}|${p.wrapper}|${p.resource}`}
+                  key={`${p.client_instance}|${p.wrapper}|${p.resource_id}`}
                   className="font-mono"
                 >
                   {displayNameById.get(p.client_instance) ?? p.client_instance}
@@ -916,7 +919,7 @@ function EditCellDialog({
   clientInstance,
   clientInstanceDisplayName,
   wrapper,
-  resource,
+  resourceId,
   existing,
   canEdit,
   onClose,
@@ -925,7 +928,7 @@ function EditCellDialog({
   clientInstance: string;
   clientInstanceDisplayName: string;
   wrapper: string;
-  resource: string;
+  resourceId: string;
   existing: WrapperPermission | null;
   canEdit: boolean;
   onClose: () => void;
@@ -960,7 +963,7 @@ function EditCellDialog({
         permission: {
           client_instance: clientInstance,
           wrapper,
-          resource,
+          resource_id: resourceId,
           mode,
           writable,
           reason: reason.trim() === "" ? undefined : reason.trim(),
@@ -978,7 +981,7 @@ function EditCellDialog({
         store: storeName,
         client_instance: clientInstance,
         wrapper,
-        resource,
+        resource_id: resourceId,
       }),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "wrapper-permissions", storeName] });
@@ -1029,7 +1032,7 @@ function EditCellDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {wrapper} / {resource} → {clientInstanceDisplayName}
+            {wrapper} / {resourceId} → {clientInstanceDisplayName}
           </DialogTitle>
           <DialogDescription>
             Set the mode{" "}
@@ -1037,7 +1040,7 @@ function EditCellDialog({
             uses when calling{" "}
             <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{wrapper}</code>{" "}
             for resource{" "}
-            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{resource}</code>
+            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{resourceId}</code>
             . The mode is checked on every read; per-call-approval also requires a
             fresh ssh-agent signature.
           </DialogDescription>

@@ -7,12 +7,13 @@ async fn pair_last_used_is_bumped_on_successful_wrapper_read() {
 
     // Seed the resource and pair via admin so a pair record exists
     // for the backend to bump.
-    daemon
+    let resource_record = daemon
         .create_resource("test", "github/token")
         .await
         .unwrap();
+    let resource_id = resource_record.resource.id.clone();
     daemon
-        .create_pair("test", "gh-authorized", "github/token")
+        .create_pair("test", "gh-authorized", &resource_id)
         .await
         .unwrap();
 
@@ -21,7 +22,7 @@ async fn pair_last_used_is_bumped_on_successful_wrapper_read() {
     let before_pair = before
         .pairs
         .iter()
-        .find(|p| p.wrapper == "gh-authorized" && p.resource == "github/token")
+        .find(|p| p.wrapper == "gh-authorized" && p.resource_id == resource_id)
         .expect("pair seeded above");
     assert!(
         before_pair.last_used_at.is_none(),
@@ -31,7 +32,7 @@ async fn pair_last_used_is_bumped_on_successful_wrapper_read() {
 
     // A successful wrapper read should bump the timestamp.
     daemon
-        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
+        .store_secret("test", "gh-authorized", &resource_id, "ghp_test123")
         .await
         .unwrap();
     let resp = daemon.read_request("gh-authorized").await.unwrap();
@@ -41,7 +42,7 @@ async fn pair_last_used_is_bumped_on_successful_wrapper_read() {
     let after_pair = after
         .pairs
         .iter()
-        .find(|p| p.wrapper == "gh-authorized" && p.resource == "github/token")
+        .find(|p| p.wrapper == "gh-authorized" && p.resource_id == resource_id)
         .expect("pair still present");
     assert!(
         after_pair.last_used_at.is_some(),

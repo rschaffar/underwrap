@@ -1046,14 +1046,14 @@ fn runtime_read_gate(
     if secret_id.starts_with("__underwrap/") {
         return Ok(());
     }
-    let resource_owned: String;
-    let resource: &str = if let Some(rest) = secret_id.strip_prefix("resources/") {
+    let resource_id_owned: String;
+    let resource_id: &str = if let Some(rest) = secret_id.strip_prefix("resources/") {
         rest
     } else if let Some(r) = underwrap_protocol::resource::resource_from_secret_id(secret_id) {
-        resource_owned = r.to_string();
+        resource_id_owned = r.to_string();
         // Storing to a local then re-borrowing keeps the branch types
         // aligned: both branches return `&str`.
-        let _ = &resource_owned;
+        let _ = &resource_id_owned;
         r
     } else {
         return Err(format!(
@@ -1075,43 +1075,47 @@ fn runtime_read_gate(
     let Some(permission) = doc
         .permissions
         .iter()
-        .find(|p| p.client_instance == principal && p.resource == resource)
+        .find(|p| p.client_instance == principal && p.resource_id == resource_id)
     else {
         return Err(format!(
-            "no wrapper permission for ({principal}, *, '{resource}')"
+            "no wrapper permission for ({principal}, *, '{resource_id}')"
         ));
     };
     if write && !permission.writable {
         return Err(format!(
-            "wrapper permission for ({principal}, '{}', '{resource}') is read-only",
+            "wrapper permission for ({principal}, '{}', '{resource_id}') is read-only",
             permission.wrapper
         ));
     }
     // Bump last_used_at on the matched pair. Failure here is
     // non-fatal — it must never block a successful read.
-    if let Err(e) = bump_pair_last_used(store, &permission.wrapper, resource) {
+    if let Err(e) = bump_pair_last_used(store, &permission.wrapper, resource_id) {
         warn!(
             audit = "pair_last_used_bump_failed",
             principal = %principal,
             wrapper = %permission.wrapper,
-            resource = %resource,
+            resource_id = %resource_id,
             err = %e,
         );
     }
     Ok(())
 }
 
-/// Set `last_used_at` on the `(wrapper, resource)` pair to the
+/// Set `last_used_at` on the `(wrapper, resource_id)` pair to the
 /// current wall-clock second. Idempotent at one-second resolution:
 /// the pairs document is only rewritten if the new timestamp differs
 /// from the stored one.
-fn bump_pair_last_used(store: &dyn StorageBackend, wrapper: &str, resource: &str) -> Result<()> {
+fn bump_pair_last_used(
+    store: &dyn StorageBackend,
+    wrapper: &str,
+    resource_id: &str,
+) -> Result<()> {
     let now = crate::operators::now_epoch_secs();
     let mut doc = load_pairs_document(store)?;
     let Some(pair) = doc
         .pairs
         .iter_mut()
-        .find(|p| p.wrapper == wrapper && p.resource == resource)
+        .find(|p| p.wrapper == wrapper && p.resource_id == resource_id)
     else {
         // No pair record means nothing to bump. This can happen if
         // the pair was deleted while a wrapper invocation was in
@@ -1139,17 +1143,17 @@ fn runtime_prefix_gate(
         return Ok(());
     }
     // Strip the trailing `/<slot>` if present so we extract the
-    // resource id even when the prefix is `<resource>/env` (no
+    // resource id even when the prefix is `<resource_id>/env` (no
     // trailing `/`).
-    let resource: &str = match prefix.rsplit_once('/') {
+    let resource_id: &str = match prefix.rsplit_once('/') {
         Some((
             head,
             underwrap_protocol::resource::ENV_SLOT
             | underwrap_protocol::resource::FILES_SLOT
             | underwrap_protocol::resource::LIBSECRET_SLOT,
         )) => head,
-        // Fall back to interpreting the prefix as the resource
-        // itself. Bare `<resource>` listings are still gated.
+        // Fall back to interpreting the prefix as the resource id
+        // itself. Bare `<resource_id>` listings are still gated.
         _ => prefix,
     };
     let raw = store
@@ -1163,15 +1167,15 @@ fn runtime_prefix_gate(
     let Some(permission) = doc
         .permissions
         .iter()
-        .find(|p| p.client_instance == principal && p.resource == resource)
+        .find(|p| p.client_instance == principal && p.resource_id == resource_id)
     else {
         return Err(format!(
-            "no wrapper permission for ({principal}, *, '{resource}')"
+            "no wrapper permission for ({principal}, *, '{resource_id}')"
         ));
     };
     if write && !permission.writable {
         return Err(format!(
-            "wrapper permission for ({principal}, '{}', '{resource}') is read-only",
+            "wrapper permission for ({principal}, '{}', '{resource_id}') is read-only",
             permission.wrapper
         ));
     }
@@ -1290,15 +1294,15 @@ fn list_secret_entries(
                 continue;
             };
             entries.push(AdminSecretEntry {
-                resource: parsed.resource_id.to_string(),
+                resource_id: parsed.resource_id.to_string(),
                 slot: parsed.slot,
                 key: parsed.inner.to_string(),
             });
         }
     }
     entries.sort_by(|a, b| {
-        a.resource
-            .cmp(&b.resource)
+        a.resource_id
+            .cmp(&b.resource_id)
             .then((a.slot as u8).cmp(&(b.slot as u8)))
             .then(a.key.cmp(&b.key))
     });
@@ -1316,27 +1320,27 @@ fn resource_blob_entries(store: &dyn StorageBackend, resource_name: &str) -> Res
     Ok(ids)
 }
 
-/// Validate the structured `(resource, slot, key)` tuple and compose
-/// the in-blob entry id. Centralizes the per-slot key-shape rules so
-/// every admin secret endpoint enforces them identically.
+/// Validate the structured `(resource_id, slot, key)` tuple and
+/// compose the in-blob entry id. Centralizes the per-slot key-shape
+/// rules so every admin secret endpoint enforces them identically.
 #[allow(clippy::result_large_err)]
 fn validate_and_compose_secret_id(
-    resource: &str,
+    resource_id: &str,
     slot: underwrap_protocol::resource::ResourceSlot,
     key: &str,
 ) -> std::result::Result<String, Response<Full<Bytes>>> {
-    if resource.trim().is_empty() {
+    if resource_id.trim().is_empty() {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            "resource must not be empty",
+            "resource_id must not be empty",
         ));
     }
-    if resource.starts_with("__underwrap") {
+    if resource_id.starts_with("__underwrap") {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            "resource names starting with '__underwrap' are reserved",
+            "resource ids starting with '__underwrap' are reserved",
         ));
     }
     if let Err(msg) = underwrap_protocol::resource::validate_secret_key(slot, key) {
@@ -1347,7 +1351,7 @@ fn validate_and_compose_secret_id(
         ));
     }
     Ok(underwrap_protocol::resource::compose_secret_id(
-        resource, slot, key,
+        resource_id, slot, key,
     ))
 }
 
@@ -1356,7 +1360,7 @@ fn handle_admin_secret_write(
     operator: &str,
     body: underwrap_protocol::service::AdminSecretWriteRequest,
 ) -> Response<Full<Bytes>> {
-    let secret_id = match validate_and_compose_secret_id(&body.resource, body.slot, &body.key) {
+    let secret_id = match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key) {
         Ok(id) => id,
         Err(resp) => return resp,
     };
@@ -1541,21 +1545,23 @@ fn apply_runtime_wrapper_register(
     let mut resources = load_resources_document(store)?;
     let mut pairs = load_pairs_document(store)?;
 
-    // Resolve missing resource names first so a single resource named
-    // by several pairs doesn't get reported multiple times.
+    // Build the (incoming resource name) → (resolved resource id) map.
+    // The daemon caches this so subsequent runtime calls speak in ids;
+    // a rename of a resource won't invalidate the cache.
+    let mut resolved_resource_ids: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut missing_resources_set: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     for pair in &request.pairs {
-        if resources.find(&pair.resource).is_none() {
-            missing_resources_set.insert(pair.resource.clone());
+        match resources.find_by_name(&pair.resource) {
+            Some(record) => {
+                resolved_resource_ids.insert(pair.resource.clone(), record.id.clone());
+            }
+            None => {
+                missing_resources_set.insert(pair.resource.clone());
+            }
         }
     }
-    let missing_pairs: Vec<ServiceWrapperResourcePair> = request
-        .pairs
-        .iter()
-        .filter(|p| pairs.find(&p.wrapper, &p.resource).is_none())
-        .cloned()
-        .collect();
 
     // Refresh `files_mount_paths` on existing pairs from the latest
     // daemon-reported config. This lets the SPA show accurate mount
@@ -1563,10 +1569,13 @@ fn apply_runtime_wrapper_register(
     // between daemon restarts.
     let mut refreshed = false;
     for incoming in &request.pairs {
+        let Some(rid) = resolved_resource_ids.get(&incoming.resource) else {
+            continue;
+        };
         if let Some(existing) = pairs
             .pairs
             .iter_mut()
-            .find(|p| p.wrapper == incoming.wrapper && p.resource == incoming.resource)
+            .find(|p| p.wrapper == incoming.wrapper && p.resource_id == *rid)
             && existing.files_mount_paths != incoming.files_mount_paths
         {
             existing.files_mount_paths = incoming.files_mount_paths.clone();
@@ -1574,14 +1583,32 @@ fn apply_runtime_wrapper_register(
         }
     }
 
+    // A "missing pair" is any incoming pair whose (wrapper, resolved
+    // resource id) is not already in the pairs document. Pairs whose
+    // resource isn't even resolved yet (auto-create disabled and a new
+    // resource name was sent) trivially count as missing.
+    let missing_pairs: Vec<ServiceWrapperResourcePair> = request
+        .pairs
+        .iter()
+        .filter(|p| match resolved_resource_ids.get(&p.resource) {
+            Some(rid) => pairs.find(&p.wrapper, rid).is_none(),
+            None => true,
+        })
+        .cloned()
+        .collect();
+
     if missing_resources_set.is_empty() && missing_pairs.is_empty() && !refreshed {
-        return Ok(ServiceWrapperRegisterResponse::default());
+        return Ok(ServiceWrapperRegisterResponse {
+            resolved_resource_ids,
+            ..Default::default()
+        });
     }
 
     if !auto_create_enabled {
         return Ok(ServiceWrapperRegisterResponse {
             created_resources: Vec::new(),
             created_pairs: Vec::new(),
+            resolved_resource_ids,
             rejected: Some(ServiceWrapperRegisterReject::AutoCreateDisabled {
                 missing_resources: missing_resources_set.into_iter().collect(),
                 missing_pairs,
@@ -1595,24 +1622,30 @@ fn apply_runtime_wrapper_register(
 
     let mut created_resources: Vec<String> = Vec::new();
     for name in &missing_resources_set {
-        // `insert` rejects duplicates; the missing-set above guarantees
-        // none, so unwrap is safe.
+        let id = generate_resource_id();
+        // `insert` rejects duplicates on id AND name; the missing-set
+        // guarantees no duplicate name and the id is freshly generated.
         resources
             .insert(ResourceRecord {
+                id: id.clone(),
                 name: name.clone(),
                 created_by: creator.clone(),
                 created_at: now_epoch,
             })
             .expect("missing-set guarantees no duplicate");
+        resolved_resource_ids.insert(name.clone(), id);
         created_resources.push(name.clone());
     }
 
     let mut created_pairs: Vec<ServiceWrapperResourcePair> = Vec::new();
     for pair in &missing_pairs {
+        let rid = resolved_resource_ids
+            .get(&pair.resource)
+            .expect("resource id resolved for every missing pair after auto-create");
         pairs
             .insert(WrapperResourcePairRecord {
                 wrapper: pair.wrapper.clone(),
-                resource: pair.resource.clone(),
+                resource_id: rid.clone(),
                 created_by: creator.clone(),
                 created_at: now_epoch,
                 last_used_at: None,
@@ -1632,8 +1665,22 @@ fn apply_runtime_wrapper_register(
     Ok(ServiceWrapperRegisterResponse {
         created_resources,
         created_pairs,
+        resolved_resource_ids,
         rejected: None,
     })
+}
+
+/// Generate a stable resource id (`res_<10 hex bytes>`). Mirrors
+/// [`generate_client_instance_id`] in shape so the two id namespaces
+/// look related but distinct.
+fn generate_resource_id() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 10];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!(
+        "res_{}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    )
 }
 
 fn admin_store(state: &AdminRuntimeState, store: &str) -> Result<Arc<dyn StorageBackend>> {
@@ -4194,7 +4241,7 @@ fn write_admin_permission_audit(
 ) {
     let resource = format!(
         "wrapper_permission:{store_name}/{}/{}/{}",
-        permission.client_instance, permission.wrapper, permission.resource
+        permission.client_instance, permission.wrapper, permission.resource_id
     );
     log_admin_event(
         action,
@@ -4275,7 +4322,7 @@ fn handle_admin_resource_blob_get(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    let blob = match load_resource_blob(store.as_ref(), &body.name) {
+    let blob = match load_resource_blob(store.as_ref(), &body.id) {
         Ok(b) => b,
         Err(e) => {
             return error_response(
@@ -4354,7 +4401,7 @@ fn handle_admin_resource_blob_put(
             "blob_b64 is not JCS-canonical; re-encode via serde_jcs",
         );
     }
-    if let Err(e) = save_resource_blob(store.as_ref(), &body.name, &blob) {
+    if let Err(e) = save_resource_blob(store.as_ref(), &body.id, &blob) {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
@@ -4365,7 +4412,7 @@ fn handle_admin_resource_blob_put(
         "resource.blob.put",
         operator,
         None,
-        Some(&body.name),
+        Some(&body.id),
         None,
         None,
         "success",
@@ -4411,7 +4458,7 @@ fn handle_admin_resource_create(
             );
         }
     };
-    if doc.find(name).is_some() {
+    if doc.find_by_name(name).is_some() {
         return error_response(
             StatusCode::CONFLICT,
             "resource_already_exists",
@@ -4419,6 +4466,7 @@ fn handle_admin_resource_create(
         );
     }
     let record = ResourceRecord {
+        id: generate_resource_id(),
         name: name.to_string(),
         created_by: EntityCreator::Operator {
             id: principal.id.clone(),
@@ -4481,12 +4529,13 @@ fn handle_admin_resource_delete(
             );
         }
     };
-    if doc.find(&body.name).is_none() {
+    let Some(target) = doc.find_by_id(&body.id) else {
         return error_response(StatusCode::NOT_FOUND, "not_found", "unknown resource");
-    }
+    };
+    let target_name = target.name.clone();
 
     let (secret_count, sample_secret_ids) =
-        match resource_secret_dependents(store.as_ref(), &body.name) {
+        match resource_secret_dependents(store.as_ref(), &body.id) {
             Ok(v) => v,
             Err(e) => {
                 return error_response(
@@ -4507,11 +4556,14 @@ fn handle_admin_resource_delete(
             );
         }
     };
+    // The wire shape for blocker pairs still carries the *name* in
+    // `resource` so the operator gets a readable label; resolve via the
+    // resources document.
     let dependent_pairs: Vec<ServiceWrapperResourcePair> = pairs
-        .pairs_for_resource(&body.name)
+        .pairs_for_resource(&body.id)
         .map(|p| ServiceWrapperResourcePair {
             wrapper: p.wrapper.clone(),
-            resource: p.resource.clone(),
+            resource: target_name.clone(),
             files_mount_paths: p.files_mount_paths.clone(),
         })
         .collect();
@@ -4532,11 +4584,11 @@ fn handle_admin_resource_delete(
     let dependent_permissions: Vec<AdminWrapperPermissionKey> = policy
         .permissions
         .iter()
-        .filter(|p| p.resource == body.name)
+        .filter(|p| p.resource_id == body.id)
         .map(|p| AdminWrapperPermissionKey {
             client_instance: p.client_instance.clone(),
             wrapper: p.wrapper.clone(),
-            resource: p.resource.clone(),
+            resource_id: p.resource_id.clone(),
         })
         .collect();
     let permission_count = u32::try_from(dependent_permissions.len()).unwrap_or(u32::MAX);
@@ -4548,7 +4600,7 @@ fn handle_admin_resource_delete(
             "resource.delete",
             &principal.username,
             None,
-            Some(&body.name),
+            Some(&body.id),
             None,
             None,
             "blocked",
@@ -4569,7 +4621,7 @@ fn handle_admin_resource_delete(
         );
     }
 
-    doc.remove(&body.name);
+    doc.remove(&body.id);
     if let Err(e) = save_resources_document(store.as_ref(), &doc) {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -4581,7 +4633,7 @@ fn handle_admin_resource_delete(
         "resource.delete",
         &principal.username,
         None,
-        Some(&body.name),
+        Some(&body.id),
         None,
         None,
         "success",
@@ -4614,8 +4666,11 @@ fn handle_admin_pairs_list(
     };
     match load_pairs_document(store.as_ref()) {
         Ok(mut doc) => {
-            doc.pairs
-                .sort_by(|a, b| a.wrapper.cmp(&b.wrapper).then(a.resource.cmp(&b.resource)));
+            doc.pairs.sort_by(|a, b| {
+                a.wrapper
+                    .cmp(&b.wrapper)
+                    .then(a.resource_id.cmp(&b.resource_id))
+            });
             json_response(
                 StatusCode::OK,
                 &underwrap_protocol::service::AdminPairsListResponse { pairs: doc.pairs },
@@ -4644,12 +4699,12 @@ fn handle_admin_pair_create(
         );
     }
     let wrapper = body.wrapper.trim();
-    let resource = body.resource.trim();
-    if wrapper.is_empty() || resource.is_empty() {
+    let resource_id = body.resource_id.trim();
+    if wrapper.is_empty() || resource_id.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_pair",
-            "wrapper and resource must both be non-empty",
+            "wrapper and resource_id must both be non-empty",
         );
     }
     let store = match admin_store_for_principal(state, principal, &body.store) {
@@ -4666,11 +4721,11 @@ fn handle_admin_pair_create(
             );
         }
     };
-    if resources.find(resource).is_none() {
+    if resources.find_by_id(resource_id).is_none() {
         return error_response(
             StatusCode::BAD_REQUEST,
             "unknown_resource",
-            &format!("resource '{resource}' must be created before a pair can reference it"),
+            &format!("resource id '{resource_id}' must exist before a pair can reference it"),
         );
     }
     let mut pairs = match load_pairs_document(store.as_ref()) {
@@ -4683,16 +4738,16 @@ fn handle_admin_pair_create(
             );
         }
     };
-    if pairs.find(wrapper, resource).is_some() {
+    if pairs.find(wrapper, resource_id).is_some() {
         return error_response(
             StatusCode::CONFLICT,
             "pair_already_exists",
-            &format!("pair ({wrapper}, {resource}) already exists"),
+            &format!("pair ({wrapper}, {resource_id}) already exists"),
         );
     }
     let record = WrapperResourcePairRecord {
         wrapper: wrapper.to_string(),
-        resource: resource.to_string(),
+        resource_id: resource_id.to_string(),
         created_by: EntityCreator::Operator {
             id: principal.id.clone(),
             username: principal.username.clone(),
@@ -4715,7 +4770,7 @@ fn handle_admin_pair_create(
         "pair.create",
         &principal.username,
         Some(wrapper),
-        Some(resource),
+        Some(resource_id),
         None,
         None,
         "success",
@@ -4756,7 +4811,7 @@ fn handle_admin_pair_delete(
             );
         }
     };
-    if doc.find(&body.wrapper, &body.resource).is_none() {
+    if doc.find(&body.wrapper, &body.resource_id).is_none() {
         return error_response(StatusCode::NOT_FOUND, "not_found", "unknown pair");
     }
 
@@ -4773,11 +4828,11 @@ fn handle_admin_pair_delete(
     let dependent_permissions: Vec<AdminWrapperPermissionKey> = policy
         .permissions
         .iter()
-        .filter(|p| p.wrapper == body.wrapper && p.resource == body.resource)
+        .filter(|p| p.wrapper == body.wrapper && p.resource_id == body.resource_id)
         .map(|p| AdminWrapperPermissionKey {
             client_instance: p.client_instance.clone(),
             wrapper: p.wrapper.clone(),
-            resource: p.resource.clone(),
+            resource_id: p.resource_id.clone(),
         })
         .collect();
     let permission_count = u32::try_from(dependent_permissions.len()).unwrap_or(u32::MAX);
@@ -4789,7 +4844,7 @@ fn handle_admin_pair_delete(
             "pair.delete",
             &principal.username,
             Some(&body.wrapper),
-            Some(&body.resource),
+            Some(&body.resource_id),
             None,
             None,
             "blocked",
@@ -4806,7 +4861,7 @@ fn handle_admin_pair_delete(
         );
     }
 
-    doc.remove(&body.wrapper, &body.resource);
+    doc.remove(&body.wrapper, &body.resource_id);
     if let Err(e) = save_pairs_document(store.as_ref(), &doc) {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -4818,7 +4873,7 @@ fn handle_admin_pair_delete(
         "pair.delete",
         &principal.username,
         Some(&body.wrapper),
-        Some(&body.resource),
+        Some(&body.resource_id),
         None,
         None,
         "success",
@@ -4878,19 +4933,19 @@ fn handle_admin_wrapper_permission_upsert(
     };
     if body.permission.client_instance.is_empty()
         || body.permission.wrapper.is_empty()
-        || body.permission.resource.is_empty()
+        || body.permission.resource_id.is_empty()
     {
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_permission",
-            "client_instance, wrapper, and resource must all be non-empty",
+            "client_instance, wrapper, and resource_id must all be non-empty",
         );
     }
     let new_permission = body.permission.clone();
     if let Some(slot) = doc.permissions.iter_mut().find(|p| {
         p.client_instance == new_permission.client_instance
             && p.wrapper == new_permission.wrapper
-            && p.resource == new_permission.resource
+            && p.resource_id == new_permission.resource_id
     }) {
         *slot = new_permission.clone();
     } else {
@@ -4900,7 +4955,7 @@ fn handle_admin_wrapper_permission_upsert(
         a.client_instance
             .cmp(&b.client_instance)
             .then(a.wrapper.cmp(&b.wrapper))
-            .then(a.resource.cmp(&b.resource))
+            .then(a.resource_id.cmp(&b.resource_id))
     });
     if let Err(e) = save_policy_document(store.as_ref(), &doc) {
         write_admin_permission_audit(
@@ -4958,7 +5013,7 @@ fn handle_admin_wrapper_permission_delete(
     doc.permissions.retain(|p| {
         !(p.client_instance == body.client_instance
             && p.wrapper == body.wrapper
-            && p.resource == body.resource)
+            && p.resource_id == body.resource_id)
     });
     let removed = before != doc.permissions.len();
     if !removed {
@@ -4978,7 +5033,7 @@ fn handle_admin_wrapper_permission_delete(
     let removed_permission = underwrap_protocol::policy::WrapperPermission {
         client_instance: body.client_instance.clone(),
         wrapper: body.wrapper.clone(),
-        resource: body.resource.clone(),
+        resource_id: body.resource_id.clone(),
         mode: underwrap_protocol::policy::WrapperApprovalMode::Locked,
         writable: false,
         reason: None,
@@ -5271,7 +5326,7 @@ async fn handle_admin_request(
         {
             Ok(body) => {
                 let secret_id =
-                    match validate_and_compose_secret_id(&body.resource, body.slot, &body.key) {
+                    match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key) {
                         Ok(id) => id,
                         Err(resp) => return Ok(resp),
                     };
@@ -5311,7 +5366,7 @@ async fn handle_admin_request(
                 .await
             {
                 Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match list_secret_entries(store.as_ref(), body.resource.as_deref())
+                    Ok(store) => match list_secret_entries(store.as_ref(), body.resource_id.as_deref())
                     {
                         Ok(entries) => json_response(
                             StatusCode::OK,
@@ -5335,7 +5390,7 @@ async fn handle_admin_request(
             {
                 Ok(body) => {
                     let secret_id = match validate_and_compose_secret_id(
-                        &body.resource,
+                        &body.resource_id,
                         body.slot,
                         &body.key,
                     ) {
@@ -5719,6 +5774,7 @@ mod tests {
         );
         let mut doc = ResourcesDocument::default();
         doc.insert(ResourceRecord {
+            id: "res_token".into(),
             name: "github/token".into(),
             created_by: EntityCreator::Operator {
                 id: "op-1".into(),
@@ -5754,7 +5810,7 @@ mod tests {
         let mut doc = PairsDocument::default();
         doc.insert(WrapperResourcePairRecord {
             wrapper: "gh-comment".into(),
-            resource: "github/token".into(),
+            resource_id: "res_token".into(),
             created_by: EntityCreator::ClientInstance {
                 id: "client-7".into(),
             },
@@ -7762,6 +7818,30 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         (state, id)
     }
 
+    /// Test helper: call the resource create handler and return the
+    /// id the backend assigned. Tests use this when they need to issue
+    /// subsequent id-addressed calls against the same resource.
+    fn create_resource_id_for_test(
+        state: &AdminRuntimeState,
+        principal: &crate::operators::Principal,
+        store_id: &str,
+        name: &str,
+    ) -> String {
+        let resp = handle_admin_resource_create(
+            state,
+            principal,
+            &underwrap_protocol::service::AdminResourceCreateRequest {
+                store: store_id.to_string(),
+                name: name.to_string(),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        response_body_json(resp)["resource"]["id"]
+            .as_str()
+            .expect("create response includes resource.id")
+            .to_string()
+    }
+
     #[test]
     fn admin_resource_create_then_list_round_trip_with_operator_provenance() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -7816,20 +7896,13 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let tmp = tempfile::TempDir::new().unwrap();
         let (state, store_id) = entity_test_state_with_store(tmp.path());
         let p = admin_principal(&[]);
-        handle_admin_resource_create(
-            &state,
-            &p,
-            &underwrap_protocol::service::AdminResourceCreateRequest {
-                store: store_id.clone(),
-                name: "github/token".into(),
-            },
-        );
+        let resource_id = create_resource_id_for_test(&state, &p, &store_id, "github/token");
         let del = handle_admin_resource_delete(
             &state,
             &p,
             &underwrap_protocol::service::AdminResourceDeleteRequest {
                 store: store_id.clone(),
-                name: "github/token".into(),
+                id: resource_id,
             },
         );
         assert_eq!(del.status(), StatusCode::OK);
@@ -7859,14 +7932,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let p = admin_principal(&[]);
 
         // Resource exists.
-        handle_admin_resource_create(
-            &state,
-            &p,
-            &underwrap_protocol::service::AdminResourceCreateRequest {
-                store: store_id.clone(),
-                name: "github/token".into(),
-            },
-        );
+        let resource_id = create_resource_id_for_test(&state, &p, &store_id, "github/token");
         // Pair references it.
         handle_admin_pair_create(
             &state,
@@ -7874,20 +7940,16 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &underwrap_protocol::service::AdminPairCreateRequest {
                 store: store_id.clone(),
                 wrapper: "gh".into(),
-                resource: "github/token".into(),
+                resource_id: resource_id.clone(),
             },
         );
-        // A secret under the resource. The legacy per-slot key shape
-        // routes through the blob shim and ends up inside the
-        // `resources/github/token` blob.
+        // A secret under the resource. The legacy per-slot in-blob
+        // entry key shape routes through the blob shim and ends up
+        // inside the `resources/<resource_id>` blob.
         {
             let reg = state.stores.read().unwrap();
-            write_legacy_secret(
-                reg.open[&store_id].as_ref(),
-                "github/token/env/GH_TOKEN",
-                b"ghp_value",
-            )
-            .unwrap();
+            let blob_key = format!("{}/env/GH_TOKEN", resource_id);
+            write_legacy_secret(reg.open[&store_id].as_ref(), &blob_key, b"ghp_value").unwrap();
         }
         // A wrapper permission referencing the resource.
         {
@@ -7898,7 +7960,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                     permissions: vec![WrapperPermission {
                         client_instance: "inst_a".into(),
                         wrapper: "gh".into(),
-                        resource: "github/token".into(),
+                        resource_id: resource_id.clone(),
                         mode: WrapperApprovalMode::Unlocked,
                         writable: false,
                         reason: None,
@@ -7913,7 +7975,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &p,
             &underwrap_protocol::service::AdminResourceDeleteRequest {
                 store: store_id.clone(),
-                name: "github/token".into(),
+                id: resource_id.clone(),
             },
         );
         assert_eq!(del.status(), StatusCode::OK);
@@ -7959,7 +8021,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         pairs
             .insert(WrapperResourcePairRecord {
                 wrapper: "gh".into(),
-                resource: "github/token".into(),
+                resource_id: "res_token".into(),
                 created_by: EntityCreator::ClientInstance {
                     id: "inst_a".into(),
                 },
@@ -7971,7 +8033,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         pairs
             .insert(WrapperResourcePairRecord {
                 wrapper: "tf".into(),
-                resource: "github/token".into(),
+                resource_id: "res_token".into(),
                 created_by: EntityCreator::ClientInstance {
                     id: "inst_a".into(),
                 },
@@ -7982,11 +8044,11 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             .unwrap();
         save_pairs_document(store, &pairs).unwrap();
 
-        bump_pair_last_used(store, "gh", "github/token").unwrap();
+        bump_pair_last_used(store, "gh", "res_token").unwrap();
 
         let after = load_pairs_document(store).unwrap();
-        let gh = after.find("gh", "github/token").unwrap();
-        let tf = after.find("tf", "github/token").unwrap();
+        let gh = after.find("gh", "res_token").unwrap();
+        let tf = after.find("tf", "res_token").unwrap();
         assert!(gh.last_used_at.is_some(), "matched pair should be bumped");
         assert!(tf.last_used_at.is_none(), "other pair must not be bumped");
     }
@@ -7999,8 +8061,8 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             let reg = state.stores.read().unwrap();
             reg.open[&store_id].clone()
         };
-        // No pair record for (gh, github/token) → no-op, no error.
-        bump_pair_last_used(store_arc.as_ref(), "gh", "github/token").unwrap();
+        // No pair record for (gh, res_token) → no-op, no error.
+        bump_pair_last_used(store_arc.as_ref(), "gh", "res_token").unwrap();
     }
 
     #[test]
@@ -8016,27 +8078,20 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &underwrap_protocol::service::AdminPairCreateRequest {
                 store: store_id.clone(),
                 wrapper: "gh".into(),
-                resource: "github/token".into(),
+                resource_id: "res_missing".into(),
             },
         );
         assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
         assert_eq!(response_body_json(missing)["code"], "unknown_resource");
 
-        handle_admin_resource_create(
-            &state,
-            &p,
-            &underwrap_protocol::service::AdminResourceCreateRequest {
-                store: store_id.clone(),
-                name: "github/token".into(),
-            },
-        );
+        let resource_id = create_resource_id_for_test(&state, &p, &store_id, "github/token");
         let create = handle_admin_pair_create(
             &state,
             &p,
             &underwrap_protocol::service::AdminPairCreateRequest {
                 store: store_id.clone(),
                 wrapper: "gh".into(),
-                resource: "github/token".into(),
+                resource_id: resource_id.clone(),
             },
         );
         assert_eq!(create.status(), StatusCode::OK);
@@ -8047,7 +8102,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &underwrap_protocol::service::AdminPairCreateRequest {
                 store: store_id.clone(),
                 wrapper: "gh".into(),
-                resource: "github/token".into(),
+                resource_id: resource_id.clone(),
             },
         );
         assert_eq!(dup.status(), StatusCode::CONFLICT);
@@ -8061,21 +8116,14 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let (state, store_id) = entity_test_state_with_store(tmp.path());
         let p = admin_principal(&[]);
 
-        handle_admin_resource_create(
-            &state,
-            &p,
-            &underwrap_protocol::service::AdminResourceCreateRequest {
-                store: store_id.clone(),
-                name: "r".into(),
-            },
-        );
+        let resource_id = create_resource_id_for_test(&state, &p, &store_id, "r");
         handle_admin_pair_create(
             &state,
             &p,
             &underwrap_protocol::service::AdminPairCreateRequest {
                 store: store_id.clone(),
                 wrapper: "gh".into(),
-                resource: "r".into(),
+                resource_id: resource_id.clone(),
             },
         );
         {
@@ -8086,7 +8134,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                     permissions: vec![WrapperPermission {
                         client_instance: "inst_a".into(),
                         wrapper: "gh".into(),
-                        resource: "r".into(),
+                        resource_id: resource_id.clone(),
                         mode: WrapperApprovalMode::Unlocked,
                         writable: false,
                         reason: None,
@@ -8102,7 +8150,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             &underwrap_protocol::service::AdminPairDeleteRequest {
                 store: store_id.clone(),
                 wrapper: "gh".into(),
-                resource: "r".into(),
+                resource_id: resource_id.clone(),
             },
         );
         assert_eq!(del.status(), StatusCode::OK);

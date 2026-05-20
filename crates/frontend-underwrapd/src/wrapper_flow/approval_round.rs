@@ -56,11 +56,18 @@ pub(super) fn check_wrapper_mode(
         }
     };
 
+    // Policy lookups are keyed by the backend's stable resource id,
+    // not by the operator-facing name in the wrapper config. Fall
+    // back to the name when register-time resolution didn't populate
+    // a mapping for this wrapper.
+    let resource_id = state
+        .resource_id_for_wrapper(wrapper_name)
+        .unwrap_or_else(|| wrapper_def.resource.clone());
     match evaluate_invocation(
         document.as_ref(),
         &state.client_instance,
         &logical_name,
-        &wrapper_def.resource,
+        &resource_id,
     ) {
         InvocationDecision::Allow => Ok(ModeGate::Proceed),
         InvocationDecision::NeedsApproval { approval_key } => {

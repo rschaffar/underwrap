@@ -36,7 +36,7 @@ describe("PolicyViewerDialog", () => {
           {
             client_instance: "dev-laptop",
             wrapper: "gh-authorized",
-            resource: "github/token",
+            resource_id: "github/token",
             mode: { kind: "unlocked" },
             writable: true,
             reason: undefined,
@@ -44,7 +44,7 @@ describe("PolicyViewerDialog", () => {
           {
             client_instance: "ci-runner",
             wrapper: "aws-prod",
-            resource: "aws/prod",
+            resource_id: "aws/prod",
             mode: { kind: "locked" },
             writable: false,
             reason: "off-hours",
@@ -52,7 +52,7 @@ describe("PolicyViewerDialog", () => {
           {
             client_instance: "ci-runner",
             wrapper: "deploy",
-            resource: "deploy/release",
+            resource_id: "deploy/release",
             mode: { kind: "per-call-approval", approval_key: "ssh-ed25519 AAA…" },
             writable: false,
             reason: undefined,
@@ -120,7 +120,7 @@ describe("PolicyViewerDialog", () => {
           {
             client_instance: "dev-laptop",
             wrapper: "gh-authorized",
-            resource: "github/token",
+            resource_id: "github/token",
             mode: { kind: "unlocked" },
             writable: false,
             reason: undefined,

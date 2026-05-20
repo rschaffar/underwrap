@@ -135,7 +135,7 @@ fn make_permission(
     WrapperPermission {
         client_instance: daemon.client_instance().to_string(),
         wrapper: wrapper.to_string(),
-        resource: resource.to_string(),
+        resource_id: resource.to_string(),
         mode: WrapperApprovalMode::Unlocked,
         writable,
         reason: None,
@@ -470,7 +470,7 @@ async fn find_pair_last_used(daemon: &TestDaemon, wrapper: &str, resource: &str)
     pairs
         .pairs
         .into_iter()
-        .find(|p| p.wrapper == wrapper && p.resource == resource)
+        .find(|p| p.wrapper == wrapper && p.resource_id == resource)
         .expect("pair record present")
         .last_used_at
 }
@@ -487,19 +487,24 @@ async fn seed_writable_permission(daemon: &TestDaemon, wrapper: &str, resource: 
         .unwrap();
 }
 
-async fn seed_resource_and_pair(daemon: &TestDaemon, wrapper: &str, resource: &str) {
-    daemon.create_resource("test", resource).await.unwrap();
-    daemon.create_pair("test", wrapper, resource).await.unwrap();
+/// Create a resource (by `name`) and a pair binding `wrapper` to it.
+/// Returns the resource id the backend assigned — every other helper
+/// in this file consumes the id, not the name.
+async fn seed_resource_and_pair(daemon: &TestDaemon, wrapper: &str, name: &str) -> String {
+    let record = daemon.create_resource("test", name).await.unwrap();
+    let id = record.resource.id;
+    daemon.create_pair("test", wrapper, &id).await.unwrap();
+    id
 }
 
 #[tokio::test]
 async fn checkout_bumps_last_used() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
-    seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
-    seed_writable_permission(&daemon, "gh-writeback", "github/token").await;
+    let resource_id = seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_permission(&daemon, "gh-writeback", &resource_id).await;
 
     assert!(
-        find_pair_last_used(&daemon, "gh-writeback", "github/token")
+        find_pair_last_used(&daemon, "gh-writeback", &resource_id)
             .await
             .is_none()
     );
@@ -513,7 +518,7 @@ async fn checkout_bumps_last_used() {
     .await
     .unwrap();
 
-    let bumped = find_pair_last_used(&daemon, "gh-writeback", "github/token").await;
+    let bumped = find_pair_last_used(&daemon, "gh-writeback", &resource_id).await;
     assert!(bumped.is_some(), "Checkout did not bump last_used_at");
 
     daemon.stop().await.unwrap();
@@ -526,8 +531,8 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
     // at one-second resolution within the same wall-clock second the
     // stored value can stay the same. Assert it's set.
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
-    seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
-    seed_writable_permission(&daemon, "gh-writeback", "github/token").await;
+    let resource_id = seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_permission(&daemon, "gh-writeback", &resource_id).await;
 
     let mutated = blob_with_env("GH_TOKEN", b"ghp_mutated");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
@@ -542,7 +547,7 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
     .await
     .unwrap();
 
-    let bumped = find_pair_last_used(&daemon, "gh-writeback", "github/token").await;
+    let bumped = find_pair_last_used(&daemon, "gh-writeback", &resource_id).await;
     assert!(
         bumped.is_some(),
         "Checkin path did not leave last_used_at set"
@@ -554,8 +559,8 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
 #[tokio::test]
 async fn usage_signal_bumps_last_used() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
-    seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
-    seed_writable_permission(&daemon, "gh-writeback", "github/token").await;
+    let resource_id = seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_permission(&daemon, "gh-writeback", &resource_id).await;
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
@@ -569,7 +574,7 @@ async fn usage_signal_bumps_last_used() {
     .await
     .unwrap();
 
-    let bumped = find_pair_last_used(&daemon, "gh-writeback", "github/token").await;
+    let bumped = find_pair_last_used(&daemon, "gh-writeback", &resource_id).await;
     assert!(bumped.is_some(), "UsageSignal did not bump last_used_at");
 
     daemon.stop().await.unwrap();
@@ -582,8 +587,8 @@ async fn rejected_checkin_still_bumps_last_used() {
     // sends UsageSignal which hits the backend's read path → second
     // bump (or same-second no-op). Either way last_used_at is set.
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
-    seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
-    seed_writable_permission(&daemon, "gh-writeback", "github/token").await;
+    let resource_id = seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_permission(&daemon, "gh-writeback", &resource_id).await;
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     let (checkout_done_tx, checkout_done_rx) = std::sync::mpsc::channel::<()>();
@@ -615,14 +620,14 @@ async fn rejected_checkin_still_bumps_last_used() {
     daemon
         .upsert_permission(
             "test",
-            &make_permission(&daemon, "gh-writeback", "github/token", false),
+            &make_permission(&daemon, "gh-writeback", &resource_id, false),
         )
         .await
         .unwrap();
     flip_tx.send(()).unwrap();
     blocking.await.unwrap();
 
-    let bumped = find_pair_last_used(&daemon, "gh-writeback", "github/token").await;
+    let bumped = find_pair_last_used(&daemon, "gh-writeback", &resource_id).await;
     assert!(
         bumped.is_some(),
         "rejected-Checkin run left last_used_at unset",

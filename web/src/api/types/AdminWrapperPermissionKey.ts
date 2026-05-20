@@ -5,4 +5,4 @@
  * responses so the SPA can render a "you must clear these wrapper
  * permissions first" list.
  */
-export type AdminWrapperPermissionKey = { client_instance: string, wrapper: string, resource: string, };
+export type AdminWrapperPermissionKey = { client_instance: string, wrapper: string, resource_id: string, };

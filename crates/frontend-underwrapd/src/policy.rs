@@ -73,7 +73,7 @@ pub(crate) fn evaluate_invocation(
         None => InvocationDecision::Deny {
             reason: format!(
                 "permission for ({}, '{wrapper}', '{}') vanished mid-evaluation",
-                permission.client_instance, permission.resource,
+                permission.client_instance, permission.resource_id,
             ),
         },
     }
@@ -138,7 +138,7 @@ mod tests {
         WrapperPermission {
             client_instance: client_instance.into(),
             wrapper: wrapper.into(),
-            resource: resource.into(),
+            resource_id: resource.into(),
             mode,
             writable: false,
             reason: None,

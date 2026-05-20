@@ -31,6 +31,8 @@ export type { AdminResourceCreateResponse } from "./AdminResourceCreateResponse"
 export type { AdminResourceDeleteBlockers } from "./AdminResourceDeleteBlockers";
 export type { AdminResourceDeleteRequest } from "./AdminResourceDeleteRequest";
 export type { AdminResourceDeleteResponse } from "./AdminResourceDeleteResponse";
+export type { AdminResourceRenameRequest } from "./AdminResourceRenameRequest";
+export type { AdminResourceRenameResponse } from "./AdminResourceRenameResponse";
 export type { AdminResourcesListRequest } from "./AdminResourcesListRequest";
 export type { AdminResourcesListResponse } from "./AdminResourcesListResponse";
 export type { AdminSecretDeleteRequest } from "./AdminSecretDeleteRequest";

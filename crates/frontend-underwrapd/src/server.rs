@@ -32,7 +32,39 @@ pub(crate) struct State {
     /// the daemon refuses wrapper requests in that state anyway, so
     /// the field is only consulted on the enrolled path.
     pub(crate) client_instance: String,
+    /// Per-wrapper-name → backend-resolved resource id. Populated from
+    /// the register response so the wrapper-resource channel can address
+    /// `resources/<id>` (and the daemon's policy lookup can match by
+    /// the same stable id) without re-resolving on every read.
+    pub(crate) resource_ids: std::collections::HashMap<String, String>,
     pub(crate) pending_approvals: PendingApprovals,
+}
+
+impl State {
+    /// Resolve the backend resource id this `wrapper_name` should
+    /// address. Prefers the register-time cache; on cache miss reads
+    /// the backend's resources document and looks up by the wrapper
+    /// config's resource name. Returns `None` only when neither the
+    /// cache nor the catalog can resolve the wrapper (typical for
+    /// unenrolled daemons, or when the resource hasn't been created
+    /// on the backend yet).
+    pub(crate) fn resource_id_for_wrapper(&self, wrapper_name: &str) -> Option<String> {
+        if let Some(id) = self.resource_ids.get(wrapper_name) {
+            return Some(id.clone());
+        }
+        let store = self.store.as_ref()?;
+        let wrapper = self.config.wrappers.get(wrapper_name)?;
+        let material = store
+            .read(underwrap_protocol::entities::RESOURCES_DOCUMENT_SECRET_ID)
+            .ok()
+            .flatten()?;
+        let doc: underwrap_protocol::entities::ResourcesDocument =
+            serde_json::from_slice(material.as_ref()).ok()?;
+        doc.resources
+            .iter()
+            .find(|r| r.name == wrapper.resource)
+            .map(|r| r.id.clone())
+    }
 }
 
 impl State {
@@ -46,8 +78,21 @@ impl State {
     }
 }
 
-fn register_wrapper_assets(store: &dyn StorageBackend, config: &DaemonConfig) -> Result<()> {
+/// Register all configured wrappers with the backend. Returns the
+/// per-wrapper-name → resolved resource id map the backend produced,
+/// or an empty map if registration failed (the daemon stays usable
+/// only if the resource ids were already cached elsewhere — at
+/// present we just degrade to "wrapper reads will fail").
+fn register_wrapper_assets(
+    store: &dyn StorageBackend,
+    config: &DaemonConfig,
+) -> Result<std::collections::HashMap<String, String>> {
     let mut pairs = Vec::new();
+    // Track wrapper_name → resource_name on the wire so we can map
+    // the response's name-keyed `resolved_resource_ids` back to the
+    // wrapper key the daemon uses internally.
+    let mut wrapper_to_resource_name: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for (wrapper_name, wrapper) in &config.wrappers {
         let logical_name = wrapper
             .logical_name
@@ -58,6 +103,7 @@ fn register_wrapper_assets(store: &dyn StorageBackend, config: &DaemonConfig) ->
             .as_ref()
             .map(|f| f.paths.clone())
             .unwrap_or_default();
+        wrapper_to_resource_name.insert(wrapper_name.clone(), wrapper.resource.clone());
         pairs.push(ServiceWrapperResourcePair {
             wrapper: logical_name,
             resource: wrapper.resource.clone(),
@@ -88,7 +134,15 @@ fn register_wrapper_assets(store: &dyn StorageBackend, config: &DaemonConfig) ->
             );
         }
     }
-    Ok(())
+    // Project the backend's name → id map onto the daemon's
+    // wrapper-name keyspace.
+    let mut by_wrapper = std::collections::HashMap::new();
+    for (wrapper_name, resource_name) in wrapper_to_resource_name {
+        if let Some(rid) = response.resolved_resource_ids.get(&resource_name) {
+            by_wrapper.insert(wrapper_name, rid.clone());
+        }
+    }
+    Ok(by_wrapper)
 }
 
 /// Open the backend client and read the mTLS-bound client instance id
@@ -170,17 +224,24 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     };
 
     let wrapper_to_gid = build_wrapper_gid_map(&config)?;
-    if let Some(store) = store.as_ref()
-        && let Err(e) = register_wrapper_assets(store.as_ref(), &config)
-    {
-        warn!(err = %e, "wrapper asset registration failed; continuing without backend register");
-    }
+    let resource_ids = if let Some(store) = store.as_ref() {
+        match register_wrapper_assets(store.as_ref(), &config) {
+            Ok(map) => map,
+            Err(e) => {
+                warn!(err = %e, "wrapper asset registration failed; continuing without backend register");
+                std::collections::HashMap::new()
+            }
+        }
+    } else {
+        std::collections::HashMap::new()
+    };
 
     let state = Arc::new(State {
         config: config.clone(),
         store,
         enrollment_url,
         client_instance,
+        resource_ids,
         pending_approvals: PendingApprovals::new(),
     });
 

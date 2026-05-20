@@ -53,7 +53,7 @@ async fn deleting_permission_revokes_future_reads() {
             "test",
             &permission.client_instance,
             &permission.wrapper,
-            &permission.resource,
+            &permission.resource_id,
         )
         .await
         .unwrap();
@@ -117,7 +117,7 @@ async fn ungranted_tuple_for_unrelated_client_instance_still_rejects() {
                 permissions: vec![WrapperPermission {
                     client_instance: "some-other-client".to_string(),
                     wrapper: "gh-authorized".to_string(),
-                    resource: "github/token".to_string(),
+                    resource_id: "github/token".to_string(),
                     mode: WrapperApprovalMode::Unlocked,
                     writable: false,
                     reason: None,

@@ -201,6 +201,13 @@ pub struct ServiceWrapperRegisterResponse {
     /// Pairs that were newly created on this call.
     #[serde(default)]
     pub created_pairs: Vec<ServiceWrapperResourcePair>,
+    /// Map from the resource names the daemon sent to the canonical
+    /// resource ids the backend resolved (or just generated) for them.
+    /// The daemon caches this so subsequent runtime calls address the
+    /// resource by its stable id — a rename of the resource name on
+    /// the backend will not invalidate cached entries.
+    #[serde(default)]
+    pub resolved_resource_ids: std::collections::HashMap<String, String>,
     /// Populated when the call was refused; in that case no
     /// `created_*` entries are produced and the backend writes
     /// nothing.
@@ -544,7 +551,7 @@ pub struct AdminUiOverviewResponse {
 #[ts(export)]
 pub struct AdminSecretReadRequest {
     pub store: String,
-    pub resource: String,
+    pub resource_id: String,
     pub slot: ResourceSlot,
     pub key: String,
 }
@@ -559,7 +566,7 @@ pub struct AdminSecretReadResponse {
 #[ts(export)]
 pub struct AdminSecretWriteRequest {
     pub store: String,
-    pub resource: String,
+    pub resource_id: String,
     pub slot: ResourceSlot,
     pub key: String,
     pub material_b64: String,
@@ -573,14 +580,14 @@ pub struct AdminSecretListRequest {
     /// for every resource in the store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub resource: Option<String>,
+    pub resource_id: Option<String>,
 }
 
 /// One per-slot entry as listed by the admin surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminSecretEntry {
-    pub resource: String,
+    pub resource_id: String,
     pub slot: ResourceSlot,
     pub key: String,
 }
@@ -595,7 +602,7 @@ pub struct AdminSecretListResponse {
 #[ts(export)]
 pub struct AdminSecretDeleteRequest {
     pub store: String,
-    pub resource: String,
+    pub resource_id: String,
     pub slot: ResourceSlot,
     pub key: String,
 }
@@ -657,7 +664,7 @@ pub struct AdminWrapperPermissionDeleteRequest {
     pub store: String,
     pub client_instance: String,
     pub wrapper: String,
-    pub resource: String,
+    pub resource_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -680,7 +687,7 @@ pub struct AdminOkResponse {
 pub struct AdminWrapperPermissionKey {
     pub client_instance: String,
     pub wrapper: String,
-    pub resource: String,
+    pub resource_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -712,7 +719,23 @@ pub struct AdminResourceCreateResponse {
 #[ts(export)]
 pub struct AdminResourceDeleteRequest {
     pub store: String,
-    pub name: String,
+    pub id: String,
+}
+
+/// Rename an existing resource by id. The id stays stable; the name
+/// changes. Returns the updated record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceRenameRequest {
+    pub store: String,
+    pub id: String,
+    pub new_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminResourceRenameResponse {
+    pub resource: ResourceRecord,
 }
 
 /// Request whole-blob get/put for a resource.
@@ -720,7 +743,7 @@ pub struct AdminResourceDeleteRequest {
 #[ts(export)]
 pub struct AdminResourceBlobGetRequest {
     pub store: String,
-    pub name: String,
+    pub id: String,
 }
 
 /// JCS-canonical JSON bytes of the resource blob, base64-encoded for
@@ -735,7 +758,7 @@ pub struct AdminResourceBlobGetResponse {
 #[ts(export)]
 pub struct AdminResourceBlobPutRequest {
     pub store: String,
-    pub name: String,
+    pub id: String,
     pub blob_b64: String,
 }
 
@@ -788,7 +811,7 @@ pub struct AdminPairsListResponse {
 pub struct AdminPairCreateRequest {
     pub store: String,
     pub wrapper: String,
-    pub resource: String,
+    pub resource_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -802,7 +825,7 @@ pub struct AdminPairCreateResponse {
 pub struct AdminPairDeleteRequest {
     pub store: String,
     pub wrapper: String,
-    pub resource: String,
+    pub resource_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, Default)]

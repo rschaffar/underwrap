@@ -69,13 +69,14 @@ export interface SecretEntry {
 
 /** Address of a per-slot entry — the structured tuple the admin API takes. */
 export interface SecretAddress {
-  resource: string;
+  resource_id: string;
   slot: SecretSlot;
   key: string;
 }
 
 export interface SecretResourceGroup {
-  resource: string;
+  /** Stable resource id; the operator-facing label is resolved via the catalog. */
+  resource_id: string;
   env: SecretEntry[];
   files: SecretEntry[];
   libsecret: SecretEntry[];
@@ -97,10 +98,10 @@ export function groupSecretEntries(
 ): SecretResourceGroup[] {
   const groups = new Map<string, SecretResourceGroup>();
   for (const entry of entries) {
-    let g = groups.get(entry.resource);
+    let g = groups.get(entry.resource_id);
     if (!g) {
-      g = { resource: entry.resource, env: [], files: [], libsecret: [] };
-      groups.set(entry.resource, g);
+      g = { resource_id: entry.resource_id, env: [], files: [], libsecret: [] };
+      groups.set(entry.resource_id, g);
     }
     g[entry.slot].push({ slot: entry.slot, key: entry.key });
   }
@@ -110,7 +111,7 @@ export function groupSecretEntries(
     g.libsecret.sort((a, b) => a.key.localeCompare(b.key));
   }
   return [...groups.values()].sort((a, b) =>
-    a.resource.localeCompare(b.resource),
+    a.resource_id.localeCompare(b.resource_id),
   );
 }
 
@@ -172,7 +173,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
   const resourceProvenance = useMemo(() => {
     const map = new Map<string, ResourceRecord>();
     for (const r of resourcesList.data?.resources ?? []) {
-      map.set(r.name, r);
+      map.set(r.id, r);
     }
     return map;
   }, [resourcesList.data]);
@@ -182,35 +183,43 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     [list.data],
   );
 
-  // Resources known to this store: every persisted resource record
-  // (which lives on the backend with provenance) plus any extra
-  // resources we observe in the secret list under a name not yet
-  // recorded. The second case shouldn't happen in normal operation,
-  // but tolerating it means a legacy import doesn't break the UI.
+  // Resources known to this store, keyed internally by resource id.
+  // The catalog provides the display name; orphan groups (a resource
+  // id that appears in secrets but not in the catalog) fall back to
+  // displaying the id.
+  const resourceNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of resourcesList.data?.resources ?? []) {
+      map.set(r.id, r.name);
+    }
+    return map;
+  }, [resourcesList.data]);
   const allResources = useMemo<SecretResourceGroup[]>(() => {
     const byResource = new Map<string, SecretResourceGroup>();
     for (const g of grouped) {
-      byResource.set(g.resource, g);
+      byResource.set(g.resource_id, g);
     }
     for (const record of resourcesList.data?.resources ?? []) {
-      if (!byResource.has(record.name)) {
-        byResource.set(record.name, {
-          resource: record.name,
+      if (!byResource.has(record.id)) {
+        byResource.set(record.id, {
+          resource_id: record.id,
           env: [],
           files: [],
           libsecret: [],
         });
       }
     }
-    return [...byResource.values()].sort((a, b) =>
-      a.resource.localeCompare(b.resource),
-    );
-  }, [grouped, resourcesList.data]);
+    return [...byResource.values()].sort((a, b) => {
+      const an = resourceNameById.get(a.resource_id) ?? a.resource_id;
+      const bn = resourceNameById.get(b.resource_id) ?? b.resource_id;
+      return an.localeCompare(bn);
+    });
+  }, [grouped, resourcesList.data, resourceNameById]);
 
   const [revealing, setRevealing] = useState<SecretAddress | null>(null);
   const [editing, setEditing] = useState<SecretAddress | null>(null);
   const [creating, setCreating] = useState<
-    { resource: string; slot: SecretSlot } | null
+    { resource_id: string; slot: SecretSlot } | null
   >(null);
   const [creatingResource, setCreatingResource] = useState(false);
   const [deleting, setDeleting] = useState<SecretAddress | null>(null);
@@ -291,35 +300,35 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         <div className="space-y-2">
           {allResources.map((group) => (
             <ResourceBlock
-              key={group.resource}
+              key={group.resource_id}
               group={group}
-              provenance={resourceProvenance.get(group.resource)}
+              provenance={resourceProvenance.get(group.resource_id)}
               displayNameById={displayNameById}
               isAdmin={isAdmin}
               onReveal={(entry) =>
                 setRevealing({
-                  resource: group.resource,
+                  resource_id: group.resource_id,
                   slot: entry.slot,
                   key: entry.key,
                 })
               }
               onEdit={(entry) =>
                 setEditing({
-                  resource: group.resource,
+                  resource_id: group.resource_id,
                   slot: entry.slot,
                   key: entry.key,
                 })
               }
               onDelete={(entry) =>
                 setDeleting({
-                  resource: group.resource,
+                  resource_id: group.resource_id,
                   slot: entry.slot,
                   key: entry.key,
                 })
               }
-              onDeleteResource={() => setDeletingResource(group.resource)}
+              onDeleteResource={() => setDeletingResource(group.resource_id)}
               onAddEntry={(slot) =>
-                setCreating({ resource: group.resource, slot })
+                setCreating({ resource_id: group.resource_id, slot })
               }
             />
           ))}
@@ -344,7 +353,9 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
       {creatingResource ? (
         <CreateResourceDialog
           storeName={storeName}
-          existingResources={allResources.map((r) => r.resource)}
+          existingResources={(resourcesList.data?.resources ?? []).map(
+            (r) => r.name,
+          )}
           onClose={() => setCreatingResource(false)}
         />
       ) : null}
@@ -366,7 +377,8 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
       {deletingResource ? (
         <DeleteResourceDialog
           storeName={storeName}
-          resourceName={deletingResource}
+          resourceId={deletingResource}
+          resourceName={resourceNameById.get(deletingResource) ?? deletingResource}
           onClose={() => setDeletingResource(null)}
         />
       ) : null}
@@ -414,7 +426,7 @@ function ResourceBlock({
       : null;
   return (
     <details
-      data-testid={`resource-block-${group.resource}`}
+      data-testid={`resource-block-${group.resource_id}`}
       className="group rounded-md border border-(--color-line) bg-(--color-surface-0)/40 open:bg-(--color-surface-0)/70"
     >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm">
@@ -422,7 +434,7 @@ function ResourceBlock({
           className="h-4 w-4 transition-transform group-open:rotate-90"
           aria-hidden
         />
-        <span className="font-mono text-(--color-fg)">{group.resource}</span>
+        <span className="font-mono text-(--color-fg)">{group.resource_id}</span>
         {provenanceLabel ? (
           <span
             className="text-xs text-(--color-muted)"
@@ -431,7 +443,7 @@ function ResourceBlock({
                 ? `Created ${provenanceDate.toISOString()} by ${provenanceLabel}`
                 : undefined
             }
-            data-testid={`resource-provenance-${group.resource}`}
+            data-testid={`resource-provenance-${group.resource_id}`}
           >
             · by {provenanceLabel}
             {provenanceDate ? ` on ${provenanceDate.toLocaleDateString()}` : null}
@@ -445,8 +457,8 @@ function ResourceBlock({
             type="button"
             variant="ghost"
             size="sm"
-            aria-label={`Delete resource ${group.resource}`}
-            data-testid={`resource-delete-${group.resource}`}
+            aria-label={`Delete resource ${group.resource_id}`}
+            data-testid={`resource-delete-${group.resource_id}`}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -582,14 +594,14 @@ function RevealSecretDialog({
       "secret",
       "read",
       storeName,
-      address.resource,
+      address.resource_id,
       address.slot,
       address.key,
     ],
     queryFn: () =>
       postSecretRead({
         store: storeName,
-        resource: address.resource,
+        resource_id: address.resource_id,
         slot: address.slot,
         key: address.key,
       }),
@@ -632,7 +644,7 @@ function RevealSecretDialog({
           <DialogTitle>Reveal secret</DialogTitle>
           <DialogDescription>
             <code>
-              {address.resource} · {address.slot} · {address.key}
+              {address.resource_id} · {address.slot} · {address.key}
             </code>{" "}
             from <code>{storeName}</code>.
           </DialogDescription>
@@ -743,7 +755,7 @@ function WriteSecretDialog({
     mutationFn: (v: { key: string; material: string }) =>
       postSecretWrite({
         store: storeName,
-        resource: address.resource,
+        resource_id: address.resource_id,
         slot: address.slot,
         key: v.key,
         material_b64: btoa(v.material),
@@ -753,7 +765,7 @@ function WriteSecretDialog({
     mutationFn: (key: string) =>
       postSecretDelete({
         store: storeName,
-        resource: address.resource,
+        resource_id: address.resource_id,
         slot: address.slot,
         key,
       }),
@@ -801,7 +813,7 @@ function WriteSecretDialog({
           <DialogDescription>
             In resource{" "}
             <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
-              {address.resource}
+              {address.resource_id}
             </code>
             , slot{" "}
             <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
@@ -1025,7 +1037,7 @@ function DeleteSecretDialog({
     mutationFn: () =>
       postSecretDelete({
         store: storeName,
-        resource: address.resource,
+        resource_id: address.resource_id,
         slot: address.slot,
         key: address.key,
       }),
@@ -1045,7 +1057,7 @@ function DeleteSecretDialog({
           <DialogDescription>
             Removes{" "}
             <code>
-              {address.resource} · {address.slot} · {address.key}
+              {address.resource_id} · {address.slot} · {address.key}
             </code>{" "}
             from <code>{storeName}</code>. This cannot be undone.
           </DialogDescription>
@@ -1080,10 +1092,12 @@ function DeleteSecretDialog({
 
 function DeleteResourceDialog({
   storeName,
+  resourceId,
   resourceName,
   onClose,
 }: {
   storeName: string;
+  resourceId: string;
   resourceName: string;
   onClose: () => void;
 }) {
@@ -1091,7 +1105,7 @@ function DeleteResourceDialog({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const mut = useMutation({
     mutationFn: () =>
-      postResourceDelete({ store: storeName, name: resourceName }),
+      postResourceDelete({ store: storeName, id: resourceId }),
   });
   async function onDelete() {
     setSubmitError(null);

@@ -5,4 +5,4 @@ export type AdminSecretListRequest = { store: string,
  * Restrict listing to a single resource. `None` returns entries
  * for every resource in the store.
  */
-resource?: string, };
+resource_id?: string, };

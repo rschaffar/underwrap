@@ -4,9 +4,10 @@ import type { EntityCreator } from "./EntityCreator";
 /**
  * A `(wrapper, resource)` pair record, one per store.
  *
- * `resource` references a [`ResourceRecord`] by name; the admin
- * create endpoint refuses to create a pair whose resource is not
- * already present.
+ * `resource_id` references a [`ResourceRecord`] by its stable id;
+ * the admin create endpoint refuses to create a pair whose resource
+ * is not already present, and resource rename does not invalidate
+ * the reference.
  *
  * `last_used_at` is bumped server-side on every successful runtime
  * read against the pair. `None` means the pair has never been used
@@ -18,4 +19,4 @@ import type { EntityCreator } from "./EntityCreator";
  * wrapper does not project `files`. The SPA uses it to render the
  * resolved location of a stored file (mount + inner path).
  */
-export type WrapperResourcePairRecord = { wrapper: string, resource: string, created_by: EntityCreator, created_at: bigint, last_used_at: bigint | null, files_mount_paths: Array<string>, };
+export type WrapperResourcePairRecord = { wrapper: string, resource_id: string, created_by: EntityCreator, created_at: bigint, last_used_at: bigint | null, files_mount_paths: Array<string>, };

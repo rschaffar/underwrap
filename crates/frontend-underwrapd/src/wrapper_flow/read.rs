@@ -65,7 +65,17 @@ pub(super) fn process_read_for(
         .logical_name
         .clone()
         .unwrap_or_else(|| wrapper_name.to_string());
-    let resource_id = wrapper_def.resource.clone();
+    // The daemon addresses the resource by its stable backend id;
+    // `wrapper_def.resource` is the operator-facing name from the
+    // wrapper config. The register call at startup populated
+    // `state.resource_ids` with the resolved id. If the resolution
+    // hasn't happened (e.g. auto-create disabled and the resource
+    // doesn't exist on the backend yet), fall back to the name so
+    // legacy / pre-id-split fixtures keep working — the read will
+    // simply fail downstream against an unknown blob.
+    let resource_id = state
+        .resource_id_for_wrapper(wrapper_name)
+        .unwrap_or_else(|| wrapper_def.resource.clone());
 
     let decision = if approval_satisfied {
         evaluate_invocation_after_approval(
@@ -208,6 +218,14 @@ mod tests {
             store: Some(store),
             enrollment_url: None,
             client_instance: "dev-laptop".to_string(),
+            // Tests pre-bind the wrapper's resource to the same string
+            // they use as the resource id in policy permissions / blob
+            // writes. This lets the daemon look up by id directly
+            // without going through the register flow.
+            resource_ids: HashMap::from([(
+                "gh-authorized".to_string(),
+                "github/token".to_string(),
+            )]),
             pending_approvals: approval::PendingApprovals::new(),
         }
     }
@@ -251,7 +269,7 @@ mod tests {
                     permissions: vec![WrapperPermission {
                         client_instance: "other-instance".into(),
                         wrapper: "gh-authorized".into(),
-                        resource: "github/token".into(),
+                        resource_id: "github/token".into(),
                         mode: WrapperApprovalMode::Unlocked,
                         writable: false,
                         reason: None,
@@ -278,7 +296,7 @@ mod tests {
                     permissions: vec![WrapperPermission {
                         client_instance: "dev-laptop".into(),
                         wrapper: "gh-authorized".into(),
-                        resource: "github/token".into(),
+                        resource_id: "github/token".into(),
                         mode: WrapperApprovalMode::Unlocked,
                         writable: false,
                         reason: None,

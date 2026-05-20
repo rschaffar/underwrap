@@ -161,6 +161,7 @@ mod tests {
             store: None,
             enrollment_url: Some("https://backend.example.internal/enroll".into()),
             client_instance: String::new(),
+            resource_ids: std::collections::HashMap::new(),
             pending_approvals: PendingApprovals::new(),
         };
 

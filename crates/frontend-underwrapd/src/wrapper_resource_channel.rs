@@ -424,7 +424,7 @@ mod tests {
             permissions: vec![WrapperPermission {
                 client_instance: "dev-laptop".into(),
                 wrapper: "wrapper".into(),
-                resource: "github/token".into(),
+                resource_id: "github/token".into(),
                 mode: WrapperApprovalMode::Unlocked,
                 writable: false,
                 reason: None,

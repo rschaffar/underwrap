@@ -67,23 +67,19 @@ async fn service_mode_auto_creates_wrapper_assets_when_enabled() {
 
     let resources = daemon.list_resources("test").await.unwrap();
     let pairs = daemon.list_pairs("test").await.unwrap();
-    assert!(
-        resources.resources.iter().any(|r| r.name == "github/token"),
-        "auto-create on: resource github/token should appear; got {resources:?}",
-    );
-    assert!(
-        pairs
-            .pairs
-            .iter()
-            .any(|p| p.wrapper == "gh-authorized" && p.resource == "github/token"),
-        "auto-create on: pair (gh-authorized, github/token) should appear; got {pairs:?}",
-    );
     // Provenance must point at the calling client instance.
     let resource = resources
         .resources
         .iter()
         .find(|r| r.name == "github/token")
-        .unwrap();
+        .expect("auto-create on: resource github/token should appear");
+    assert!(
+        pairs
+            .pairs
+            .iter()
+            .any(|p| p.wrapper == "gh-authorized" && p.resource_id == resource.id),
+        "auto-create on: pair (gh-authorized, <github/token id>) should appear; got {pairs:?}",
+    );
     match &resource.created_by {
         underwrap_protocol::entities::EntityCreator::ClientInstance { id } => {
             assert_eq!(id, &instance_id);
@@ -105,17 +101,18 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         .await
         .unwrap();
 
-    daemon
+    let resource_record = daemon
         .create_resource("test", "github/token")
         .await
         .unwrap();
+    let resource_id = resource_record.resource.id.clone();
     daemon
-        .store_secret("test", "gh-authorized", "github/token", "ghp_value")
+        .store_secret("test", "gh-authorized", &resource_id, "ghp_value")
         .await
         .unwrap();
 
     let blocked = daemon
-        .delete_resource("test", "github/token")
+        .delete_resource("test", &resource_id)
         .await
         .unwrap();
     assert!(
@@ -139,12 +136,12 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         .unwrap();
 
     // Remove the secret. The harness writes secrets under
-    // `<resource>/env/TEST_TOKEN` (see `store_secret`).
+    // `<resource_id>/env/TEST_TOKEN` (see `store_secret`).
     let resp = daemon
         .admin_request(reqwest::Method::POST, "/v1/admin/secret/delete")
         .json(&underwrap_protocol::service::AdminSecretDeleteRequest {
             store: "test".into(),
-            resource: "github/token".into(),
+            resource_id: resource_id.clone(),
             slot: underwrap_protocol::resource::ResourceSlot::Env,
             key: "TEST_TOKEN".into(),
         })
@@ -158,7 +155,7 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
     );
 
     let ok = daemon
-        .delete_resource("test", "github/token")
+        .delete_resource("test", &resource_id)
         .await
         .unwrap();
     assert!(ok.ok, "delete should succeed after blockers cleared");

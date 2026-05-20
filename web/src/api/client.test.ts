@@ -191,6 +191,7 @@ describe("resources and pairs admin helpers", () => {
         if (String(input).endsWith("/resources/create")) {
           return mockResponse(200, {
             resource: {
+              id: "res_r",
               name: "r",
               created_by: { kind: "operator", id: "op", username: "a" },
               created_at: 1,
@@ -201,7 +202,7 @@ describe("resources and pairs admin helpers", () => {
           return mockResponse(200, {
             pair: {
               wrapper: "gh",
-              resource: "r",
+              resource_id: "res_r",
               created_by: { kind: "operator", id: "op", username: "a" },
               created_at: 1,
             },
@@ -212,11 +213,11 @@ describe("resources and pairs admin helpers", () => {
     );
 
     await postResourcesList({ store: "work" });
-    await postResourceCreate({ store: "work", name: "github/token" });
-    await postResourceDelete({ store: "work", name: "github/token" });
+    await postResourceCreate({ store: "work", name: "r" });
+    await postResourceDelete({ store: "work", id: "res_r" });
     await postPairsList({ store: "work" });
-    await postPairCreate({ store: "work", wrapper: "gh", resource: "r" });
-    await postPairDelete({ store: "work", wrapper: "gh", resource: "r" });
+    await postPairCreate({ store: "work", wrapper: "gh", resource_id: "res_r" });
+    await postPairDelete({ store: "work", wrapper: "gh", resource_id: "res_r" });
 
     expect(calls.map((c) => [c.path, c.method])).toEqual([
       ["/v1/admin/resources/list", "POST"],
@@ -227,11 +228,11 @@ describe("resources and pairs admin helpers", () => {
       ["/v1/admin/pairs/delete", "POST"],
     ]);
     expect(calls[0]!.body).toEqual({ store: "work" });
-    expect(calls[1]!.body).toEqual({ store: "work", name: "github/token" });
+    expect(calls[1]!.body).toEqual({ store: "work", name: "r" });
     expect(calls[4]!.body).toEqual({
       store: "work",
       wrapper: "gh",
-      resource: "r",
+      resource_id: "res_r",
     });
   });
 });

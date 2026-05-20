@@ -4,8 +4,13 @@ import type { EntityCreator } from "./EntityCreator";
 /**
  * A resource record, one per store.
  *
- * `name` is the resource identifier as it appears in secret ids
- * (`<resource>/<slot>/<name>`) and in `WrapperPermission.resource`. It
- * is the primary key within a store; duplicates are rejected on insert.
+ * `id` is a stable, opaque, write-once identifier (`res_<hex>`). It
+ * addresses the resource on disk (`resources/<id>` blob), in pair
+ * records, and in wrapper permissions — so renaming a resource
+ * preserves every existing reference.
+ *
+ * `name` is the operator-facing label. Mutable via the admin rename
+ * endpoint; what wrapper configs reference (operator-friendly); what
+ * the SPA shows. Duplicates rejected on insert and on rename.
  */
-export type ResourceRecord = { name: string, created_by: EntityCreator, created_at: bigint, };
+export type ResourceRecord = { id: string, name: string, created_by: EntityCreator, created_at: bigint, };
