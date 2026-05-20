@@ -3,6 +3,7 @@ use ts_rs::TS;
 
 use crate::entities::{ResourceRecord, WrapperResourcePairRecord};
 use crate::policy::{PolicyDocument, WrapperPermission};
+use crate::resource::ResourceSlot;
 
 // ===== Users admin API (ticket 240) =====
 //
@@ -529,11 +530,23 @@ pub struct AdminUiOverviewResponse {
     pub stores: Vec<AdminUiOverviewStore>,
 }
 
+// ===== Secret CRUD =====
+//
+// Per-slot entries inside a resource blob are addressed by the
+// structured tuple `(store, resource, slot, key)`. The on-disk format
+// is unchanged — handlers compose the legacy in-blob entry key via
+// `resource::compose_secret_id` internally. The wire form no longer
+// carries a flattened `secret_id` string, which removes the
+// "first-match `/<slot>/` wins" parsing ambiguity from the admin
+// surface and lets us validate keys per slot.
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminSecretReadRequest {
     pub store: String,
-    pub secret_id: String,
+    pub resource: String,
+    pub slot: ResourceSlot,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -546,12 +559,9 @@ pub struct AdminSecretReadResponse {
 #[ts(export)]
 pub struct AdminSecretWriteRequest {
     pub store: String,
-    /// The wrapper context the operator is editing under. Required: the
-    /// backend gates writes against `(wrapper, cred:<secret_id>, store.write)`
-    /// in the policy document, so a write only succeeds when the operator
-    /// has an active allow rule or grant for that tuple.
-    pub wrapper: String,
-    pub secret_id: String,
+    pub resource: String,
+    pub slot: ResourceSlot,
+    pub key: String,
     pub material_b64: String,
 }
 
@@ -559,20 +569,35 @@ pub struct AdminSecretWriteRequest {
 #[ts(export)]
 pub struct AdminSecretListRequest {
     pub store: String,
-    pub prefix: String,
+    /// Restrict listing to a single resource. `None` returns entries
+    /// for every resource in the store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resource: Option<String>,
+}
+
+/// One per-slot entry as listed by the admin surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminSecretEntry {
+    pub resource: String,
+    pub slot: ResourceSlot,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminSecretListResponse {
-    pub ids: Vec<String>,
+    pub entries: Vec<AdminSecretEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminSecretDeleteRequest {
     pub store: String,
-    pub secret_id: String,
+    pub resource: String,
+    pub slot: ResourceSlot,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

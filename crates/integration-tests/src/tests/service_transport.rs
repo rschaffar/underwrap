@@ -139,12 +139,14 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         .unwrap();
 
     // Remove the secret. The harness writes secrets under
-    // `<resource>/env/TEST_TOKEN` (see `env_secret_id`).
+    // `<resource>/env/TEST_TOKEN` (see `store_secret`).
     let resp = daemon
         .admin_request(reqwest::Method::POST, "/v1/admin/secret/delete")
         .json(&underwrap_protocol::service::AdminSecretDeleteRequest {
             store: "test".into(),
-            secret_id: "github/token/env/TEST_TOKEN".into(),
+            resource: "github/token".into(),
+            slot: underwrap_protocol::resource::ResourceSlot::Env,
+            key: "TEST_TOKEN".into(),
         })
         .send()
         .await

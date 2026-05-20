@@ -34,6 +34,7 @@ use underwrap_protocol::entities::{
     EntityCreator, PairsDocument, ResourceRecord, ResourcesDocument, WrapperResourcePairRecord,
 };
 use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
+use underwrap_protocol::resource::ResourceSlot;
 use underwrap_protocol::service::{
     AdminClientInstanceActionState, AdminClientInstanceCreateRequest,
     AdminClientInstanceDetailResponse, AdminClientInstanceListItem, AdminClientInstanceStatus,
@@ -53,7 +54,7 @@ use underwrap_protocol::service::{
     AdminResourceBlobPutResponse, AdminResourceCreateRequest, AdminResourceCreateResponse,
     AdminResourceDeleteBlockers, AdminResourceDeleteRequest, AdminResourceDeleteResponse,
     AdminResourcesListRequest, AdminResourcesListResponse, AdminSecretDeleteRequest,
-    AdminSecretDeleteResponse, AdminSecretListRequest, AdminSecretListResponse,
+    AdminSecretDeleteResponse, AdminSecretEntry, AdminSecretListRequest, AdminSecretListResponse,
     AdminSecretReadRequest, AdminSecretReadResponse, AdminSecretWriteRequest,
     AdminUiOverviewResponse, AdminUiOverviewStore, AdminUiWrapperCounts,
     AdminWrapperPermissionDeleteRequest, AdminWrapperPermissionKey,
@@ -131,11 +132,13 @@ fn ts_bindings_in_sync_with_rust() {
         AdminPolicyPutRequest,
         AdminSecretDeleteRequest,
         AdminSecretDeleteResponse,
+        AdminSecretEntry,
         AdminSecretListRequest,
         AdminSecretListResponse,
         AdminSecretReadRequest,
         AdminSecretReadResponse,
         AdminSecretWriteRequest,
+        ResourceSlot,
         AdminStoreBackendKind,
         AdminStoreUsageSummary,
         AdminStoreActionState,

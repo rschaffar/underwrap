@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { SecretsPage, groupSecretIds } from "./secrets";
+import { SecretsPage, groupSecretEntries } from "./secrets";
 
 // Mock the API surface; the unit tests assert rendering decisions
 // only and stay hermetic from a real backend.
@@ -12,15 +12,15 @@ vi.mock("@/api/client", async () => {
   return {
     ...actual,
     fetchStores: vi.fn(),
+    fetchClientInstances: vi.fn(),
     postSecretList: vi.fn(),
     postResourcesList: vi.fn(),
-    postPairsList: vi.fn(),
   };
 });
 
 import {
+  fetchClientInstances,
   fetchStores,
-  postPairsList,
   postResourcesList,
   postSecretList,
 } from "@/api/client";
@@ -53,30 +53,25 @@ describe("SecretsPage", () => {
 
   beforeEach(() => {
     vi.mocked(fetchStores).mockReset();
+    vi.mocked(fetchClientInstances).mockReset();
     vi.mocked(postSecretList).mockReset();
     vi.mocked(postResourcesList).mockReset();
-    vi.mocked(postPairsList).mockReset();
-    // Default: empty resources + pairs documents. Individual tests
-    // override these when they need provenance or wrapper choices.
     vi.mocked(postResourcesList).mockResolvedValue({ resources: [] });
-    vi.mocked(postPairsList).mockResolvedValue({ pairs: [] });
+    vi.mocked(fetchClientInstances).mockResolvedValue({ items: [] });
   });
 
-  it("filters out reserved __underwrap/ secret IDs and groups the rest by resource", async () => {
+  it("groups structured secret entries by resource", async () => {
     vi.mocked(fetchStores).mockResolvedValue(storesList);
     vi.mocked(postSecretList).mockResolvedValue({
-      ids: [
-        "github/token/env/GH_TOKEN",
-        "github/token/env/GH_USERNAME",
-        "github/gh/libsecret/credential",
-        "__underwrap/policy",
-        "__underwrap/catalog",
-        "aws/access-key/env/AWS_KEY",
+      entries: [
+        { resource: "github/token", slot: "env", key: "GH_TOKEN" },
+        { resource: "github/token", slot: "env", key: "GH_USERNAME" },
+        { resource: "github/gh", slot: "libsecret", key: "credential" },
+        { resource: "aws/access-key", slot: "env", key: "AWS_KEY" },
       ],
     });
     renderWithQuery(<SecretsPage principal={null} />);
 
-    // Resources show up as expandable blocks.
     const ghToken = await screen.findByTestId("resource-block-github/token");
     const ghGh = await screen.findByTestId("resource-block-github/gh");
     const aws = await screen.findByTestId("resource-block-aws/access-key");
@@ -84,46 +79,18 @@ describe("SecretsPage", () => {
     expect(ghGh).toBeInTheDocument();
     expect(aws).toBeInTheDocument();
 
-    // The reserved internal IDs do not produce a resource block.
-    expect(
-      screen.queryByTestId("resource-block-__underwrap/policy"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("resource-block-__underwrap/catalog"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("resource-block-unrecognized"),
-    ).not.toBeInTheDocument();
-
     // The github/token block's env section lists exactly the two
     // entries that belong to it.
     const ghTokenEnv = within(ghToken).getByTestId("slot-env");
     expect(within(ghTokenEnv).getByText("GH_TOKEN")).toBeInTheDocument();
     expect(within(ghTokenEnv).getByText("GH_USERNAME")).toBeInTheDocument();
-    // And the libsecret + files sections of the same block are empty.
     expect(within(ghToken).getByTestId("slot-files")).toHaveTextContent(/none/i);
     expect(within(ghToken).getByTestId("slot-libsecret")).toHaveTextContent(
       /none/i,
     );
 
-    // The github/gh block's libsecret section has the credential entry.
     const ghGhLibsecret = within(ghGh).getByTestId("slot-libsecret");
     expect(within(ghGhLibsecret).getByText("credential")).toBeInTheDocument();
-  });
-
-  it("surfaces non-conforming IDs in the unrecognized block", async () => {
-    vi.mocked(fetchStores).mockResolvedValue(storesList);
-    // No `/env|files|libsecret/` segment — these don't fit the
-    // wrapper-resource layout and the page should still surface
-    // them so the operator can clean up.
-    vi.mocked(postSecretList).mockResolvedValue({
-      ids: ["legacy-blob", "another/orphan"],
-    });
-    renderWithQuery(<SecretsPage principal={null} />);
-
-    const block = await screen.findByTestId("resource-block-unrecognized");
-    expect(within(block).getByText("legacy-blob")).toBeInTheDocument();
-    expect(within(block).getByText("another/orphan")).toBeInTheDocument();
   });
 
   it("lists resources from the backend even when they hold zero secrets", async () => {
@@ -131,7 +98,7 @@ describe("SecretsPage", () => {
     // soon as a resource record exists, so they can write the first
     // entries before the wrapper's first read.
     vi.mocked(fetchStores).mockResolvedValue(storesList);
-    vi.mocked(postSecretList).mockResolvedValue({ ids: [] });
+    vi.mocked(postSecretList).mockResolvedValue({ entries: [] });
     vi.mocked(postResourcesList).mockResolvedValue({
       resources: [
         {
@@ -154,53 +121,74 @@ describe("SecretsPage", () => {
 
     const block = await screen.findByTestId("resource-block-github/gh");
     expect(block).toBeInTheDocument();
-    // Slot sections report empty rather than disappearing.
     expect(within(block).getByTestId("slot-libsecret")).toHaveTextContent(
       /none/i,
     );
-    // Provenance line rendered.
     expect(
       within(block).getByTestId("resource-provenance-github/gh"),
     ).toHaveTextContent(/by alice/i);
   });
+
+  it("shows client-instance display name in resource provenance", async () => {
+    vi.mocked(fetchStores).mockResolvedValue(storesList);
+    vi.mocked(postSecretList).mockResolvedValue({ entries: [] });
+    vi.mocked(postResourcesList).mockResolvedValue({
+      resources: [
+        {
+          name: "auto/created",
+          created_by: { kind: "client-instance", id: "inst_abc123" },
+          created_at: 1_700_000_000n,
+        },
+      ],
+    });
+    vi.mocked(fetchClientInstances).mockResolvedValue({
+      items: [
+        {
+          id: "inst_abc123",
+          display_name: "shame01",
+          current_store_id: "store_default",
+          current_store_name: "default",
+          status: "active",
+          current_credential_fingerprint: "fp",
+          auto_create_wrapper_assets: true,
+          actions: {
+            can_edit_display_name: true,
+            can_remap_store: true,
+            can_disable: true,
+            can_enable: false,
+            can_delete: true,
+          },
+        },
+      ],
+    });
+
+    renderWithQuery(<SecretsPage principal={null} />);
+
+    const provenance = await screen.findByTestId(
+      "resource-provenance-auto/created",
+    );
+    expect(provenance.textContent).toMatch(/shame01/);
+    expect(provenance.textContent).not.toMatch(/inst_abc123/);
+  });
 });
 
-describe("groupSecretIds", () => {
-  it("splits on the first valid slot delimiter", () => {
-    const { resources, unrecognized } = groupSecretIds([
-      "github/token/env/GH_TOKEN",
-      "github/token/env/GH_USERNAME",
-      "github/token/files/config.json",
-      "github/gh/libsecret/credential",
-      "aws/access-key/env/AWS_KEY",
+describe("groupSecretEntries", () => {
+  it("buckets by resource and sorts each slot by key", () => {
+    const groups = groupSecretEntries([
+      { resource: "github/token", slot: "env", key: "GH_USERNAME" },
+      { resource: "github/token", slot: "env", key: "GH_TOKEN" },
+      { resource: "github/token", slot: "files", key: "config.json" },
+      { resource: "github/gh", slot: "libsecret", key: "credential" },
+      { resource: "aws/access-key", slot: "env", key: "AWS_KEY" },
     ]);
-    expect(unrecognized).toEqual([]);
-    // Resources are alphabetically sorted.
-    expect(resources.map((r) => r.resource)).toEqual([
+    expect(groups.map((r) => r.resource)).toEqual([
       "aws/access-key",
       "github/gh",
       "github/token",
     ]);
-    const token = resources.find((r) => r.resource === "github/token")!;
-    expect(token.env.map((e) => e.name)).toEqual(["GH_TOKEN", "GH_USERNAME"]);
-    expect(token.files.map((e) => e.name)).toEqual(["config.json"]);
+    const token = groups.find((r) => r.resource === "github/token")!;
+    expect(token.env.map((e) => e.key)).toEqual(["GH_TOKEN", "GH_USERNAME"]);
+    expect(token.files.map((e) => e.key)).toEqual(["config.json"]);
     expect(token.libsecret).toEqual([]);
-  });
-
-  it("preserves the full secret ID on every entry so dialogs can target it", () => {
-    const { resources } = groupSecretIds(["github/token/env/GH_TOKEN"]);
-    expect(resources[0].env[0]).toEqual({
-      id: "github/token/env/GH_TOKEN",
-      name: "GH_TOKEN",
-    });
-  });
-
-  it("surfaces non-conforming IDs in `unrecognized` without dropping them", () => {
-    const { resources, unrecognized } = groupSecretIds([
-      "stray-blob",
-      "no/slot/here-ish",
-    ]);
-    expect(resources).toEqual([]);
-    expect(unrecognized).toEqual(["no/slot/here-ish", "stray-blob"]);
   });
 });

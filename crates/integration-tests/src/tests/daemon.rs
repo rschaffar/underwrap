@@ -318,8 +318,9 @@ async fn underwrapd_binary_start_and_read() {
         .header("X-CSRF-Token", &admin_csrf_token)
         .json(&underwrap_protocol::service::AdminSecretWriteRequest {
             store: "test".to_string(),
-            wrapper: "w".to_string(),
-            secret_id: "s/t/env/TEST_TOKEN".to_string(),
+            resource: "s/t".to_string(),
+            slot: underwrap_protocol::resource::ResourceSlot::Env,
+            key: "TEST_TOKEN".to_string(),
             material_b64: base64::engine::general_purpose::STANDARD.encode("value"),
         })
         .send()

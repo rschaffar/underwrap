@@ -54,15 +54,12 @@ pub struct TestDaemon {
     handle: tokio::task::JoinHandle<Result<()>>,
 }
 
-fn env_secret_id(resource_id: &str) -> String {
-    if resource_id.contains("/env/")
-        || resource_id == underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID
-    {
-        resource_id.to_string()
-    } else {
-        format!("{resource_id}/env/TEST_TOKEN")
-    }
-}
+/// Conventional fixture-level secret key. Test fixtures write a
+/// single env entry under each resource via [`TestDaemon::store_secret`];
+/// callers receive a `(resource, slot, key)` triple internally where
+/// `key` is this constant.
+const FIXTURE_ENV_KEY: &str = "TEST_TOKEN";
+
 
 impl TestDaemon {
     /// Start a daemon with the given wrapper definitions.
@@ -338,16 +335,17 @@ impl TestDaemon {
     pub async fn admin_write_raw(
         &self,
         store: &str,
-        wrapper: &str,
-        secret_id: &str,
+        _wrapper: &str,
+        resource_id: &str,
         material: &str,
     ) -> Result<()> {
         let response = self
             .admin_request(reqwest::Method::POST, "/v1/admin/secret/write")
             .json(&underwrap_protocol::service::AdminSecretWriteRequest {
                 store: store.to_string(),
-                wrapper: wrapper.to_string(),
-                secret_id: env_secret_id(secret_id),
+                resource: resource_id.to_string(),
+                slot: underwrap_protocol::resource::ResourceSlot::Env,
+                key: FIXTURE_ENV_KEY.into(),
                 material_b64: base64::engine::general_purpose::STANDARD.encode(material.as_bytes()),
             })
             .send()

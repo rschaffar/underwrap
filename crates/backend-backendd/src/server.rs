@@ -1259,50 +1259,50 @@ fn delete_legacy_secret(store: &dyn StorageBackend, secret_id: &str) -> Result<b
     Ok(existed)
 }
 
-/// List per-key entries matching `prefix`. Empty prefix lists every
-/// entry in every resource. System-reserved prefixes fall through to
-/// raw `store.list`.
-fn list_legacy_secrets(store: &dyn StorageBackend, prefix: &str) -> Result<Vec<String>> {
-    if prefix.starts_with("__underwrap/") || prefix == "__underwrap" {
-        return store.list(prefix);
-    }
-    // Identify which resource(s) the prefix touches.
-    let derived_resource_id: Option<String> = if prefix.is_empty() {
-        None
-    } else {
-        // If the prefix already targets a specific slot, the resource
-        // is everything before the slot marker.
-        let split_resource = ["/env", "/files", "/libsecret"]
-            .iter()
-            .filter_map(|marker| prefix.find(marker).map(|idx| &prefix[..idx]))
-            .min_by_key(|s| s.len())
-            .map(str::to_string);
-        // Otherwise the prefix may itself BE a resource id.
-        split_resource.or_else(|| Some(prefix.to_string()))
-    };
+/// List per-slot entries across the store, optionally restricted to a
+/// single resource. Returns structured `(resource, slot, key)` entries
+/// — the legacy flattened ids never leave the backend.
+fn list_secret_entries(
+    store: &dyn StorageBackend,
+    resource_filter: Option<&str>,
+) -> Result<Vec<underwrap_protocol::service::AdminSecretEntry>> {
+    use underwrap_protocol::resource::parse_secret_id;
+    use underwrap_protocol::service::AdminSecretEntry;
 
-    let mut keys: Vec<String> = Vec::new();
-    let resources: Vec<String> = if let Some(rid) = derived_resource_id {
-        vec![rid]
-    } else {
-        // List every resource blob currently in storage.
-        store
+    let resources: Vec<String> = match resource_filter {
+        Some(rid) => vec![rid.to_string()],
+        None => store
             .list("resources")?
             .into_iter()
             .filter_map(|k| k.strip_prefix("resources/").map(str::to_string))
-            .collect()
+            .collect(),
     };
+
+    let mut entries: Vec<AdminSecretEntry> = Vec::new();
     for resource_id in &resources {
         let blob = load_resource_blob(store, resource_id)?;
-        let entries = expand_blob_to_entries(resource_id, &blob)?;
-        for key in entries.into_keys() {
-            if prefix.is_empty() || key == prefix || key.starts_with(&format!("{prefix}/")) {
-                keys.push(key);
-            }
+        let blob_entries = expand_blob_to_entries(resource_id, &blob)?;
+        for entry_key in blob_entries.into_keys() {
+            // `expand_blob_to_entries` produces ids of the canonical
+            // `<resource>/<slot>/<inner>` shape; anything else is a
+            // bug. Skip silently rather than fail the whole listing.
+            let Some(parsed) = parse_secret_id(&entry_key) else {
+                continue;
+            };
+            entries.push(AdminSecretEntry {
+                resource: parsed.resource_id.to_string(),
+                slot: parsed.slot,
+                key: parsed.inner.to_string(),
+            });
         }
     }
-    keys.sort();
-    Ok(keys)
+    entries.sort_by(|a, b| {
+        a.resource
+            .cmp(&b.resource)
+            .then((a.slot as u8).cmp(&(b.slot as u8)))
+            .then(a.key.cmp(&b.key))
+    });
+    Ok(entries)
 }
 
 /// Count how many per-slot entries exist under `resource_name`, plus
@@ -1316,18 +1316,50 @@ fn resource_blob_entries(store: &dyn StorageBackend, resource_name: &str) -> Res
     Ok(ids)
 }
 
+/// Validate the structured `(resource, slot, key)` tuple and compose
+/// the in-blob entry id. Centralizes the per-slot key-shape rules so
+/// every admin secret endpoint enforces them identically.
+#[allow(clippy::result_large_err)]
+fn validate_and_compose_secret_id(
+    resource: &str,
+    slot: underwrap_protocol::resource::ResourceSlot,
+    key: &str,
+) -> std::result::Result<String, Response<Full<Bytes>>> {
+    if resource.trim().is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "resource must not be empty",
+        ));
+    }
+    if resource.starts_with("__underwrap") {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "resource names starting with '__underwrap' are reserved",
+        ));
+    }
+    if let Err(msg) = underwrap_protocol::resource::validate_secret_key(slot, key) {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            &msg,
+        ));
+    }
+    Ok(underwrap_protocol::resource::compose_secret_id(
+        resource, slot, key,
+    ))
+}
+
 fn handle_admin_secret_write(
     state: &AdminRuntimeState,
     operator: &str,
     body: underwrap_protocol::service::AdminSecretWriteRequest,
 ) -> Response<Full<Bytes>> {
-    if body.secret_id == POLICY_DOCUMENT_SECRET_ID {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "policy document is reserved; use /v1/admin/policy/put",
-        );
-    }
+    let secret_id = match validate_and_compose_secret_id(&body.resource, body.slot, &body.key) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let material = match base64::engine::general_purpose::STANDARD.decode(&body.material_b64) {
         Ok(material) => material,
         Err(e) => {
@@ -1349,13 +1381,13 @@ fn handle_admin_secret_write(
     // policy document gate wrapper-side writes only — admins can't
     // be locked out of their own backend.
 
-    match write_legacy_secret(store.as_ref(), &body.secret_id, &material) {
+    match write_legacy_secret(store.as_ref(), &secret_id, &material) {
         Ok(()) => {
             info!(
                 audit = "secret_stored",
                 operator = %operator,
                 store = %body.store,
-                secret = %body.secret_id,
+                secret = %secret_id,
             );
             json_response(
                 StatusCode::OK,
@@ -5237,22 +5269,30 @@ async fn handle_admin_request(
         >(request)
         .await
         {
-            Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                Ok(store) => match read_legacy_secret(store.as_ref(), &body.secret_id) {
-                    Ok(material) => json_response(
-                        StatusCode::OK,
-                        &underwrap_protocol::service::AdminSecretReadResponse {
-                            material_b64: material.map(|material| {
-                                base64::engine::general_purpose::STANDARD.encode(material.as_ref())
-                            }),
-                        },
-                    ),
-                    Err(e) => {
-                        error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
-                    }
-                },
-                Err(resp) => resp,
-            },
+            Ok(body) => {
+                let secret_id =
+                    match validate_and_compose_secret_id(&body.resource, body.slot, &body.key) {
+                        Ok(id) => id,
+                        Err(resp) => return Ok(resp),
+                    };
+                match admin_store_for_principal(&state, &principal, &body.store) {
+                    Ok(store) => match read_legacy_secret(store.as_ref(), &secret_id) {
+                        Ok(material) => json_response(
+                            StatusCode::OK,
+                            &underwrap_protocol::service::AdminSecretReadResponse {
+                                material_b64: material.map(|material| {
+                                    base64::engine::general_purpose::STANDARD
+                                        .encode(material.as_ref())
+                                }),
+                            },
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                        }
+                    },
+                    Err(resp) => resp,
+                }
+            }
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/secret/write") => {
@@ -5271,10 +5311,11 @@ async fn handle_admin_request(
                 .await
             {
                 Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match list_legacy_secrets(store.as_ref(), &body.prefix) {
-                        Ok(ids) => json_response(
+                    Ok(store) => match list_secret_entries(store.as_ref(), body.resource.as_deref())
+                    {
+                        Ok(entries) => json_response(
                             StatusCode::OK,
-                            &underwrap_protocol::service::AdminSecretListResponse { ids },
+                            &underwrap_protocol::service::AdminSecretListResponse { entries },
                         ),
                         Err(e) => {
                             error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
@@ -5292,18 +5333,30 @@ async fn handle_admin_request(
             match parse_json_body::<underwrap_protocol::service::AdminSecretDeleteRequest>(request)
                 .await
             {
-                Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match delete_legacy_secret(store.as_ref(), &body.secret_id) {
-                        Ok(existed) => json_response(
-                            StatusCode::OK,
-                            &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
-                        ),
-                        Err(e) => {
-                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
-                        }
-                    },
-                    Err(resp) => resp,
-                },
+                Ok(body) => {
+                    let secret_id = match validate_and_compose_secret_id(
+                        &body.resource,
+                        body.slot,
+                        &body.key,
+                    ) {
+                        Ok(id) => id,
+                        Err(resp) => return Ok(resp),
+                    };
+                    match admin_store_for_principal(&state, &principal, &body.store) {
+                        Ok(store) => match delete_legacy_secret(store.as_ref(), &secret_id) {
+                            Ok(existed) => json_response(
+                                StatusCode::OK,
+                                &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
+                            ),
+                            Err(e) => error_response(
+                                StatusCode::BAD_REQUEST,
+                                "admin_error",
+                                &e.to_string(),
+                            ),
+                        },
+                        Err(resp) => resp,
+                    }
+                }
                 Err(response) => response,
             }
         }

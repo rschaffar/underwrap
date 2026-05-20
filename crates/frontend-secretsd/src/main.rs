@@ -117,9 +117,13 @@ fn read_init_section(init_fd: i32) -> Result<LibsecretSection> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    // secretsd runs inside the wrapper's namespace and inherits the user's
+    // terminal stderr, so default to `warn` to keep routine startup and
+    // per-call DBus traces off the console. Set `RUST_LOG=underwrap_secretsd=info`
+    // (or `debug`) to re-enable them when debugging.
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
 

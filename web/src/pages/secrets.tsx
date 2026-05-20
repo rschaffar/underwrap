@@ -26,14 +26,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  type AdminPairsListResponse,
+  type AdminClientInstancesListResponse,
   type AdminResourcesListResponse,
+  type AdminSecretEntry,
   type AdminSecretListResponse,
   type AdminSecretReadResponse,
   type AdminStoresListResponse,
   type EntityCreator,
+  fetchClientInstances,
   fetchStores,
-  postPairsList,
   postResourceCreate,
   postResourceDelete,
   postResourcesList,
@@ -42,6 +43,7 @@ import {
   postSecretRead,
   postSecretWrite,
   type ResourceRecord,
+  type ResourceSlot,
   type WhoamiResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -55,19 +57,21 @@ interface SecretsPageProps {
   principal: WhoamiResponse | null;
 }
 
-/**
- * The three backend "slots" every wrapper resource has. The secret
- * ID layout is `<resource>/<slot>/<name>` — see `examples/config.yaml`
- * and `crates/shared-protocol/src/config.rs`.
- */
-export const SECRET_SLOTS = ["env", "files", "libsecret"] as const;
-export type SecretSlot = (typeof SECRET_SLOTS)[number];
+/** The three backend slots every resource has. */
+export const SECRET_SLOTS = ["env", "files", "libsecret"] as const satisfies ReadonlyArray<ResourceSlot>;
+export type SecretSlot = ResourceSlot;
 
+/** A single per-slot entry inside a resource. */
 export interface SecretEntry {
-  /** Full secret ID, as stored in the backend. */
-  id: string;
-  /** Entry name within the slot — everything after `<slot>/`. */
-  name: string;
+  slot: SecretSlot;
+  key: string;
+}
+
+/** Address of a per-slot entry — the structured tuple the admin API takes. */
+export interface SecretAddress {
+  resource: string;
+  slot: SecretSlot;
+  key: string;
 }
 
 export interface SecretResourceGroup {
@@ -83,53 +87,31 @@ function resourceCount(g: SecretResourceGroup): number {
 }
 
 /**
- * Parse a list of secret IDs into resource-grouped buckets. Each
- * ID is expected to match `<resource>/<slot>/<name>` where `<slot>`
- * is one of env/files/libsecret. IDs that don't match the layout
- * are surfaced separately as `unrecognized` so the operator can
- * see and clean them up rather than have them silently disappear.
- *
- * Non-greedy on the resource segment so a deeply-nested resource
- * path resolves to the first valid slot delimiter (the common
- * shape — see the `prefer the leftmost split` test case).
+ * Group structured `AdminSecretEntry` rows from the admin API into
+ * per-resource buckets, with each slot sorted by key. The backend
+ * already guarantees the shape (legacy path-encoded ids never reach
+ * the wire), so there is no "unrecognized" bucket here.
  */
-export function groupSecretIds(ids: string[]): {
-  resources: SecretResourceGroup[];
-  unrecognized: string[];
-} {
+export function groupSecretEntries(
+  entries: AdminSecretEntry[],
+): SecretResourceGroup[] {
   const groups = new Map<string, SecretResourceGroup>();
-  const unrecognized: string[] = [];
-  const pattern = /^(.+?)\/(env|files|libsecret)\/(.+)$/;
-  for (const id of ids) {
-    const m = pattern.exec(id);
-    if (!m) {
-      unrecognized.push(id);
-      continue;
-    }
-    const [, resource, slot, name] = m as unknown as [
-      string,
-      string,
-      SecretSlot,
-      string,
-    ];
-    let g = groups.get(resource);
+  for (const entry of entries) {
+    let g = groups.get(entry.resource);
     if (!g) {
-      g = { resource, env: [], files: [], libsecret: [] };
-      groups.set(resource, g);
+      g = { resource: entry.resource, env: [], files: [], libsecret: [] };
+      groups.set(entry.resource, g);
     }
-    g[slot].push({ id, name });
+    g[entry.slot].push({ slot: entry.slot, key: entry.key });
   }
-  // Stable sort within each slot, then by resource name.
   for (const g of groups.values()) {
-    g.env.sort((a, b) => a.name.localeCompare(b.name));
-    g.files.sort((a, b) => a.name.localeCompare(b.name));
-    g.libsecret.sort((a, b) => a.name.localeCompare(b.name));
+    g.env.sort((a, b) => a.key.localeCompare(b.key));
+    g.files.sort((a, b) => a.key.localeCompare(b.key));
+    g.libsecret.sort((a, b) => a.key.localeCompare(b.key));
   }
-  const resources = [...groups.values()].sort((a, b) =>
+  return [...groups.values()].sort((a, b) =>
     a.resource.localeCompare(b.resource),
   );
-  unrecognized.sort();
-  return { resources, unrecognized };
 }
 
 export function SecretsPage({ principal: _principal }: SecretsPageProps) {
@@ -161,29 +143,32 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
 
   const list = useQuery<AdminSecretListResponse>({
     queryKey: ["admin", "secrets", storeName],
-    queryFn: () => postSecretList({ store: storeName!, prefix: "" }),
+    queryFn: () => postSecretList({ store: storeName! }),
     enabled: !!storeName,
   });
   // Resources are first-class backend records — these drive the
   // "empty resource" rows (resources that exist but have no secrets
-  // yet) and the provenance display. The pairs list seeds the wrapper
-  // selector in the write dialog.
+  // yet) and the provenance display.
   const resourcesList = useQuery<AdminResourcesListResponse>({
     queryKey: ["admin", "resources", storeName],
     queryFn: () => postResourcesList({ store: storeName! }),
     enabled: !!storeName,
   });
-  const pairsList = useQuery<AdminPairsListResponse>({
-    queryKey: ["admin", "pairs", storeName],
-    queryFn: () => postPairsList({ store: storeName! }),
-    enabled: !!storeName,
+  // Client-instance directory powers `displayNameById` so resource
+  // provenance shows the operator-facing name instead of the opaque
+  // backend id when a client instance auto-created a resource.
+  const clientInstancesList = useQuery<AdminClientInstancesListResponse>({
+    queryKey: ["admin", "client-instances"],
+    queryFn: fetchClientInstances,
   });
+  const displayNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const i of clientInstancesList.data?.items ?? []) {
+      map.set(i.id, i.display_name);
+    }
+    return map;
+  }, [clientInstancesList.data]);
   const isAdmin = !!(_principal?.authenticated && _principal.role === "admin");
-  const wrapperChoices = useMemo(() => {
-    const set = new Set<string>();
-    for (const p of pairsList.data?.pairs ?? []) set.add(p.wrapper);
-    return [...set].sort();
-  }, [pairsList.data]);
   const resourceProvenance = useMemo(() => {
     const map = new Map<string, ResourceRecord>();
     for (const r of resourcesList.data?.resources ?? []) {
@@ -192,34 +177,10 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     return map;
   }, [resourcesList.data]);
 
-  /**
-   * Map from resource name to the wrappers that project its `files`
-   * slot, plus the target-home-relative paths each wrapper mounts it
-   * at. Used by SlotSection (slot=files) to render the resolved
-   * location for each stored file.
-   */
-  const fileMountsByResource = useMemo(() => {
-    const map = new Map<string, Array<{ wrapper: string; paths: string[] }>>();
-    for (const p of pairsList.data?.pairs ?? []) {
-      if (p.files_mount_paths.length === 0) continue;
-      const list = map.get(p.resource) ?? [];
-      list.push({ wrapper: p.wrapper, paths: p.files_mount_paths });
-      map.set(p.resource, list);
-    }
-    for (const arr of map.values()) arr.sort((a, b) => a.wrapper.localeCompare(b.wrapper));
-    return map;
-  }, [pairsList.data]);
-
-  // Filter out reserved underwrap internal secret IDs so operators
-  // don't accidentally read or delete them through this UI.
-  // The backend already rejects writes for the policy ID with a clear
-  // error, but hiding it removes the foot-gun entirely.
-  const RESERVED_PREFIX = /^__underwrap\//;
-  const visibleIds = useMemo(
-    () => (list.data?.ids ?? []).filter((id) => !RESERVED_PREFIX.test(id)),
+  const grouped = useMemo(
+    () => groupSecretEntries(list.data?.entries ?? []),
     [list.data],
   );
-  const grouped = useMemo(() => groupSecretIds(visibleIds), [visibleIds]);
 
   // Resources known to this store: every persisted resource record
   // (which lives on the backend with provenance) plus any extra
@@ -228,7 +189,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
   // but tolerating it means a legacy import doesn't break the UI.
   const allResources = useMemo<SecretResourceGroup[]>(() => {
     const byResource = new Map<string, SecretResourceGroup>();
-    for (const g of grouped.resources) {
+    for (const g of grouped) {
       byResource.set(g.resource, g);
     }
     for (const record of resourcesList.data?.resources ?? []) {
@@ -244,15 +205,15 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     return [...byResource.values()].sort((a, b) =>
       a.resource.localeCompare(b.resource),
     );
-  }, [grouped.resources, resourcesList.data]);
+  }, [grouped, resourcesList.data]);
 
-  const [revealing, setRevealing] = useState<string | null>(null);
-  const [editing, setEditing] = useState<string | null>(null);
-  const [creating, setCreating] = useState<{ prefilledId?: string } | null>(
-    null,
-  );
+  const [revealing, setRevealing] = useState<SecretAddress | null>(null);
+  const [editing, setEditing] = useState<SecretAddress | null>(null);
+  const [creating, setCreating] = useState<
+    { resource: string; slot: SecretSlot } | null
+  >(null);
   const [creatingResource, setCreatingResource] = useState(false);
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<SecretAddress | null>(null);
   const [deletingResource, setDeletingResource] = useState<string | null>(null);
 
   if (!storeName) {
@@ -319,7 +280,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         <p role="alert" className="text-sm text-rose-300">
           {describeApiError(list.error)}
         </p>
-      ) : allResources.length === 0 && grouped.unrecognized.length === 0 ? (
+      ) : allResources.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
           No resources are known to this store yet. Use{" "}
           <strong className="text-(--color-fg)">Create resource</strong>{" "}
@@ -333,34 +294,42 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
               key={group.resource}
               group={group}
               provenance={resourceProvenance.get(group.resource)}
-              fileMounts={fileMountsByResource.get(group.resource) ?? []}
+              displayNameById={displayNameById}
               isAdmin={isAdmin}
-              onReveal={setRevealing}
-              onEdit={setEditing}
-              onDelete={setDeleting}
+              onReveal={(entry) =>
+                setRevealing({
+                  resource: group.resource,
+                  slot: entry.slot,
+                  key: entry.key,
+                })
+              }
+              onEdit={(entry) =>
+                setEditing({
+                  resource: group.resource,
+                  slot: entry.slot,
+                  key: entry.key,
+                })
+              }
+              onDelete={(entry) =>
+                setDeleting({
+                  resource: group.resource,
+                  slot: entry.slot,
+                  key: entry.key,
+                })
+              }
               onDeleteResource={() => setDeletingResource(group.resource)}
               onAddEntry={(slot) =>
-                setCreating({
-                  prefilledId: `${group.resource}/${slot}/`,
-                })
+                setCreating({ resource: group.resource, slot })
               }
             />
           ))}
-          {grouped.unrecognized.length > 0 ? (
-            <UnrecognizedBlock
-              ids={grouped.unrecognized}
-              onReveal={setRevealing}
-              onEdit={setEditing}
-              onDelete={setDeleting}
-            />
-          ) : null}
         </div>
       )}
 
       {revealing ? (
         <RevealSecretDialog
           storeName={storeName}
-          secretId={revealing}
+          address={revealing}
           onClose={() => setRevealing(null)}
         />
       ) : null}
@@ -368,8 +337,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         <WriteSecretDialog
           storeName={storeName}
           mode="create"
-          prefilledSecretId={creating.prefilledId}
-          wrapperChoices={wrapperChoices}
+          address={{ ...creating, key: "" }}
           onClose={() => setCreating(null)}
         />
       ) : null}
@@ -384,15 +352,14 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         <WriteSecretDialog
           storeName={storeName}
           mode="edit"
-          existingId={editing}
-          wrapperChoices={wrapperChoices}
+          address={editing}
           onClose={() => setEditing(null)}
         />
       ) : null}
       {deleting ? (
         <DeleteSecretDialog
           storeName={storeName}
-          secretId={deleting}
+          address={deleting}
           onClose={() => setDeleting(null)}
         />
       ) : null}
@@ -410,15 +377,15 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
 // ---------- Resource block (expandable) ----------
 
 interface RowActions {
-  onReveal: (id: string) => void;
-  onEdit: (id: string) => void;
-  onDelete: (id: string) => void;
+  onReveal: (entry: SecretEntry) => void;
+  onEdit: (entry: SecretEntry) => void;
+  onDelete: (entry: SecretEntry) => void;
 }
 
 function ResourceBlock({
   group,
   provenance,
-  fileMounts,
+  displayNameById,
   isAdmin,
   onAddEntry,
   onDeleteResource,
@@ -426,7 +393,7 @@ function ResourceBlock({
 }: {
   group: SecretResourceGroup;
   provenance: ResourceRecord | undefined;
-  fileMounts: Array<{ wrapper: string; paths: string[] }>;
+  displayNameById: Map<string, string>;
   isAdmin: boolean;
   onAddEntry: (slot: SecretSlot) => void;
   onDeleteResource: () => void;
@@ -438,7 +405,9 @@ function ResourceBlock({
   const summary = SECRET_SLOTS.filter((slot) => group[slot].length > 0)
     .map((slot) => `${slot} (${group[slot].length})`)
     .join(" · ");
-  const provenanceLabel = provenance ? describeCreator(provenance.created_by) : null;
+  const provenanceLabel = provenance
+    ? describeCreator(provenance.created_by, displayNameById)
+    : null;
   const provenanceDate =
     provenance && Number(provenance.created_at)
       ? new Date(Number(provenance.created_at) * 1000)
@@ -495,7 +464,6 @@ function ResourceBlock({
             key={slot}
             slot={slot}
             entries={group[slot]}
-            fileMounts={slot === "files" ? fileMounts : []}
             isAdmin={isAdmin}
             onAdd={() => onAddEntry(slot)}
             {...actions}
@@ -506,26 +474,27 @@ function ResourceBlock({
   );
 }
 
-function describeCreator(creator: EntityCreator): string {
+function describeCreator(
+  creator: EntityCreator,
+  displayNameById?: Map<string, string>,
+): string {
   switch (creator.kind) {
     case "operator":
       return creator.username;
     case "client-instance":
-      return `client ${creator.id}`;
+      return `client ${displayNameById?.get(creator.id) ?? creator.id}`;
   }
 }
 
 function SlotSection({
   slot,
   entries,
-  fileMounts,
   isAdmin: _isAdmin,
   onAdd,
   ...actions
 }: {
   slot: SecretSlot;
   entries: SecretEntry[];
-  fileMounts: Array<{ wrapper: string; paths: string[] }>;
   isAdmin: boolean;
   onAdd: () => void;
 } & RowActions) {
@@ -553,29 +522,12 @@ function SlotSection({
         <ul className="space-y-1">
           {entries.map((entry) => (
             <li
-              key={entry.id}
+              key={`${entry.slot}|${entry.key}`}
               className="flex flex-col gap-1 rounded-md px-2 py-1.5 hover:bg-(--color-surface-1)/50 sm:flex-row sm:items-center sm:gap-2"
             >
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <span
-                  className="font-mono text-xs text-(--color-fg)"
-                  title={entry.id}
-                >
-                  {entry.name}
-                </span>
-                {slot === "files" && fileMounts.length > 0 ? (
-                  <span
-                    className="font-mono text-[10px] text-(--color-muted)"
-                    data-testid={`file-mounts-${entry.id}`}
-                  >
-                    {fileMounts
-                      .flatMap((m) =>
-                        m.paths.map((p) => `${p}/${entry.name} (${m.wrapper})`),
-                      )
-                      .join(" · ")}
-                  </span>
-                ) : null}
-              </div>
+              <span className="font-mono text-xs text-(--color-fg)">
+                {entry.key}
+              </span>
               <div className="ml-auto inline-flex gap-2">
                 <EntryActions entry={entry} {...actions} />
               </div>
@@ -595,23 +547,15 @@ function EntryActions({
 }: { entry: SecretEntry } & RowActions) {
   return (
     <>
-      <Button variant="ghost" size="sm" onClick={() => onReveal(entry.id)}>
+      <Button variant="ghost" size="sm" onClick={() => onReveal(entry)}>
         <Eye className="mr-1.5 h-4 w-4" aria-hidden />
         Reveal
       </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onEdit(entry.id)}
-      >
+      <Button variant="ghost" size="sm" onClick={() => onEdit(entry)}>
         <Pencil className="mr-1.5 h-4 w-4" aria-hidden />
         Edit
       </Button>
-      <Button
-        variant="destructive"
-        size="sm"
-        onClick={() => onDelete(entry.id)}
-      >
+      <Button variant="destructive" size="sm" onClick={() => onDelete(entry)}>
         <Trash2 className="mr-1.5 h-4 w-4" aria-hidden />
         Delete
       </Button>
@@ -619,67 +563,36 @@ function EntryActions({
   );
 }
 
-function UnrecognizedBlock({
-  ids,
-  ...actions
-}: { ids: string[] } & RowActions) {
-  return (
-    <details
-      data-testid="resource-block-unrecognized"
-      className="group rounded-md border border-amber-500/30 bg-amber-500/5"
-    >
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm">
-        <ChevronRight
-          className="h-4 w-4 transition-transform group-open:rotate-90"
-          aria-hidden
-        />
-        <span className="text-amber-200">Unrecognized layout</span>
-        <span className="ml-auto text-xs text-amber-200/70">
-          {ids.length} {ids.length === 1 ? "secret" : "secrets"}
-        </span>
-      </summary>
-      <div className="space-y-1 border-t border-amber-500/30 px-4 py-3">
-        <p className="pb-2 text-xs text-amber-200/80">
-          These IDs don't follow the{" "}
-          <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
-            &lt;resource&gt;/&lt;env|files|libsecret&gt;/&lt;name&gt;
-          </code>{" "}
-          convention. They may be left over from an older import.
-        </p>
-        <ul className="space-y-1">
-          {ids.map((id) => (
-            <li
-              key={id}
-              className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-(--color-surface-1)/50"
-            >
-              <span className="font-mono text-xs text-(--color-fg)">{id}</span>
-              <div className="ml-auto inline-flex gap-2">
-                <EntryActions entry={{ id, name: id }} {...actions} />
-              </div>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </details>
-  );
-}
-
 // ---------- Reveal ----------
 
 function RevealSecretDialog({
   storeName,
-  secretId,
+  address,
   onClose,
 }: {
   storeName: string;
-  secretId: string;
+  address: SecretAddress;
   onClose: () => void;
 }) {
   const [confirmed, setConfirmed] = useState(false);
   const [copied, setCopied] = useState(false);
   const read = useQuery<AdminSecretReadResponse>({
-    queryKey: ["admin", "secret", "read", storeName, secretId],
-    queryFn: () => postSecretRead({ store: storeName, secret_id: secretId }),
+    queryKey: [
+      "admin",
+      "secret",
+      "read",
+      storeName,
+      address.resource,
+      address.slot,
+      address.key,
+    ],
+    queryFn: () =>
+      postSecretRead({
+        store: storeName,
+        resource: address.resource,
+        slot: address.slot,
+        key: address.key,
+      }),
     // Only fire after the operator confirms they want to view it.
     enabled: confirmed,
     // Don't cache the secret material in the React Query store any
@@ -718,7 +631,10 @@ function RevealSecretDialog({
         <DialogHeader>
           <DialogTitle>Reveal secret</DialogTitle>
           <DialogDescription>
-            <code>{secretId}</code> from <code>{storeName}</code>.
+            <code>
+              {address.resource} · {address.slot} · {address.key}
+            </code>{" "}
+            from <code>{storeName}</code>.
           </DialogDescription>
         </DialogHeader>
 
@@ -785,15 +701,18 @@ function RevealSecretDialog({
 }
 
 // ---------- Write (create + edit share the dialog) ----------
+//
+// The dialog edits the structured `(resource, slot, key)` address
+// directly. Resource and slot are locked in both modes — they're
+// pinned by the page row that opened the dialog, and changing them
+// would amount to moving an entry across resources/slots, which the
+// API doesn't model as a single operation. Key is editable in both
+// modes; on edit, a key change is implemented as write-new +
+// delete-old (best-effort: a failure between the two leaves both
+// entries present until the operator deletes one manually).
 
 const writeSchema = z.object({
-  secret_id: z
-    .string()
-    .min(1, "Secret ID is required.")
-    .refine((s) => !s.startsWith("__underwrap/"), {
-      message: "Reserved IDs starting with __underwrap/ cannot be used.",
-    }),
-  wrapper: z.string().min(1, "Pick a wrapper context."),
+  key: z.string().min(1, "Key is required."),
   material: z.string().min(1, "Material is required."),
 });
 type WriteValues = z.infer<typeof writeSchema>;
@@ -801,128 +720,130 @@ type WriteValues = z.infer<typeof writeSchema>;
 function WriteSecretDialog({
   storeName,
   mode,
-  existingId,
-  prefilledSecretId,
-  wrapperChoices,
+  address,
   onClose,
 }: {
   storeName: string;
   mode: "create" | "edit";
-  existingId?: string;
-  prefilledSecretId?: string;
-  wrapperChoices: string[];
+  /**
+   * The address the dialog opens against. In `create` mode `key` is
+   * the empty string; in `edit` mode it's the existing key.
+   */
+  address: SecretAddress;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const [submitError, setSubmitError] = useState<string | null>(null);
   const form = useForm<WriteValues>({
     resolver: zodResolver(writeSchema),
-    defaultValues: {
-      secret_id: existingId ?? prefilledSecretId ?? "",
-      wrapper: wrapperChoices[0] ?? "",
-      material: "",
-    },
+    defaultValues: { key: address.key, material: "" },
   });
 
-  const mut = useMutation({
-    mutationFn: (v: WriteValues) =>
+  const writeMut = useMutation({
+    mutationFn: (v: { key: string; material: string }) =>
       postSecretWrite({
         store: storeName,
-        wrapper: v.wrapper,
-        secret_id: v.secret_id,
+        resource: address.resource,
+        slot: address.slot,
+        key: v.key,
         material_b64: btoa(v.material),
       }),
-    onSuccess: async () => {
-      await qc.invalidateQueries({
-        queryKey: ["admin", "secrets", storeName],
-      });
-      onClose();
-    },
-    onError: (err) => setSubmitError(describeApiError(err)),
   });
+  const deleteMut = useMutation({
+    mutationFn: (key: string) =>
+      postSecretDelete({
+        store: storeName,
+        resource: address.resource,
+        slot: address.slot,
+        key,
+      }),
+  });
+
+  async function onSubmit(v: WriteValues) {
+    setSubmitError(null);
+    try {
+      await writeMut.mutateAsync(v);
+      // Rename path: edit + key changed → delete the old entry.
+      // Best-effort — if this fails the new entry already landed and
+      // the operator sees both rows until they delete the stale one
+      // by hand.
+      if (mode === "edit" && v.key !== address.key) {
+        try {
+          await deleteMut.mutateAsync(address.key);
+        } catch (e) {
+          setSubmitError(
+            `New entry saved as ${v.key}, but deleting the old ${address.key} failed: ${describeApiError(e)}`,
+          );
+          await qc.invalidateQueries({
+            queryKey: ["admin", "secrets", storeName],
+          });
+          return;
+        }
+      }
+      await qc.invalidateQueries({ queryKey: ["admin", "secrets", storeName] });
+      onClose();
+    } catch (e) {
+      setSubmitError(describeApiError(e));
+    }
+  }
+
+  const pending = writeMut.isPending || deleteMut.isPending;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {mode === "create" ? "Create secret" : `Edit: ${existingId}`}
+            {mode === "create"
+              ? `Create ${address.slot} entry`
+              : `Edit ${address.slot} entry`}
           </DialogTitle>
           <DialogDescription>
-            {mode === "create"
-              ? "New secret in this store."
-              : "Overwrite the stored material. Old value cannot be recovered."}{" "}
-            Material is sent over TLS, base64-encoded in transit, and
+            In resource{" "}
+            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
+              {address.resource}
+            </code>
+            , slot{" "}
+            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
+              {address.slot}
+            </code>
+            . Material is sent over TLS, base64-encoded in transit, and
             never echoed back.
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit((v) => {
-              setSubmitError(null);
-              mut.mutate(v);
-            })}
+            onSubmit={form.handleSubmit(onSubmit)}
             className="space-y-4"
             noValidate
           >
             <FormField
               control={form.control}
-              name="secret_id"
+              name="key"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Secret ID</FormLabel>
+                  <FormLabel>Key</FormLabel>
                   <FormControl>
                     <Input
-                      autoFocus={mode === "create"}
-                      readOnly={mode === "edit"}
+                      autoFocus
                       autoCapitalize="off"
                       autoCorrect="off"
                       spellCheck={false}
-                      placeholder="e.g. github/token/env/GH_TOKEN"
+                      placeholder={
+                        address.slot === "env"
+                          ? "e.g. GH_TOKEN"
+                          : address.slot === "files"
+                            ? "e.g. config.yaml or nested/dir/file"
+                            : "e.g. default/gh-cli.secret"
+                      }
                       {...field}
                     />
                   </FormControl>
                   <FormDescription>
-                    Slash-delimited path. <code>env/&lt;NAME&gt;</code>{" "}
-                    suffixes are conventional for environment-mode
-                    wrappers.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="wrapper"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Wrapper context</FormLabel>
-                  <FormControl>
-                    {wrapperChoices.length === 0 ? (
-                      <Input
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        spellCheck={false}
-                        placeholder="e.g. gh-authorized"
-                        {...field}
-                      />
-                    ) : (
-                      <select
-                        {...field}
-                        className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
-                      >
-                        {wrapperChoices.map((w) => (
-                          <option key={w} value={w}>
-                            {w}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </FormControl>
-                  <FormDescription>
-                    Used for backend write authorization. Free-form
-                    when no wrapper/resource pairs are registered yet.
+                    {address.slot === "env"
+                      ? "Environment variable name — letters, digits, and underscores."
+                      : "Relative path inside the slot. Renaming this key on edit moves the entry."}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -958,8 +879,8 @@ function WriteSecretDialog({
               <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={mut.isPending}>
-                {mut.isPending
+              <Button type="submit" disabled={pending}>
+                {pending
                   ? "Saving…"
                   : mode === "create"
                     ? "Create"
@@ -1091,18 +1012,23 @@ function CreateResourceDialog({
 
 function DeleteSecretDialog({
   storeName,
-  secretId,
+  address,
   onClose,
 }: {
   storeName: string;
-  secretId: string;
+  address: SecretAddress;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const [submitError, setSubmitError] = useState<string | null>(null);
   const mut = useMutation({
     mutationFn: () =>
-      postSecretDelete({ store: storeName, secret_id: secretId }),
+      postSecretDelete({
+        store: storeName,
+        resource: address.resource,
+        slot: address.slot,
+        key: address.key,
+      }),
     onSuccess: async () => {
       await qc.invalidateQueries({
         queryKey: ["admin", "secrets", storeName],
@@ -1117,8 +1043,11 @@ function DeleteSecretDialog({
         <DialogHeader>
           <DialogTitle>Delete secret</DialogTitle>
           <DialogDescription>
-            Removes <code>{secretId}</code> from <code>{storeName}</code>.
-            This cannot be undone.
+            Removes{" "}
+            <code>
+              {address.resource} · {address.slot} · {address.key}
+            </code>{" "}
+            from <code>{storeName}</code>. This cannot be undone.
           </DialogDescription>
         </DialogHeader>
         {submitError ? (

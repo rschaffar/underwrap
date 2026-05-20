@@ -12,11 +12,15 @@
 //! `libsecret:<resource>` — the scoping strings here describe the grant
 //! key, not a storage path.
 //!
-//! The legacy "fully-qualified secret id" shape
-//! (`<resource>/<slot>/<path>`) survives only as the address space the
-//! per-key admin endpoints accept; helpers below parse it into resource
-//! id + slot + inner path so callers can route per-key operations to
-//! the corresponding blob field.
+//! Admin endpoints address per-slot entries via the structured tuple
+//! `(resource, slot, key)`; [`compose_secret_id`] is the canonical
+//! mapping from that tuple to the in-blob entry key used by the
+//! resource bundle expansion. [`parse_secret_id`] is the inverse, kept
+//! around for code paths that still receive a flattened id from the
+//! wire (e.g. legacy fixtures).
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 pub const ENV_SLOT: &str = "env";
 pub const FILES_SLOT: &str = "files";
@@ -39,10 +43,10 @@ pub fn libsecret_resource(resource_id: &str) -> String {
     format!("libsecret:{resource_id}")
 }
 
-/// Parse a legacy per-slot secret id of the form
-/// `<resource_id>/<slot>/<inner>` into its components. Returns
-/// `None` when no slot is present in canonical position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The three logical slots inside a resource blob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
 pub enum ResourceSlot {
     Env,
     Files,
@@ -55,6 +59,39 @@ impl ResourceSlot {
             Self::Env => ENV_SLOT,
             Self::Files => FILES_SLOT,
             Self::Libsecret => LIBSECRET_SLOT,
+        }
+    }
+}
+
+/// Compose the in-blob entry key for `(resource_id, slot, key)`. This
+/// is the canonical mapping admin handlers use to route a structured
+/// secret address into the legacy entry map produced by
+/// `expand_blob_to_entries`.
+pub fn compose_secret_id(resource_id: &str, slot: ResourceSlot, key: &str) -> String {
+    format!("{resource_id}/{}/{key}", slot.name())
+}
+
+/// Validate a per-slot key supplied by an operator. Returns the
+/// trimmed key on success and a user-facing error string on rejection.
+///
+/// Rules:
+/// - `env`: must satisfy [`validate_env_name`] (identifier-shaped and
+///   not a reserved hardening name).
+/// - `files`, `libsecret`: path-shaped — non-empty, no leading slash,
+///   no `.`/`..`/empty segments, no null bytes.
+pub fn validate_secret_key(slot: ResourceSlot, key: &str) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("key must not be empty".into());
+    }
+    match slot {
+        ResourceSlot::Env => validate_env_name(key).map_err(str::to_string),
+        ResourceSlot::Files | ResourceSlot::Libsecret => {
+            if has_traversal(key) {
+                return Err(
+                    "key must be a relative path with no empty segments, '.' or '..'".into(),
+                );
+            }
+            Ok(())
         }
     }
 }
@@ -212,6 +249,36 @@ mod tests {
             Some("github/token"),
         );
         assert_eq!(resource_from_secret_id("__underwrap/policy/document"), None);
+    }
+
+    #[test]
+    fn compose_secret_id_round_trips_through_parse() {
+        let composed = compose_secret_id("github/token", ResourceSlot::Env, "GH_TOKEN");
+        assert_eq!(composed, "github/token/env/GH_TOKEN");
+        let parsed = parse_secret_id(&composed).unwrap();
+        assert_eq!(parsed.resource_id, "github/token");
+        assert_eq!(parsed.slot, ResourceSlot::Env);
+        assert_eq!(parsed.inner, "GH_TOKEN");
+    }
+
+    #[test]
+    fn validate_secret_key_accepts_per_slot_shapes() {
+        assert!(validate_secret_key(ResourceSlot::Env, "GH_TOKEN").is_ok());
+        assert!(validate_secret_key(ResourceSlot::Files, "config.yaml").is_ok());
+        assert!(validate_secret_key(ResourceSlot::Files, "nested/dir/file").is_ok());
+        assert!(validate_secret_key(ResourceSlot::Libsecret, "default/gh-cli.secret").is_ok());
+    }
+
+    #[test]
+    fn validate_secret_key_rejects_invalid_shapes() {
+        assert!(validate_secret_key(ResourceSlot::Env, "").is_err());
+        assert!(validate_secret_key(ResourceSlot::Env, "bad-name").is_err());
+        assert!(validate_secret_key(ResourceSlot::Env, "PATH").is_err());
+        assert!(validate_secret_key(ResourceSlot::Files, "").is_err());
+        assert!(validate_secret_key(ResourceSlot::Files, "/abs").is_err());
+        assert!(validate_secret_key(ResourceSlot::Files, "a/../b").is_err());
+        assert!(validate_secret_key(ResourceSlot::Files, "a//b").is_err());
+        assert!(validate_secret_key(ResourceSlot::Libsecret, "x\0y").is_err());
     }
 
     #[test]
