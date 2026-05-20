@@ -72,6 +72,38 @@ def bootstrap_admin_session(url):
     _CSRF_TOKEN[url] = csrf
 
 
+def login_admin_session(url):
+    """Re-authenticate against an already-bootstrapped backend, e.g.
+    after a daemon restart that wiped the in-memory session state.
+    Captures a fresh session+CSRF cookie pair from
+    `/v1/admin/auth/login`."""
+    cookie_jar = _cookie_jar_path(url)
+    payload = json.dumps({
+        "username": ADMIN_BOOTSTRAP_USER,
+        "password": ADMIN_BOOTSTRAP_PASSWORD,
+    })
+    cmd = [
+        "curl", "-fsS",
+        "--cacert", CA_CERT,
+        "-c", cookie_jar,
+        "-X", "POST",
+        "-H", f"Origin: {url}",
+        "-H", "Content-Type: application/json",
+        "-d", payload,
+        f"{url}/v1/admin/auth/login",
+    ]
+    machine.succeed(" ".join(shlex.quote(p) for p in cmd))
+    csrf = machine.succeed(
+        f"awk '$6==\"__Host-uw-csrf\"{{print $7}}' {shlex.quote(cookie_jar)}"
+    ).strip()
+    if not csrf:
+        raise AssertionError(
+            f"login_admin_session: no __Host-uw-csrf cookie in {cookie_jar}"
+        )
+    _COOKIE_JAR[url] = cookie_jar
+    _CSRF_TOKEN[url] = csrf
+
+
 def admin_api(url, path, payload=None, method="POST"):
     """Make an authenticated admin API call. Uses the session cookies
     populated by `bootstrap_admin_session` for the listener at `url`
@@ -105,21 +137,51 @@ def admin_api(url, path, payload=None, method="POST"):
 
 
 def admin_write_secret(url, store, wrapper, secret_id, value):
+    """Admin-side secret write. `secret_id` is the legacy
+    `<resource_name>/<slot>/<key>` path used in test fixtures; we
+    split it from the right (slot + key are single segments) and
+    translate the resource name to its backend id. `wrapper` is kept
+    in the signature for call-site readability but is not on the
+    new wire shape."""
+    del wrapper  # kept for call-site readability only
+    resource_name, slot, key = secret_id.rsplit("/", 2)
     return admin_api(
         url,
         "/v1/admin/secret/write",
         {
             "store": store,
-            "wrapper": wrapper,
-            "secret_id": secret_id,
+            "resource_id": _resource_id_for(url, resource_name),
+            "slot": slot,
+            "key": key,
             "material_b64": base64.b64encode(value.encode()).decode(),
         },
     )
 
 
+# Auto-created resources are addressed by a stable backend id
+# (`res_<hex>`), not by their operator-facing name. The test scripts
+# think in names; the maps below are populated after the auto-create
+# pass in `boot_and_service_checks` and consulted by the helpers
+# below to translate name → id.
+LOCAL_RESOURCE_IDS: dict[str, str] = {}
+REMOTE_RESOURCE_IDS: dict[str, str] = {}
+
+
+def _resource_id_for(url, name):
+    table = LOCAL_RESOURCE_IDS if url == ADMIN_LOCAL else REMOTE_RESOURCE_IDS
+    try:
+        return table[name]
+    except KeyError as e:
+        raise AssertionError(
+            f"resource {name!r} not in id-map for {url}: {table}"
+        ) from e
+
+
 def admin_upsert_grant(url, store, client_instance, wrapper, resource, mode, *, writable=False, reason=None):
-    """Upsert an agent grant for a `(client_instance, wrapper, resource)`
-    tuple.
+    """Upsert a wrapper permission for a
+    `(client_instance, wrapper, resource)` tuple. `resource` is the
+    operator-facing name; it is translated to the stable backend id
+    before the request is sent.
 
     `mode` is a dict that serializes WrapperApprovalMode, e.g.:
       {"kind": "locked"}
@@ -127,31 +189,31 @@ def admin_upsert_grant(url, store, client_instance, wrapper, resource, mode, *, 
       {"kind": "unlocked-until", "until_epoch": 1234}
       {"kind": "per-call-approval", "approval_key": "ssh-ed25519 ..."}
     """
-    grant = {
+    permission = {
         "client_instance": client_instance,
         "wrapper": wrapper,
-        "resource": resource,
+        "resource_id": _resource_id_for(url, resource),
         "mode": mode,
         "writable": writable,
     }
     if reason is not None:
-        grant["reason"] = reason
+        permission["reason"] = reason
     return admin_api(
         url,
-        "/v1/admin/grants/upsert",
-        {"store": store, "grant": grant},
+        "/v1/admin/wrapper-permissions/upsert",
+        {"store": store, "permission": permission},
     )
 
 
 def admin_delete_grant(url, store, client_instance, wrapper, resource):
     return admin_api(
         url,
-        "/v1/admin/grants/delete",
+        "/v1/admin/wrapper-permissions/delete",
         {
             "store": store,
             "client_instance": client_instance,
             "wrapper": wrapper,
-            "resource": resource,
+            "resource_id": _resource_id_for(url, resource),
         },
     )
 
@@ -165,7 +227,7 @@ def admin_get_blob(url, store, resource):
     return admin_api(
         url,
         "/v1/admin/resources/blob/get",
-        {"store": store, "name": resource},
+        {"store": store, "id": _resource_id_for(url, resource)},
     )["blob_b64"]
 
 
@@ -178,8 +240,17 @@ def admin_list_pairs(url, store):
 
 
 def find_pair(pairs, wrapper, resource):
+    """Locate the pair record for `(wrapper, resource_name)`. The wire
+    shape carries `resource_id`, so we resolve `resource` (a name)
+    against the appropriate id-map before matching."""
+    if resource in LOCAL_RESOURCE_IDS:
+        resource_id = LOCAL_RESOURCE_IDS[resource]
+    elif resource in REMOTE_RESOURCE_IDS:
+        resource_id = REMOTE_RESOURCE_IDS[resource]
+    else:
+        return None
     for p in pairs:
-        if p["wrapper"] == wrapper and p["resource"] == resource:
+        if p["wrapper"] == wrapper and p["resource_id"] == resource_id:
             return p
     return None
 
@@ -350,27 +421,37 @@ def boot_and_service_checks():
         ADMIN_REMOTE, "/v1/admin/pairs/list", {"store": "remote"}
     )["pairs"]
 
+    # Populate the name → id maps that the wrapper-permission helpers
+    # and `find_pair` consult. Auto-create assigns each resource a
+    # stable `res_<hex>` id that differs from the operator-facing name.
+    LOCAL_RESOURCE_IDS.clear()
+    LOCAL_RESOURCE_IDS.update({r["name"]: r["id"] for r in local_resources})
+    REMOTE_RESOURCE_IDS.clear()
+    REMOTE_RESOURCE_IDS.update({r["name"]: r["id"] for r in remote_resources})
+
     assert any(
         r["name"] == "test/token"
         and r["created_by"].get("kind") == "client-instance"
         and r["created_by"].get("id") == LOCAL_CLIENT_INSTANCE
         for r in local_resources
     ), f"missing local resource record for test/token with client-instance provenance: {local_resources}"
+    test_token_id = LOCAL_RESOURCE_IDS["test/token"]
     assert any(
         p["wrapper"] == "test-echo"
-        and p["resource"] == "test/token"
+        and p["resource_id"] == test_token_id
         and p["created_by"].get("id") == LOCAL_CLIENT_INSTANCE
         for p in local_pairs
-    ), f"missing local pair record (test-echo, test/token): {local_pairs}"
+    ), f"missing local pair record (test-echo, test/token={test_token_id}): {local_pairs}"
     assert any(
         r["name"] == "remote/token"
         and r["created_by"].get("id") == REMOTE_CLIENT_INSTANCE
         for r in remote_resources
     ), f"missing remote resource record: {remote_resources}"
+    remote_token_id = REMOTE_RESOURCE_IDS["remote/token"]
     assert any(
-        p["wrapper"] == "remote-echo" and p["resource"] == "remote/token"
+        p["wrapper"] == "remote-echo" and p["resource_id"] == remote_token_id
         for p in remote_pairs
-    ), f"missing remote pair record: {remote_pairs}"
+    ), f"missing remote pair record (remote-echo, remote/token={remote_token_id}): {remote_pairs}"
     machine.log(
         "PASS: wrapper assets auto-created with client-instance provenance after flag flip"
     )
@@ -879,11 +960,17 @@ def local_libsecret_mode():
 
     # Verify the secret IS in the backend storage (via the daemon).
     # Under the atomic-blob storage layout the whole libsecret keyring
-    # lives in a single file at `resources/<resource_id>`.
+    # lives in a single file at `resources/<resource_id>` where
+    # `<resource_id>` is the stable backend id (not the name).
+    libsecret_resource_id = LOCAL_RESOURCE_IDS["test/libsecret-store"]
     backend_blob = machine.succeed(
-        "test -f /var/lib/underwrap-backend-local/secrets/resources/test/libsecret-store && echo ok || echo none"
+        "test -f "
+        f"/var/lib/underwrap-backend-local/secrets/resources/{libsecret_resource_id} "
+        "&& echo ok || echo none"
     ).strip()
-    assert backend_blob == "ok", "expected libsecret resource blob in backend"
+    assert backend_blob == "ok", (
+        f"expected libsecret resource blob at resources/{libsecret_resource_id}"
+    )
     machine.log("PASS: libsecret data stored in backend")
 
     # Verify the private bus is NOT reachable from outside the namespace.
@@ -993,10 +1080,7 @@ def local_directory_credentials():
     dir_a_files = sorted(
         json.loads(
             base64.b64decode(
-                admin_api(
-                    ADMIN_LOCAL, "/v1/admin/resources/blob/get",
-                    {"store": "local", "name": "test/dir-a"},
-                )["blob_b64"]
+                admin_get_blob(ADMIN_LOCAL, "local", "test/dir-a")
             )
         )["files"].keys()
     )
@@ -1044,15 +1128,9 @@ def local_directory_credentials():
     # always RW (so the target's `ln -s` succeeds in-namespace), but
     # the end-of-run walk refuses to follow symlinks and drops the
     # writeback. The backend blob stays unchanged.
-    before = admin_api(
-        ADMIN_LOCAL, "/v1/admin/resources/blob/get",
-        {"store": "local", "name": "test/dir-a"},
-    )["blob_b64"]
+    before = admin_get_blob(ADMIN_LOCAL, "local", "test/dir-a")
     machine.succeed(su("/run/wrappers/bin/local-test-dir-symlink"))
-    after = admin_api(
-        ADMIN_LOCAL, "/v1/admin/resources/blob/get",
-        {"store": "local", "name": "test/dir-a"},
-    )["blob_b64"]
+    after = admin_get_blob(ADMIN_LOCAL, "local", "test/dir-a")
     assert after == before, (
         "symlink-creating wrapper unexpectedly mutated the backend blob"
     )
@@ -1531,9 +1609,11 @@ def encrypted_store_in_memory_keys():
         f"curl -fsS --cacert {CA_CERT} "
         f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
     )
-    # We have to re-bootstrap our session against the listener
-    # because in-memory session state was reset.
-    bootstrap_admin_session(ADMIN_LOCAL)
+    # We have to re-login our session against the listener because
+    # in-memory session state was reset. The on-disk bootstrap
+    # sentinel persists across restarts, so the public bootstrap
+    # endpoint now refuses; use the login path instead.
+    login_admin_session(ADMIN_LOCAL)
 
     stores_after_restart = admin_api(
         ADMIN_LOCAL, "/v1/admin/stores", None, method="GET"
@@ -1601,7 +1681,7 @@ def encrypted_store_in_memory_keys():
         f"curl -fsS --cacert {CA_CERT} "
         f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
     )
-    bootstrap_admin_session(ADMIN_LOCAL)
+    login_admin_session(ADMIN_LOCAL)
     old_key_attempt = admin_api_expect_status(
         ADMIN_LOCAL,
         f"/v1/admin/stores/{store_id}/unlock",

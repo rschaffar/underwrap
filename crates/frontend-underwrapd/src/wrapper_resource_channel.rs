@@ -272,7 +272,7 @@ fn handle_checkin(
             error!(
                 wrapper = %wrapper_name,
                 resource = %resource_id,
-                err = %e,
+                err = format!("{e:#}"),
                 "saving blob on checkin",
             );
             WrapperResourceResponse::Error {

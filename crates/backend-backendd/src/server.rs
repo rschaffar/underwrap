@@ -22,7 +22,7 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
 use underwrap_protocol::config::{StoreRecord, StoreRegistryDocument};
-use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument};
+use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument, WrapperPermission};
 
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource::parse_secret_id;
@@ -1204,31 +1204,45 @@ fn runtime_read_gate(
             .map_err(|e| format!("parsing policy: {e}"))?,
         None => PolicyDocument::default(),
     };
-    let Some(permission) = doc
+    // Multiple wrappers may share one resource on the frontend side
+    // (e.g. a read-only wrapper and a write wrapper that both project
+    // `test/dir-a`). The backend cannot tell which wrapper issued the
+    // request — only the client_instance is on the wire — so the
+    // sanity gate matches on `(client_instance, resource_id)` and
+    // accepts the request when **any** permission for that pair is
+    // suitable. The wrapper-specific writability check still happens
+    // in the daemon before the request reaches us.
+    let matching: Vec<&WrapperPermission> = doc
         .permissions
         .iter()
-        .find(|p| p.client_instance == principal && p.resource_id == resource_id)
-    else {
+        .filter(|p| p.client_instance == principal && p.resource_id == resource_id)
+        .collect();
+    if matching.is_empty() {
         return Err(format!(
             "no wrapper permission for ({principal}, *, '{resource_id}')"
         ));
-    };
-    if write && !permission.writable {
+    }
+    if write && !matching.iter().any(|p| p.writable) {
         return Err(format!(
-            "wrapper permission for ({principal}, '{}', '{resource_id}') is read-only",
-            permission.wrapper
+            "no writable wrapper permission for ({principal}, *, '{resource_id}')"
         ));
     }
-    // Bump last_used_at on the matched pair. Failure here is
-    // non-fatal — it must never block a successful read.
-    if let Err(e) = bump_pair_last_used(store, &permission.wrapper, resource_id) {
-        warn!(
-            audit = "pair_last_used_bump_failed",
-            principal = %principal,
-            wrapper = %permission.wrapper,
-            resource_id = %resource_id,
-            err = %e,
-        );
+    // Bump last_used_at on every matching pair. The backend can't
+    // distinguish which wrapper issued the request from the wire, so
+    // when multiple wrappers project the same resource we surface
+    // recency on each one. Failure here is non-fatal — it must never
+    // block a successful read.
+    let bump_wrappers: Vec<String> = matching.iter().map(|p| p.wrapper.clone()).collect();
+    for wrapper in &bump_wrappers {
+        if let Err(e) = bump_pair_last_used(store, wrapper, resource_id) {
+            warn!(
+                audit = "pair_last_used_bump_failed",
+                principal = %principal,
+                wrapper = %wrapper,
+                resource_id = %resource_id,
+                err = %e,
+            );
+        }
     }
     Ok(())
 }
@@ -1292,19 +1306,20 @@ fn runtime_prefix_gate(
             .map_err(|e| format!("parsing policy: {e}"))?,
         None => PolicyDocument::default(),
     };
-    let Some(permission) = doc
+    // See `runtime_read_gate` for the wildcard-wrapper rationale.
+    let matching: Vec<&WrapperPermission> = doc
         .permissions
         .iter()
-        .find(|p| p.client_instance == principal && p.resource_id == resource_id)
-    else {
+        .filter(|p| p.client_instance == principal && p.resource_id == resource_id)
+        .collect();
+    if matching.is_empty() {
         return Err(format!(
             "no wrapper permission for ({principal}, *, '{resource_id}')"
         ));
-    };
-    if write && !permission.writable {
+    }
+    if write && !matching.iter().any(|p| p.writable) {
         return Err(format!(
-            "wrapper permission for ({principal}, '{}', '{resource_id}') is read-only",
-            permission.wrapper
+            "no writable wrapper permission for ({principal}, *, '{resource_id}')"
         ));
     }
     Ok(())
