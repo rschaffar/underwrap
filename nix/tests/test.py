@@ -13,27 +13,89 @@ def su(cmd):
 import os
 SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PYTHON3 = os.environ.get("PYTHON3", "python3")
-ADMIN_LOCAL = "http://127.0.0.1:19443"
-ADMIN_REMOTE = "http://127.0.0.1:19444"
-ADMIN_TOKEN = "vm-test-admin-token"
+
+# Each daemon now runs a single HTTPS listener that serves both the
+# runtime service API (mTLS-authenticated, `/v1/...`) and the admin
+# SPA + JSON API (session-cookie + CSRF authenticated, `/v1/admin/...`).
+ADMIN_LOCAL = "https://127.0.0.1:18443"
+ADMIN_REMOTE = "https://127.0.0.1:18444"
+CA_CERT = "/etc/underwrap-test-ca.pem"
+ADMIN_BOOTSTRAP_USER = "tester"
+ADMIN_BOOTSTRAP_PASSWORD = "hunter2"
+
+# Per-admin session-cookie state, populated by `bootstrap_admin_session`
+# during boot. `_COOKIE_JAR[url]` is the path of curl's cookie file on
+# the VM; `_CSRF_TOKEN[url]` is the value of the `__Host-uw-csrf` cookie
+# extracted from it.
+_COOKIE_JAR = {}
+_CSRF_TOKEN = {}
+
+
+def _cookie_jar_path(url):
+    safe = url.replace("https://", "").replace(":", "-").replace("/", "_")
+    return f"/tmp/underwrap-admin-cookies-{safe}.txt"
+
+
+def bootstrap_admin_session(url):
+    """Create the first operator on an admin listener and capture its
+    session cookies. Must be called exactly once per backend boot —
+    subsequent bootstrap POSTs would return 409.
+    """
+    cookie_jar = _cookie_jar_path(url)
+    payload = json.dumps({
+        "username": ADMIN_BOOTSTRAP_USER,
+        "password": ADMIN_BOOTSTRAP_PASSWORD,
+    })
+    cmd = [
+        "curl", "-fsS",
+        "--cacert", CA_CERT,
+        "-c", cookie_jar,
+        "-X", "POST",
+        "-H", f"Origin: {url}",
+        "-H", "Content-Type: application/json",
+        "-d", payload,
+        f"{url}/v1/admin/auth/bootstrap",
+    ]
+    machine.succeed(" ".join(shlex.quote(p) for p in cmd))
+
+    # Extract the CSRF cookie value from the Netscape-format cookie jar.
+    # Field 6 is the cookie name, field 7 is the value.
+    csrf = machine.succeed(
+        f"awk '$6==\"__Host-uw-csrf\"{{print $7}}' {shlex.quote(cookie_jar)}"
+    ).strip()
+    if not csrf:
+        raise AssertionError(
+            f"bootstrap_admin_session: no __Host-uw-csrf cookie in {cookie_jar}"
+        )
+
+    _COOKIE_JAR[url] = cookie_jar
+    _CSRF_TOKEN[url] = csrf
 
 
 def admin_api(url, path, payload=None, method="POST"):
-    # State-changing requests against an admin listener with
-    # `allowed_origins` configured (ticket 212) must carry an
-    # `Origin` header matching one of the allowlisted entries.
-    # The bearer-token path is exempt from CSRF, but the origin
-    # check still applies to every non-GET/HEAD/OPTIONS request.
+    """Make an authenticated admin API call. Uses the session cookies
+    populated by `bootstrap_admin_session` for the listener at `url`
+    and adds an `X-CSRF-Token` header on every state-changing request
+    so the backend's CSRF double-submit check (ticket 212) passes.
+    """
+    is_state_changing = method not in ("GET", "HEAD", "OPTIONS")
+    cookie_jar = _COOKIE_JAR.get(url)
+    csrf = _CSRF_TOKEN.get(url)
+    if cookie_jar is None or csrf is None:
+        raise AssertionError(
+            f"admin_api({url!r}, …): bootstrap_admin_session was never "
+            f"called for this listener — cookies + CSRF token are unset",
+        )
+
     cmd = [
-        "curl",
-        "-fsS",
-        "-X",
-        method,
-        "-H",
-        f"Authorization: Bearer {ADMIN_TOKEN}",
-        "-H",
-        f"Origin: {url}",
+        "curl", "-fsS",
+        "--cacert", CA_CERT,
+        "-b", cookie_jar,
+        "-X", method,
+        "-H", f"Origin: {url}",
     ]
+    if is_state_changing:
+        cmd += ["-H", f"X-CSRF-Token: {csrf}"]
     if payload is not None:
         cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(payload)]
     cmd += [f"{url}{path}"]
@@ -213,10 +275,28 @@ def boot_and_service_checks():
     # ============================================================
 
     machine.wait_for_unit("multi-user.target")
-    machine.wait_for_unit("underwrapd-local.service")
-    machine.wait_for_unit("underwrapd-tunnel.service")
     machine.wait_for_unit("underwrap-backendd.service")
     machine.wait_for_unit("underwrap-backendd-local.service")
+
+    # Wait for the unified HTTPS listeners to start accepting before
+    # bootstrapping. The bootstrap-status endpoint is the cheapest GET
+    # the backend exposes.
+    for url in (ADMIN_LOCAL, ADMIN_REMOTE):
+        machine.wait_until_succeeds(
+            f"curl -fsS --cacert {CA_CERT} {url}/v1/admin/auth/bootstrap/status >/dev/null"
+        )
+
+    # Create the first operator on each backend and capture session
+    # cookies + CSRF token. Every subsequent admin_api(...) call
+    # depends on these globals being populated.
+    bootstrap_admin_session(ADMIN_LOCAL)
+    bootstrap_admin_session(ADMIN_REMOTE)
+
+    # underwrapd-local / underwrapd-tunnel only come up after the
+    # backends are reachable (they probe /v1/status at startup), so
+    # wait for them now.
+    machine.wait_for_unit("underwrapd-local.service")
+    machine.wait_for_unit("underwrapd-tunnel.service")
 
     machine.succeed("id testuser")
     machine.succeed("id underwrap-local")
@@ -229,8 +309,6 @@ def boot_and_service_checks():
     remote_stores = admin_api(ADMIN_REMOTE, "/v1/admin/stores", None, method="GET")["items"]
     assert [s["name"] for s in local_stores] == ["local"]
     assert [s["name"] for s in remote_stores] == ["remote"]
-    # Declarative provenance is surfaced so the SPA can refuse to mutate.
-    assert all(s["source"] == "declarative" for s in local_stores + remote_stores)
 
     # Resolve the runtime client instance ids for both daemons. The
     # backend assigns these dynamically when the client is enrolled,
@@ -806,10 +884,12 @@ def local_libsecret_mode():
     machine.log("PASS: secret-tool lookup via libsecret wrapper")
 
     # Verify the secret IS in the backend storage (via the daemon).
-    backend_files = machine.succeed(
-        "find /var/lib/underwrap-backend-local/secrets/test/libsecret-store/ -type f 2>/dev/null || echo none"
+    # Under the atomic-blob storage layout the whole libsecret keyring
+    # lives in a single file at `resources/<resource_id>`.
+    backend_blob = machine.succeed(
+        "test -f /var/lib/underwrap-backend-local/secrets/resources/test/libsecret-store && echo ok || echo none"
     ).strip()
-    assert backend_files != "none", "expected libsecret backend files"
+    assert backend_blob == "ok", "expected libsecret resource blob in backend"
     machine.log("PASS: libsecret data stored in backend")
 
     # Verify the private bus is NOT reachable from outside the namespace.
@@ -922,16 +1002,38 @@ def local_directory_credentials():
     assert dir_output[1].strip() == "meta-updated", f"expected meta-updated, got {dir_output}"
     machine.log("PASS: directory read-write wrapper updates backend-managed files")
 
-    # Verify one backend entry per file and deletion propagation.
-    dir_a_backend_files = machine.succeed(
-        "find /var/lib/underwrap-backend-local/secrets/test/dir-a/files -type f -printf '%P\\n' | sort"
-    ).strip().split("\n")
-    assert dir_a_backend_files == ["sub/nested", "token"], f"unexpected dir-a backend files: {dir_a_backend_files}"
-    dir_b_backend_files = machine.succeed(
-        "find /var/lib/underwrap-backend-local/secrets/test/dir-b/files -type f -printf '%P\\n' | sort || true"
-    ).strip().split("\n")
-    assert dir_b_backend_files == ["meta"], f"unexpected dir-b backend files: {dir_b_backend_files}"
-    machine.log("PASS: directory backend stores one entry per file and propagates deletions")
+    # Verify one resource blob per resource (atomic-blob storage layout)
+    # and that the in-blob files section reflects the writeback +
+    # deletion the wrapper performed.
+    dir_a_files = sorted(
+        admin_api(
+            ADMIN_LOCAL, "/v1/admin/resources/blob/get",
+            {"store": "local", "name": "test/dir-a"},
+        )["blob_b64"]
+        and json.loads(
+            base64.b64decode(
+                admin_api(
+                    ADMIN_LOCAL, "/v1/admin/resources/blob/get",
+                    {"store": "local", "name": "test/dir-a"},
+                )["blob_b64"]
+            )
+        )["files"].keys()
+    )
+    assert dir_a_files == ["sub/nested", "token"], (
+        f"unexpected dir-a blob files: {dir_a_files}"
+    )
+    dir_b_blob = json.loads(
+        base64.b64decode(
+            admin_api(
+                ADMIN_LOCAL, "/v1/admin/resources/blob/get",
+                {"store": "local", "name": "test/dir-b"},
+            )["blob_b64"]
+        )
+    )
+    assert sorted(dir_b_blob["files"].keys()) == ["meta"], (
+        f"unexpected dir-b blob files: {sorted(dir_b_blob['files'].keys())}"
+    )
+    machine.log("PASS: resource blob carries the writeback + deletion")
 
     # While a wrapped target is running, a separate same-UID host process must not
     # be able to access the mounted secret files from the host namespace view.
@@ -984,9 +1086,24 @@ def local_directory_credentials():
     assert post_exit != 0, "FAIL: second directory credential file remained visible after wrapper exit"
     machine.log("PASS: directory credentials leave no host-visible files after wrapper exit")
 
-    # Symlink creation inside a managed tree must be rejected.
-    machine.fail(su("/run/wrappers/bin/local-test-dir-symlink"))
-    machine.log("PASS: directory sync rejects symlinks in managed trees")
+    # Symlinks in the managed staging tree must never reach the
+    # backend. Under the atomic-blob model the staging tmpfs is
+    # always RW (so the target's `ln -s` succeeds in-namespace), but
+    # the end-of-run walk refuses to follow symlinks and drops the
+    # writeback. The backend blob stays unchanged.
+    before = admin_api(
+        ADMIN_LOCAL, "/v1/admin/resources/blob/get",
+        {"store": "local", "name": "test/dir-a"},
+    )["blob_b64"]
+    machine.succeed(su("/run/wrappers/bin/local-test-dir-symlink"))
+    after = admin_api(
+        ADMIN_LOCAL, "/v1/admin/resources/blob/get",
+        {"store": "local", "name": "test/dir-a"},
+    )["blob_b64"]
+    assert after == before, (
+        "symlink-creating wrapper unexpectedly mutated the backend blob"
+    )
+    machine.log("PASS: directory writeback drops runs that introduce symlinks")
 
     # Seed the per-grant `writable=true` for the wrappers used by
     # the atomic-writeback scenarios (story 410 / ticket 432). They
@@ -1167,19 +1284,23 @@ def local_atomic_writeback():
     assert after_a == baseline_a, "scenario 3: dir-a blob changed despite read-only grant"
     assert after_b == baseline_b, "scenario 3: dir-b blob changed despite read-only grant"
 
-    journal_grep = machine.succeed(
-        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
-        "| grep -F 'writeback_rejected' || true"
-    ).strip()
-    assert 'reason":"grant_readonly"' in journal_grep, (
-        f"scenario 3: missing grant_readonly journal event: {journal_grep!r}"
+    # The structured audit event and the human-readable warning are
+    # both emitted by `frontend-ns` on the wrapper's stderr (the
+    # event line is JCS-canonical JSON; the warning is a plain
+    # English sentence). The stderr capture file above has both.
+    assert '"audit":"writeback_rejected"' in stderr_capture, (
+        f"scenario 3: missing writeback_rejected audit event in stderr: {stderr_capture!r}"
+    )
+    assert '"reason":"grant_readonly"' in stderr_capture, (
+        f"scenario 3: missing grant_readonly reason: {stderr_capture!r}"
     )
 
     assert "grant is read-only" in stderr_capture, (
         f"scenario 3: missing human-readable stderr warning: {stderr_capture!r}"
     )
+    _ = cursor  # cursor kept above for symmetry with the other scenarios
     machine.log(
-        "PASS: scenario 3 — read-only grant drops mutations with journal + stderr warning"
+        "PASS: scenario 3 — read-only grant drops mutations with audit event + stderr warning"
     )
 
     # ----------------------------------------------------------
@@ -1209,16 +1330,18 @@ def local_atomic_writeback():
     )
     time.sleep(0.5)
 
-    journal_grep = machine.succeed(
-        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
-        "| grep -F 'writeback_rejected' || true"
-    ).strip()
-    assert 'reason":"grant_readonly"' in journal_grep, (
-        f"scenario 4: missing journal event even with suppression set: {journal_grep!r}"
+    # The audit event still fires (suppression is stderr-only); the
+    # human-readable line is suppressed.
+    assert '"audit":"writeback_rejected"' in stderr_capture, (
+        f"scenario 4: missing audit event even with suppression set: {stderr_capture!r}"
+    )
+    assert '"reason":"grant_readonly"' in stderr_capture, (
+        f"scenario 4: missing grant_readonly reason: {stderr_capture!r}"
     )
     assert "grant is read-only" not in stderr_capture, (
         f"scenario 4: human-readable stderr line leaked despite suppression env: {stderr_capture!r}"
     )
+    _ = cursor
 
     # Env clear: the target must not see UNDERWRAP_SUPPRESS_READONLY_WARNING
     # (or any other UNDERWRAP_*) propagated from the wrapper invocation
@@ -1287,20 +1410,24 @@ def local_atomic_writeback():
 
     machine.execute("rm -f /tmp/dir-write-then-sleep.ready")
     cursor = journal_cursor()
+    # The script sleeps for ~4s after writing; we flip the grant
+    # during the sleep, then wait for the natural exit.
     machine.succeed(
         "su testuser -s /bin/sh -c '"
-        "setsid /run/wrappers/bin/local-test-dir-write-then-sleep 30 "
+        "setsid /run/wrappers/bin/local-test-dir-write-then-sleep "
         ">/tmp/wts-stdout.log 2>/tmp/wts-stderr.log </dev/null &'"
     )
 
     # Wait for the target to finish writing.
     deadline = time.time() + 10
+    flipped = False
     while time.time() < deadline:
         rc = machine.execute("test -e /tmp/dir-write-then-sleep.ready")[0]
         if rc == 0:
+            flipped = True
             break
         time.sleep(0.2)
-    else:
+    if not flipped:
         raise AssertionError("scenario 6: target never signaled write completion")
 
     # Flip the grant to read-only mid-run.
@@ -1314,28 +1441,32 @@ def local_atomic_writeback():
         writable=False,
     )
 
-    # Send SIGTERM so the target exits and ns runs writeback.
-    machine.execute("pkill -TERM -u testuser -f dir-write-then-sleep-target || true")
-    # Give ns time to dispatch Checkin and the daemon to respond.
-    time.sleep(3)
+    # Wait for the natural sleep + ns writeback to complete. The
+    # daemon-end of the channel exits when ns sends Checkin → wait
+    # for that to land in the audit trail.
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        out = machine.succeed("cat /tmp/wts-stderr.log || true")
+        if '"audit":"writeback_rejected"' in out:
+            break
+        time.sleep(0.5)
 
     after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
     assert after_a == baseline_a, "scenario 6: backend blob changed despite mid-run flip"
 
-    journal_grep = machine.succeed(
-        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
-        "| grep -F 'writeback_rejected' || true"
-    ).strip()
-    assert 'reason":"server_rejected"' in journal_grep, (
-        f"scenario 6: missing server_rejected journal event: {journal_grep!r}"
-    )
-
     stderr_capture = machine.succeed("cat /tmp/wts-stderr.log || true")
+    assert '"audit":"writeback_rejected"' in stderr_capture, (
+        f"scenario 6: missing audit event after grant flip: {stderr_capture!r}"
+    )
+    assert '"reason":"server_rejected"' in stderr_capture, (
+        f"scenario 6: missing server_rejected reason: {stderr_capture!r}"
+    )
     assert "grant is read-only" in stderr_capture, (
         f"scenario 6: missing human-readable stderr warning: {stderr_capture!r}"
     )
+    _ = cursor
     machine.log(
-        "PASS: scenario 6 — server rejects Checkin after mid-run grant flip, journal records server_rejected"
+        "PASS: scenario 6 — server rejects Checkin after mid-run grant flip, audit event records server_rejected"
     )
 
 

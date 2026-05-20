@@ -9,6 +9,86 @@ let
   testLocalClientKey = pkgs.writeText "underwrap-test-client-local.key" (builtins.readFile ../../testdata/pki/client-local.key);
   testTunnelClientPem = pkgs.writeText "underwrap-test-client-tunnel.pem" (builtins.readFile ../../testdata/pki/client-tunnel.pem);
   testTunnelClientKey = pkgs.writeText "underwrap-test-client-tunnel.key" (builtins.readFile ../../testdata/pki/client-tunnel.key);
+
+  # SHA-256 of the DER-encoded client certificate — this is the
+  # `cert_fingerprint` that the backend's mTLS layer matches against
+  # `ClientInstanceRecord.current_credential.cert_fingerprint` to
+  # identify a runtime client (see
+  # `crates/backend-backendd/src/runtime_clients.rs::cert_fingerprint_from_pem`).
+  certFingerprint = name: pem:
+    builtins.replaceStrings [ " " "\n" "-" ] [ "" "" "" ] (
+      builtins.readFile (
+        pkgs.runCommand "${name}-fingerprint" { nativeBuildInputs = [ pkgs.openssl ]; } ''
+          openssl x509 -in ${pem} -outform DER | sha256sum | cut -d' ' -f1 | tr -d '\n' > $out
+        ''
+      )
+    );
+  localClientFingerprint = certFingerprint "client-local" testLocalClientPem;
+  tunnelClientFingerprint = certFingerprint "client-tunnel" testTunnelClientPem;
+
+  # The backend now reads its store registry from a single JSON
+  # document at a fixed path; we seed one document per daemon.
+  remoteStoresJson = pkgs.writeText "underwrap-backend-remote-stores.json" (builtins.toJSON {
+    version = 1;
+    stores = [
+      {
+        id = "remote";
+        name = "remote";
+        backend = "plain";
+        dir = "/var/lib/underwrap-backend/secrets";
+        description = "remote-mode test store";
+      }
+    ];
+  });
+  localStoresJson = pkgs.writeText "underwrap-backend-local-stores.json" (builtins.toJSON {
+    version = 1;
+    stores = [
+      {
+        id = "local";
+        name = "local";
+        backend = "plain";
+        dir = "/var/lib/underwrap-backend-local/secrets";
+        description = "local-mode test store";
+      }
+    ];
+  });
+
+  # The backend likewise reads its runtime client-instance registry
+  # from one JSON document. The cert fingerprint embedded here is what
+  # `validate_runtime_client_mappings` will match incoming mTLS
+  # connections against.
+  remoteClientInstancesJson = pkgs.writeText "underwrap-backend-remote-client-instances.json" (builtins.toJSON {
+    version = 1;
+    instances = [
+      {
+        id = "inst_underwrap-tunnel";
+        display_name = "underwrap-tunnel";
+        current_store_id = "remote";
+        status = "active";
+        current_credential = {
+          cert_fingerprint = tunnelClientFingerprint;
+          cert_pem = builtins.readFile ../../testdata/pki/client-tunnel.pem;
+        };
+        auto_create_wrapper_assets = false;
+      }
+    ];
+  });
+  localClientInstancesJson = pkgs.writeText "underwrap-backend-local-client-instances.json" (builtins.toJSON {
+    version = 1;
+    instances = [
+      {
+        id = "inst_underwrap-local";
+        display_name = "underwrap-local";
+        current_store_id = "local";
+        status = "active";
+        current_credential = {
+          cert_fingerprint = localClientFingerprint;
+          cert_pem = builtins.readFile ../../testdata/pki/client-local.pem;
+        };
+        auto_create_wrapper_assets = false;
+      }
+    ];
+  });
   crashScript = pkgs.writeShellScript "crash-target" ''
     kill -SEGV $$
   '';
@@ -60,9 +140,11 @@ let
     ${pkgs.coreutils}/bin/cat "$HOME/.local/share/underwrap-dir-b/meta" >/dev/null
     exec ${pkgs.coreutils}/bin/sleep "''${1:-300}"
   '';
-  # Writes a file, signals readiness via a marker file, then sleeps.
-  # The test driver flips the grant during the sleep window and then
-  # sends SIGTERM so ns dispatches Checkin against the flipped grant.
+  # Writes a file, signals readiness via a marker file, then sleeps
+  # for a fixed short window. The test driver flips the grant during
+  # the sleep; once the script exits, ns dispatches Checkin against
+  # the flipped grant. The window is small (4s) so the test runs fast
+  # and predictable even on a loaded host.
   dirWriteThenSleepScript = pkgs.writeShellScript "dir-write-then-sleep-target" ''
     set -eu
     ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
@@ -70,7 +152,7 @@ let
     # Mark write completion so the test driver can flip the grant
     # before ns dispatches end-of-run writeback.
     ${pkgs.coreutils}/bin/touch /tmp/dir-write-then-sleep.ready
-    exec ${pkgs.coreutils}/bin/sleep "''${1:-30}"
+    exec ${pkgs.coreutils}/bin/sleep "''${1:-4}"
   '';
   # Always-writable namespace mount probe: touches a file under the
   # bound directory regardless of grant. The wrapper exits 0 if the
@@ -95,26 +177,29 @@ let
 in {
   imports = [ nixosModule ];
 
-  # The VM test runs two backendds on one host (a contrived stand-in
-  # for "two separate deployments"), so it seeds each daemon with its
-  # own store material directly under a daemon-specific `/etc/` path.
-  environment.etc."underwrap-backend-remote/stores.d/remote.yaml".text = builtins.toJSON {
-    backend = "plain";
-    dir = "/var/lib/underwrap-backend/secrets";
-    description = "remote-mode test store";
+  environment.systemPackages = [ underwrapPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl pkgs.jq ];
+
+  # Pre-seeded 32-byte session AEAD keys (one per daemon). The local
+  # admin listener used to be the only one needing one; under the
+  # new model both listeners are unified HTTPS endpoints that mix
+  # the runtime service API and the admin SPA, so each needs a key.
+  environment.etc."underwrap-admin-session.key" = {
+    text = "01234567890123456789012345678901";
+    mode = "0644";
   };
-  environment.etc."underwrap-backend-local/stores.d/local.yaml".text = builtins.toJSON {
-    backend = "plain";
-    dir = "/var/lib/underwrap-backend-local/secrets";
-    description = "local-mode test store";
+  environment.etc."underwrap-admin-session-remote.key" = {
+    # Exactly 32 bytes (no trailing newline — the backend's load
+    # requires `len == 32` precisely).
+    text = "0123456789abcdef0123456789abcdef";
+    mode = "0644";
   };
 
-  environment.systemPackages = [ underwrapPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl ];
-
-  # Operator bearer token for the backend admin API. World-readable is fine
-  # in the VM test; real deployments would ship this via a secrets system.
-  environment.etc."underwrap-admin-token" = {
-    text = "vm-test-admin-token";
+  # CA cert at a stable path so the test driver's curl invocations can
+  # validate the daemon's HTTPS listeners. Backends already trust this
+  # CA for mTLS client cert validation; this exposes the cert itself
+  # for clients that want server-cert verification.
+  environment.etc."underwrap-test-ca.pem" = {
+    text = builtins.readFile ../../testdata/pki/ca.pem;
     mode = "0644";
   };
 
@@ -143,26 +228,22 @@ in {
       User = "underwrap-backend";
       Group = "underwrap-backend";
       ExecStart = let
-        # Each daemon points at its own `stores.d` so it only opens
-        # stores it has filesystem access to. NotFound on the
-        # dynamic dir is tolerated by the backend; this test has no
-        # dynamic stores.
         cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
-          stores_declarative_dir = "/etc/underwrap-backend-remote/stores.d";
-          stores_dynamic_dir = "/var/lib/underwrap-backend/dynamic.d";
-          service = {
+          stores_file = "/var/lib/underwrap-backend/stores.json";
+          client_instances_file = "/var/lib/underwrap-backend/client-instances.json";
+          operators_file = "/var/lib/underwrap-backend/operators.json";
+          https = {
             listen = "127.0.0.1:18444";
             tls = {
               cert_file = testServerPem;
               key_file = testServerKey;
             };
-            clients = {
-              underwrap-tunnel.store = "remote";
-            };
           };
           admin = {
-            listen = "127.0.0.1:19444";
-            tokens.ops.token_file = "/etc/underwrap-admin-token";
+            session_key_file = "/etc/underwrap-admin-session-remote.key";
+            allowed_origins = [ "https://127.0.0.1:18444" ];
+            stores_data_root = "/var/lib/underwrap-backend/data-root";
+            keys_dir = "/var/lib/underwrap-backend/keys";
           };
         });
       in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
@@ -193,6 +274,8 @@ in {
   systemd.tmpfiles.rules = [
     "d /run/underwrap-backend 0700 underwrap-backend underwrap-backend -"
     "d /var/lib/underwrap-backend/secrets 0700 underwrap-backend underwrap-backend -"
+    "d /var/lib/underwrap-backend/data-root 0700 underwrap-backend underwrap-backend -"
+    "d /var/lib/underwrap-backend/keys 0700 underwrap-backend underwrap-backend -"
     "d /var/lib/underwrap-backend-local 0700 underwrap-local underwrap-local -"
     "d /var/lib/underwrap-backend-local/secrets 0700 underwrap-local underwrap-local -"
     # Root the admin API carves dynamic stores into (ticket 262).
@@ -207,6 +290,14 @@ in {
     "C /var/lib/underwrap-local/client-local.key 0400 underwrap-local underwrap-local - ${testLocalClientKey}"
     "C /var/lib/underwrap-tunnel/client-tunnel.pem 0400 underwrap-tunnel underwrap-tunnel - ${testTunnelClientPem}"
     "C /var/lib/underwrap-tunnel/client-tunnel.key 0400 underwrap-tunnel underwrap-tunnel - ${testTunnelClientKey}"
+    # Pre-stage the backend-managed store + client-instance registries.
+    # The backend opens these files at boot and uses them as the
+    # authoritative source for which stores exist and which mTLS
+    # client certs map to which store.
+    "C /var/lib/underwrap-backend/stores.json 0600 underwrap-backend underwrap-backend - ${remoteStoresJson}"
+    "C /var/lib/underwrap-backend/client-instances.json 0600 underwrap-backend underwrap-backend - ${remoteClientInstancesJson}"
+    "C /var/lib/underwrap-backend-local/stores.json 0600 underwrap-local underwrap-local - ${localStoresJson}"
+    "C /var/lib/underwrap-backend-local/client-instances.json 0600 underwrap-local underwrap-local - ${localClientInstancesJson}"
   ];
 
   # SSH server for the tunnel.
@@ -225,31 +316,19 @@ in {
       Group = "underwrap-local";
       ExecStart = let
         cfg = pkgs.writeText "underwrap-local-backend.yaml" (builtins.toJSON {
-          stores_declarative_dir = "/etc/underwrap-backend-local/stores.d";
-          stores_dynamic_dir = "/var/lib/underwrap-backend-local/dynamic.d";
-          service = {
+          stores_file = "/var/lib/underwrap-backend-local/stores.json";
+          client_instances_file = "/var/lib/underwrap-backend-local/client-instances.json";
+          operators_file = "/var/lib/underwrap-backend-local/operators.json";
+          https = {
             listen = "127.0.0.1:18443";
             tls = {
               cert_file = testServerPem;
               key_file = testServerKey;
             };
-            clients = {
-              underwrap-local.store = "local";
-            };
           };
           admin = {
-            listen = "127.0.0.1:19443";
-            tokens.ops.token_file = "/etc/underwrap-admin-token";
-            # SPA-aware admin surface (ticket 262): a session key is
-            # required for the cookie-based login flow. The VM test
-            # uses a deterministic 32-byte file under /etc/ so the
-            # test bootstrap can drive cookie auth against the
-            # backend's own admin listener. `allowed_origins`
-            # mirrors the per-test origin curl announces.
             session_key_file = "/etc/underwrap-admin-session.key";
-            allowed_origins = [
-              "http://127.0.0.1:19443"
-            ];
+            allowed_origins = [ "https://127.0.0.1:18443" ];
             stores_data_root = "/var/lib/underwrap-backend-local/data-root";
             keys_dir = "/var/lib/underwrap-backend-local/keys";
           };
@@ -276,14 +355,6 @@ in {
       LimitCORE = 0;
       ReadWritePaths = [ "/var/lib/underwrap-backend-local" ];
     };
-  };
-
-  # Pre-seeded 32-byte session AEAD key used by the local admin
-  # listener for cookie-based session encryption. World-readable in
-  # the test; real deployments would ship this via sops.
-  environment.etc."underwrap-admin-session.key" = {
-    text = "01234567890123456789012345678901";
-    mode = "0644";
   };
 
 

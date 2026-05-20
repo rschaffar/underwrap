@@ -42,10 +42,10 @@ constraint unless the user asks for it.
 ```bash
 nix develop                                          # dev shell
 cargo build                                          # build all
-cargo test --workspace                               # 85+ tests
+cargo test --workspace                               # 530+ tests
 cargo fmt -- --check                                 # format check
 cargo clippy --all-targets --workspace -- -D warnings # lint (zero warnings policy)
-nix build .#checks.x86_64-linux.vm-test              # NixOS VM test (21 assertions)
+nix build .#checks.x86_64-linux.vm-test              # NixOS VM test (60+ assertions)
 ```
 
 ## Project structure
