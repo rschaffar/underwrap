@@ -460,6 +460,12 @@ function ResourceBlock({
         >
           {displayLabel}
         </span>
+        <span
+          className="font-mono text-[0.65rem] text-(--color-muted)/70"
+          data-testid={`resource-id-${group.resource_id}`}
+        >
+          {group.resource_id}
+        </span>
         {provenanceLabel ? (
           <span
             className="text-xs text-(--color-muted)"
