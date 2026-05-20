@@ -37,6 +37,7 @@ const RESOURCE_CHANNEL_FD: i32 = 20;
 
 struct ReceivedResourceBinding {
     resource_id: String,
+    resource_name: String,
     access: AccessMode,
     libsecret: bool,
     files_target_paths: Vec<String>,
@@ -119,6 +120,7 @@ fn exec_via_ns(
 
     let exec_resource = ExecResourceBinding {
         resource_id: resource_binding.resource_id.clone(),
+        resource_name: resource_binding.resource_name.clone(),
         access: resource_binding.access,
         channel_fd: RESOURCE_CHANNEL_FD as u32,
         libsecret: resource_binding.libsecret,
@@ -405,26 +407,35 @@ fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
         response = read_frame_sync(&mut stream)?;
     }
 
-    let (env_bindings, resource_id, access, libsecret, files_target_paths) = match response {
-        WrapperResponse::ReadOk {
-            env,
-            resource_id,
-            access,
-            libsecret,
-            files_target_paths,
-        } => (env, resource_id, access, libsecret, files_target_paths),
-        WrapperResponse::Error { code, message } => {
-            if matches!(code, underwrap_protocol::message::ErrorCode::StoreLocked) {
-                bail!(
-                    "underwrap: backing store is locked; ask an administrator to unlock it ({message})"
-                );
+    let (env_bindings, resource_id, resource_name, access, libsecret, files_target_paths) =
+        match response {
+            WrapperResponse::ReadOk {
+                env,
+                resource_id,
+                resource_name,
+                access,
+                libsecret,
+                files_target_paths,
+            } => (
+                env,
+                resource_id,
+                resource_name,
+                access,
+                libsecret,
+                files_target_paths,
+            ),
+            WrapperResponse::Error { code, message } => {
+                if matches!(code, underwrap_protocol::message::ErrorCode::StoreLocked) {
+                    bail!(
+                        "underwrap: backing store is locked; ask an administrator to unlock it ({message})"
+                    );
+                }
+                bail!("daemon denied request ({code:?}): {message}");
             }
-            bail!("daemon denied request ({code:?}): {message}");
-        }
-        WrapperResponse::ApprovalRequired { .. } => {
-            bail!("daemon issued a second approval challenge; refusing");
-        }
-    };
+            WrapperResponse::ApprovalRequired { .. } => {
+                bail!("daemon issued a second approval challenge; refusing");
+            }
+        };
 
     let fd = underwrap_protocol::scm_rights::recv_fd(&stream).with_context(|| {
         format!("failed to receive wrapper-resource channel fd for '{resource_id}'")
@@ -434,6 +445,7 @@ fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
         env_bindings,
         ReceivedResourceBinding {
             resource_id,
+            resource_name,
             access,
             libsecret,
             files_target_paths,

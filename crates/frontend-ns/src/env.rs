@@ -75,7 +75,8 @@ mod tests {
 
     fn sample_binding() -> ExecResourceBinding {
         ExecResourceBinding {
-            resource_id: "x/y".to_string(),
+            resource_id: "res_x_y".to_string(),
+            resource_name: "x/y".to_string(),
             access: AccessMode::ReadOnly,
             channel_fd: 20,
             libsecret: false,

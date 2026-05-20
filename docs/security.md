@@ -260,13 +260,24 @@ resource:
 
 - the daemon refuses the underlying storage write,
 - the wrapper drops the locally-buffered change,
-- the wrapper emits one structured `audit=writeback_rejected
-  reason=grant_readonly` event to stderr (captured by journald on
-  systemd units),
-- and writes one human-readable warning line to stderr unless
-  `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` is set on the wrapper's
-  environment. The suppression env var is never propagated into the
-  target process; it is a wrapper-owned signal only.
+- the wrapper emits one structured `AUDIT=writeback_rejected
+  REASON=grant_readonly` event directly to systemd-journald via its
+  native socket (`/run/systemd/journal/socket`), with
+  `RESOURCE_ID` and `RESOURCE_NAME` fields naming the affected
+  resource. The audit event is unconditional — it does not pass
+  through the wrapper's stderr, so an interactive caller cannot
+  observe (or suppress) it,
+- and writes one human-readable warning line to stderr — naming the
+  resource by both its operator-facing name and its stable id —
+  unless `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` is set on the
+  wrapper's environment. The suppression env var is never propagated
+  into the target process; it is a wrapper-owned signal only.
+
+If journald's native socket is unreachable (non-systemd hosts,
+integration test environments), the wrapper falls back to writing the
+audit record as one JSON line on stderr. The fallback is *not* gated
+by the suppression env var: the audit trail must exist somewhere, and
+losing it silently would be worse than the extra terminal noise.
 
 The change in attack surface is small: a malicious target inside the
 namespace could already attempt writes to its bound directory under

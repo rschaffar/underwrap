@@ -24,6 +24,7 @@ use underwrap_protocol::message::{WrapperResourceRequest, WrapperResourceRespons
 #[allow(dead_code)] // some fields consumed later in the wrapper flow.
 pub struct ResourceChannel {
     pub resource_id: String,
+    pub resource_name: String,
     pub channel_fd: i32,
     pub original_canonical: Vec<u8>,
     pub writable: bool,
@@ -46,6 +47,7 @@ pub fn checkout(binding: &ExecResourceBinding) -> Result<ResourceChannel, String
     })?;
     Ok(ResourceChannel {
         resource_id: binding.resource_id.clone(),
+        resource_name: binding.resource_name.clone(),
         channel_fd: binding.channel_fd as i32,
         original_canonical,
         writable,

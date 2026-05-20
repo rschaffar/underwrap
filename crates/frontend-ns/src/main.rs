@@ -15,6 +15,7 @@
 mod caps;
 mod directory_credential;
 mod env;
+mod journal;
 mod libsecret;
 mod mounts;
 mod resource_channel;
@@ -327,8 +328,16 @@ fn wait_for_child(pid: libc::pid_t) -> Result<libc::c_int, String> {
 
 /// `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` silences the stderr line
 /// emitted when a writeback is dropped because the grant is read-only.
-/// The structured journal event is always logged.
+/// The structured audit event is always emitted — on systemd hosts it
+/// goes to journald's native socket, and only falls back to stderr
+/// when the journal socket is unreachable (so the audit trail still
+/// exists on non-systemd dev runs and in tests).
 const SUPPRESS_READONLY_WARNING_ENV: &str = "UNDERWRAP_SUPPRESS_READONLY_WARNING";
+
+/// `PRIORITY=4` — `LOG_WARNING` in syslog terms; matches the severity
+/// of the human-readable warning that accompanies the event.
+const JOURNAL_PRIORITY_WARNING: &str = "4";
+const JOURNAL_SYSLOG_IDENTIFIER: &str = "underwrap-ns";
 
 fn read_only_warning_suppressed() -> bool {
     matches!(
@@ -340,25 +349,56 @@ fn read_only_warning_suppressed() -> bool {
 fn report_outcomes(outcomes: &[WritebackOutcome]) {
     let suppress = read_only_warning_suppressed();
     for outcome in outcomes {
-        let (resource_id, reason) = match outcome {
+        let (resource_id, resource_name, reason) = match outcome {
             WritebackOutcome::Unchanged | WritebackOutcome::Persisted => continue,
             // Wrapper-local decision: the Checkout's writability bit
             // was already false, so no Checkin was attempted.
-            WritebackOutcome::DroppedReadOnly { resource_id } => (resource_id, "grant_readonly"),
+            WritebackOutcome::DroppedReadOnly {
+                resource_id,
+                resource_name,
+            } => (resource_id, resource_name, "grant_readonly"),
             // Server-side rejection: Checkin was sent but the daemon
             // refused it (e.g. the grant flipped mid-run).
-            WritebackOutcome::RejectedReadOnly { resource_id } => (resource_id, "server_rejected"),
+            WritebackOutcome::RejectedReadOnly {
+                resource_id,
+                resource_name,
+            } => (resource_id, resource_name, "server_rejected"),
         };
-        eprintln!(
-            r#"{{"audit":"writeback_rejected","reason":"{reason}","resource":"{resource_id}"}}"#,
-        );
+
+        emit_audit_event(reason, resource_id, resource_name);
+
         if !suppress {
             eprintln!(
-                "underwrap: changes to resource '{resource_id}' were not \
-                 persisted (grant is read-only). Set \
+                "underwrap: changes to resource '{resource_name}' ({resource_id}) \
+                 were not persisted (grant is read-only). Set \
                  {SUPPRESS_READONLY_WARNING_ENV}=1 to silence this message.",
             );
         }
+    }
+}
+
+/// Send the `writeback_rejected` event to journald. On non-systemd
+/// hosts (or if the journal socket send fails), fall back to a
+/// stderr-JSON line so the audit trail is not lost on dev / test runs.
+fn emit_audit_event(reason: &str, resource_id: &str, resource_name: &str) {
+    let message =
+        format!("writeback rejected for resource '{resource_name}' ({resource_id}): {reason}");
+    let fields = [
+        ("MESSAGE", message.as_str()),
+        ("PRIORITY", JOURNAL_PRIORITY_WARNING),
+        ("SYSLOG_IDENTIFIER", JOURNAL_SYSLOG_IDENTIFIER),
+        ("AUDIT", "writeback_rejected"),
+        ("REASON", reason),
+        ("RESOURCE_ID", resource_id),
+        ("RESOURCE_NAME", resource_name),
+    ];
+    if journal::send_record(&fields).is_err() {
+        // Fallback: emit the same record as one JSON line on stderr.
+        // The journal field names map 1:1 to the JSON keys so log
+        // pipelines can be written once.
+        eprintln!(
+            r#"{{"audit":"writeback_rejected","reason":"{reason}","resource_id":"{resource_id}","resource_name":"{resource_name}"}}"#,
+        );
     }
 }
 

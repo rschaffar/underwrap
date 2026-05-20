@@ -173,6 +173,7 @@ pub(super) fn process_read_for(
         response: WrapperResponse::ReadOk {
             env,
             resource_id: resource_id.clone(),
+            resource_name: wrapper_def.resource.clone(),
             access,
             libsecret,
             files_target_paths,

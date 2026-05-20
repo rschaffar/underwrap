@@ -37,10 +37,16 @@ pub enum WritebackOutcome {
     Persisted,
     /// Bytes changed but the daemon rejected the `Checkin` because the
     /// grant is not writable. The change has been dropped.
-    RejectedReadOnly { resource_id: String },
+    RejectedReadOnly {
+        resource_id: String,
+        resource_name: String,
+    },
     /// Bytes changed and the grant was already read-only at Checkout —
     /// no `Checkin` was attempted. The change has been dropped.
-    DroppedReadOnly { resource_id: String },
+    DroppedReadOnly {
+        resource_id: String,
+        resource_name: String,
+    },
 }
 
 /// Per-resource input from the run's tmpfs/state side.
@@ -130,6 +136,7 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
         signal_usage(channel.channel_fd, &channel.resource_id)?;
         return Ok(WritebackOutcome::DroppedReadOnly {
             resource_id: channel.resource_id.clone(),
+            resource_name: channel.resource_name.clone(),
         });
     }
 
@@ -140,6 +147,7 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
             signal_usage(channel.channel_fd, &channel.resource_id)?;
             Ok(WritebackOutcome::RejectedReadOnly {
                 resource_id: channel.resource_id.clone(),
+                resource_name: channel.resource_name.clone(),
             })
         }
     }

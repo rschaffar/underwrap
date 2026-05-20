@@ -68,6 +68,7 @@ fn open_run(socket_path: &Path) -> OpenedRun {
         WrapperResponse::ReadOk {
             env,
             resource_id,
+            resource_name: _,
             access,
             libsecret,
             files_target_paths,

@@ -1194,8 +1194,11 @@ def local_atomic_writeback():
     # The `test-dir-readonly-write` wrapper writes mutations through a
     # grant with `writable=false`. The daemon emits no Checkin (ns
     # has writable=false from Checkout), the backend blob is
-    # unchanged, the journal carries `writeback_rejected reason=grant_readonly`,
-    # and stderr contains the human-readable line.
+    # unchanged, the journal carries the structured
+    # `AUDIT=writeback_rejected REASON=grant_readonly` event (routed
+    # via journald's native socket so it does not clutter the
+    # wrapper's stderr), and stderr contains only the human-readable
+    # line — which names both the resource and its id.
     # ----------------------------------------------------------
     baseline_a = reset_blob_state()
     admin_upsert_grant(
@@ -1220,31 +1223,43 @@ def local_atomic_writeback():
     after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
     assert after_a == baseline_a, "scenario 3: dir-a blob changed despite read-only grant"
 
-    # The structured audit event and the human-readable warning are
-    # both emitted by `frontend-ns` on the wrapper's stderr (the
-    # event line is JCS-canonical JSON; the warning is a plain
-    # English sentence). The stderr capture file above has both.
-    assert '"audit":"writeback_rejected"' in stderr_capture, (
-        f"scenario 3: missing writeback_rejected audit event in stderr: {stderr_capture!r}"
+    # The structured audit event is delivered via journald's native
+    # socket; the human-readable warning goes to wrapper stderr. The
+    # warning identifies the resource by name and id.
+    assert '"audit":"writeback_rejected"' not in stderr_capture, (
+        f"scenario 3: audit JSON leaked onto stderr instead of journald: {stderr_capture!r}"
     )
-    assert '"reason":"grant_readonly"' in stderr_capture, (
-        f"scenario 3: missing grant_readonly reason: {stderr_capture!r}"
-    )
-
     assert "grant is read-only" in stderr_capture, (
         f"scenario 3: missing human-readable stderr warning: {stderr_capture!r}"
     )
-    _ = cursor  # cursor kept above for symmetry with the other scenarios
+    assert f"resource '{DIR_A}'" in stderr_capture, (
+        f"scenario 3: stderr warning missing resource name: {stderr_capture!r}"
+    )
+
+    journal_after = machine.succeed(
+        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
+        "SYSLOG_IDENTIFIER=underwrap-ns --output=export || true"
+    )
+    assert "AUDIT=writeback_rejected" in journal_after, (
+        f"scenario 3: missing writeback_rejected event in journal: {journal_after!r}"
+    )
+    assert "REASON=grant_readonly" in journal_after, (
+        f"scenario 3: missing grant_readonly reason in journal: {journal_after!r}"
+    )
+    assert f"RESOURCE_NAME={DIR_A}" in journal_after, (
+        f"scenario 3: journal event missing resource name: {journal_after!r}"
+    )
     machine.log(
-        "PASS: scenario 3 — read-only grant drops mutations with audit event + stderr warning"
+        "PASS: scenario 3 — read-only grant drops mutations; journal records audit event, stderr shows named warning"
     )
 
     # ----------------------------------------------------------
     # Scenario 4: suppression env var
     # Same setup as scenario 3 but with UNDERWRAP_SUPPRESS_READONLY_WARNING=1
-    # in the wrapper's environment. Journal still records the event;
-    # stderr does not carry the human-readable line; the target
-    # process does NOT see the env var (env_clear whitelist).
+    # in the wrapper's environment. Journal still records the event
+    # (suppression only gates the stderr warning); the human-readable
+    # line is silenced; the target process does NOT see the env var
+    # (env_clear whitelist).
     # ----------------------------------------------------------
     baseline_a = reset_blob_state()
     admin_upsert_grant(
@@ -1266,18 +1281,26 @@ def local_atomic_writeback():
     )
     time.sleep(0.5)
 
-    # The audit event still fires (suppression is stderr-only); the
-    # human-readable line is suppressed.
-    assert '"audit":"writeback_rejected"' in stderr_capture, (
-        f"scenario 4: missing audit event even with suppression set: {stderr_capture!r}"
-    )
-    assert '"reason":"grant_readonly"' in stderr_capture, (
-        f"scenario 4: missing grant_readonly reason: {stderr_capture!r}"
+    # The audit event still fires (journal-side); stderr should now
+    # be completely silent under suppression — neither the audit JSON
+    # nor the human-readable line should appear.
+    assert '"audit":"writeback_rejected"' not in stderr_capture, (
+        f"scenario 4: audit JSON leaked to stderr instead of journald: {stderr_capture!r}"
     )
     assert "grant is read-only" not in stderr_capture, (
         f"scenario 4: human-readable stderr line leaked despite suppression env: {stderr_capture!r}"
     )
-    _ = cursor
+
+    journal_after = machine.succeed(
+        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
+        "SYSLOG_IDENTIFIER=underwrap-ns --output=export || true"
+    )
+    assert "AUDIT=writeback_rejected" in journal_after, (
+        f"scenario 4: journal missing audit event under suppression: {journal_after!r}"
+    )
+    assert "REASON=grant_readonly" in journal_after, (
+        f"scenario 4: journal missing grant_readonly reason: {journal_after!r}"
+    )
 
     # Env clear: the target must not see UNDERWRAP_SUPPRESS_READONLY_WARNING
     # (or any other UNDERWRAP_*) propagated from the wrapper invocation
@@ -1379,30 +1402,41 @@ def local_atomic_writeback():
 
     # Wait for the natural sleep + ns writeback to complete. The
     # daemon-end of the channel exits when ns sends Checkin → wait
-    # for that to land in the audit trail.
+    # for the audit event to appear in the journal (which is where
+    # the structured trail lives now).
     deadline = time.time() + 30
+    journal_after = ""
     while time.time() < deadline:
-        out = machine.succeed("cat /tmp/wts-stderr.log || true")
-        if '"audit":"writeback_rejected"' in out:
+        journal_after = machine.succeed(
+            f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
+            "SYSLOG_IDENTIFIER=underwrap-ns --output=export || true"
+        )
+        if "AUDIT=writeback_rejected" in journal_after:
             break
         time.sleep(0.5)
 
     after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
     assert after_a == baseline_a, "scenario 6: backend blob changed despite mid-run flip"
 
-    stderr_capture = machine.succeed("cat /tmp/wts-stderr.log || true")
-    assert '"audit":"writeback_rejected"' in stderr_capture, (
-        f"scenario 6: missing audit event after grant flip: {stderr_capture!r}"
+    assert "AUDIT=writeback_rejected" in journal_after, (
+        f"scenario 6: missing audit event in journal after grant flip: {journal_after!r}"
     )
-    assert '"reason":"server_rejected"' in stderr_capture, (
-        f"scenario 6: missing server_rejected reason: {stderr_capture!r}"
+    assert "REASON=server_rejected" in journal_after, (
+        f"scenario 6: missing server_rejected reason in journal: {journal_after!r}"
+    )
+
+    stderr_capture = machine.succeed("cat /tmp/wts-stderr.log || true")
+    assert '"audit":"writeback_rejected"' not in stderr_capture, (
+        f"scenario 6: audit JSON leaked to stderr instead of journald: {stderr_capture!r}"
     )
     assert "grant is read-only" in stderr_capture, (
         f"scenario 6: missing human-readable stderr warning: {stderr_capture!r}"
     )
-    _ = cursor
+    assert f"resource '{DIR_A}'" in stderr_capture, (
+        f"scenario 6: stderr warning missing resource name: {stderr_capture!r}"
+    )
     machine.log(
-        "PASS: scenario 6 — server rejects Checkin after mid-run grant flip, audit event records server_rejected"
+        "PASS: scenario 6 — server rejects Checkin after mid-run grant flip; journal records server_rejected"
     )
 
 

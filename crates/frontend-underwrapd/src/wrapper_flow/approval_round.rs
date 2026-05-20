@@ -21,6 +21,7 @@ pub(super) enum ModeGate {
 
 /// Consult the per-store policy document for the wrapper's single
 /// resource.
+#[allow(clippy::result_large_err)]
 pub(super) fn check_wrapper_mode(
     wrapper_name: &str,
     state: &State,

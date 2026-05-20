@@ -12,6 +12,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecResourceBinding {
     pub resource_id: String,
+    /// Operator-facing resource name carried alongside the id so ns
+    /// can name the resource in journal and stderr diagnostics.
+    pub resource_name: String,
     pub access: AccessMode,
     pub channel_fd: u32,
     /// Whether secretsd should be launched for this resource.
@@ -25,6 +28,7 @@ pub struct ExecResourceBinding {
 impl WireEncode for ExecResourceBinding {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         self.resource_id.encode(out)?;
+        self.resource_name.encode(out)?;
         self.access.encode(out)?;
         self.channel_fd.encode(out)?;
         self.libsecret.encode(out)?;
@@ -36,6 +40,7 @@ impl WireDecode for ExecResourceBinding {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         Ok(Self {
             resource_id: String::decode(reader)?,
+            resource_name: String::decode(reader)?,
             access: AccessMode::decode(reader)?,
             channel_fd: u32::decode(reader)?,
             libsecret: bool::decode(reader)?,
@@ -83,7 +88,8 @@ mod tests {
     #[test]
     fn exec_resource_binding_roundtrip() {
         let binding = ExecResourceBinding {
-            resource_id: "gws/state".to_string(),
+            resource_id: "res_gws_state".to_string(),
+            resource_name: "gws/state".to_string(),
             access: AccessMode::ReadWrite,
             channel_fd: 20,
             libsecret: false,
@@ -97,7 +103,8 @@ mod tests {
 
     fn sample_binding() -> ExecResourceBinding {
         ExecResourceBinding {
-            resource_id: "gws/state".to_string(),
+            resource_id: "res_gws_state".to_string(),
+            resource_name: "gws/state".to_string(),
             access: AccessMode::ReadWrite,
             channel_fd: 20,
             libsecret: false,
@@ -112,7 +119,8 @@ mod tests {
             env_passthrough: Vec::new(),
             env_set: HashMap::new(),
             resource: ExecResourceBinding {
-                resource_id: "x/y".to_string(),
+                resource_id: "res_x_y".to_string(),
+                resource_name: "x/y".to_string(),
                 access: AccessMode::ReadOnly,
                 channel_fd: 20,
                 libsecret: false,

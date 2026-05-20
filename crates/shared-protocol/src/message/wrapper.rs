@@ -66,6 +66,11 @@ pub enum WrapperResponse {
         /// after the `ReadOk` response itself, regardless of which
         /// slots (`env`, `files`, `libsecret`) the resource opts into.
         resource_id: String,
+        /// Operator-facing resource name (e.g. `github/token`).
+        /// Carried alongside the id so the wrapper can produce
+        /// human- and journal-readable diagnostics that name the
+        /// resource without an extra backend round-trip.
+        resource_name: String,
         access: AccessMode,
         /// Whether secretsd should be launched for this resource.
         libsecret: bool,
@@ -95,6 +100,7 @@ impl WireEncode for WrapperResponse {
             Self::ReadOk {
                 env,
                 resource_id,
+                resource_name,
                 access,
                 libsecret,
                 files_target_paths,
@@ -102,6 +108,7 @@ impl WireEncode for WrapperResponse {
                 0u8.encode(out)?;
                 env.encode(out)?;
                 resource_id.encode(out)?;
+                resource_name.encode(out)?;
                 access.encode(out)?;
                 libsecret.encode(out)?;
                 files_target_paths.encode(out)
@@ -131,6 +138,7 @@ impl WireDecode for WrapperResponse {
             0 => Ok(Self::ReadOk {
                 env: std::collections::HashMap::<String, SecretBytes>::decode(reader)?,
                 resource_id: String::decode(reader)?,
+                resource_name: String::decode(reader)?,
                 access: AccessMode::decode(reader)?,
                 libsecret: bool::decode(reader)?,
                 files_target_paths: Vec::<String>::decode(reader)?,
