@@ -72,7 +72,7 @@ pub(crate) async fn handle_wrapper(
         &result.response,
         wrapper_name,
         &state,
-        &result.resource_access,
+        result.resource_access.as_ref(),
     )
     .await;
 
@@ -98,7 +98,7 @@ async fn complete_read(
                 code: ErrorCode::Unauthorized,
                 message: crate::server::unenrolled_message(url),
             },
-            resource_access: Vec::new(),
+            resource_access: None,
         });
     }
 
@@ -110,7 +110,7 @@ async fn complete_read(
                 ApprovalOutcome::Rejected(response) => {
                     return Ok(read::ReadResult {
                         response,
-                        resource_access: Vec::new(),
+                        resource_access: None,
                     });
                 }
             }
@@ -118,13 +118,13 @@ async fn complete_read(
         Ok(ModeGate::Deny(response)) => {
             return Ok(read::ReadResult {
                 response,
-                resource_access: Vec::new(),
+                resource_access: None,
             });
         }
         Err(response) => {
             return Ok(read::ReadResult {
                 response,
-                resource_access: Vec::new(),
+                resource_access: None,
             });
         }
     };

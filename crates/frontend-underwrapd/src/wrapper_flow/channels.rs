@@ -7,35 +7,32 @@ use underwrap_protocol::message::WrapperResponse;
 
 use crate::server::State;
 
-/// Set up the wrapper-resource channels for every resource the daemon
-/// authorized in `process_read_for`. Only called when the response is
-/// `ReadOk`. Each channel handler enforces the per-resource access mode
+/// Set up the single wrapper-resource channel for the resource the
+/// daemon authorized in `process_read_for`. Only called when the
+/// response is `ReadOk`. The channel handler enforces the access mode
 /// on `Checkin` and serves `Checkout` / `UsageSignal` unconditionally.
-///
-/// The send order on the wire is the order the wrapper expects:
-/// exactly one fd per `resources` entry in `WrapperResponse::ReadOk`,
-/// in the same order.
+/// Exactly one fd is sent via SCM_RIGHTS, immediately after the
+/// `ReadOk` response itself.
 pub(super) async fn establish_scoped_channels(
     stream: &UnixStream,
     response: &WrapperResponse,
     wrapper_name: &str,
     state: &State,
-    resource_access: &[(String, AccessMode)],
+    resource_access: Option<&(String, AccessMode)>,
 ) {
     let WrapperResponse::ReadOk { .. } = response else {
         return;
     };
+    let Some((resource_id, access)) = resource_access else {
+        return;
+    };
 
-    for (resource_id, access) in resource_access {
-        match setup_wrapper_resource_channel(stream, wrapper_name, resource_id, *access, state)
-            .await
-        {
-            Ok(()) => {
-                info!(wrapper = %wrapper_name, resource = %resource_id, ?access, "wrapper-resource channel established");
-            }
-            Err(e) => {
-                error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "failed to setup wrapper-resource channel");
-            }
+    match setup_wrapper_resource_channel(stream, wrapper_name, resource_id, *access, state).await {
+        Ok(()) => {
+            info!(wrapper = %wrapper_name, resource = %resource_id, ?access, "wrapper-resource channel established");
+        }
+        Err(e) => {
+            error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "failed to setup wrapper-resource channel");
         }
     }
 }

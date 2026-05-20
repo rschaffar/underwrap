@@ -42,7 +42,7 @@ async fn disabling_runtime_client_instance_blocks_fresh_runtime_connections() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![daemon.current_grant("gh-authorized", "github/token")],
+                permissions: vec![daemon.current_permission("gh-authorized", "github/token")],
             },
         )
         .await

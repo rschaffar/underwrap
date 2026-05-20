@@ -2,9 +2,9 @@
 //!
 //! Before this module the only persisted "resource universe" was the
 //! catalog blob written by runtime clients on startup, plus whatever
-//! string keys happened to appear inside `AgentGrant`s. That left
-//! resources and `(wrapper, resource)` pairs without provenance and
-//! made the catalog blob the de-facto source of truth even though
+//! string keys happened to appear inside `WrapperPermission`s. That
+//! left resources and `(wrapper, resource)` pairs without provenance
+//! and made the catalog blob the de-facto source of truth even though
 //! nothing in the design said it had to be.
 //!
 //! These two documents replace the catalog: one persisted list per
@@ -16,10 +16,10 @@
 //! schema version tag so deserialisation can reject unknown versions
 //! loudly.
 //!
-//! The grant model (`AgentGrant`, keyed on `(client_instance, wrapper,
-//! resource)`) is intentionally untouched — it still references
-//! wrappers and resources by name, and now those names are anchored
-//! to records here.
+//! The wrapper-permission model (`WrapperPermission`, keyed on
+//! `(client_instance, wrapper, resource)`) is intentionally untouched
+//! — it still references wrappers and resources by name, and now
+//! those names are anchored to records here.
 //!
 //! `RESERVED_PREFIX` filtering in the admin SPA already hides
 //! `__underwrap/...` secret ids from operators, so these documents
@@ -65,8 +65,8 @@ pub enum EntityCreator {
 /// A resource record, one per store.
 ///
 /// `name` is the resource identifier as it appears in secret ids
-/// (`<resource>/<slot>/<name>`) and in `AgentGrant.resource`. It is
-/// the primary key within a store; duplicates are rejected on insert.
+/// (`<resource>/<slot>/<name>`) and in `WrapperPermission.resource`. It
+/// is the primary key within a store; duplicates are rejected on insert.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct ResourceRecord {

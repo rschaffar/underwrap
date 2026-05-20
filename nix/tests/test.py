@@ -207,15 +207,9 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-dir-env-probe": "test/dir-a",
 }
 
-# The directory wrappers map a second resource (`test/dir-b`); after
-# seeding the primary grant we also seed the secondary one so reads
-# of both mounted directories are authorized.
-LOCAL_WRAPPER_EXTRA_RESOURCES = {
-    "test-dir-write": ["test/dir-b"],
-    "test-dir-read": ["test/dir-b"],
-    "test-dir-readonly-write": ["test/dir-b"],
-    "test-dir-sleep": ["test/dir-b"],
-}
+# Each wrapper now projects exactly one resource, so no secondary
+# grants are needed.
+LOCAL_WRAPPER_EXTRA_RESOURCES = {}
 
 REMOTE_WRAPPER_RESOURCES = {
     "remote-echo": "remote/token",
@@ -979,38 +973,25 @@ def local_directory_credentials():
     ]:
         grant_local_unlocked(wrapper)
 
-    # Seed two directory credentials through a read-write wrapper.
+    # Seed a directory credential through a read-write wrapper.
     machine.succeed(su("/run/wrappers/bin/local-test-dir-write seed"))
     machine.log("PASS: directory credential seed wrapper succeeded")
 
-    # Read both mounted directories through a read-only wrapper.
+    # Read the mounted directory through a read-only wrapper.
     dir_output = machine.succeed(su("/run/wrappers/bin/local-test-dir-read")).strip().split("\n")
     assert dir_output[0].strip() == "token-seed", f"expected token-seed, got {dir_output}"
-    assert dir_output[1].strip() == "meta-seed", f"expected meta-seed, got {dir_output}"
-    machine.log("PASS: directory credential read-only wrapper can read both mounted directories")
+    machine.log("PASS: directory credential read-only wrapper can read the mounted directory")
 
-    # Pre-245 the daemon supported per-wrapper write rules so the
-    # `test-dir-readonly-write` wrapper could be denied mutation
-    # while sharing a target with `test-dir-write`. The new grant
-    # model expresses this via the per-grant `writable: bool` flag,
-    # which is decided per `(client_instance, wrapper, resource)`.
-
-    # Update content and delete one file through the read-write wrapper.
+    # Update content through the read-write wrapper.
     machine.succeed(su("/run/wrappers/bin/local-test-dir-write update"))
     dir_output = machine.succeed(su("/run/wrappers/bin/local-test-dir-read")).strip().split("\n")
     assert dir_output[0].strip() == "token-updated", f"expected token-updated, got {dir_output}"
-    assert dir_output[1].strip() == "meta-updated", f"expected meta-updated, got {dir_output}"
     machine.log("PASS: directory read-write wrapper updates backend-managed files")
 
-    # Verify one resource blob per resource (atomic-blob storage layout)
-    # and that the in-blob files section reflects the writeback +
-    # deletion the wrapper performed.
+    # Verify the in-blob files section reflects the writeback (single
+    # resource per wrapper, so all files land in dir-a's blob).
     dir_a_files = sorted(
-        admin_api(
-            ADMIN_LOCAL, "/v1/admin/resources/blob/get",
-            {"store": "local", "name": "test/dir-a"},
-        )["blob_b64"]
-        and json.loads(
+        json.loads(
             base64.b64decode(
                 admin_api(
                     ADMIN_LOCAL, "/v1/admin/resources/blob/get",
@@ -1022,18 +1003,7 @@ def local_directory_credentials():
     assert dir_a_files == ["sub/nested", "token"], (
         f"unexpected dir-a blob files: {dir_a_files}"
     )
-    dir_b_blob = json.loads(
-        base64.b64decode(
-            admin_api(
-                ADMIN_LOCAL, "/v1/admin/resources/blob/get",
-                {"store": "local", "name": "test/dir-b"},
-            )["blob_b64"]
-        )
-    )
-    assert sorted(dir_b_blob["files"].keys()) == ["meta"], (
-        f"unexpected dir-b blob files: {sorted(dir_b_blob['files'].keys())}"
-    )
-    machine.log("PASS: resource blob carries the writeback + deletion")
+    machine.log("PASS: resource blob carries the writeback")
 
     # While a wrapped target is running, a separate same-UID host process must not
     # be able to access the mounted secret files from the host namespace view.
@@ -1048,42 +1018,25 @@ def local_directory_credentials():
     )[0]
     assert host_view != 0, "FAIL: same-UID host process can read directory credential file"
 
-    host_view = machine.execute(
-        "su testuser -s /bin/sh -c 'cat $HOME/.local/share/underwrap-dir-b/meta 2>/dev/null'"
-    )[0]
-    assert host_view != 0, "FAIL: same-UID host process can read second directory credential file"
-
     host_ls = machine.execute(
         "su testuser -s /bin/sh -c 'ls $HOME/.config/underwrap-dir-a >/dev/null 2>&1'"
     )[0]
-    assert host_ls != 0, "FAIL: same-UID host process can list first mounted directory"
-    host_ls = machine.execute(
-        "su testuser -s /bin/sh -c 'ls $HOME/.local/share/underwrap-dir-b >/dev/null 2>&1'"
-    )[0]
-    assert host_ls != 0, "FAIL: same-UID host process can list second mounted directory"
+    assert host_ls != 0, "FAIL: same-UID host process can list mounted directory"
 
     host_find = machine.succeed(
         "su testuser -s /bin/sh -c 'find $HOME/.config/underwrap-dir-a -maxdepth 2 -type f 2>/dev/null || true'"
     ).strip()
     assert host_find == "", f"FAIL: host view exposes mounted directory files: {host_find}"
-    host_find = machine.succeed(
-        "su testuser -s /bin/sh -c 'find $HOME/.local/share/underwrap-dir-b -maxdepth 2 -type f 2>/dev/null || true'"
-    ).strip()
-    assert host_find == "", f"FAIL: host view exposes second mounted directory files: {host_find}"
-    machine.log("PASS: same-UID host processes cannot list mounted directories or access files in them")
+    machine.log("PASS: same-UID host processes cannot list mounted directory or access files in it")
 
     machine.execute("pkill -u testuser -f local-test-dir-sleep || true")
     time.sleep(0.5)
 
-    # The mounted directories must disappear from normal host view after the wrapper exits.
+    # The mounted directory must disappear from normal host view after the wrapper exits.
     post_exit = machine.execute(
         "su testuser -s /bin/sh -c 'test -e $HOME/.config/underwrap-dir-a/token'"
     )[0]
     assert post_exit != 0, "FAIL: directory credential file remained visible after wrapper exit"
-    post_exit = machine.execute(
-        "su testuser -s /bin/sh -c 'test -e $HOME/.local/share/underwrap-dir-b/meta'"
-    )[0]
-    assert post_exit != 0, "FAIL: second directory credential file remained visible after wrapper exit"
     machine.log("PASS: directory credentials leave no host-visible files after wrapper exit")
 
     # Symlinks in the managed staging tree must never reach the
@@ -1107,7 +1060,7 @@ def local_directory_credentials():
 
     # Seed the per-grant `writable=true` for the wrappers used by
     # the atomic-writeback scenarios (story 410 / ticket 432). They
-    # share the dir-a / dir-b resources, so the helper flips both.
+    # share the dir-a resource.
     for wrapper in [
         "test-dir-write-then-sleep",
         "test-dir-touch",
@@ -1148,19 +1101,15 @@ def local_atomic_writeback():
     # ============================================================
 
     DIR_A = "test/dir-a"
-    DIR_B = "test/dir-b"
 
     def reset_blob_state():
-        """Re-seed the dir-a / dir-b blobs to a known state. The
+        """Re-seed the dir-a blob to a known state. The
         `test-dir-write seed` script writes a deterministic set of
         files via the writable grant; we then re-fetch the blob bytes
         so subsequent scenarios can byte-compare against this baseline."""
         grant_local_unlocked("test-dir-write")
         machine.succeed(su("/run/wrappers/bin/local-test-dir-write seed"))
-        return (
-            admin_get_blob(ADMIN_LOCAL, "local", DIR_A),
-            admin_get_blob(ADMIN_LOCAL, "local", DIR_B),
-        )
+        return admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
 
     def journal_lines_since(boot_offset, *, units=None, grep=None):
         """Capture journal output emitted since `boot_offset` (a
@@ -1191,7 +1140,7 @@ def local_atomic_writeback():
     # bytes are byte-identical after the run. Journal contains no
     # writeback_rejected event. `last_used_at` is bumped.
     # ----------------------------------------------------------
-    baseline_a, baseline_b = reset_blob_state()
+    baseline_a = reset_blob_state()
     grant_local_unlocked("test-dir-read")
 
     before_pairs = admin_list_pairs(ADMIN_LOCAL, "local")
@@ -1203,9 +1152,7 @@ def local_atomic_writeback():
     time.sleep(0.5)
 
     after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
-    after_b = admin_get_blob(ADMIN_LOCAL, "local", DIR_B)
     assert after_a == baseline_a, "scenario 1: dir-a blob changed after clean run"
-    assert after_b == baseline_b, "scenario 1: dir-b blob changed after clean run"
 
     rejected = machine.succeed(
         f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
@@ -1250,22 +1197,13 @@ def local_atomic_writeback():
     # unchanged, the journal carries `writeback_rejected reason=grant_readonly`,
     # and stderr contains the human-readable line.
     # ----------------------------------------------------------
-    baseline_a, baseline_b = reset_blob_state()
+    baseline_a = reset_blob_state()
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
         "test-dir-readonly-write",
         DIR_A,
-        {"kind": "unlocked"},
-        writable=False,
-    )
-    admin_upsert_grant(
-        ADMIN_LOCAL,
-        "local",
-        LOCAL_CLIENT_INSTANCE,
-        "test-dir-readonly-write",
-        DIR_B,
         {"kind": "unlocked"},
         writable=False,
     )
@@ -1280,9 +1218,7 @@ def local_atomic_writeback():
     time.sleep(0.5)
 
     after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
-    after_b = admin_get_blob(ADMIN_LOCAL, "local", DIR_B)
     assert after_a == baseline_a, "scenario 3: dir-a blob changed despite read-only grant"
-    assert after_b == baseline_b, "scenario 3: dir-b blob changed despite read-only grant"
 
     # The structured audit event and the human-readable warning are
     # both emitted by `frontend-ns` on the wrapper's stderr (the
@@ -1310,7 +1246,7 @@ def local_atomic_writeback():
     # stderr does not carry the human-readable line; the target
     # process does NOT see the env var (env_clear whitelist).
     # ----------------------------------------------------------
-    baseline_a, baseline_b = reset_blob_state()
+    baseline_a = reset_blob_state()
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
@@ -1369,7 +1305,7 @@ def local_atomic_writeback():
     # (the kernel allowed the write); the file does not persist to
     # the backend (covered by scenario 3's blob check, repeated here).
     # ----------------------------------------------------------
-    baseline_a, _ = reset_blob_state()
+    baseline_a = reset_blob_state()
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
@@ -1397,7 +1333,7 @@ def local_atomic_writeback():
     # carries `writeback_rejected reason=server_rejected` and the
     # backend blob is unchanged.
     # ----------------------------------------------------------
-    baseline_a, _ = reset_blob_state()
+    baseline_a = reset_blob_state()
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",

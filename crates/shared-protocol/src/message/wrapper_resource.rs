@@ -10,9 +10,10 @@
 //!   resource was used in this run (bumps `last_used_at` on the
 //!   `(wrapper, resource)` pair) without sending a blob.
 //!
-//! The channel is per-resource: the daemon sets up one socketpair per
-//! resource in scope and hands the wrapper end via `SCM_RIGHTS`. The
-//! `resource_id` is implicit per channel and not on the wire.
+//! Each wrapper run has exactly one channel: the daemon sets up one
+//! socketpair for the wrapper's single resource and hands the wrapper
+//! end via `SCM_RIGHTS`. The `resource_id` is implicit per channel and
+//! not on the wire.
 
 use anyhow::{Result, anyhow};
 

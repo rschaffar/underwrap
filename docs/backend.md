@@ -179,54 +179,56 @@ session cookies; state-changing requests must also satisfy the CSRF and
   `403 writes_globally_disabled` when the toggle is off.
 - `POST /v1/admin/policy/get` — fetch the entire `PolicyDocument`
 - `POST /v1/admin/policy/put` — replace the entire document
-- `POST /v1/admin/grants/list` — list every grant in a store
-- `POST /v1/admin/grants/upsert` — create or update one grant by
-  `(wrapper, host, user)`
-- `POST /v1/admin/grants/delete` — remove a grant by tuple
+- `POST /v1/admin/wrapper-permissions/list` — list every wrapper
+  permission in a store
+- `POST /v1/admin/wrapper-permissions/upsert` — create or update one
+  wrapper permission by `(client_instance, wrapper, resource)`
+- `POST /v1/admin/wrapper-permissions/delete` — remove a wrapper
+  permission by tuple
 - `POST /v1/admin/resources/{list,create,delete}` — manage the
   Resource records that own provenance for resource names. `delete`
   refuses with structured `blocked_by` counts when secrets, pairs, or
-  grants still reference the resource.
+  wrapper permissions still reference the resource.
 - `POST /v1/admin/pairs/{list,create,delete}` — manage the
   Wrapper/Resource Pair records. `create` refuses if the referenced
   resource doesn't exist or if `(wrapper, resource)` is already taken;
-  `delete` refuses when any grant references the pair.
+  `delete` refuses when any wrapper permission references the pair.
 - `POST /v1/admin/policy/writes-enabled/get` — read the per-store
   write toggle
 - `POST /v1/admin/policy/writes-enabled/set` — flip the per-store
   write toggle. Admin-only; logged.
 
 Every admin write is a full atomic replacement of the stored policy
-document or of one grant entry.
+document or of one wrapper-permission entry.
 
 ## Policy model
 
 The backend persists one policy document per store under a reserved
-secret id (`__underwrap/policy/document`). After the ticket-245 rewrite
-it has just two sections.
+secret id (`__underwrap/policy/document`).
 
-### Agent grants
+### Wrapper permissions
 
-A grant is one row keyed by the tuple `(wrapper, host, user)`. The mode
-on the grant decides whether the agent can use that grant *right now*:
+A wrapper permission is one row keyed by the tuple
+`(client_instance, wrapper, resource)`. The mode on the permission
+decides whether the runtime client may use it *right now*:
 
 ```yaml
-grants:
-  - wrapper: gh-authorized
-    host: deepthought
-    user: robert
+permissions:
+  - client_instance: dev-laptop
+    wrapper: gh-authorized
+    resource: github/token
     mode:
       kind: unlocked
-  - wrapper: aws-prod
-    host: deepthought
-    user: robert
+  - client_instance: dev-laptop
+    wrapper: aws-prod
+    resource: aws/prod
     mode:
       kind: per-call-approval
       approval_key: "ssh-ed25519 AAAA…"
     reason: "ops approval required"
-  - wrapper: jira-readonly
-    host: ci
-    user: bot
+  - client_instance: ci
+    wrapper: jira-readonly
+    resource: jira/api
     mode:
       kind: unlocked-until
       until_epoch: 1745092800
@@ -234,8 +236,8 @@ grants:
 
 Four modes:
 
-- **`locked`** — deny every invocation through this grant.
-- **`unlocked`** — allow every invocation through this grant.
+- **`locked`** — deny every invocation through this permission.
+- **`unlocked`** — allow every invocation through this permission.
 - **`unlocked-until`** — allow until `until_epoch`; deny after. The
   expiry is checked lazily on each request — there is no background
   sweeper.
@@ -245,8 +247,8 @@ Four modes:
 
 There is **no per-secret read filter**. Once the mode allows the
 invocation, the daemon hands the wrapper every resource the wrapper's
-declaration lists. To remove an agent's access to a resource, edit the
-wrapper definition, not the policy.
+declaration lists. To remove a runtime client's access to a resource,
+edit the wrapper definition, not the policy.
 
 ### Global write lock
 
@@ -263,8 +265,9 @@ gate via the `AccessMode::ReadWrite` projection.
 
 ### Evaluation order (daemon)
 
-1. Look up the grant for `(wrapper, host, user)`. No grant → reject.
-2. Consult the grant's mode:
+1. Look up the wrapper permission for
+   `(client_instance, wrapper, resource)`. No permission → reject.
+2. Consult the permission's mode:
    - `locked` → reject with the operator-supplied reason.
    - `unlocked` → proceed.
    - `unlocked-until { until_epoch }` → proceed if `now < until_epoch`,

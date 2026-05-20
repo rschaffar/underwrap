@@ -137,7 +137,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     document.title = "underwrap — secrets";
   }, []);
 
-  // Store selector — URL-persisted, same shape as the Matrix page.
+  // Store selector — URL-persisted, same shape as the Wrapper permissions page.
   const stores = useQuery<AdminStoresListResponse>({
     queryKey: ["admin", "stores"],
     queryFn: fetchStores,
@@ -1235,10 +1235,10 @@ function DeleteResourceDialog({
                   ) : null}
                 </li>
               ) : null}
-              {blockers.grant_count > 0 ? (
+              {blockers.permission_count > 0 ? (
                 <li>
-                  <strong>{blockers.grant_count}</strong> grant
-                  {blockers.grant_count === 1 ? "" : "s"}
+                  <strong>{blockers.permission_count}</strong> wrapper permission
+                  {blockers.permission_count === 1 ? "" : "s"}
                 </li>
               ) : null}
             </ul>

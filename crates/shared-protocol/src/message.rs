@@ -13,7 +13,7 @@ mod wrapper_resource;
 
 pub use common::SecretBytes;
 pub use errors::ErrorCode;
-pub use wrapper::{ReadResourceBinding, WrapperRequest, WrapperResponse};
+pub use wrapper::{WrapperRequest, WrapperResponse};
 pub use wrapper_resource::{ResourceErrorCode, WrapperResourceRequest, WrapperResourceResponse};
 
 #[cfg(test)]

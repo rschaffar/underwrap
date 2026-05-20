@@ -55,16 +55,12 @@ in
     package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     instances.agent = {
-      credentials."github/agent-comment" = {
-        mode = "env";
-        variable = "GH_TOKEN";
-      };
-
       wrappers.gh-comment = {
         # IMPORTANT: point underwrap at your own narrow wrapper, not directly at
         # the full gh CLI, when the command is meant for an agent.
         target = "${agentGhComment}/bin/agent-gh-comment";
-        use."github/agent-comment".access = "read-only";
+        resource = "github/agent-comment";
+        env = true;
 
         # Optional: set fixed env vars for the target from trusted config.
         envSet = {

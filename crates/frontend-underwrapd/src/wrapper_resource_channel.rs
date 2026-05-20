@@ -419,9 +419,9 @@ mod tests {
 
     #[test]
     fn checkin_rejects_when_policy_flipped_readonly_mid_run() {
-        use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
+        use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
         let policy = PolicyDocument {
-            grants: vec![AgentGrant {
+            permissions: vec![WrapperPermission {
                 client_instance: "dev-laptop".into(),
                 wrapper: "wrapper".into(),
                 resource: "github/token".into(),

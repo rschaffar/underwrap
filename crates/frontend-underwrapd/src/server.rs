@@ -53,18 +53,16 @@ fn register_wrapper_assets(store: &dyn StorageBackend, config: &DaemonConfig) ->
             .logical_name
             .clone()
             .unwrap_or_else(|| wrapper_name.clone());
-        for (resource, usage) in &wrapper.resources {
-            let files_mount_paths = usage
-                .files
-                .as_ref()
-                .map(|f| f.paths.clone())
-                .unwrap_or_default();
-            pairs.push(ServiceWrapperResourcePair {
-                wrapper: logical_name.clone(),
-                resource: resource.clone(),
-                files_mount_paths,
-            });
-        }
+        let files_mount_paths = wrapper
+            .files
+            .as_ref()
+            .map(|f| f.paths.clone())
+            .unwrap_or_default();
+        pairs.push(ServiceWrapperResourcePair {
+            wrapper: logical_name,
+            resource: wrapper.resource.clone(),
+            files_mount_paths,
+        });
     }
     let response = store.register_wrapper_assets(&ServiceWrapperRegisterRequest { pairs })?;
     match response.rejected {

@@ -1,10 +1,10 @@
 /**
- * Wrappers page e2e (ticket 392).
+ * Wrapper permissions page e2e.
  *
- * Exercises the wrapper/resource-pair + agent-grant model end-to-end
- * from the SPA: pair creation through the dialog, cell-editor flows
- * for each of the four grant modes, removing a grant, and a refresh
- * that preserves the URL `?store=` selection.
+ * Exercises the wrapper/resource-pair + wrapper-permission model
+ * end-to-end from the SPA: pair creation through the dialog,
+ * cell-editor flows for each of the four modes, removing a permission,
+ * and a refresh that preserves the URL `?store=` selection.
  */
 import { test, expect, loginViaUi } from "./fixtures";
 
@@ -63,13 +63,13 @@ test("wrappers page loads and shows the empty-pairs message on a fresh store", a
   ).toBeVisible();
 });
 
-test("cell editor cycles a grant through all four modes and then removes it", async ({
+test("cell editor cycles a permission through all four modes and then removes it", async ({
   page,
   backendWithAdmin,
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
 
-  // Seed a pair record so the table has a row to drive grants against.
+  // Seed a pair record so the table has a row to drive permissions against.
   await seedPair(
     page,
     backendWithAdmin.baseUrl,
@@ -77,10 +77,10 @@ test("cell editor cycles a grant through all four modes and then removes it", as
     "gh-authorized",
     "github/token",
   );
-  // Seed an initial grant so the cell starts non-empty.
+  // Seed an initial permission so the cell starts non-empty.
   const csrf = await csrfFromPage(page);
   const seed = await page.request.post(
-    `${backendWithAdmin.baseUrl}/v1/admin/grants/upsert`,
+    `${backendWithAdmin.baseUrl}/v1/admin/wrapper-permissions/upsert`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -89,7 +89,7 @@ test("cell editor cycles a grant through all four modes and then removes it", as
       },
       data: {
         store: "default",
-        grant: {
+        permission: {
           client_instance: "dev-laptop",
           wrapper: "gh-authorized",
           resource: "github/token",
@@ -121,7 +121,7 @@ test("cell editor cycles a grant through all four modes and then removes it", as
         .getByLabel(/ssh public key/i)
         .fill("ssh-ed25519 AAAAAAAA test@example");
     }
-    await dlg.getByTestId("grant-save").click();
+    await dlg.getByTestId("permission-save").click();
     await expect(dlg).toBeHidden();
   }
 
@@ -137,11 +137,11 @@ test("cell editor cycles a grant through all four modes and then removes it", as
   await setMode("locked");
   await expect(cell.getByTestId("mode-locked")).toBeVisible();
 
-  // Remove the grant. The pair row remains visible because the pair
-  // record is independent of any grants on it.
+  // Remove the permission. The pair row remains visible because the
+  // pair record is independent of any permissions on it.
   await cell.click();
   const dlg = page.getByRole("dialog");
-  await dlg.getByTestId("grant-remove").click();
+  await dlg.getByTestId("permission-remove").click();
   await expect(dlg).toBeHidden();
 });
 
@@ -165,7 +165,7 @@ test("admin can create a wrapper/resource pair through the dialog", async ({
   await expect(page.getByRole("cell", { name: "github/token" })).toBeVisible();
 });
 
-test("raw policy viewer surfaces the live PolicyDocument and writable-grant count", async ({
+test("raw policy viewer surfaces the live PolicyDocument and writable-permission count", async ({
   page,
   backendWithAdmin,
 }) => {
@@ -176,23 +176,24 @@ test("raw policy viewer surfaces the live PolicyDocument and writable-grant coun
   const dlg = page.getByRole("dialog", { name: /raw policy: default/i });
   await expect(dlg).toBeVisible();
 
-  await expect(dlg.getByTestId("writable-grants-badge")).toHaveText(/0 of 0/i);
+  await expect(dlg.getByTestId("writable-permissions-badge")).toHaveText(/0 of 0/i);
   const json = dlg.getByTestId("policy-json");
-  await expect(json).toContainText('"grants"');
+  await expect(json).toContainText('"permissions"');
 
   await dlg.getByText("Close", { exact: true }).click();
   await expect(dlg).toBeHidden();
 
   const csrf = await csrfFromPage(page);
-  // Pair must exist before a grant can render on the wrappers page,
-  // but the raw policy viewer reads policy.grants directly so the
-  // upsert below is sufficient to bump the writable count.
+  // Pair must exist before a permission can render on the wrapper
+  // permissions page, but the raw policy viewer reads
+  // policy.permissions directly so the upsert below is sufficient to
+  // bump the writable count.
   const setResp = await page.request.post(
-    `${backendWithAdmin.baseUrl}/v1/admin/grants/upsert`,
+    `${backendWithAdmin.baseUrl}/v1/admin/wrapper-permissions/upsert`,
     {
       data: {
         store: "default",
-        grant: {
+        permission: {
           client_instance: "dev-laptop",
           wrapper: "gh-authorized",
           resource: "github/token",
@@ -210,6 +211,6 @@ test("raw policy viewer surfaces the live PolicyDocument and writable-grant coun
 
   await page.getByRole("button", { name: /view raw policy/i }).click();
   const dlg2 = page.getByRole("dialog", { name: /raw policy: default/i });
-  await expect(dlg2.getByTestId("writable-grants-badge")).toHaveText(/1 of 1/i);
+  await expect(dlg2.getByTestId("writable-permissions-badge")).toHaveText(/1 of 1/i);
   await expect(dlg2.getByTestId("policy-json")).toContainText('"writable": true');
 });

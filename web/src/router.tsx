@@ -14,7 +14,7 @@ import { AppShell } from "@/components/app-shell";
 import { Dashboard } from "@/pages/dashboard";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
-import { WrappersPage } from "@/pages/wrappers";
+import { WrapperPermissionsPage } from "@/pages/wrapper-permissions";
 import { SecretsPage } from "@/pages/secrets";
 import { StoresPage } from "@/pages/stores";
 import { ClientInstancesPage } from "@/pages/client-instances";
@@ -232,12 +232,12 @@ const profileRoute = new Route({
   },
 });
 
-const wrappersRoute = new Route({
+const wrapperPermissionsRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/wrappers",
-  component: function WrappersRouteComponent() {
-    const ctx = wrappersRoute.useRouteContext();
-    return <WrappersPage principal={ctx.principal} />;
+  component: function WrapperPermissionsRouteComponent() {
+    const ctx = wrapperPermissionsRoute.useRouteContext();
+    return <WrapperPermissionsPage principal={ctx.principal} />;
   },
 });
 
@@ -343,7 +343,7 @@ export function safeNextPath(next: string | null): string | null {
 // list ordered the same way as `APP_ROUTE_PATHS` for readability.
 export const appRoutes = [
   indexRoute,
-  wrappersRoute,
+  wrapperPermissionsRoute,
   secretsRoute,
   storesRoute,
   clientInstancesRoute,

@@ -1,9 +1,8 @@
-//! Builder helpers for common wrapper and resource test configs.
+//! Builder helpers for common wrapper test configs.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use underwrap_protocol::config::{FilesUse, ResourceUse, WrapperDef};
+use underwrap_protocol::config::{FilesUse, WrapperDef};
 
 /// Get the current process's primary group name (for test wrappers).
 fn current_group_name() -> String {
@@ -16,35 +15,40 @@ fn current_group_name() -> String {
     name.to_string_lossy().to_string()
 }
 
-/// Create a simple env-projecting wrapper def for testing.
+/// Simple env-projecting wrapper def for testing.
 pub fn wrapper(target: &str, resource_id: &str, _env_var: &str) -> WrapperDef {
     WrapperDef {
         target: PathBuf::from(target),
         logical_name: None,
-        resources: HashMap::from([(
-            resource_id.to_string(),
-            ResourceUse {
-                env: true,
-                files: None,
-                libsecret: false,
-            },
-        )]),
+        resource: resource_id.to_string(),
+        env: true,
+        files: None,
+        libsecret: false,
         socket: PathBuf::new(),
         group: current_group_name(),
     }
 }
 
-pub fn files_resource(path: &str) -> ResourceUse {
-    files_resource_paths(&[path])
+/// Wrapper def projecting a single resource into its files slot at
+/// `path`.
+pub fn files_wrapper(target: &str, resource_id: &str, path: &str) -> WrapperDef {
+    files_wrapper_paths(target, resource_id, &[path])
 }
 
-pub fn files_resource_paths(paths: &[&str]) -> ResourceUse {
-    ResourceUse {
+/// Wrapper def projecting a single resource into its files slot at
+/// multiple `paths`.
+pub fn files_wrapper_paths(target: &str, resource_id: &str, paths: &[&str]) -> WrapperDef {
+    WrapperDef {
+        target: PathBuf::from(target),
+        logical_name: None,
+        resource: resource_id.to_string(),
         env: false,
         files: Some(FilesUse {
             paths: paths.iter().map(|p| (*p).to_string()).collect(),
         }),
         libsecret: false,
+        socket: PathBuf::new(),
+        group: current_group_name(),
     }
 }
 
@@ -56,21 +60,31 @@ mod tests {
     fn wrapper_builder_creates_env_projection() {
         let wrapper = wrapper("/usr/bin/gh", "github/token", "GH_TOKEN");
         assert_eq!(wrapper.target, PathBuf::from("/usr/bin/gh"));
-        assert_eq!(wrapper.resources.len(), 1);
-        assert!(wrapper.resources.get("github/token").unwrap().env);
+        assert_eq!(wrapper.resource, "github/token");
+        assert!(wrapper.env);
+        assert!(wrapper.files.is_none());
+        assert!(!wrapper.libsecret);
     }
 
     #[test]
-    fn files_resource_builder_sets_path() {
-        let usage = files_resource(".config/gws");
-        assert_eq!(usage.files.unwrap().paths, vec![".config/gws".to_string()]);
-    }
-
-    #[test]
-    fn files_resource_paths_builder_carries_all_paths() {
-        let usage = files_resource_paths(&[".config/gws", ".local/share/gws"]);
+    fn files_wrapper_builder_sets_path() {
+        let w = files_wrapper("/usr/bin/true", "gws/state", ".config/gws");
+        assert_eq!(w.resource, "gws/state");
         assert_eq!(
-            usage.files.unwrap().paths,
+            w.files.as_ref().unwrap().paths,
+            vec![".config/gws".to_string()]
+        );
+    }
+
+    #[test]
+    fn files_wrapper_paths_builder_carries_all_paths() {
+        let w = files_wrapper_paths(
+            "/usr/bin/true",
+            "gws/state",
+            &[".config/gws", ".local/share/gws"],
+        );
+        assert_eq!(
+            w.files.unwrap().paths,
             vec![".config/gws".to_string(), ".local/share/gws".to_string()],
         );
     }

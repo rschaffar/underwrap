@@ -16,9 +16,10 @@ let
     || lib.hasPrefix (right + "/") left;
 
   wrapperDirectoryPaths = wrapper:
-    lib.concatLists
-      (lib.mapAttrsToList (_resource: use: if use.files == null then [] else use.files.paths)
-        wrapper.resources);
+    if wrapper.files == null then [] else wrapper.files.paths;
+
+  wrapperHasProjection = wrapper:
+    wrapper.env || wrapper.files != null || wrapper.libsecret;
 
   # Per-instance helper functions. All names are prefixed with the instance name
   # to ensure full isolation between instances.
@@ -42,9 +43,6 @@ let
     nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
     debugToolTarget = "${cfg.package}/bin/underwrap-debug-tool";
 
-    wrapperUsesLibsecret = w:
-      lib.any (use: use.libsecret) (lib.attrValues w.resources);
-
     mkWrapperConfig = { configName, target, wrapperName, wrapper, envSet ? wrapper.envSet }:
       pkgs.writeText "${configName}.yaml" (builtins.toJSON ({
         inherit target;
@@ -52,7 +50,7 @@ let
         ns_binary = nsBinaryPath;
         env_passthrough = wrapper.envPassthrough;
         env_set = envSet;
-      } // lib.optionalAttrs (wrapperUsesLibsecret wrapper) {
+      } // lib.optionalAttrs wrapper.libsecret {
         libsecret = true;
         dbus_daemon_binary = "${pkgs.dbus}/bin/dbus-daemon";
         secretsd_binary = "${cfg.package}/bin/underwrap-secretsd";
@@ -108,18 +106,17 @@ let
         ca_file = inst.backend.caFile;
       };
       wrappers = lib.mapAttrs' (name: w:
-        lib.nameValuePair (fullWrapperName name) {
+        lib.nameValuePair (fullWrapperName name) ({
           target = w.target;
           logical_name = name;
-          resources = lib.mapAttrs (_resource: use:
-            ({ inherit (use) env libsecret; }
-              // lib.optionalAttrs (use.files != null) {
-                files = { inherit (use.files) paths; };
-              })
-          ) w.resources;
+          resource = w.resource;
+          env = w.env;
+          libsecret = w.libsecret;
           socket = wrapperSocketPath name;
           group = wrapperGroupName name;
-        }
+        } // lib.optionalAttrs (w.files != null) {
+          files = { inherit (w.files) paths; };
+        })
       ) inst.wrappers;
     };
 
@@ -275,8 +272,24 @@ let
     };
   };
 
-  resourceUseSubmodule = lib.types.submodule {
+  wrapperSubmodule = lib.types.submodule {
     options = {
+      target = lib.mkOption {
+        type = lib.types.str;
+        description = "Absolute path to the target binary.";
+      };
+      resource = lib.mkOption {
+        type = lib.types.str;
+        description = ''
+          Backend resource id this wrapper projects into the target. Each
+          wrapper projects exactly one resource; opt into the projection
+          slots with <option>env</option>, <option>files</option>, and
+          <option>libsecret</option>. Backend policy, not NixOS config,
+          decides whether projected mutable slots are read-only or
+          read-write for a particular invocation.
+        '';
+        example = "github/token";
+      };
       env = lib.mkOption {
         type = lib.types.bool;
         default = false;
@@ -294,24 +307,6 @@ let
         type = lib.types.bool;
         default = false;
         description = "Expose this resource's libsecret slot through a private Secret Service.";
-      };
-    };
-  };
-
-  wrapperSubmodule = lib.types.submodule {
-    options = {
-      target = lib.mkOption {
-        type = lib.types.str;
-        description = "Absolute path to the target binary.";
-      };
-      resources = lib.mkOption {
-        type = lib.types.attrsOf resourceUseSubmodule;
-        default = {};
-        description = ''
-          Resource slot projections for this wrapper. Backend policy, not
-          NixOS config, decides whether projected mutable slots are read-only
-          or read-write for a particular invocation.
-        '';
       };
       envPassthrough = lib.mkOption {
         type = lib.types.listOf lib.types.str;
@@ -456,22 +451,15 @@ in {
               map (right: { inherit left right; })
                 (lib.filter (right: right != left) paths)
             ) paths;
-            projections = lib.mapAttrsToList (_resource: use:
-              use.env || use.files != null || use.libsecret
-            ) wrapper.resources;
           in {
-            assertion = wrapper.resources != {}
-              && lib.all (v: v) projections
+            assertion = wrapper.resource != ""
+              && wrapperHasProjection wrapper
               && lib.length paths == lib.length (lib.unique paths)
               && lib.all (path: isCleanRelativePath path) paths
               && lib.all (pair: !pathsOverlap pair.left pair.right) pairs;
-            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: resources must project at least one slot and files target paths must be clean, unique, and non-overlapping";
+            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: must declare a non-empty resource, enable at least one projection slot (env, files, or libsecret), and supply files paths that are clean, unique, and non-overlapping";
           }
         ) inst.wrappers)
-        ++ (lib.mapAttrsToList (wrapperName: wrapper: {
-          assertion = lib.length (lib.filter (use: use.libsecret) (lib.attrValues wrapper.resources)) <= 1;
-          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: at most one libsecret slot may be projected";
-        }) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: wrapper: {
           assertion = !(lib.any linkerLikeEnvPrefix wrapper.envPassthrough);
           message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envPassthrough: LD_* environment variables must not be passed through — they would let the caller redirect dynamic linking in the target process and defeat the NO_NEW_PRIVS + env_clear() hardening";

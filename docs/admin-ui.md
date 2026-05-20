@@ -38,21 +38,21 @@ flow exclusively.
 
 ## Surface today
 
-| Page        | Path        | Role required |
-| ----------- | ----------- | ------------- |
-| Dashboard   | `/`         | any operator  |
-| Matrix      | `/matrix`   | any operator  |
-| Stores      | `/stores`   | admin         |
-| Users       | `/users`    | admin         |
-| Profile     | `/profile`  | any operator  |
-| Login       | `/login`    | unauthenticated |
-| Bootstrap   | `/bootstrap`| empty backend |
+| Page                | Path        | Role required |
+| ------------------- | ----------- | ------------- |
+| Dashboard           | `/`         | any operator  |
+| Wrapper permissions | `/wrappers` | any operator  |
+| Stores              | `/stores`   | admin         |
+| Users               | `/users`    | admin         |
+| Profile             | `/profile`  | any operator  |
+| Login               | `/login`    | unauthenticated |
+| Bootstrap           | `/bootstrap`| empty backend |
 
 Operators see only the stores they have been granted access to.
-Admins see everything. The matrix tab lets admins set the
-`(wrapper, host, user)` grant mode and toggle the per-store global
-`writes_enabled` switch — see [backend docs](backend.md#policy-model)
-for the underlying model.
+Admins see everything. The Wrapper permissions tab lets admins set
+the `(client_instance, wrapper, resource)` permission mode and toggle
+its `writable` flag — see [backend docs](backend.md#policy-model) for
+the underlying model.
 
 ## Local development
 

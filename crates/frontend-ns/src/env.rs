@@ -70,13 +70,25 @@ pub(crate) fn build_target_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use underwrap_protocol::config::AccessMode;
+    use underwrap_protocol::exec::ExecResourceBinding;
+
+    fn sample_binding() -> ExecResourceBinding {
+        ExecResourceBinding {
+            resource_id: "x/y".to_string(),
+            access: AccessMode::ReadOnly,
+            channel_fd: 20,
+            libsecret: false,
+            files_target_paths: Vec::new(),
+        }
+    }
 
     fn sample_exec_bundle() -> ExecBundle {
         ExecBundle {
             env: HashMap::from([("GH_TOKEN".to_string(), "ghp_test".into())]),
             env_passthrough: vec!["CUSTOM_PASSTHROUGH".to_string()],
             env_set: HashMap::from([("PATH".to_string(), "/trusted/bin".to_string())]),
-            resources: Vec::new(),
+            resource: sample_binding(),
         }
     }
 
@@ -109,7 +121,7 @@ mod tests {
             env: HashMap::from([("BAD".to_string(), vec![0xff, 0xfe].into())]),
             env_passthrough: Vec::new(),
             env_set: HashMap::new(),
-            resources: Vec::new(),
+            resource: sample_binding(),
         };
 
         let err = build_target_env(&host_env, &bundle).unwrap_err();

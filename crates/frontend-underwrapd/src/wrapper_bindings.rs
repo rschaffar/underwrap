@@ -1,129 +1,75 @@
-use underwrap_protocol::config::{FilesUse, ResourceUse, WrapperDef};
+//! Wrapper-projection helpers.
+//!
+//! Each `WrapperDef` declares one resource plus the subset of the three
+//! projection slots (`env`, `files`, `libsecret`) that resource should
+//! populate. These helpers are thin views over those flat fields.
 
-pub(crate) fn wrapper_libsecret_resource(wrapper: &WrapperDef) -> Option<&str> {
+use underwrap_protocol::config::WrapperDef;
+
+/// Target-home-relative bind-mount paths for the wrapper's resource,
+/// or empty when the wrapper does not project a `files` slot.
+pub(crate) fn wrapper_file_paths(wrapper: &WrapperDef) -> Vec<String> {
     wrapper
-        .resources
-        .iter()
-        .find_map(|(resource_id, usage)| usage.libsecret.then_some(resource_id.as_str()))
+        .files
+        .as_ref()
+        .map(|f| f.paths.clone())
+        .unwrap_or_default()
 }
 
-pub(crate) fn wrapper_env_resources(wrapper: &WrapperDef) -> Vec<&str> {
-    let mut out: Vec<&str> = wrapper
-        .resources
-        .iter()
-        .filter_map(|(resource_id, usage)| usage.env.then_some(resource_id.as_str()))
-        .collect();
-    out.sort();
-    out
-}
-
-pub(crate) fn wrapper_file_bindings(wrapper: &WrapperDef) -> Vec<FileProjection> {
-    let mut out = Vec::new();
-    for (resource_id, usage) in &wrapper.resources {
-        if let Some(FilesUse { paths }) = &usage.files {
-            out.push(FileProjection {
-                resource_id: resource_id.clone(),
-                target_paths: paths.clone(),
-            });
-        }
-    }
-    out.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
-    out
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FileProjection {
-    pub resource_id: String,
-    pub target_paths: Vec<String>,
-}
-
-pub(crate) fn resource_has_projection(usage: &ResourceUse) -> bool {
-    usage.env || usage.files.is_some() || usage.libsecret
-}
-
-/// Every resource id the wrapper declares across any slot, sorted and
-/// deduped. Used by the grant-evaluation gate to consult one grant per
-/// resource before the read flow proceeds.
-pub(crate) fn wrapper_all_resources(wrapper: &WrapperDef) -> Vec<String> {
-    let mut out: Vec<String> = wrapper
-        .resources
-        .iter()
-        .filter(|(_, usage)| resource_has_projection(usage))
-        .map(|(id, _)| id.clone())
-        .collect();
-    out.sort();
-    out.dedup();
-    out
+/// Whether the wrapper enables at least one projection slot for its
+/// resource. A wrapper without any slot would do nothing useful at run
+/// time and is rejected by [`crate::startup::validate_config`].
+pub(crate) fn wrapper_has_projection(wrapper: &WrapperDef) -> bool {
+    wrapper.env || wrapper.files.is_some() || wrapper.libsecret
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::path::PathBuf;
-    use underwrap_protocol::config::{FilesUse, ResourceUse};
+    use underwrap_protocol::config::FilesUse;
 
-    fn wrapper_with_resources(resources: &[(&str, ResourceUse)]) -> WrapperDef {
+    fn base() -> WrapperDef {
         WrapperDef {
             target: PathBuf::from("/usr/bin/true"),
             logical_name: None,
-            resources: resources
-                .iter()
-                .map(|(name, usage)| ((*name).to_string(), usage.clone()))
-                .collect::<HashMap<_, _>>(),
+            resource: "x/y".to_string(),
+            env: false,
+            files: None,
+            libsecret: false,
             socket: PathBuf::new(),
-            group: "test-group".to_string(),
+            group: "g".to_string(),
         }
     }
 
     #[test]
-    fn wrapper_binding_helpers_select_expected_resources() {
-        let wrapper = wrapper_with_resources(&[
-            (
-                "github/token",
-                ResourceUse {
-                    env: true,
-                    files: None,
-                    libsecret: false,
-                },
-            ),
-            (
-                "libsecret/default",
-                ResourceUse {
-                    env: false,
-                    files: None,
-                    libsecret: true,
-                },
-            ),
-            (
-                "gws/state",
-                ResourceUse {
-                    env: false,
-                    files: Some(FilesUse {
-                        paths: vec![
-                            ".config/gcloud".to_string(),
-                            ".local/share/gcloud".to_string(),
-                        ],
-                    }),
-                    libsecret: false,
-                },
-            ),
-        ]);
+    fn file_paths_empty_when_no_files_slot() {
+        let w = base();
+        assert!(wrapper_file_paths(&w).is_empty());
+    }
 
-        assert_eq!(
-            wrapper_libsecret_resource(&wrapper),
-            Some("libsecret/default")
-        );
-        assert_eq!(wrapper_env_resources(&wrapper), vec!["github/token"]);
-        assert_eq!(
-            wrapper_file_bindings(&wrapper),
-            vec![FileProjection {
-                resource_id: "gws/state".to_string(),
-                target_paths: vec![
-                    ".config/gcloud".to_string(),
-                    ".local/share/gcloud".to_string(),
-                ],
-            }]
-        );
+    #[test]
+    fn file_paths_returned_when_files_slot_present() {
+        let mut w = base();
+        w.files = Some(FilesUse {
+            paths: vec![".config/gws".to_string()],
+        });
+        assert_eq!(wrapper_file_paths(&w), vec![".config/gws".to_string()]);
+    }
+
+    #[test]
+    fn has_projection_reflects_any_enabled_slot() {
+        let mut w = base();
+        assert!(!wrapper_has_projection(&w));
+        w.env = true;
+        assert!(wrapper_has_projection(&w));
+        w.env = false;
+        w.libsecret = true;
+        assert!(wrapper_has_projection(&w));
+        w.libsecret = false;
+        w.files = Some(FilesUse {
+            paths: vec![".x".to_string()],
+        });
+        assert!(wrapper_has_projection(&w));
     }
 }

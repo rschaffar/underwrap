@@ -2,10 +2,6 @@
 // `cargo test --workspace` after changing a Rust admin DTO; the test below will
 // fail until the contents match the registered type list.
 
-export type { AdminAgentGrantDeleteRequest } from "./AdminAgentGrantDeleteRequest";
-export type { AdminAgentGrantUpsertRequest } from "./AdminAgentGrantUpsertRequest";
-export type { AdminAgentGrantsListRequest } from "./AdminAgentGrantsListRequest";
-export type { AdminAgentGrantsListResponse } from "./AdminAgentGrantsListResponse";
 export type { AdminClientInstanceActionState } from "./AdminClientInstanceActionState";
 export type { AdminClientInstanceCreateRequest } from "./AdminClientInstanceCreateRequest";
 export type { AdminClientInstanceDetailResponse } from "./AdminClientInstanceDetailResponse";
@@ -13,7 +9,6 @@ export type { AdminClientInstanceListItem } from "./AdminClientInstanceListItem"
 export type { AdminClientInstanceStatus } from "./AdminClientInstanceStatus";
 export type { AdminClientInstanceUpdateRequest } from "./AdminClientInstanceUpdateRequest";
 export type { AdminClientInstancesListResponse } from "./AdminClientInstancesListResponse";
-export type { AdminGrantKey } from "./AdminGrantKey";
 export type { AdminOkResponse } from "./AdminOkResponse";
 export type { AdminOkUserResponse } from "./AdminOkUserResponse";
 export type { AdminPairCreateRequest } from "./AdminPairCreateRequest";
@@ -66,7 +61,11 @@ export type { AdminUserResetPasswordRequest } from "./AdminUserResetPasswordRequ
 export type { AdminUserRole } from "./AdminUserRole";
 export type { AdminUserUpdateRequest } from "./AdminUserUpdateRequest";
 export type { AdminUsersListResponse } from "./AdminUsersListResponse";
-export type { AgentGrant } from "./AgentGrant";
+export type { AdminWrapperPermissionDeleteRequest } from "./AdminWrapperPermissionDeleteRequest";
+export type { AdminWrapperPermissionKey } from "./AdminWrapperPermissionKey";
+export type { AdminWrapperPermissionUpsertRequest } from "./AdminWrapperPermissionUpsertRequest";
+export type { AdminWrapperPermissionsListRequest } from "./AdminWrapperPermissionsListRequest";
+export type { AdminWrapperPermissionsListResponse } from "./AdminWrapperPermissionsListResponse";
 export type { BootstrapRequest } from "./BootstrapRequest";
 export type { BootstrapResponse } from "./BootstrapResponse";
 export type { BootstrapStatusResponse } from "./BootstrapStatusResponse";
@@ -81,4 +80,5 @@ export type { ResourcesDocument } from "./ResourcesDocument";
 export type { ServiceWrapperResourcePair } from "./ServiceWrapperResourcePair";
 export type { WhoamiResponse } from "./WhoamiResponse";
 export type { WrapperApprovalMode } from "./WrapperApprovalMode";
+export type { WrapperPermission } from "./WrapperPermission";
 export type { WrapperResourcePairRecord } from "./WrapperResourcePairRecord";

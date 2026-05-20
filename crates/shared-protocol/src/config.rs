@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+// A wrapper projects exactly one backend resource. The resource may opt
+// into any combination of the three projection slots (`env`, `files`,
+// `libsecret`); at least one must be enabled. The backend pair table is
+// still keyed by `(wrapper, resource)` so two frontend instances can map
+// the same wrapper name to different resources, and the grant key keeps
+// `resource` so a frontend-side config edit cannot redirect an existing
+// grant to a different secret.
+
 /// Top-level daemon configuration.
 ///
 /// The frontend's only externally meaningful identity is its
@@ -127,6 +135,7 @@ pub struct BackendServiceConfig {
 
 /// A wrapper definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WrapperDef {
     /// Absolute path to the target binary to exec.
     pub target: PathBuf,
@@ -136,39 +145,31 @@ pub struct WrapperDef {
     #[serde(default)]
     pub logical_name: Option<String>,
 
-    /// Resource projections for this wrapper, keyed by backend resource id.
-    ///
-    /// A resource always has all three backend slots (`env`, `files`,
-    /// `libsecret`). This map only decides which slots the frontend projects
-    /// into the wrapped process. Read/write authority is decided solely by the
-    /// backend policy document.
-    #[serde(default)]
-    pub resources: HashMap<String, ResourceUse>,
+    /// Backend resource id this wrapper projects into the target. Each
+    /// wrapper projects exactly one resource; the resource itself
+    /// always has all three backend slots (`env`, `files`, `libsecret`)
+    /// available, and the wrapper opts into the subset it needs via the
+    /// flags below.
+    pub resource: String,
 
-    /// Unix socket path for this wrapper's authenticated daemon channel.
-    pub socket: PathBuf,
-
-    /// Unix group name for GID-based wrapper identity.
-    pub group: String,
-}
-
-/// Frontend projection of one backend resource into a wrapper invocation.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ResourceUse {
-    /// Project every variable configured in `<resource>/env/*` into the
-    /// target environment.
+    /// Project `<resource>/env/*` into the target environment.
     #[serde(default)]
     pub env: bool,
 
-    /// Project `<resource>/files/*` as a namespace-private directory mounted
-    /// at `path` relative to the target user's home.
+    /// Project `<resource>/files/*` as namespace-private directories
+    /// mounted at the given paths relative to the target user's home.
     #[serde(default)]
     pub files: Option<FilesUse>,
 
     /// Project `<resource>/libsecret/*` through a private Secret Service.
     #[serde(default)]
     pub libsecret: bool,
+
+    /// Unix socket path for this wrapper's authenticated daemon channel.
+    pub socket: PathBuf,
+
+    /// Unix group name for GID-based wrapper identity.
+    pub group: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -235,29 +236,60 @@ wrappers:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
-    resources:
-      github/token:
-        env: true
-      gws/state:
-        files:
-          paths:
-            - .config/gws
-            - .local/share/gws
+    resource: github/token
+    env: true
+  gws-auth:
+    target: /usr/bin/gws
+    socket: /run/underwrap/gws-auth.sock
+    group: underwrap-gws-auth
+    resource: gws/state
+    files:
+      paths:
+        - .config/gws
+        - .local/share/gws
 "#;
         let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.wrappers.len(), 1);
-        let w = &config.wrappers["gh-authorized"];
-        assert_eq!(w.target, PathBuf::from("/usr/bin/gh"));
-        assert_eq!(w.resources.len(), 2);
-        assert!(w.resources["github/token"].env);
+        assert_eq!(config.wrappers.len(), 2);
+        let gh = &config.wrappers["gh-authorized"];
+        assert_eq!(gh.target, PathBuf::from("/usr/bin/gh"));
+        assert_eq!(gh.resource, "github/token");
+        assert!(gh.env);
+        assert!(gh.files.is_none());
+        assert!(!gh.libsecret);
+        let gws = &config.wrappers["gws-auth"];
+        assert_eq!(gws.resource, "gws/state");
+        assert!(!gws.env);
         assert_eq!(
-            w.resources["gws/state"].files.as_ref().unwrap().paths,
+            gws.files.as_ref().unwrap().paths,
             vec![".config/gws".to_string(), ".local/share/gws".to_string()],
         );
     }
 
     #[test]
-    fn resource_use_rejects_unknown_fields() {
+    fn wrapper_rejects_unknown_fields() {
+        let yaml = r#"
+backend:
+  url: https://x
+  ca_file: /x
+  client_cert_file: /y
+  client_key_file: /z
+wrappers:
+  bad:
+    target: /usr/bin/true
+    socket: /run/x.sock
+    group: g
+    resource: github/token
+    variable: GH_TOKEN
+"#;
+        let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field `variable`"));
+    }
+
+    #[test]
+    fn wrapper_rejects_legacy_resources_map() {
+        // The old multi-resource shape (`resources: { ... }`) is rejected
+        // by `deny_unknown_fields` so stale configs fail loudly instead
+        // of silently dropping projection slots.
         let yaml = r#"
 backend:
   url: https://x
@@ -271,10 +303,29 @@ wrappers:
     group: g
     resources:
       github/token:
-        variable: GH_TOKEN
+        env: true
 "#;
         let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field `variable`"));
+        assert!(err.to_string().contains("unknown field `resources`"));
+    }
+
+    #[test]
+    fn wrapper_requires_resource() {
+        let yaml = r#"
+backend:
+  url: https://x
+  ca_file: /x
+  client_cert_file: /y
+  client_key_file: /z
+wrappers:
+  bad:
+    target: /usr/bin/true
+    socket: /run/x.sock
+    group: g
+    env: true
+"#;
+        let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+        assert!(err.to_string().contains("missing field `resource`"));
     }
 
     #[test]
@@ -290,9 +341,8 @@ wrappers:
     target: /usr/bin/true
     socket: /run/x.sock
     group: g
-    resources:
-      gws/state:
-        files: {}
+    resource: gws/state
+    files: {}
 "#;
         let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
         assert!(err.to_string().contains("missing field `paths`"));

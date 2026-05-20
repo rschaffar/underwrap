@@ -1,16 +1,16 @@
 //! underwrap-ns — PID namespace isolation stage.
 //!
-//! Reads the `ExecBundle` on fd 3, opens the per-resource wrapper-resource
-//! channels handed to it by `underwrap-exec` (fd 20+i), drives `Checkout`
-//! on each, materializes any `files` slot into a tmpfs staging dir,
-//! starts a private dbus-daemon + secretsd in the namespace when a
-//! libsecret resource is in scope, then forks into a fresh PID namespace
-//! to exec the target.
+//! Reads the `ExecBundle` on fd 3, opens the wrapper-resource channel
+//! handed to it by `underwrap-exec` (fd 20), drives `Checkout`,
+//! materializes any `files` slot into a tmpfs staging dir, starts a
+//! private dbus-daemon + secretsd in the namespace when the resource
+//! has the libsecret slot enabled, then forks into a fresh PID
+//! namespace to exec the target.
 //!
 //! After waitpid, walks the staging tmpfs, reads the libsecret state
-//! file secretsd wrote, composes a new `ResourceBlob` per resource and
-//! dispatches the end-of-run decision (`UsageSignal` / `Checkin` /
-//! drop+warn) on each channel.
+//! file secretsd wrote, composes a new `ResourceBlob` and dispatches
+//! the end-of-run decision (`UsageSignal` / `Checkin` / drop+warn) on
+//! the channel.
 
 mod caps;
 mod directory_credential;
@@ -56,22 +56,18 @@ fn run() -> Result<(), String> {
         read_secret_fd().map_err(|e| format!("reading exec bundle from fd {SECRET_FD}: {e}"))?;
 
     let libsecret_requested = std::env::var("UNDERWRAP_LIBSECRET").is_ok();
-    let libsecret_resource_present = exec_bundle.resources.iter().any(|r| r.libsecret);
+    let libsecret_resource_present = exec_bundle.resource.libsecret;
     let libsecret_enabled = libsecret_requested && libsecret_resource_present;
-    let has_files = exec_bundle
-        .resources
-        .iter()
-        .any(|r| !r.files_target_paths.is_empty());
+    let has_files = !exec_bundle.resource.files_target_paths.is_empty();
     let target_home =
         resolve_target_home().map_err(|e| format!("resolving target home directory: {e}"))?;
 
     make_process_non_dumpable()?;
     prepare_namespace(libsecret_enabled, has_files)?;
 
-    let resource_channels = resource_channel::checkout_all(&exec_bundle.resources)?;
+    let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
 
-    let mounted_directories =
-        prepare_mounted_directories(&exec_bundle, &resource_channels, &target_home)?;
+    let mounted_directories = prepare_mounted_directories(&resource_channel, &target_home)?;
 
     let libsecret_state_path = if libsecret_enabled {
         Some(PathBuf::from(format!(
@@ -87,7 +83,7 @@ fn run() -> Result<(), String> {
             target,
             target_args,
             &exec_bundle,
-            &resource_channels,
+            &resource_channel,
             libsecret_enabled,
             libsecret_state_path.as_deref(),
         )
@@ -95,7 +91,7 @@ fn run() -> Result<(), String> {
         run_parent(
             pid,
             &mounted_directories,
-            &resource_channels,
+            &resource_channel,
             has_files,
             libsecret_state_path.as_deref(),
         )
@@ -144,36 +140,26 @@ fn prepare_namespace(libsecret_enabled: bool, has_files: bool) -> Result<(), Str
 }
 
 fn prepare_mounted_directories(
-    _exec_bundle: &ExecBundle,
-    resource_channels: &[ResourceChannel],
+    resource_channel: &ResourceChannel,
     target_home: &Path,
 ) -> Result<Vec<MountedDirectory>, String> {
-    let mut decoded = Vec::new();
-    for channel in resource_channels {
-        if channel.files_target_paths.is_empty() {
-            continue;
-        }
-        let blob = underwrap_protocol::resource_blob::ResourceBlob::from_canonical_bytes(
-            &channel.original_canonical,
-        )
-        .map_err(|e| format!("decoding Checkout blob for '{}': {e}", channel.resource_id))?;
-        decoded.push((
-            channel.resource_id.clone(),
-            blob,
-            &channel.files_target_paths,
-        ));
-    }
-    if decoded.is_empty() {
+    if resource_channel.files_target_paths.is_empty() {
         return Ok(Vec::new());
     }
-    let inputs: Vec<ResourceMountInput<'_>> = decoded
-        .iter()
-        .map(|(id, blob, paths)| ResourceMountInput {
-            resource_id: id.as_str(),
-            blob,
-            target_paths: paths.as_slice(),
-        })
-        .collect();
+    let blob = underwrap_protocol::resource_blob::ResourceBlob::from_canonical_bytes(
+        &resource_channel.original_canonical,
+    )
+    .map_err(|e| {
+        format!(
+            "decoding Checkout blob for '{}': {e}",
+            resource_channel.resource_id
+        )
+    })?;
+    let inputs = [ResourceMountInput {
+        resource_id: resource_channel.resource_id.as_str(),
+        blob: &blob,
+        target_paths: resource_channel.files_target_paths.as_slice(),
+    }];
     prepare_directory_mounts(&inputs, target_home, &PathBuf::from(DIRECTORY_STAGING_ROOT))
         .map_err(|e| format!("preparing files-slot mounts: {e}"))
 }
@@ -191,7 +177,7 @@ fn run_child(
     target: String,
     target_args: Vec<String>,
     exec_bundle: &ExecBundle,
-    resource_channels: &[ResourceChannel],
+    resource_channel: &ResourceChannel,
     libsecret_enabled: bool,
     libsecret_state_path: Option<&Path>,
 ) -> Result<(), String> {
@@ -217,21 +203,20 @@ fn run_child(
     if libsecret_enabled {
         let state_path = libsecret_state_path
             .ok_or_else(|| "libsecret enabled but no state path provided".to_string())?;
-        let section_bytes = libsecret_section_bytes(resource_channels)?;
+        let section_bytes = libsecret_section_bytes(resource_channel)?;
         setup_libsecret(&mut cmd, SECRET_FD, &section_bytes, state_path)?;
     }
 
-    resource_channel::close_channel_fds_for_exec(resource_channels);
+    resource_channel::close_channel_fd_for_exec(resource_channel);
 
     let err = cmd.exec();
     Err(format!("exec failed: {err}"))
 }
 
-fn libsecret_section_bytes(channels: &[ResourceChannel]) -> Result<Vec<u8>, String> {
-    let channel = channels
-        .iter()
-        .find(|c| c.libsecret)
-        .ok_or_else(|| "libsecret enabled but no libsecret resource present".to_string())?;
+fn libsecret_section_bytes(channel: &ResourceChannel) -> Result<Vec<u8>, String> {
+    if !channel.libsecret {
+        return Err("libsecret enabled but resource does not project libsecret".to_string());
+    }
     let blob = underwrap_protocol::resource_blob::ResourceBlob::from_canonical_bytes(
         &channel.original_canonical,
     )
@@ -267,7 +252,7 @@ fn disable_core_dumps() -> Result<(), String> {
 fn run_parent(
     pid: libc::pid_t,
     mounted_directories: &[MountedDirectory],
-    resource_channels: &[ResourceChannel],
+    resource_channel: &ResourceChannel,
     has_files: bool,
     libsecret_state_path: Option<&Path>,
 ) -> Result<(), String> {
@@ -277,32 +262,25 @@ fn run_parent(
 
     let status = wait_for_child(pid)?;
 
-    // Compose and dispatch end-of-run writes BEFORE the directory
+    // Compose and dispatch the end-of-run write BEFORE the directory
     // unmounts: the staging tmpfs lives in ns's mount namespace, but
     // the writeback walks the staging path, which is unaffected by the
     // unmounting of bind targets. We do however need the staging files
     // intact, so order is "walk first, then unmount".
-    let directory_by_resource: std::collections::HashMap<&str, &MountedDirectory> =
-        mounted_directories
-            .iter()
-            .map(|d| (d.resource_id.as_str(), d))
-            .collect();
-    let writeback_inputs: Vec<WritebackInput<'_>> = resource_channels
+    let directory = mounted_directories
         .iter()
-        .map(|channel| WritebackInput {
-            channel,
-            directory: directory_by_resource
-                .get(channel.resource_id.as_str())
-                .copied(),
-            libsecret_state_path: if channel.libsecret {
-                libsecret_state_path
-            } else {
-                None
-            },
-        })
-        .collect();
+        .find(|d| d.resource_id == resource_channel.resource_id);
+    let writeback_input = WritebackInput {
+        channel: resource_channel,
+        directory,
+        libsecret_state_path: if resource_channel.libsecret {
+            libsecret_state_path
+        } else {
+            None
+        },
+    };
 
-    let writeback_result = writeback::dispatch_writeback(&writeback_inputs);
+    let writeback_result = writeback::dispatch_writeback(&[writeback_input]);
 
     // Always run mount cleanup, regardless of writeback success/failure.
     let cleanup_result = cleanup_mount_state(mounted_directories, has_files);

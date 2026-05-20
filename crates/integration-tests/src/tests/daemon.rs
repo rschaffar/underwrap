@@ -17,23 +17,20 @@ wrappers:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
-    resources:
-      github/token:
-        env: true
+    resource: github/token
+    env: true
   agent-slack:
     target: /usr/bin/slack-cli
     socket: /run/underwrap/agent-slack.sock
     group: underwrap-agent-slack
-    resources:
-      slack/xoxp:
-        env: true
+    resource: slack/xoxp
+    env: true
   gh-libsecret:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-libsecret.sock
     group: underwrap-gh-libsecret
-    resources:
-      github/gh:
-        libsecret: true
+    resource: github/gh
+    libsecret: true
 "#;
     let config: underwrap_protocol::config::DaemonConfig = serde_yaml::from_str(text).unwrap();
 
@@ -43,7 +40,10 @@ wrappers:
     assert!(config.wrappers.contains_key("gh-libsecret"));
 
     let gh = &config.wrappers["gh-authorized"];
-    assert!(gh.resources["github/token"].env);
+    assert_eq!(gh.resource, "github/token");
+    assert!(gh.env);
+    let lib = &config.wrappers["gh-libsecret"];
+    assert!(lib.libsecret);
 }
 
 // ===========================================================================
@@ -340,7 +340,7 @@ async fn underwrapd_binary_start_and_read() {
         .json(&underwrap_protocol::service::AdminPolicyPutRequest {
             store: "test".to_string(),
             document: underwrap_protocol::policy::PolicyDocument {
-                grants: vec![underwrap_protocol::policy::AgentGrant {
+                permissions: vec![underwrap_protocol::policy::WrapperPermission {
                     client_instance: "inst_underwrap_local".to_string(),
                     wrapper: "w".to_string(),
                     resource: "s/t".to_string(),

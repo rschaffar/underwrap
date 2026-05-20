@@ -34,7 +34,7 @@ async fn per_call_approval_succeeds_with_valid_ed25519_signature() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
-    let mut grant = daemon.current_grant("gh-authorized", "github/token");
+    let mut grant = daemon.current_permission("gh-authorized", "github/token");
     grant.mode = WrapperApprovalMode::PerCallApproval {
         approval_key: public_key_openssh,
     };
@@ -42,7 +42,7 @@ async fn per_call_approval_succeeds_with_valid_ed25519_signature() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![grant],
+                permissions: vec![grant],
             },
         )
         .await
@@ -101,7 +101,7 @@ async fn per_call_approval_rejects_wrong_signature() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
         .await
         .unwrap();
-    let mut grant = daemon.current_grant("gh-authorized", "github/token");
+    let mut grant = daemon.current_permission("gh-authorized", "github/token");
     grant.mode = WrapperApprovalMode::PerCallApproval {
         approval_key: authorized_openssh,
     };
@@ -109,7 +109,7 @@ async fn per_call_approval_rejects_wrong_signature() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![grant],
+                permissions: vec![grant],
             },
         )
         .await
@@ -176,7 +176,7 @@ async fn per_call_approval_denies_without_matching_grant() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![underwrap_protocol::policy::AgentGrant {
+                permissions: vec![underwrap_protocol::policy::WrapperPermission {
                     client_instance: "some-other-instance".to_string(),
                     wrapper: "gh-authorized".to_string(),
                     resource: "github/token".to_string(),
@@ -195,7 +195,7 @@ async fn per_call_approval_denies_without_matching_grant() {
     match resp {
         WrapperResponse::Error { code, message } => {
             assert!(matches!(code, ErrorCode::Unauthorized));
-            assert!(message.contains("no grant"));
+            assert!(message.contains("no permission"));
         }
         other => panic!("expected Error, got {other:?}"),
     }

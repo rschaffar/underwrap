@@ -10,7 +10,6 @@ use crate::approval::{self, IssuedChallenge};
 use crate::audit;
 use crate::policy::{InvocationDecision, evaluate_invocation, load_policy_document};
 use crate::server::State;
-use crate::wrapper_bindings::wrapper_all_resources;
 
 const WRAPPER_APPROVAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -20,8 +19,8 @@ pub(super) enum ModeGate {
     Deny(WrapperResponse),
 }
 
-/// Consult the per-store policy document for every resource the
-/// wrapper declares and combine the results.
+/// Consult the per-store policy document for the wrapper's single
+/// resource.
 pub(super) fn check_wrapper_mode(
     wrapper_name: &str,
     state: &State,
@@ -39,7 +38,6 @@ pub(super) fn check_wrapper_mode(
         .logical_name
         .clone()
         .unwrap_or_else(|| wrapper_name.to_string());
-    let resources = wrapper_all_resources(wrapper_def);
 
     let document = match load_policy_document(
         state
@@ -62,7 +60,7 @@ pub(super) fn check_wrapper_mode(
         document.as_ref(),
         &state.client_instance,
         &logical_name,
-        &resources,
+        &wrapper_def.resource,
     ) {
         InvocationDecision::Allow => Ok(ModeGate::Proceed),
         InvocationDecision::NeedsApproval { approval_key } => {

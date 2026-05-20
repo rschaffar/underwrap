@@ -120,8 +120,9 @@ Tests:
 - Unit tests in `underwrap-backendd::server` for nonce storage, signature
   verification (ed25519 and rsa happy paths, mismatched key, bad signature,
   expired nonce), and the expiry sweeper.
-- Integration tests in `crates/integration-tests/src/tests/grants.rs` (or a
-  new `approval.rs`) that exercise the end-to-end per-call approval flow
+- Integration tests in
+  `crates/integration-tests/src/tests/wrapper_permissions.rs` (or a new
+  `approval.rs`) that exercise the end-to-end per-call approval flow
   using a test ed25519 key.
 - Smoke test for the VM test that sets `PerCallApproval` centrally and
   proves reads fail without a valid signature.
@@ -170,7 +171,7 @@ Delivered scope:
 - username/password operator auth with signed `HttpOnly` sessions
 - resource explorer with reveal, upload/download, write, delete, and mutation
   flows
-- wrapper mode console and access matrix console
+- wrapper permissions console
 - systemd + NixOS module wiring for deployment alongside backendd
 
 Tests:
@@ -179,7 +180,7 @@ Tests:
 - backend tests for the UI-oriented admin API surface
 - Playwright browser regressions covering protected-route/session failures,
   CSRF rejection, reveal/download no-store behavior, mutation/upload/delete,
-  wrapper-mode changes and matrix toggles
+  wrapper-mode changes and permission toggles
 
 ### M5 — Docs rewrite
 

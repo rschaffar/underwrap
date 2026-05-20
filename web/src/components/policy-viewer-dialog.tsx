@@ -24,12 +24,13 @@ interface PolicyViewerDialogProps {
 }
 
 /**
- * Read-only viewer for a store's `PolicyDocument`. The Matrix page
- * shows a derived `(wrapper, resource, client_instance)` grid that
- * hides the underlying document shape; this dialog renders the raw
- * JSON the backend stores, plus a quick count of writable grants.
+ * Read-only viewer for a store's `PolicyDocument`. The Wrapper
+ * permissions page shows a derived
+ * `(wrapper, resource, client_instance)` grid that hides the
+ * underlying document shape; this dialog renders the raw JSON the
+ * backend stores, plus a quick count of writable permissions.
  *
- * Editing intentionally stays in the Matrix view.
+ * Editing intentionally stays in the Wrapper permissions view.
  */
 export function PolicyViewerDialog({
   storeName,
@@ -69,8 +70,8 @@ export function PolicyViewerDialog({
     }
   }
 
-  const grants = policy.data?.document.grants ?? [];
-  const writableGrantCount = grants.filter((g) => g.writable).length;
+  const permissions = policy.data?.document.permissions ?? [];
+  const writablePermissionCount = permissions.filter((p) => p.writable).length;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -79,7 +80,8 @@ export function PolicyViewerDialog({
           <DialogTitle>Raw policy: {storeName}</DialogTitle>
           <DialogDescription>
             The persisted <code>PolicyDocument</code> for this store.
-            Read-only — use the Matrix view to change grants.
+            Read-only — use the Wrapper permissions view to change
+            permissions.
           </DialogDescription>
         </DialogHeader>
 
@@ -96,13 +98,13 @@ export function PolicyViewerDialog({
           <div className="space-y-3">
             <div className="flex items-center gap-3 text-xs">
               <span className="text-(--color-muted)">
-                Writable grants:
+                Writable permissions:
               </span>
               <span
-                data-testid="writable-grants-badge"
+                data-testid="writable-permissions-badge"
                 className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-(--color-fg)"
               >
-                {writableGrantCount} of {grants.length}
+                {writablePermissionCount} of {permissions.length}
               </span>
             </div>
             <pre

@@ -44,21 +44,23 @@ Example:
 
 ```nix
 services.underwrap.instances.work = {
-  credentials."github/gh" = {
-    mode = "libsecret";
-  };
-
   wrappers.gh-auth = {
     target = "${pkgs.gh}/bin/gh";
-    use."github/gh".access = "read-write";
+    resource = "github/gh";
+    libsecret = true;
   };
 
   wrappers.gh-pr = {
     target = "/nix/store/...-gh-pr-helper/bin/gh-pr-helper";
-    use."github/gh".access = "read-only";
+    resource = "github/gh";
+    libsecret = true;
   };
 };
 ```
+
+Read/write authority is decided per `(client_instance, wrapper, resource)`
+grant in the backend policy, not in the NixOS module — the same `github/gh`
+resource can be writable for `gh-auth` and read-only for `gh-pr`.
 
 This is a good first-release shape because it keeps the credential
 namespace reusable while separating:

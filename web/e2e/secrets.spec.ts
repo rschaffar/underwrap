@@ -129,11 +129,11 @@ test("secrets full round trip: create → reveal → edit → delete", async ({
   );
 });
 
-// The wrapper-writable per-slot toggle moved off the Secrets page when
-// `writable` became a per-grant field; the equivalent affordance now
-// lives on the Matrix cell editor and is covered by
-// `wrappers.spec.ts` "raw policy viewer surfaces the live PolicyDocument
-// and writable-grant count".
+// The wrapper-writable per-slot toggle moved off the Secrets page
+// when `writable` became a per-permission field; the equivalent
+// affordance now lives on the Wrapper permissions cell editor and is
+// covered by `wrappers.spec.ts` "raw policy viewer surfaces the live
+// PolicyDocument and writable-permission count".
 
 test("admin deletes a resource via the simple confirm dialog after refusal clears", async ({
   page,

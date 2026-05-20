@@ -5,7 +5,7 @@ import type { EntityCreator } from "./EntityCreator";
  * A resource record, one per store.
  *
  * `name` is the resource identifier as it appears in secret ids
- * (`<resource>/<slot>/<name>`) and in `AgentGrant.resource`. It is
- * the primary key within a store; duplicates are rejected on insert.
+ * (`<resource>/<slot>/<name>`) and in `WrapperPermission.resource`. It
+ * is the primary key within a store; duplicates are rejected on insert.
  */
 export type ResourceRecord = { name: string, created_by: EntityCreator, created_at: bigint, };

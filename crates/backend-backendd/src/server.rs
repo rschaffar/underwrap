@@ -1072,26 +1072,28 @@ fn runtime_read_gate(
     };
     let doc: PolicyDocument =
         serde_json::from_slice(material.as_ref()).map_err(|e| format!("parsing policy: {e}"))?;
-    let Some(grant) = doc
-        .grants
+    let Some(permission) = doc
+        .permissions
         .iter()
-        .find(|g| g.client_instance == principal && g.resource == resource)
+        .find(|p| p.client_instance == principal && p.resource == resource)
     else {
-        return Err(format!("no grant for ({principal}, *, '{resource}')"));
-    };
-    if write && !grant.writable {
         return Err(format!(
-            "grant for ({principal}, '{}', '{resource}') is read-only",
-            grant.wrapper
+            "no wrapper permission for ({principal}, *, '{resource}')"
+        ));
+    };
+    if write && !permission.writable {
+        return Err(format!(
+            "wrapper permission for ({principal}, '{}', '{resource}') is read-only",
+            permission.wrapper
         ));
     }
     // Bump last_used_at on the matched pair. Failure here is
     // non-fatal — it must never block a successful read.
-    if let Err(e) = bump_pair_last_used(store, &grant.wrapper, resource) {
+    if let Err(e) = bump_pair_last_used(store, &permission.wrapper, resource) {
         warn!(
             audit = "pair_last_used_bump_failed",
             principal = %principal,
-            wrapper = %grant.wrapper,
+            wrapper = %permission.wrapper,
             resource = %resource,
             err = %e,
         );
@@ -1158,17 +1160,19 @@ fn runtime_prefix_gate(
     };
     let doc: PolicyDocument =
         serde_json::from_slice(material.as_ref()).map_err(|e| format!("parsing policy: {e}"))?;
-    let Some(grant) = doc
-        .grants
+    let Some(permission) = doc
+        .permissions
         .iter()
-        .find(|g| g.client_instance == principal && g.resource == resource)
+        .find(|p| p.client_instance == principal && p.resource == resource)
     else {
-        return Err(format!("no grant for ({principal}, *, '{resource}')"));
-    };
-    if write && !grant.writable {
         return Err(format!(
-            "grant for ({principal}, '{}', '{resource}') is read-only",
-            grant.wrapper
+            "no wrapper permission for ({principal}, *, '{resource}')"
+        ));
+    };
+    if write && !permission.writable {
+        return Err(format!(
+            "wrapper permission for ({principal}, '{}', '{resource}') is read-only",
+            permission.wrapper
         ));
     }
     Ok(())
@@ -1445,19 +1449,19 @@ fn admin_ui_overview_for_store(
 
     let resource_count = resources.resources.len();
 
-    // Bucket every agent grant by its current mode. The grant key is
-    // `(client_instance, wrapper, resource)` so this count reflects
-    // the distribution across the per-resource grant fleet, not the
-    // wrapper catalog.
+    // Bucket every wrapper permission by its current mode. The
+    // permission key is `(client_instance, wrapper, resource)` so this
+    // count reflects the distribution across the per-resource
+    // permission fleet, not the wrapper catalog.
     let mut wrapper_counts = underwrap_protocol::service::AdminUiWrapperCounts {
         locked: 0,
         unlocked: 0,
         unlocked_until: 0,
         per_call_approval: 0,
     };
-    let mut writable_grant_count = 0usize;
-    for grant in &policy.grants {
-        match grant.mode {
+    let mut writable_permission_count = 0usize;
+    for permission in &policy.permissions {
+        match permission.mode {
             underwrap_protocol::policy::WrapperApprovalMode::Locked => wrapper_counts.locked += 1,
             underwrap_protocol::policy::WrapperApprovalMode::Unlocked => {
                 wrapper_counts.unlocked += 1
@@ -1469,8 +1473,8 @@ fn admin_ui_overview_for_store(
                 wrapper_counts.per_call_approval += 1
             }
         }
-        if grant.writable {
-            writable_grant_count += 1;
+        if permission.writable {
+            writable_permission_count += 1;
         }
     }
 
@@ -1478,7 +1482,7 @@ fn admin_ui_overview_for_store(
         store: store_name.to_string(),
         resource_count,
         wrapper_counts,
-        writable_grant_count,
+        writable_permission_count,
     })
 }
 
@@ -4097,7 +4101,7 @@ fn handle_admin_client_instance_delete(
     )
 }
 
-// ===== Agent grant CRUD =====
+// ===== Wrapper permission CRUD =====
 
 fn load_policy_document_or_default(store: &dyn StorageBackend) -> Result<PolicyDocument> {
     match store.read(POLICY_DOCUMENT_SECRET_ID)? {
@@ -4113,22 +4117,22 @@ fn save_policy_document(store: &dyn StorageBackend, doc: &PolicyDocument) -> Res
     )
 }
 
-fn write_admin_grant_audit(
+fn write_admin_permission_audit(
     _state: &AdminRuntimeState,
     actor: &crate::operators::Principal,
     store_name: &str,
-    grant: &underwrap_protocol::policy::AgentGrant,
+    permission: &underwrap_protocol::policy::WrapperPermission,
     action: &str,
     result: &str,
 ) {
     let resource = format!(
-        "grant:{store_name}/{}/{}/{}",
-        grant.client_instance, grant.wrapper, grant.resource
+        "wrapper_permission:{store_name}/{}/{}/{}",
+        permission.client_instance, permission.wrapper, permission.resource
     );
     log_admin_event(
         action,
         &actor.username,
-        Some(grant.wrapper.as_str()),
+        Some(permission.wrapper.as_str()),
         Some(resource.as_str()),
         None,
         None,
@@ -4386,7 +4390,7 @@ fn handle_admin_resource_delete(
     body: &underwrap_protocol::service::AdminResourceDeleteRequest,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::service::{
-        AdminGrantKey, AdminResourceDeleteBlockers, AdminResourceDeleteResponse,
+        AdminResourceDeleteBlockers, AdminResourceDeleteResponse, AdminWrapperPermissionKey,
         ServiceWrapperResourcePair,
     };
     if !principal.is_admin() {
@@ -4458,21 +4462,21 @@ fn handle_admin_resource_delete(
             );
         }
     };
-    let dependent_grants: Vec<AdminGrantKey> = policy
-        .grants
+    let dependent_permissions: Vec<AdminWrapperPermissionKey> = policy
+        .permissions
         .iter()
-        .filter(|g| g.resource == body.name)
-        .map(|g| AdminGrantKey {
-            client_instance: g.client_instance.clone(),
-            wrapper: g.wrapper.clone(),
-            resource: g.resource.clone(),
+        .filter(|p| p.resource == body.name)
+        .map(|p| AdminWrapperPermissionKey {
+            client_instance: p.client_instance.clone(),
+            wrapper: p.wrapper.clone(),
+            resource: p.resource.clone(),
         })
         .collect();
-    let grant_count = u32::try_from(dependent_grants.len()).unwrap_or(u32::MAX);
-    let mut sample_grants = dependent_grants;
-    sample_grants.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+    let permission_count = u32::try_from(dependent_permissions.len()).unwrap_or(u32::MAX);
+    let mut sample_permissions = dependent_permissions;
+    sample_permissions.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
 
-    if secret_count > 0 || pair_count > 0 || grant_count > 0 {
+    if secret_count > 0 || pair_count > 0 || permission_count > 0 {
         log_admin_event(
             "resource.delete",
             &principal.username,
@@ -4491,8 +4495,8 @@ fn handle_admin_resource_delete(
                     sample_secret_ids,
                     pair_count,
                     sample_pairs,
-                    grant_count,
-                    sample_grants,
+                    permission_count,
+                    sample_permissions,
                 }),
             },
         );
@@ -4662,7 +4666,7 @@ fn handle_admin_pair_delete(
     body: &underwrap_protocol::service::AdminPairDeleteRequest,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::service::{
-        AdminGrantKey, AdminPairDeleteBlockers, AdminPairDeleteResponse,
+        AdminPairDeleteBlockers, AdminPairDeleteResponse, AdminWrapperPermissionKey,
     };
     if !principal.is_admin() {
         return error_response(
@@ -4699,21 +4703,21 @@ fn handle_admin_pair_delete(
             );
         }
     };
-    let dependent_grants: Vec<AdminGrantKey> = policy
-        .grants
+    let dependent_permissions: Vec<AdminWrapperPermissionKey> = policy
+        .permissions
         .iter()
-        .filter(|g| g.wrapper == body.wrapper && g.resource == body.resource)
-        .map(|g| AdminGrantKey {
-            client_instance: g.client_instance.clone(),
-            wrapper: g.wrapper.clone(),
-            resource: g.resource.clone(),
+        .filter(|p| p.wrapper == body.wrapper && p.resource == body.resource)
+        .map(|p| AdminWrapperPermissionKey {
+            client_instance: p.client_instance.clone(),
+            wrapper: p.wrapper.clone(),
+            resource: p.resource.clone(),
         })
         .collect();
-    let grant_count = u32::try_from(dependent_grants.len()).unwrap_or(u32::MAX);
-    let mut sample_grants = dependent_grants;
-    sample_grants.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+    let permission_count = u32::try_from(dependent_permissions.len()).unwrap_or(u32::MAX);
+    let mut sample_permissions = dependent_permissions;
+    sample_permissions.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
 
-    if grant_count > 0 {
+    if permission_count > 0 {
         log_admin_event(
             "pair.delete",
             &principal.username,
@@ -4728,8 +4732,8 @@ fn handle_admin_pair_delete(
             &AdminPairDeleteResponse {
                 ok: false,
                 blocked_by: Some(AdminPairDeleteBlockers {
-                    grant_count,
-                    sample_grants,
+                    permission_count,
+                    sample_permissions,
                 }),
             },
         );
@@ -4762,10 +4766,10 @@ fn handle_admin_pair_delete(
 }
 
 #[allow(clippy::result_large_err)]
-fn handle_admin_grants_list(
+fn handle_admin_wrapper_permissions_list(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
-    body: &underwrap_protocol::service::AdminAgentGrantsListRequest,
+    body: &underwrap_protocol::service::AdminWrapperPermissionsListRequest,
 ) -> Response<Full<Bytes>> {
     let store = match admin_store_for_principal(state, principal, &body.store) {
         Ok(s) => s,
@@ -4774,23 +4778,25 @@ fn handle_admin_grants_list(
     match load_policy_document_or_default(store.as_ref()) {
         Ok(doc) => json_response(
             StatusCode::OK,
-            &underwrap_protocol::service::AdminAgentGrantsListResponse { grants: doc.grants },
+            &underwrap_protocol::service::AdminWrapperPermissionsListResponse {
+                permissions: doc.permissions,
+            },
         ),
         Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     }
 }
 
 #[allow(clippy::result_large_err)]
-fn handle_admin_grant_upsert(
+fn handle_admin_wrapper_permission_upsert(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
-    body: &underwrap_protocol::service::AdminAgentGrantUpsertRequest,
+    body: &underwrap_protocol::service::AdminWrapperPermissionUpsertRequest,
 ) -> Response<Full<Bytes>> {
     if !principal.is_admin() {
         return error_response(
             StatusCode::FORBIDDEN,
             "forbidden",
-            "only admins may mutate grants",
+            "only admins may mutate wrapper permissions",
         );
     }
     let store = match admin_store_for_principal(state, principal, &body.store) {
@@ -4803,39 +4809,39 @@ fn handle_admin_grant_upsert(
             return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
         }
     };
-    if body.grant.client_instance.is_empty()
-        || body.grant.wrapper.is_empty()
-        || body.grant.resource.is_empty()
+    if body.permission.client_instance.is_empty()
+        || body.permission.wrapper.is_empty()
+        || body.permission.resource.is_empty()
     {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "invalid_grant",
+            "invalid_permission",
             "client_instance, wrapper, and resource must all be non-empty",
         );
     }
-    let new_grant = body.grant.clone();
-    if let Some(slot) = doc.grants.iter_mut().find(|g| {
-        g.client_instance == new_grant.client_instance
-            && g.wrapper == new_grant.wrapper
-            && g.resource == new_grant.resource
+    let new_permission = body.permission.clone();
+    if let Some(slot) = doc.permissions.iter_mut().find(|p| {
+        p.client_instance == new_permission.client_instance
+            && p.wrapper == new_permission.wrapper
+            && p.resource == new_permission.resource
     }) {
-        *slot = new_grant.clone();
+        *slot = new_permission.clone();
     } else {
-        doc.grants.push(new_grant.clone());
+        doc.permissions.push(new_permission.clone());
     }
-    doc.grants.sort_by(|a, b| {
+    doc.permissions.sort_by(|a, b| {
         a.client_instance
             .cmp(&b.client_instance)
             .then(a.wrapper.cmp(&b.wrapper))
             .then(a.resource.cmp(&b.resource))
     });
     if let Err(e) = save_policy_document(store.as_ref(), &doc) {
-        write_admin_grant_audit(
+        write_admin_permission_audit(
             state,
             principal,
             &body.store,
-            &new_grant,
-            "grant.upsert",
+            &new_permission,
+            "wrapper_permission.upsert",
             "failure",
         );
         return error_response(
@@ -4844,12 +4850,12 @@ fn handle_admin_grant_upsert(
             &format!("persisting policy document: {e:#}"),
         );
     }
-    write_admin_grant_audit(
+    write_admin_permission_audit(
         state,
         principal,
         &body.store,
-        &new_grant,
-        "grant.upsert",
+        &new_permission,
+        "wrapper_permission.upsert",
         "success",
     );
     json_response(
@@ -4859,16 +4865,16 @@ fn handle_admin_grant_upsert(
 }
 
 #[allow(clippy::result_large_err)]
-fn handle_admin_grant_delete(
+fn handle_admin_wrapper_permission_delete(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
-    body: &underwrap_protocol::service::AdminAgentGrantDeleteRequest,
+    body: &underwrap_protocol::service::AdminWrapperPermissionDeleteRequest,
 ) -> Response<Full<Bytes>> {
     if !principal.is_admin() {
         return error_response(
             StatusCode::FORBIDDEN,
             "forbidden",
-            "only admins may mutate grants",
+            "only admins may mutate wrapper permissions",
         );
     }
     let store = match admin_store_for_principal(state, principal, &body.store) {
@@ -4881,15 +4887,19 @@ fn handle_admin_grant_delete(
             return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
         }
     };
-    let before = doc.grants.len();
-    doc.grants.retain(|g| {
-        !(g.client_instance == body.client_instance
-            && g.wrapper == body.wrapper
-            && g.resource == body.resource)
+    let before = doc.permissions.len();
+    doc.permissions.retain(|p| {
+        !(p.client_instance == body.client_instance
+            && p.wrapper == body.wrapper
+            && p.resource == body.resource)
     });
-    let removed = before != doc.grants.len();
+    let removed = before != doc.permissions.len();
     if !removed {
-        return error_response(StatusCode::NOT_FOUND, "not_found", "no matching grant");
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no matching wrapper permission",
+        );
     }
     if let Err(e) = save_policy_document(store.as_ref(), &doc) {
         return error_response(
@@ -4898,7 +4908,7 @@ fn handle_admin_grant_delete(
             &format!("persisting policy document: {e:#}"),
         );
     }
-    let removed_grant = underwrap_protocol::policy::AgentGrant {
+    let removed_permission = underwrap_protocol::policy::WrapperPermission {
         client_instance: body.client_instance.clone(),
         wrapper: body.wrapper.clone(),
         resource: body.resource.clone(),
@@ -4906,12 +4916,12 @@ fn handle_admin_grant_delete(
         writable: false,
         reason: None,
     };
-    write_admin_grant_audit(
+    write_admin_permission_audit(
         state,
         principal,
         &body.store,
-        &removed_grant,
-        "grant.delete",
+        &removed_permission,
+        "wrapper_permission.delete",
         "success",
     );
     json_response(
@@ -5316,29 +5326,29 @@ async fn handle_admin_request(
             },
             Err(response) => response,
         },
-        // ===== Agent grant CRUD (ticket 246) =====
-        (&Method::POST, "/v1/admin/grants/list") => match parse_json_body::<
-            underwrap_protocol::service::AdminAgentGrantsListRequest,
+        // ===== Wrapper permission CRUD =====
+        (&Method::POST, "/v1/admin/wrapper-permissions/list") => match parse_json_body::<
+            underwrap_protocol::service::AdminWrapperPermissionsListRequest,
         >(request)
         .await
         {
-            Ok(body) => handle_admin_grants_list(&state, &principal, &body),
+            Ok(body) => handle_admin_wrapper_permissions_list(&state, &principal, &body),
             Err(response) => response,
         },
-        (&Method::POST, "/v1/admin/grants/upsert") => match parse_json_body::<
-            underwrap_protocol::service::AdminAgentGrantUpsertRequest,
+        (&Method::POST, "/v1/admin/wrapper-permissions/upsert") => match parse_json_body::<
+            underwrap_protocol::service::AdminWrapperPermissionUpsertRequest,
         >(request)
         .await
         {
-            Ok(body) => handle_admin_grant_upsert(&state, &principal, &body),
+            Ok(body) => handle_admin_wrapper_permission_upsert(&state, &principal, &body),
             Err(response) => response,
         },
-        (&Method::POST, "/v1/admin/grants/delete") => match parse_json_body::<
-            underwrap_protocol::service::AdminAgentGrantDeleteRequest,
+        (&Method::POST, "/v1/admin/wrapper-permissions/delete") => match parse_json_body::<
+            underwrap_protocol::service::AdminWrapperPermissionDeleteRequest,
         >(request)
         .await
         {
-            Ok(body) => handle_admin_grant_delete(&state, &principal, &body),
+            Ok(body) => handle_admin_wrapper_permission_delete(&state, &principal, &body),
             Err(response) => response,
         },
         (&Method::POST, "/v1/admin/resources/list") => {
@@ -7755,7 +7765,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
 
     #[test]
     fn admin_resource_delete_refuses_with_structured_blockers() {
-        use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
+        use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
         let tmp = tempfile::TempDir::new().unwrap();
         let (state, store_id) = entity_test_state_with_store(tmp.path());
         let p = admin_principal(&[]);
@@ -7791,13 +7801,13 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             )
             .unwrap();
         }
-        // A grant referencing the resource.
+        // A wrapper permission referencing the resource.
         {
             let reg = state.stores.read().unwrap();
             save_policy_document(
                 reg.open[&store_id].as_ref(),
                 &PolicyDocument {
-                    grants: vec![AgentGrant {
+                    permissions: vec![WrapperPermission {
                         client_instance: "inst_a".into(),
                         wrapper: "gh".into(),
                         resource: "github/token".into(),
@@ -7824,9 +7834,12 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let blockers = &body["blocked_by"];
         assert_eq!(blockers["secret_count"], 1);
         assert_eq!(blockers["pair_count"], 1);
-        assert_eq!(blockers["grant_count"], 1);
+        assert_eq!(blockers["permission_count"], 1);
         assert_eq!(blockers["sample_pairs"][0]["wrapper"], "gh");
-        assert_eq!(blockers["sample_grants"][0]["client_instance"], "inst_a");
+        assert_eq!(
+            blockers["sample_permissions"][0]["client_instance"],
+            "inst_a"
+        );
 
         // Resource is still present.
         let list = handle_admin_resources_list(
@@ -7954,8 +7967,8 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     }
 
     #[test]
-    fn admin_pair_delete_refuses_when_grants_reference_the_pair() {
-        use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
+    fn admin_pair_delete_refuses_when_permissions_reference_the_pair() {
+        use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
         let tmp = tempfile::TempDir::new().unwrap();
         let (state, store_id) = entity_test_state_with_store(tmp.path());
         let p = admin_principal(&[]);
@@ -7982,7 +7995,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             save_policy_document(
                 reg.open[&store_id].as_ref(),
                 &PolicyDocument {
-                    grants: vec![AgentGrant {
+                    permissions: vec![WrapperPermission {
                         client_instance: "inst_a".into(),
                         wrapper: "gh".into(),
                         resource: "r".into(),
@@ -8007,8 +8020,8 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(del.status(), StatusCode::OK);
         let body = response_body_json(del);
         assert_eq!(body["ok"], false);
-        assert_eq!(body["blocked_by"]["grant_count"], 1);
-        assert_eq!(body["blocked_by"]["sample_grants"][0]["wrapper"], "gh");
+        assert_eq!(body["blocked_by"]["permission_count"], 1);
+        assert_eq!(body["blocked_by"]["sample_permissions"][0]["wrapper"], "gh");
     }
 
     #[test]

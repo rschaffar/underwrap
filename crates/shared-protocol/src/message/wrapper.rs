@@ -57,50 +57,22 @@ impl WireDecode for WrapperRequest {
     }
 }
 
-/// One resource in scope for this wrapper run, as announced by the
-/// daemon in `WrapperResponse::ReadOk`. The wrapper-resource channel
-/// fd is sent via SCM_RIGHTS immediately after the response, one fd
-/// per `resources` entry, in the same order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadResourceBinding {
-    pub resource_id: String,
-    pub access: AccessMode,
-    /// Whether secretsd should be launched for this resource.
-    pub libsecret: bool,
-    /// Target-home-relative paths at which the files staging dir for
-    /// this resource should be bind-mounted in the namespace. Empty
-    /// for resources without a `files` slot.
-    pub files_target_paths: Vec<String>,
-}
-
-impl WireEncode for ReadResourceBinding {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        self.resource_id.encode(out)?;
-        self.access.encode(out)?;
-        self.libsecret.encode(out)?;
-        self.files_target_paths.encode(out)
-    }
-}
-
-impl WireDecode for ReadResourceBinding {
-    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
-        Ok(Self {
-            resource_id: String::decode(reader)?,
-            access: AccessMode::decode(reader)?,
-            libsecret: bool::decode(reader)?,
-            files_target_paths: Vec::<String>::decode(reader)?,
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperResponse {
     ReadOk {
         env: std::collections::HashMap<String, SecretBytes>,
-        /// Wrapper-resource channel bindings. The daemon sends one
-        /// fd via SCM_RIGHTS per entry, in the same order, after the
-        /// `ReadOk` response itself.
-        resources: Vec<ReadResourceBinding>,
+        /// The single resource the wrapper projects. The daemon sends
+        /// exactly one wrapper-resource channel fd via SCM_RIGHTS
+        /// after the `ReadOk` response itself, regardless of which
+        /// slots (`env`, `files`, `libsecret`) the resource opts into.
+        resource_id: String,
+        access: AccessMode,
+        /// Whether secretsd should be launched for this resource.
+        libsecret: bool,
+        /// Target-home-relative paths at which the files staging dir
+        /// for this resource should be bind-mounted in the namespace.
+        /// Empty when the wrapper does not project a `files` slot.
+        files_target_paths: Vec<String>,
     },
     /// The wrapper is in per-call approval mode. The caller must sign `nonce`
     /// with the private half of `approval_key` (OpenSSH public key) and return
@@ -120,10 +92,19 @@ pub enum WrapperResponse {
 impl WireEncode for WrapperResponse {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {
-            Self::ReadOk { env, resources } => {
+            Self::ReadOk {
+                env,
+                resource_id,
+                access,
+                libsecret,
+                files_target_paths,
+            } => {
                 0u8.encode(out)?;
                 env.encode(out)?;
-                resources.encode(out)
+                resource_id.encode(out)?;
+                access.encode(out)?;
+                libsecret.encode(out)?;
+                files_target_paths.encode(out)
             }
             Self::ApprovalRequired {
                 challenge_id,
@@ -149,7 +130,10 @@ impl WireDecode for WrapperResponse {
         match u8::decode(reader)? {
             0 => Ok(Self::ReadOk {
                 env: std::collections::HashMap::<String, SecretBytes>::decode(reader)?,
-                resources: Vec::<ReadResourceBinding>::decode(reader)?,
+                resource_id: String::decode(reader)?,
+                access: AccessMode::decode(reader)?,
+                libsecret: bool::decode(reader)?,
+                files_target_paths: Vec::<String>::decode(reader)?,
             }),
             1 => Ok(Self::ApprovalRequired {
                 challenge_id: String::decode(reader)?,

@@ -23,35 +23,35 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  type AdminAgentGrantsListResponse,
   type AdminClientInstancesListResponse,
   type AdminPairsListResponse,
   type AdminResourcesListResponse,
   type AdminStoresListResponse,
-  type AgentGrant,
+  type AdminWrapperPermissionsListResponse,
   type EntityCreator,
   fetchClientInstances,
   fetchStores,
-  postGrantDelete,
-  postGrantUpsert,
-  postGrantsList,
   postPairCreate,
   postPairDelete,
   postPairsList,
   postResourceCreate,
   postResourcesList,
+  postWrapperPermissionDelete,
+  postWrapperPermissionUpsert,
+  postWrapperPermissionsList,
   type ResourceRecord,
   type WhoamiResponse,
   type WrapperApprovalMode,
+  type WrapperPermission,
   type WrapperResourcePairRecord,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
-interface WrappersPageProps {
+interface WrapperPermissionsPageProps {
   principal: WhoamiResponse | null;
 }
 
-/** Canonical kebab string for a grant mode. */
+/** Canonical kebab string for a permission mode. */
 export type ModeKind =
   | "locked"
   | "unlocked"
@@ -116,10 +116,10 @@ function describeCreator(creator: EntityCreator): string {
   }
 }
 
-/** Collect every distinct runtime client instance mentioned in grants. */
-export function deriveClientInstances(grants: AgentGrant[]): string[] {
+/** Collect every distinct runtime client instance mentioned in permissions. */
+export function deriveClientInstances(permissions: WrapperPermission[]): string[] {
   const set = new Set<string>();
-  for (const g of grants) set.add(g.client_instance);
+  for (const p of permissions) set.add(p.client_instance);
   return [...set].sort();
 }
 
@@ -134,9 +134,9 @@ export function sortPairs(
   );
 }
 
-export function WrappersPage({ principal }: WrappersPageProps) {
+export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProps) {
   useEffect(() => {
-    document.title = "underwrap — wrappers";
+    document.title = "underwrap — wrapper permissions";
   }, []);
 
   const isAdmin = !!(principal?.authenticated && principal.role === "admin");
@@ -165,9 +165,9 @@ export function WrappersPage({ principal }: WrappersPageProps) {
     window.history.replaceState({}, "", url.toString());
   }, [storeName]);
 
-  const grants = useQuery<AdminAgentGrantsListResponse>({
-    queryKey: ["admin", "grants", storeName],
-    queryFn: () => postGrantsList({ store: storeName! }),
+  const permissions = useQuery<AdminWrapperPermissionsListResponse>({
+    queryKey: ["admin", "wrapper-permissions", storeName],
+    queryFn: () => postWrapperPermissionsList({ store: storeName! }),
     enabled: !!storeName,
   });
   const pairs = useQuery<AdminPairsListResponse>({
@@ -180,9 +180,9 @@ export function WrappersPage({ principal }: WrappersPageProps) {
     queryFn: () => postResourcesList({ store: storeName! }),
     enabled: !!storeName,
   });
-  // The pairs and grants reference client instances by id; the
-  // operator-facing column header shows the editable display name
-  // resolved from this list.
+  // The pairs and wrapper permissions reference client instances by
+  // id; the operator-facing column header shows the editable display
+  // name resolved from this list.
   const clientInstancesList = useQuery<AdminClientInstancesListResponse>({
     queryKey: ["admin", "client-instances"],
     queryFn: fetchClientInstances,
@@ -199,40 +199,42 @@ export function WrappersPage({ principal }: WrappersPageProps) {
     [pairs.data],
   );
   const clientInstances = useMemo(
-    () => deriveClientInstances(grants.data?.grants ?? []),
-    [grants.data],
+    () => deriveClientInstances(permissions.data?.permissions ?? []),
+    [permissions.data],
   );
 
-  /** Map `(client_instance, wrapper, resource)` → grant. */
-  const grantIndex = useMemo(() => {
-    const map = new Map<string, AgentGrant>();
-    for (const g of grants.data?.grants ?? []) {
-      map.set(`${g.client_instance}|${g.wrapper}|${g.resource}`, g);
+  /** Map `(client_instance, wrapper, resource)` → permission. */
+  const permissionIndex = useMemo(() => {
+    const map = new Map<string, WrapperPermission>();
+    for (const p of permissions.data?.permissions ?? []) {
+      map.set(`${p.client_instance}|${p.wrapper}|${p.resource}`, p);
     }
     return map;
-  }, [grants.data]);
+  }, [permissions.data]);
 
   const [editing, setEditing] = useState<{
     clientInstance: string;
     wrapper: string;
     resource: string;
-    grant: AgentGrant | null;
+    permission: WrapperPermission | null;
   } | null>(null);
   const [rawOpen, setRawOpen] = useState(false);
   const [creatingPair, setCreatingPair] = useState(false);
   const [deletingPair, setDeletingPair] =
     useState<WrapperResourcePairRecord | null>(null);
 
-  function invalidatePairsAndGrants() {
+  function invalidatePairsAndPermissions() {
     if (!storeName) return;
     qc.invalidateQueries({ queryKey: ["admin", "pairs", storeName] });
-    qc.invalidateQueries({ queryKey: ["admin", "grants", storeName] });
+    qc.invalidateQueries({ queryKey: ["admin", "wrapper-permissions", storeName] });
   }
 
   if (!storeName) {
     return (
       <div className="space-y-4">
-        <h2 className="text-xl font-semibold text-(--color-fg)">Wrappers</h2>
+        <h2 className="text-xl font-semibold text-(--color-fg)">
+          Wrapper permissions
+        </h2>
         {stores.isLoading ? (
           <p className="text-sm text-(--color-muted)">Loading…</p>
         ) : (
@@ -240,7 +242,7 @@ export function WrappersPage({ principal }: WrappersPageProps) {
             role="alert"
             className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
           >
-            No stores are visible to you. Ask an admin for a grant on
+            No stores are visible to you. Ask an admin for access to
             at least one store.
           </p>
         )}
@@ -252,11 +254,13 @@ export function WrappersPage({ principal }: WrappersPageProps) {
     <div className="space-y-6">
       <header className="flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-(--color-fg)">Wrappers</h2>
+          <h2 className="text-xl font-semibold text-(--color-fg)">
+            Wrapper permissions
+          </h2>
           <p className="mt-1 text-sm text-(--color-muted)">
             Wrapper/resource pairs registered with the backend, and the
-            agent grant each runtime client instance holds against them.
-            Click a cell to set or change the grant mode.
+            permission each runtime client instance holds against them.
+            Click a cell to set or change the mode.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -298,11 +302,13 @@ export function WrappersPage({ principal }: WrappersPageProps) {
         </div>
       </header>
 
-      {grants.isLoading || pairs.isLoading ? (
-        <p className="text-sm text-(--color-muted)">Loading wrappers…</p>
-      ) : grants.error || pairs.error ? (
+      {permissions.isLoading || pairs.isLoading ? (
+        <p className="text-sm text-(--color-muted)">
+          Loading wrapper permissions…
+        </p>
+      ) : permissions.error || pairs.error ? (
         <p role="alert" className="text-sm text-rose-300">
-          {describeApiError(grants.error ?? pairs.error)}
+          {describeApiError(permissions.error ?? pairs.error)}
         </p>
       ) : pairRecords.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
@@ -316,14 +322,14 @@ export function WrappersPage({ principal }: WrappersPageProps) {
           pairs={pairRecords}
           clientInstances={clientInstances}
           displayNameById={displayNameById}
-          grantIndex={grantIndex}
+          permissionIndex={permissionIndex}
           isAdmin={isAdmin}
-          onCellClick={(wr, clientInstance, grant) =>
+          onCellClick={(wr, clientInstance, permission) =>
             setEditing({
               clientInstance,
               wrapper: wr.wrapper,
               resource: wr.resource,
-              grant,
+              permission,
             })
           }
           onDeletePair={(pair) => setDeletingPair(pair)}
@@ -339,7 +345,7 @@ export function WrappersPage({ principal }: WrappersPageProps) {
           }
           wrapper={editing.wrapper}
           resource={editing.resource}
-          existing={editing.grant}
+          existing={editing.permission}
           canEdit={isAdmin}
           onClose={() => setEditing(null)}
         />
@@ -352,7 +358,7 @@ export function WrappersPage({ principal }: WrappersPageProps) {
           existingPairs={pairRecords}
           onClose={() => setCreatingPair(false)}
           onCreated={() => {
-            invalidatePairsAndGrants();
+            invalidatePairsAndPermissions();
             qc.invalidateQueries({ queryKey: ["admin", "resources", storeName] });
             setCreatingPair(false);
           }}
@@ -366,7 +372,7 @@ export function WrappersPage({ principal }: WrappersPageProps) {
           displayNameById={displayNameById}
           onClose={() => setDeletingPair(null)}
           onDeleted={() => {
-            invalidatePairsAndGrants();
+            invalidatePairsAndPermissions();
             setDeletingPair(null);
           }}
         />
@@ -387,7 +393,7 @@ function PairsTable({
   pairs,
   clientInstances,
   displayNameById,
-  grantIndex,
+  permissionIndex,
   isAdmin,
   onCellClick,
   onDeletePair,
@@ -395,12 +401,12 @@ function PairsTable({
   pairs: WrapperResourcePairRecord[];
   clientInstances: string[];
   displayNameById: Map<string, string>;
-  grantIndex: Map<string, AgentGrant>;
+  permissionIndex: Map<string, WrapperPermission>;
   isAdmin: boolean;
   onCellClick: (
     wr: WrapperResource,
     clientInstance: string,
-    grant: AgentGrant | null,
+    permission: WrapperPermission | null,
   ) => void;
   onDeletePair: (pair: WrapperResourcePairRecord) => void;
 }) {
@@ -475,17 +481,17 @@ function PairsTable({
                 </td>
                 {clientInstances.map((c) => {
                   const key = `${c}|${pair.wrapper}|${pair.resource}`;
-                  const grant = grantIndex.get(key) ?? null;
+                  const permission = permissionIndex.get(key) ?? null;
                   return (
                     <td key={key} className="px-3 py-3">
                       <button
                         type="button"
                         data-testid={`wrappers-cell-${pair.wrapper}-${pair.resource}-${c}`}
-                        onClick={() => onCellClick(wr, c, grant)}
+                        onClick={() => onCellClick(wr, c, permission)}
                         disabled={!isAdmin}
                         className="min-h-11 min-w-[5rem] rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-1 text-xs hover:bg-(--color-surface-0) disabled:opacity-60"
                       >
-                        <CellContent grant={grant} />
+                        <CellContent permission={permission} />
                       </button>
                     </td>
                   );
@@ -513,15 +519,15 @@ function PairsTable({
   );
 }
 
-function CellContent({ grant }: { grant: AgentGrant | null }) {
-  if (!grant) {
+function CellContent({ permission }: { permission: WrapperPermission | null }) {
+  if (!permission) {
     return (
       <span className="inline-flex items-center gap-1 text-(--color-muted)">
         <Plus className="h-3 w-3" aria-hidden /> not granted
       </span>
     );
   }
-  return <ModeBadge mode={grant.mode} />;
+  return <ModeBadge mode={permission.mode} />;
 }
 
 export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
@@ -656,8 +662,8 @@ function CreatePairDialog({
         <DialogHeader>
           <DialogTitle>Create wrapper/resource pair</DialogTitle>
           <DialogDescription>
-            A wrapper/resource pair is the unit grants reference. Each
-            registered pair becomes a row in the table.
+            A wrapper/resource pair is the unit wrapper permissions
+            reference. Each registered pair becomes a row in the table.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -790,8 +796,8 @@ function DeletePairDialog({
             Delete pair: {pair.wrapper} / {pair.resource}
           </DialogTitle>
           <DialogDescription>
-            Removes the wrapper/resource pair record. Any grants that
-            reference this pair must be removed first.
+            Removes the wrapper/resource pair record. Any wrapper
+            permissions that reference this pair must be removed first.
           </DialogDescription>
         </DialogHeader>
         {blockers ? (
@@ -799,20 +805,20 @@ function DeletePairDialog({
             role="alert"
             className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
           >
-            Cannot delete — {blockers.grant_count} grant
-            {blockers.grant_count === 1 ? "" : "s"} still reference this pair:
+            Cannot delete — {blockers.permission_count} wrapper permission
+            {blockers.permission_count === 1 ? "" : "s"} still reference this pair:
             <ul className="mt-1 list-disc pl-5">
-              {blockers.sample_grants.map((g) => (
+              {blockers.sample_permissions.map((p) => (
                 <li
-                  key={`${g.client_instance}|${g.wrapper}|${g.resource}`}
+                  key={`${p.client_instance}|${p.wrapper}|${p.resource}`}
                   className="font-mono"
                 >
-                  {displayNameById.get(g.client_instance) ?? g.client_instance}
+                  {displayNameById.get(p.client_instance) ?? p.client_instance}
                 </li>
               ))}
             </ul>
             <p className="mt-2 text-amber-200/80">
-              Clear those grants on the matrix above, then try again.
+              Clear those permissions in the table above, then try again.
             </p>
           </div>
         ) : null}
@@ -860,7 +866,7 @@ function EditCellDialog({
   clientInstanceDisplayName: string;
   wrapper: string;
   resource: string;
-  existing: AgentGrant | null;
+  existing: WrapperPermission | null;
   canEdit: boolean;
   onClose: () => void;
 }) {
@@ -889,9 +895,9 @@ function EditCellDialog({
 
   const upsert = useMutation({
     mutationFn: (mode: WrapperApprovalMode) =>
-      postGrantUpsert({
+      postWrapperPermissionUpsert({
         store: storeName,
-        grant: {
+        permission: {
           client_instance: clientInstance,
           wrapper,
           resource,
@@ -901,21 +907,21 @@ function EditCellDialog({
         },
       }),
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["admin", "grants", storeName] });
+      await qc.invalidateQueries({ queryKey: ["admin", "wrapper-permissions", storeName] });
       onClose();
     },
     onError: (err) => setSubmitError(describeApiError(err)),
   });
   const remove = useMutation({
     mutationFn: () =>
-      postGrantDelete({
+      postWrapperPermissionDelete({
         store: storeName,
         client_instance: clientInstance,
         wrapper,
         resource,
       }),
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["admin", "grants", storeName] });
+      await qc.invalidateQueries({ queryKey: ["admin", "wrapper-permissions", storeName] });
       onClose();
     },
     onError: (err) => setSubmitError(describeApiError(err)),
@@ -981,7 +987,7 @@ function EditCellDialog({
             role="alert"
             className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
           >
-            Only admin operators can change grants.
+            Only admin operators can change permissions.
           </p>
         ) : null}
         <div className="space-y-4">
@@ -1045,7 +1051,7 @@ function EditCellDialog({
           <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-(--color-fg)">
             <input
               type="checkbox"
-              data-testid="grant-writable"
+              data-testid="permission-writable"
               checked={writable}
               disabled={!canEdit}
               onChange={(e) => setWritable(e.target.checked)}
@@ -1078,9 +1084,9 @@ function EditCellDialog({
               size="sm"
               onClick={() => remove.mutate()}
               disabled={remove.isPending}
-              data-testid="grant-remove"
+              data-testid="permission-remove"
             >
-              {remove.isPending ? "Removing…" : "Remove grant"}
+              {remove.isPending ? "Removing…" : "Remove permission"}
             </Button>
           ) : (
             <span />
@@ -1093,7 +1099,7 @@ function EditCellDialog({
               type="button"
               onClick={onSave}
               disabled={!canEdit || upsert.isPending}
-              data-testid="grant-save"
+              data-testid="permission-save"
             >
               {upsert.isPending ? "Saving…" : "Save"}
             </Button>

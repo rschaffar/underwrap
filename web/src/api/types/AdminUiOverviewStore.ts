@@ -3,8 +3,8 @@ import type { AdminUiWrapperCounts } from "./AdminUiWrapperCounts";
 
 export type AdminUiOverviewStore = { store: string, resource_count: number, wrapper_counts: AdminUiWrapperCounts, 
 /**
- * Number of grants with `writable = true`. Surfaced on the
- * dashboard overview as a quick "how many wrapper writes are
- * open" signal.
+ * Number of wrapper permissions with `writable = true`. Surfaced
+ * on the dashboard overview as a quick "how many wrapper writes
+ * are open" signal.
  */
-writable_grant_count: number, };
+writable_permission_count: number, };

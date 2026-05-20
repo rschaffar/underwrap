@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::entities::{ResourceRecord, WrapperResourcePairRecord};
-use crate::policy::{AgentGrant, PolicyDocument};
+use crate::policy::{PolicyDocument, WrapperPermission};
 
 // ===== Users admin API (ticket 240) =====
 //
@@ -517,10 +517,10 @@ pub struct AdminUiOverviewStore {
     pub store: String,
     pub resource_count: usize,
     pub wrapper_counts: AdminUiWrapperCounts,
-    /// Number of grants with `writable = true`. Surfaced on the
-    /// dashboard overview as a quick "how many wrapper writes are
-    /// open" signal.
-    pub writable_grant_count: usize,
+    /// Number of wrapper permissions with `writable = true`. Surfaced
+    /// on the dashboard overview as a quick "how many wrapper writes
+    /// are open" signal.
+    pub writable_permission_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -600,35 +600,35 @@ pub struct AdminPolicyPutRequest {
     pub document: PolicyDocument,
 }
 
-// ===== Agent grant CRUD =====
+// ===== Wrapper permission CRUD =====
 //
-// One `AgentGrant` per `(client_instance, wrapper, resource)` tuple.
-// The mode controls *if* the grant is usable; the `writable` flag on
-// the grant decides wrapper-side writes for the `files`/`libsecret`
-// slots.
+// One `WrapperPermission` per `(client_instance, wrapper, resource)`
+// tuple. The mode controls *if* the permission is usable; the
+// `writable` flag on the permission decides wrapper-side writes for
+// the `files`/`libsecret` slots.
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct AdminAgentGrantsListRequest {
+pub struct AdminWrapperPermissionsListRequest {
     pub store: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct AdminAgentGrantsListResponse {
-    pub grants: Vec<AgentGrant>,
+pub struct AdminWrapperPermissionsListResponse {
+    pub permissions: Vec<WrapperPermission>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct AdminAgentGrantUpsertRequest {
+pub struct AdminWrapperPermissionUpsertRequest {
     pub store: String,
-    pub grant: AgentGrant,
+    pub permission: WrapperPermission,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct AdminAgentGrantDeleteRequest {
+pub struct AdminWrapperPermissionDeleteRequest {
     pub store: String,
     pub client_instance: String,
     pub wrapper: String,
@@ -647,11 +647,12 @@ pub struct AdminOkResponse {
 // any dependent exists; the refusal response carries enough structured
 // detail for the SPA to point the operator at the exact blocker.
 
-/// The composite key for a grant. Used in delete-refusal responses so
-/// the SPA can render a "you must clear these grants first" list.
+/// The composite key for a wrapper permission. Used in delete-refusal
+/// responses so the SPA can render a "you must clear these wrapper
+/// permissions first" list.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
-pub struct AdminGrantKey {
+pub struct AdminWrapperPermissionKey {
     pub client_instance: String,
     pub wrapper: String,
     pub resource: String,
@@ -731,9 +732,9 @@ pub struct AdminResourceDeleteBlockers {
     pub pair_count: u32,
     #[serde(default)]
     pub sample_pairs: Vec<ServiceWrapperResourcePair>,
-    pub grant_count: u32,
+    pub permission_count: u32,
     #[serde(default)]
-    pub sample_grants: Vec<AdminGrantKey>,
+    pub sample_permissions: Vec<AdminWrapperPermissionKey>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -782,9 +783,9 @@ pub struct AdminPairDeleteRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, Default)]
 #[ts(export)]
 pub struct AdminPairDeleteBlockers {
-    pub grant_count: u32,
+    pub permission_count: u32,
     #[serde(default)]
-    pub sample_grants: Vec<AdminGrantKey>,
+    pub sample_permissions: Vec<AdminWrapperPermissionKey>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

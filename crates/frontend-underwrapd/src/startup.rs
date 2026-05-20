@@ -63,54 +63,37 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
             wrapper.socket.display(),
         );
         anyhow::ensure!(
-            !wrapper.resources.is_empty(),
-            "wrapper '{}' must project at least one resource slot",
+            !wrapper.resource.is_empty(),
+            "wrapper '{}' must declare a resource",
             name
         );
+        anyhow::ensure!(
+            crate::wrapper_bindings::wrapper_has_projection(wrapper),
+            "wrapper '{}' must enable at least one projection slot (env, files, or libsecret)",
+            name,
+        );
 
-        let mut libsecret_count = 0usize;
-        let mut directory_paths: Vec<String> = Vec::new();
-        for (resource_id, usage) in &wrapper.resources {
+        if let Some(files) = &wrapper.files {
             anyhow::ensure!(
-                crate::wrapper_bindings::resource_has_projection(usage),
-                "wrapper '{}' resource '{}' does not project any slot",
-                name,
-                resource_id,
+                !files.paths.is_empty(),
+                "wrapper '{name}' files slot has no paths"
             );
-            if usage.libsecret {
-                libsecret_count += 1;
+            for path in &files.paths {
+                validate_relative_credential_path(path)
+                    .with_context(|| format!("wrapper '{name}' files slot has invalid path"))?;
             }
-            if let Some(files) = &usage.files {
-                anyhow::ensure!(
-                    !files.paths.is_empty(),
-                    "wrapper '{name}' projects resource '{resource_id}' files slot with no paths"
-                );
-                for path in &files.paths {
-                    validate_relative_credential_path(path).with_context(|| {
-                        format!(
-                            "wrapper '{name}' projects resource '{resource_id}' files slot with invalid path"
-                        )
-                    })?;
-                    directory_paths.push(path.clone());
+            for (i, left) in files.paths.iter().enumerate() {
+                for right in files.paths.iter().skip(i + 1) {
+                    anyhow::ensure!(
+                        !paths_overlap(left, right),
+                        "wrapper '{}' uses overlapping files paths '{}' and '{}'",
+                        name,
+                        left,
+                        right,
+                    );
                 }
             }
         }
-        for (i, left) in directory_paths.iter().enumerate() {
-            for right in directory_paths.iter().skip(i + 1) {
-                anyhow::ensure!(
-                    !paths_overlap(left, right),
-                    "wrapper '{}' uses overlapping directory resource paths '{}' and '{}'",
-                    name,
-                    left,
-                    right,
-                );
-            }
-        }
-        anyhow::ensure!(
-            libsecret_count <= 1,
-            "wrapper '{}' may project at most one libsecret slot",
-            name,
-        );
     }
     Ok(())
 }

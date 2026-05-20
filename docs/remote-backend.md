@@ -135,7 +135,8 @@ services.underwrap = {
 
     wrappers.work-gh = {
       target = "${pkgs.gh}/bin/gh";
-      resources."github/token".env = true;
+      resource = "github/token";
+      env = true;
     };
   };
 };

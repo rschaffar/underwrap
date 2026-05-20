@@ -28,50 +28,68 @@ use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::Path;
 
 use base64::Engine;
+use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{
-    ReadResourceBinding, ResourceErrorCode, SecretBytes, WrapperRequest, WrapperResourceRequest,
+    ResourceErrorCode, SecretBytes, WrapperRequest, WrapperResourceRequest,
     WrapperResourceResponse, WrapperResponse,
 };
-use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
+use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
 use underwrap_protocol::resource_blob::ResourceBlob;
 use underwrap_protocol::scm_rights;
 
 use super::*;
 
 /// Result of the wrapper-side Read + SCM_RIGHTS exchange: ReadOk
-/// metadata plus one open `UnixStream` per resource fd, in the order
-/// the daemon emitted them.
+/// metadata plus the one open `UnixStream` for the wrapper's resource
+/// channel.
 struct OpenedRun {
     #[allow(dead_code)] // captured for diagnostics; tests assert on the channel side
     env: HashMap<String, SecretBytes>,
-    channels: Vec<(ReadResourceBinding, StdUnixStream)>,
+    #[allow(dead_code)]
+    resource_id: String,
+    #[allow(dead_code)]
+    access: AccessMode,
+    #[allow(dead_code)]
+    libsecret: bool,
+    #[allow(dead_code)]
+    files_target_paths: Vec<String>,
+    channel: StdUnixStream,
 }
 
 /// Connect a sync wrapper-side `StdUnixStream`, send `Read`, parse
-/// `ReadOk`, and receive one fd per resource in scope via SCM_RIGHTS.
+/// `ReadOk`, and receive the one channel fd via SCM_RIGHTS.
 fn open_run(socket_path: &Path) -> OpenedRun {
     let mut stream = StdUnixStream::connect(socket_path)
         .unwrap_or_else(|e| panic!("connect {}: {e}", socket_path.display()));
     write_frame_sync(&mut stream, &WrapperRequest::Read { scope: None }).unwrap();
     let resp: WrapperResponse = read_frame_sync(&mut stream).unwrap();
-    let (env, resources) = match resp {
-        WrapperResponse::ReadOk { env, resources } => (env, resources),
+    let (env, resource_id, access, libsecret, files_target_paths) = match resp {
+        WrapperResponse::ReadOk {
+            env,
+            resource_id,
+            access,
+            libsecret,
+            files_target_paths,
+        } => (env, resource_id, access, libsecret, files_target_paths),
         other => panic!("expected ReadOk, got {other:?}"),
     };
 
-    let mut channels = Vec::with_capacity(resources.len());
-    for binding in resources {
-        let fd = scm_rights::recv_fd(&stream)
-            .unwrap_or_else(|e| panic!("recv_fd for '{}': {e}", binding.resource_id));
-        // SAFETY: the fd was just received via SCM_RIGHTS and is owned
-        // by this process; wrapping it in a UnixStream gives us a
-        // standard owned handle for the channel.
-        let channel_stream = unsafe { StdUnixStream::from_raw_fd(fd) };
-        channels.push((binding, channel_stream));
-    }
+    let fd =
+        scm_rights::recv_fd(&stream).unwrap_or_else(|e| panic!("recv_fd for '{resource_id}': {e}"));
+    // SAFETY: the fd was just received via SCM_RIGHTS and is owned
+    // by this process; wrapping it in a UnixStream gives us a
+    // standard owned handle for the channel.
+    let channel = unsafe { StdUnixStream::from_raw_fd(fd) };
 
-    OpenedRun { env, channels }
+    OpenedRun {
+        env,
+        resource_id,
+        access,
+        libsecret,
+        files_target_paths,
+        channel,
+    }
 }
 
 fn send_checkout(stream: &mut StdUnixStream) -> (Vec<u8>, bool) {
@@ -108,8 +126,13 @@ fn writeback_wrapper_config() -> HashMap<String, underwrap_protocol::config::Wra
     wrappers
 }
 
-fn upsert_grant(daemon: &TestDaemon, wrapper: &str, resource: &str, writable: bool) -> AgentGrant {
-    AgentGrant {
+fn make_permission(
+    daemon: &TestDaemon,
+    wrapper: &str,
+    resource: &str,
+    writable: bool,
+) -> WrapperPermission {
+    WrapperPermission {
         client_instance: daemon.client_instance().to_string(),
         wrapper: wrapper.to_string(),
         resource: resource.to_string(),
@@ -164,7 +187,12 @@ async fn clean_run_only_sends_usage_signal() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![upsert_grant(&daemon, "gh-writeback", "github/token", true)],
+                permissions: vec![make_permission(
+                    &daemon,
+                    "gh-writeback",
+                    "github/token",
+                    true,
+                )],
             },
         )
         .await
@@ -175,9 +203,8 @@ async fn clean_run_only_sends_usage_signal() {
     // doesn't block the current-thread tokio runtime the daemon
     // tasks are running on.
     tokio::task::spawn_blocking(move || {
-        let mut run = open_run(&socket);
-        assert_eq!(run.channels.len(), 1);
-        let (_binding, mut channel) = run.channels.pop().unwrap();
+        let run = open_run(&socket);
+        let mut channel = run.channel;
         let (blob, writable) = send_checkout(&mut channel);
         assert_eq!(blob, initial_bytes);
         assert!(writable);
@@ -205,7 +232,12 @@ async fn writable_grant_persists_checkin() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![upsert_grant(&daemon, "gh-writeback", "github/token", true)],
+                permissions: vec![make_permission(
+                    &daemon,
+                    "gh-writeback",
+                    "github/token",
+                    true,
+                )],
             },
         )
         .await
@@ -216,8 +248,8 @@ async fn writable_grant_persists_checkin() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     let result = tokio::task::spawn_blocking(move || {
-        let mut run = open_run(&socket);
-        let (_binding, mut channel) = run.channels.pop().unwrap();
+        let run = open_run(&socket);
+        let mut channel = run.channel;
         let (blob, writable) = send_checkout(&mut channel);
         assert!(writable);
         assert!(blob != mutated_bytes);
@@ -244,7 +276,12 @@ async fn readonly_grant_rejects_checkin() {
             "test",
             &PolicyDocument {
                 // writable = false → daemon must refuse the Checkin.
-                grants: vec![upsert_grant(&daemon, "gh-writeback", "github/token", false)],
+                permissions: vec![make_permission(
+                    &daemon,
+                    "gh-writeback",
+                    "github/token",
+                    false,
+                )],
             },
         )
         .await
@@ -255,8 +292,8 @@ async fn readonly_grant_rejects_checkin() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let mut run = open_run(&socket);
-        let (_binding, mut channel) = run.channels.pop().unwrap();
+        let run = open_run(&socket);
+        let mut channel = run.channel;
         let (_blob, writable) = send_checkout(&mut channel);
         assert!(!writable, "grant is read-only at Checkout");
 
@@ -289,7 +326,12 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![upsert_grant(&daemon, "gh-writeback", "github/token", true)],
+                permissions: vec![make_permission(
+                    &daemon,
+                    "gh-writeback",
+                    "github/token",
+                    true,
+                )],
             },
         )
         .await
@@ -308,8 +350,8 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
     let mutated = blob_with_env("GH_TOKEN", b"ghp_flipped");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let blocking = tokio::task::spawn_blocking(move || {
-        let mut run = open_run(&socket);
-        let (_binding, mut channel) = run.channels.pop().unwrap();
+        let run = open_run(&socket);
+        let mut channel = run.channel;
         let (_blob, writable) = send_checkout(&mut channel);
         assert!(writable, "Checkout must observe the still-writable grant");
         checkout_done_tx.send(()).unwrap();
@@ -328,9 +370,9 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
 
     // Flip the grant to read-only via the admin API.
     daemon
-        .upsert_grant(
+        .upsert_permission(
             "test",
-            &upsert_grant(&daemon, "gh-writeback", "github/token", false),
+            &make_permission(&daemon, "gh-writeback", "github/token", false),
         )
         .await
         .unwrap();
@@ -363,7 +405,12 @@ async fn noncanonical_checkin_rejected() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![upsert_grant(&daemon, "gh-writeback", "github/token", true)],
+                permissions: vec![make_permission(
+                    &daemon,
+                    "gh-writeback",
+                    "github/token",
+                    true,
+                )],
             },
         )
         .await
@@ -377,8 +424,8 @@ async fn noncanonical_checkin_rejected() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let mut run = open_run(&socket);
-        let (_binding, mut channel) = run.channels.pop().unwrap();
+        let run = open_run(&socket);
+        let mut channel = run.channel;
         let (_blob, _writable) = send_checkout(&mut channel);
         let resp = send_checkin(&mut channel, &noncanonical);
         match resp {
@@ -428,12 +475,12 @@ async fn find_pair_last_used(daemon: &TestDaemon, wrapper: &str, resource: &str)
         .last_used_at
 }
 
-async fn seed_writable_grant(daemon: &TestDaemon, wrapper: &str, resource: &str) {
+async fn seed_writable_permission(daemon: &TestDaemon, wrapper: &str, resource: &str) {
     daemon
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![upsert_grant(daemon, wrapper, resource, true)],
+                permissions: vec![make_permission(daemon, wrapper, resource, true)],
             },
         )
         .await
@@ -449,7 +496,7 @@ async fn seed_resource_and_pair(daemon: &TestDaemon, wrapper: &str, resource: &s
 async fn checkout_bumps_last_used() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
     seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
-    seed_writable_grant(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_permission(&daemon, "gh-writeback", "github/token").await;
 
     assert!(
         find_pair_last_used(&daemon, "gh-writeback", "github/token")
@@ -459,8 +506,8 @@ async fn checkout_bumps_last_used() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let mut run = open_run(&socket);
-        let (_b, mut channel) = run.channels.pop().unwrap();
+        let run = open_run(&socket);
+        let mut channel = run.channel;
         let _ = send_checkout(&mut channel);
     })
     .await
@@ -480,14 +527,14 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
     // stored value can stay the same. Assert it's set.
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
     seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
-    seed_writable_grant(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_permission(&daemon, "gh-writeback", "github/token").await;
 
     let mutated = blob_with_env("GH_TOKEN", b"ghp_mutated");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let mut run = open_run(&socket);
-        let (_b, mut channel) = run.channels.pop().unwrap();
+        let run = open_run(&socket);
+        let mut channel = run.channel;
         let _ = send_checkout(&mut channel);
         let resp = send_checkin(&mut channel, &mutated_bytes);
         assert!(matches!(resp, WrapperResourceResponse::CheckinOk));
@@ -508,12 +555,12 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
 async fn usage_signal_bumps_last_used() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
     seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
-    seed_writable_grant(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_permission(&daemon, "gh-writeback", "github/token").await;
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let mut run = open_run(&socket);
-        let (_b, mut channel) = run.channels.pop().unwrap();
+        let run = open_run(&socket);
+        let mut channel = run.channel;
         // Skip Checkout — drive UsageSignal directly to isolate the
         // bump from any other backend read.
         let resp = send_usage_signal(&mut channel);
@@ -536,7 +583,7 @@ async fn rejected_checkin_still_bumps_last_used() {
     // bump (or same-second no-op). Either way last_used_at is set.
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
     seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
-    seed_writable_grant(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_permission(&daemon, "gh-writeback", "github/token").await;
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     let (checkout_done_tx, checkout_done_rx) = std::sync::mpsc::channel::<()>();
@@ -544,8 +591,8 @@ async fn rejected_checkin_still_bumps_last_used() {
     let mutated = blob_with_env("GH_TOKEN", b"ghp_rejected_mutation");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let blocking = tokio::task::spawn_blocking(move || {
-        let mut run = open_run(&socket);
-        let (_b, mut channel) = run.channels.pop().unwrap();
+        let run = open_run(&socket);
+        let mut channel = run.channel;
         let _ = send_checkout(&mut channel);
         checkout_done_tx.send(()).unwrap();
         flip_rx.recv().unwrap();
@@ -566,9 +613,9 @@ async fn rejected_checkin_still_bumps_last_used() {
         .unwrap();
 
     daemon
-        .upsert_grant(
+        .upsert_permission(
             "test",
-            &upsert_grant(&daemon, "gh-writeback", "github/token", false),
+            &make_permission(&daemon, "gh-writeback", "github/token", false),
         )
         .await
         .unwrap();

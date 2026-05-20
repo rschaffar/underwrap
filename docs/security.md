@@ -630,7 +630,7 @@ This is a deliberate choice:
 ### Backend-managed administration
 
 The admin surface is not a Unix socket on the target host. Operators
-manage agent grants and the global write-lock through the central
+manage wrapper permissions and the global write-lock through the central
 `underwrap-backendd`'s admin HTTP API (bearer-token or session-cookie
 authenticated) or through the browser-based admin UI in front of it.
 The target host only needs outbound mTLS access to the backend.
@@ -662,8 +662,9 @@ doesn't leave writes enabled by accident.
 ### Trust model implication
 
 Mutation immutability is an **operator-discipline property**, not a
-schema invariant. While `writes_enabled` is `true`, any agent grant
-on the store can drive a write. If a future requirement calls for
+schema invariant. While `writes_enabled` is `true`, any wrapper
+permission on the store can drive a write. If a future requirement
+calls for
 true tamper-evidence ("this value was never overwritten"), it has to
 come from a different mechanism — append-only storage, audit
 attestations — not from the policy layer, since policy itself is
@@ -876,11 +877,11 @@ under a reserved key in the same `StorageBackend` that holds the
 wrapper's secrets, so policy and secret material share one trust
 model.
 
-After ticket 245 the document is a flat list of **agent grants**
-keyed by `(wrapper, host, user)` plus the per-store
-`writes_enabled` toggle. Each grant carries one of four modes:
+The document is a flat list of **wrapper permissions** keyed by
+`(client_instance, wrapper, resource)` plus the per-store
+`writes_enabled` toggle. Each permission carries one of four modes:
 
-- **`Locked`** — every request through this grant is denied.
+- **`Locked`** — every request through this permission is denied.
 - **`Unlocked`** — requests are allowed.
 - **`UnlockedUntil { until_epoch }`** — requests are allowed until
   the deadline. The deadline is checked lazily on each request;
@@ -889,15 +890,15 @@ keyed by `(wrapper, host, user)` plus the per-store
   must be accompanied by a fresh ssh-agent signature. A prior
   success does not carry over to the next call.
 
-If no grant exists for `(wrapper, host, user)` the request is
-rejected with the same "ungranted" shape as a `Locked` grant — the
-daemon does not distinguish "no grant" from "denied grant" to the
-wrapper, so operators can't be probed for grant existence through
-the wrapper channel.
+If no permission exists for `(client_instance, wrapper, resource)`
+the request is rejected with the same "no permission" shape as a
+`Locked` permission — the daemon does not distinguish "no permission"
+from "denied permission" to the wrapper, so operators can't be probed
+for permission existence through the wrapper channel.
 
 ### Per-call ssh-agent approval
 
-When a grant is in `PerCallApproval`, the flow is:
+When a permission is in `PerCallApproval`, the flow is:
 
 1. The daemon issues a challenge: a random 32-byte nonce and a
    short-lived challenge ID, valid for 60 seconds. The

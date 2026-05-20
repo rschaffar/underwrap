@@ -2,13 +2,13 @@
 import type { WrapperApprovalMode } from "./WrapperApprovalMode";
 
 /**
- * One per-store agent grant.
+ * One per-store wrapper permission.
  *
  * The tuple `(client_instance, wrapper, resource)` is the unique key;
  * persistence layers MUST reject duplicates with the stable error code
- * `duplicate_grant`.
+ * `duplicate_permission`.
  */
-export type AgentGrant = { client_instance: string, wrapper: string, resource: string, mode: WrapperApprovalMode, 
+export type WrapperPermission = { client_instance: string, wrapper: string, resource: string, mode: WrapperApprovalMode, 
 /**
  * Whether the wrapper may write to this resource through the
  * secretsd channel. Applies to the `files` and `libsecret` slots;
@@ -16,6 +16,7 @@ export type AgentGrant = { client_instance: string, wrapper: string, resource: s
  */
 writable: boolean, 
 /**
- * Operator-facing free-form note. Surfaced in the matrix UI tooltip.
+ * Operator-facing free-form note. Surfaced in the wrapper
+ * permissions UI tooltip.
  */
 reason?: string, };

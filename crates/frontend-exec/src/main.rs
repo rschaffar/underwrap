@@ -17,11 +17,10 @@
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 
+use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::exec::{ExecBundle, ExecResourceBinding};
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{
-    ReadResourceBinding, SecretBytes, WrapperRequest, WrapperResponse,
-};
+use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
 
 mod ssh_agent;
 use ssh_agent::sign_with_ssh_agent;
@@ -32,19 +31,21 @@ const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
 /// Path to the underwrap-ns binary. Set by the NixOS module via sidecar config.
 const DEFAULT_NS_BINARY: &str = "/run/wrappers/bin/underwrap-ns";
 
-/// First fd used to pass wrapper-resource channels into underwrap-ns.
-/// The exec bundle pipe takes fd 3; resource channels are mapped to
-/// 20, 21, 22, ... in the order the daemon emitted them.
-const FIRST_RESOURCE_CHANNEL_FD: i32 = 20;
+/// Fd used to pass the wrapper-resource channel into underwrap-ns.
+/// The exec bundle pipe takes fd 3; the channel is mapped to fd 20.
+const RESOURCE_CHANNEL_FD: i32 = 20;
 
 struct ReceivedResourceBinding {
-    metadata: ReadResourceBinding,
+    resource_id: String,
+    access: AccessMode,
+    libsecret: bool,
+    files_target_paths: Vec<String>,
     channel_fd: i32,
 }
 
 type ReadSecretResult = (
     std::collections::HashMap<String, SecretBytes>,
-    Vec<ReceivedResourceBinding>,
+    ReceivedResourceBinding,
 );
 
 fn main() -> Result<()> {
@@ -59,7 +60,7 @@ fn main() -> Result<()> {
 
     let wrapper_config = load_wrapper_config(&config_name)?;
 
-    let (env_bindings, resource_bindings) = request_secret(&wrapper_config.wrapper_socket)?;
+    let (env_bindings, resource_binding) = request_secret(&wrapper_config.wrapper_socket)?;
 
     // Drop all elevated privileges.
     drop_privilege()?;
@@ -77,7 +78,7 @@ fn main() -> Result<()> {
         &wrapper_config,
         &all_args,
         env_bindings,
-        resource_bindings,
+        resource_binding,
     )
 }
 
@@ -87,7 +88,7 @@ fn exec_via_ns(
     config: &WrapperExecConfig,
     args: &[String],
     env_bindings: std::collections::HashMap<String, SecretBytes>,
-    resource_bindings: Vec<ReceivedResourceBinding>,
+    resource_binding: ReceivedResourceBinding,
 ) -> Result<()> {
     if !std::path::Path::new(ns_binary).exists() {
         bail!(
@@ -116,19 +117,15 @@ fn exec_via_ns(
     }
     let (pipe_read, pipe_write) = (pipe_fds[0], pipe_fds[1]);
 
-    let exec_resources: Vec<ExecResourceBinding> = resource_bindings
-        .iter()
-        .enumerate()
-        .map(|(index, binding)| ExecResourceBinding {
-            resource_id: binding.metadata.resource_id.clone(),
-            access: binding.metadata.access,
-            channel_fd: (FIRST_RESOURCE_CHANNEL_FD + index as i32) as u32,
-            libsecret: binding.metadata.libsecret,
-            files_target_paths: binding.metadata.files_target_paths.clone(),
-        })
-        .collect();
+    let exec_resource = ExecResourceBinding {
+        resource_id: resource_binding.resource_id.clone(),
+        access: resource_binding.access,
+        channel_fd: RESOURCE_CHANNEL_FD as u32,
+        libsecret: resource_binding.libsecret,
+        files_target_paths: resource_binding.files_target_paths.clone(),
+    };
 
-    let libsecret_in_scope = exec_resources.iter().any(|r| r.libsecret);
+    let libsecret_in_scope = exec_resource.libsecret;
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -153,18 +150,16 @@ fn exec_via_ns(
             unsafe { libc::close(pipe_read) };
         }
 
-        // Map each wrapper-resource fd to its agreed slot (20+i).
-        for (binding, exec_binding) in resource_bindings.iter().zip(&exec_resources) {
-            let target_fd = exec_binding.channel_fd as i32;
-            if binding.channel_fd != target_fd {
-                let ret = unsafe { libc::dup2(binding.channel_fd, target_fd) };
-                if ret < 0 {
-                    let err = std::io::Error::last_os_error();
-                    eprintln!("underwrap-exec: dup2 wrapper-resource channel fd failed: {err}");
-                    std::process::exit(1);
-                }
-                unsafe { libc::close(binding.channel_fd) };
+        // Map the wrapper-resource fd to its agreed slot.
+        let target_fd = exec_resource.channel_fd as i32;
+        if resource_binding.channel_fd != target_fd {
+            let ret = unsafe { libc::dup2(resource_binding.channel_fd, target_fd) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                eprintln!("underwrap-exec: dup2 wrapper-resource channel fd failed: {err}");
+                std::process::exit(1);
             }
+            unsafe { libc::close(resource_binding.channel_fd) };
         }
 
         // Build argv for underwrap-ns: <ns_binary> <target> [args...]
@@ -215,9 +210,7 @@ fn exec_via_ns(
 
     unsafe { libc::close(pipe_read) };
 
-    for binding in &resource_bindings {
-        unsafe { libc::close(binding.channel_fd) };
-    }
+    unsafe { libc::close(resource_binding.channel_fd) };
 
     {
         use std::os::unix::io::FromRawFd;
@@ -226,7 +219,7 @@ fn exec_via_ns(
             env: env_bindings,
             env_passthrough: config.env_passthrough.clone(),
             env_set: config.env_set.clone(),
-            resources: exec_resources,
+            resource: exec_resource,
         };
         write_frame_sync(&mut pipe, &payload).context("writing exec bundle to pipe")?;
         // pipe_write closed on drop.
@@ -381,8 +374,8 @@ fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
     })
 }
 
-/// Request credentials from the daemon. Returns env bindings plus one
-/// wrapper-resource channel fd per resource the daemon authorized.
+/// Request credentials from the daemon. Returns env bindings plus the
+/// single wrapper-resource channel fd the daemon authorized.
 fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
@@ -412,8 +405,14 @@ fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
         response = read_frame_sync(&mut stream)?;
     }
 
-    let (env_bindings, resources) = match response {
-        WrapperResponse::ReadOk { env, resources } => (env, resources),
+    let (env_bindings, resource_id, access, libsecret, files_target_paths) = match response {
+        WrapperResponse::ReadOk {
+            env,
+            resource_id,
+            access,
+            libsecret,
+            files_target_paths,
+        } => (env, resource_id, access, libsecret, files_target_paths),
         WrapperResponse::Error { code, message } => {
             bail!("daemon denied request ({code:?}): {message}");
         }
@@ -422,21 +421,20 @@ fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
         }
     };
 
-    let mut resource_bindings = Vec::with_capacity(resources.len());
-    for metadata in resources {
-        let fd = underwrap_protocol::scm_rights::recv_fd(&stream).with_context(|| {
-            format!(
-                "failed to receive wrapper-resource channel fd for '{}'",
-                metadata.resource_id
-            )
-        })?;
-        resource_bindings.push(ReceivedResourceBinding {
-            metadata,
-            channel_fd: fd,
-        });
-    }
+    let fd = underwrap_protocol::scm_rights::recv_fd(&stream).with_context(|| {
+        format!("failed to receive wrapper-resource channel fd for '{resource_id}'")
+    })?;
 
-    Ok((env_bindings, resource_bindings))
+    Ok((
+        env_bindings,
+        ReceivedResourceBinding {
+            resource_id,
+            access,
+            libsecret,
+            files_target_paths,
+            channel_fd: fd,
+        },
+    ))
 }
 
 fn drop_privilege() -> Result<()> {

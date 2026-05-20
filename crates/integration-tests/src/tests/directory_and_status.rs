@@ -6,18 +6,15 @@ async fn overlapping_directory_paths_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
-    wrapper_def.resources = HashMap::from([
-        ("gws/state".to_string(), files_resource(".config/gws")),
-        (
-            "gws/state-nested".to_string(),
-            files_resource(".config/gws/session"),
-        ),
-    ]);
+    let mut wrapper_def = files_wrapper_paths(
+        "/usr/bin/true",
+        "gws/state",
+        &[".config/gws", ".config/gws/session"],
+    );
     wrapper_def.socket = wrapper_socket;
 
     let err = daemon_config_error(wrapper_def).await;
-    assert!(err.contains("overlapping directory resource paths"));
+    assert!(err.contains("overlapping files paths"));
 }
 
 #[tokio::test]
@@ -26,15 +23,15 @@ async fn duplicate_directory_paths_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
-    wrapper_def.resources = HashMap::from([
-        ("gws/state-a".to_string(), files_resource(".config/gws")),
-        ("gws/state-b".to_string(), files_resource(".config/gws")),
-    ]);
+    let mut wrapper_def = files_wrapper_paths(
+        "/usr/bin/true",
+        "gws/state",
+        &[".config/gws", ".config/gws"],
+    );
     wrapper_def.socket = wrapper_socket;
 
     let err = daemon_config_error(wrapper_def).await;
-    assert!(err.contains("overlapping directory resource paths"));
+    assert!(err.contains("overlapping files paths"));
 }
 
 #[tokio::test]
@@ -43,8 +40,7 @@ async fn absolute_directory_path_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
-    wrapper_def.resources = HashMap::from([("gws/state".to_string(), files_resource("/etc/gws"))]);
+    let mut wrapper_def = files_wrapper("/usr/bin/true", "gws/state", "/etc/gws");
     wrapper_def.socket = wrapper_socket;
 
     let err = daemon_config_error(wrapper_def).await;
@@ -57,9 +53,7 @@ async fn traversal_directory_path_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
-    wrapper_def.resources =
-        HashMap::from([("gws/state".to_string(), files_resource(".config/../gws"))]);
+    let mut wrapper_def = files_wrapper("/usr/bin/true", "gws/state", ".config/../gws");
     wrapper_def.socket = wrapper_socket;
 
     let err = daemon_config_error(wrapper_def).await;
@@ -72,9 +66,7 @@ async fn empty_segment_directory_path_rejected_at_startup() {
     let base = tempdir.path();
     let wrapper_socket = base.join("wrapper.sock");
 
-    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
-    wrapper_def.resources =
-        HashMap::from([("gws/state".to_string(), files_resource(".config//gws"))]);
+    let mut wrapper_def = files_wrapper("/usr/bin/true", "gws/state", ".config//gws");
     wrapper_def.socket = wrapper_socket;
 
     let err = daemon_config_error(wrapper_def).await;
@@ -82,38 +74,31 @@ async fn empty_segment_directory_path_rejected_at_startup() {
 }
 
 #[tokio::test]
-async fn directory_bindings_are_returned_on_read() {
+async fn directory_binding_is_returned_on_read() {
     let mut wrappers = HashMap::new();
-    let mut wrapper_def = wrapper("/usr/bin/true", "dummy/env", "IGNORED");
-    wrapper_def.resources = HashMap::from([
-        ("gws/state-a".to_string(), files_resource(".config/gws-a")),
-        (
-            "gws/state-b".to_string(),
-            files_resource(".local/share/gws-b"),
-        ),
-    ]);
+    let wrapper_def = files_wrapper_paths(
+        "/usr/bin/true",
+        "gws/state",
+        &[".config/gws", ".local/share/gws"],
+    );
     wrappers.insert("dir-w".to_string(), wrapper_def);
 
     let daemon = TestDaemon::start(wrappers).await.unwrap();
     let resp = daemon.read_request("dir-w").await.unwrap();
     match resp {
-        WrapperResponse::ReadOk { env, resources } => {
+        WrapperResponse::ReadOk {
+            env,
+            resource_id,
+            files_target_paths,
+            libsecret,
+            ..
+        } => {
             assert!(env.is_empty());
-            // Files bindings ride inside the `resources` list now —
-            // one entry per resource, each carrying its
-            // `files_target_paths`.
-            let files: Vec<_> = resources
-                .iter()
-                .filter(|r| !r.files_target_paths.is_empty())
-                .collect();
-            assert_eq!(files.len(), 2);
+            assert_eq!(resource_id, "gws/state");
+            assert!(!libsecret);
             assert_eq!(
-                files[0].files_target_paths,
-                vec![".config/gws-a".to_string()]
-            );
-            assert_eq!(
-                files[1].files_target_paths,
-                vec![".local/share/gws-b".to_string()],
+                files_target_paths,
+                vec![".config/gws".to_string(), ".local/share/gws".to_string()],
             );
         }
         other => panic!("expected ReadOk, got {other:?}"),

@@ -16,7 +16,7 @@ async fn service_mode_roundtrip_reads_secret() {
         .put_policy(
             "test",
             &PolicyDocument {
-                grants: vec![daemon.current_grant("gh-authorized", "github/token")],
+                permissions: vec![daemon.current_permission("gh-authorized", "github/token")],
             },
         )
         .await
@@ -124,9 +124,12 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
     );
     let blockers = blocked.blocked_by.expect("blockers present");
     assert!(blockers.secret_count >= 1, "secret blocker reported");
-    assert!(blockers.grant_count >= 1, "grant blocker reported");
+    assert!(
+        blockers.permission_count >= 1,
+        "permission blocker reported"
+    );
 
-    // Clear the seeded grant.
+    // Clear the seeded permission.
     daemon
         .put_policy(
             "test",

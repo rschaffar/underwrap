@@ -23,19 +23,20 @@ wrappers:
   # the socket selects the expected wrapper, and the peer's effective GID
   # must match the configured group for that socket.
   #
-  # Every backend resource always has three slots:
+  # A wrapper projects **exactly one** backend resource. The resource
+  # always has three slots:
   #   <resource>/env/*
   #   <resource>/files/*
   #   <resource>/libsecret/*
-  #
-  # The wrapper config only decides which slots to project into the target.
+  # Enable any combination of `env`, `files`, and `libsecret` below to
+  # decide which of those slots are projected into the target. At least
+  # one slot must be enabled.
   gh-authorized:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-authorized.sock
     group: underwrap-gh-authorized
-    resources:
-      github/token:
-        env: true
+    resource: github/token
+    env: true
 
   # Agent-facing pattern: point underwrap at your own narrow wrapper in the
   # Nix store, not directly at the full gh CLI. That wrapper can hardcode the
@@ -44,55 +45,53 @@ wrappers:
     target: /nix/store/...-agent-gh-comment/bin/agent-gh-comment
     socket: /run/underwrap/agent-gh-comment.sock
     group: underwrap-agent-gh-comment
-    resources:
-      github/token:
-        env: true
+    resource: github/token
+    env: true
 
   agent-slack:
     target: /usr/bin/slack-cli
     socket: /run/underwrap/agent-slack.sock
     group: underwrap-agent-slack
-    resources:
-      slack/xoxp:
-        env: true
+    resource: slack/xoxp
+    env: true
 
-  # Libsecret-backed gh wrappers can share one backend resource.
+  # Libsecret-backed gh wrappers can share one backend resource across
+  # different wrappers; the backend pair table keeps them as distinct
+  # (wrapper, resource) rows so they remain independently authorized.
   gh-auth:
     target: /usr/bin/gh
     socket: /run/underwrap/gh-auth.sock
     group: underwrap-gh-auth
-    resources:
-      github/gh:
-        libsecret: true
+    resource: github/gh
+    libsecret: true
 
   gh-pr:
     target: /nix/store/...-gh-pr-helper/bin/gh-pr-helper
     socket: /run/underwrap/gh-pr.sock
     group: underwrap-gh-pr
-    resources:
-      github/gh:
-        libsecret: true
+    resource: github/gh
+    libsecret: true
 
   # A tool that persists backend-managed credential state in a directory tree.
   gws-auth:
     target: /usr/bin/gws
     socket: /run/underwrap/gws-auth.sock
     group: underwrap-gws-auth
-    resources:
-      gws/state:
-        files:
-          # One or more target-home-relative mount paths. The same backend
-          # resource is bind-mounted at every entry; writes are serialized
-          # through a single daemon channel so two mount points can never
-          # race against each other.
-          #
-          # The namespace mount is always read-write for the target, even
-          # when the backend grant denies writes. The backend is the sole
-          # write authority: any modifications attempted on a read-only
-          # grant are dropped at the end-of-run writeback and the wrapper
-          # emits one journal event + one stderr line per affected
-          # resource. Set `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` on the
-          # wrapper invocation to silence the stderr line (the journal
-          # event is always emitted).
-          paths:
-            - .config/gws
+    resource: gws/state
+    files:
+      # One or more target-home-relative mount paths. The single backend
+      # resource is bind-mounted at every entry; writes are serialized
+      # through a single daemon channel so two mount points can never
+      # race against each other.
+      #
+      # The namespace mount is always read-write for the target, even
+      # when the backend wrapper permission denies writes. The backend
+      # is the sole write authority: any modifications attempted on a
+      # read-only permission are dropped at the end-of-run writeback
+      # and the wrapper
+      # emits one journal event + one stderr line per affected
+      # resource. Set `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` on the
+      # wrapper invocation to silence the stderr line (the journal
+      # event is always emitted).
+      paths:
+        - .config/gws

@@ -33,21 +33,7 @@ use underwrap_backendd::server::{
 use underwrap_protocol::entities::{
     EntityCreator, PairsDocument, ResourceRecord, ResourcesDocument, WrapperResourcePairRecord,
 };
-use underwrap_protocol::policy::{AgentGrant, PolicyDocument, WrapperApprovalMode};
-use underwrap_protocol::service::{
-    AdminAgentGrantDeleteRequest, AdminAgentGrantUpsertRequest, AdminAgentGrantsListRequest,
-    AdminAgentGrantsListResponse, AdminGrantKey, AdminOkResponse, AdminPairCreateRequest,
-    AdminPairCreateResponse, AdminPairDeleteBlockers, AdminPairDeleteRequest,
-    AdminPairDeleteResponse, AdminPairsListRequest, AdminPairsListResponse, AdminPolicyGetRequest,
-    AdminPolicyGetResponse, AdminPolicyPutRequest, AdminResourceBlobGetRequest,
-    AdminResourceBlobGetResponse, AdminResourceBlobPutRequest, AdminResourceBlobPutResponse,
-    AdminResourceCreateRequest, AdminResourceCreateResponse, AdminResourceDeleteBlockers,
-    AdminResourceDeleteRequest, AdminResourceDeleteResponse, AdminResourcesListRequest,
-    AdminResourcesListResponse, AdminSecretDeleteRequest, AdminSecretDeleteResponse,
-    AdminSecretListRequest, AdminSecretListResponse, AdminSecretReadRequest,
-    AdminSecretReadResponse, AdminSecretWriteRequest, AdminUiOverviewResponse,
-    AdminUiOverviewStore, AdminUiWrapperCounts, ServiceWrapperResourcePair,
-};
+use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
 use underwrap_protocol::service::{
     AdminClientInstanceActionState, AdminClientInstanceCreateRequest,
     AdminClientInstanceDetailResponse, AdminClientInstanceListItem, AdminClientInstanceStatus,
@@ -58,6 +44,21 @@ use underwrap_protocol::service::{
     AdminStoreUpdateRequest, AdminStoreUsageSummary, AdminStoresListResponse,
     AdminUserCreateRequest, AdminUserDetailResponse, AdminUserListItem,
     AdminUserResetPasswordRequest, AdminUserRole, AdminUserUpdateRequest, AdminUsersListResponse,
+};
+use underwrap_protocol::service::{
+    AdminOkResponse, AdminPairCreateRequest, AdminPairCreateResponse, AdminPairDeleteBlockers,
+    AdminPairDeleteRequest, AdminPairDeleteResponse, AdminPairsListRequest, AdminPairsListResponse,
+    AdminPolicyGetRequest, AdminPolicyGetResponse, AdminPolicyPutRequest,
+    AdminResourceBlobGetRequest, AdminResourceBlobGetResponse, AdminResourceBlobPutRequest,
+    AdminResourceBlobPutResponse, AdminResourceCreateRequest, AdminResourceCreateResponse,
+    AdminResourceDeleteBlockers, AdminResourceDeleteRequest, AdminResourceDeleteResponse,
+    AdminResourcesListRequest, AdminResourcesListResponse, AdminSecretDeleteRequest,
+    AdminSecretDeleteResponse, AdminSecretListRequest, AdminSecretListResponse,
+    AdminSecretReadRequest, AdminSecretReadResponse, AdminSecretWriteRequest,
+    AdminUiOverviewResponse, AdminUiOverviewStore, AdminUiWrapperCounts,
+    AdminWrapperPermissionDeleteRequest, AdminWrapperPermissionKey,
+    AdminWrapperPermissionUpsertRequest, AdminWrapperPermissionsListRequest,
+    AdminWrapperPermissionsListResponse, ServiceWrapperResourcePair,
 };
 
 fn export_dir() -> PathBuf {
@@ -110,7 +111,7 @@ fn ts_bindings_in_sync_with_rust() {
         WhoamiResponse,
         OperatorRole,
         // shared-protocol::policy types reachable from admin DTOs
-        AgentGrant,
+        WrapperPermission,
         PolicyDocument,
         WrapperApprovalMode,
         // shared-protocol::entities — resource/pair entity model
@@ -120,10 +121,10 @@ fn ts_bindings_in_sync_with_rust() {
         WrapperResourcePairRecord,
         PairsDocument,
         // shared-protocol::service admin DTOs
-        AdminAgentGrantsListRequest,
-        AdminAgentGrantsListResponse,
-        AdminAgentGrantUpsertRequest,
-        AdminAgentGrantDeleteRequest,
+        AdminWrapperPermissionsListRequest,
+        AdminWrapperPermissionsListResponse,
+        AdminWrapperPermissionUpsertRequest,
+        AdminWrapperPermissionDeleteRequest,
         AdminOkResponse,
         AdminPolicyGetRequest,
         AdminPolicyGetResponse,
@@ -166,7 +167,7 @@ fn ts_bindings_in_sync_with_rust() {
         AdminUiOverviewStore,
         AdminUiWrapperCounts,
         // Admin Resource/Pair CRUD (ticket 384)
-        AdminGrantKey,
+        AdminWrapperPermissionKey,
         AdminResourcesListRequest,
         AdminResourcesListResponse,
         AdminResourceCreateRequest,

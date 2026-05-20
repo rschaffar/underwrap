@@ -107,26 +107,19 @@ let
     set -eu
     ${pkgs.coreutils}/bin/cat "$HOME/.config/underwrap-dir-a/token"
     ${pkgs.coreutils}/bin/printf '\n'
-    ${pkgs.coreutils}/bin/cat "$HOME/.local/share/underwrap-dir-b/meta"
-    ${pkgs.coreutils}/bin/printf '\n'
   '';
   dirWriteScript = pkgs.writeShellScript "dir-write-target" ''
     set -eu
     mode="''${1:-seed}"
     ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a/sub"
-    ${pkgs.coreutils}/bin/mkdir -p "$HOME/.local/share/underwrap-dir-b"
     case "$mode" in
       seed)
         printf 'token-seed' > "$HOME/.config/underwrap-dir-a/token"
         printf 'nested-seed' > "$HOME/.config/underwrap-dir-a/sub/nested"
-        printf 'meta-seed' > "$HOME/.local/share/underwrap-dir-b/meta"
-        printf 'old-file' > "$HOME/.local/share/underwrap-dir-b/old"
         ;;
       update)
         printf 'token-updated' > "$HOME/.config/underwrap-dir-a/token"
         printf 'nested-updated' > "$HOME/.config/underwrap-dir-a/sub/nested"
-        printf 'meta-updated' > "$HOME/.local/share/underwrap-dir-b/meta"
-        ${pkgs.coreutils}/bin/rm -f "$HOME/.local/share/underwrap-dir-b/old"
         ;;
       *)
         echo "unknown mode: $mode" >&2
@@ -137,7 +130,6 @@ let
   dirSleepScript = pkgs.writeShellScript "dir-sleep-target" ''
     set -eu
     ${pkgs.coreutils}/bin/cat "$HOME/.config/underwrap-dir-a/token" >/dev/null
-    ${pkgs.coreutils}/bin/cat "$HOME/.local/share/underwrap-dir-b/meta" >/dev/null
     exec ${pkgs.coreutils}/bin/sleep "''${1:-300}"
   '';
   # Writes a file, signals readiness via a marker file, then sleeps
@@ -374,80 +366,93 @@ in {
         wrappers = {
           test-echo = {
             target = "${pkgs.coreutils}/bin/env";
-            resources."test/token".env = true;
+            resource = "test/token";
+            env = true;
           };
           test-echo2 = {
             target = "${pkgs.coreutils}/bin/echo";
-            resources."test/other".env = true;
+            resource = "test/other";
+            env = true;
           };
           test-locked = {
             target = "${pkgs.coreutils}/bin/env";
-            resources."test/locked-tok".env = true;
+            resource = "test/locked-tok";
+            env = true;
           };
           test-sleep = {
             target = "${pkgs.coreutils}/bin/sleep";
-            resources."test/dumpable-tok".env = true;
+            resource = "test/dumpable-tok";
+            env = true;
           };
           test-crash = {
             target = "${crashScript}";
-            resources."test/crash-tok".env = true;
+            resource = "test/crash-tok";
+            env = true;
           };
           test-libsecret = {
             target = "${pkgs.libsecret}/bin/secret-tool";
-            resources."test/libsecret-store".libsecret = true;
+            resource = "test/libsecret-store";
+            libsecret = true;
           };
           test-keyring-probe = {
             target = "${goKeyringProbePackage}/bin/underwrap-go-keyring-probe";
-            resources."test/libsecret-store".libsecret = true;
+            resource = "test/libsecret-store";
+            libsecret = true;
           };
           test-ns-pids = {
             target = "${listPidsScript}";
-            resources."test/ns-pids-store".libsecret = true;
+            resource = "test/ns-pids-store";
+            libsecret = true;
             envSet.PATH = pkgs.lib.makeBinPath [ pkgs.coreutils ];
           };
           test-caps = {
             target = "${capsScript}";
-            resources."test/caps-tok".env = true;
+            resource = "test/caps-tok";
+            env = true;
             envSet.PATH = pkgs.lib.makeBinPath [ pkgs.gnugrep ];
           };
           test-dir-write = {
             target = "${dirWriteScript}";
-            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
-            resources."test/dir-b".files.paths = [ ".local/share/underwrap-dir-b" ];
+            resource = "test/dir-a";
+            files.paths = [ ".config/underwrap-dir-a" ];
           };
           test-dir-read = {
             target = "${dirReadScript}";
-            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
-            resources."test/dir-b".files.paths = [ ".local/share/underwrap-dir-b" ];
+            resource = "test/dir-a";
+            files.paths = [ ".config/underwrap-dir-a" ];
           };
           test-dir-readonly-write = {
             target = "${dirWriteScript}";
-            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
-            resources."test/dir-b".files.paths = [ ".local/share/underwrap-dir-b" ];
+            resource = "test/dir-a";
+            files.paths = [ ".config/underwrap-dir-a" ];
           };
           test-dir-sleep = {
             target = "${dirSleepScript}";
-            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
-            resources."test/dir-b".files.paths = [ ".local/share/underwrap-dir-b" ];
+            resource = "test/dir-a";
+            files.paths = [ ".config/underwrap-dir-a" ];
           };
           test-dir-symlink = {
             target = "${dirSymlinkScript}";
-            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+            resource = "test/dir-a";
+            files.paths = [ ".config/underwrap-dir-a" ];
           };
           # Used by the atomic-writeback grant-flip scenario.
           test-dir-write-then-sleep = {
             target = "${dirWriteThenSleepScript}";
-            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+            resource = "test/dir-a";
+            files.paths = [ ".config/underwrap-dir-a" ];
           };
           # Used by the always-writable namespace mount scenario.
           test-dir-touch = {
             target = "${dirTouchScript}";
-            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+            resource = "test/dir-a";
+            files.paths = [ ".config/underwrap-dir-a" ];
           };
           # Used by the suppression-env-var-target-isolation scenario.
           test-dir-env-probe = {
             target = "${dirEnvProbeScript}";
-            resources."test/dir-a".files.paths = [ ".config/underwrap-dir-a" ];
+            resource = "test/dir-a";
+            files.paths = [ ".config/underwrap-dir-a" ];
           };
         };
       };
@@ -462,7 +467,8 @@ in {
 
         wrappers.remote-echo = {
           target = "${pkgs.coreutils}/bin/env";
-          resources."remote/token".env = true;
+          resource = "remote/token";
+          env = true;
         };
       };
     };

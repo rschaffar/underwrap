@@ -1,9 +1,9 @@
-//! Per-resource wrapper-resource channel state held by frontend-ns.
+//! Wrapper-resource channel state held by frontend-ns.
 //!
-//! On startup, ns owns one bulk-blob channel fd per resource in scope
-//! (fd 20+i, sent by frontend-exec via dup2). ns sends one `Checkout`
-//! on each channel to capture the current JCS-canonical blob plus
-//! the grant's writability for the end-of-run decision.
+//! On startup, ns owns the bulk-blob channel fd for the wrapper's one
+//! resource (fd 20, sent by frontend-exec via dup2). ns sends a
+//! `Checkout` on the channel to capture the current JCS-canonical blob
+//! plus the grant's writability for the end-of-run decision.
 //!
 //! The fd is held open as a raw integer rather than a `UnixStream`,
 //! mirroring the `DirectoryChannel` pattern: each operation `dup`s
@@ -18,10 +18,10 @@ use underwrap_protocol::exec::ExecResourceBinding;
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{WrapperResourceRequest, WrapperResourceResponse};
 
-/// One resource's state captured at Checkout, used by the end-of-run
+/// The resource's state captured at Checkout, used by the end-of-run
 /// writeback decision. The fd stays open until the namespace tears
 /// down; each IPC op `dup`s it into a temporary `UnixStream`.
-#[allow(dead_code)] // some fields consumed in story 410 task 413 cutover.
+#[allow(dead_code)] // some fields consumed later in the wrapper flow.
 pub struct ResourceChannel {
     pub resource_id: String,
     pub channel_fd: i32,
@@ -31,33 +31,27 @@ pub struct ResourceChannel {
     pub files_target_paths: Vec<String>,
 }
 
-/// Drive `Checkout` on every wrapper-resource channel the daemon
-/// established for this run. Each channel returns the resource's
-/// current JCS-canonical blob plus the writability flag derived from
-/// the policy grant.
+/// Drive `Checkout` on the wrapper's resource channel. Returns the
+/// resource's current JCS-canonical blob plus the writability flag
+/// derived from the policy grant.
 ///
-/// Failure on any one channel is fatal — security model is no
-/// fallback. The error message names the resource.
-pub fn checkout_all(bindings: &[ExecResourceBinding]) -> Result<Vec<ResourceChannel>, String> {
-    let mut channels = Vec::with_capacity(bindings.len());
-    for binding in bindings {
-        let (original_canonical, writable) =
-            send_checkout(binding.channel_fd as i32).map_err(|e| {
-                format!(
-                    "wrapper-resource Checkout for '{}' failed: {e}",
-                    binding.resource_id
-                )
-            })?;
-        channels.push(ResourceChannel {
-            resource_id: binding.resource_id.clone(),
-            channel_fd: binding.channel_fd as i32,
-            original_canonical,
-            writable,
-            libsecret: binding.libsecret,
-            files_target_paths: binding.files_target_paths.clone(),
-        });
-    }
-    Ok(channels)
+/// Failure is fatal — security model is no fallback. The error message
+/// names the resource.
+pub fn checkout(binding: &ExecResourceBinding) -> Result<ResourceChannel, String> {
+    let (original_canonical, writable) = send_checkout(binding.channel_fd as i32).map_err(|e| {
+        format!(
+            "wrapper-resource Checkout for '{}' failed: {e}",
+            binding.resource_id
+        )
+    })?;
+    Ok(ResourceChannel {
+        resource_id: binding.resource_id.clone(),
+        channel_fd: binding.channel_fd as i32,
+        original_canonical,
+        writable,
+        libsecret: binding.libsecret,
+        files_target_paths: binding.files_target_paths.clone(),
+    })
 }
 
 fn send_checkout(fd: i32) -> Result<(Vec<u8>, bool), String> {
@@ -82,13 +76,11 @@ fn send_checkout(fd: i32) -> Result<(Vec<u8>, bool), String> {
     }
 }
 
-/// Drop the wrapper-resource channel fds before exec'ing the target.
+/// Drop the wrapper-resource channel fd before exec'ing the target.
 /// The target must never inherit the daemon-facing IPC; if it did,
 /// a compromised target could replay Checkin against the daemon.
-pub fn close_channel_fds_for_exec(channels: &[ResourceChannel]) {
-    for channel in channels {
-        unsafe {
-            libc::close(channel.channel_fd);
-        }
+pub fn close_channel_fd_for_exec(channel: &ResourceChannel) {
+    unsafe {
+        libc::close(channel.channel_fd);
     }
 }

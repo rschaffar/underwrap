@@ -4,10 +4,11 @@ use crate::message::SecretBytes;
 use anyhow::Result;
 use std::collections::HashMap;
 
-/// One wrapper-resource binding flowing through the exec → ns
-/// handoff. `channel_fd` is the ns-side fd number that backs the
-/// authenticated socketpair to the daemon for this resource; ns
-/// drives `Checkout` / `Checkin` / `UsageSignal` over that fd.
+/// The wrapper-resource binding flowing through the exec → ns handoff.
+/// `channel_fd` is the ns-side fd number that backs the authenticated
+/// socketpair to the daemon for this resource; ns drives `Checkout` /
+/// `Checkin` / `UsageSignal` over that fd. Each wrapper run has
+/// exactly one resource, so the bundle carries exactly one binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecResourceBinding {
     pub resource_id: String,
@@ -48,10 +49,10 @@ pub struct ExecBundle {
     pub env: HashMap<String, SecretBytes>,
     pub env_passthrough: Vec<String>,
     pub env_set: HashMap<String, String>,
-    /// Per-resource wrapper-resource channel bindings. One entry per
-    /// resource in scope, each carrying the fd for the bulk-blob IPC
-    /// channel (`Checkout` / `Checkin` / `UsageSignal`).
-    pub resources: Vec<ExecResourceBinding>,
+    /// The wrapper-resource binding for this run's single resource,
+    /// carrying the fd for the bulk-blob IPC channel
+    /// (`Checkout` / `Checkin` / `UsageSignal`).
+    pub resource: ExecResourceBinding,
 }
 
 impl WireEncode for ExecBundle {
@@ -59,7 +60,7 @@ impl WireEncode for ExecBundle {
         self.env.encode(out)?;
         self.env_passthrough.encode(out)?;
         self.env_set.encode(out)?;
-        self.resources.encode(out)
+        self.resource.encode(out)
     }
 }
 
@@ -69,7 +70,7 @@ impl WireDecode for ExecBundle {
             env: HashMap::<String, SecretBytes>::decode(reader)?,
             env_passthrough: Vec::<String>::decode(reader)?,
             env_set: HashMap::<String, String>::decode(reader)?,
-            resources: Vec::<ExecResourceBinding>::decode(reader)?,
+            resource: ExecResourceBinding::decode(reader)?,
         })
     }
 }
@@ -94,13 +95,29 @@ mod tests {
         assert_eq!(decoded, binding);
     }
 
+    fn sample_binding() -> ExecResourceBinding {
+        ExecResourceBinding {
+            resource_id: "gws/state".to_string(),
+            access: AccessMode::ReadWrite,
+            channel_fd: 20,
+            libsecret: false,
+            files_target_paths: vec![".config/gh".to_string()],
+        }
+    }
+
     #[test]
-    fn exec_bundle_roundtrip_empty() {
+    fn exec_bundle_roundtrip_minimal() {
         let bundle = ExecBundle {
             env: HashMap::new(),
             env_passthrough: Vec::new(),
             env_set: HashMap::new(),
-            resources: Vec::new(),
+            resource: ExecResourceBinding {
+                resource_id: "x/y".to_string(),
+                access: AccessMode::ReadOnly,
+                channel_fd: 20,
+                libsecret: false,
+                files_target_paths: Vec::new(),
+            },
         };
 
         let encoded = encode_to_vec(&bundle).unwrap();
@@ -123,22 +140,7 @@ mod tests {
                 ("PATH".to_string(), "/run/current-system/sw/bin".to_string()),
                 ("UNDERWRAP_LIBSECRET".to_string(), "1".to_string()),
             ]),
-            resources: vec![
-                ExecResourceBinding {
-                    resource_id: "gws/state".to_string(),
-                    access: AccessMode::ReadWrite,
-                    channel_fd: 20,
-                    libsecret: false,
-                    files_target_paths: vec![".config/gh".to_string()],
-                },
-                ExecResourceBinding {
-                    resource_id: "gh/credentials".to_string(),
-                    access: AccessMode::ReadOnly,
-                    channel_fd: 21,
-                    libsecret: true,
-                    files_target_paths: Vec::new(),
-                },
-            ],
+            resource: sample_binding(),
         };
 
         let encoded = encode_to_vec(&bundle).unwrap();
@@ -152,7 +154,7 @@ mod tests {
             env: HashMap::from([("GH_TOKEN".to_string(), b"ghp_test".as_slice().into())]),
             env_passthrough: vec!["SSH_AUTH_SOCK".to_string()],
             env_set: HashMap::new(),
-            resources: Vec::new(),
+            resource: sample_binding(),
         };
 
         let mut encoded = encode_to_vec(&bundle).unwrap();

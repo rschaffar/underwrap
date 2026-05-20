@@ -40,7 +40,7 @@ interface NavItem {
 
 export const NAV: NavItem[] = [
   { label: "Dashboard", icon: LayoutDashboard, href: "/" },
-  { label: "Wrappers", icon: Grid3x3, href: "/wrappers" },
+  { label: "Wrapper permissions", icon: Grid3x3, href: "/wrappers" },
   { label: "Secrets", icon: KeyRound, href: "/secrets" },
   { label: "Stores", icon: Lock, href: "/stores", adminOnly: true },
   {

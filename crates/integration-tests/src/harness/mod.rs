@@ -13,13 +13,13 @@ use tokio::sync::Notify;
 use underwrap_protocol::config::*;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
 use underwrap_protocol::message::*;
-use underwrap_protocol::policy::{AgentGrant, PolicyDocument};
+use underwrap_protocol::policy::{PolicyDocument, WrapperPermission};
 
 mod builders;
 mod pki;
 mod readiness;
 
-pub use builders::{files_resource, wrapper};
+pub use builders::{files_wrapper, files_wrapper_paths, wrapper};
 pub(crate) use pki::{
     TEST_CA_PEM, TEST_CLIENT_LOCAL_KEY, TEST_CLIENT_LOCAL_PEM, TEST_SERVER_KEY, TEST_SERVER_PEM,
 };
@@ -317,14 +317,14 @@ impl TestDaemon {
         secret_id: &str,
         material: &str,
     ) -> Result<()> {
-        // The wrapper-side read gates on an `AgentGrant` matching
-        // `(client_instance, wrapper, resource)`; seed a grant for
+        // The wrapper-side read gates on a `WrapperPermission` matching
+        // `(client_instance, wrapper, resource)`; seed a permission for
         // this daemon's instance so the read flow under test still
         // passes. The `secret_id` argument is the resource id.
         self.put_policy(
             store,
             &PolicyDocument {
-                grants: vec![self.current_grant(wrapper, secret_id)],
+                permissions: vec![self.current_permission(wrapper, secret_id)],
             },
         )
         .await?;
@@ -634,13 +634,22 @@ impl TestDaemon {
         Ok(())
     }
 
-    pub async fn upsert_grant(&self, store: &str, grant: &AgentGrant) -> Result<()> {
+    pub async fn upsert_permission(
+        &self,
+        store: &str,
+        permission: &WrapperPermission,
+    ) -> Result<()> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/grants/upsert")
-            .json(&underwrap_protocol::service::AdminAgentGrantUpsertRequest {
-                store: store.to_string(),
-                grant: grant.clone(),
-            })
+            .admin_request(
+                reqwest::Method::POST,
+                "/v1/admin/wrapper-permissions/upsert",
+            )
+            .json(
+                &underwrap_protocol::service::AdminWrapperPermissionUpsertRequest {
+                    store: store.to_string(),
+                    permission: permission.clone(),
+                },
+            )
             .send()
             .await?;
         anyhow::ensure!(
@@ -651,7 +660,7 @@ impl TestDaemon {
         Ok(())
     }
 
-    pub async fn delete_grant(
+    pub async fn delete_permission(
         &self,
         store: &str,
         client_instance: &str,
@@ -659,13 +668,18 @@ impl TestDaemon {
         resource: &str,
     ) -> Result<()> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/grants/delete")
-            .json(&underwrap_protocol::service::AdminAgentGrantDeleteRequest {
-                store: store.to_string(),
-                client_instance: client_instance.to_string(),
-                wrapper: wrapper.to_string(),
-                resource: resource.to_string(),
-            })
+            .admin_request(
+                reqwest::Method::POST,
+                "/v1/admin/wrapper-permissions/delete",
+            )
+            .json(
+                &underwrap_protocol::service::AdminWrapperPermissionDeleteRequest {
+                    store: store.to_string(),
+                    client_instance: client_instance.to_string(),
+                    wrapper: wrapper.to_string(),
+                    resource: resource.to_string(),
+                },
+            )
             .send()
             .await?;
         anyhow::ensure!(
@@ -676,11 +690,11 @@ impl TestDaemon {
         Ok(())
     }
 
-    /// Convenience: build an `Unlocked` grant for the given wrapper +
-    /// resource on this harness's mTLS-bound client instance. Used by
-    /// almost every read-flow test.
-    pub fn current_grant(&self, wrapper: &str, resource: &str) -> AgentGrant {
-        AgentGrant {
+    /// Convenience: build an `Unlocked` wrapper permission for the
+    /// given wrapper + resource on this harness's mTLS-bound client
+    /// instance. Used by almost every read-flow test.
+    pub fn current_permission(&self, wrapper: &str, resource: &str) -> WrapperPermission {
+        WrapperPermission {
             client_instance: self.client_instance.clone(),
             wrapper: wrapper.to_string(),
             resource: resource.to_string(),

@@ -82,7 +82,7 @@ The current console supports:
 - explicit reveal/download
 - mutation-gated write/upload/delete
 - wrapper mode management
-- access-matrix toggles
+- wrapper-permission toggles
 
 ## Historical note
 

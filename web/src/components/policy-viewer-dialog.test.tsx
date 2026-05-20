@@ -29,10 +29,10 @@ describe("PolicyViewerDialog", () => {
     vi.mocked(postPolicyGet).mockReset();
   });
 
-  it("renders the formatted JSON, the writable-grants badge, and a copy button for a non-trivial policy", async () => {
+  it("renders the formatted JSON, the writable-permissions badge, and a copy button for a non-trivial policy", async () => {
     vi.mocked(postPolicyGet).mockResolvedValue({
       document: {
-        grants: [
+        permissions: [
           {
             client_instance: "dev-laptop",
             wrapper: "gh-authorized",
@@ -70,12 +70,12 @@ describe("PolicyViewerDialog", () => {
       await screen.findByRole("heading", { name: /raw policy: prod/i }),
     ).toBeInTheDocument();
 
-    // Writable-grants badge counts the single grant flagged writable.
+    // Writable-permissions badge counts the single permission flagged writable.
     expect(
-      await screen.findByTestId("writable-grants-badge"),
+      await screen.findByTestId("writable-permissions-badge"),
     ).toHaveTextContent(/1 of 3/i);
 
-    // The JSON pre block contains every grant tuple.
+    // The JSON pre block contains every permission tuple.
     const pre = await screen.findByTestId("policy-json");
     expect(pre).toHaveTextContent("gh-authorized");
     expect(pre).toHaveTextContent("aws-prod");
@@ -89,13 +89,13 @@ describe("PolicyViewerDialog", () => {
 
   it("shows 0 writable when the policy is empty", async () => {
     vi.mocked(postPolicyGet).mockResolvedValue({
-      document: { grants: [] },
+      document: { permissions: [] },
     });
     renderWithQuery(
       <PolicyViewerDialog storeName="dev" open={true} onClose={() => {}} />,
     );
     expect(
-      await screen.findByTestId("writable-grants-badge"),
+      await screen.findByTestId("writable-permissions-badge"),
     ).toHaveTextContent(/0 of 0/i);
   });
 
@@ -116,7 +116,7 @@ describe("PolicyViewerDialog", () => {
   it("copies the formatted JSON to the clipboard when the copy button is clicked", async () => {
     vi.mocked(postPolicyGet).mockResolvedValue({
       document: {
-        grants: [
+        permissions: [
           {
             client_instance: "dev-laptop",
             wrapper: "gh-authorized",

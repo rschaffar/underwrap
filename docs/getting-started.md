@@ -97,14 +97,10 @@ In your NixOS configuration:
         caFile = "/etc/underwrap/ca.pem";
       };
 
-      credentials."jira/api-token" = {
-        mode = "env";
-        variable = "JIRA_API_TOKEN";
-      };
-
       wrappers.jira = {
         target = "${pkgs.jira-cli-go}/bin/jira";
-        use."jira/api-token".access = "read-only";
+        resource = "jira/api-token";
+        env = true;
       };
     };
   };

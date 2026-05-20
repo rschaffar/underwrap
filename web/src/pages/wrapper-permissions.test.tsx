@@ -8,9 +8,9 @@ import {
   modeKind,
   sortPairs,
   wrapperResourceKey,
-} from "./wrappers";
+} from "./wrapper-permissions";
 import type {
-  AgentGrant,
+  WrapperPermission,
   WrapperApprovalMode,
   WrapperResourcePairRecord,
 } from "@/api/client";
@@ -18,7 +18,7 @@ import type {
 afterEach(() => {});
 
 describe("derivation helpers", () => {
-  const grants: AgentGrant[] = [
+  const permissions: WrapperPermission[] = [
     {
       client_instance: "dev-laptop",
       wrapper: "gh-authorized",
@@ -65,7 +65,7 @@ describe("derivation helpers", () => {
   ];
 
   it("deriveClientInstances dedupes and sorts", () => {
-    const instances = deriveClientInstances(grants);
+    const instances = deriveClientInstances(permissions);
     expect(instances).toEqual(["ci-runner", "dev-laptop"]);
   });
 

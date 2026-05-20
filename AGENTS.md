@@ -103,12 +103,12 @@ story tickets and give both story and task tickets these ordered numeric prefixe
 - `crates/frontend-underwrapd/src/server.rs` — daemon: identity resolution, wrapper dispatch
 - `crates/frontend-underwrapd/src/approval.rs` — pending-challenge store + signature verify
 - `crates/frontend-underwrapd/src/wrapper_flow/` — the wrapper socket request flow
-- `crates/frontend-underwrapd/src/policy.rs` — grant gate (lookup by `(wrapper, host, user)`)
-- `crates/backend-backendd/src/server.rs` — HTTPS service + admin API + stores/users/grants CRUD
+- `crates/frontend-underwrapd/src/policy.rs` — wrapper-permission gate (lookup by `(client_instance, wrapper, resource)`)
+- `crates/backend-backendd/src/server.rs` — HTTPS service + admin API + stores/users/wrapper-permissions CRUD
 - `crates/backend-backendd/src/auth.rs` — Argon2id password hashing + AEAD session cookies
 - `crates/backend-backendd/src/web.rs` — embedded SPA hosting via `rust-embed`
-- `crates/backend-backendd/src/operators.rs` — operator records + Principal + role/grant model
-- `crates/shared-protocol/src/policy.rs` — `PolicyDocument`, `AgentGrant`, `WrapperApprovalMode`
+- `crates/backend-backendd/src/operators.rs` — operator records + Principal + role/store-access model
+- `crates/shared-protocol/src/policy.rs` — `PolicyDocument`, `WrapperPermission`, `WrapperApprovalMode`
 - `crates/shared-protocol/src/entities.rs` — `ResourceRecord`, `WrapperResourcePairRecord`, `EntityCreator` (first-class entities with provenance)
 - `crates/shared-store/src/service.rs` — mTLS HTTPS backend client
 - `web/src/router.tsx` — TanStack Router setup; the SPA's auth/bootstrap guard lives here
@@ -196,7 +196,16 @@ on backward compatibility concerns.
 **Two-stage wrapper chain:**
 `underwrap-exec` (setgid) → pipe fd 3 → `underwrap-ns` (cap_sys_admin) → target in PID namespace
 
-**Identity model:** wrapper socket selects expected wrapper + setgid group → `SO_PEERCRED` effective GID → daemon confirms the match; daemon resolves the GID-validated peer UID to a username via `getpwuid` and consults the per-store grant `(wrapper, host, user)`.
+**Identity model:** wrapper socket selects expected wrapper + setgid group → `SO_PEERCRED` effective GID → daemon confirms the match; daemon resolves the GID-validated peer UID to a username via `getpwuid` and consults the per-store grant `(client_instance, wrapper, resource)`.
+
+**One resource per wrapper (frontend invariant):** each `WrapperDef` in
+the frontend config projects exactly one backend resource. The resource
+itself still has all three projection slots (`env`, `files`, `libsecret`);
+the wrapper opts into the subset it needs. The backend keeps full
+`(wrapper, resource)` granularity in the pair table and the grant key —
+collapsing the grant key would let a frontend-side config edit silently
+redirect an existing authorization to a different secret, which is the
+trust-boundary reason for the asymmetry.
 
 **Central backend:** the frontend daemon connects outbound to
 `underwrap-backendd` over HTTPS with mTLS. The backend holds secrets, the
@@ -208,13 +217,13 @@ the same listener as the JSON admin API.
 
 **Multi-instance:** `services.underwrap.instances.<name>` — fully isolated users, groups, sockets.
 
-**Grant model:** the per-store policy document is a flat list of
-`AgentGrant` rows keyed by `(wrapper, host, user)` plus a single
-global `writes_enabled` toggle. Each grant carries one of four modes
-(`Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`,
-`PerCallApproval { approval_key }`). Read access through an active
-grant is unconditional; write access (admin + wrapper) gates on the
-global `writes_enabled` flag.
+**Wrapper permission model:** the per-store policy document is a flat
+list of `WrapperPermission` rows keyed by
+`(client_instance, wrapper, resource)`. Each permission carries one of
+four modes (`Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`,
+`PerCallApproval { approval_key }`) and a per-permission `writable:
+bool` flag. Read access through an active permission is unconditional;
+write access is decided per-permission.
 
 **Libsecret mode:** When `libsecret = true` on a wrapper:
 
@@ -242,14 +251,14 @@ PID + mount namespace (created by underwrap-ns)
 
 See `docs/security.md` "Design invariants" and "Secretsd channel" for security analysis.
 
-**Per-call approval** (when the grant for `(wrapper, host, user)` is in `PerCallApproval` mode):
+**Per-call approval** (when the permission for `(client_instance, wrapper, resource)` is in `PerCallApproval` mode):
 
 1. underwrap-exec connects and sends `WrapperRequest::Read`
-2. underwrapd consults the grant and responds with
+2. underwrapd consults the permission and responds with
    `WrapperResponse::ApprovalRequired { challenge_id, nonce, approval_key }`
 3. underwrap-exec signs the nonce via `SSH_AUTH_SOCK` and sends
    `WrapperRequest::ApprovalProof { challenge_id, signature, public_key_blob }`
-4. underwrapd verifies the signature against the grant's `approval_key`,
+4. underwrapd verifies the signature against the permission's `approval_key`,
    consumes the nonce, and re-authorizes the read with the mode gate
    bypassed
 5. The usual `ReadOk` / scoped-channel flow continues
@@ -267,14 +276,15 @@ when the channel closes.
 `WrapperResourcePairRecord` carries `last_used_at` (bumped on every
 successful runtime read) and `files_mount_paths` (refreshed from the
 wrapper config on every daemon startup register). The admin SPA's
-Wrappers matrix shows the relative-time label; the Secrets browser
-uses the mount paths to render `<mount>/<inner>` next to each file
-entry.
+Wrapper permissions table shows the relative-time label; the Secrets
+browser uses the mount paths to render `<mount>/<inner>` next to each
+file entry.
 
 The namespace's bind-mounted directory and tmpfs staging dir are
-**always read-write** to the target, regardless of grant. The backend
-remains the sole authority for write authorization: when an
-end-of-run writeback is rejected on a read-only grant, the wrapper
+**always read-write** to the target, regardless of the wrapper
+permission. The backend remains the sole authority for write
+authorization: when an end-of-run writeback is rejected on a
+read-only permission, the wrapper
 emits one structured journal event plus one stderr line per affected
 resource (suppressible via `UNDERWRAP_SUPPRESS_READONLY_WARNING=1`).
 secretsd applies the same warning UX to libsecret writes; the D-Bus

@@ -123,10 +123,6 @@ export async function apiJson<T>(
 // running `cargo test --workspace` instead.
 
 import type {
-  AdminAgentGrantDeleteRequest,
-  AdminAgentGrantUpsertRequest,
-  AdminAgentGrantsListRequest,
-  AdminAgentGrantsListResponse,
   AdminClientInstanceActionState,
   AdminClientInstanceCreateRequest,
   AdminClientInstanceDetailResponse,
@@ -134,7 +130,6 @@ import type {
   AdminClientInstancesListResponse,
   AdminClientInstanceStatus,
   AdminClientInstanceUpdateRequest,
-  AdminGrantKey,
   AdminOkResponse,
   AdminOkUserResponse,
   AdminPairCreateRequest,
@@ -174,7 +169,11 @@ import type {
   AdminUserRole,
   AdminUserUpdateRequest,
   AdminUsersListResponse,
-  AgentGrant,
+  AdminWrapperPermissionDeleteRequest,
+  AdminWrapperPermissionKey,
+  AdminWrapperPermissionUpsertRequest,
+  AdminWrapperPermissionsListRequest,
+  AdminWrapperPermissionsListResponse,
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
@@ -185,14 +184,11 @@ import type {
   ServiceWrapperResourcePair,
   WhoamiResponse,
   WrapperApprovalMode,
+  WrapperPermission,
   WrapperResourcePairRecord,
 } from "@/api/types";
 
 export type {
-  AdminAgentGrantDeleteRequest,
-  AdminAgentGrantUpsertRequest,
-  AdminAgentGrantsListRequest,
-  AdminAgentGrantsListResponse,
   AdminClientInstanceActionState,
   AdminClientInstanceCreateRequest,
   AdminClientInstanceDetailResponse,
@@ -200,7 +196,6 @@ export type {
   AdminClientInstancesListResponse,
   AdminClientInstanceStatus,
   AdminClientInstanceUpdateRequest,
-  AdminGrantKey,
   AdminOkResponse,
   AdminOkUserResponse,
   AdminPairCreateRequest,
@@ -240,7 +235,11 @@ export type {
   AdminUserRole,
   AdminUserUpdateRequest,
   AdminUsersListResponse,
-  AgentGrant,
+  AdminWrapperPermissionDeleteRequest,
+  AdminWrapperPermissionKey,
+  AdminWrapperPermissionUpsertRequest,
+  AdminWrapperPermissionsListRequest,
+  AdminWrapperPermissionsListResponse,
   BootstrapRequest,
   BootstrapResponse,
   BootstrapStatusResponse,
@@ -251,6 +250,7 @@ export type {
   ServiceWrapperResourcePair,
   WhoamiResponse,
   WrapperApprovalMode,
+  WrapperPermission,
   WrapperResourcePairRecord,
 };
 
@@ -428,21 +428,24 @@ export function postPasswordChange(
   });
 }
 
-// ----- Agent grants (ticket 246) -----
+// ----- Wrapper permissions -----
 
-export function postGrantsList(
-  body: AdminAgentGrantsListRequest,
-): Promise<AdminAgentGrantsListResponse> {
-  return apiJson<AdminAgentGrantsListResponse>("/v1/admin/grants/list", {
-    method: "POST",
-    json: body,
-  });
+export function postWrapperPermissionsList(
+  body: AdminWrapperPermissionsListRequest,
+): Promise<AdminWrapperPermissionsListResponse> {
+  return apiJson<AdminWrapperPermissionsListResponse>(
+    "/v1/admin/wrapper-permissions/list",
+    {
+      method: "POST",
+      json: body,
+    },
+  );
 }
 
-export function postGrantUpsert(
-  body: AdminAgentGrantUpsertRequest,
+export function postWrapperPermissionUpsert(
+  body: AdminWrapperPermissionUpsertRequest,
 ): Promise<AdminOkResponse> {
-  return apiJson<AdminOkResponse>("/v1/admin/grants/upsert", {
+  return apiJson<AdminOkResponse>("/v1/admin/wrapper-permissions/upsert", {
     method: "POST",
     json: body,
   });
@@ -495,10 +498,10 @@ export function postSecretDelete(
   });
 }
 
-export function postGrantDelete(
-  body: AdminAgentGrantDeleteRequest,
+export function postWrapperPermissionDelete(
+  body: AdminWrapperPermissionDeleteRequest,
 ): Promise<AdminOkResponse> {
-  return apiJson<AdminOkResponse>("/v1/admin/grants/delete", {
+  return apiJson<AdminOkResponse>("/v1/admin/wrapper-permissions/delete", {
     method: "POST",
     json: body,
   });
