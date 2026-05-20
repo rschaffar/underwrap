@@ -7,8 +7,20 @@ export type AdminStoreActionState = {
 can_edit_metadata: boolean, 
 /**
  * Whether this principal may rotate the store's master key.
+ * Rotation requires the store to be encrypted **and** currently
+ * unlocked.
  */
 can_rotate_key: boolean, 
+/**
+ * Whether this principal may unlock the store. True only for
+ * encrypted stores that are currently locked.
+ */
+can_unlock: boolean, 
+/**
+ * Whether this principal may lock the store. True only for
+ * encrypted stores that are currently unlocked.
+ */
+can_lock: boolean, 
 /**
  * Whether a plain DELETE is currently allowed.
  */

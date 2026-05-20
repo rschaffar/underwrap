@@ -111,10 +111,7 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         .await
         .unwrap();
 
-    let blocked = daemon
-        .delete_resource("test", &resource_id)
-        .await
-        .unwrap();
+    let blocked = daemon.delete_resource("test", &resource_id).await.unwrap();
     assert!(
         !blocked.ok,
         "delete should be refused while dependents exist"
@@ -154,10 +151,7 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         resp.text().await.unwrap_or_default(),
     );
 
-    let ok = daemon
-        .delete_resource("test", &resource_id)
-        .await
-        .unwrap();
+    let ok = daemon.delete_resource("test", &resource_id).await.unwrap();
     assert!(ok.ok, "delete should succeed after blockers cleared");
 
     daemon.stop().await.unwrap();

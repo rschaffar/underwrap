@@ -13,10 +13,10 @@ id: string,
  */
 name: string, backend: AdminStoreBackendKind, dir: string, 
 /**
- * Set when the backend is `encrypted` — the path to the master
- * key file. Never echo the key contents.
+ * `true` if this is an encrypted store with no master key loaded.
+ * Plain stores are never locked.
  */
-key_file?: string, description?: string, created_at?: bigint, 
+locked: boolean, description?: string, created_at?: bigint, 
 /**
  * On-disk path of the backend-managed store registry file that
  * owns this record.

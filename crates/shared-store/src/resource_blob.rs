@@ -406,16 +406,9 @@ mod tests {
         // one nonce per write, so this is also the "one nonce per
         // resource per save" assertion in disguise. (Ticket 405.)
         let tmp = tempfile::TempDir::new().unwrap();
-        let key_path = tmp.path().join("master.key");
         let key: [u8; 32] = rand::random();
-        std::fs::write(&key_path, key).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
         let dir = tmp.path().join("secrets");
-        let backend = crate::EncryptedBackend::open(&dir, &key_path).unwrap();
+        let backend = crate::EncryptedBackend::open_with_key(&dir, key).unwrap();
 
         save_resource_blob(&backend, "github/token", &sample_blob("a")).unwrap();
         save_resource_blob(&backend, "aws/creds", &sample_blob("b")).unwrap();

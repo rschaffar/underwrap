@@ -60,7 +60,6 @@ pub struct TestDaemon {
 /// `key` is this constant.
 const FIXTURE_ENV_KEY: &str = "TEST_TOKEN";
 
-
 impl TestDaemon {
     /// Start a daemon with the given wrapper definitions.
     pub async fn start(wrappers: HashMap<String, WrapperDef>) -> Result<Self> {
@@ -112,8 +111,6 @@ impl TestDaemon {
         let instances_file = base.join("client-instances.json");
         let stores_data_root = base.join("stores-data-root");
         std::fs::create_dir_all(&stores_data_root)?;
-        let keys_dir = base.join("keys");
-        std::fs::create_dir_all(&keys_dir)?;
         let test_store = underwrap_protocol::config::StoreRecord {
             id: "test".to_string(),
             name: "test".to_string(),
@@ -168,7 +165,6 @@ impl TestDaemon {
                 session_key_file: session_key_file.clone(),
                 session_lifetime_secs: None,
                 stores_data_root: Some(stores_data_root),
-                keys_dir: Some(keys_dir),
             }),
         };
         let backend_shutdown = Arc::new(Notify::new());

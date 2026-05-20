@@ -3,7 +3,7 @@
 /**
  * Storage backend kind a store uses. Kept as a flat enum so the
  * admin UI can switch on it without having to mirror the full
- * `StorageConfig` discriminant logic; the per-kind details
- * (`dir`, `key_file`) live on the detail response instead.
+ * `StorageConfig` discriminant logic; per-kind details (currently
+ * only `dir`) live on the detail response.
  */
 export type AdminStoreBackendKind = "plain" | "encrypted";

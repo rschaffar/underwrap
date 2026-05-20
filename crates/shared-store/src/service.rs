@@ -319,6 +319,11 @@ async fn parse_error(response: reqwest::Response) -> anyhow::Error {
     let status = response.status();
     let text = response.text().await.unwrap_or_else(|_| String::new());
     if let Ok(error) = serde_json::from_str::<ServiceErrorResponse>(&text) {
+        if error.code == "store_locked" {
+            return anyhow::Error::new(ServiceStoreLocked {
+                message: error.message,
+            });
+        }
         anyhow::anyhow!(
             "backend service error {} ({}): {}",
             status,
@@ -329,6 +334,25 @@ async fn parse_error(response: reqwest::Response) -> anyhow::Error {
         anyhow::anyhow!("backend service error {}: {}", status, text)
     }
 }
+
+/// Typed error variant that the frontend daemon can downcast to in
+/// order to translate a backend `store_locked` HTTP error into the
+/// `ErrorCode::StoreLocked` wrapper response. Carrying it through
+/// `anyhow::Error::new(...)` keeps the rest of the storage error
+/// surface unchanged while preserving structured propagation for
+/// this one case.
+#[derive(Debug)]
+pub struct ServiceStoreLocked {
+    pub message: String,
+}
+
+impl std::fmt::Display for ServiceStoreLocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "backend store is locked: {}", self.message)
+    }
+}
+
+impl std::error::Error for ServiceStoreLocked {}
 
 impl StorageBackend for ServiceBackend {
     fn read(&self, secret_id: &str) -> Result<Option<SecretBytes>> {

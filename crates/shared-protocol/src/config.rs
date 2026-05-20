@@ -40,14 +40,16 @@ pub enum StorageConfig {
         #[serde(default = "default_storage_dir")]
         dir: PathBuf,
     },
-    /// Encrypted directory: secrets encrypted at rest with a master key.
-    /// The master key file must be readable only by the daemon user.
+    /// Encrypted directory: secrets encrypted at rest with a 32-byte
+    /// master key. The master key lives in process memory only — it is
+    /// generated once at store creation, returned to the operator once,
+    /// and never written to disk. Restarting the backend leaves every
+    /// encrypted store locked until an operator unlocks it via the
+    /// admin API.
     #[serde(rename = "encrypted")]
     Encrypted {
         #[serde(default = "default_storage_dir")]
         dir: PathBuf,
-        /// Path to the master key file (32 bytes, raw or hex-encoded).
-        key_file: PathBuf,
     },
 }
 

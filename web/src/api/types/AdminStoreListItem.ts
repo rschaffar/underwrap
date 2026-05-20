@@ -11,4 +11,9 @@ id: string,
 /**
  * Editable operator-facing display name.
  */
-name: string, backend: AdminStoreBackendKind, description?: string, created_at?: bigint, usage: AdminStoreUsageSummary, actions: AdminStoreActionState, };
+name: string, backend: AdminStoreBackendKind, description?: string, created_at?: bigint, 
+/**
+ * `true` if this is an encrypted store with no master key loaded.
+ * Plain stores are never locked.
+ */
+locked: boolean, usage: AdminStoreUsageSummary, actions: AdminStoreActionState, };

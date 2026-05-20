@@ -135,6 +135,10 @@ pub(super) fn process_read_for(
         let blob = match load_resource_blob(store.as_ref(), &resource_id) {
             Ok(b) => b,
             Err(e) => {
+                if let Some(locked) = e.downcast_ref::<underwrap_store::ServiceStoreLocked>() {
+                    error!(wrapper = %wrapper_name, resource = %resource_id, "backing store is locked");
+                    return error_result(ErrorCode::StoreLocked, locked.message.clone());
+                }
                 error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "resource blob load failed");
                 return error_result(ErrorCode::Internal, "internal storage error".to_string());
             }

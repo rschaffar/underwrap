@@ -9,6 +9,10 @@ pub enum ErrorCode {
     NotFound,
     Locked,
     Internal,
+    /// The targeted encrypted store is locked: the backend is running
+    /// but has no master key loaded for this store. An operator must
+    /// unlock it via the admin API before runtime requests can land.
+    StoreLocked,
 }
 
 impl WireEncode for ErrorCode {
@@ -18,6 +22,7 @@ impl WireEncode for ErrorCode {
             Self::NotFound => 1u8.encode(out),
             Self::Locked => 2u8.encode(out),
             Self::Internal => 3u8.encode(out),
+            Self::StoreLocked => 4u8.encode(out),
         }
     }
 }
@@ -29,6 +34,7 @@ impl WireDecode for ErrorCode {
             1 => Ok(Self::NotFound),
             2 => Ok(Self::Locked),
             3 => Ok(Self::Internal),
+            4 => Ok(Self::StoreLocked),
             other => Err(anyhow!("invalid error code discriminant: {other}")),
         }
     }

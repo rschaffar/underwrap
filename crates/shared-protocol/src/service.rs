@@ -249,8 +249,8 @@ pub struct ServiceErrorResponse {
 
 /// Storage backend kind a store uses. Kept as a flat enum so the
 /// admin UI can switch on it without having to mirror the full
-/// `StorageConfig` discriminant logic; the per-kind details
-/// (`dir`, `key_file`) live on the detail response instead.
+/// `StorageConfig` discriminant logic; per-kind details (currently
+/// only `dir`) live on the detail response.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
@@ -274,7 +274,15 @@ pub struct AdminStoreActionState {
     /// Whether this principal may edit the store metadata.
     pub can_edit_metadata: bool,
     /// Whether this principal may rotate the store's master key.
+    /// Rotation requires the store to be encrypted **and** currently
+    /// unlocked.
     pub can_rotate_key: bool,
+    /// Whether this principal may unlock the store. True only for
+    /// encrypted stores that are currently locked.
+    pub can_unlock: bool,
+    /// Whether this principal may lock the store. True only for
+    /// encrypted stores that are currently unlocked.
+    pub can_lock: bool,
     /// Whether a plain DELETE is currently allowed.
     pub can_delete_now: bool,
     /// Whether a force delete is currently allowed.
@@ -295,6 +303,9 @@ pub struct AdminStoreListItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub created_at: Option<u64>,
+    /// `true` if this is an encrypted store with no master key loaded.
+    /// Plain stores are never locked.
+    pub locked: bool,
     pub usage: AdminStoreUsageSummary,
     pub actions: AdminStoreActionState,
 }
@@ -314,11 +325,9 @@ pub struct AdminStoreDetailResponse {
     pub name: String,
     pub backend: AdminStoreBackendKind,
     pub dir: String,
-    /// Set when the backend is `encrypted` — the path to the master
-    /// key file. Never echo the key contents.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub key_file: Option<String>,
+    /// `true` if this is an encrypted store with no master key loaded.
+    /// Plain stores are never locked.
+    pub locked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub description: Option<String>,
@@ -357,15 +366,25 @@ pub struct AdminStoreCreateResponse {
 }
 
 /// Response from `POST /v1/admin/stores/{name}/rotate-key`. The new
-/// key is returned exactly once. `warning` documents the v1 rotation
-/// limitation: existing ciphertext encrypted with the previous key
-/// is no longer readable through this backend until the operator
-/// re-encrypts it offline.
+/// key is returned exactly once. Every resource in the store has
+/// been transparently re-encrypted under the new key before the
+/// response is sent; `warning` carries a one-line reminder that the
+/// operator is solely responsible for saving the new value (the
+/// backend does not store it on disk).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct AdminStoreRotateKeyResponse {
     pub key_hex: String,
     pub warning: String,
+}
+
+/// Body of `POST /v1/admin/stores/{id}/unlock`. The operator pastes
+/// in the 64-character hex master key that was issued at store
+/// creation (or rotation). Whitespace around the value is tolerated.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct AdminStoreUnlockRequest {
+    pub key_hex: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

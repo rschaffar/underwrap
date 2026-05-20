@@ -64,21 +64,10 @@ pub struct AdminConfig {
     /// creation (returns `data_root_not_configured`).
     #[serde(default)]
     pub stores_data_root: Option<PathBuf>,
-    /// Directory under which the admin API writes master-key files
-    /// for encrypted dynamic stores (ticket 234). Each encrypted
-    /// store gets one key file at `<keys_dir>/<store>.key`, mode
-    /// 0600. Defaults to [`DEFAULT_KEYS_DIR`].
-    #[serde(default)]
-    pub keys_dir: Option<PathBuf>,
 }
 
 /// Default location of the backend-managed store-registry file.
 pub const DEFAULT_STORES_FILE: &str = "/var/lib/underwrap-backend/stores.json";
-
-/// Default location of the master-key directory the admin API writes
-/// to when creating encrypted stores. One file per store at
-/// `<keys_dir>/<store-id>.key`, mode 0600.
-pub const DEFAULT_KEYS_DIR: &str = "/var/lib/underwrap-backend/keys";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
@@ -134,21 +123,113 @@ pub struct LoadedStoreRecord {
     pub record: StoreRecord,
 }
 
+/// Live lock-state of one store. Plain stores are constructed as
+/// [`StoreState::Unlocked`] at startup and stay there for the
+/// lifetime of the process. Encrypted stores boot as
+/// [`StoreState::Locked`] and only transition to `Unlocked` after an
+/// operator submits the master key via `POST .../unlock`. Dropping the
+/// `Arc<dyn StorageBackend>` zeroizes the held `MasterKey`.
+pub enum StoreState {
+    Unlocked(Arc<dyn StorageBackend>),
+    Locked,
+}
+
+impl StoreState {
+    pub fn is_locked(&self) -> bool {
+        matches!(self, StoreState::Locked)
+    }
+
+    pub fn backend(&self) -> Option<&Arc<dyn StorageBackend>> {
+        match self {
+            StoreState::Unlocked(b) => Some(b),
+            StoreState::Locked => None,
+        }
+    }
+}
+
+/// Reason a `StoreRegistry` lookup failed. Translated to HTTP at the
+/// handler boundary: `NotFound → 404`, `Locked → 503 / store_locked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryLookupError {
+    NotFound,
+    Locked,
+}
+
 /// Open backends + provenance metadata for every store visible to the
 /// admin API. Wrapped in an `RwLock` inside [`AdminRuntimeState`] so
-/// the CRUD handlers in ticket 231 can mutate it without rebooting
-/// the daemon. Readers (overview, secret-read, …) take the read
-/// guard and clone out the `Arc<dyn StorageBackend>` they need.
+/// the CRUD handlers can mutate it without rebooting the daemon.
+/// Readers consult [`StoreRegistry::unlocked_backend`] to fetch the
+/// live `Arc<dyn StorageBackend>` for a store and surface
+/// [`RegistryLookupError::Locked`] when the store hasn't been
+/// unlocked yet.
 pub struct StoreRegistry {
-    pub open: HashMap<String, Arc<dyn StorageBackend>>,
+    pub state: HashMap<String, StoreState>,
     pub records: HashMap<String, LoadedStoreRecord>,
 }
 
 impl StoreRegistry {
     pub fn new() -> Self {
         Self {
-            open: HashMap::new(),
+            state: HashMap::new(),
             records: HashMap::new(),
+        }
+    }
+
+    /// Return the live backend for `store_id` if it is unlocked, or a
+    /// structured error otherwise. Used by every service / admin
+    /// handler that needs to touch backing storage.
+    pub fn unlocked_backend(
+        &self,
+        store_id: &str,
+    ) -> std::result::Result<Arc<dyn StorageBackend>, RegistryLookupError> {
+        match self.state.get(store_id) {
+            Some(StoreState::Unlocked(b)) => Ok(Arc::clone(b)),
+            Some(StoreState::Locked) => Err(RegistryLookupError::Locked),
+            None => Err(RegistryLookupError::NotFound),
+        }
+    }
+
+    /// `true` when the store exists in the registry and is currently
+    /// in the locked state. `false` for plain stores, for unlocked
+    /// encrypted stores, and for unknown ids.
+    pub fn is_locked(&self, store_id: &str) -> bool {
+        matches!(self.state.get(store_id), Some(StoreState::Locked))
+    }
+
+    /// Install an unlocked backend for `store_id`. Used after a
+    /// successful unlock or by store creation. Returns the previous
+    /// state so the caller can decide what to do (e.g. error out on
+    /// `Unlocked` to avoid a race on already-unlocked stores).
+    pub fn unlock(
+        &mut self,
+        store_id: &str,
+        backend: Arc<dyn StorageBackend>,
+    ) -> Option<StoreState> {
+        self.state
+            .insert(store_id.to_string(), StoreState::Unlocked(backend))
+    }
+
+    /// Transition `store_id` to the locked state, dropping any held
+    /// backend. Returns `true` when the store existed in the registry.
+    pub fn lock(&mut self, store_id: &str) -> bool {
+        if self.state.contains_key(store_id) {
+            self.state.insert(store_id.to_string(), StoreState::Locked);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Test-only: return the unlocked backend for `store_id`,
+    /// panicking with a helpful message if the store is locked or
+    /// unknown. Cuts down on noise in tests that already know the
+    /// store is unlocked because they just created it.
+    #[cfg(test)]
+    pub fn expect_unlocked(&self, store_id: &str) -> Arc<dyn StorageBackend> {
+        match self.state.get(store_id) {
+            Some(StoreState::Unlocked(b)) => Arc::clone(b),
+            Some(StoreState::Locked) => panic!("expected '{store_id}' to be unlocked"),
+            None => panic!("expected '{store_id}' in registry"),
         }
     }
 }
@@ -179,9 +260,12 @@ struct AdminRuntimeState {
     /// store's display name. `None` disables creation (returns
     /// `data_root_not_configured`).
     stores_data_root: Option<PathBuf>,
-    /// Directory where master-key files for encrypted dynamic stores
-    /// are written. One file per store, mode 0600. See ticket 234.
-    keys_dir: PathBuf,
+    /// Per-store rotation lock. Held for the duration of
+    /// `rotate-key` so that concurrent writes through the runtime
+    /// service do not land in the pre-swap data directory. Lazily
+    /// populated on first use; entries are never removed (the cost is
+    /// one `Mutex` per known store, which is negligible).
+    rotation_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Whether the browser-facing admin UI/API is enabled on the HTTPS
     /// listener. When false, `/v1/admin/*` and SPA routes return 404.
     admin_enabled: bool,
@@ -244,9 +328,9 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
     let client_instances_file = config.client_instances_file();
     let operators_file = config.operators_file();
     let definitions = load_store_records(&stores_file)?;
-    let stores = open_stores(&definitions)?;
+    let state_map = open_initial_stores(&definitions)?;
     let store_registry = Arc::new(std::sync::RwLock::new(StoreRegistry {
-        open: stores.clone(),
+        state: state_map,
         records: definitions.clone(),
     }));
     let client_instances = Arc::new(std::sync::RwLock::new(
@@ -275,9 +359,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             stores_file: stores_file.clone(),
             client_instances_file: client_instances_file.clone(),
             stores_data_root: admin_config.and_then(|cfg| cfg.stores_data_root.clone()),
-            keys_dir: admin_config
-                .and_then(|cfg| cfg.keys_dir.clone())
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_KEYS_DIR)),
+            rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: admin_config.is_some(),
             allowed_origins: admin_config.and_then(|cfg| cfg.allowed_origins.clone()),
             web_source: crate::web::WebAssetSource::from_env(),
@@ -296,7 +378,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             let snapshot = state.stores.read().unwrap();
             info!(
                 listen = %https_config.listen,
-                stores = snapshot.open.len(),
+                stores = snapshot.state.len(),
                 instances = state.client_instances.read().unwrap().len(),
                 admin = state.admin_enabled,
                 "backend HTTPS listener ready",
@@ -329,13 +411,32 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
     }
 }
 
-fn open_stores(
+/// Build the initial [`StoreState`] map for the on-disk store
+/// registry. Plain stores are opened immediately and inserted as
+/// [`StoreState::Unlocked`]. Encrypted stores are inserted as
+/// [`StoreState::Locked`] — the backend does not hold their master
+/// key, so they stay locked until an operator submits the key via
+/// `POST /v1/admin/stores/{id}/unlock`.
+fn open_initial_stores(
     definitions: &HashMap<String, LoadedStoreRecord>,
-) -> Result<HashMap<String, Arc<dyn StorageBackend>>> {
+) -> Result<HashMap<String, StoreState>> {
     let mut stores = HashMap::new();
     for (id, def) in definitions {
-        let store: Arc<dyn StorageBackend> = Arc::from(underwrap_store::open(&def.record.storage)?);
-        stores.insert(id.clone(), store);
+        let state = match &def.record.storage {
+            underwrap_protocol::config::StorageConfig::Plain { .. } => {
+                let backend: Arc<dyn StorageBackend> =
+                    Arc::from(underwrap_store::open(&def.record.storage)?);
+                StoreState::Unlocked(backend)
+            }
+            underwrap_protocol::config::StorageConfig::Encrypted { .. } => {
+                info!(
+                    store = %id,
+                    "encrypted store starts locked; awaiting POST /v1/admin/stores/{{id}}/unlock",
+                );
+                StoreState::Locked
+            }
+        };
+        stores.insert(id.clone(), state);
     }
     Ok(stores)
 }
@@ -477,15 +578,17 @@ fn validate_runtime_client_mappings(
 ) -> Result<()> {
     let registry = stores.read().unwrap();
     for instance in client_instances.read().unwrap().values() {
-        registry
-            .open
-            .get(&instance.current_store_id)
-            .with_context(|| {
-                format!(
-                    "runtime client instance '{}' references unknown store '{}'",
-                    instance.id, instance.current_store_id
-                )
-            })?;
+        // Existence is all we require here: the store may be locked
+        // (encrypted, no key yet) and that is still a valid mapping —
+        // runtime requests against a locked store surface
+        // `store_locked` at request time.
+        if !registry.records.contains_key(&instance.current_store_id) {
+            anyhow::bail!(
+                "runtime client instance '{}' references unknown store '{}'",
+                instance.id,
+                instance.current_store_id
+            );
+        }
     }
     Ok(())
 }
@@ -675,10 +778,19 @@ fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'sta
     }
 }
 
+/// Outcome of authenticating a runtime client request. Carries the
+/// authenticated instance id and the resolved store id; the live
+/// backend is looked up at request time so that lock/unlock
+/// transitions take effect immediately.
+struct RuntimeRequestPrincipal {
+    instance_id: String,
+    store_id: String,
+}
+
 fn resolve_runtime_client(
     state: &AdminRuntimeState,
     certs: &[rustls::pki_types::CertificateDer<'static>],
-) -> Result<(String, Arc<dyn StorageBackend>)> {
+) -> Result<RuntimeRequestPrincipal> {
     let cert = certs
         .first()
         .context("client did not present a certificate")?;
@@ -693,20 +805,21 @@ fn resolve_runtime_client(
         "runtime client instance '{}' is not active",
         instance.id
     );
-    let store = state
-        .stores
-        .read()
-        .unwrap()
-        .open
-        .get(&instance.current_store_id)
-        .with_context(|| {
-            format!(
-                "runtime client instance '{}' references unknown store '{}'",
-                instance.id, instance.current_store_id
-            )
-        })?
-        .clone();
-    Ok((instance.id.clone(), store))
+    // We deliberately don't fetch the backend Arc here — a store can
+    // legitimately be `Locked` for this principal, and the caller has
+    // to surface that as `store_locked`. Existence-only check.
+    let store_id = instance.current_store_id.clone();
+    if !state.stores.read().unwrap().records.contains_key(&store_id) {
+        anyhow::bail!(
+            "runtime client instance '{}' references unknown store '{}'",
+            instance.id,
+            store_id,
+        );
+    }
+    Ok(RuntimeRequestPrincipal {
+        instance_id: instance.id.clone(),
+        store_id,
+    })
 }
 
 #[cfg(test)]
@@ -807,7 +920,7 @@ async fn handle_service_request(
     state: Arc<AdminRuntimeState>,
     peer_certificates: Arc<Vec<rustls::pki_types::CertificateDer<'static>>>,
 ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
-    let (principal, store) = match resolve_runtime_client(&state, peer_certificates.as_ref()) {
+    let resolved = match resolve_runtime_client(&state, peer_certificates.as_ref()) {
         Ok(resolved) => resolved,
         Err(e) => {
             warn!(
@@ -820,6 +933,25 @@ async fn handle_service_request(
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
                 "runtime client is not currently authorized",
+            ));
+        }
+    };
+    let principal = resolved.instance_id;
+    let store = match state
+        .stores
+        .read()
+        .unwrap()
+        .unlocked_backend(&resolved.store_id)
+    {
+        Ok(b) => b,
+        Err(RegistryLookupError::Locked) => {
+            return Ok(store_locked_response(&resolved.store_id));
+        }
+        Err(RegistryLookupError::NotFound) => {
+            return Ok(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "runtime client mapping points at an unknown store",
             ));
         }
     };
@@ -1105,11 +1237,7 @@ fn runtime_read_gate(
 /// current wall-clock second. Idempotent at one-second resolution:
 /// the pairs document is only rewritten if the new timestamp differs
 /// from the stored one.
-fn bump_pair_last_used(
-    store: &dyn StorageBackend,
-    wrapper: &str,
-    resource_id: &str,
-) -> Result<()> {
+fn bump_pair_last_used(store: &dyn StorageBackend, wrapper: &str, resource_id: &str) -> Result<()> {
     let now = crate::operators::now_epoch_secs();
     let mut doc = load_pairs_document(store)?;
     let Some(pair) = doc
@@ -1220,6 +1348,20 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response<Ful
             code: code.to_string(),
             message: message.to_string(),
         },
+    )
+}
+
+/// Canonical 503 response for a request that targeted a known but
+/// locked encrypted store. The `code` field is what frontend daemons
+/// and the SPA switch on; the human-readable message names the
+/// store so an operator looking at logs can act on it.
+fn store_locked_response(store_id: &str) -> Response<Full<Bytes>> {
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "store_locked",
+        &format!(
+            "store '{store_id}' is locked; an administrator must unlock it before requests can land",
+        ),
     )
 }
 
@@ -1351,7 +1493,9 @@ fn validate_and_compose_secret_id(
         ));
     }
     Ok(underwrap_protocol::resource::compose_secret_id(
-        resource_id, slot, key,
+        resource_id,
+        slot,
+        key,
     ))
 }
 
@@ -1413,16 +1557,15 @@ fn handle_admin_secret_rename(
     operator: &str,
     body: underwrap_protocol::service::AdminSecretRenameRequest,
 ) -> Response<Full<Bytes>> {
-    let from_id =
-        match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.from_key) {
-            Ok(id) => id,
-            Err(resp) => return resp,
-        };
-    let to_id =
-        match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.to_key) {
-            Ok(id) => id,
-            Err(resp) => return resp,
-        };
+    let from_id = match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.from_key)
+    {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let to_id = match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.to_key) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let store = match admin_store(state, &body.store) {
         Ok(store) => store,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
@@ -1480,7 +1623,11 @@ fn handle_admin_secret_rename(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
     };
     if let Err(e) = save_resource_blob(store.as_ref(), &body.resource_id, &new_blob) {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &e.to_string(),
+        );
     }
     info!(
         audit = "secret_renamed",
@@ -1781,10 +1928,13 @@ fn admin_store(state: &AdminRuntimeState, store: &str) -> Result<Arc<dyn Storage
         .stores
         .read()
         .unwrap()
-        .open
-        .get(store)
-        .cloned()
-        .with_context(|| format!("unknown store '{store}'"))
+        .unlocked_backend(store)
+        .map_err(|e| match e {
+            RegistryLookupError::Locked => {
+                anyhow::anyhow!("store '{store}' is locked; unlock it before this admin operation")
+            }
+            RegistryLookupError::NotFound => anyhow::anyhow!("unknown store '{store}'"),
+        })
 }
 
 /// Resolve a store reference for an authenticated request. Returns
@@ -1809,9 +1959,10 @@ fn admin_store_for_principal(
             "unknown store",
         ));
     }
-    match state.stores.read().unwrap().open.get(store).cloned() {
-        Some(s) => Ok(s),
-        None => Err(error_response(
+    match state.stores.read().unwrap().unlocked_backend(store) {
+        Ok(s) => Ok(s),
+        Err(RegistryLookupError::Locked) => Err(store_locked_response(store)),
+        Err(RegistryLookupError::NotFound) => Err(error_response(
             StatusCode::NOT_FOUND,
             "not_found",
             "unknown store",
@@ -3028,7 +3179,9 @@ fn admin_store_usage(
             .count(),
     );
     let has_secrets = match store.list("") {
-        Ok(ids) => !ids.is_empty(),
+        Ok(ids) => ids
+            .iter()
+            .any(|id| id != underwrap_store::ENCRYPTED_CANARY_ID),
         Err(e) => {
             return Err(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3047,19 +3200,26 @@ fn admin_store_actions(
     principal: &crate::operators::Principal,
     loaded: &LoadedStoreRecord,
     usage: &AdminStoreUsageSummary,
+    locked: bool,
 ) -> AdminStoreActionState {
     let can_manage = principal.is_admin();
+    let is_encrypted = matches!(
+        &loaded.record.storage,
+        underwrap_protocol::config::StorageConfig::Encrypted { .. }
+    );
+    // Delete works for both locked and unlocked stores — we use the
+    // `has_secrets` flag only to choose between plain DELETE and
+    // force-DELETE. For locked stores we cannot inspect contents, so
+    // we conservatively offer force-DELETE only.
     let can_delete_without_force =
-        can_manage && usage.mapped_client_instance_count == 0 && !usage.has_secrets;
+        can_manage && usage.mapped_client_instance_count == 0 && !usage.has_secrets && !locked;
     let can_force_delete =
-        can_manage && usage.mapped_client_instance_count == 0 && usage.has_secrets;
+        can_manage && usage.mapped_client_instance_count == 0 && (usage.has_secrets || locked);
     AdminStoreActionState {
         can_edit_metadata: can_manage,
-        can_rotate_key: can_manage
-            && matches!(
-                &loaded.record.storage,
-                underwrap_protocol::config::StorageConfig::Encrypted { .. }
-            ),
+        can_rotate_key: can_manage && is_encrypted && !locked,
+        can_unlock: can_manage && is_encrypted && locked,
+        can_lock: can_manage && is_encrypted && !locked,
         can_delete_now: can_delete_without_force,
         can_force_delete,
     }
@@ -3067,6 +3227,7 @@ fn admin_store_actions(
 
 fn admin_store_list_item(
     loaded: &LoadedStoreRecord,
+    locked: bool,
     usage: AdminStoreUsageSummary,
     actions: AdminStoreActionState,
 ) -> AdminStoreListItem {
@@ -3076,6 +3237,7 @@ fn admin_store_list_item(
         backend: backend_kind(&loaded.record.storage),
         description: loaded.record.description.clone(),
         created_at: loaded.record.created_at,
+        locked,
         usage,
         actions,
     }
@@ -3084,24 +3246,22 @@ fn admin_store_list_item(
 fn admin_store_detail(
     stores_file: &Path,
     loaded: &LoadedStoreRecord,
+    locked: bool,
     usage: AdminStoreUsageSummary,
     actions: AdminStoreActionState,
 ) -> AdminStoreDetailResponse {
-    let (dir, key_file) = match &loaded.record.storage {
-        underwrap_protocol::config::StorageConfig::Plain { dir } => {
-            (dir.to_string_lossy().to_string(), None)
+    let dir = match &loaded.record.storage {
+        underwrap_protocol::config::StorageConfig::Plain { dir }
+        | underwrap_protocol::config::StorageConfig::Encrypted { dir } => {
+            dir.to_string_lossy().to_string()
         }
-        underwrap_protocol::config::StorageConfig::Encrypted { dir, key_file } => (
-            dir.to_string_lossy().to_string(),
-            Some(key_file.to_string_lossy().to_string()),
-        ),
     };
     AdminStoreDetailResponse {
         id: loaded.record.id.clone(),
         name: loaded.record.name.clone(),
         backend: backend_kind(&loaded.record.storage),
         dir,
-        key_file,
+        locked,
         description: loaded.record.description.clone(),
         created_at: loaded.record.created_at,
         source_path: stores_file.to_string_lossy().to_string(),
@@ -3110,31 +3270,57 @@ fn admin_store_detail(
     }
 }
 
+/// Usage summary for a store that we cannot currently inspect because
+/// it is locked. We surface zero secret count rather than guessing —
+/// the SPA's "is this safe to delete" hint then falls into the
+/// force-delete bucket and the operator gets a clear "unlock first
+/// or force-delete" decision.
+fn admin_store_usage_for_locked(
+    state: &AdminRuntimeState,
+    store_id: &str,
+) -> AdminStoreUsageSummary {
+    let mapped_client_instance_count = saturating_u32(
+        state
+            .client_instances
+            .read()
+            .unwrap()
+            .values()
+            .filter(|instance| instance.current_store_id == store_id)
+            .count(),
+    );
+    AdminStoreUsageSummary {
+        mapped_client_instance_count,
+        has_secrets: false,
+    }
+}
+
 fn handle_admin_stores_list(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
 ) -> Response<Full<Bytes>> {
-    let visible: Vec<(String, LoadedStoreRecord, Arc<dyn StorageBackend>)> = {
+    type Visible = (String, LoadedStoreRecord, Option<Arc<dyn StorageBackend>>);
+    let visible: Vec<Visible> = {
         let reg = state.stores.read().unwrap();
         reg.records
             .iter()
             .filter(|(id, _)| principal.has_store_access(id))
-            .filter_map(|(id, loaded)| {
-                reg.open
-                    .get(id)
-                    .cloned()
-                    .map(|handle| (id.clone(), loaded.clone(), handle))
+            .map(|(id, loaded)| {
+                let backend = reg.state.get(id).and_then(|s| s.backend()).cloned();
+                (id.clone(), loaded.clone(), backend)
             })
             .collect()
     };
     let mut items = Vec::with_capacity(visible.len());
     for (id, loaded, handle) in visible {
-        let usage = match admin_store_usage(state, &id, handle.as_ref()) {
-            Ok(usage) => usage,
-            Err(resp) => return resp,
+        let (usage, locked) = match handle {
+            Some(b) => match admin_store_usage(state, &id, b.as_ref()) {
+                Ok(usage) => (usage, false),
+                Err(resp) => return resp,
+            },
+            None => (admin_store_usage_for_locked(state, &id), true),
         };
-        let actions = admin_store_actions(principal, &loaded, &usage);
-        items.push(admin_store_list_item(&loaded, usage, actions));
+        let actions = admin_store_actions(principal, &loaded, &usage, locked);
+        items.push(admin_store_list_item(&loaded, locked, usage, actions));
     }
     items.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
     json_response(StatusCode::OK, &AdminStoresListResponse { items })
@@ -3149,30 +3335,34 @@ fn handle_admin_store_detail(
     if !principal.has_store_access(name) {
         return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
     }
-    let (loaded, handle) = {
+    let (loaded, handle, locked) = {
         let reg = state.stores.read().unwrap();
-        match (reg.records.get(name), reg.open.get(name).cloned()) {
-            (Some(loaded), Some(handle)) => (loaded.clone(), handle),
-            (Some(_), None) => {
+        let Some(loaded) = reg.records.get(name) else {
+            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
+        };
+        match reg.state.get(name) {
+            Some(StoreState::Unlocked(b)) => (loaded.clone(), Some(Arc::clone(b)), false),
+            Some(StoreState::Locked) => (loaded.clone(), None, true),
+            None => {
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal",
-                    "store metadata present but backend missing",
+                    "store metadata present but registry state missing",
                 );
-            }
-            (None, _) => {
-                return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
             }
         }
     };
-    let usage = match admin_store_usage(state, name, handle.as_ref()) {
-        Ok(usage) => usage,
-        Err(resp) => return resp,
+    let usage = match handle.as_ref() {
+        Some(b) => match admin_store_usage(state, name, b.as_ref()) {
+            Ok(usage) => usage,
+            Err(resp) => return resp,
+        },
+        None => admin_store_usage_for_locked(state, name),
     };
-    let actions = admin_store_actions(principal, &loaded, &usage);
+    let actions = admin_store_actions(principal, &loaded, &usage, locked);
     json_response(
         StatusCode::OK,
-        &admin_store_detail(&state.stores_file, &loaded, usage, actions),
+        &admin_store_detail(&state.stores_file, &loaded, locked, usage, actions),
     )
 }
 
@@ -3277,42 +3467,70 @@ fn do_admin_store_create(
         }
     }
 
-    let (storage, generated_key_hex) = match body.backend {
-        AdminStoreBackendKind::Plain => (
-            underwrap_protocol::config::StorageConfig::Plain {
+    let (storage, opened, generated_key_hex): (
+        underwrap_protocol::config::StorageConfig,
+        Arc<dyn StorageBackend>,
+        Option<String>,
+    ) = match body.backend {
+        AdminStoreBackendKind::Plain => {
+            let storage = underwrap_protocol::config::StorageConfig::Plain {
                 dir: validated_dir.clone(),
-            },
-            None,
-        ),
-        AdminStoreBackendKind::Encrypted => {
-            let key_file = state.keys_dir.join(format!("{}.key", store_id));
-            if key_file.exists() {
+            };
+            if let Err(e) = create_data_dir_secure(&validated_dir) {
                 return error_response(
-                    StatusCode::CONFLICT,
-                    "key_file_exists",
-                    &format!(
-                        "refusing to overwrite existing key file at {} — remove it manually if you intended to recreate this store",
-                        key_file.display(),
-                    ),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "create_data_dir_failed",
+                    &format!("creating data dir {}: {e:#}", validated_dir.display()),
                 );
             }
-            let key_hex = match generate_master_key_atomic(&key_file) {
-                Ok(hex) => hex,
+            let backend: Arc<dyn StorageBackend> = match underwrap_store::open(&storage) {
+                Ok(b) => Arc::from(b),
                 Err(e) => {
                     return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        "key_generation_failed",
-                        &format!("generating master key at {}: {e:#}", key_file.display()),
+                        "open_store_failed",
+                        &format!("opening store backend after create: {e:#}"),
                     );
                 }
             };
-            (
-                underwrap_protocol::config::StorageConfig::Encrypted {
-                    dir: validated_dir.clone(),
-                    key_file,
-                },
-                Some(key_hex),
-            )
+            (storage, backend, None)
+        }
+        AdminStoreBackendKind::Encrypted => {
+            if let Err(e) = create_data_dir_secure(&validated_dir) {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "create_data_dir_failed",
+                    &format!("creating data dir {}: {e:#}", validated_dir.display()),
+                );
+            }
+            let key_bytes = generate_master_key_bytes();
+            let key_hex = master_key_hex(&key_bytes);
+            let backend =
+                match underwrap_store::EncryptedBackend::open_with_key(&validated_dir, key_bytes) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "open_store_failed",
+                            &format!("opening encrypted store backend after create: {e:#}"),
+                        );
+                    }
+                };
+            if let Err(e) = backend.write(
+                underwrap_store::ENCRYPTED_CANARY_ID,
+                underwrap_store::ENCRYPTED_CANARY_PLAINTEXT,
+            ) {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "canary_write_failed",
+                    &format!("writing unlock canary for new encrypted store: {e:#}"),
+                );
+            }
+            let backend: Arc<dyn StorageBackend> = Arc::new(backend);
+            let storage = underwrap_protocol::config::StorageConfig::Encrypted {
+                dir: validated_dir.clone(),
+            };
+            (storage, backend, Some(key_hex))
         }
     };
 
@@ -3324,36 +3542,15 @@ fn do_admin_store_create(
         storage,
     };
 
-    if let Err(e) = create_data_dir_secure(&validated_dir) {
-        rollback_generated_key(&record.storage);
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "create_data_dir_failed",
-            &format!("creating data dir {}: {e:#}", validated_dir.display()),
-        );
-    }
-
-    let opened: Arc<dyn StorageBackend> = match underwrap_store::open(&record.storage) {
-        Ok(b) => Arc::from(b),
-        Err(e) => {
-            rollback_generated_key(&record.storage);
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "open_store_failed",
-                &format!("opening store backend after create: {e:#}"),
-            );
-        }
-    };
-
     let loaded = LoadedStoreRecord { record };
     {
         let mut reg = state.stores.write().unwrap();
-        reg.open.insert(store_id.clone(), opened);
+        reg.state
+            .insert(store_id.clone(), StoreState::Unlocked(opened));
         reg.records.insert(store_id.clone(), loaded.clone());
         if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
-            reg.open.remove(&store_id);
+            reg.state.remove(&store_id);
             reg.records.remove(&store_id);
-            rollback_generated_key(&loaded.record.storage);
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "write_store_registry_failed",
@@ -3366,81 +3563,29 @@ fn do_admin_store_create(
         mapped_client_instance_count: 0,
         has_secrets: false,
     };
-    let actions = admin_store_actions(principal, &loaded, &usage);
+    let actions = admin_store_actions(principal, &loaded, &usage, false);
     json_response(
         StatusCode::OK,
         &AdminStoreCreateResponse {
-            store: admin_store_detail(&state.stores_file, &loaded, usage, actions),
+            store: admin_store_detail(&state.stores_file, &loaded, false, usage, actions),
             key_hex: generated_key_hex,
         },
     )
 }
 
-/// Best-effort cleanup of an in-flight encrypted-store creation:
-/// drop the key file we just wrote so a failed YAML or backend-open
-/// step doesn't leave an orphan 0600 file in `keys_dir` for a store
-/// that never made it into the registry.
-fn rollback_generated_key(storage: &underwrap_protocol::config::StorageConfig) {
-    if let underwrap_protocol::config::StorageConfig::Encrypted { key_file, .. } = storage {
-        let _ = std::fs::remove_file(key_file);
-    }
-}
-
-/// Generate 32 fresh random bytes and atomically install them as the
-/// hex-encoded master key at `path` with mode 0600. The hex form is
-/// returned to the caller; the disk and the in-memory copy share the
-/// same bytes so we don't have to keep both around. The temp file
-/// lives in the same directory as `path` so `persist` is rename-only.
-fn generate_master_key_atomic(path: &Path) -> Result<String> {
+/// Generate 32 fresh random bytes via the OS RNG. The bytes are
+/// caller-owned and should be moved into either the [`EncryptedBackend`]
+/// (which zeroizes on drop) or the JSON response buffer — never both.
+fn generate_master_key_bytes() -> [u8; 32] {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
-    let key_hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    bytes
+}
 
-    let dir = path.parent().ok_or_else(|| {
-        anyhow::anyhow!("master key path {} has no parent directory", path.display())
-    })?;
-    // mkdir_p the keys dir if it's missing. 0700 keeps other users
-    // out even if the parent's default mode would be looser.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        if !dir.exists() {
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir)
-                .with_context(|| format!("creating keys dir {}", dir.display()))?;
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("creating keys dir {}", dir.display()))?;
-    }
-
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("creating temp key file in {}", dir.display()))?;
-    use std::io::Write;
-    tmp.write_all(key_hex.as_bytes())
-        .context("writing master key tempfile")?;
-    tmp.as_file()
-        .sync_all()
-        .context("fsync master key tempfile")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(tmp.path(), perms)
-            .with_context(|| format!("setting 0600 on {}", tmp.path().display()))?;
-    }
-    tmp.persist(path).map_err(|e| {
-        anyhow::anyhow!(
-            "atomically persisting master key to {}: {e}",
-            path.display()
-        )
-    })?;
-    Ok(key_hex)
+/// Hex-encode a 32-byte master key as 64 lowercase characters.
+fn master_key_hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(unix)]
@@ -3546,27 +3691,31 @@ fn do_admin_store_update(
     }
     write_admin_store_audit(state, principal, name, "store.update", "success");
     let loaded = LoadedStoreRecord { record: updated };
-    let handle = {
+    let (handle, locked) = {
         let reg = state.stores.read().unwrap();
-        match reg.open.get(name).cloned() {
-            Some(handle) => handle,
+        match reg.state.get(name) {
+            Some(StoreState::Unlocked(b)) => (Some(Arc::clone(b)), false),
+            Some(StoreState::Locked) => (None, true),
             None => {
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal",
-                    "store metadata present but backend missing",
+                    "store metadata present but registry state missing",
                 );
             }
         }
     };
-    let usage = match admin_store_usage(state, name, handle.as_ref()) {
-        Ok(usage) => usage,
-        Err(resp) => return resp,
+    let usage = match handle.as_ref() {
+        Some(b) => match admin_store_usage(state, name, b.as_ref()) {
+            Ok(usage) => usage,
+            Err(resp) => return resp,
+        },
+        None => admin_store_usage_for_locked(state, name),
     };
-    let actions = admin_store_actions(principal, &loaded, &usage);
+    let actions = admin_store_actions(principal, &loaded, &usage, locked);
     json_response(
         StatusCode::OK,
-        &admin_store_detail(&state.stores_file, &loaded, usage, actions),
+        &admin_store_detail(&state.stores_file, &loaded, locked, usage, actions),
     )
 }
 
@@ -3584,19 +3733,23 @@ fn handle_admin_store_delete(
             "only admins may delete stores",
         );
     }
-    let (store_handle, dir_for_hint) = {
+    let (store_handle, dir_for_hint, locked) = {
         let reg = state.stores.read().unwrap();
         let Some(loaded) = reg.records.get(name) else {
             return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
         };
-        let Some(handle) = reg.open.get(name).cloned() else {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "store metadata present but backend missing",
-            );
-        };
-        (handle, loaded.record.storage.dir().clone())
+        let dir = loaded.record.storage.dir().clone();
+        match reg.state.get(name) {
+            Some(StoreState::Unlocked(b)) => (Some(Arc::clone(b)), dir, false),
+            Some(StoreState::Locked) => (None, dir, true),
+            None => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "store metadata present but registry state missing",
+                );
+            }
+        }
     };
     if state
         .client_instances
@@ -3612,27 +3765,42 @@ fn handle_admin_store_delete(
         );
     }
 
-    let non_empty = match store_handle.list("") {
-        Ok(ids) => !ids.is_empty(),
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "list_store_failed",
-                &format!("checking store contents before delete: {e:#}"),
-            );
-        }
+    let non_empty = match store_handle.as_ref() {
+        Some(h) => match h.list("") {
+            Ok(ids) => ids
+                .iter()
+                .any(|id| id != underwrap_store::ENCRYPTED_CANARY_ID),
+            Err(e) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "list_store_failed",
+                    &format!("checking store contents before delete: {e:#}"),
+                );
+            }
+        },
+        // Locked encrypted store: we cannot inspect contents. Refuse
+        // unless the caller passed `force=true`, since deleting a
+        // store without confirming it's empty risks orphaning data
+        // the operator forgot about.
+        None => true,
     };
     if non_empty && !force {
-        return error_response(
-            StatusCode::CONFLICT,
-            "store_not_empty",
-            "store contains secrets; re-issue with `?force=true` to delete the record anyway",
-        );
+        let code = if locked {
+            "store_locked_use_force"
+        } else {
+            "store_not_empty"
+        };
+        let message = if locked {
+            "store is locked; contents cannot be inspected. re-issue with `?force=true` to delete the record anyway"
+        } else {
+            "store contains secrets; re-issue with `?force=true` to delete the record anyway"
+        };
+        return error_response(StatusCode::CONFLICT, code, message);
     }
 
     {
         let mut reg = state.stores.write().unwrap();
-        reg.open.remove(name);
+        reg.state.remove(name);
         reg.records.remove(name);
         if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
             return error_response(
@@ -3668,12 +3836,25 @@ fn handle_admin_store_delete(
     )
 }
 
-/// `POST /v1/admin/stores/{id}/rotate-key` — generate a fresh master
-/// key, replace the on-disk key file atomically, reopen the backend,
-/// persist the updated store record, and return the new key value
-/// **exactly once**. Plain stores reject the operation.
-#[allow(clippy::result_large_err)]
-fn handle_admin_store_rotate_key(
+/// Get or lazily create the rotation `Mutex` for `store_id`. Held for
+/// the duration of a rotation so concurrent writes wait until the new
+/// backend has fully replaced the old one.
+fn rotation_lock(state: &AdminRuntimeState, store_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = state.rotation_locks.lock().unwrap();
+    Arc::clone(
+        locks
+            .entry(store_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+    )
+}
+
+/// `POST /v1/admin/stores/{id}/rotate-key` — mint a fresh 32-byte
+/// master key in memory, re-encrypt every resource in the store under
+/// it, atomically swap the data directory, install the new backend in
+/// the registry, and return the new key **exactly once**. Plain stores
+/// reject the operation; locked encrypted stores must be unlocked
+/// first.
+async fn handle_admin_store_rotate_key(
     state: &AdminRuntimeState,
     principal: &crate::operators::Principal,
     name: &str,
@@ -3686,13 +3867,13 @@ fn handle_admin_store_rotate_key(
         );
     }
 
-    let (mut updated_record, key_file, dir) = {
+    let (mut updated_record, dir, current_backend) = {
         let reg = state.stores.read().unwrap();
         let Some(loaded) = reg.records.get(name) else {
             return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
         };
         let record = loaded.record.clone();
-        match record.storage.clone() {
+        let dir = match &record.storage {
             underwrap_protocol::config::StorageConfig::Plain { .. } => {
                 return error_response(
                     StatusCode::CONFLICT,
@@ -3700,31 +3881,155 @@ fn handle_admin_store_rotate_key(
                     "store is not encrypted; rotate-key only applies to encrypted backends",
                 );
             }
-            underwrap_protocol::config::StorageConfig::Encrypted { dir, key_file } => {
-                (record, key_file, dir)
+            underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.clone(),
+        };
+        match reg.state.get(name) {
+            Some(StoreState::Unlocked(b)) => (record, dir, Arc::clone(b)),
+            Some(StoreState::Locked) => {
+                return store_locked_response(name);
+            }
+            None => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "store metadata present but registry state missing",
+                );
             }
         }
     };
 
-    let key_hex = match generate_master_key_atomic(&key_file) {
-        Ok(hex) => hex,
-        Err(e) => {
-            write_admin_store_audit(state, principal, name, "store.rotate-key", "failure");
+    let rotate_lock = rotation_lock(state, name);
+    let _rotate_guard = rotate_lock.lock().await;
+
+    let new_key_bytes = generate_master_key_bytes();
+    let key_hex = master_key_hex(&new_key_bytes);
+
+    // Stage the re-encrypted blobs in a sibling temp directory and
+    // swap into place once every resource has migrated. The temp dir
+    // is colocated with the data dir so `rename` is atomic on the
+    // same filesystem.
+    let parent = match dir.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "key_generation_failed",
-                &format!("rotating master key at {}: {e:#}", key_file.display()),
+                "internal",
+                "encrypted store directory has no parent — cannot stage rotation",
             );
         }
     };
-
-    let new_backend: Arc<dyn StorageBackend> =
-        match underwrap_store::open(&underwrap_protocol::config::StorageConfig::Encrypted {
-            dir,
-            key_file: key_file.clone(),
-        }) {
-            Ok(b) => Arc::from(b),
+    let stage_name = format!(
+        ".rotating-{}-{}",
+        name,
+        master_key_hex(&generate_master_key_bytes())
+            .chars()
+            .take(16)
+            .collect::<String>()
+    );
+    let stage_dir = parent.join(&stage_name);
+    if let Err(e) = create_data_dir_secure(&stage_dir) {
+        write_admin_store_audit(state, principal, name, "store.rotate-key", "stage-failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rotate_stage_failed",
+            &format!(
+                "creating rotation staging dir {}: {e:#}",
+                stage_dir.display()
+            ),
+        );
+    }
+    let new_backend =
+        match underwrap_store::EncryptedBackend::open_with_key(&stage_dir, new_key_bytes) {
+            Ok(b) => b,
             Err(e) => {
+                let _ = std::fs::remove_dir_all(&stage_dir);
+                write_admin_store_audit(state, principal, name, "store.rotate-key", "stage-failed");
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "rotate_stage_failed",
+                    &format!("opening rotation staging backend: {e:#}"),
+                );
+            }
+        };
+
+    if let Err(resp) = reencrypt_into(
+        current_backend.as_ref(),
+        &new_backend,
+        &stage_dir,
+        state,
+        principal,
+        name,
+    ) {
+        return resp;
+    }
+
+    // Move the live data dir aside and swap the staged dir in. Both
+    // renames are individually atomic; we attempt to undo the first
+    // if the second fails so the registry's `Arc` never points at a
+    // backend whose directory has vanished.
+    let backup_dir = parent.join(format!("{stage_name}.replaced"));
+    if let Err(e) = std::fs::rename(&dir, &backup_dir) {
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        write_admin_store_audit(state, principal, name, "store.rotate-key", "swap-failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rotate_swap_failed",
+            &format!(
+                "moving live data dir aside ({} → {}): {e:#}",
+                dir.display(),
+                backup_dir.display(),
+            ),
+        );
+    }
+    if let Err(e) = std::fs::rename(&stage_dir, &dir) {
+        // Try to roll the first rename back so the live dir keeps
+        // pointing at usable ciphertext.
+        let _ = std::fs::rename(&backup_dir, &dir);
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        write_admin_store_audit(state, principal, name, "store.rotate-key", "swap-failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rotate_swap_failed",
+            &format!(
+                "promoting staged data dir ({} → {}): {e:#}",
+                stage_dir.display(),
+                dir.display(),
+            ),
+        );
+    }
+
+    // Open a fresh backend at the post-swap path so the registry
+    // ends up holding an `Arc` whose `dir` field matches the live
+    // directory. (Reusing `new_backend` would carry the staging
+    // path even though we just renamed it.)
+    let installed_key = generate_master_key_bytes(); // placeholder, immediately overwritten
+    let _ = installed_key; // keep clippy happy if it ever sees an unused let
+    let rotated_backend: Arc<dyn StorageBackend> = {
+        // Re-derive the in-memory key from the hex we already
+        // computed — that way we don't have to hold on to two
+        // copies of the byte form across the swap.
+        let bytes = match underwrap_store::parse_hex_key(&key_hex) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&backup_dir);
+                write_admin_store_audit(
+                    state,
+                    principal,
+                    name,
+                    "store.rotate-key",
+                    "reopen-failed",
+                );
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &format!("parsing fresh rotation key back from hex: {e:#}"),
+                );
+            }
+        };
+        match underwrap_store::EncryptedBackend::open_with_key(&dir, bytes) {
+            Ok(b) => Arc::new(b),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&backup_dir);
                 write_admin_store_audit(
                     state,
                     principal,
@@ -3735,18 +4040,27 @@ fn handle_admin_store_rotate_key(
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "open_store_failed",
-                    &format!("reopening store with new master key: {e:#}"),
+                    &format!("opening rotated backend at {}: {e:#}", dir.display()),
                 );
             }
-        };
-
-    updated_record.storage = underwrap_protocol::config::StorageConfig::Encrypted {
-        dir: updated_record.storage.dir().clone(),
-        key_file: key_file.clone(),
+        }
     };
+    // Best-effort cleanup of the old ciphertext directory now that
+    // the swap has succeeded.
+    if let Err(e) = std::fs::remove_dir_all(&backup_dir) {
+        warn!(
+            store = %name,
+            backup_dir = %backup_dir.display(),
+            err = format!("{e:#}"),
+            "rotation succeeded but old data dir could not be removed; left in place for manual cleanup",
+        );
+    }
+
+    updated_record.storage = underwrap_protocol::config::StorageConfig::Encrypted { dir };
     {
         let mut reg = state.stores.write().unwrap();
-        reg.open.insert(name.to_string(), new_backend);
+        reg.state
+            .insert(name.to_string(), StoreState::Unlocked(rotated_backend));
         if let Some(loaded) = reg.records.get_mut(name) {
             loaded.record = updated_record.clone();
         }
@@ -3764,12 +4078,287 @@ fn handle_admin_store_rotate_key(
         StatusCode::OK,
         &AdminStoreRotateKeyResponse {
             key_hex,
-            warning: "the previous master key has been replaced; secrets already \
-                     stored under this store remain encrypted with the old key and \
-                     cannot be decrypted through this backend. re-encrypt them \
-                     offline if you need to keep them readable."
-                .to_string(),
+            warning:
+                "every resource in this store has been re-encrypted under the new master key. \
+                 the new key is shown only here — record it now in a password manager or other \
+                 trusted store. you will need it to unlock this store after the next backend \
+                 restart."
+                    .to_string(),
         },
+    )
+}
+
+/// Copy every resource (and the canary) from `from` to `to`,
+/// transparently decrypting under the old key and re-encrypting under
+/// the new one. On any failure the staged data directory is removed
+/// and a structured error response is returned for the rotate handler
+/// to surface to the operator.
+#[allow(clippy::result_large_err)]
+fn reencrypt_into(
+    from: &dyn StorageBackend,
+    to: &dyn StorageBackend,
+    stage_dir: &Path,
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    store_name: &str,
+) -> std::result::Result<(), Response<Full<Bytes>>> {
+    let ids = match from.list("") {
+        Ok(ids) => ids,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(stage_dir);
+            write_admin_store_audit(
+                state,
+                principal,
+                store_name,
+                "store.rotate-key",
+                "list-failed",
+            );
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "rotate_list_failed",
+                &format!("listing existing resources for rotation: {e:#}"),
+            ));
+        }
+    };
+    // Make sure the canary is always present in the new backend even
+    // if the source store somehow lost it (e.g. operator deleted it
+    // by hand). Write it once up front; the loop below will skip its
+    // own re-write so we don't fight ourselves over the canary id.
+    if let Err(e) = to.write(
+        underwrap_store::ENCRYPTED_CANARY_ID,
+        underwrap_store::ENCRYPTED_CANARY_PLAINTEXT,
+    ) {
+        let _ = std::fs::remove_dir_all(stage_dir);
+        write_admin_store_audit(
+            state,
+            principal,
+            store_name,
+            "store.rotate-key",
+            "canary-write-failed",
+        );
+        return Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rotate_canary_failed",
+            &format!("writing canary in staged data dir: {e:#}"),
+        ));
+    }
+    for id in ids {
+        if id == underwrap_store::ENCRYPTED_CANARY_ID {
+            continue;
+        }
+        let material = match from.read(&id) {
+            Ok(Some(m)) => m,
+            Ok(None) => continue, // raced — gone
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(stage_dir);
+                write_admin_store_audit(
+                    state,
+                    principal,
+                    store_name,
+                    "store.rotate-key",
+                    "read-failed",
+                );
+                return Err(error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "rotate_read_failed",
+                    &format!("reading '{id}' for rotation: {e:#}"),
+                ));
+            }
+        };
+        if let Err(e) = to.write(&id, material.as_ref()) {
+            let _ = std::fs::remove_dir_all(stage_dir);
+            write_admin_store_audit(
+                state,
+                principal,
+                store_name,
+                "store.rotate-key",
+                "write-failed",
+            );
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "rotate_write_failed",
+                &format!("writing '{id}' to staged data dir: {e:#}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `POST /v1/admin/stores/{id}/unlock` — accept a 64-character hex
+/// master key from the operator, build a fresh `EncryptedBackend`
+/// against the store's data directory, verify the key by decrypting
+/// the unlock canary written at creation, and install the backend in
+/// the registry. Wrong keys never transition the registry to
+/// `Unlocked`; the registry stays `Locked` and the response surfaces a
+/// structured `key_mismatch` code.
+async fn handle_admin_store_unlock(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    name: &str,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may unlock stores",
+        );
+    }
+    let body = match parse_json_body::<underwrap_protocol::service::AdminStoreUnlockRequest>(
+        request,
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    do_admin_store_unlock(state, principal, name, body)
+}
+
+#[allow(clippy::result_large_err)]
+fn do_admin_store_unlock(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    name: &str,
+    body: underwrap_protocol::service::AdminStoreUnlockRequest,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may unlock stores",
+        );
+    }
+    let dir = {
+        let reg = state.stores.read().unwrap();
+        let Some(loaded) = reg.records.get(name) else {
+            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
+        };
+        match &loaded.record.storage {
+            underwrap_protocol::config::StorageConfig::Plain { .. } => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "store_not_encrypted",
+                    "plain stores are never locked",
+                );
+            }
+            underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.clone(),
+        }
+    };
+    match state.stores.read().unwrap().state.get(name) {
+        Some(StoreState::Unlocked(_)) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "already_unlocked",
+                "store is already unlocked",
+            );
+        }
+        Some(StoreState::Locked) => {}
+        None => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "store metadata present but registry state missing",
+            );
+        }
+    }
+    let key_bytes = match underwrap_store::parse_hex_key(&body.key_hex) {
+        Ok(k) => k,
+        Err(e) => {
+            write_admin_store_audit(state, principal, name, "store.unlock", "invalid-key-hex");
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_key_hex",
+                &format!("master key is not 64 hex characters: {e}"),
+            );
+        }
+    };
+    let backend = match underwrap_store::EncryptedBackend::open_with_key(&dir, key_bytes) {
+        Ok(b) => b,
+        Err(e) => {
+            write_admin_store_audit(state, principal, name, "store.unlock", "open-failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "open_store_failed",
+                &format!("opening encrypted store at {}: {e:#}", dir.display()),
+            );
+        }
+    };
+    match backend.read(underwrap_store::ENCRYPTED_CANARY_ID) {
+        Ok(Some(plain)) if plain.as_ref() == underwrap_store::ENCRYPTED_CANARY_PLAINTEXT => {}
+        Ok(Some(_)) => {
+            write_admin_store_audit(state, principal, name, "store.unlock", "canary-mismatch");
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "key_mismatch",
+                "submitted key decrypts the canary but to unexpected content; refusing to unlock",
+            );
+        }
+        Ok(None) => {
+            write_admin_store_audit(state, principal, name, "store.unlock", "canary-missing");
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "key_mismatch",
+                "store has no unlock canary; refusing to unlock under an unverifiable key",
+            );
+        }
+        Err(_) => {
+            write_admin_store_audit(state, principal, name, "store.unlock", "key-mismatch");
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "key_mismatch",
+                "submitted key did not decrypt the unlock canary",
+            );
+        }
+    }
+    {
+        let mut reg = state.stores.write().unwrap();
+        reg.unlock(name, Arc::new(backend));
+    }
+    write_admin_store_audit(state, principal, name, "store.unlock", "success");
+    json_response(StatusCode::OK, &serde_json::json!({ "ok": true }))
+}
+
+/// `POST /v1/admin/stores/{id}/lock` — drop the in-memory backend for
+/// `name`, transitioning the registry to [`StoreState::Locked`]. The
+/// held `MasterKey` zeroes on drop. Plain stores reject the
+/// operation; already-locked stores succeed as a no-op so the admin
+/// SPA can call this without racing the current state.
+#[allow(clippy::result_large_err)]
+fn handle_admin_store_lock(
+    state: &AdminRuntimeState,
+    principal: &crate::operators::Principal,
+    name: &str,
+) -> Response<Full<Bytes>> {
+    if !principal.is_admin() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only admins may lock stores",
+        );
+    }
+    let mut reg = state.stores.write().unwrap();
+    let Some(loaded) = reg.records.get(name) else {
+        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
+    };
+    if matches!(
+        loaded.record.storage,
+        underwrap_protocol::config::StorageConfig::Plain { .. }
+    ) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "store_not_encrypted",
+            "plain stores are never locked",
+        );
+    }
+    let was_locked = matches!(reg.state.get(name), Some(StoreState::Locked));
+    reg.lock(name);
+    drop(reg);
+    let result = if was_locked { "noop" } else { "success" };
+    write_admin_store_audit(state, principal, name, "store.lock", result);
+    json_response(
+        StatusCode::OK,
+        &serde_json::json!({ "ok": true, "was_locked": was_locked }),
     )
 }
 
@@ -4310,9 +4899,11 @@ fn drop_client_instance_permissions(
     store_id: &str,
     client_instance_id: &str,
 ) -> Result<()> {
-    let store = match state.stores.read().unwrap().open.get(store_id).cloned() {
-        Some(s) => s,
-        None => return Ok(()),
+    let store = match state.stores.read().unwrap().unlocked_backend(store_id) {
+        Ok(s) => s,
+        // Skip when locked or unknown — the unlock path will be the
+        // place to apply this kind of cleanup if it ever matters.
+        Err(_) => return Ok(()),
     };
     let mut doc = load_policy_document_or_default(store.as_ref())?;
     let before = doc.permissions.len();
@@ -5310,18 +5901,44 @@ async fn handle_admin_request(
     // Path-parameterised stores routes. Match them first so the
     // literal "/v1/admin/stores" dispatch below doesn't shadow them.
     //
-    // `/v1/admin/stores/{name}/rotate-key` is the only nested route;
-    // it must be matched before the generic single-segment matcher
-    // (which filters out any path containing '/').
-    if let Some(rest) = request.uri().path().strip_prefix("/v1/admin/stores/")
-        && let Some(name) = rest.strip_suffix("/rotate-key")
-        && !name.is_empty()
-        && !name.contains('/')
-    {
-        return Ok(match *request.method() {
-            Method::POST => handle_admin_store_rotate_key(&state, &principal, name),
-            _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
-        });
+    // Three nested routes today — `rotate-key`, `unlock`, `lock` —
+    // all match before the generic single-segment matcher (which
+    // filters out any path containing '/').
+    if let Some(rest) = request.uri().path().strip_prefix("/v1/admin/stores/") {
+        if let Some(name) = rest.strip_suffix("/rotate-key")
+            && !name.is_empty()
+            && !name.contains('/')
+        {
+            return Ok(match *request.method() {
+                Method::POST => handle_admin_store_rotate_key(&state, &principal, name).await,
+                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
+            });
+        }
+        if rest.ends_with("/unlock") || rest.ends_with("/lock") {
+            let (name, op) = if let Some(n) = rest.strip_suffix("/unlock") {
+                (n, "unlock")
+            } else {
+                (rest.strip_suffix("/lock").unwrap(), "lock")
+            };
+            if !name.is_empty() && !name.contains('/') {
+                let name_owned = name.to_string();
+                let is_post = request.method() == Method::POST;
+                if !is_post {
+                    return Ok(error_response(
+                        StatusCode::METHOD_NOT_ALLOWED,
+                        "method_not_allowed",
+                        "POST",
+                    ));
+                }
+                return Ok(match op {
+                    "unlock" => {
+                        handle_admin_store_unlock(&state, &principal, &name_owned, request).await
+                    }
+                    "lock" => handle_admin_store_lock(&state, &principal, &name_owned),
+                    _ => unreachable!(),
+                });
+            }
+        }
     }
     // Path-parameterised users routes (ticket 240).
     //
@@ -5462,14 +6079,21 @@ async fn handle_admin_request(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_secs())
                 .unwrap_or(0);
-            // Snapshot the open backends so we can release the read
-            // lock before doing I/O against each store.
+            // Snapshot the unlocked backends so we can release the
+            // read lock before doing I/O against each store. Locked
+            // encrypted stores are silently skipped — the SPA's
+            // overview already exposes their presence via the stores
+            // list endpoint, and probing them here would surface
+            // `store_locked` from a tile that the operator can't act
+            // on directly.
             let snapshot: Vec<(String, Arc<dyn StorageBackend>)> = {
                 let reg = state.stores.read().unwrap();
-                reg.open
+                reg.state
                     .iter()
                     .filter(|(name, _)| principal.has_store_access(name))
-                    .map(|(name, store)| (name.clone(), store.clone()))
+                    .filter_map(|(name, state)| {
+                        state.backend().map(|b| (name.clone(), Arc::clone(b)))
+                    })
                     .collect()
             };
             match snapshot
@@ -5534,16 +6158,19 @@ async fn handle_admin_request(
                 .await
             {
                 Ok(body) => match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match list_secret_entries(store.as_ref(), body.resource_id.as_deref())
-                    {
-                        Ok(entries) => json_response(
-                            StatusCode::OK,
-                            &underwrap_protocol::service::AdminSecretListResponse { entries },
-                        ),
-                        Err(e) => {
-                            error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
+                    Ok(store) => {
+                        match list_secret_entries(store.as_ref(), body.resource_id.as_deref()) {
+                            Ok(entries) => json_response(
+                                StatusCode::OK,
+                                &underwrap_protocol::service::AdminSecretListResponse { entries },
+                            ),
+                            Err(e) => error_response(
+                                StatusCode::BAD_REQUEST,
+                                "admin_error",
+                                &e.to_string(),
+                            ),
                         }
-                    },
+                    }
                     Err(resp) => resp,
                 },
                 Err(response) => response,
@@ -6268,16 +6895,20 @@ mod tests {
     }
 
     fn test_admin_state(stores: HashMap<String, Arc<dyn StorageBackend>>) -> AdminRuntimeState {
+        let state: HashMap<String, StoreState> = stores
+            .into_iter()
+            .map(|(id, b)| (id, StoreState::Unlocked(b)))
+            .collect();
         AdminRuntimeState {
             stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
-                open: stores,
+                state,
                 records: HashMap::new(),
             })),
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
             stores_data_root: None,
-            keys_dir: std::path::PathBuf::new(),
+            rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -6357,7 +6988,6 @@ mod tests {
             session_key_file: PathBuf::from("/dev/null"),
             session_lifetime_secs: None,
             stores_data_root: None,
-            keys_dir: None,
         };
         validate_admin_config(&cfg).expect("nonempty origins must be allowed");
     }
@@ -6369,7 +6999,6 @@ mod tests {
             session_key_file: PathBuf::from("/dev/null"),
             session_lifetime_secs: None,
             stores_data_root: None,
-            keys_dir: None,
         };
         let err = validate_admin_config(&cfg).unwrap_err();
         assert!(format!("{err:#}").contains("empty entry"));
@@ -6486,7 +7115,7 @@ mod tests {
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
             stores_data_root: None,
-            keys_dir: std::path::PathBuf::new(),
+            rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -6635,8 +7264,26 @@ mod tests {
         status: crate::runtime_clients::ClientInstanceStatus,
         store_id: &str,
     ) -> AdminRuntimeState {
-        let mut stores: HashMap<String, Arc<dyn StorageBackend>> = HashMap::new();
-        stores.insert(store_id.to_string(), Arc::new(MemTestStore::new()));
+        let mut state_map: HashMap<String, StoreState> = HashMap::new();
+        state_map.insert(
+            store_id.to_string(),
+            StoreState::Unlocked(Arc::new(MemTestStore::new())),
+        );
+        let mut records: HashMap<String, LoadedStoreRecord> = HashMap::new();
+        records.insert(
+            store_id.to_string(),
+            LoadedStoreRecord {
+                record: StoreRecord {
+                    id: store_id.to_string(),
+                    name: store_id.to_string(),
+                    description: None,
+                    created_at: None,
+                    storage: underwrap_protocol::config::StorageConfig::Plain {
+                        dir: PathBuf::from("/dev/null"),
+                    },
+                },
+            },
+        );
         let mut client_instances = HashMap::new();
         client_instances.insert(
             "inst_local".to_string(),
@@ -6656,14 +7303,14 @@ mod tests {
         );
         AdminRuntimeState {
             stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
-                open: stores,
-                records: HashMap::new(),
+                state: state_map,
+                records,
             })),
             client_instances: Arc::new(std::sync::RwLock::new(client_instances)),
             stores_file: PathBuf::new(),
             client_instances_file: PathBuf::new(),
             stores_data_root: None,
-            keys_dir: PathBuf::new(),
+            rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -6687,8 +7334,9 @@ mod tests {
             "work",
         );
         let cert = rustls::pki_types::CertificateDer::from(cert_der);
-        let (principal, _store) = resolve_runtime_client(&state, &[cert]).unwrap();
-        assert_eq!(principal, "inst_local");
+        let resolved = resolve_runtime_client(&state, &[cert]).unwrap();
+        assert_eq!(resolved.instance_id, "inst_local");
+        assert_eq!(resolved.store_id, "work");
     }
 
     #[test]
@@ -6830,7 +7478,7 @@ mod tests {
             stores_file: std::path::PathBuf::new(),
             client_instances_file: std::path::PathBuf::new(),
             stores_data_root: None,
-            keys_dir: std::path::PathBuf::new(),
+            rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -7252,15 +7900,13 @@ mod tests {
         std::fs::create_dir_all(&dynamic_dir).unwrap();
         let data_root = tmp.join("data");
         std::fs::create_dir_all(&data_root).unwrap();
-        let keys_dir = tmp.join("keys");
-        std::fs::create_dir_all(&keys_dir).unwrap();
         AdminRuntimeState {
             stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
             client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
             stores_file: tmp.join("stores.json"),
             client_instances_file: tmp.join("client-instances.json"),
             stores_data_root: Some(data_root),
-            keys_dir,
+            rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: true,
             allowed_origins: None,
             web_source: crate::web::WebAssetSource::Embedded,
@@ -7328,9 +7974,19 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     impl CollectBytesSync for Full<Bytes> {
         fn collect_bytes_simple(self) -> Vec<u8> {
             use http_body_util::BodyExt;
-            // The Full body has a single frame; drain via block_in_place.
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async { self.collect().await.unwrap().to_bytes().to_vec() })
+            // If we're already on a tokio runtime (e.g. inside a
+            // `#[tokio::test(flavor = "multi_thread")]` test) we cannot
+            // construct a nested Runtime — use `block_in_place` to
+            // escape the worker. Otherwise spin up a small runtime
+            // just for this drain.
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async { self.collect().await.unwrap().to_bytes().to_vec() })
+                })
+            } else {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async { self.collect().await.unwrap().to_bytes().to_vec() })
+            }
         }
     }
 
@@ -7547,7 +8203,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         // Drop a secret in so the store is non-empty.
         {
             let reg = state.stores.read().unwrap();
-            reg.open[&store_id]
+            reg.expect_unlocked(&store_id)
                 .write("greeting", &SecretBytes::from(b"hello".to_vec()))
                 .unwrap();
         }
@@ -7589,10 +8245,8 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(body["store"]["backend"], "plain");
     }
 
-    #[cfg(unix)]
     #[test]
-    fn create_encrypted_store_generates_key_with_0600_and_returns_it_once() {
-        use std::os::unix::fs::PermissionsExt;
+    fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         let p = admin_principal(&[]);
@@ -7617,23 +8271,44 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             "key_hex must be lowercase hex",
         );
 
-        // Key file is in state.keys_dir, named after the store id, mode 0600.
-        let key_path = state.keys_dir.join(format!("{}.key", store_id));
-        assert!(key_path.exists(), "key file must be created");
-        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "key file must be mode 0600, got {mode:o}");
-        let on_disk = std::fs::read_to_string(&key_path).unwrap();
-        assert_eq!(
-            on_disk, key_hex,
-            "key file contents must match returned key"
-        );
+        // No file under the test root survives the call with a
+        // `.key` suffix — the master key never touched disk. We walk
+        // manually rather than pull in a new dependency.
+        fn assert_no_key_files(dir: &std::path::Path) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    assert_no_key_files(&path);
+                } else {
+                    let name = entry.file_name();
+                    let name_lossy = name.to_string_lossy();
+                    assert!(
+                        !name_lossy.ends_with(".key"),
+                        "no on-disk .key file should exist after create; found {}",
+                        path.display(),
+                    );
+                }
+            }
+        }
+        assert_no_key_files(tmp.path());
 
-        // Subsequent detail GETs must NOT echo the key value. (The
-        // detail response carries the *path*, not the contents.)
+        // The unlock canary lives in the data directory under its
+        // reserved id; we read it back through the live registry
+        // backend so we know the key in memory still decrypts it.
+        let backend = state.stores.read().unwrap().expect_unlocked(&store_id);
+        let canary = backend
+            .read(underwrap_store::ENCRYPTED_CANARY_ID)
+            .unwrap()
+            .expect("canary must exist after create");
+        assert_eq!(canary.as_ref(), underwrap_store::ENCRYPTED_CANARY_PLAINTEXT);
+
+        // The detail response carries the data dir and `locked=false`
+        // but never echoes the key value.
         let resp = handle_admin_store_detail(&state, &p, &store_id);
         let body = response_body_json(resp);
         assert_eq!(body["backend"], "encrypted");
-        assert_eq!(body["key_file"], key_path.to_string_lossy().to_string());
+        assert_eq!(body["locked"], false);
         let body_str = serde_json::to_string(&body).unwrap();
         assert!(
             !body_str.contains(key_hex),
@@ -7641,10 +8316,8 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn rotate_key_replaces_key_and_returns_new_value_once() {
-        use std::os::unix::fs::PermissionsExt;
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         let p = admin_principal(&[]);
@@ -7662,22 +8335,45 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let store_id = create_body["store"]["id"].as_str().unwrap().to_string();
         let original_key = create_body["key_hex"].as_str().unwrap().to_string();
 
-        let resp = handle_admin_store_rotate_key(&state, &p, &store_id);
+        // Seed a known plaintext under the original key.
+        {
+            let backend = state.stores.read().unwrap().expect_unlocked(&store_id);
+            backend.write("greeting", b"hello").unwrap();
+        }
+
+        let resp = handle_admin_store_rotate_key(&state, &p, &store_id).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = response_body_json(resp);
         let new_key = body["key_hex"].as_str().unwrap().to_string();
         assert_ne!(new_key, original_key, "rotation must produce a fresh key");
         assert_eq!(new_key.len(), 64);
         assert!(
-            body["warning"].as_str().unwrap().contains("re-encrypt"),
-            "warning must mention the re-encryption limitation",
+            body["warning"]
+                .as_str()
+                .unwrap()
+                .contains("re-encrypted under the new master key"),
+            "warning must describe the re-encryption: {}",
+            body["warning"],
         );
 
-        // On-disk key file still 0600, contents = new key.
-        let key_path = state.keys_dir.join(format!("{}.key", store_id));
-        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-        assert_eq!(std::fs::read_to_string(&key_path).unwrap(), new_key);
+        // The active backend still decodes the same plaintext (now
+        // under the new key).
+        {
+            let backend = state.stores.read().unwrap().expect_unlocked(&store_id);
+            assert_eq!(
+                backend.read("greeting").unwrap().unwrap().as_ref(),
+                b"hello"
+            );
+            // Canary survived the rotation.
+            assert_eq!(
+                backend
+                    .read(underwrap_store::ENCRYPTED_CANARY_ID)
+                    .unwrap()
+                    .unwrap()
+                    .as_ref(),
+                underwrap_store::ENCRYPTED_CANARY_PLAINTEXT,
+            );
+        }
 
         // Detail GET still does not leak the key value.
         let resp = handle_admin_store_detail(&state, &p, &store_id);
@@ -7687,8 +8383,8 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert!(!body_str.contains(&original_key));
     }
 
-    #[test]
-    fn rotate_key_refuses_plain_store() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rotate_key_refuses_plain_store() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         let p = admin_principal(&[]);
@@ -7701,13 +8397,35 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 description: None,
             },
         );
-        let resp = handle_admin_store_rotate_key(&state, &p, &store_id);
+        let resp = handle_admin_store_rotate_key(&state, &p, &store_id).await;
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         assert_eq!(response_body_json(resp)["code"], "not_encrypted");
     }
 
-    #[test]
-    fn rotate_key_requires_admin_and_succeeds() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rotate_key_refuses_locked_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let store_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                description: None,
+            },
+        );
+        // Lock the store and confirm rotation refuses.
+        let resp = handle_admin_store_lock(&state, &p, &store_id);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = handle_admin_store_rotate_key(&state, &p, &store_id).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response_body_json(resp)["code"], "store_locked");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rotate_key_requires_admin_and_succeeds() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = crud_state(tmp.path());
         let p = admin_principal(&[]);
@@ -7722,11 +8440,234 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         );
         // Non-admin gets 403.
         let op = operator_principal(&[&store_id]);
-        let resp = handle_admin_store_rotate_key(&state, &op, &store_id);
+        let resp = handle_admin_store_rotate_key(&state, &op, &store_id).await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
-        let resp = handle_admin_store_rotate_key(&state, &p, &store_id);
+        let resp = handle_admin_store_rotate_key(&state, &p, &store_id).await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn unlock_round_trip_succeeds_with_correct_hex() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                description: None,
+            },
+        );
+        let body = response_body_json(resp);
+        let store_id = body["store"]["id"].as_str().unwrap().to_string();
+        let key_hex = body["key_hex"].as_str().unwrap().to_string();
+
+        // Simulate a restart by locking the store.
+        let resp = handle_admin_store_lock(&state, &p, &store_id);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(state.stores.read().unwrap().is_locked(&store_id));
+
+        let resp = do_admin_store_unlock(
+            &state,
+            &p,
+            &store_id,
+            underwrap_protocol::service::AdminStoreUnlockRequest { key_hex },
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(!state.stores.read().unwrap().is_locked(&store_id));
+    }
+
+    #[test]
+    fn unlock_rejects_wrong_hex_and_keeps_store_locked() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                description: None,
+            },
+        );
+        let store_id = response_body_json(resp)["store"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let resp = handle_admin_store_lock(&state, &p, &store_id);
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bogus_hex = "0".repeat(64);
+        let resp = do_admin_store_unlock(
+            &state,
+            &p,
+            &store_id,
+            underwrap_protocol::service::AdminStoreUnlockRequest { key_hex: bogus_hex },
+        );
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(response_body_json(resp)["code"], "key_mismatch");
+        assert!(state.stores.read().unwrap().is_locked(&store_id));
+    }
+
+    #[test]
+    fn unlock_rejects_invalid_hex_format() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                description: None,
+            },
+        );
+        let store_id = response_body_json(resp)["store"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let resp = handle_admin_store_lock(&state, &p, &store_id);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = do_admin_store_unlock(
+            &state,
+            &p,
+            &store_id,
+            underwrap_protocol::service::AdminStoreUnlockRequest {
+                key_hex: "not hex".into(),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_body_json(resp)["code"], "invalid_key_hex");
+    }
+
+    #[test]
+    fn unlock_refuses_plain_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let store_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                description: None,
+            },
+        );
+        let resp = do_admin_store_unlock(
+            &state,
+            &p,
+            &store_id,
+            underwrap_protocol::service::AdminStoreUnlockRequest {
+                key_hex: "0".repeat(64),
+            },
+        );
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_body_json(resp)["code"], "store_not_encrypted");
+    }
+
+    #[test]
+    fn unlock_refuses_already_unlocked_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                description: None,
+            },
+        );
+        let body = response_body_json(resp);
+        let store_id = body["store"]["id"].as_str().unwrap().to_string();
+        let key_hex = body["key_hex"].as_str().unwrap().to_string();
+        let resp = do_admin_store_unlock(
+            &state,
+            &p,
+            &store_id,
+            underwrap_protocol::service::AdminStoreUnlockRequest { key_hex },
+        );
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(response_body_json(resp)["code"], "already_unlocked");
+    }
+
+    #[test]
+    fn lock_transitions_unlocked_encrypted_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                description: None,
+            },
+        );
+        let store_id = response_body_json(resp)["store"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!state.stores.read().unwrap().is_locked(&store_id));
+        let resp = handle_admin_store_lock(&state, &p, &store_id);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(response_body_json(resp)["was_locked"], false);
+        assert!(state.stores.read().unwrap().is_locked(&store_id));
+        // Second call is a no-op success.
+        let resp = handle_admin_store_lock(&state, &p, &store_id);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(response_body_json(resp)["was_locked"], true);
+    }
+
+    #[test]
+    fn lock_refuses_plain_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let store_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                description: None,
+            },
+        );
+        let resp = handle_admin_store_lock(&state, &p, &store_id);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_body_json(resp)["code"], "store_not_encrypted");
+    }
+
+    #[test]
+    fn canary_is_hidden_from_admin_has_secrets_view() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let resp = do_admin_store_create(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "vault".into(),
+                backend: AdminStoreBackendKind::Encrypted,
+                description: None,
+            },
+        );
+        let store_id = response_body_json(resp)["store"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Fresh encrypted store has only the canary; admin view must
+        // not flag it as having secrets.
+        let detail = response_body_json(handle_admin_store_detail(&state, &p, &store_id));
+        assert_eq!(detail["usage"]["has_secrets"], false);
     }
 
     #[test]
@@ -7754,8 +8695,10 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         );
         {
             let reg = state.stores.read().unwrap();
-            reg.open[&plain_id].write("secret/item", b"value").unwrap();
-            reg.open[&encrypted_id]
+            reg.expect_unlocked(&plain_id)
+                .write("secret/item", b"value")
+                .unwrap();
+            reg.expect_unlocked(&encrypted_id)
                 .write("secret/item", b"value")
                 .unwrap();
         }
@@ -8161,10 +9104,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
             },
         );
         assert_eq!(resp.status(), StatusCode::CONFLICT);
-        assert_eq!(
-            response_body_json(resp)["code"],
-            "resource_already_exists"
-        );
+        assert_eq!(response_body_json(resp)["code"], "resource_already_exists");
     }
 
     #[test]
@@ -8204,9 +9144,10 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         assert_eq!(rename.status(), StatusCode::OK);
 
         // The new key holds the original material; the old key is gone.
-        let entries =
-            list_secret_entries(state.stores.read().unwrap().open[&store_id].as_ref(), None)
-                .unwrap();
+        let entries = {
+            let backend = state.stores.read().unwrap().expect_unlocked(&store_id);
+            list_secret_entries(backend.as_ref(), None).unwrap()
+        };
         let keys: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
         assert_eq!(keys, vec!["config.json"]);
     }
@@ -8271,13 +9212,18 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         {
             let reg = state.stores.read().unwrap();
             let blob_key = format!("{}/env/GH_TOKEN", resource_id);
-            write_legacy_secret(reg.open[&store_id].as_ref(), &blob_key, b"ghp_value").unwrap();
+            write_legacy_secret(
+                reg.expect_unlocked(&store_id).as_ref(),
+                &blob_key,
+                b"ghp_value",
+            )
+            .unwrap();
         }
         // A wrapper permission referencing the resource.
         {
             let reg = state.stores.read().unwrap();
             save_policy_document(
-                reg.open[&store_id].as_ref(),
+                reg.expect_unlocked(&store_id).as_ref(),
                 &PolicyDocument {
                     permissions: vec![WrapperPermission {
                         client_instance: "inst_a".into(),
@@ -8333,10 +9279,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         use underwrap_protocol::entities::{EntityCreator, WrapperResourcePairRecord};
         let tmp = tempfile::TempDir::new().unwrap();
         let (state, store_id) = entity_test_state_with_store(tmp.path());
-        let store_arc = {
-            let reg = state.stores.read().unwrap();
-            reg.open[&store_id].clone()
-        };
+        let store_arc = state.stores.read().unwrap().expect_unlocked(&store_id);
         let store: &dyn StorageBackend = store_arc.as_ref();
 
         let mut pairs = load_pairs_document(store).unwrap();
@@ -8379,10 +9322,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
     fn bump_pair_last_used_silent_when_no_pair() {
         let tmp = tempfile::TempDir::new().unwrap();
         let (state, store_id) = entity_test_state_with_store(tmp.path());
-        let store_arc = {
-            let reg = state.stores.read().unwrap();
-            reg.open[&store_id].clone()
-        };
+        let store_arc = state.stores.read().unwrap().expect_unlocked(&store_id);
         // No pair record for (gh, res_token) → no-op, no error.
         bump_pair_last_used(store_arc.as_ref(), "gh", "res_token").unwrap();
     }
@@ -8451,7 +9391,7 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         {
             let reg = state.stores.read().unwrap();
             save_policy_document(
-                reg.open[&store_id].as_ref(),
+                reg.expect_unlocked(&store_id).as_ref(),
                 &PolicyDocument {
                     permissions: vec![WrapperPermission {
                         client_instance: "inst_a".into(),

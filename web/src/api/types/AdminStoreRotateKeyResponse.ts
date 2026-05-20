@@ -2,9 +2,10 @@
 
 /**
  * Response from `POST /v1/admin/stores/{name}/rotate-key`. The new
- * key is returned exactly once. `warning` documents the v1 rotation
- * limitation: existing ciphertext encrypted with the previous key
- * is no longer readable through this backend until the operator
- * re-encrypts it offline.
+ * key is returned exactly once. Every resource in the store has
+ * been transparently re-encrypted under the new key before the
+ * response is sent; `warning` carries a one-line reminder that the
+ * operator is solely responsible for saving the new value (the
+ * backend does not store it on disk).
  */
 export type AdminStoreRotateKeyResponse = { key_hex: string, warning: string, };

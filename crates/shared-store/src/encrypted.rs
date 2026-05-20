@@ -1,4 +1,9 @@
 //! Encrypted file-based storage backend (ChaCha20-Poly1305).
+//!
+//! The 32-byte master key lives in process memory only — it is never
+//! written to disk. Callers obtain a key either by generating fresh
+//! random bytes (on store creation) or by parsing an operator-supplied
+//! hex string (on unlock). See [`crate::parse_hex_key`].
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -23,27 +28,12 @@ pub struct EncryptedBackend {
 }
 
 impl EncryptedBackend {
-    pub fn open(dir: &Path, key_file: &Path) -> Result<Self> {
-        // Verify key file permissions.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let meta = std::fs::metadata(key_file)
-                .with_context(|| format!("reading key file {}", key_file.display()))?;
-            let mode = meta.permissions().mode() & 0o777;
-            if mode & 0o077 != 0 {
-                bail!(
-                    "key file {} has insecure permissions {:#o} (must not be group/world readable)",
-                    key_file.display(),
-                    mode
-                );
-            }
-        }
-
-        let key = load_master_key(key_file)?;
+    /// Open the backend against `dir` using the in-memory `key`. The
+    /// caller's `key` is moved into the backend and zeroized on drop.
+    pub fn open_with_key(dir: &Path, key: [u8; 32]) -> Result<Self> {
         Ok(Self {
             dir: prepare_dir(dir)?,
-            key,
+            key: MasterKey(key),
         })
     }
 }
@@ -82,43 +72,6 @@ impl StorageBackend for EncryptedBackend {
             Err(e) => Err(e).with_context(|| format!("deleting secret {secret_id}")),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Key loading
-// ---------------------------------------------------------------------------
-
-fn load_master_key(path: &Path) -> Result<MasterKey> {
-    let mut raw = std::fs::read(path)
-        .with_context(|| format!("reading master key from {}", path.display()))?;
-
-    if raw.len() == 32 {
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&raw);
-        raw.zeroize();
-        return Ok(MasterKey(key));
-    }
-
-    let hex_str = std::str::from_utf8(&raw)
-        .context("master key file is not valid UTF-8")?
-        .trim();
-    if hex_str.len() == 64 {
-        let mut key = [0u8; 32];
-        for (i, byte) in key.iter_mut().enumerate() {
-            let s = hex_str
-                .get(i * 2..i * 2 + 2)
-                .with_context(|| format!("invalid hex in master key at position {}", i * 2))?;
-            *byte = u8::from_str_radix(s, 16)
-                .with_context(|| format!("invalid hex in master key at position {}", i * 2))?;
-        }
-        raw.zeroize();
-        return Ok(MasterKey(key));
-    }
-
-    bail!(
-        "master key must be 32 raw bytes or 64 hex characters, got {} bytes",
-        raw.len()
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -164,15 +117,8 @@ mod tests {
 
     fn test_backend() -> (tempfile::TempDir, EncryptedBackend) {
         let dir = tempfile::TempDir::new().unwrap();
-        let key_path = dir.path().join("master.key");
         let key: [u8; 32] = rand::random();
-        std::fs::write(&key_path, key).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
-        let backend = EncryptedBackend::open(&dir.path().join("secrets"), &key_path).unwrap();
+        let backend = EncryptedBackend::open_with_key(&dir.path().join("secrets"), key).unwrap();
         (dir, backend)
     }
 
@@ -216,33 +162,9 @@ mod tests {
         let (dir, b) = test_backend();
         b.write("tok", b"secret").unwrap();
 
-        let key_path = dir.path().join("other.key");
-        let key: [u8; 32] = rand::random();
-        std::fs::write(&key_path, key).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
-        let b2 = EncryptedBackend::open(&dir.path().join("secrets"), &key_path).unwrap();
+        let other_key: [u8; 32] = rand::random();
+        let b2 = EncryptedBackend::open_with_key(&dir.path().join("secrets"), other_key).unwrap();
         assert!(b2.read("tok").is_err());
-    }
-
-    #[test]
-    fn hex_key_file() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let key_path = dir.path().join("master.hex");
-        let key: [u8; 32] = rand::random();
-        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
-        std::fs::write(&key_path, format!("{hex}\n")).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
-        let b = EncryptedBackend::open(&dir.path().join("secrets"), &key_path).unwrap();
-        b.write("tok", b"hex_key_test").unwrap();
-        assert_eq!(b.read("tok").unwrap().unwrap(), b"hex_key_test");
     }
 
     #[test]

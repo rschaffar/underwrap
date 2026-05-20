@@ -86,7 +86,6 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
             session_key_file,
             session_lifetime_secs: None,
             stores_data_root: Some(base.join("stores-data-root")),
-            keys_dir: Some(base.join("keys")),
         }),
     })
     .unwrap();
@@ -224,7 +223,6 @@ async fn underwrapd_binary_start_and_read() {
             session_key_file: session_key_file.clone(),
             session_lifetime_secs: None,
             stores_data_root: None,
-            keys_dir: None,
         }),
     })
     .unwrap();

@@ -414,6 +414,11 @@ fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
             files_target_paths,
         } => (env, resource_id, access, libsecret, files_target_paths),
         WrapperResponse::Error { code, message } => {
+            if matches!(code, underwrap_protocol::message::ErrorCode::StoreLocked) {
+                bail!(
+                    "underwrap: backing store is locked; ask an administrator to unlock it ({message})"
+                );
+            }
             bail!("daemon denied request ({code:?}): {message}");
         }
         WrapperResponse::ApprovalRequired { .. } => {
