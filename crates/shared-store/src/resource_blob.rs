@@ -369,6 +369,124 @@ mod tests {
         assert!(!delete_resource_blob(&store, "r").unwrap());
     }
 
+    fn sample_blob(env_value: &str) -> ResourceBlob {
+        let mut blob = ResourceBlob::empty();
+        blob.env.insert("TOK".into(), SecretBytes::from(env_value));
+        blob
+    }
+
+    #[test]
+    fn plain_backend_one_file_per_resource() {
+        // Each saved resource lands as exactly one file on disk under
+        // the `resources/<id>` path — the atomic-blob storage shape
+        // for plain stores. (Ticket 405.)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("secrets");
+        let backend = crate::PlainBackend::open(&dir).unwrap();
+
+        save_resource_blob(&backend, "github/token", &sample_blob("a")).unwrap();
+        save_resource_blob(&backend, "aws/creds", &sample_blob("b")).unwrap();
+
+        let files: Vec<std::path::PathBuf> = walk_files(&dir.join("resources"))
+            .into_iter()
+            .map(|p| p.strip_prefix(&dir).unwrap().to_path_buf())
+            .collect();
+        let mut paths: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, vec!["resources/aws/creds", "resources/github/token"]);
+    }
+
+    #[test]
+    fn encrypted_backend_one_file_per_resource() {
+        // Same invariant on the encrypted backend: one file per
+        // resource keyed under `resources/<id>`. Encryption produces
+        // one nonce per write, so this is also the "one nonce per
+        // resource per save" assertion in disguise. (Ticket 405.)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let key_path = tmp.path().join("master.key");
+        let key: [u8; 32] = rand::random();
+        std::fs::write(&key_path, key).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let dir = tmp.path().join("secrets");
+        let backend = crate::EncryptedBackend::open(&dir, &key_path).unwrap();
+
+        save_resource_blob(&backend, "github/token", &sample_blob("a")).unwrap();
+        save_resource_blob(&backend, "aws/creds", &sample_blob("b")).unwrap();
+
+        let mut paths: Vec<String> = walk_files(&dir.join("resources"))
+            .into_iter()
+            .map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, vec!["resources/aws/creds", "resources/github/token"]);
+
+        // And the on-disk ciphertext is not the plain serialized blob.
+        let raw = std::fs::read(dir.join("resources/github/token")).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&raw).contains("\"TOK\""),
+            "plaintext leaked through encrypted backend",
+        );
+    }
+
+    #[test]
+    fn list_resources_prefix_returns_expected_set() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let backend = crate::PlainBackend::open(tmp.path()).unwrap();
+        save_resource_blob(&backend, "a/one", &sample_blob("a")).unwrap();
+        save_resource_blob(&backend, "a/two", &sample_blob("b")).unwrap();
+        save_resource_blob(&backend, "b/three", &sample_blob("c")).unwrap();
+
+        let mut ids = backend.list("resources").unwrap();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["resources/a/one", "resources/a/two", "resources/b/three"]
+        );
+    }
+
+    #[test]
+    fn read_prefixed_resources_returns_full_blobs() {
+        // Reading each `resources/<id>` entry yields the same bytes
+        // `to_canonical_bytes` produces — the storage layer doesn't
+        // re-serialize, just round-trips the canonical JCS bytes.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let backend = crate::PlainBackend::open(tmp.path()).unwrap();
+        let blob_a = sample_blob("a");
+        let blob_b = sample_blob("b");
+        save_resource_blob(&backend, "a/one", &blob_a).unwrap();
+        save_resource_blob(&backend, "b/two", &blob_b).unwrap();
+
+        let raw_a = backend.read("resources/a/one").unwrap().expect("present");
+        assert_eq!(Vec::<u8>::from(raw_a), blob_a.to_canonical_bytes().unwrap());
+        let raw_b = backend.read("resources/b/two").unwrap().expect("present");
+        assert_eq!(Vec::<u8>::from(raw_b), blob_b.to_canonical_bytes().unwrap());
+    }
+
+    fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        if !root.exists() {
+            return out;
+        }
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(p) = stack.pop() {
+            if p.is_dir() {
+                for entry in std::fs::read_dir(&p).unwrap() {
+                    stack.push(entry.unwrap().path());
+                }
+            } else {
+                out.push(p);
+            }
+        }
+        out
+    }
+
     fn populated_blob() -> ResourceBlob {
         let mut blob = ResourceBlob::empty();
         blob.env

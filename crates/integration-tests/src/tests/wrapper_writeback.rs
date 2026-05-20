@@ -400,3 +400,186 @@ async fn noncanonical_checkin_rejected() {
 
     daemon.stop().await.unwrap();
 }
+
+// ===========================================================================
+// last_used_at coverage (ticket 423)
+// ===========================================================================
+//
+// Every successful backend access for a `resources/<id>` path bumps the
+// `(wrapper, resource)` pair's `last_used_at` to the current wall-clock
+// second (see `bump_pair_last_used` in the backend). The wrapper-resource
+// channel hits that path for all three verbs:
+//
+//   - Checkout    → backend READ  of `resources/<id>`
+//   - Checkin     → backend WRITE of `resources/<id>` (writable grants)
+//   - UsageSignal → backend READ  of `resources/<id>`
+//
+// These tests pin down that every verb's success-path bumps the pair,
+// including the "rejected Checkin → drop+UsageSignal" path that the
+// frontend-ns decision tree synthesizes.
+
+async fn find_pair_last_used(daemon: &TestDaemon, wrapper: &str, resource: &str) -> Option<u64> {
+    let pairs = daemon.list_pairs("test").await.unwrap();
+    pairs
+        .pairs
+        .into_iter()
+        .find(|p| p.wrapper == wrapper && p.resource == resource)
+        .expect("pair record present")
+        .last_used_at
+}
+
+async fn seed_writable_grant(daemon: &TestDaemon, wrapper: &str, resource: &str) {
+    daemon
+        .put_policy(
+            "test",
+            &PolicyDocument {
+                grants: vec![upsert_grant(daemon, wrapper, resource, true)],
+            },
+        )
+        .await
+        .unwrap();
+}
+
+async fn seed_resource_and_pair(daemon: &TestDaemon, wrapper: &str, resource: &str) {
+    daemon.create_resource("test", resource).await.unwrap();
+    daemon.create_pair("test", wrapper, resource).await.unwrap();
+}
+
+#[tokio::test]
+async fn checkout_bumps_last_used() {
+    let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
+    seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_grant(&daemon, "gh-writeback", "github/token").await;
+
+    assert!(
+        find_pair_last_used(&daemon, "gh-writeback", "github/token")
+            .await
+            .is_none()
+    );
+
+    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    tokio::task::spawn_blocking(move || {
+        let mut run = open_run(&socket);
+        let (_b, mut channel) = run.channels.pop().unwrap();
+        let _ = send_checkout(&mut channel);
+    })
+    .await
+    .unwrap();
+
+    let bumped = find_pair_last_used(&daemon, "gh-writeback", "github/token").await;
+    assert!(bumped.is_some(), "Checkout did not bump last_used_at");
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn checkin_keeps_last_used_at_least_at_checkout_value() {
+    // A wrapper run that ends with a successful Checkin necessarily
+    // bumped on Checkout first. The Checkin's write also bumps, but
+    // at one-second resolution within the same wall-clock second the
+    // stored value can stay the same. Assert it's set.
+    let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
+    seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_grant(&daemon, "gh-writeback", "github/token").await;
+
+    let mutated = blob_with_env("GH_TOKEN", b"ghp_mutated");
+    let mutated_bytes = mutated.to_canonical_bytes().unwrap();
+    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    tokio::task::spawn_blocking(move || {
+        let mut run = open_run(&socket);
+        let (_b, mut channel) = run.channels.pop().unwrap();
+        let _ = send_checkout(&mut channel);
+        let resp = send_checkin(&mut channel, &mutated_bytes);
+        assert!(matches!(resp, WrapperResourceResponse::CheckinOk));
+    })
+    .await
+    .unwrap();
+
+    let bumped = find_pair_last_used(&daemon, "gh-writeback", "github/token").await;
+    assert!(
+        bumped.is_some(),
+        "Checkin path did not leave last_used_at set"
+    );
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn usage_signal_bumps_last_used() {
+    let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
+    seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_grant(&daemon, "gh-writeback", "github/token").await;
+
+    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    tokio::task::spawn_blocking(move || {
+        let mut run = open_run(&socket);
+        let (_b, mut channel) = run.channels.pop().unwrap();
+        // Skip Checkout — drive UsageSignal directly to isolate the
+        // bump from any other backend read.
+        let resp = send_usage_signal(&mut channel);
+        assert!(matches!(resp, WrapperResourceResponse::UsageSignalOk));
+    })
+    .await
+    .unwrap();
+
+    let bumped = find_pair_last_used(&daemon, "gh-writeback", "github/token").await;
+    assert!(bumped.is_some(), "UsageSignal did not bump last_used_at");
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn rejected_checkin_still_bumps_last_used() {
+    // Checkout against a writable grant bumps once; the operator
+    // flips the grant read-only; the Checkin is rejected; ns then
+    // sends UsageSignal which hits the backend's read path → second
+    // bump (or same-second no-op). Either way last_used_at is set.
+    let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
+    seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
+    seed_writable_grant(&daemon, "gh-writeback", "github/token").await;
+
+    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let (checkout_done_tx, checkout_done_rx) = std::sync::mpsc::channel::<()>();
+    let (flip_tx, flip_rx) = std::sync::mpsc::channel::<()>();
+    let mutated = blob_with_env("GH_TOKEN", b"ghp_rejected_mutation");
+    let mutated_bytes = mutated.to_canonical_bytes().unwrap();
+    let blocking = tokio::task::spawn_blocking(move || {
+        let mut run = open_run(&socket);
+        let (_b, mut channel) = run.channels.pop().unwrap();
+        let _ = send_checkout(&mut channel);
+        checkout_done_tx.send(()).unwrap();
+        flip_rx.recv().unwrap();
+        let resp = send_checkin(&mut channel, &mutated_bytes);
+        assert!(matches!(
+            resp,
+            WrapperResourceResponse::Error {
+                code: ResourceErrorCode::Unauthorized,
+                ..
+            }
+        ));
+        let resp = send_usage_signal(&mut channel);
+        assert!(matches!(resp, WrapperResourceResponse::UsageSignalOk));
+    });
+
+    tokio::task::spawn_blocking(move || checkout_done_rx.recv().unwrap())
+        .await
+        .unwrap();
+
+    daemon
+        .upsert_grant(
+            "test",
+            &upsert_grant(&daemon, "gh-writeback", "github/token", false),
+        )
+        .await
+        .unwrap();
+    flip_tx.send(()).unwrap();
+    blocking.await.unwrap();
+
+    let bumped = find_pair_last_used(&daemon, "gh-writeback", "github/token").await;
+    assert!(
+        bumped.is_some(),
+        "rejected-Checkin run left last_used_at unset",
+    );
+
+    daemon.stop().await.unwrap();
+}

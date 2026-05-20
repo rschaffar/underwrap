@@ -488,6 +488,26 @@ mod tests {
     }
 
     #[test]
+    fn checkin_rejects_unknown_schema_version() {
+        // Hand-crafted JCS-canonical bytes (keys sorted lexicographically)
+        // for an otherwise valid ResourceBlob carrying an unsupported
+        // schema version. ResourceBlob::from_canonical_bytes refuses
+        // unknown versions, so the channel surfaces InvalidRequest.
+        let store = MemStore::with_entries(&[]);
+        let bytes =
+            br#"{"env":{},"files":{},"libsecret":{"aliases":{},"collections":{}},"schema_version":999}"#
+                .to_vec();
+        let resp = handle_checkin(bytes, &store, &ctx_for(AccessMode::ReadWrite));
+        match resp {
+            WrapperResourceResponse::Error {
+                code: ResourceErrorCode::InvalidRequest,
+                ..
+            } => {}
+            other => panic!("expected InvalidRequest on unknown schema, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn usage_signal_is_a_no_op_read() {
         let store = MemStore::with_entries(&[("github/token/env/GH_TOKEN", b"ghp_old")]);
         let resp = handle_usage_signal(&store, "wrapper", "github/token");

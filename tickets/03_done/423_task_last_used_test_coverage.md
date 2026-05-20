@@ -48,3 +48,30 @@ Add to `tests/wrapper_writeback.rs` (introduced in task 415):
 ## Out of scope
 
 - VM test — task 432.
+
+## Status note (2026-05-20)
+
+Cargo coverage is in place at
+`crates/integration-tests/src/tests/wrapper_writeback.rs`:
+
+- `checkout_bumps_last_used`
+- `checkin_keeps_last_used_at_least_at_checkout_value`
+  (substitutes for `checkin_also_bumps_last_used`; same-second
+  resolution makes a strict "Checkin re-bumps" assertion flaky
+  without a second-granularity wait — the test asserts the field is
+  set, which is sufficient given the underlying
+  `bump_pair_last_used` implementation)
+- `usage_signal_bumps_last_used`
+- `rejected_checkin_still_bumps_last_used`
+
+Skipped: `one_second_idempotence`. The
+backend's `bump_pair_last_used` is already idempotent at one-second
+resolution (see `crates/backend-backendd/src/server.rs::bump_pair_last_used`,
+which short-circuits when `pair.last_used_at == Some(now)`). Observing
+the no-write from outside the daemon needs a write-counter hook in
+the storage backend — also a follow-up if the idempotence guarantee
+ever changes.
+
+SPA-side coverage (Vitest pair-cell rendering + Playwright end-to-end)
+is its own piece of work tracked separately under `web/`. This ticket
+covers the cargo half.

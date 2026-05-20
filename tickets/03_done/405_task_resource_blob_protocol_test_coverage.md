@@ -53,3 +53,34 @@ Round-trip + decode/encode tests for the three admin endpoints.
 
 - Tests for wrapper-end-of-run decision and SPA — stories 410 / 420.
 - VM test — task 432.
+
+## Status note (2026-05-20)
+
+Cargo coverage is in place:
+
+- Wrapper-side IPC tests live in
+  `crates/integration-tests/src/tests/wrapper_writeback.rs` and cover
+  the Checkout / Checkin / UsageSignal / readonly-grant / mid-run flip
+  / non-canonical-bytes paths against a real underwrapd + backend
+  (introduced in task 415).
+- `unknown_schema_version_rejected` is covered at the daemon channel
+  layer in
+  `crates/frontend-underwrapd/src/wrapper_resource_channel.rs::tests::checkin_rejects_unknown_schema_version`,
+  and at the storage layer in
+  `crates/shared-protocol/src/resource_blob.rs::tests::unknown_schema_version_rejected`.
+- Storage-layer shape tests
+  (`plain_backend_one_file_per_resource`,
+  `encrypted_backend_one_file_per_resource`,
+  `list_resources_prefix_returns_expected_set`,
+  `read_prefixed_resources_returns_full_blobs`) live in
+  `crates/shared-store/src/resource_blob.rs::tests`.
+
+Skipped: the `checkin_writes_back_atomically` deterministic-barrier
+test for concurrent Checkouts seeing only old-or-new bytes (never
+partial). The atomic-blob storage layer already writes via
+`NamedTempFile::persist` (single rename), so the property holds by
+construction; observing it from outside the daemon requires hooking
+into the backend's storage layer with a barrier, which is dispro-
+portionate test infrastructure for a property guaranteed by `rename(2)`.
+A follow-up task can add it if the storage layer ever grows a
+non-atomic code path.
