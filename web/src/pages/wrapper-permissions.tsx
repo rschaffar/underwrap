@@ -73,14 +73,6 @@ export function wrapperResourceKey(wr: WrapperResource): string {
   return `${wr.wrapper}|${wr.resource}`;
 }
 
-/** Format a u64 epoch (from ts-rs `bigint`) as a short local date. */
-function formatEpoch(epoch: bigint | number | undefined | null): string {
-  if (epoch === undefined || epoch === null) return "—";
-  const n = typeof epoch === "bigint" ? Number(epoch) : epoch;
-  if (!n) return "—";
-  return new Date(n * 1000).toLocaleDateString();
-}
-
 /** Format a u64 epoch as a relative time label ("3 min ago"). */
 export function formatRelativeFromEpoch(
   epoch: bigint | number | null | undefined,
@@ -106,13 +98,20 @@ function formatEpochFull(epoch: bigint | number | null | undefined): string {
   return new Date(n * 1000).toLocaleString();
 }
 
-/** Render an `EntityCreator` as a short human-readable label. */
-function describeCreator(creator: EntityCreator): string {
+/**
+ * Render an `EntityCreator` as a short human-readable label. When the
+ * creator is a runtime client instance, prefer the operator-facing
+ * display name resolved from `displayNameById` over the opaque id.
+ */
+function describeCreator(
+  creator: EntityCreator,
+  displayNameById?: Map<string, string>,
+): string {
   switch (creator.kind) {
     case "operator":
       return creator.username;
     case "client-instance":
-      return `client ${creator.id}`;
+      return `client ${displayNameById?.get(creator.id) ?? creator.id}`;
   }
 }
 
@@ -155,6 +154,28 @@ export function sortPairs(
       ? a.resource.localeCompare(b.resource)
       : a.wrapper.localeCompare(b.wrapper),
   );
+}
+
+/**
+ * Group pair records by resource, sorted by resource name, with each
+ * group's wrappers sorted by wrapper name. The page renders one table
+ * per group, with the resource shown as the section heading.
+ */
+export function groupPairsByResource(
+  pairs: WrapperResourcePairRecord[],
+): { resource: string; pairs: WrapperResourcePairRecord[] }[] {
+  const buckets = new Map<string, WrapperResourcePairRecord[]>();
+  for (const p of pairs) {
+    const arr = buckets.get(p.resource);
+    if (arr) arr.push(p);
+    else buckets.set(p.resource, [p]);
+  }
+  return [...buckets.entries()]
+    .map(([resource, group]) => ({
+      resource,
+      pairs: [...group].sort((a, b) => a.wrapper.localeCompare(b.wrapper)),
+    }))
+    .sort((a, b) => a.resource.localeCompare(b.resource));
 }
 
 export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProps) {
@@ -348,22 +369,28 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
             : " Ask an admin to add one, or enable auto-create for a client instance."}
         </p>
       ) : (
-        <PairsTable
-          pairs={pairRecords}
-          clientInstances={clientInstances}
-          displayNameById={displayNameById}
-          permissionIndex={permissionIndex}
-          isAdmin={isAdmin}
-          onCellClick={(wr, clientInstance, permission) =>
-            setEditing({
-              clientInstance,
-              wrapper: wr.wrapper,
-              resource: wr.resource,
-              permission,
-            })
-          }
-          onDeletePair={(pair) => setDeletingPair(pair)}
-        />
+        <div className="space-y-6">
+          {groupPairsByResource(pairRecords).map((group) => (
+            <ResourcePairsTable
+              key={group.resource}
+              resource={group.resource}
+              pairs={group.pairs}
+              clientInstances={clientInstances}
+              displayNameById={displayNameById}
+              permissionIndex={permissionIndex}
+              isAdmin={isAdmin}
+              onCellClick={(wr, clientInstance, permission) =>
+                setEditing({
+                  clientInstance,
+                  wrapper: wr.wrapper,
+                  resource: wr.resource,
+                  permission,
+                })
+              }
+              onDeletePair={(pair) => setDeletingPair(pair)}
+            />
+          ))}
+        </div>
       )}
 
       {editing ? (
@@ -419,7 +446,8 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
 
 // ---------- Subcomponents ----------
 
-function PairsTable({
+function ResourcePairsTable({
+  resource,
   pairs,
   clientInstances,
   displayNameById,
@@ -428,6 +456,7 @@ function PairsTable({
   onCellClick,
   onDeletePair,
 }: {
+  resource: string;
   pairs: WrapperResourcePairRecord[];
   clientInstances: string[];
   displayNameById: Map<string, string>;
@@ -441,121 +470,123 @@ function PairsTable({
   onDeletePair: (pair: WrapperResourcePairRecord) => void;
 }) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-(--color-line)">
-      <table className="min-w-full text-left text-sm">
-        <thead className="bg-(--color-surface-0)/60 text-xs uppercase tracking-wide text-(--color-muted)">
-          <tr>
-            <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
-              Wrapper
-            </th>
-            <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
-              Resource
-            </th>
-            <th className="bg-(--color-surface-0)/60 px-4 py-2 text-(--color-muted)">
-              Provenance
-            </th>
-            <th className="bg-(--color-surface-0)/60 px-4 py-2 text-(--color-muted)">
-              Last used
-            </th>
-            {clientInstances.map((c) => {
-              const displayName = displayNameById.get(c) ?? c;
+    <section
+      className="space-y-2"
+      data-testid={`wrappers-resource-table-${resource}`}
+    >
+      <h3 className="text-sm font-medium text-(--color-fg)">
+        Resource:{" "}
+        <code className="rounded bg-(--color-surface-1) px-1.5 py-0.5 text-xs">
+          {resource}
+        </code>
+      </h3>
+      <div className="overflow-x-auto rounded-xl border border-(--color-line)">
+        <table className="min-w-full text-left text-sm">
+          <thead className="bg-(--color-surface-0)/60 text-xs uppercase tracking-wide text-(--color-muted)">
+            <tr>
+              <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
+                Wrapper
+              </th>
+              <th className="bg-(--color-surface-0)/60 px-4 py-2 text-(--color-muted)">
+                Last used
+              </th>
+              {clientInstances.map((c) => {
+                const displayName = displayNameById.get(c) ?? c;
+                return (
+                  <th key={c} className="px-3 py-2" title={c}>
+                    <div className="font-medium text-(--color-fg)">
+                      {displayName}
+                    </div>
+                  </th>
+                );
+              })}
+              {isAdmin ? <th className="px-3 py-2" /> : null}
+            </tr>
+          </thead>
+          <tbody>
+            {pairs.map((pair) => {
+              const wr: WrapperResource = {
+                wrapper: pair.wrapper,
+                resource: pair.resource,
+              };
+              const provenance = `Created ${formatEpochFull(
+                pair.created_at,
+              )} by ${describeCreator(pair.created_by, displayNameById)}`;
               return (
-                <th key={c} className="px-3 py-2" title={c}>
-                  <div className="font-medium text-(--color-fg)">
-                    {displayName}
-                  </div>
-                </th>
+                <tr
+                  key={wrapperResourceKey(wr)}
+                  className="border-t border-(--color-line) align-middle"
+                >
+                  <th
+                    scope="row"
+                    className="sticky left-0 z-10 bg-(--color-surface-0)/40 px-4 py-3 text-left font-medium text-(--color-fg)"
+                    title={provenance}
+                    data-testid={`wrappers-provenance-${pair.wrapper}-${pair.resource}`}
+                  >
+                    {pair.wrapper}
+                  </th>
+                  <td
+                    className="px-4 py-3 text-xs text-(--color-muted)"
+                    title={`Last used: ${formatEpochFull(pair.last_used_at)}`}
+                    data-testid={`wrappers-last-used-${pair.wrapper}-${pair.resource}`}
+                  >
+                    {pair.last_used_at == null ? (
+                      <span className="opacity-60">never used</span>
+                    ) : (
+                      <>used {formatRelativeFromEpoch(pair.last_used_at)}</>
+                    )}
+                  </td>
+                  {clientInstances.map((c) => {
+                    const key = `${c}|${pair.wrapper}|${pair.resource}`;
+                    const permission = permissionIndex.get(key) ?? null;
+                    return (
+                      <td key={key} className="px-3 py-3">
+                        <button
+                          type="button"
+                          data-testid={`wrappers-cell-${pair.wrapper}-${pair.resource}-${c}`}
+                          onClick={() => onCellClick(wr, c, permission)}
+                          disabled={!isAdmin}
+                          className="min-h-11 min-w-[5rem] rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-1 text-xs hover:bg-(--color-surface-0) disabled:opacity-60"
+                        >
+                          <CellContent permission={permission} />
+                        </button>
+                      </td>
+                    );
+                  })}
+                  {isAdmin ? (
+                    <td className="px-3 py-3">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Delete pair ${pair.wrapper} / ${pair.resource}`}
+                        data-testid={`wrappers-delete-pair-${pair.wrapper}-${pair.resource}`}
+                        onClick={() => onDeletePair(pair)}
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden />
+                      </Button>
+                    </td>
+                  ) : null}
+                </tr>
               );
             })}
-            {isAdmin ? <th className="px-3 py-2" /> : null}
-          </tr>
-        </thead>
-        <tbody>
-          {pairs.map((pair) => {
-            const wr: WrapperResource = {
-              wrapper: pair.wrapper,
-              resource: pair.resource,
-            };
-            return (
-              <tr
-                key={wrapperResourceKey(wr)}
-                className="border-t border-(--color-line) align-middle"
-              >
-                <th
-                  scope="row"
-                  className="sticky left-0 z-10 bg-(--color-surface-0)/40 px-4 py-3 text-left font-medium text-(--color-fg)"
-                >
-                  {pair.wrapper}
-                </th>
-                <td className="px-4 py-3 text-(--color-muted)">{pair.resource}</td>
-                <td
-                  className="px-4 py-3 text-xs text-(--color-muted)"
-                  title={`Created ${new Date(
-                    Number(pair.created_at) * 1000,
-                  ).toISOString()} by ${describeCreator(pair.created_by)}`}
-                >
-                  by {describeCreator(pair.created_by)}
-                  <br />
-                  on {formatEpoch(pair.created_at)}
-                </td>
-                <td
-                  className="px-4 py-3 text-xs text-(--color-muted)"
-                  title={`Last used: ${formatEpochFull(pair.last_used_at)}`}
-                  data-testid={`wrappers-last-used-${pair.wrapper}-${pair.resource}`}
-                >
-                  {pair.last_used_at == null ? (
-                    <span className="opacity-60">never used</span>
-                  ) : (
-                    <>used {formatRelativeFromEpoch(pair.last_used_at)}</>
-                  )}
-                </td>
-                {clientInstances.map((c) => {
-                  const key = `${c}|${pair.wrapper}|${pair.resource}`;
-                  const permission = permissionIndex.get(key) ?? null;
-                  return (
-                    <td key={key} className="px-3 py-3">
-                      <button
-                        type="button"
-                        data-testid={`wrappers-cell-${pair.wrapper}-${pair.resource}-${c}`}
-                        onClick={() => onCellClick(wr, c, permission)}
-                        disabled={!isAdmin}
-                        className="min-h-11 min-w-[5rem] rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-1 text-xs hover:bg-(--color-surface-0) disabled:opacity-60"
-                      >
-                        <CellContent permission={permission} />
-                      </button>
-                    </td>
-                  );
-                })}
-                {isAdmin ? (
-                  <td className="px-3 py-3">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`Delete pair ${pair.wrapper} / ${pair.resource}`}
-                      data-testid={`wrappers-delete-pair-${pair.wrapper}-${pair.resource}`}
-                      onClick={() => onDeletePair(pair)}
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden />
-                    </Button>
-                  </td>
-                ) : null}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
+/**
+ * Absent permissions render as Locked — the same badge the explicit
+ * `Locked` mode uses. This collapses two "deny" states (no row vs. a
+ * row pinned to Locked) into a single visual: from the operator's
+ * perspective, both deny reads, and the dialog still lets them upgrade
+ * to a different mode.
+ */
 function CellContent({ permission }: { permission: WrapperPermission | null }) {
   if (!permission) {
-    return (
-      <span className="inline-flex items-center gap-1 text-(--color-muted)">
-        <Plus className="h-3 w-3" aria-hidden /> not granted
-      </span>
-    );
+    return <ModeBadge mode={{ kind: "locked" } as WrapperApprovalMode} />;
   }
   return <ModeBadge mode={permission.mode} />;
 }

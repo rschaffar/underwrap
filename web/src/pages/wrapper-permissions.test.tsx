@@ -5,6 +5,7 @@ import {
   ModeBadge,
   deriveClientInstances,
   formatRelativeFromEpoch,
+  groupPairsByResource,
   modeKind,
   sortPairs,
   wrapperResourceKey,
@@ -76,6 +77,28 @@ describe("derivation helpers", () => {
       "gh-authorized|github/token",
       "jira-readonly|jira/api",
     ]);
+  });
+
+  it("groupPairsByResource buckets by resource and sorts both axes", () => {
+    const shared: WrapperResourcePairRecord[] = [
+      ...pairs,
+      {
+        wrapper: "gh-cli",
+        resource: "github/token",
+        created_by: { kind: "operator", id: "op-1", username: "alice" },
+        created_at: 175n,
+        last_used_at: null,
+        files_mount_paths: [],
+      },
+    ];
+    const groups = groupPairsByResource(shared);
+    expect(groups.map((g) => g.resource)).toEqual([
+      "aws/prod",
+      "github/token",
+      "jira/api",
+    ]);
+    const github = groups.find((g) => g.resource === "github/token")!;
+    expect(github.pairs.map((p) => p.wrapper)).toEqual(["gh-authorized", "gh-cli"]);
   });
 
   it("formatRelativeFromEpoch renders 'never' for null/undefined/zero", () => {
