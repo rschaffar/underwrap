@@ -1369,7 +1369,7 @@ fn store_locked_response(store_id: &str) -> Response<Full<Bytes>> {
 /// Read a single per-key entry by translating through the resource
 /// blob layout. Falls back to raw `store.read` for non-slotted ids
 /// (reserved system documents).
-fn read_legacy_secret(store: &dyn StorageBackend, secret_id: &str) -> Result<Option<SecretBytes>> {
+fn read_resource_entry(store: &dyn StorageBackend, secret_id: &str) -> Result<Option<SecretBytes>> {
     let Some(parsed) = parse_secret_id(secret_id) else {
         return store.read(secret_id);
     };
@@ -1380,7 +1380,7 @@ fn read_legacy_secret(store: &dyn StorageBackend, secret_id: &str) -> Result<Opt
 
 /// Write a single per-key entry by load-modify-save against the
 /// resource blob.
-fn write_legacy_secret(store: &dyn StorageBackend, secret_id: &str, material: &[u8]) -> Result<()> {
+fn write_resource_entry(store: &dyn StorageBackend, secret_id: &str, material: &[u8]) -> Result<()> {
     let Some(parsed) = parse_secret_id(secret_id) else {
         return store.write(secret_id, material);
     };
@@ -1392,7 +1392,7 @@ fn write_legacy_secret(store: &dyn StorageBackend, secret_id: &str, material: &[
 }
 
 /// Delete a single per-key entry. Returns the existed flag.
-fn delete_legacy_secret(store: &dyn StorageBackend, secret_id: &str) -> Result<bool> {
+fn delete_resource_entry(store: &dyn StorageBackend, secret_id: &str) -> Result<bool> {
     let Some(parsed) = parse_secret_id(secret_id) else {
         return store.delete(secret_id);
     };
@@ -1408,7 +1408,7 @@ fn delete_legacy_secret(store: &dyn StorageBackend, secret_id: &str) -> Result<b
 
 /// List per-slot entries across the store, optionally restricted to a
 /// single resource. Returns structured `(resource, slot, key)` entries
-/// — the legacy flattened ids never leave the backend.
+/// — the flattened in-blob ids never leave the backend.
 fn list_secret_entries(
     store: &dyn StorageBackend,
     resource_filter: Option<&str>,
@@ -1530,7 +1530,7 @@ fn handle_admin_secret_write(
     // policy document gate wrapper-side writes only — admins can't
     // be locked out of their own backend.
 
-    match write_legacy_secret(store.as_ref(), &secret_id, &material) {
+    match write_resource_entry(store.as_ref(), &secret_id, &material) {
         Ok(()) => {
             info!(
                 audit = "secret_stored",
@@ -6199,7 +6199,7 @@ async fn handle_admin_request(
                         Err(resp) => return Ok(resp),
                     };
                 match admin_store_for_principal(&state, &principal, &body.store) {
-                    Ok(store) => match read_legacy_secret(store.as_ref(), &secret_id) {
+                    Ok(store) => match read_resource_entry(store.as_ref(), &secret_id) {
                         Ok(material) => json_response(
                             StatusCode::OK,
                             &underwrap_protocol::service::AdminSecretReadResponse {
@@ -6269,7 +6269,7 @@ async fn handle_admin_request(
                         Err(resp) => return Ok(resp),
                     };
                     match admin_store_for_principal(&state, &principal, &body.store) {
-                        Ok(store) => match delete_legacy_secret(store.as_ref(), &secret_id) {
+                        Ok(store) => match delete_resource_entry(store.as_ref(), &secret_id) {
                             Ok(existed) => json_response(
                                 StatusCode::OK,
                                 &underwrap_protocol::service::AdminSecretDeleteResponse { existed },
@@ -9555,13 +9555,13 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 resource_id: resource_id.clone(),
             },
         );
-        // A secret under the resource. The legacy per-slot in-blob
-        // entry key shape routes through the blob shim and ends up
-        // inside the `resources/<resource_id>` blob.
+        // A secret under the resource. The per-slot in-blob entry key
+        // shape routes through the blob shim and ends up inside the
+        // `resources/<resource_id>` blob.
         {
             let reg = state.stores.read().unwrap();
             let blob_key = format!("{}/env/GH_TOKEN", resource_id);
-            write_legacy_secret(
+            write_resource_entry(
                 reg.expect_unlocked(&store_id).as_ref(),
                 &blob_key,
                 b"ghp_value",
