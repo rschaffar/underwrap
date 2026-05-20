@@ -238,6 +238,13 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
     }
     return map;
   }, [clientInstancesList.data]);
+  const resourceNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of resources.data?.resources ?? []) {
+      map.set(r.id, r.name);
+    }
+    return map;
+  }, [resources.data]);
   const pairRecords = useMemo(
     () => sortPairs(pairs.data?.pairs ?? []),
     [pairs.data],
@@ -373,6 +380,7 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
           groups={groupPairsByResource(pairRecords)}
           clientInstances={clientInstances}
           displayNameById={displayNameById}
+          resourceNameById={resourceNameById}
           permissionIndex={permissionIndex}
           isAdmin={isAdmin}
           onCellClick={(wr, clientInstance, permission) =>
@@ -396,6 +404,9 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
           }
           wrapper={editing.wrapper}
           resourceId={editing.resource_id}
+          resourceName={
+            resourceNameById.get(editing.resource_id) ?? editing.resource_id
+          }
           existing={editing.permission}
           canEdit={isAdmin}
           onClose={() => setEditing(null)}
@@ -421,6 +432,9 @@ export function WrapperPermissionsPage({ principal }: WrapperPermissionsPageProp
           storeName={storeName}
           pair={deletingPair}
           displayNameById={displayNameById}
+          resourceName={
+            resourceNameById.get(deletingPair.resource_id) ?? deletingPair.resource_id
+          }
           onClose={() => setDeletingPair(null)}
           onDeleted={() => {
             invalidatePairsAndPermissions();
@@ -444,6 +458,7 @@ function ResourceGroupedPairsTable({
   groups,
   clientInstances,
   displayNameById,
+  resourceNameById,
   permissionIndex,
   isAdmin,
   onCellClick,
@@ -452,6 +467,7 @@ function ResourceGroupedPairsTable({
   groups: { resource: string; pairs: WrapperResourcePairRecord[] }[];
   clientInstances: string[];
   displayNameById: Map<string, string>;
+  resourceNameById: Map<string, string>;
   permissionIndex: Map<string, WrapperPermission>;
   isAdmin: boolean;
   onCellClick: (
@@ -511,9 +527,10 @@ function ResourceGroupedPairsTable({
                       rowSpan={group.pairs.length}
                       className="sticky left-0 z-10 bg-(--color-surface-0)/40 px-4 py-3 text-left align-top font-medium text-(--color-fg)"
                       data-testid={`wrappers-resource-${group.resource}`}
+                      title={group.resource}
                     >
                       <code className="rounded bg-(--color-surface-1) px-1.5 py-0.5 text-xs">
-                        {group.resource}
+                        {resourceNameById.get(group.resource) ?? group.resource}
                       </code>
                     </th>
                   ) : null}
@@ -558,7 +575,9 @@ function ResourceGroupedPairsTable({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        aria-label={`Delete pair ${pair.wrapper} / ${pair.resource_id}`}
+                        aria-label={`Delete pair ${pair.wrapper} / ${
+                          resourceNameById.get(pair.resource_id) ?? pair.resource_id
+                        }`}
                         data-testid={`wrappers-delete-pair-${pair.wrapper}-${pair.resource_id}`}
                         onClick={() => onDeletePair(pair)}
                       >
@@ -816,12 +835,14 @@ function DeletePairDialog({
   storeName,
   pair,
   displayNameById,
+  resourceName,
   onClose,
   onDeleted,
 }: {
   storeName: string;
   pair: WrapperResourcePairRecord;
   displayNameById: Map<string, string>;
+  resourceName: string;
   onClose: () => void;
   onDeleted: () => void;
 }) {
@@ -856,7 +877,7 @@ function DeletePairDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            Delete pair: {pair.wrapper} / {pair.resource_id}
+            Delete pair: {pair.wrapper} / {resourceName}
           </DialogTitle>
           <DialogDescription>
             Removes the wrapper/resource pair record. Any wrapper
@@ -920,6 +941,7 @@ function EditCellDialog({
   clientInstanceDisplayName,
   wrapper,
   resourceId,
+  resourceName,
   existing,
   canEdit,
   onClose,
@@ -929,6 +951,7 @@ function EditCellDialog({
   clientInstanceDisplayName: string;
   wrapper: string;
   resourceId: string;
+  resourceName: string;
   existing: WrapperPermission | null;
   canEdit: boolean;
   onClose: () => void;
@@ -1032,7 +1055,7 @@ function EditCellDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {wrapper} / {resourceId} → {clientInstanceDisplayName}
+            {wrapper} / {resourceName} → {clientInstanceDisplayName}
           </DialogTitle>
           <DialogDescription>
             Set the mode{" "}
@@ -1040,7 +1063,12 @@ function EditCellDialog({
             uses when calling{" "}
             <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{wrapper}</code>{" "}
             for resource{" "}
-            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{resourceId}</code>
+            <code
+              className="rounded bg-(--color-surface-1) px-1 py-0.5"
+              title={resourceId}
+            >
+              {resourceName}
+            </code>
             . The mode is checked on every read; per-call-approval also requires a
             fresh ssh-agent signature.
           </DialogDescription>
