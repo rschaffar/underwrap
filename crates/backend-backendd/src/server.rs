@@ -4,7 +4,6 @@
 //! browser-facing admin UI/API from one HTTPS listener.
 
 use anyhow::{Context, Result};
-use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
@@ -22,7 +21,11 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 use underwrap_protocol::config::StoreRecord;
 
-use underwrap_store::{StorageBackend, load_resource_blob, save_resource_blob};
+#[cfg(test)]
+use base64::Engine;
+use underwrap_store::StorageBackend;
+#[cfg(test)]
+use underwrap_store::{load_resource_blob, save_resource_blob};
 
 pub(crate) use crate::admin_api::audit::log_admin_event;
 pub use crate::admin_api::auth::{LoginRequest, LoginResponse, WhoamiResponse};
@@ -50,6 +53,10 @@ pub(crate) use crate::admin_api::policy::{
     drop_client_instance_permissions, handle_admin_policy_get, handle_admin_policy_put,
     handle_admin_wrapper_permission_delete, handle_admin_wrapper_permission_upsert,
     handle_admin_wrapper_permissions_list,
+};
+pub(crate) use crate::admin_api::resources::{
+    handle_admin_resource_blob_get, handle_admin_resource_blob_put, handle_admin_resource_create,
+    handle_admin_resource_delete, handle_admin_resource_rename, handle_admin_resources_list,
 };
 pub(crate) use crate::admin_api::secrets::{
     handle_admin_secret_delete, handle_admin_secret_list, handle_admin_secret_read,
@@ -84,16 +91,15 @@ pub(crate) use crate::runtime_api::principal::validate_runtime_client_mappings;
 pub(crate) use crate::runtime_api::principal::{
     get_policy_document, put_policy_document, resolve_runtime_client,
 };
-pub(crate) use crate::runtime_api::wrappers::generate_resource_id;
+
 #[cfg(test)]
 pub(crate) use crate::runtime_api::wrappers::handle_runtime_wrapper_register;
 pub(crate) use crate::runtime_state::AdminRuntimeState;
-pub(crate) use crate::storage::documents::{
-    ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document_or_default,
-    load_resources_document, resource_secret_dependents, save_resources_document,
-};
 #[cfg(test)]
-pub(crate) use crate::storage::documents::{save_pairs_document, save_policy_document};
+pub(crate) use crate::storage::documents::{
+    load_pairs_document, load_policy_document_or_default, load_resources_document,
+    save_pairs_document, save_policy_document, save_resources_document,
+};
 #[cfg(test)]
 pub(crate) use crate::storage::secret_entries::{list_secret_entries, write_resource_entry};
 pub use crate::store_registry::{
@@ -1920,426 +1926,6 @@ fn handle_admin_client_instance_delete(
     json_response(
         StatusCode::OK,
         &underwrap_protocol::service::AdminOkResponse { ok: true },
-    )
-}
-
-// ===== Admin Resource and Pair CRUD =====
-//
-// Six endpoints behind `/v1/admin/resources/*` and
-// `/v1/admin/pairs/*`. All require an authenticated admin operator;
-// reads return store-scoped data, writes set provenance on create,
-// deletes refuse with structured blockers when dependents exist.
-
-#[allow(clippy::result_large_err)]
-fn handle_admin_resources_list(
-    state: &AdminRuntimeState,
-    body: &underwrap_protocol::service::AdminResourcesListRequest,
-) -> Response<Full<Bytes>> {
-    let store = match admin_store(state, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    match load_resources_document(store.as_ref()) {
-        Ok(mut doc) => {
-            doc.resources.sort_by(|a, b| a.name.cmp(&b.name));
-            json_response(
-                StatusCode::OK,
-                &underwrap_protocol::service::AdminResourcesListResponse {
-                    resources: doc.resources,
-                },
-            )
-        }
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("loading resources document: {e:#}"),
-        ),
-    }
-}
-
-#[allow(clippy::result_large_err)]
-fn handle_admin_resource_blob_get(
-    state: &AdminRuntimeState,
-    body: &underwrap_protocol::service::AdminResourceBlobGetRequest,
-) -> Response<Full<Bytes>> {
-    let store = match admin_store(state, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let blob = match load_resource_blob(store.as_ref(), &body.id) {
-        Ok(b) => b,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading resource blob: {e:#}"),
-            );
-        }
-    };
-    let bytes = match blob.to_canonical_bytes() {
-        Ok(b) => b,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("canonicalizing resource blob: {e:#}"),
-            );
-        }
-    };
-    json_response(
-        StatusCode::OK,
-        &underwrap_protocol::service::AdminResourceBlobGetResponse {
-            blob_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
-        },
-    )
-}
-
-fn handle_admin_resource_blob_put(
-    state: &AdminRuntimeState,
-    operator: &str,
-    body: &underwrap_protocol::service::AdminResourceBlobPutRequest,
-) -> Response<Full<Bytes>> {
-    use underwrap_protocol::resource_blob::ResourceBlob;
-    let store = match admin_store(state, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let blob_bytes = match base64::engine::general_purpose::STANDARD.decode(&body.blob_b64) {
-        Ok(b) => b,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                &format!("blob_b64 is not valid base64: {e}"),
-            );
-        }
-    };
-    let blob = match ResourceBlob::from_canonical_bytes(&blob_bytes) {
-        Ok(b) => b,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_blob",
-                &format!("decoding resource blob: {e:#}"),
-            );
-        }
-    };
-    // Enforce that the caller sent already-canonical bytes. The
-    // wrapper-side does this naturally via serde_jcs; admin clients
-    // must as well.
-    let canonical = match blob.to_canonical_bytes() {
-        Ok(b) => b,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("canonicalizing resource blob: {e:#}"),
-            );
-        }
-    };
-    if canonical != blob_bytes {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "noncanonical_blob",
-            "blob_b64 is not JCS-canonical; re-encode via serde_jcs",
-        );
-    }
-    if let Err(e) = save_resource_blob(store.as_ref(), &body.id, &blob) {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("saving resource blob: {e:#}"),
-        );
-    }
-    log_admin_event(
-        "resource.blob.put",
-        operator,
-        None,
-        Some(&body.id),
-        None,
-        None,
-        "success",
-    );
-    json_response(
-        StatusCode::OK,
-        &underwrap_protocol::service::AdminResourceBlobPutResponse { ok: true },
-    )
-}
-
-fn handle_admin_resource_create(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    body: &underwrap_protocol::service::AdminResourceCreateRequest,
-) -> Response<Full<Bytes>> {
-    use underwrap_protocol::entities::{EntityCreator, ResourceRecord};
-    let name = body.name.trim();
-    if name.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_resource_name",
-            "resource name must be non-empty",
-        );
-    }
-    let store = match admin_store(state, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let mut doc = match load_resources_document(store.as_ref()) {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading resources document: {e:#}"),
-            );
-        }
-    };
-    if doc.find_by_name(name).is_some() {
-        return error_response(
-            StatusCode::CONFLICT,
-            "resource_already_exists",
-            &format!("resource '{name}' already exists"),
-        );
-    }
-    let record = ResourceRecord {
-        id: generate_resource_id(),
-        name: name.to_string(),
-        created_by: EntityCreator::Operator {
-            id: principal.id.clone(),
-            username: principal.username.clone(),
-        },
-        created_at: crate::users::now_epoch_secs(),
-    };
-    doc.insert(record.clone())
-        .expect("find returned None just above");
-    if let Err(e) = save_resources_document(store.as_ref(), &doc) {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("persisting resources document: {e:#}"),
-        );
-    }
-    log_admin_event(
-        "resource.create",
-        &principal.username,
-        None,
-        Some(name),
-        None,
-        None,
-        "success",
-    );
-    json_response(
-        StatusCode::OK,
-        &underwrap_protocol::service::AdminResourceCreateResponse { resource: record },
-    )
-}
-
-#[allow(clippy::result_large_err)]
-fn handle_admin_resource_delete(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    body: &underwrap_protocol::service::AdminResourceDeleteRequest,
-) -> Response<Full<Bytes>> {
-    use underwrap_protocol::service::{
-        AdminResourceDeleteBlockers, AdminResourceDeleteResponse, AdminWrapperPermissionKey,
-        ServiceWrapperResourcePair,
-    };
-    let store = match admin_store(state, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let mut doc = match load_resources_document(store.as_ref()) {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading resources document: {e:#}"),
-            );
-        }
-    };
-    let Some(target) = doc.find_by_id(&body.id) else {
-        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown resource");
-    };
-    let target_name = target.name.clone();
-
-    let (secret_count, sample_secret_ids) =
-        match resource_secret_dependents(store.as_ref(), &body.id) {
-            Ok(v) => v,
-            Err(e) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &format!("scanning resource dependents: {e:#}"),
-                );
-            }
-        };
-
-    let pairs = match load_pairs_document(store.as_ref()) {
-        Ok(p) => p,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading pairs document: {e:#}"),
-            );
-        }
-    };
-    // The wire shape for blocker pairs still carries the *name* in
-    // `resource` so the operator gets a readable label; resolve via the
-    // resources document.
-    let dependent_pairs: Vec<ServiceWrapperResourcePair> = pairs
-        .pairs_for_resource(&body.id)
-        .map(|p| ServiceWrapperResourcePair {
-            wrapper: p.wrapper.clone(),
-            resource: target_name.clone(),
-        })
-        .collect();
-    let pair_count = u32::try_from(dependent_pairs.len()).unwrap_or(u32::MAX);
-    let mut sample_pairs = dependent_pairs;
-    sample_pairs.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
-
-    let policy = match load_policy_document_or_default(store.as_ref()) {
-        Ok(p) => p,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading policy document: {e:#}"),
-            );
-        }
-    };
-    let dependent_permissions: Vec<AdminWrapperPermissionKey> = policy
-        .permissions
-        .iter()
-        .filter(|p| p.resource_id == body.id)
-        .map(|p| AdminWrapperPermissionKey {
-            client_instance: p.client_instance.clone(),
-            wrapper: p.wrapper.clone(),
-            resource_id: p.resource_id.clone(),
-        })
-        .collect();
-    let permission_count = u32::try_from(dependent_permissions.len()).unwrap_or(u32::MAX);
-    let mut sample_permissions = dependent_permissions;
-    sample_permissions.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
-
-    if secret_count > 0 || pair_count > 0 || permission_count > 0 {
-        log_admin_event(
-            "resource.delete",
-            &principal.username,
-            None,
-            Some(&body.id),
-            None,
-            None,
-            "blocked",
-        );
-        return json_response(
-            StatusCode::OK,
-            &AdminResourceDeleteResponse {
-                ok: false,
-                blocked_by: Some(AdminResourceDeleteBlockers {
-                    secret_count,
-                    sample_secret_ids,
-                    pair_count,
-                    sample_pairs,
-                    permission_count,
-                    sample_permissions,
-                }),
-            },
-        );
-    }
-
-    doc.remove(&body.id);
-    if let Err(e) = save_resources_document(store.as_ref(), &doc) {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("persisting resources document: {e:#}"),
-        );
-    }
-    log_admin_event(
-        "resource.delete",
-        &principal.username,
-        None,
-        Some(&body.id),
-        None,
-        None,
-        "success",
-    );
-    json_response(
-        StatusCode::OK,
-        &AdminResourceDeleteResponse {
-            ok: true,
-            blocked_by: None,
-        },
-    )
-}
-
-#[allow(clippy::result_large_err)]
-fn handle_admin_resource_rename(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    body: &underwrap_protocol::service::AdminResourceRenameRequest,
-) -> Response<Full<Bytes>> {
-    use underwrap_protocol::entities::InsertError;
-    let new_name = body.new_name.trim();
-    if new_name.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_resource_name",
-            "new_name must be non-empty",
-        );
-    }
-    let store = match admin_store(state, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let mut doc = match load_resources_document(store.as_ref()) {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading resources document: {e:#}"),
-            );
-        }
-    };
-    match doc.rename(&body.id, new_name) {
-        Ok(true) => {}
-        Ok(false) => {
-            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown resource");
-        }
-        Err(InsertError::Duplicate) => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "resource_already_exists",
-                &format!("resource name '{new_name}' is already taken"),
-            );
-        }
-    }
-    let updated = doc
-        .find_by_id(&body.id)
-        .expect("rename above returned Ok(true)")
-        .clone();
-    if let Err(e) = save_resources_document(store.as_ref(), &doc) {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("persisting resources document: {e:#}"),
-        );
-    }
-    log_admin_event(
-        "resource.rename",
-        &principal.username,
-        None,
-        Some(&body.id),
-        None,
-        None,
-        "success",
-    );
-    json_response(
-        StatusCode::OK,
-        &underwrap_protocol::service::AdminResourceRenameResponse { resource: updated },
     )
 }
 

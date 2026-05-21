@@ -19,5 +19,6 @@ pub(crate) mod csrf;
 pub(crate) mod overview;
 pub(crate) mod pairs;
 pub(crate) mod policy;
+pub(crate) mod resources;
 pub(crate) mod secrets;
 pub(crate) mod users;
