@@ -1,5 +1,15 @@
 # Backend release plan
 
+> **Historical document.** This plan was written before the central-backend
+> redesign shipped. The runtime API surface, the `WrapperApprovalMode`
+> variant set, and the per-call-approval flow described below have all
+> moved on. For the current truth see
+> [`docs/backend.md`](backend.md) (API surface), [`docs/security.md`](security.md)
+> (policy model + invariants), and [`docs/architecture.md`](architecture.md)
+> (component layout). In particular: there is no `PerCallApproval` mode
+> any more, the runtime wire does not carry `secret_id`, and policy
+> evaluation is server-side only.
+
 This is the consolidated plan for getting underwrap to a coherent first release
 around the **central backend** architecture. It supersedes the three
 `backend-v2-*.md` drafts, which will be removed once the plan is executed.

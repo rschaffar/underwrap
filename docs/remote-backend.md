@@ -170,21 +170,25 @@ The short way is now the admin UI in the browser:
 
 ## Wrapper approval modes
 
-Wrappers default to "unlocked forever" on first use. Centrally change
-that any time:
+Permissions default to `Locked` when the backend auto-seeds them on
+register. Operators flip them centrally any time:
 
 - **`locked`** — deny everything. Use this for wrappers under
-  maintenance or compromise investigation.
-- **`unlocked { until_epoch }`** — allow through rules until the given
-  epoch; `underwrap-backendd` flips the entry back to `locked`
-  automatically.
-- **`per-call-approval { approval_key }`** — require the operator to
-  sign a fresh nonce with their SSH agent on every invocation. Use this
-  for high-privilege wrappers where ambient automation should never be
-  able to act alone.
+  maintenance or compromise investigation; the operator-supplied
+  `reason` field is surfaced verbatim to the caller.
+- **`unlocked`** — allow every invocation through this permission.
+- **`unlocked-until { until_epoch }`** — allow until the given epoch
+  (unix seconds); the deadline is checked lazily on each request,
+  there is no background sweeper.
+
+Per-invocation approval is intentionally not a feature of this
+product — use `sudo` or polkit in front of the wrapper for
+human-in-the-loop confirmation.
 
 The wrapper-side behavior is identical across modes; only the backend
-policy changes.
+policy changes. Read access through an active permission is
+unconditional; write access is decided per-permission via the
+`writable: bool` flag and re-checked on every finalize.
 
 ## What this is not
 

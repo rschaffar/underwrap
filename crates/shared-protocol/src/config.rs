@@ -349,4 +349,24 @@ wrappers:
         let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
         assert!(err.to_string().contains("missing field `paths`"));
     }
+
+    #[test]
+    fn shipped_examples_config_yaml_parses() {
+        // Locks the relationship between the annotated example we ship
+        // and the actual config schema. If a future change drops or
+        // renames a field used in `examples/config.yaml`, this test
+        // surfaces the drift instead of letting the example rot.
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let repo_root = std::path::Path::new(manifest)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let example = repo_root.join("examples").join("config.yaml");
+        let yaml = std::fs::read_to_string(&example)
+            .unwrap_or_else(|e| panic!("read {}: {e}", example.display()));
+        let _: DaemonConfig = serde_yaml::from_str(&yaml).unwrap_or_else(|e| {
+            panic!("examples/config.yaml does not parse against DaemonConfig: {e}")
+        });
+    }
 }

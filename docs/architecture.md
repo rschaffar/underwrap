@@ -67,10 +67,9 @@ user runs jira issue list
   -> target execs with the injected secret
 ```
 
-When the backend policy puts the wrapper in **per-call approval** mode
-the daemon adds one round-trip before the read: it issues a nonce,
-waits for the wrapper's ssh-agent signature, verifies it against the
-policy's `approval_key`, and only then fetches the secret.
+Per-invocation approval is intentionally out of scope. If you need
+a human-in-the-loop prompt, layer it at the OS level (sudo, polkit)
+in front of the wrapper.
 
 ## Local identity model
 
@@ -90,19 +89,46 @@ wrapper says on the socket identifies it — the kernel does.
 ## Central authorization model
 
 Everything beyond "is this wrapper allowed to talk to me at all" lives
-in the backend's `PolicyDocument`:
+in the backend's `PolicyDocument`. The document is a flat list of
+`WrapperPermission` rows keyed by `(client_instance, wrapper, resource_id)`.
+Each row carries:
 
-- per-wrapper **approval mode** (`locked` / `unlocked{until?}` /
-  `per-call-approval{approval_key}`)
-- per-`(wrapper, resource, operation)` **rules** (permanent allow/deny)
-- per-`(wrapper, resource, operation)` **grants** (time-bounded
-  allow/deny)
+- a **mode**: `Locked`, `Unlocked`, or `UnlockedUntil { until_epoch }`,
+- a per-row **`writable: bool`** flag deciding whether wrapper-side
+  writebacks are accepted.
 
 See [The underwrap backend](backend.md) for the evaluation order,
-policy data model, and API shape. `underwrapd` fetches the policy
-document through the backend's authenticated service, evaluates it
-locally for each request, and surfaces `NeedsApproval` to the wrapper
-when per-call approval is required.
+policy data model, and API shape. `underwrapd` does not evaluate
+policy itself — it forwards every wrapper invocation to the backend,
+which re-evaluates the document on every open and every finalize.
+
+## Trust boundary
+
+The daemon is intentionally a thin client of the backend. What it
+**CAN** do:
+
+- accept wrapper-socket connections, verify the peer's effective GID
+  against the socket's expected wrapper, and refuse otherwise;
+- map a verified wrapper invocation to a `(wrapper_name, resource_name)`
+  pair and forward it to the backend over mTLS;
+- relay an opaque resource blob from the backend to the wrapper
+  (and back, on writeback) without inspecting it.
+
+What the daemon **CANNOT** do:
+
+- evaluate the policy document (it never has it);
+- name a backend storage key on the wire (the runtime API speaks
+  `(wrapper_name, resource_name)` only — `__underwrap/*` is
+  unreachable);
+- decide whether a writeback is allowed (the backend re-checks the
+  `writable` flag on every finalize);
+- mutate the `env` section of a resource blob on writeback (the
+  backend rejects any change to `env` with
+  `InvalidBlob { reason: "env-section-immutable" }`).
+
+A buggy or malicious daemon can only reach what its mTLS client
+certificate's principal already has explicit `WrapperPermission`
+rows for.
 
 ## Backend storage
 
@@ -112,9 +138,18 @@ when per-call approval is required.
 - **encrypted** — ChaCha20-Poly1305 files keyed by a 32-byte master key
   file.
 
-The service listener exposes only the narrow runtime surface
-(`/v1/read`, `/v1/write`, `/v1/list`, `/v1/delete`, `/v1/status`). A
-separate admin listener exposes the policy and admin surface.
+The runtime listener exposes exactly three mTLS endpoints to
+`underwrapd`:
+
+- `POST /v1/wrappers` — register the daemon's `(wrapper_name,
+  resource_name)` pairs at startup.
+- `POST /v1/wrapper-invocations` — open one invocation. Returns
+  `Allow { resource_id, blob_b64, writable }` or `Deny { reason }`.
+- `POST /v1/wrapper-invocations/finalize` — close one invocation,
+  optionally with a writeback blob. Re-checks writability and
+  env-immutability server-side.
+
+A separate admin listener exposes the policy and admin surface.
 
 ## Libsecret flow
 
@@ -164,28 +199,35 @@ path and observers always see identical content at every mount.
 
 ```text
 crates/
-  underwrap-protocol        shared config, message families, IPC framing, fd passing
-  underwrap-store           storage trait + backend implementations + mTLS HTTPS client
-  underwrapd                frontend daemon on the target host
-  underwrap-backendd        central authenticated HTTPS service
+  shared-protocol           shared config, message families, IPC framing, fd passing,
+                            runtime wire types, policy + resource models
+  shared-store              storage trait + plain/encrypted backend implementations
+                            (backend-internal — nothing else implements it)
+  shared-secretsd-store     in-memory Secret Service data model
+  frontend-underwrapd       frontend daemon on the target host
   frontend-exec             stage 1 wrapper (setgid)
   frontend-ns               stage 2 wrapper (namespace setup)
   frontend-secretsd         Secret Service implementation for libsecret mode
-  shared-secretsd-store     in-memory Secret Service data model
+  backend-backendd          central authenticated HTTPS service +
+                            sole policy authority + embedded admin SPA
   integration-tests         cross-component tests
-apps/
-  admin-ui                  supported Next.js operator console
+web/                        Vite + React + shadcn admin SPA (embedded into
+                            backend-backendd via rust-embed)
 ```
 
 ### `underwrapd` internals
 
-- `server.rs` — daemon startup and listener orchestration
+- `server.rs` — daemon startup, listener orchestration, lazy
+  `BackendClient` open
+- `backend_client.rs` — typed mTLS client for the three runtime
+  endpoints; sync-callable from the wrapper-socket loop via a
+  dedicated tokio worker thread
 - `startup.rs` — config validation, UID/GID resolution, socket binding
 - `peer_auth.rs` — `SO_PEERCRED` and effective-GID checks
-- `wrapper_flow.rs` — the wrapper request flow including the per-call
-  approval round-trip
-- `approval.rs` — pending-challenge store and SSH signature verification
-- `policy.rs` — loads the backend's policy document and evaluates it
+- `wrapper_flow/` — the wrapper request flow (peer auth → open
+  invocation on the backend → relay `ReadOk` + scoped channel)
+- `wrapper_resource_channel.rs` — serves Checkout from the cached
+  blob and turns Checkin / UsageSignal into finalize calls
 - `status.rs` — wrapper/credential status for the admin API
 - `wrapper_bindings.rs` — env/libsecret/directory binding selection
 

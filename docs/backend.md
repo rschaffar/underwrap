@@ -25,9 +25,12 @@ Operators manage the backend through the admin UI served directly by
 ┌─────────────────────┐      ┌─────────────────────────────┐
 │  underwrapd         │ HTTPS│  underwrap-backendd         │
 │  (per-instance,     ├─────▶│  one HTTPS listener         │
-│   Unix-socket IPC)  │ mTLS │  - /v1/status, /v1/*        │
-└─────────────────────┘      │  - /v1/admin/* + embedded UI│
-                              └─────────────────────────────┘
+│   Unix-socket IPC)  │ mTLS │  - /v1/wrappers             │
+│                     │      │  - /v1/wrapper-invocations  │
+│                     │      │  - /v1/wrapper-invocations/ │
+│                     │      │       finalize              │
+│                     │      │  - /v1/admin/* + embedded UI│
+└─────────────────────┘      └─────────────────────────────┘
 ```
 
 ## Trust boundaries
@@ -120,27 +123,118 @@ operator-state file plus the session cookie.
 
 ## Runtime API
 
-The HTTPS service exposes the small surface `underwrapd` needs, all over
-`POST` except `GET /v1/status`:
+The HTTPS service exposes exactly three endpoints to `underwrapd`,
+all `POST`. The wire speaks `(wrapper_name, resource_name)` only —
+there is **no** way for a runtime client to address a backend
+storage key (`__underwrap/*` or `<resource>/<slot>/<inner>`) directly.
 
-- `GET /v1/status` — server liveness and the authenticated principal
-- `POST /v1/read` — `{secret_id}` → `{material_b64 | null}`
-- `POST /v1/read-prefixes` — one-shot bundle read for all leaves below a set of prefixes
-- `POST /v1/write` — `{secret_id, material_b64}`
-- `POST /v1/list` — `{prefix}` → `{ids}`
-- `POST /v1/delete` — `{secret_id}` → `{existed}`
-- `POST /v1/runtime/wrappers/register` — frontend auto-registration of
-  `(wrapper, resource)` pairs. The backend reads the calling
-  client-instance's `auto_create_wrapper_assets` flag to decide whether
-  missing Resource and Wrapper/Resource Pair records may be created on
-  this principal's behalf. Returns the list of newly-created entities,
-  or a structured `AutoCreateDisabled` refusal listing what would have
-  been created. The endpoint is upsert-only: existing entities are
-  never modified, removals never happen, and `created_by` is set once
-  on first sight.
+### `POST /v1/wrappers` — register
 
-Store selection is implicit in the authenticated principal. There is no
-store name in the request body. Operators create runtime client
+```json
+{ "wrappers": [
+    { "wrapper_name": "gh-authorized", "resource_name": "github/token" }
+] }
+```
+
+Frontend auto-registration of the daemon's `(wrapper_name,
+resource_name)` pairs at startup. The backend reads the calling
+client-instance's `auto_create_wrapper_assets` flag to decide whether
+missing `Resource` and `Wrapper/Resource Pair` records may be created
+on this principal's behalf. For every successfully-resolved pair the
+backend also seeds a `Locked` permission for `(this client_instance,
+wrapper_name, resource_id)` if none exists yet.
+
+Response (tagged on `outcome`):
+
+```json
+{ "outcome": "ok",
+  "auto_created_resources": ["github/token"],
+  "auto_created_pairs": [{ "wrapper_name": "gh-authorized",
+                            "resource_name": "github/token" }] }
+```
+
+or, when `auto_create_wrapper_assets` is `false` and at least one
+pair is unknown:
+
+```json
+{ "outcome": "auto-create-disabled",
+  "missing_resources": ["github/token"],
+  "missing_pairs": [{ "wrapper_name": "gh-authorized",
+                       "resource_name": "github/token" }] }
+```
+
+The endpoint is upsert-only: existing entities are never modified,
+removals never happen, and `created_by` is set once on first sight.
+Idempotent on repeat calls — re-registering an unchanged set returns
+`outcome: ok` with empty creation lists.
+
+### `POST /v1/wrapper-invocations` — open
+
+```json
+{ "wrapper_name": "gh-authorized", "resource_name": "github/token" }
+```
+
+The backend re-evaluates the policy server-side and replies with
+either:
+
+```json
+{ "outcome": "allow",
+  "resource_id": "res_a1b2c3…",
+  "blob_b64": "…",
+  "writable": false }
+```
+
+or a structured `Deny`:
+
+```json
+{ "outcome": "deny", "reason": "no-permission" }
+```
+
+Stable kebab-case reasons: `no-permission`, `locked` (or the
+permission's free-text `reason` field verbatim, when set), `expired`,
+`unregistered-pair`. The daemon caches `blob_b64` for the lifetime of
+the wrapper-resource channel and serves the wrapper's `Checkout`
+verbatim from it; it never tries to look up the storage key itself.
+
+### `POST /v1/wrapper-invocations/finalize` — close
+
+```json
+{ "wrapper_name": "gh-authorized",
+  "resource_name": "github/token",
+  "blob_b64": "…or omitted for a usage-signal call…" }
+```
+
+The backend re-evaluates the policy again, then:
+
+- `blob_b64 = None` — usage signal. Bumps `last_used_at` on the pair
+  and returns `{ "outcome": "ok" }`. Always allowed if the open
+  would have been allowed.
+- `blob_b64 = Some(_)` — writeback. The backend re-checks the
+  `writable` flag (deny `not-writable` if false), decodes the blob,
+  re-canonicalizes it (deny `noncanonical-blob` if it doesn't match
+  the submitted bytes), rejects unknown `schema_version` values, then
+  enforces **env immutability**: the new blob's `env` section must
+  byte-equal the stored blob's `env` section. Any change to `env`
+  rejects with `InvalidBlob { reason: "env-section-immutable" }`.
+- On a clean write the blob is atomically replaced; `last_used_at`
+  is bumped on the pair regardless of which branch ran.
+
+Tagged response variants:
+
+```json
+{ "outcome": "ok" }
+{ "outcome": "deny", "reason": "not-writable" }
+{ "outcome": "invalid-blob", "reason": "env-section-immutable" }
+```
+
+Structured `InvalidBlob` reasons: `decode-failed`, `noncanonical-blob`,
+`schema-unknown`, `env-section-immutable`. They are split apart from
+`Deny` because a `Deny` may flip to `Allow` after an operator edits
+the policy, whereas `InvalidBlob` is a client bug that won't change
+on retry.
+
+Store selection is implicit in the authenticated principal. There is
+no store name in any request body. Operators create runtime client
 instances directly in the admin UI by pasting a cert PEM the helper
 produced; the helper does not talk to the backend.
 
@@ -245,8 +339,7 @@ permissions:
     wrapper: aws-prod
     resource: aws/prod
     mode:
-      kind: per-call-approval
-      approval_key: "ssh-ed25519 AAAA…"
+      kind: locked
     reason: "ops approval required"
   - client_instance: ci
     wrapper: jira-readonly
@@ -256,21 +349,29 @@ permissions:
       until_epoch: 1745092800
 ```
 
-Four modes:
+Three modes:
 
-- **`locked`** — deny every invocation through this permission.
+- **`locked`** — deny every invocation through this permission. The
+  free-text `reason` field is surfaced verbatim in the `Deny.reason`
+  payload so operators can communicate intent without a roundtrip to
+  Slack.
 - **`unlocked`** — allow every invocation through this permission.
 - **`unlocked-until`** — allow until `until_epoch`; deny after. The
   expiry is checked lazily on each request — there is no background
   sweeper.
-- **`per-call-approval`** — every invocation must be accompanied by a
-  fresh ssh-agent signature over a backend-issued nonce, verifiable
-  against `approval_key` (OpenSSH public key format; ed25519 or RSA).
+
+Per-invocation approval is intentionally out of scope. If you need
+human-in-the-loop confirmation, layer it at the OS level (sudo,
+polkit) in front of the wrapper.
 
 There is **no per-secret read filter**. Once the mode allows the
 invocation, the daemon hands the wrapper every resource the wrapper's
 declaration lists. To remove a runtime client's access to a resource,
 edit the wrapper definition, not the policy.
+
+Write authorization is decided per-permission via the `writable: bool`
+flag and re-checked by the backend on every finalize. Read access
+through an active permission is unconditional.
 
 ### Global write lock
 
@@ -285,20 +386,31 @@ a fresh store — admins opt in deliberately before any mutation lands.
 Wrapper-side writes through the libsecret channel inherit the same
 gate via the `AccessMode::ReadWrite` projection.
 
-### Evaluation order (daemon)
+### Evaluation order (backend, on both open and finalize)
 
-1. Look up the wrapper permission for
-   `(client_instance, wrapper, resource)`. No permission → reject.
-2. Consult the permission's mode:
-   - `locked` → reject with the operator-supplied reason.
-   - `unlocked` → proceed.
-   - `unlocked-until { until_epoch }` → proceed if `now < until_epoch`,
-     else reject.
-   - `per-call-approval` → run the ssh-agent challenge round; on
-     success, proceed.
-3. Serve every resource the wrapper's declaration lists. The libsecret
-   slot is projected `ReadOnly` if `writes_enabled = false`, `ReadWrite`
-   otherwise.
+1. Resolve `resource_name` to a `Resource` record; if absent, deny
+   `unregistered-pair`.
+2. Look up the `(wrapper_name, resource_id)` pair; if absent, deny
+   `unregistered-pair`.
+3. Look up the wrapper permission for
+   `(authenticated principal, wrapper_name, resource_id)`. No
+   permission → deny `no-permission`.
+4. Consult the permission's mode:
+   - `locked` → deny with the operator-supplied `reason`, or
+     `"locked"` if none was set.
+   - `unlocked` → allow.
+   - `unlocked-until { until_epoch }` → allow if
+     `now <= until_epoch`, else deny `expired`.
+5. On finalize with a writeback blob, additionally:
+   - deny `not-writable` if the permission's `writable` flag is
+     false (independent of the open's allow);
+   - decode + re-canonicalize the bytes, reject
+     `noncanonical-blob`, `decode-failed`, `schema-unknown` shapes;
+   - reject `env-section-immutable` if the new blob's `env`
+     section differs from the stored blob's `env` section.
+
+The daemon plays no part in this — it forwards the call and relays
+the outcome.
 
 ## Resources and Wrapper/Resource Pairs
 
@@ -327,7 +439,6 @@ pairs:
     created_by: { kind: client-instance, id: inst_dev_laptop }
     created_at: 1735690500
     last_used_at: 1735770100
-    files_mount_paths: [".config/gh"]
 ```
 
 Provenance is set on first creation and never changes afterwards.
@@ -337,17 +448,12 @@ counts plus a small sample so the SPA can render a clear "fix this
 first" message).
 
 `last_used_at` (unix seconds, `None` until first use) is bumped
-server-side on every successful runtime read against the pair's
-resource. The bump is idempotent at one-second resolution and never
-blocks a read.
-
-`files_mount_paths` is the set of target-home-relative paths the
-wrapper bind-mounts this resource's `files` slot at. The daemon
-reports the current value on every startup register; existing pair
-records are refreshed when the value changes (so editing a wrapper
-mount path is reflected in the SPA after the next daemon restart).
-The admin SPA uses this list to render `<mount>/<inner>` next to
-each stored file so operators can see where it lands at runtime.
+server-side on **both** the open and the finalize handler — i.e.
+once at the start of a wrapper invocation and again at every
+finalize (writeback or usage signal). The bump is idempotent at
+one-second resolution and never blocks the request. Mount paths
+are a daemon-local concern derived from the wrapper config; they
+never travel on the wire and the pair record does not store them.
 
 ## Resource blob storage
 
@@ -388,36 +494,17 @@ lands; today the daemon still re-serializes on every flush.
 
 `PlainBackend` stores the blob as one file per resource;
 `EncryptedBackend` AEAD-encrypts the blob as one ciphertext with one
-nonce per resource. The per-key administrative endpoints
-(`/v1/admin/secret/{read,write,list,delete}`) keep the legacy
+nonce per resource. Operator-facing admin endpoints
+(`/v1/admin/secret/{read,write,list,delete}`) keep the
 `<resource>/<slot>/<inner>` address space but route through the blob
-via a load-modify-save shim.
+via a load-modify-save shim. **No runtime endpoint accepts a storage
+key on the wire.**
 
 The `auto_create_wrapper_assets` flag on each client-instance record
-gates whether `POST /v1/runtime/wrappers/register` may insert new
-records on that principal's behalf. The flag defaults off; an admin
-must flip it on per instance before its wrappers can register new
-resources or pairs on startup.
-
-## Per-call approval flow
-
-```text
-wrapper  ──Read───►  underwrapd  ──read policy──►  backend
-wrapper  ◄─Challenge─  underwrapd  (evaluates, sees PerCallApproval)
-wrapper  ──signs via ssh-agent──►  underwrapd
-wrapper  ◄─ReadOk─────  underwrapd  (verified sig, fetched material)
-```
-
-The daemon keeps pending challenges in memory with a 60-second TTL. Each
-nonce is single-use. Signatures are verified with
-[`ssh-key`](https://docs.rs/ssh-key) against the `approval_key` stored in
-the policy.
-
-Central logging of the raw signature (sending the signed blob to the
-backend in addition to local verification) is a later step; today the
-backend sees only the resulting `secret.read` after the daemon accepts
-the signature. The admin UI can still reason about "is this wrapper in
-per-call mode?" because the mode lives in the policy document.
+gates whether `POST /v1/wrappers` may insert new records on that
+principal's behalf. The flag defaults off; an admin must flip it on
+per instance before its wrappers can register new resources or pairs
+on startup.
 
 ## What this replaces
 

@@ -245,7 +245,28 @@ This principle matters most in:
 - privilege dropping
 - descriptor handling
 
-### 7. The backend is the sole write-authorization authority
+### 7. The runtime wire never names a storage key
+
+The runtime mTLS API between `underwrapd` and `underwrap-backendd`
+speaks **only** `(wrapper_name, resource_name)`. There is no
+`secret_id` field, no `prefix` field, no path. The three endpoints
+are `POST /v1/wrappers`, `POST /v1/wrapper-invocations`, and
+`POST /v1/wrapper-invocations/finalize`. A runtime client cannot
+address `__underwrap/policy/document`, `__underwrap/resources/document`,
+or any other backend-internal key, because no wire shape exists that
+would route a storage key to a write path. The earlier per-key
+`/v1/{read,write,list,delete}` surface was deleted in the runtime-API
+redesign for exactly this reason: a misbehaving runtime client used
+to be able to `POST /v1/write` against `__underwrap/policy/document`
+with a hand-crafted policy doc and grant itself everything.
+
+The env section of a resource blob is admin-only on writeback. The
+backend enforces `new_blob.env == current_blob.env` on every
+finalize and rejects the call with
+`InvalidBlob { reason: "env-section-immutable" }` otherwise. Operators
+who need to change an env binding go through the admin API.
+
+### 8. The backend is the sole write-authorization authority
 
 The namespace-side tmpfs staging dirs and bind mounts are always
 read-write to the target, even when the grant is read-only. This
@@ -255,10 +276,13 @@ tools that test-write before falling back (cache directories, git
 credential helpers, etc.).
 
 The backend remains the only authority that decides whether a change
-persists. When a wrapper attempts a writeback for a read-only-granted
-resource:
+persists. The `writable` flag is re-checked on every
+`POST /v1/wrapper-invocations/finalize` independent of the open's
+outcome, so a permission flipped from writable to read-only between
+open and finalize is honoured. When a wrapper attempts a writeback
+for a read-only permission:
 
-- the daemon refuses the underlying storage write,
+- the backend answers `Deny { reason: "not-writable" }`,
 - the wrapper drops the locally-buffered change,
 - the wrapper emits one structured `AUDIT=writeback_rejected
   REASON=grant_readonly` event directly to systemd-journald via its
@@ -933,50 +957,67 @@ model.
 
 The document is a flat list of **wrapper permissions** keyed by
 `(client_instance, wrapper, resource)` plus the per-store
-`writes_enabled` toggle. Each permission carries one of four modes:
+`writes_enabled` toggle. Each permission carries one of three modes
+and a per-permission `writable: bool` flag:
 
 - **`Locked`** — every request through this permission is denied.
+  The permission's free-text `reason` is surfaced verbatim to the
+  caller's `Deny.reason` payload.
 - **`Unlocked`** — requests are allowed.
 - **`UnlockedUntil { until_epoch }`** — requests are allowed until
   the deadline. The deadline is checked lazily on each request;
   there is no backend sweeper.
-- **`PerCallApproval { approval_key }`** — each individual request
-  must be accompanied by a fresh ssh-agent signature. A prior
-  success does not carry over to the next call.
 
 If no permission exists for `(client_instance, wrapper, resource)`
-the request is rejected with the same "no permission" shape as a
-`Locked` permission — the daemon does not distinguish "no permission"
-from "denied permission" to the wrapper, so operators can't be probed
-for permission existence through the wrapper channel.
+the request is rejected with the structured reason `no-permission`.
+The daemon does not distinguish "no permission" from "denied
+permission" at the wrapper edge — both surface as
+`WrapperResponse::Error { code: Unauthorized }` — so operators can't
+be probed for permission existence through the wrapper channel.
 
-### Per-call ssh-agent approval
+Per-invocation approval is intentionally **not** a feature of this
+product. Layer human-in-the-loop confirmation at the OS level
+(sudo, polkit) in front of the wrapper if you need it.
 
-When a permission is in `PerCallApproval`, the flow is:
+### Server-side policy authority
 
-1. The daemon issues a challenge: a random 32-byte nonce and a
-   short-lived challenge ID, valid for 60 seconds. The
-   `approval_key` bound to the grant (an OpenSSH public key) is
-   returned so the caller knows which key to sign with.
-2. `underwrap-exec` asks the caller's SSH agent to sign the nonce
-   with the matching private key.
-3. The daemon verifies the returned signature against the stored
-   `approval_key`. Ed25519 and RSA keys are accepted; other SSH key
-   types are rejected. The challenge is consumed whether or not the
-   signature verifies — each nonce is single-use.
+Every runtime invocation is re-evaluated on the backend on **both**
+the open and the finalize handler. Specifically:
 
-The only thing the caller needs to hold is access to the SSH agent
-loaded with the approved key. The private key never touches the
-daemon or the wrapper.
+- `POST /v1/wrapper-invocations` resolves the resource by name,
+  looks up the pair, looks up the permission keyed by the
+  authenticated principal, checks the mode, and replies
+  `Allow { resource_id, blob_b64, writable }` or
+  `Deny { reason }`.
+- `POST /v1/wrapper-invocations/finalize` repeats the same lookup
+  and additionally re-checks `writable` against the **current**
+  permission for any writeback. A permission flipped from writable
+  to read-only between open and finalize is honoured — the
+  writeback is rejected with `Deny { reason: "not-writable" }`.
+- The new blob is base64-decoded, JCS-canonicalized, checked for
+  schema version, and verified against the stored env section.
+  Anything that fails surfaces as
+  `InvalidBlob { reason: "decode-failed" | "noncanonical-blob" |
+  "schema-unknown" | "env-section-immutable" }`.
+
+The daemon carries no policy state and never makes a security
+decision — it forwards calls and relays outcomes.
 
 ### What's no longer in the model
 
 The pre-245 model carried a per-`(wrapper, resource, operation)`
 allow/deny ACL on top of the mode gate. That layer is gone. Once
-the grant mode says "allow", the daemon serves whatever resources
-the wrapper's declaration lists — no per-resource filter. To revoke
-an agent's access to a resource, edit the wrapper definition; to
-revoke the agent entirely, delete the grant.
+the permission's mode says "allow", the daemon serves whatever
+resources the wrapper's declaration lists — no per-resource filter.
+To revoke a runtime client's access to a resource, edit the wrapper
+definition or delete the permission.
+
+The earlier model also carried per-invocation SSH-agent approval
+(a `PerCallApproval { approval_key }` mode that demanded a fresh
+ssh-agent signature on every call). That feature is removed — the
+attack surface (an SSH agent in the path, signature verification on
+the daemon side, a forwarded nonce flow) was not justified by what
+it bought over `Locked` + admin-toggled `Unlocked` + sudo/polkit.
 
 ---
 

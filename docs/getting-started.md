@@ -199,10 +199,12 @@ Open the admin UI and inspect the `work` store's policy and secrets.
   [wrapper author checklist](wrapper-author-checklist.md).
 - **`gh auth login` with stored credentials** — see
   [GitHub via libsecret](gh-libsecret.md).
-- **Per-call operator approval for high-privilege wrappers** — set the
-  wrapper's mode to `per-call-approval` in the admin UI and register
-  your SSH public key. Every invocation then requires a fresh
-  ssh-agent signature.
+- **Human-in-the-loop confirmation for high-privilege wrappers** —
+  underwrap deliberately does not ship a per-invocation prompt.
+  Layer it at the OS level: install the wrapper behind `sudo` (or a
+  polkit rule) and rely on the existing audit trail. Pair this with
+  a `Locked` permission you flip to `Unlocked` (or `UnlockedUntil`)
+  out-of-band for time-bound access windows.
 
 ## Troubleshooting
 

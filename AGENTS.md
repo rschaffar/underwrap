@@ -254,10 +254,8 @@ Per-invocation approval is out of scope; use OS-level mechanisms
 
 The runtime client never names a storage key, never identifies
 itself by id, never evaluates policy, and never holds a
-`StorageBackend`. The legacy per-key endpoints
-(`/v1/read`, `/v1/write`, `/v1/list`, `/v1/read-prefixes`,
-`/v1/delete`, `/v1/status`, `/v1/runtime/wrappers/register`) are
-deleted.
+`StorageBackend`. There is no wire shape that lets a runtime mTLS
+client address `__underwrap/*` or `<resource>/<slot>/<key>`.
 
 **Libsecret mode:** When `libsecret = true` on a wrapper:
 
@@ -326,15 +324,11 @@ namespace mount, and read-only writeback warning have all landed
 (tickets/03_done/epic_atomic_resource_blobs.md). The runtime-API
 redesign collapsing the daemon to a thin client + deleting the
 per-key endpoints + dropping SSH per-call approval landed under
-`epic_runtime_api_redesign.md`.
+`tickets/03_done/epic_runtime_api_redesign.md` together with its
+integration-test sweep and prose-docs sweep.
 
 ## Planned work
 
-- `tickets/01_todo/640_task_integration_tests.md` — comprehensive
-  integration test coverage of the three new runtime endpoints.
 - `tickets/01_todo/650_task_vm_test_update.md` — NixOS VM test
   updates (backend-restart self-heal, env immutability through the
   full stack, no-`PerCallApproval` admin assertion).
-- `tickets/01_todo/660_task_docs.md` — docs sweep of
-  `docs/architecture.md`, `docs/backend.md`, `docs/security.md`,
-  `examples/config.yaml`, `docs/getting-started.md`.
