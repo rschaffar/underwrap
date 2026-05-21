@@ -1149,6 +1149,32 @@ async fn handle_service_request(
                 Err(response) => response,
             }
         }
+        (&Method::POST, "/v1/wrappers") => match parse_json_body::<
+            underwrap_protocol::service::RuntimeWrapperRegisterRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_runtime_wrapper_register(&state, store.as_ref(), &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/wrapper-invocations") => match parse_json_body::<
+            underwrap_protocol::service::RuntimeWrapperInvocationOpenRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => handle_runtime_wrapper_invocation_open(store.as_ref(), &principal, &body),
+            Err(response) => response,
+        },
+        (&Method::POST, "/v1/wrapper-invocations/finalize") => match parse_json_body::<
+            underwrap_protocol::service::RuntimeWrapperInvocationFinalizeRequest,
+        >(request)
+        .await
+        {
+            Ok(body) => {
+                handle_runtime_wrapper_invocation_finalize(store.as_ref(), &principal, &body)
+            }
+            Err(response) => response,
+        },
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown endpoint"),
     };
     Ok(response)
@@ -1979,6 +2005,454 @@ fn apply_runtime_wrapper_register(
         resolved_resource_ids,
         rejected: None,
     })
+}
+
+/// Handle `POST /v1/wrappers`.
+///
+/// Translates the resource-vocabulary register request into the
+/// shared `apply_runtime_wrapper_register` helper. Mount paths are
+/// not on the new wire — the daemon keeps them locally — so they go
+/// through as empty vectors. The auto-create flag is looked up on
+/// the calling client instance, matching the existing endpoint.
+fn handle_runtime_wrapper_register(
+    state: &AdminRuntimeState,
+    store: &dyn StorageBackend,
+    principal: &str,
+    body: &underwrap_protocol::service::RuntimeWrapperRegisterRequest,
+) -> Response<Full<Bytes>> {
+    use underwrap_protocol::service::{
+        RuntimeWrapperRegisterPair, RuntimeWrapperRegisterResponse, ServiceWrapperRegisterReject,
+        ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
+    };
+
+    for pair in &body.wrappers {
+        if pair.wrapper_name.trim().is_empty() {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_wrapper_name",
+                "wrapper_name must be non-empty",
+            );
+        }
+        if pair.resource_name.trim().is_empty() {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_resource_name",
+                "resource_name must be non-empty",
+            );
+        }
+    }
+
+    let legacy = ServiceWrapperRegisterRequest {
+        pairs: body
+            .wrappers
+            .iter()
+            .map(|p| ServiceWrapperResourcePair {
+                wrapper: p.wrapper_name.clone(),
+                resource: p.resource_name.clone(),
+                files_mount_paths: Vec::new(),
+            })
+            .collect(),
+    };
+    let auto_create_enabled = state
+        .client_instances
+        .read()
+        .unwrap()
+        .get(principal)
+        .map(|r| r.auto_create_wrapper_assets)
+        .unwrap_or(false);
+    let now = crate::users::now_epoch_secs();
+    match apply_runtime_wrapper_register(store, principal, auto_create_enabled, &legacy, now) {
+        Ok(resp) => match resp.rejected {
+            Some(ServiceWrapperRegisterReject::AutoCreateDisabled {
+                missing_resources,
+                missing_pairs,
+            }) => json_response(
+                StatusCode::OK,
+                &RuntimeWrapperRegisterResponse::AutoCreateDisabled {
+                    missing_resources,
+                    missing_pairs: missing_pairs
+                        .into_iter()
+                        .map(|p| RuntimeWrapperRegisterPair {
+                            wrapper_name: p.wrapper,
+                            resource_name: p.resource,
+                        })
+                        .collect(),
+                },
+            ),
+            None => json_response(
+                StatusCode::OK,
+                &RuntimeWrapperRegisterResponse::Ok {
+                    auto_created_resources: resp.created_resources,
+                    auto_created_pairs: resp
+                        .created_pairs
+                        .into_iter()
+                        .map(|p| RuntimeWrapperRegisterPair {
+                            wrapper_name: p.wrapper,
+                            resource_name: p.resource,
+                        })
+                        .collect(),
+                },
+            ),
+        },
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("register failed: {e:#}"),
+        ),
+    }
+}
+
+/// Result of the policy + pair lookup shared by open and finalize.
+///
+/// Encodes the four authoritative outcomes the backend draws from the
+/// per-store state: pair not registered, no permission at all, the
+/// permission denies right now, or the permission allows.
+enum InvocationLookup<'a> {
+    UnregisteredPair,
+    NoPermission,
+    Denied(String),
+    Allowed {
+        resource_id: String,
+        permission: &'a WrapperPermission,
+    },
+}
+
+/// Resolve `(principal, wrapper_name, resource_name)` to either an
+/// allow-with-permission or a structured denial. Used by the open and
+/// finalize handlers; both must reach the same conclusion from the
+/// same inputs (stateless re-evaluation per the redesign).
+fn resolve_invocation<'a>(
+    store: &dyn StorageBackend,
+    principal: &str,
+    wrapper_name: &str,
+    resource_name: &str,
+    policy: &'a PolicyDocument,
+) -> Result<InvocationLookup<'a>> {
+    use underwrap_protocol::policy::WrapperApprovalMode;
+
+    let resources = load_resources_document(store)?;
+    let Some(resource) = resources.find_by_name(resource_name) else {
+        return Ok(InvocationLookup::UnregisteredPair);
+    };
+    let pairs = load_pairs_document(store)?;
+    if pairs.find(wrapper_name, &resource.id).is_none() {
+        return Ok(InvocationLookup::UnregisteredPair);
+    }
+    let Some(permission) = policy.find_permission(principal, wrapper_name, &resource.id) else {
+        return Ok(InvocationLookup::NoPermission);
+    };
+    match &permission.mode {
+        WrapperApprovalMode::Locked => Ok(InvocationLookup::Denied("locked".to_string())),
+        WrapperApprovalMode::Unlocked => Ok(InvocationLookup::Allowed {
+            resource_id: resource.id.clone(),
+            permission,
+        }),
+        WrapperApprovalMode::UnlockedUntil { until_epoch } => {
+            if crate::users::now_epoch_secs() > *until_epoch {
+                Ok(InvocationLookup::Denied("expired".to_string()))
+            } else {
+                Ok(InvocationLookup::Allowed {
+                    resource_id: resource.id.clone(),
+                    permission,
+                })
+            }
+        }
+        // PerCallApproval is being removed in ticket 620; until the
+        // variant is deleted from the schema, treat it as a hard deny
+        // on the new endpoints — operators using these endpoints must
+        // pick one of the three remaining modes.
+        WrapperApprovalMode::PerCallApproval { .. } => Ok(InvocationLookup::Denied(
+            "per-call-approval-removed".to_string(),
+        )),
+    }
+}
+
+/// Handle `POST /v1/wrapper-invocations` — open an invocation.
+fn handle_runtime_wrapper_invocation_open(
+    store: &dyn StorageBackend,
+    principal: &str,
+    body: &underwrap_protocol::service::RuntimeWrapperInvocationOpenRequest,
+) -> Response<Full<Bytes>> {
+    use base64::Engine;
+    use underwrap_protocol::service::RuntimeWrapperInvocationOpenResponse;
+
+    if body.wrapper_name.trim().is_empty() || body.resource_name.trim().is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "wrapper_name and resource_name must be non-empty",
+        );
+    }
+    let policy = match load_policy_document_or_default(store) {
+        Ok(p) => p,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading policy: {e:#}"),
+            );
+        }
+    };
+    let lookup = match resolve_invocation(
+        store,
+        principal,
+        &body.wrapper_name,
+        &body.resource_name,
+        &policy,
+    ) {
+        Ok(l) => l,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("policy lookup failed: {e:#}"),
+            );
+        }
+    };
+    let (resource_id, writable) = match lookup {
+        InvocationLookup::UnregisteredPair => {
+            return json_response(
+                StatusCode::OK,
+                &RuntimeWrapperInvocationOpenResponse::Deny {
+                    reason: "unregistered-pair".to_string(),
+                },
+            );
+        }
+        InvocationLookup::NoPermission => {
+            return json_response(
+                StatusCode::OK,
+                &RuntimeWrapperInvocationOpenResponse::Deny {
+                    reason: "no-permission".to_string(),
+                },
+            );
+        }
+        InvocationLookup::Denied(reason) => {
+            return json_response(
+                StatusCode::OK,
+                &RuntimeWrapperInvocationOpenResponse::Deny { reason },
+            );
+        }
+        InvocationLookup::Allowed {
+            resource_id,
+            permission,
+        } => (resource_id, permission.writable),
+    };
+    let blob = match load_resource_blob(store, &resource_id) {
+        Ok(b) => b,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading resource blob: {e:#}"),
+            );
+        }
+    };
+    let bytes = match blob.to_canonical_bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("serializing resource blob: {e:#}"),
+            );
+        }
+    };
+    if let Err(e) = bump_pair_last_used(store, &body.wrapper_name, &resource_id) {
+        warn!(
+            audit = "pair_last_used_bump_failed",
+            principal = %principal,
+            wrapper = %body.wrapper_name,
+            resource_id = %resource_id,
+            err = %e,
+        );
+    }
+    json_response(
+        StatusCode::OK,
+        &RuntimeWrapperInvocationOpenResponse::Allow {
+            blob_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            writable,
+        },
+    )
+}
+
+/// Handle `POST /v1/wrapper-invocations/finalize` — close an invocation.
+///
+/// Stateless: no prior open call is required. If `blob_b64` is `None`
+/// this is a usage-signal-only finalize that bumps `last_used_at`.
+/// If `blob_b64` is `Some`, the backend independently re-checks
+/// writability, decodes the blob, requires canonical bytes, and
+/// rejects any change to the env section.
+fn handle_runtime_wrapper_invocation_finalize(
+    store: &dyn StorageBackend,
+    principal: &str,
+    body: &underwrap_protocol::service::RuntimeWrapperInvocationFinalizeRequest,
+) -> Response<Full<Bytes>> {
+    use base64::Engine;
+    use underwrap_protocol::resource_blob::ResourceBlob;
+    use underwrap_protocol::service::RuntimeWrapperInvocationFinalizeResponse;
+
+    if body.wrapper_name.trim().is_empty() || body.resource_name.trim().is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "wrapper_name and resource_name must be non-empty",
+        );
+    }
+    let policy = match load_policy_document_or_default(store) {
+        Ok(p) => p,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading policy: {e:#}"),
+            );
+        }
+    };
+    let lookup = match resolve_invocation(
+        store,
+        principal,
+        &body.wrapper_name,
+        &body.resource_name,
+        &policy,
+    ) {
+        Ok(l) => l,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("policy lookup failed: {e:#}"),
+            );
+        }
+    };
+    let (resource_id, writable) = match lookup {
+        InvocationLookup::UnregisteredPair => {
+            return json_response(
+                StatusCode::OK,
+                &RuntimeWrapperInvocationFinalizeResponse::Deny {
+                    reason: "unregistered-pair".to_string(),
+                },
+            );
+        }
+        InvocationLookup::NoPermission => {
+            return json_response(
+                StatusCode::OK,
+                &RuntimeWrapperInvocationFinalizeResponse::Deny {
+                    reason: "no-permission".to_string(),
+                },
+            );
+        }
+        InvocationLookup::Denied(reason) => {
+            return json_response(
+                StatusCode::OK,
+                &RuntimeWrapperInvocationFinalizeResponse::Deny { reason },
+            );
+        }
+        InvocationLookup::Allowed {
+            resource_id,
+            permission,
+        } => (resource_id, permission.writable),
+    };
+
+    if let Some(blob_b64) = &body.blob_b64 {
+        if !writable {
+            return json_response(
+                StatusCode::OK,
+                &RuntimeWrapperInvocationFinalizeResponse::Deny {
+                    reason: "not-writable".to_string(),
+                },
+            );
+        }
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(blob_b64) {
+            Ok(b) => b,
+            Err(_) => {
+                return json_response(
+                    StatusCode::OK,
+                    &RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+                        reason: "decode-failed".to_string(),
+                    },
+                );
+            }
+        };
+        let new_blob = match ResourceBlob::from_canonical_bytes(&bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                let msg = format!("{e:#}");
+                // `from_canonical_bytes` rejects unknown schema versions
+                // with a message starting with `unsupported resource
+                // blob schema_version`; everything else is a JSON
+                // decode failure. The wire reason distinguishes them
+                // so the daemon can give the operator a useful error.
+                let reason = if msg.contains("schema_version") {
+                    "schema-unknown"
+                } else {
+                    "decode-failed"
+                };
+                return json_response(
+                    StatusCode::OK,
+                    &RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+                        reason: reason.to_string(),
+                    },
+                );
+            }
+        };
+        let canonical = match new_blob.to_canonical_bytes() {
+            Ok(b) => b,
+            Err(e) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &format!("re-serializing blob: {e:#}"),
+                );
+            }
+        };
+        if canonical != bytes {
+            return json_response(
+                StatusCode::OK,
+                &RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+                    reason: "noncanonical-blob".to_string(),
+                },
+            );
+        }
+        let current = match load_resource_blob(store, &resource_id) {
+            Ok(b) => b,
+            Err(e) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &format!("loading current blob: {e:#}"),
+                );
+            }
+        };
+        if new_blob.env != current.env {
+            return json_response(
+                StatusCode::OK,
+                &RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+                    reason: "env-section-immutable".to_string(),
+                },
+            );
+        }
+        if let Err(e) = save_resource_blob(store, &resource_id, &new_blob) {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("saving resource blob: {e:#}"),
+            );
+        }
+    }
+
+    if let Err(e) = bump_pair_last_used(store, &body.wrapper_name, &resource_id) {
+        warn!(
+            audit = "pair_last_used_bump_failed",
+            principal = %principal,
+            wrapper = %body.wrapper_name,
+            resource_id = %resource_id,
+            err = %e,
+        );
+    }
+    json_response(
+        StatusCode::OK,
+        &RuntimeWrapperInvocationFinalizeResponse::Ok,
+    )
 }
 
 /// Generate a stable resource id (`res_<10 hex bytes>`). Mirrors
@@ -9572,6 +10046,472 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 .is_user_floor_revoked("bob", now - 1),
             "sessions issued before the reset must be revoked",
         );
+    }
+
+    /// Fixture for the new runtime API tests. Builds a `crud_state`
+    /// with a plain store containing one resource ("alpha", id derived
+    /// from the catalog), one `(gh, alpha)` pair, and one Unlocked
+    /// writable permission for `instance_id`. Returns enough info for
+    /// individual tests to issue the new runtime endpoints.
+    struct RuntimeApiFixture {
+        _tmp: tempfile::TempDir,
+        state: AdminRuntimeState,
+        store_id: String,
+        instance_id: String,
+        resource_id: String,
+    }
+
+    impl RuntimeApiFixture {
+        fn store(&self) -> Arc<dyn StorageBackend> {
+            self.state
+                .stores
+                .read()
+                .unwrap()
+                .expect_unlocked(&self.store_id)
+        }
+
+        fn policy(&self) -> PolicyDocument {
+            load_policy_document_or_default(self.store().as_ref()).unwrap()
+        }
+
+        fn save_policy(&self, doc: &PolicyDocument) {
+            save_policy_document(self.store().as_ref(), doc).unwrap();
+        }
+    }
+
+    fn make_runtime_api_fixture() -> RuntimeApiFixture {
+        use underwrap_protocol::entities::{
+            EntityCreator, ResourceRecord, WrapperResourcePairRecord,
+        };
+        use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
+        use underwrap_protocol::resource_blob::ResourceBlob;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = crud_state(tmp.path());
+        let p = admin_principal(&[]);
+        let store_id = create_store_for_test(
+            &state,
+            &p,
+            AdminStoreCreateRequest {
+                name: "work".into(),
+                backend: AdminStoreBackendKind::Plain,
+                description: None,
+            },
+        );
+
+        let instance_id = "inst-runtime".to_string();
+        {
+            let mut instances = state.client_instances.write().unwrap();
+            instances.insert(
+                instance_id.clone(),
+                crate::runtime_clients::ClientInstanceRecord {
+                    id: instance_id.clone(),
+                    display_name: "test".into(),
+                    current_store_id: store_id.clone(),
+                    status: crate::runtime_clients::ClientInstanceStatus::Active,
+                    last_seen_at: None,
+                    current_credential: crate::runtime_clients::CurrentCredentialRecord {
+                        cert_fingerprint: "fp-runtime".into(),
+                        cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
+                        issued_at: Some(1),
+                    },
+                    auto_create_wrapper_assets: false,
+                },
+            );
+            crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
+                .unwrap();
+        }
+
+        let store = state.stores.read().unwrap().expect_unlocked(&store_id);
+        let resource_id = "res_alpha".to_string();
+        let mut resources = load_resources_document(store.as_ref()).unwrap();
+        resources
+            .insert(ResourceRecord {
+                id: resource_id.clone(),
+                name: "alpha".into(),
+                created_by: EntityCreator::Operator {
+                    id: "admin-id".into(),
+                    username: "alice".into(),
+                },
+                created_at: 1,
+            })
+            .unwrap();
+        save_resources_document(store.as_ref(), &resources).unwrap();
+        let mut pairs = load_pairs_document(store.as_ref()).unwrap();
+        pairs
+            .insert(WrapperResourcePairRecord {
+                wrapper: "gh".into(),
+                resource_id: resource_id.clone(),
+                created_by: EntityCreator::ClientInstance {
+                    id: instance_id.clone(),
+                },
+                created_at: 1,
+                last_used_at: None,
+                files_mount_paths: Vec::new(),
+            })
+            .unwrap();
+        save_pairs_document(store.as_ref(), &pairs).unwrap();
+
+        let policy = PolicyDocument {
+            permissions: vec![WrapperPermission {
+                client_instance: instance_id.clone(),
+                wrapper: "gh".into(),
+                resource_id: resource_id.clone(),
+                mode: WrapperApprovalMode::Unlocked,
+                writable: true,
+                reason: None,
+            }],
+        };
+        save_policy_document(store.as_ref(), &policy).unwrap();
+        save_resource_blob(store.as_ref(), &resource_id, &ResourceBlob::empty()).unwrap();
+
+        RuntimeApiFixture {
+            _tmp: tmp,
+            state,
+            store_id,
+            instance_id,
+            resource_id,
+        }
+    }
+
+    #[test]
+    fn runtime_wrapper_register_seeds_pair_when_auto_create_enabled() {
+        use underwrap_protocol::service::{
+            RuntimeWrapperRegisterPair, RuntimeWrapperRegisterRequest,
+            RuntimeWrapperRegisterResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        // Flip auto-create on for this instance.
+        {
+            let mut instances = fx.state.client_instances.write().unwrap();
+            instances
+                .get_mut(&fx.instance_id)
+                .unwrap()
+                .auto_create_wrapper_assets = true;
+        }
+        let store = fx.store();
+        let resp = handle_runtime_wrapper_register(
+            &fx.state,
+            store.as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperRegisterRequest {
+                wrappers: vec![RuntimeWrapperRegisterPair {
+                    wrapper_name: "newcomer".into(),
+                    resource_name: "beta".into(),
+                }],
+            },
+        );
+        let parsed: RuntimeWrapperRegisterResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        match parsed {
+            RuntimeWrapperRegisterResponse::Ok {
+                auto_created_resources,
+                auto_created_pairs,
+            } => {
+                assert_eq!(auto_created_resources, vec!["beta".to_string()]);
+                assert_eq!(auto_created_pairs.len(), 1);
+                assert_eq!(auto_created_pairs[0].wrapper_name, "newcomer");
+                assert_eq!(auto_created_pairs[0].resource_name, "beta");
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_wrapper_register_refuses_when_auto_create_disabled() {
+        use underwrap_protocol::service::{
+            RuntimeWrapperRegisterPair, RuntimeWrapperRegisterRequest,
+            RuntimeWrapperRegisterResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        let store = fx.store();
+        let resp = handle_runtime_wrapper_register(
+            &fx.state,
+            store.as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperRegisterRequest {
+                wrappers: vec![RuntimeWrapperRegisterPair {
+                    wrapper_name: "newcomer".into(),
+                    resource_name: "gamma".into(),
+                }],
+            },
+        );
+        let parsed: RuntimeWrapperRegisterResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        match parsed {
+            RuntimeWrapperRegisterResponse::AutoCreateDisabled {
+                missing_resources,
+                missing_pairs,
+            } => {
+                assert_eq!(missing_resources, vec!["gamma".to_string()]);
+                assert_eq!(missing_pairs.len(), 1);
+                assert_eq!(missing_pairs[0].wrapper_name, "newcomer");
+                assert_eq!(missing_pairs[0].resource_name, "gamma");
+            }
+            other => panic!("expected AutoCreateDisabled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_wrapper_invocation_open_allows_unlocked_permission() {
+        use base64::Engine;
+        use underwrap_protocol::resource_blob::ResourceBlob;
+        use underwrap_protocol::service::{
+            RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        let resp = handle_runtime_wrapper_invocation_open(
+            fx.store().as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperInvocationOpenRequest {
+                wrapper_name: "gh".into(),
+                resource_name: "alpha".into(),
+            },
+        );
+        let parsed: RuntimeWrapperInvocationOpenResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        match parsed {
+            RuntimeWrapperInvocationOpenResponse::Allow { blob_b64, writable } => {
+                assert!(writable, "fixture seeds writable=true");
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&blob_b64)
+                    .unwrap();
+                let blob = ResourceBlob::from_canonical_bytes(&bytes).unwrap();
+                assert!(blob.env.is_empty());
+                assert!(blob.files.is_empty());
+            }
+            other => panic!("expected Allow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_wrapper_invocation_open_denies_locked_permission() {
+        use underwrap_protocol::policy::WrapperApprovalMode;
+        use underwrap_protocol::service::{
+            RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        let mut policy = fx.policy();
+        policy.permissions[0].mode = WrapperApprovalMode::Locked;
+        fx.save_policy(&policy);
+        let resp = handle_runtime_wrapper_invocation_open(
+            fx.store().as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperInvocationOpenRequest {
+                wrapper_name: "gh".into(),
+                resource_name: "alpha".into(),
+            },
+        );
+        let parsed: RuntimeWrapperInvocationOpenResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        match parsed {
+            RuntimeWrapperInvocationOpenResponse::Deny { reason } => {
+                assert_eq!(reason, "locked");
+            }
+            other => panic!("expected Deny(locked), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_wrapper_invocation_open_denies_unregistered_pair() {
+        use underwrap_protocol::service::{
+            RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        let resp = handle_runtime_wrapper_invocation_open(
+            fx.store().as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperInvocationOpenRequest {
+                wrapper_name: "ghost".into(),
+                resource_name: "alpha".into(),
+            },
+        );
+        let parsed: RuntimeWrapperInvocationOpenResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        assert!(matches!(
+            parsed,
+            RuntimeWrapperInvocationOpenResponse::Deny { reason } if reason == "unregistered-pair"
+        ));
+    }
+
+    #[test]
+    fn runtime_wrapper_invocation_finalize_bumps_last_used_without_blob() {
+        use underwrap_protocol::service::{
+            RuntimeWrapperInvocationFinalizeRequest, RuntimeWrapperInvocationFinalizeResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        let resp = handle_runtime_wrapper_invocation_finalize(
+            fx.store().as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperInvocationFinalizeRequest {
+                wrapper_name: "gh".into(),
+                resource_name: "alpha".into(),
+                blob_b64: None,
+            },
+        );
+        let parsed: RuntimeWrapperInvocationFinalizeResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        assert_eq!(parsed, RuntimeWrapperInvocationFinalizeResponse::Ok);
+        let pairs = load_pairs_document(fx.store().as_ref()).unwrap();
+        assert!(
+            pairs
+                .find("gh", &fx.resource_id)
+                .unwrap()
+                .last_used_at
+                .is_some(),
+        );
+    }
+
+    #[test]
+    fn runtime_wrapper_invocation_finalize_persists_libsecret_change() {
+        use base64::Engine;
+        use underwrap_protocol::resource_blob::{Collection, ResourceBlob};
+        use underwrap_protocol::service::{
+            RuntimeWrapperInvocationFinalizeRequest, RuntimeWrapperInvocationFinalizeResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        let mut blob = ResourceBlob::empty();
+        blob.libsecret.collections.insert(
+            "default".into(),
+            Collection {
+                label: "Default".into(),
+                created: 1,
+                modified: 2,
+                items: Default::default(),
+            },
+        );
+        let bytes = blob.to_canonical_bytes().unwrap();
+        let resp = handle_runtime_wrapper_invocation_finalize(
+            fx.store().as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperInvocationFinalizeRequest {
+                wrapper_name: "gh".into(),
+                resource_name: "alpha".into(),
+                blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+            },
+        );
+        let parsed: RuntimeWrapperInvocationFinalizeResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        assert_eq!(parsed, RuntimeWrapperInvocationFinalizeResponse::Ok);
+        let stored = load_resource_blob(fx.store().as_ref(), &fx.resource_id).unwrap();
+        assert!(stored.libsecret.collections.contains_key("default"));
+    }
+
+    #[test]
+    fn runtime_wrapper_invocation_finalize_rejects_env_mutation() {
+        use base64::Engine;
+        use underwrap_protocol::message::SecretBytes;
+        use underwrap_protocol::resource_blob::ResourceBlob;
+        use underwrap_protocol::service::{
+            RuntimeWrapperInvocationFinalizeRequest, RuntimeWrapperInvocationFinalizeResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        // Seed an env entry in the stored blob.
+        let mut stored = ResourceBlob::empty();
+        stored
+            .env
+            .insert("TOKEN".into(), SecretBytes::from(b"abc".to_vec()));
+        save_resource_blob(fx.store().as_ref(), &fx.resource_id, &stored).unwrap();
+
+        // Wrapper tries to rewrite TOKEN.
+        let mut mutated = stored.clone();
+        mutated
+            .env
+            .insert("TOKEN".into(), SecretBytes::from(b"xyz".to_vec()));
+        let bytes = mutated.to_canonical_bytes().unwrap();
+        let resp = handle_runtime_wrapper_invocation_finalize(
+            fx.store().as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperInvocationFinalizeRequest {
+                wrapper_name: "gh".into(),
+                resource_name: "alpha".into(),
+                blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+            },
+        );
+        let parsed: RuntimeWrapperInvocationFinalizeResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        assert!(matches!(
+            parsed,
+            RuntimeWrapperInvocationFinalizeResponse::InvalidBlob { reason }
+                if reason == "env-section-immutable"
+        ));
+        // Stored env section must be untouched.
+        let after = load_resource_blob(fx.store().as_ref(), &fx.resource_id).unwrap();
+        assert_eq!(
+            after.env.get("TOKEN").map(|v| v.as_ref().to_vec()),
+            Some(b"abc".to_vec())
+        );
+    }
+
+    #[test]
+    fn runtime_wrapper_invocation_finalize_rejects_noncanonical_blob() {
+        use base64::Engine;
+        use underwrap_protocol::service::{
+            RuntimeWrapperInvocationFinalizeRequest, RuntimeWrapperInvocationFinalizeResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        // Hand-craft a valid-but-noncanonical JSON: trailing whitespace
+        // around the body keeps the bytes parseable but is rejected by
+        // the round-trip equality check.
+        let noncanonical = br#"{"schema_version":1,"env":{},"files":{},"libsecret":{"aliases":{},"collections":{}}}  "#;
+        let resp = handle_runtime_wrapper_invocation_finalize(
+            fx.store().as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperInvocationFinalizeRequest {
+                wrapper_name: "gh".into(),
+                resource_name: "alpha".into(),
+                blob_b64: Some(
+                    base64::engine::general_purpose::STANDARD.encode(noncanonical.as_slice()),
+                ),
+            },
+        );
+        let parsed: RuntimeWrapperInvocationFinalizeResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        assert!(matches!(
+            parsed,
+            RuntimeWrapperInvocationFinalizeResponse::InvalidBlob { reason }
+                if reason == "noncanonical-blob"
+        ));
+    }
+
+    #[test]
+    fn runtime_wrapper_invocation_finalize_rejects_writeback_when_not_writable() {
+        use base64::Engine;
+        use underwrap_protocol::resource_blob::ResourceBlob;
+        use underwrap_protocol::service::{
+            RuntimeWrapperInvocationFinalizeRequest, RuntimeWrapperInvocationFinalizeResponse,
+        };
+
+        let fx = make_runtime_api_fixture();
+        let mut policy = fx.policy();
+        policy.permissions[0].writable = false;
+        fx.save_policy(&policy);
+
+        let bytes = ResourceBlob::empty().to_canonical_bytes().unwrap();
+        let resp = handle_runtime_wrapper_invocation_finalize(
+            fx.store().as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperInvocationFinalizeRequest {
+                wrapper_name: "gh".into(),
+                resource_name: "alpha".into(),
+                blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+            },
+        );
+        let parsed: RuntimeWrapperInvocationFinalizeResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        assert!(matches!(
+            parsed,
+            RuntimeWrapperInvocationFinalizeResponse::Deny { reason } if reason == "not-writable"
+        ));
     }
 
     #[test]

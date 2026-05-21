@@ -863,6 +863,112 @@ pub struct AdminPairDeleteResponse {
 // endpoint and the admin delete-blocker shape; the persisted record
 // adds provenance fields on top.
 
+// ===== Runtime API (resource-vocabulary; replaces the legacy
+// per-key /v1/read /v1/write /v1/list /v1/delete /v1/read-prefixes
+// endpoints and /v1/runtime/wrappers/register). =====
+//
+// The runtime client addresses wrappers and resources by **name** only.
+// There is no `secret_id` field anywhere on this surface and no way to
+// address `__underwrap/*` or `<resource>/<slot>/<key>` storage keys.
+// The backend re-derives the principal from the mTLS cert and
+// re-evaluates the policy document on every call; there are no
+// sessions or open-call state between open and finalize.
+
+/// `POST /v1/wrappers` — one `(wrapper, resource)` pair on the wire.
+/// Mount paths are intentionally absent: they are a daemon-local fact
+/// used to wire bind mounts and never need to reach the backend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeWrapperRegisterPair {
+    pub wrapper_name: String,
+    pub resource_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeWrapperRegisterRequest {
+    pub wrappers: Vec<RuntimeWrapperRegisterPair>,
+}
+
+/// Response to `POST /v1/wrappers`.
+///
+/// The `outcome` tag makes the JSON unambiguous on the wire. `Ok`
+/// reports anything the call newly created; `AutoCreateDisabled`
+/// reports the would-be creations so an operator can decide whether
+/// to flip the auto-create flag on the calling client instance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum RuntimeWrapperRegisterResponse {
+    Ok {
+        /// Resource names that were newly created on this call. Empty
+        /// when every named resource already existed.
+        #[serde(default)]
+        auto_created_resources: Vec<String>,
+        /// Pairs that were newly created on this call.
+        #[serde(default)]
+        auto_created_pairs: Vec<RuntimeWrapperRegisterPair>,
+    },
+    AutoCreateDisabled {
+        missing_resources: Vec<String>,
+        missing_pairs: Vec<RuntimeWrapperRegisterPair>,
+    },
+}
+
+/// `POST /v1/wrapper-invocations` — open an invocation. Stateless:
+/// the backend doesn't allocate a session, it just re-evaluates the
+/// policy and returns the current blob.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeWrapperInvocationOpenRequest {
+    pub wrapper_name: String,
+    pub resource_name: String,
+}
+
+/// Response to `POST /v1/wrapper-invocations`.
+///
+/// `Deny.reason` is a stable kebab-case discriminator (`no-permission`,
+/// `locked`, `expired`, `unregistered-pair`) the daemon can switch on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum RuntimeWrapperInvocationOpenResponse {
+    Allow {
+        /// Canonical resource blob, base64-encoded.
+        blob_b64: String,
+        /// Whether the matched permission allows wrapper-side writes.
+        /// The daemon uses this only as a hint to fail closed early;
+        /// the backend re-checks on finalize regardless.
+        writable: bool,
+    },
+    Deny {
+        reason: String,
+    },
+}
+
+/// `POST /v1/wrapper-invocations/finalize` — close an invocation.
+/// Optional writeback blob, plus an unconditional `last_used_at` bump
+/// on the matched pair.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeWrapperInvocationFinalizeRequest {
+    pub wrapper_name: String,
+    pub resource_name: String,
+    /// `Some` = writeback. The wrapper sends the entire updated blob,
+    /// not a diff. `None` = usage signal only (still bumps last_used_at).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_b64: Option<String>,
+}
+
+/// Response to `POST /v1/wrapper-invocations/finalize`.
+///
+/// `Deny` covers policy denials. `InvalidBlob` covers writeback
+/// validation failures (`env-section-immutable`, `noncanonical-blob`,
+/// `schema-unknown`, `decode-failed`). They are split apart because a
+/// `Deny` may flip to `Allow` after an operator edits the policy,
+/// whereas `InvalidBlob` is a client bug that won't change on retry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum RuntimeWrapperInvocationFinalizeResponse {
+    Ok,
+    Deny { reason: String },
+    InvalidBlob { reason: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
