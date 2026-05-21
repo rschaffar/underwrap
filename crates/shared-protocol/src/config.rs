@@ -356,6 +356,11 @@ wrappers:
         // and the actual config schema. If a future change drops or
         // renames a field used in `examples/config.yaml`, this test
         // surfaces the drift instead of letting the example rot.
+        //
+        // Skips silently when `examples/` isn't in the build sandbox
+        // (e.g. nix builds that copy only `crates/` into the source
+        // tree). The drift check still fires under a normal
+        // workspace-root `cargo test`, which is where humans run it.
         let manifest = env!("CARGO_MANIFEST_DIR");
         let repo_root = std::path::Path::new(manifest)
             .parent()
@@ -363,8 +368,13 @@ wrappers:
             .parent()
             .unwrap();
         let example = repo_root.join("examples").join("config.yaml");
-        let yaml = std::fs::read_to_string(&example)
-            .unwrap_or_else(|e| panic!("read {}: {e}", example.display()));
+        let Ok(yaml) = std::fs::read_to_string(&example) else {
+            eprintln!(
+                "skipping: {} not reachable from this build sandbox",
+                example.display()
+            );
+            return;
+        };
         let _: DaemonConfig = serde_yaml::from_str(&yaml).unwrap_or_else(|e| {
             panic!("examples/config.yaml does not parse against DaemonConfig: {e}")
         });

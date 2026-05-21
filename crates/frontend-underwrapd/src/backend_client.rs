@@ -115,8 +115,21 @@ impl BackendClient {
         identity_pem.extend_from_slice(&key_pem);
 
         let _ = rustls::crypto::ring::default_provider().install_default();
+        // Disable HTTP keep-alive: the daemon issues a small handful
+        // of requests per wrapper invocation and at most a couple of
+        // invocations per second. The cost of one mTLS handshake per
+        // request is negligible compared to the cost of failing-open
+        // a wrapper call because reqwest tried to reuse a connection
+        // the backend silently dropped (e.g. after a restart). Without
+        // this, the first invocation after `systemctl restart
+        // underwrap-backendd` hits a half-dead pooled connection and
+        // surfaces as `peer closed connection without sending TLS
+        // close_notify`; with it, every call opens a fresh TLS
+        // connection and the daemon survives backend restarts without
+        // operator intervention.
         let mut builder = reqwest::Client::builder()
             .use_rustls_tls()
+            .pool_max_idle_per_host(0)
             .identity(Identity::from_pem(&identity_pem).context("parsing backend identity PEM")?);
         if let Some(ca_path) = config.ca_file.as_ref() {
             let ca_pem = fs::read(ca_path)

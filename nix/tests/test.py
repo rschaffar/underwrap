@@ -187,7 +187,6 @@ def admin_upsert_grant(url, store, client_instance, wrapper, resource, mode, *, 
       {"kind": "locked"}
       {"kind": "unlocked"}
       {"kind": "unlocked-until", "until_epoch": 1234}
-      {"kind": "per-call-approval", "approval_key": "ssh-ed25519 ..."}
     """
     permission = {
         "client_instance": client_instance,
@@ -358,8 +357,8 @@ def boot_and_service_checks():
     bootstrap_admin_session(ADMIN_REMOTE)
 
     # underwrapd-local / underwrapd-tunnel only come up after the
-    # backends are reachable (they probe /v1/status at startup), so
-    # wait for them now.
+    # backends are reachable (they issue an empty `POST /v1/wrappers`
+    # register call at startup), so wait for them now.
     machine.wait_for_unit("underwrapd-local.service")
     machine.wait_for_unit("underwrapd-tunnel.service")
 
@@ -1917,6 +1916,218 @@ def instance_isolation():
     machine.log("PASS: local wrapper does not leak remote secrets")
 
 
+def runtime_api_invariants():
+    # ============================================================
+    # RUNTIME API INVARIANTS (epic_runtime_api_redesign)
+    # ============================================================
+    #
+    # Pins the trust-boundary properties of the new three-endpoint
+    # runtime API end-to-end: lazy self-heal after a backend restart
+    # (regression for the original auth-bypass risk that motivated
+    # the redesign), no legacy storage-key route on the wire, no
+    # PerCallApproval mode anywhere in the admin surface, and the
+    # env-immutability rule applied by the backend on every finalize.
+    # ============================================================
+
+    # ----------------------------------------------------------
+    # Backend restart self-heal — the daemon's BackendClient is
+    # lazy and re-opens on the next wrapper call, so the wrapper
+    # must keep working without restarting underwrapd-local.
+    # ----------------------------------------------------------
+    grant_local_unlocked("test-echo")
+    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    assert "MY_TOKEN=" in output
+
+    machine.succeed("systemctl restart underwrap-backendd-local.service")
+    machine.wait_for_unit("underwrap-backendd-local.service")
+    # Give the new listener a moment to bind before the next wrapper call.
+    time.sleep(1)
+
+    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    assert "MY_TOKEN=" in output, (
+        f"wrapper must self-heal after backend restart, got: {output}"
+    )
+    machine.log("PASS: daemon self-heals after backend restart")
+
+    # ----------------------------------------------------------
+    # PerCallApproval variant is gone — admin policy/put rejects
+    # any payload that tries to carry it.
+    # ----------------------------------------------------------
+    err = admin_api_expect_status(
+        ADMIN_LOCAL,
+        "/v1/admin/policy/put",
+        {
+            "store": "local",
+            "document": {
+                "permissions": [
+                    {
+                        "client_instance": LOCAL_CLIENT_INSTANCE,
+                        "wrapper": "test-echo",
+                        "resource_id": _resource_id_for(ADMIN_LOCAL, "test/token"),
+                        "mode": {"kind": "per-call-approval"},
+                        "writable": False,
+                    }
+                ]
+            },
+        },
+        status=400,
+    )
+    err_blob = json.dumps(err).lower()
+    assert (
+        "unknown variant" in err_blob
+        or "per-call-approval" in err_blob
+        or "kind" in err_blob
+    ), f"unexpected admin policy/put error shape: {err}"
+    machine.log("PASS: admin policy/put rejects per-call-approval payloads")
+
+    # ----------------------------------------------------------
+    # The legacy per-key /v1/write route is gone — even an
+    # authenticated runtime mTLS client cannot reach it. Same for
+    # /v1/status, /v1/read, /v1/delete, /v1/list.
+    # ----------------------------------------------------------
+    runtime_cert = "/var/lib/underwrap-local/client-local.pem"
+    runtime_key = "/var/lib/underwrap-local/client-local.key"
+
+    def _runtime_curl(method, path, body=None, expect_status=None):
+        """Issue an mTLS request against the local backend's runtime
+        surface using underwrapd-local's own client credential, then
+        return either the parsed JSON body (when expect_status is
+        None or 2xx) or just the http_code (for failure cases)."""
+        cmd = [
+            "curl", "-sS",
+            "-o", "/tmp/runtime-body",
+            "-w", "%{http_code}",
+            "--cacert", CA_CERT,
+            "--cert", runtime_cert,
+            "--key", runtime_key,
+            "-X", method,
+            f"https://127.0.0.1:18443{path}",
+        ]
+        if body is not None:
+            cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(body)]
+        code = machine.succeed(" ".join(shlex.quote(p) for p in cmd)).strip()
+        if expect_status is not None:
+            assert code == str(expect_status), (
+                f"runtime {method} {path} expected HTTP {expect_status}, got {code}"
+            )
+            return code
+        if not code.startswith("2"):
+            body_text = machine.succeed("cat /tmp/runtime-body")
+            raise AssertionError(f"runtime {method} {path} returned {code}: {body_text}")
+        body_text = machine.succeed("cat /tmp/runtime-body")
+        return json.loads(body_text) if body_text.strip() else {}
+
+    for legacy in ("/v1/status", "/v1/read", "/v1/write", "/v1/list", "/v1/delete",
+                   "/v1/read-prefixes", "/v1/runtime/wrappers/register"):
+        _runtime_curl("POST", legacy, body={}, expect_status=404)
+    machine.log("PASS: every legacy per-key runtime route returns 404 on mTLS")
+
+    # ----------------------------------------------------------
+    # Env immutability through the full mTLS path: open returns
+    # the canonical blob, finalize rejects a writeback that
+    # mutates the env section even when the permission is
+    # writable. This pins the redesign's "env is admin-only on
+    # writeback" guarantee at the wire level inside a real VM.
+    # ----------------------------------------------------------
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-echo",
+        "test/token",
+        {"kind": "unlocked"},
+        writable=True,
+    )
+
+    open_resp = _runtime_curl(
+        "POST",
+        "/v1/wrapper-invocations",
+        body={"wrapper_name": "test-echo", "resource_name": "test/token"},
+    )
+    assert open_resp["outcome"] == "allow", f"open should Allow, got {open_resp}"
+    assert open_resp["writable"] is True, "grant flipped to writable above"
+    blob_bytes = base64.b64decode(open_resp["blob_b64"])
+    blob = json.loads(blob_bytes.decode())
+    # Mutate the env section. JCS-canonical JSON for our blob shape
+    # (ASCII keys, base64 string values, sorted u64 schema_version) is
+    # byte-identical to Python's sorted-keys minified JSON, so the
+    # backend's re-canonicalize check will accept the encoding and
+    # then reject specifically on env-section-immutable.
+    blob.setdefault("env", {})["INJECTED"] = base64.b64encode(b"x").decode()
+    mutated = json.dumps(blob, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    finalize_resp = _runtime_curl(
+        "POST",
+        "/v1/wrapper-invocations/finalize",
+        body={
+            "wrapper_name": "test-echo",
+            "resource_name": "test/token",
+            "blob_b64": base64.b64encode(mutated).decode(),
+        },
+    )
+    assert finalize_resp == {"outcome": "invalid-blob", "reason": "env-section-immutable"}, (
+        f"env mutation must be rejected, got {finalize_resp}"
+    )
+    machine.log("PASS: backend rejects env mutation on direct mTLS finalize")
+
+    # Sanity: a finalize that touches files (and leaves env alone)
+    # still succeeds against the same writable permission, so the
+    # rejection above is specifically about env and not about the
+    # mTLS path being broken.
+    blob = json.loads(blob_bytes.decode())
+    blob.setdefault("files", {})["touched"] = base64.b64encode(b"y").decode()
+    ok_blob = json.dumps(blob, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    finalize_resp = _runtime_curl(
+        "POST",
+        "/v1/wrapper-invocations/finalize",
+        body={
+            "wrapper_name": "test-echo",
+            "resource_name": "test/token",
+            "blob_b64": base64.b64encode(ok_blob).decode(),
+        },
+    )
+    assert finalize_resp == {"outcome": "ok"}, (
+        f"files-only writeback must succeed, got {finalize_resp}"
+    )
+    machine.log("PASS: files-only writeback through the same path succeeds")
+
+    # Clean up the writable grant so later sections don't trip over
+    # it; reset the env-only baseline by re-writing through the
+    # admin API.
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-echo",
+        "test/token",
+        {"kind": "unlocked"},
+        writable=False,
+    )
+
+    # ----------------------------------------------------------
+    # Static check: the shipped daemon and backend binaries no
+    # longer carry any of the SSH-agent approval symbols. Guards
+    # against accidental reintroduction by tooling that doesn't
+    # run the integration tests.
+    # ----------------------------------------------------------
+    forbidden = ("approval_key", "ApprovalProof", "ApprovalRequired", "PerCallApproval")
+    for unit in ("underwrapd-local.service", "underwrap-backendd-local.service",
+                 "underwrap-backendd.service"):
+        pid = machine.succeed(
+            f"systemctl show {unit} -p MainPID --value"
+        ).strip()
+        if not pid or pid == "0":
+            continue
+        exe = machine.succeed(f"readlink /proc/{pid}/exe").strip()
+        for needle in forbidden:
+            hit = machine.succeed(
+                f"grep -aoF {shlex.quote(needle)} {shlex.quote(exe)} | head -n 1 || true"
+            ).strip()
+            assert not hit, (
+                f"binary for {unit} ({exe}) still carries forbidden symbol {needle!r}"
+            )
+    machine.log("PASS: no SSH-approval symbols remain in shipped binaries")
+
+
 def audit_and_no_secret_leaks():
     # ============================================================
     # AUDIT + NO SECRET LEAKS
@@ -1960,5 +2171,6 @@ instance_isolation()
 local_backend_policy_control_center()
 local_backend_managed_grants()
 encrypted_store_in_memory_keys()
+runtime_api_invariants()
 audit_and_no_secret_leaks()
 
