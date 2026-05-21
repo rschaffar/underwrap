@@ -22,4 +22,5 @@ pub(crate) mod pairs;
 pub(crate) mod policy;
 pub(crate) mod resources;
 pub(crate) mod secrets;
+pub(crate) mod stores;
 pub(crate) mod users;
