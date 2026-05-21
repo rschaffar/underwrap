@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod config;
+pub(crate) mod http;
 pub mod runtime_clients;
 pub mod server;
 pub mod store_registry;

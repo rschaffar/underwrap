@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
@@ -33,6 +33,12 @@ use underwrap_store::{
 
 pub use crate::config::{
     AdminConfig, BackendConfig, DEFAULT_STORES_FILE, HttpsConfig, HttpsTlsConfig,
+};
+#[cfg(test)]
+pub(crate) use crate::http::origin::referer_to_origin;
+pub(crate) use crate::http::origin::{check_admin_origin, validate_admin_config};
+pub(crate) use crate::http::responses::{
+    error_response, json_response, parse_json_body, store_locked_response,
 };
 pub use crate::store_registry::{
     LoadedStoreRecord, RegistryLookupError, StoreRegistry, StoreState, is_valid_store_id,
@@ -245,72 +251,6 @@ fn validate_runtime_client_mappings(
         }
     }
     Ok(())
-}
-
-/// Validate the browser-facing admin configuration.
-fn validate_admin_config(config: &AdminConfig) -> Result<()> {
-    if let Some(origins) = &config.allowed_origins {
-        for origin in origins {
-            if origin.trim().is_empty() {
-                anyhow::bail!("admin.allowed_origins contains an empty entry");
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Check the `Origin` (or `Referer`) header of a state-changing request
-/// against the configured allowlist. GET/HEAD/OPTIONS are not gated.
-/// Returns `Ok(())` when no allowlist is configured.
-fn check_admin_origin(
-    method: &Method,
-    headers: &hyper::HeaderMap,
-    allowed: Option<&[String]>,
-) -> std::result::Result<(), &'static str> {
-    if matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS) {
-        return Ok(());
-    }
-    let allowed = match allowed {
-        Some(list) if !list.is_empty() => list,
-        _ => return Ok(()),
-    };
-    let presented = headers
-        .get(hyper::header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .or_else(|| {
-            headers
-                .get(hyper::header::REFERER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(referer_to_origin)
-        });
-    let presented = match presented {
-        Some(value) => value,
-        None => return Err("missing Origin/Referer on state-changing request"),
-    };
-    if allowed.iter().any(|a| a.trim() == presented) {
-        Ok(())
-    } else {
-        Err("Origin/Referer not in allowed_origins")
-    }
-}
-
-/// Strip path/query from a `Referer` value, returning the scheme+host[:port]
-/// prefix. Returns `None` for malformed inputs so callers can reject.
-fn referer_to_origin(referer: &str) -> Option<String> {
-    let trimmed = referer.trim();
-    let (scheme, rest) = trimmed.split_once("://")?;
-    if scheme.is_empty() {
-        return None;
-    }
-    let authority = match rest.find('/') {
-        Some(idx) => &rest[..idx],
-        None => rest,
-    };
-    if authority.is_empty() {
-        return None;
-    }
-    Some(format!("{scheme}://{authority}"))
 }
 
 /// Outcome of authenticating a runtime client request. Carries the
@@ -559,61 +499,6 @@ fn bump_pair_last_used(store: &dyn StorageBackend, wrapper: &str, resource_id: &
     }
     pair.last_used_at = Some(now);
     save_pairs_document(store, &doc)
-}
-
-async fn parse_json_body<T: serde::de::DeserializeOwned>(
-    request: Request<Incoming>,
-) -> std::result::Result<T, Response<Full<Bytes>>> {
-    let body = match request.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(e) => {
-            return Err(error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                &format!("failed to read request body: {e}"),
-            ));
-        }
-    };
-    serde_json::from_slice(&body).map_err(|e| {
-        error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            &format!("invalid JSON request body: {e}"),
-        )
-    })
-}
-
-fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Response<Full<Bytes>> {
-    let bytes = serde_json::to_vec(body).expect("serializing service response");
-    Response::builder()
-        .status(status)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(bytes)))
-        .expect("building HTTP response")
-}
-
-fn error_response(status: StatusCode, code: &str, message: &str) -> Response<Full<Bytes>> {
-    json_response(
-        status,
-        &underwrap_protocol::service::ServiceErrorResponse {
-            code: code.to_string(),
-            message: message.to_string(),
-        },
-    )
-}
-
-/// Canonical 503 response for a request that targeted a known but
-/// locked encrypted store. The `code` field is what frontend daemons
-/// and the SPA switch on; the human-readable message names the
-/// store so an operator looking at logs can act on it.
-fn store_locked_response(store_id: &str) -> Response<Full<Bytes>> {
-    error_response(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "store_locked",
-        &format!(
-            "store '{store_id}' is locked; an administrator must unlock it before requests can land",
-        ),
-    )
 }
 
 /// Read a single per-key entry by translating through the resource
