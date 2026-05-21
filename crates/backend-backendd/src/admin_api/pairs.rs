@@ -3,7 +3,10 @@
 
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::{Response, StatusCode};
+use hyper::body::Incoming;
+use hyper::{Request, Response, StatusCode};
+
+use crate::http::responses::parse_json_body;
 
 use crate::admin_api::audit::log_admin_event;
 use crate::http::responses::{error_response, json_response};
@@ -12,6 +15,47 @@ use crate::storage::documents::{
     ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document_or_default,
     load_resources_document, save_pairs_document,
 };
+
+pub(crate) async fn handle_admin_pairs_list_endpoint(
+    state: &AdminRuntimeState,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body = match parse_json_body::<underwrap_protocol::service::AdminPairsListRequest>(request)
+        .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    handle_admin_pairs_list(state, &body)
+}
+
+pub(crate) async fn handle_admin_pair_create_endpoint(
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body = match parse_json_body::<underwrap_protocol::service::AdminPairCreateRequest>(request)
+        .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    handle_admin_pair_create(state, principal, &body)
+}
+
+pub(crate) async fn handle_admin_pair_delete_endpoint(
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body = match parse_json_body::<underwrap_protocol::service::AdminPairDeleteRequest>(request)
+        .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    handle_admin_pair_delete(state, principal, &body)
+}
 
 #[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_pairs_list(

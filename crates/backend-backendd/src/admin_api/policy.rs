@@ -131,6 +131,53 @@ pub(crate) async fn handle_admin_policy_put(
     }
 }
 
+pub(crate) async fn handle_admin_wrapper_permissions_list_endpoint(
+    state: &AdminRuntimeState,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body = match parse_json_body::<
+        underwrap_protocol::service::AdminWrapperPermissionsListRequest,
+    >(request)
+    .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    handle_admin_wrapper_permissions_list(state, &body)
+}
+
+pub(crate) async fn handle_admin_wrapper_permission_upsert_endpoint(
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body = match parse_json_body::<
+        underwrap_protocol::service::AdminWrapperPermissionUpsertRequest,
+    >(request)
+    .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    handle_admin_wrapper_permission_upsert(state, principal, &body)
+}
+
+pub(crate) async fn handle_admin_wrapper_permission_delete_endpoint(
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body = match parse_json_body::<
+        underwrap_protocol::service::AdminWrapperPermissionDeleteRequest,
+    >(request)
+    .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    handle_admin_wrapper_permission_delete(state, principal, &body)
+}
+
 #[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_wrapper_permissions_list(
     state: &AdminRuntimeState,

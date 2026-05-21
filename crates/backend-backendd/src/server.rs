@@ -55,16 +55,29 @@ pub(crate) use crate::admin_api::csrf::{
     AdminAuthError, attach_csrf_cookie, authenticate_admin, check_csrf, resolve_principal,
 };
 pub(crate) use crate::admin_api::overview::handle_admin_ui_overview;
+#[cfg(test)]
+pub(crate) use crate::admin_api::pairs::{handle_admin_pair_create, handle_admin_pair_delete};
 pub(crate) use crate::admin_api::pairs::{
-    handle_admin_pair_create, handle_admin_pair_delete, handle_admin_pairs_list,
+    handle_admin_pair_create_endpoint, handle_admin_pair_delete_endpoint,
+    handle_admin_pairs_list_endpoint,
 };
+#[cfg(test)]
+pub(crate) use crate::admin_api::policy::handle_admin_wrapper_permission_upsert;
 pub(crate) use crate::admin_api::policy::{
-    handle_admin_policy_get, handle_admin_policy_put, handle_admin_wrapper_permission_delete,
-    handle_admin_wrapper_permission_upsert, handle_admin_wrapper_permissions_list,
+    handle_admin_policy_get, handle_admin_policy_put,
+    handle_admin_wrapper_permission_delete_endpoint,
+    handle_admin_wrapper_permission_upsert_endpoint,
+    handle_admin_wrapper_permissions_list_endpoint,
 };
 pub(crate) use crate::admin_api::resources::{
-    handle_admin_resource_blob_get, handle_admin_resource_blob_put, handle_admin_resource_create,
-    handle_admin_resource_delete, handle_admin_resource_rename, handle_admin_resources_list,
+    handle_admin_resource_blob_get_endpoint, handle_admin_resource_blob_put_endpoint,
+    handle_admin_resource_create_endpoint, handle_admin_resource_delete_endpoint,
+    handle_admin_resource_rename_endpoint, handle_admin_resources_list_endpoint,
+};
+#[cfg(test)]
+pub(crate) use crate::admin_api::resources::{
+    handle_admin_resource_create, handle_admin_resource_delete, handle_admin_resource_rename,
+    handle_admin_resources_list,
 };
 pub(crate) use crate::admin_api::secrets::{
     handle_admin_secret_delete, handle_admin_secret_list, handle_admin_secret_read,
@@ -94,9 +107,9 @@ pub use crate::config::{
 #[cfg(test)]
 pub(crate) use crate::http::origin::referer_to_origin;
 pub(crate) use crate::http::origin::{check_admin_origin, validate_admin_config};
+pub(crate) use crate::http::responses::error_response;
 #[cfg(test)]
 pub(crate) use crate::http::responses::json_response;
-pub(crate) use crate::http::responses::{error_response, parse_json_body};
 pub(crate) use crate::runtime_api::handle_service_request;
 #[cfg(test)]
 pub(crate) use crate::runtime_api::invocations::{
@@ -557,102 +570,41 @@ async fn handle_admin_request(
         }
         (&Method::POST, "/v1/admin/policy/get") => handle_admin_policy_get(&state, request).await,
         (&Method::POST, "/v1/admin/policy/put") => handle_admin_policy_put(&state, request).await,
-        // ===== Wrapper permission CRUD =====
-        (&Method::POST, "/v1/admin/wrapper-permissions/list") => match parse_json_body::<
-            underwrap_protocol::service::AdminWrapperPermissionsListRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_wrapper_permissions_list(&state, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/wrapper-permissions/upsert") => match parse_json_body::<
-            underwrap_protocol::service::AdminWrapperPermissionUpsertRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_wrapper_permission_upsert(&state, &principal, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/wrapper-permissions/delete") => match parse_json_body::<
-            underwrap_protocol::service::AdminWrapperPermissionDeleteRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_wrapper_permission_delete(&state, &principal, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/resources/list") => {
-            match parse_json_body::<underwrap_protocol::service::AdminResourcesListRequest>(request)
-                .await
-            {
-                Ok(body) => handle_admin_resources_list(&state, &body),
-                Err(response) => response,
-            }
+        (&Method::POST, "/v1/admin/wrapper-permissions/list") => {
+            handle_admin_wrapper_permissions_list_endpoint(&state, request).await
         }
-        (&Method::POST, "/v1/admin/resources/create") => match parse_json_body::<
-            underwrap_protocol::service::AdminResourceCreateRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_resource_create(&state, &principal, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/resources/delete") => match parse_json_body::<
-            underwrap_protocol::service::AdminResourceDeleteRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_resource_delete(&state, &principal, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/resources/rename") => match parse_json_body::<
-            underwrap_protocol::service::AdminResourceRenameRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_resource_rename(&state, &principal, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/resources/blob/get") => match parse_json_body::<
-            underwrap_protocol::service::AdminResourceBlobGetRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_resource_blob_get(&state, &body),
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/admin/resources/blob/put") => match parse_json_body::<
-            underwrap_protocol::service::AdminResourceBlobPutRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => handle_admin_resource_blob_put(&state, &actor, &body),
-            Err(response) => response,
-        },
+        (&Method::POST, "/v1/admin/wrapper-permissions/upsert") => {
+            handle_admin_wrapper_permission_upsert_endpoint(&state, &principal, request).await
+        }
+        (&Method::POST, "/v1/admin/wrapper-permissions/delete") => {
+            handle_admin_wrapper_permission_delete_endpoint(&state, &principal, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/list") => {
+            handle_admin_resources_list_endpoint(&state, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/create") => {
+            handle_admin_resource_create_endpoint(&state, &principal, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/delete") => {
+            handle_admin_resource_delete_endpoint(&state, &principal, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/rename") => {
+            handle_admin_resource_rename_endpoint(&state, &principal, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/blob/get") => {
+            handle_admin_resource_blob_get_endpoint(&state, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/blob/put") => {
+            handle_admin_resource_blob_put_endpoint(&state, &actor, request).await
+        }
         (&Method::POST, "/v1/admin/pairs/list") => {
-            match parse_json_body::<underwrap_protocol::service::AdminPairsListRequest>(request)
-                .await
-            {
-                Ok(body) => handle_admin_pairs_list(&state, &body),
-                Err(response) => response,
-            }
+            handle_admin_pairs_list_endpoint(&state, request).await
         }
         (&Method::POST, "/v1/admin/pairs/create") => {
-            match parse_json_body::<underwrap_protocol::service::AdminPairCreateRequest>(request)
-                .await
-            {
-                Ok(body) => handle_admin_pair_create(&state, &principal, &body),
-                Err(response) => response,
-            }
+            handle_admin_pair_create_endpoint(&state, &principal, request).await
         }
         (&Method::POST, "/v1/admin/pairs/delete") => {
-            match parse_json_body::<underwrap_protocol::service::AdminPairDeleteRequest>(request)
-                .await
-            {
-                Ok(body) => handle_admin_pair_delete(&state, &principal, &body),
-                Err(response) => response,
-            }
+            handle_admin_pair_delete_endpoint(&state, &principal, request).await
         }
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     };

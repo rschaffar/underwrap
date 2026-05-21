@@ -9,7 +9,10 @@
 use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::{Response, StatusCode};
+use hyper::body::Incoming;
+use hyper::{Request, Response, StatusCode};
+
+use crate::http::responses::parse_json_body;
 
 use underwrap_store::{load_resource_blob, save_resource_blob};
 
@@ -21,6 +24,94 @@ use crate::storage::documents::{
     ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document_or_default,
     load_resources_document, resource_secret_dependents, save_resources_document,
 };
+
+pub(crate) async fn handle_admin_resources_list_endpoint(
+    state: &AdminRuntimeState,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body =
+        match parse_json_body::<underwrap_protocol::service::AdminResourcesListRequest>(request)
+            .await
+        {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        };
+    handle_admin_resources_list(state, &body)
+}
+
+pub(crate) async fn handle_admin_resource_blob_get_endpoint(
+    state: &AdminRuntimeState,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body =
+        match parse_json_body::<underwrap_protocol::service::AdminResourceBlobGetRequest>(request)
+            .await
+        {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        };
+    handle_admin_resource_blob_get(state, &body)
+}
+
+pub(crate) async fn handle_admin_resource_blob_put_endpoint(
+    state: &AdminRuntimeState,
+    operator: &str,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body =
+        match parse_json_body::<underwrap_protocol::service::AdminResourceBlobPutRequest>(request)
+            .await
+        {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        };
+    handle_admin_resource_blob_put(state, operator, &body)
+}
+
+pub(crate) async fn handle_admin_resource_create_endpoint(
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body =
+        match parse_json_body::<underwrap_protocol::service::AdminResourceCreateRequest>(request)
+            .await
+        {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        };
+    handle_admin_resource_create(state, principal, &body)
+}
+
+pub(crate) async fn handle_admin_resource_delete_endpoint(
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body =
+        match parse_json_body::<underwrap_protocol::service::AdminResourceDeleteRequest>(request)
+            .await
+        {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        };
+    handle_admin_resource_delete(state, principal, &body)
+}
+
+pub(crate) async fn handle_admin_resource_rename_endpoint(
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let body =
+        match parse_json_body::<underwrap_protocol::service::AdminResourceRenameRequest>(request)
+            .await
+        {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        };
+    handle_admin_resource_rename(state, principal, &body)
+}
 
 #[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_resources_list(
