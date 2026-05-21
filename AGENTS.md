@@ -53,15 +53,15 @@ nix build .#checks.x86_64-linux.vm-test              # NixOS VM test (60+ assert
 ```
 crates/
   shared-protocol/         # IPC framing, config schema, messages, SCM_RIGHTS, policy types
-  shared-store/            # StorageBackend trait: plain, encrypted; mTLS HTTPS service client
+  shared-store/            # StorageBackend trait used by the backend (PlainBackend, EncryptedBackend)
   shared-secretsd-store/   # In-memory Secret Service data model + JSON serialization
-  frontend-underwrapd/     # Daemon: identity, grant gate, per-call approval, audit
+  frontend-underwrapd/     # Daemon: thin client of the backend; relays wrapper IPC to /v1/wrapper-invocations
   frontend-exec/           # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
   frontend-ns/             # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
   frontend-secretsd/       # D-Bus Secret Service provider for libsecret mode
   frontend-debug-tool/     # CLI for debugging wrapper-socket flows
   frontend-keyring-probe/  # Smoke-test binary for the libsecret round-trip
-  backend-backendd/        # Central HTTPS service + admin API + auth + SPA hosting
+  backend-backendd/        # Central HTTPS service + admin API + auth + SPA hosting + policy authority
   integration-tests/       # Cargo integration tests (real daemon + backend)
 web/                       # Vite + React + shadcn admin SPA (served by backend-backendd)
 nix/
@@ -97,20 +97,32 @@ story tickets and give both story and task tickets these ordered numeric prefixe
 
 ## Key files to understand first
 
-- `crates/frontend-exec/src/main.rs` — two-stage wrapper entry point with
-  per-call approval ssh-agent signing
+- `crates/frontend-exec/src/main.rs` — two-stage wrapper entry point;
+  authenticates against the daemon, receives env + a scoped resource
+  channel fd, then re-execs into `underwrap-ns`
 - `crates/frontend-ns/src/main.rs` — PID namespace + hardening + libsecret mode
-- `crates/frontend-underwrapd/src/server.rs` — daemon: identity resolution, wrapper dispatch
-- `crates/frontend-underwrapd/src/approval.rs` — pending-challenge store + signature verify
-- `crates/frontend-underwrapd/src/wrapper_flow/` — the wrapper socket request flow
-- `crates/frontend-underwrapd/src/policy.rs` — wrapper-permission gate (lookup by `(client_instance, wrapper, resource)`)
-- `crates/backend-backendd/src/server.rs` — HTTPS service + admin API + stores/users/wrapper-permissions CRUD
+- `crates/frontend-underwrapd/src/server.rs` — daemon: lazy
+  [`BackendClient`] open, wrapper-socket dispatch
+- `crates/frontend-underwrapd/src/backend_client.rs` — typed mTLS
+  client for the three runtime endpoints
+- `crates/frontend-underwrapd/src/wrapper_flow/` — wrapper socket
+  request flow (peer auth → open invocation on backend → relay
+  ReadOk + scoped channel)
+- `crates/frontend-underwrapd/src/wrapper_resource_channel.rs` —
+  serves Checkout from the cached blob; turns Checkin / UsageSignal
+  into finalize calls
+- `crates/backend-backendd/src/server.rs` — HTTPS service + admin
+  API + the three runtime handlers (`/v1/wrappers`,
+  `/v1/wrapper-invocations`, `/v1/wrapper-invocations/finalize`) +
+  sole policy authority
 - `crates/backend-backendd/src/auth.rs` — Argon2id password hashing + AEAD session cookies
 - `crates/backend-backendd/src/web.rs` — embedded SPA hosting via `rust-embed`
 - `crates/backend-backendd/src/operators.rs` — operator records + Principal + role/store-access model
 - `crates/shared-protocol/src/policy.rs` — `PolicyDocument`, `WrapperPermission`, `WrapperApprovalMode`
 - `crates/shared-protocol/src/entities.rs` — `ResourceRecord`, `WrapperResourcePairRecord`, `EntityCreator` (first-class entities with provenance)
-- `crates/shared-store/src/service.rs` — mTLS HTTPS backend client
+- `crates/shared-protocol/src/service.rs` — wire types incl.
+  `Runtime{WrapperRegister, WrapperInvocationOpen,
+  WrapperInvocationFinalize}{Request,Response}`
 - `web/src/router.tsx` — TanStack Router setup; the SPA's auth/bootstrap guard lives here
 - `nix/modules/underwrap.nix` — frontend NixOS module (generates wrappers, sockets, services)
 - `nix/modules/underwrap-backend.nix` — backend NixOS module (declarative stores)
@@ -196,7 +208,7 @@ on backward compatibility concerns.
 **Two-stage wrapper chain:**
 `underwrap-exec` (setgid) → pipe fd 3 → `underwrap-ns` (cap_sys_admin) → target in PID namespace
 
-**Identity model:** wrapper socket selects expected wrapper + setgid group → `SO_PEERCRED` effective GID → daemon confirms the match; daemon resolves the GID-validated peer UID to a username via `getpwuid` and consults the per-store grant `(client_instance, wrapper, resource)`.
+**Identity model:** wrapper socket selects expected wrapper + setgid group → `SO_PEERCRED` effective GID → daemon confirms the match → daemon issues `POST /v1/wrapper-invocations { wrapper_name, resource_name }` to the backend over mTLS. The backend re-derives the principal from the cert and consults the per-store grant `(client_instance, wrapper, resource)`. The daemon itself carries no policy state.
 
 **One resource per wrapper (frontend invariant):** each `WrapperDef` in
 the frontend config projects exactly one backend resource. The resource
@@ -220,10 +232,32 @@ the same listener as the JSON admin API.
 **Wrapper permission model:** the per-store policy document is a flat
 list of `WrapperPermission` rows keyed by
 `(client_instance, wrapper, resource)`. Each permission carries one of
-four modes (`Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`,
-`PerCallApproval { approval_key }`) and a per-permission `writable:
-bool` flag. Read access through an active permission is unconditional;
-write access is decided per-permission.
+three modes (`Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`)
+and a per-permission `writable: bool` flag. Read access through an
+active permission is unconditional; write access is decided
+per-permission and re-checked server-side on every finalize.
+Per-invocation approval is out of scope; use OS-level mechanisms
+(sudo / polkit) if you need a prompt.
+
+**Runtime API (daemon ↔ backend, mTLS):**
+
+- `POST /v1/wrappers` — register the daemon's `(wrapper_name,
+  resource_name)` pairs at startup.
+- `POST /v1/wrapper-invocations` — open one invocation. Backend
+  re-evaluates the policy and returns either `Allow { resource_id,
+  blob_b64, writable }` or `Deny { reason }`.
+- `POST /v1/wrapper-invocations/finalize` — close one invocation,
+  optionally with a writeback blob. Backend independently re-checks
+  writability, re-canonicalizes, and rejects any change to the env
+  section (`env-section-immutable`). With `blob_b64 = None` this is
+  the usage-signal path that just bumps `last_used_at`.
+
+The runtime client never names a storage key, never identifies
+itself by id, never evaluates policy, and never holds a
+`StorageBackend`. The legacy per-key endpoints
+(`/v1/read`, `/v1/write`, `/v1/list`, `/v1/read-prefixes`,
+`/v1/delete`, `/v1/status`, `/v1/runtime/wrappers/register`) are
+deleted.
 
 **Libsecret mode:** When `libsecret = true` on a wrapper:
 
@@ -251,34 +285,23 @@ PID + mount namespace (created by underwrap-ns)
 
 See `docs/security.md` "Design invariants" and "Secretsd channel" for security analysis.
 
-**Per-call approval** (when the permission for `(client_instance, wrapper, resource)` is in `PerCallApproval` mode):
-
-1. underwrap-exec connects and sends `WrapperRequest::Read`
-2. underwrapd consults the permission and responds with
-   `WrapperResponse::ApprovalRequired { challenge_id, nonce, approval_key }`
-3. underwrap-exec signs the nonce via `SSH_AUTH_SOCK` and sends
-   `WrapperRequest::ApprovalProof { challenge_id, signature, public_key_blob }`
-4. underwrapd verifies the signature against the permission's `approval_key`,
-   consumes the nonce, and re-authorizes the read with the mode gate
-   bypassed
-5. The usual `ReadOk` / scoped-channel flow continues
-
 ## Resource storage and writeback model
 
-Every resource is stored as **one** opaque blob at `resources/<id>` in
-the `StorageBackend`. The blob is JCS-canonical (RFC 8785) JSON
-carrying the resource's `env`, `files`, and `libsecret` sections (see
-`docs/backend.md` "Resource blob storage"). The wrapper-side per-call
-IPC verbs still exist, but writes during a run buffer in the daemon's
-in-memory bundle snapshot and are persisted as one atomic blob write
-when the channel closes.
+Every resource is stored as **one** opaque blob at `resources/<id>`
+in the backend's `StorageBackend`. The blob is JCS-canonical (RFC
+8785) JSON carrying the resource's `env`, `files`, and `libsecret`
+sections (see `docs/backend.md` "Resource blob storage").
+
+The daemon never holds a `StorageBackend`. On wrapper open it gets
+the canonical blob bytes from `POST /v1/wrapper-invocations` and
+caches them for the lifetime of the channel; on Checkout it serves
+those bytes verbatim; on Checkin / UsageSignal it issues
+`POST /v1/wrapper-invocations/finalize` (with or without a blob).
+Mount paths are a daemon-local concern — `frontend-ns` derives them
+from the wrapper config — and never travel on the wire.
 
 `WrapperResourcePairRecord` carries `last_used_at` (bumped on every
-successful runtime read) and `files_mount_paths` (refreshed from the
-wrapper config on every daemon startup register). The admin SPA's
-Wrapper permissions table shows the relative-time label; the Secrets
-browser uses the mount paths to render `<mount>/<inner>` next to each
-file entry.
+successful open and every successful finalize).
 
 The namespace's bind-mounted directory and tmpfs staging dir are
 **always read-write** to the target, regardless of the wrapper
@@ -300,11 +323,18 @@ The libsecret mode is implemented. See the architecture notes above
 and `docs/security.md` for the full design and security analysis. The
 atomic resource-blob storage layout, last-used tracking, always-rw
 namespace mount, and read-only writeback warning have all landed
-(tickets/03_done/epic_atomic_resource_blobs.md).
+(tickets/03_done/epic_atomic_resource_blobs.md). The runtime-API
+redesign collapsing the daemon to a thin client + deleting the
+per-key endpoints + dropping SSH per-call approval landed under
+`epic_runtime_api_redesign.md`.
 
 ## Planned work
 
-- Wrapper-side rewrite to speak Checkout/Checkin/UsageSignal natively
-  and remove the legacy per-call IPC (tickets/01_todo/411, 413).
-- Documentation pass on architecture.md + security.md and a VM test
-  for the always-rw mount and warning behavior (tickets/01_todo/432).
+- `tickets/01_todo/640_task_integration_tests.md` — comprehensive
+  integration test coverage of the three new runtime endpoints.
+- `tickets/01_todo/650_task_vm_test_update.md` — NixOS VM test
+  updates (backend-restart self-heal, env immutability through the
+  full stack, no-`PerCallApproval` admin assertion).
+- `tickets/01_todo/660_task_docs.md` — docs sweep of
+  `docs/architecture.md`, `docs/backend.md`, `docs/security.md`,
+  `examples/config.yaml`, `docs/getting-started.md`.
