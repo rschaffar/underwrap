@@ -10,7 +10,7 @@
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use std::collections::HashMap;
 
 use underwrap_protocol::service::{
@@ -495,4 +495,42 @@ pub(crate) fn handle_admin_client_instance_delete(
         StatusCode::OK,
         &underwrap_protocol::service::AdminOkResponse { ok: true },
     )
+}
+
+pub(crate) async fn route(
+    method: &Method,
+    path: &str,
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    if path == "/v1/admin/client-instances" {
+        return match *method {
+            Method::GET => handle_admin_client_instances_list(state),
+            Method::POST => handle_admin_client_instance_create(state, principal, request).await,
+            _ => error_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "GET or POST",
+            ),
+        };
+    }
+    if let Some(rest) = path.strip_prefix("/v1/admin/client-instances/")
+        && !rest.is_empty()
+        && !rest.contains('/')
+    {
+        return match *method {
+            Method::GET => handle_admin_client_instance_detail(state, rest),
+            Method::PUT => {
+                handle_admin_client_instance_update(state, principal, rest, request).await
+            }
+            Method::DELETE => handle_admin_client_instance_delete(state, principal, rest),
+            _ => error_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "GET, PUT, or DELETE",
+            ),
+        };
+    }
+    error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint")
 }

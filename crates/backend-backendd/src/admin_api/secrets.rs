@@ -10,7 +10,7 @@ use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use tracing::info;
 
 use underwrap_protocol::message::SecretBytes;
@@ -291,4 +291,27 @@ pub(crate) fn handle_admin_secret_rename(
         StatusCode::OK,
         &underwrap_protocol::service::AdminOkResponse { ok: true },
     )
+}
+
+pub(crate) async fn route(
+    method: &Method,
+    path: &str,
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    match (method, path) {
+        (&Method::POST, "/v1/admin/secret/read") => handle_admin_secret_read(state, request).await,
+        (&Method::POST, "/v1/admin/secret/write") => {
+            handle_admin_secret_write_endpoint(state, &principal.username, request).await
+        }
+        (&Method::POST, "/v1/admin/secret/list") => handle_admin_secret_list(state, request).await,
+        (&Method::POST, "/v1/admin/secret/delete") => {
+            handle_admin_secret_delete(state, request).await
+        }
+        (&Method::POST, "/v1/admin/secret/rename") => {
+            handle_admin_secret_rename_endpoint(state, &principal.username, request).await
+        }
+        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
+    }
 }

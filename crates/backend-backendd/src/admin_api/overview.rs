@@ -8,7 +8,8 @@
 use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::{Response, StatusCode};
+use hyper::body::Incoming;
+use hyper::{Method, Request, Response, StatusCode};
 use std::sync::Arc;
 
 use underwrap_store::StorageBackend;
@@ -92,5 +93,18 @@ pub(crate) fn handle_admin_ui_overview(state: &AdminRuntimeState) -> Response<Fu
             )
         }
         Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+    }
+}
+
+pub(crate) async fn route(
+    method: &Method,
+    path: &str,
+    state: &AdminRuntimeState,
+    _principal: &crate::users::Principal,
+    _request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    match (method, path) {
+        (&Method::GET, "/v1/admin/ui/overview") => handle_admin_ui_overview(state),
+        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     }
 }

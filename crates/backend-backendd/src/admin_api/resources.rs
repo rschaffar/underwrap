@@ -10,7 +10,7 @@ use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 
 use crate::http::responses::parse_json_body;
 
@@ -530,4 +530,34 @@ pub(crate) fn handle_admin_resource_rename(
         StatusCode::OK,
         &underwrap_protocol::service::AdminResourceRenameResponse { resource: updated },
     )
+}
+
+pub(crate) async fn route(
+    method: &Method,
+    path: &str,
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    match (method, path) {
+        (&Method::POST, "/v1/admin/resources/list") => {
+            handle_admin_resources_list_endpoint(state, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/create") => {
+            handle_admin_resource_create_endpoint(state, principal, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/delete") => {
+            handle_admin_resource_delete_endpoint(state, principal, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/rename") => {
+            handle_admin_resource_rename_endpoint(state, principal, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/blob/get") => {
+            handle_admin_resource_blob_get_endpoint(state, request).await
+        }
+        (&Method::POST, "/v1/admin/resources/blob/put") => {
+            handle_admin_resource_blob_put_endpoint(state, &principal.username, request).await
+        }
+        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
+    }
 }

@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::warn;
@@ -1215,4 +1215,76 @@ pub(crate) fn write_admin_store_audit(
         None,
         result,
     );
+}
+
+pub(crate) async fn route(
+    method: &Method,
+    path: &str,
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    if path == "/v1/admin/stores" {
+        return match *method {
+            Method::GET => handle_admin_stores_list(state),
+            Method::POST => handle_admin_store_create(state, principal, request).await,
+            _ => error_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "GET or POST",
+            ),
+        };
+    }
+    if let Some(rest) = path.strip_prefix("/v1/admin/stores/") {
+        if let Some(name) = rest.strip_suffix("/rotate-key")
+            && !name.is_empty()
+            && !name.contains('/')
+        {
+            return match *method {
+                Method::POST => handle_admin_store_rotate_key(state, principal, name).await,
+                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
+            };
+        }
+        if let Some(name) = rest.strip_suffix("/unlock")
+            && !name.is_empty()
+            && !name.contains('/')
+        {
+            return match *method {
+                Method::POST => handle_admin_store_unlock(state, principal, name, request).await,
+                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
+            };
+        }
+        if let Some(name) = rest.strip_suffix("/lock")
+            && !name.is_empty()
+            && !name.contains('/')
+        {
+            return match *method {
+                Method::POST => handle_admin_store_lock(state, principal, name),
+                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
+            };
+        }
+        if !rest.is_empty() && !rest.contains('/') {
+            return match *method {
+                Method::GET => handle_admin_store_detail(state, rest),
+                Method::PUT => handle_admin_store_update(state, principal, rest, request).await,
+                Method::DELETE => {
+                    let force = request
+                        .uri()
+                        .query()
+                        .map(|q| {
+                            q.split('&')
+                                .any(|pair| matches!(pair, "force=true" | "force=1" | "force"))
+                        })
+                        .unwrap_or(false);
+                    handle_admin_store_delete(state, principal, rest, force)
+                }
+                _ => error_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "GET, PUT, or DELETE",
+                ),
+            };
+        }
+    }
+    error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint")
 }

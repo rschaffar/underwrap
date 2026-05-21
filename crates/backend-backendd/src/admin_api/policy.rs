@@ -16,7 +16,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 
 use underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID;
 
@@ -329,4 +329,27 @@ pub(crate) fn handle_admin_wrapper_permission_delete(
         StatusCode::OK,
         &underwrap_protocol::service::AdminOkResponse { ok: true },
     )
+}
+
+pub(crate) async fn route(
+    method: &Method,
+    path: &str,
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    match (method, path) {
+        (&Method::POST, "/v1/admin/policy/get") => handle_admin_policy_get(state, request).await,
+        (&Method::POST, "/v1/admin/policy/put") => handle_admin_policy_put(state, request).await,
+        (&Method::POST, "/v1/admin/wrapper-permissions/list") => {
+            handle_admin_wrapper_permissions_list_endpoint(state, request).await
+        }
+        (&Method::POST, "/v1/admin/wrapper-permissions/upsert") => {
+            handle_admin_wrapper_permission_upsert_endpoint(state, principal, request).await
+        }
+        (&Method::POST, "/v1/admin/wrapper-permissions/delete") => {
+            handle_admin_wrapper_permission_delete_endpoint(state, principal, request).await
+        }
+        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
+    }
 }

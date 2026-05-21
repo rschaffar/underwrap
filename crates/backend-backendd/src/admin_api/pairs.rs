@@ -4,7 +4,7 @@
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 
 use crate::http::responses::parse_json_body;
 
@@ -275,4 +275,25 @@ pub(crate) fn handle_admin_pair_delete(
             blocked_by: None,
         },
     )
+}
+
+pub(crate) async fn route(
+    method: &Method,
+    path: &str,
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    match (method, path) {
+        (&Method::POST, "/v1/admin/pairs/list") => {
+            handle_admin_pairs_list_endpoint(state, request).await
+        }
+        (&Method::POST, "/v1/admin/pairs/create") => {
+            handle_admin_pair_create_endpoint(state, principal, request).await
+        }
+        (&Method::POST, "/v1/admin/pairs/delete") => {
+            handle_admin_pair_delete_endpoint(state, principal, request).await
+        }
+        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
+    }
 }

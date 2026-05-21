@@ -9,7 +9,7 @@
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use tracing::{info, warn};
 
 use crate::http::responses::{error_response, json_response, parse_json_body};
@@ -246,7 +246,7 @@ pub(crate) async fn handle_admin_password_change(
     // These two helpers will move to `admin_api::users` in ticket
     // 770; until then they live in `crate::server` and the auth
     // module reaches back for them.
-    use crate::server::{mutate_collection, write_admin_user_audit};
+    use crate::admin_api::users::{mutate_collection, write_admin_user_audit};
 
     let body = match parse_json_body::<AdminPasswordChangeRequest>(request).await {
         Ok(b) => b,
@@ -336,5 +336,25 @@ pub(crate) async fn handle_admin_password_change(
                 "could not save new password",
             )
         }
+    }
+}
+
+/// Authenticated auth routes — currently just `auth/password`.
+/// Login + whoami are public (dispatched inline before the
+/// session-cookie gate). `auth/logout` is dispatched inline in
+/// [`crate::admin_api::handle_admin_request`] because it consumes the
+/// `AdminAuth` struct, not the resolved `Principal`.
+pub(crate) async fn route(
+    method: &Method,
+    path: &str,
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    match (method, path) {
+        (&Method::POST, "/v1/admin/auth/password") => {
+            handle_admin_password_change(state, principal, request).await
+        }
+        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     }
 }

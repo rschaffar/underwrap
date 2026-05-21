@@ -6,9 +6,11 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use http_body_util::Full;
+#[cfg(test)]
+use hyper::Method;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 
@@ -17,7 +19,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[cfg(test)]
 use base64::Engine;
@@ -28,103 +30,91 @@ use underwrap_protocol::config::StoreRecord;
 #[cfg(test)]
 use underwrap_store::{StorageBackend, load_resource_blob, save_resource_blob};
 
+// External-consumer re-exports. `integration-tests/`, `tests/ts_export.rs`,
+// and `main.rs` import these via `underwrap_backendd::server::*`. Once
+// 820 lands and `server.rs` becomes a re-export shim (or disappears),
+// these continue to work because the crate-root re-export still leads
+// here.
 pub use crate::admin_api::auth::{LoginRequest, LoginResponse, WhoamiResponse};
-pub(crate) use crate::admin_api::auth::{
-    handle_admin_login, handle_admin_logout, handle_admin_password_change, handle_admin_whoami,
-};
-#[cfg(test)]
-pub(crate) use crate::admin_api::bootstrap::audit_bootstrap_attempt;
 pub use crate::admin_api::bootstrap::{
     BootstrapRequest, BootstrapResponse, BootstrapStatusResponse,
 };
+pub use crate::config::{
+    AdminConfig, BackendConfig, DEFAULT_STORES_FILE, HttpsConfig, HttpsTlsConfig,
+};
+pub use crate::store_registry::{
+    LoadedStoreRecord, RegistryLookupError, StoreRegistry, StoreState, is_valid_store_id,
+    load_store_records,
+};
+
+// Internal helpers used by the runtime bootstrap and the HTTPS connection
+// dispatcher live below. Anything only the inline test module reaches for
+// is re-exported behind `#[cfg(test)]` — ticket 820 relocates those tests
+// next to their production modules and removes the re-exports.
+pub(crate) use crate::admin_api::stores::admin_store;
+pub(crate) use crate::http::origin::validate_admin_config;
+pub(crate) use crate::http::responses::error_response;
+pub(crate) use crate::runtime_api::handle_service_request;
+pub(crate) use crate::runtime_api::principal::validate_runtime_client_mappings;
+pub(crate) use crate::runtime_state::AdminRuntimeState;
+pub(crate) use crate::store_registry::open_initial_stores;
+pub(crate) use crate::tls::build_https_acceptor;
+
+#[cfg(test)]
+pub(crate) use crate::admin_api::auth::{handle_admin_logout, handle_admin_whoami};
+#[cfg(test)]
 pub(crate) use crate::admin_api::bootstrap::{
-    handle_admin_bootstrap, handle_admin_bootstrap_status,
+    audit_bootstrap_attempt, handle_admin_bootstrap_status,
 };
 #[cfg(test)]
 pub(crate) use crate::admin_api::client_instances::{
     do_admin_client_instance_create, do_admin_client_instance_update,
-};
-pub(crate) use crate::admin_api::client_instances::{
-    handle_admin_client_instance_create, handle_admin_client_instance_delete,
-    handle_admin_client_instance_detail, handle_admin_client_instance_update,
-    handle_admin_client_instances_list,
+    handle_admin_client_instance_delete, handle_admin_client_instances_list,
 };
 #[cfg(test)]
-pub(crate) use crate::admin_api::csrf::AdminAuth;
 pub(crate) use crate::admin_api::csrf::{
-    AdminAuthError, attach_csrf_cookie, authenticate_admin, check_csrf, resolve_principal,
+    AdminAuth, AdminAuthError, attach_csrf_cookie, authenticate_admin, check_csrf,
+    resolve_principal,
 };
-pub(crate) use crate::admin_api::overview::handle_admin_ui_overview;
 #[cfg(test)]
 pub(crate) use crate::admin_api::pairs::{handle_admin_pair_create, handle_admin_pair_delete};
-pub(crate) use crate::admin_api::pairs::{
-    handle_admin_pair_create_endpoint, handle_admin_pair_delete_endpoint,
-    handle_admin_pairs_list_endpoint,
-};
 #[cfg(test)]
 pub(crate) use crate::admin_api::policy::handle_admin_wrapper_permission_upsert;
-pub(crate) use crate::admin_api::policy::{
-    handle_admin_policy_get, handle_admin_policy_put,
-    handle_admin_wrapper_permission_delete_endpoint,
-    handle_admin_wrapper_permission_upsert_endpoint,
-    handle_admin_wrapper_permissions_list_endpoint,
-};
-pub(crate) use crate::admin_api::resources::{
-    handle_admin_resource_blob_get_endpoint, handle_admin_resource_blob_put_endpoint,
-    handle_admin_resource_create_endpoint, handle_admin_resource_delete_endpoint,
-    handle_admin_resource_rename_endpoint, handle_admin_resources_list_endpoint,
-};
 #[cfg(test)]
 pub(crate) use crate::admin_api::resources::{
     handle_admin_resource_create, handle_admin_resource_delete, handle_admin_resource_rename,
     handle_admin_resources_list,
 };
-pub(crate) use crate::admin_api::secrets::{
-    handle_admin_secret_delete, handle_admin_secret_list, handle_admin_secret_read,
-    handle_admin_secret_rename_endpoint, handle_admin_secret_write_endpoint,
-};
 #[cfg(test)]
 pub(crate) use crate::admin_api::secrets::{handle_admin_secret_rename, handle_admin_secret_write};
-pub(crate) use crate::admin_api::stores::{
-    admin_store, handle_admin_store_create, handle_admin_store_delete, handle_admin_store_detail,
-    handle_admin_store_lock, handle_admin_store_rotate_key, handle_admin_store_unlock,
-    handle_admin_store_update, handle_admin_stores_list,
-};
 #[cfg(test)]
 pub(crate) use crate::admin_api::stores::{
-    do_admin_store_create, do_admin_store_unlock, do_admin_store_update, resolve_store_dir,
+    do_admin_store_create, do_admin_store_unlock, do_admin_store_update, handle_admin_store_delete,
+    handle_admin_store_detail, handle_admin_store_lock, handle_admin_store_rotate_key,
+    handle_admin_stores_list, resolve_store_dir,
 };
 #[cfg(test)]
-pub(crate) use crate::admin_api::users::{do_admin_user_create, do_admin_user_update};
 pub(crate) use crate::admin_api::users::{
-    handle_admin_user_create, handle_admin_user_delete, handle_admin_user_detail,
-    handle_admin_user_reset_password, handle_admin_user_update, handle_admin_users_list,
-    mutate_collection, write_admin_user_audit,
+    do_admin_user_create, do_admin_user_update, handle_admin_user_delete, handle_admin_users_list,
+    mutate_collection,
 };
-pub use crate::config::{
-    AdminConfig, BackendConfig, DEFAULT_STORES_FILE, HttpsConfig, HttpsTlsConfig,
-};
+#[cfg(test)]
+pub(crate) use crate::http::origin::check_admin_origin;
 #[cfg(test)]
 pub(crate) use crate::http::origin::referer_to_origin;
-pub(crate) use crate::http::origin::{check_admin_origin, validate_admin_config};
-pub(crate) use crate::http::responses::error_response;
 #[cfg(test)]
 pub(crate) use crate::http::responses::json_response;
-pub(crate) use crate::runtime_api::handle_service_request;
 #[cfg(test)]
 pub(crate) use crate::runtime_api::invocations::{
     bump_pair_last_used, handle_runtime_wrapper_invocation_finalize,
     handle_runtime_wrapper_invocation_open,
 };
-pub(crate) use crate::runtime_api::principal::validate_runtime_client_mappings;
 #[cfg(test)]
 pub(crate) use crate::runtime_api::principal::{
     get_policy_document, put_policy_document, resolve_runtime_client,
 };
-
 #[cfg(test)]
 pub(crate) use crate::runtime_api::wrappers::handle_runtime_wrapper_register;
-pub(crate) use crate::runtime_state::AdminRuntimeState;
 #[cfg(test)]
 pub(crate) use crate::storage::documents::{
     load_pairs_document, load_policy_document_or_default, load_resources_document,
@@ -132,12 +122,6 @@ pub(crate) use crate::storage::documents::{
 };
 #[cfg(test)]
 pub(crate) use crate::storage::secret_entries::{list_secret_entries, write_resource_entry};
-pub(crate) use crate::store_registry::open_initial_stores;
-pub use crate::store_registry::{
-    LoadedStoreRecord, RegistryLookupError, StoreRegistry, StoreState, is_valid_store_id,
-    load_store_records,
-};
-pub(crate) use crate::tls::build_https_acceptor;
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores_file = config.stores_file();
@@ -289,326 +273,9 @@ async fn handle_https_request(
                 "admin interface is disabled",
             ));
         }
-        return handle_admin_request(request, state).await;
+        return crate::admin_api::handle_admin_request(request, state).await;
     }
     handle_service_request(request, state, peer_certificates).await
-}
-
-async fn handle_admin_request(
-    request: Request<Incoming>,
-    state: Arc<AdminRuntimeState>,
-) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
-    if crate::web::is_spa_request(request.method(), request.uri().path()) {
-        return Ok(crate::web::serve_web_request(
-            request.method(),
-            request.uri().path(),
-            &state.web_source,
-        ));
-    }
-    if let Err(reason) = check_admin_origin(
-        request.method(),
-        request.headers(),
-        state.allowed_origins.as_deref(),
-    ) {
-        warn!(reason = reason, "rejected admin request (origin check)");
-        return Ok(error_response(StatusCode::FORBIDDEN, "bad_origin", reason));
-    }
-    // Auth endpoints are public — they exist *to* establish a session.
-    // CSRF/logout (212), bootstrap (214), and any other unauthenticated
-    // auth surfaces dispatch here before the session-cookie check
-    // below.
-    match (request.method(), request.uri().path()) {
-        (&Method::POST, "/v1/admin/auth/login") => {
-            return Ok(handle_admin_login(&state, request).await);
-        }
-        (&Method::GET, "/v1/admin/auth/whoami") => {
-            return Ok(handle_admin_whoami(&state, request.headers()));
-        }
-        (&Method::GET, "/v1/admin/auth/bootstrap/status") => {
-            return Ok(handle_admin_bootstrap_status(&state));
-        }
-        (&Method::POST, "/v1/admin/auth/bootstrap") => {
-            return Ok(handle_admin_bootstrap(&state, request).await);
-        }
-        _ => {}
-    }
-    let auth = match authenticate_admin(&state, request.headers()) {
-        Ok(a) => a,
-        Err(AdminAuthError::Revoked) => {
-            warn!("rejected admin request: session revoked");
-            return Ok(error_response(
-                StatusCode::UNAUTHORIZED,
-                "session_revoked",
-                "session has been revoked",
-            ));
-        }
-        Err(AdminAuthError::Unauthenticated(reason)) => {
-            warn!(reason = reason, "rejected admin request");
-            return Ok(error_response(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                reason,
-            ));
-        }
-    };
-
-    if let Err((code, msg)) = check_csrf(
-        request.method(),
-        request.headers(),
-        &auth.session().csrf_secret,
-    ) {
-        warn!(reason = msg, code = code, "rejected admin request (csrf)");
-        return Ok(error_response(StatusCode::FORBIDDEN, code, msg));
-    }
-
-    let principal = match resolve_principal(&state, &auth) {
-        Ok(p) => p,
-        Err(resp) => return Ok(resp),
-    };
-    let actor = principal.username.clone();
-    info!(
-        user = %actor,
-        method = %request.method(),
-        path = request.uri().path(),
-        "admin request"
-    );
-
-    // Logout runs *after* auth + CSRF have passed: the caller must have
-    // a valid session AND have proven possession of its csrf_secret to
-    // revoke it. That blocks drive-by logout via cookie-only requests.
-    if request.method() == Method::POST && request.uri().path() == "/v1/admin/auth/logout" {
-        return Ok(handle_admin_logout(&state, auth.session()));
-    }
-
-    // Path-parameterised stores routes. Match them first so the
-    // literal "/v1/admin/stores" dispatch below doesn't shadow them.
-    //
-    // Three nested routes today — `rotate-key`, `unlock`, `lock` —
-    // all match before the generic single-segment matcher (which
-    // filters out any path containing '/').
-    if let Some(rest) = request.uri().path().strip_prefix("/v1/admin/stores/") {
-        if let Some(name) = rest.strip_suffix("/rotate-key")
-            && !name.is_empty()
-            && !name.contains('/')
-        {
-            return Ok(match *request.method() {
-                Method::POST => handle_admin_store_rotate_key(&state, &principal, name).await,
-                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
-            });
-        }
-        if rest.ends_with("/unlock") || rest.ends_with("/lock") {
-            let (name, op) = if let Some(n) = rest.strip_suffix("/unlock") {
-                (n, "unlock")
-            } else {
-                (rest.strip_suffix("/lock").unwrap(), "lock")
-            };
-            if !name.is_empty() && !name.contains('/') {
-                let name_owned = name.to_string();
-                let is_post = request.method() == Method::POST;
-                if !is_post {
-                    return Ok(error_response(
-                        StatusCode::METHOD_NOT_ALLOWED,
-                        "method_not_allowed",
-                        "POST",
-                    ));
-                }
-                return Ok(match op {
-                    "unlock" => {
-                        handle_admin_store_unlock(&state, &principal, &name_owned, request).await
-                    }
-                    "lock" => handle_admin_store_lock(&state, &principal, &name_owned),
-                    _ => unreachable!(),
-                });
-            }
-        }
-    }
-    // Path-parameterised users routes (ticket 240).
-    //
-    // `/v1/admin/users/{id}/password` is the only nested route; match
-    // it before the generic single-segment matcher (which filters out
-    // any path containing '/').
-    let users_subpath = request
-        .uri()
-        .path()
-        .strip_prefix("/v1/admin/users/")
-        .map(str::to_string);
-    if let Some(rest) = users_subpath.as_deref() {
-        if let Some(id) = rest.strip_suffix("/password")
-            && !id.is_empty()
-            && !id.contains('/')
-        {
-            let id = id.to_string();
-            return Ok(match *request.method() {
-                Method::POST => {
-                    handle_admin_user_reset_password(&state, &principal, &id, request).await
-                }
-                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
-            });
-        }
-        if !rest.is_empty() && !rest.contains('/') {
-            let id = rest.to_string();
-            match *request.method() {
-                Method::GET => {
-                    return Ok(handle_admin_user_detail(&state, &id));
-                }
-                Method::PUT => {
-                    return Ok(handle_admin_user_update(&state, &principal, &id, request).await);
-                }
-                Method::DELETE => {
-                    return Ok(handle_admin_user_delete(&state, &principal, &id));
-                }
-                _ => {
-                    return Ok(error_response(
-                        StatusCode::METHOD_NOT_ALLOWED,
-                        "method_not_allowed",
-                        "GET, PUT, or DELETE",
-                    ));
-                }
-            }
-        }
-    }
-
-    // Path-parameterised client-instance routes.
-    if let Some(id) = request
-        .uri()
-        .path()
-        .strip_prefix("/v1/admin/client-instances/")
-        .filter(|rest| !rest.is_empty() && !rest.contains('/'))
-    {
-        let id = id.to_string();
-        match *request.method() {
-            Method::GET => {
-                return Ok(handle_admin_client_instance_detail(&state, &id));
-            }
-            Method::PUT => {
-                return Ok(
-                    handle_admin_client_instance_update(&state, &principal, &id, request).await,
-                );
-            }
-            Method::DELETE => {
-                return Ok(handle_admin_client_instance_delete(&state, &principal, &id));
-            }
-            _ => {
-                return Ok(error_response(
-                    StatusCode::METHOD_NOT_ALLOWED,
-                    "method_not_allowed",
-                    "GET, PUT, or DELETE",
-                ));
-            }
-        }
-    }
-
-    // GET /v1/admin/stores/<name>, PUT, DELETE.
-    if let Some(name) = request
-        .uri()
-        .path()
-        .strip_prefix("/v1/admin/stores/")
-        .filter(|rest| !rest.is_empty() && !rest.contains('/'))
-    {
-        let name = name.to_string();
-        match *request.method() {
-            Method::GET => {
-                return Ok(handle_admin_store_detail(&state, &name));
-            }
-            Method::PUT => {
-                return Ok(handle_admin_store_update(&state, &principal, &name, request).await);
-            }
-            Method::DELETE => {
-                let force = request
-                    .uri()
-                    .query()
-                    .map(|q| {
-                        q.split('&')
-                            .any(|pair| matches!(pair, "force=true" | "force=1" | "force"))
-                    })
-                    .unwrap_or(false);
-                return Ok(handle_admin_store_delete(&state, &principal, &name, force));
-            }
-            _ => {
-                return Ok(error_response(
-                    StatusCode::METHOD_NOT_ALLOWED,
-                    "method_not_allowed",
-                    "GET, PUT, or DELETE",
-                ));
-            }
-        }
-    }
-
-    let response = match (request.method(), request.uri().path()) {
-        (&Method::GET, "/v1/admin/users") => {
-            return Ok(handle_admin_users_list(&state));
-        }
-        (&Method::POST, "/v1/admin/users") => {
-            return Ok(handle_admin_user_create(&state, &principal, request).await);
-        }
-        (&Method::POST, "/v1/admin/auth/password") => {
-            return Ok(handle_admin_password_change(&state, &principal, request).await);
-        }
-        (&Method::GET, "/v1/admin/stores") => {
-            return Ok(handle_admin_stores_list(&state));
-        }
-        (&Method::POST, "/v1/admin/stores") => {
-            return Ok(handle_admin_store_create(&state, &principal, request).await);
-        }
-        (&Method::GET, "/v1/admin/client-instances") => {
-            return Ok(handle_admin_client_instances_list(&state));
-        }
-        (&Method::POST, "/v1/admin/client-instances") => {
-            return Ok(handle_admin_client_instance_create(&state, &principal, request).await);
-        }
-        (&Method::GET, "/v1/admin/ui/overview") => handle_admin_ui_overview(&state),
-        (&Method::POST, "/v1/admin/secret/read") => handle_admin_secret_read(&state, request).await,
-        (&Method::POST, "/v1/admin/secret/write") => {
-            handle_admin_secret_write_endpoint(&state, &actor, request).await
-        }
-        (&Method::POST, "/v1/admin/secret/list") => handle_admin_secret_list(&state, request).await,
-        (&Method::POST, "/v1/admin/secret/delete") => {
-            handle_admin_secret_delete(&state, request).await
-        }
-        (&Method::POST, "/v1/admin/secret/rename") => {
-            handle_admin_secret_rename_endpoint(&state, &actor, request).await
-        }
-        (&Method::POST, "/v1/admin/policy/get") => handle_admin_policy_get(&state, request).await,
-        (&Method::POST, "/v1/admin/policy/put") => handle_admin_policy_put(&state, request).await,
-        (&Method::POST, "/v1/admin/wrapper-permissions/list") => {
-            handle_admin_wrapper_permissions_list_endpoint(&state, request).await
-        }
-        (&Method::POST, "/v1/admin/wrapper-permissions/upsert") => {
-            handle_admin_wrapper_permission_upsert_endpoint(&state, &principal, request).await
-        }
-        (&Method::POST, "/v1/admin/wrapper-permissions/delete") => {
-            handle_admin_wrapper_permission_delete_endpoint(&state, &principal, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/list") => {
-            handle_admin_resources_list_endpoint(&state, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/create") => {
-            handle_admin_resource_create_endpoint(&state, &principal, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/delete") => {
-            handle_admin_resource_delete_endpoint(&state, &principal, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/rename") => {
-            handle_admin_resource_rename_endpoint(&state, &principal, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/blob/get") => {
-            handle_admin_resource_blob_get_endpoint(&state, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/blob/put") => {
-            handle_admin_resource_blob_put_endpoint(&state, &actor, request).await
-        }
-        (&Method::POST, "/v1/admin/pairs/list") => {
-            handle_admin_pairs_list_endpoint(&state, request).await
-        }
-        (&Method::POST, "/v1/admin/pairs/create") => {
-            handle_admin_pair_create_endpoint(&state, &principal, request).await
-        }
-        (&Method::POST, "/v1/admin/pairs/delete") => {
-            handle_admin_pair_delete_endpoint(&state, &principal, request).await
-        }
-        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
-    };
-    Ok(attach_csrf_cookie(response, &state, &auth))
 }
 
 #[cfg(test)]

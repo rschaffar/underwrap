@@ -10,7 +10,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use tracing::warn;
 
 use underwrap_protocol::service::{
@@ -365,4 +365,50 @@ pub(crate) fn handle_admin_user_delete(
             }
         }
     }
+}
+
+pub(crate) async fn route(
+    method: &Method,
+    path: &str,
+    state: &AdminRuntimeState,
+    principal: &crate::users::Principal,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    if path == "/v1/admin/users" {
+        return match *method {
+            Method::GET => handle_admin_users_list(state),
+            Method::POST => handle_admin_user_create(state, principal, request).await,
+            _ => error_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "GET or POST",
+            ),
+        };
+    }
+    if let Some(rest) = path.strip_prefix("/v1/admin/users/") {
+        if let Some(id) = rest.strip_suffix("/password")
+            && !id.is_empty()
+            && !id.contains('/')
+        {
+            return match *method {
+                Method::POST => {
+                    handle_admin_user_reset_password(state, principal, id, request).await
+                }
+                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
+            };
+        }
+        if !rest.is_empty() && !rest.contains('/') {
+            return match *method {
+                Method::GET => handle_admin_user_detail(state, rest),
+                Method::PUT => handle_admin_user_update(state, principal, rest, request).await,
+                Method::DELETE => handle_admin_user_delete(state, principal, rest),
+                _ => error_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "GET, PUT, or DELETE",
+                ),
+            };
+        }
+    }
+    error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint")
 }
