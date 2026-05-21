@@ -160,21 +160,16 @@ pub(crate) fn test_users_file() -> PathBuf {
     ))
 }
 
-pub(crate) fn test_admin_state(
-    stores: HashMap<String, Arc<dyn StorageBackend>>,
-) -> AdminRuntimeState {
-    let state: HashMap<String, StoreState> = stores
-        .into_iter()
-        .map(|(id, b)| (id, StoreState::Unlocked(b)))
-        .collect();
+/// Canonical "blank" AdminRuntimeState: empty registry, no client
+/// instances, admin enabled, embedded SPA, zeroed session key, a
+/// fresh temporary users file. Every named builder below starts
+/// here and mutates the one or two fields it actually cares about.
+pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
     AdminRuntimeState {
-        stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
-            state,
-            records: HashMap::new(),
-        })),
+        stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
         client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
-        stores_file: std::path::PathBuf::new(),
-        client_instances_file: std::path::PathBuf::new(),
+        stores_file: PathBuf::new(),
+        client_instances_file: PathBuf::new(),
         stores_data_root: None,
         rotation_locks: std::sync::Mutex::new(HashMap::new()),
         admin_enabled: true,
@@ -189,6 +184,30 @@ pub(crate) fn test_admin_state(
         bootstrap_lock: std::sync::Mutex::new(()),
         user_collection_lock: std::sync::Mutex::new(()),
     }
+}
+
+fn ramp_session_key() -> [u8; crate::auth::SESSION_KEY_LEN] {
+    let mut key = [0u8; crate::auth::SESSION_KEY_LEN];
+    for (i, b) in key.iter_mut().enumerate() {
+        *b = i as u8;
+    }
+    key
+}
+
+pub(crate) fn test_admin_state(
+    stores: HashMap<String, Arc<dyn StorageBackend>>,
+) -> AdminRuntimeState {
+    let state: HashMap<String, StoreState> = stores
+        .into_iter()
+        .map(|(id, b)| (id, StoreState::Unlocked(b)))
+        .collect();
+    let mut s = default_admin_runtime_state();
+    s.stores = Arc::new(std::sync::RwLock::new(StoreRegistry {
+        state,
+        records: HashMap::new(),
+    }));
+    s.admin_enabled = true;
+    s
 }
 
 pub(crate) fn headers_with_session_cookie(value: Option<&str>) -> hyper::HeaderMap {
@@ -214,7 +233,9 @@ pub(crate) fn headers_with(pairs: &[(&str, &str)]) -> hyper::HeaderMap {
 }
 
 pub(crate) fn seeded_admin_state(username: &str, password: &str) -> AdminRuntimeState {
-    let users_file = test_users_file();
+    let mut s = default_admin_runtime_state();
+    s.session_key = ramp_session_key();
+    s.session_lifetime_secs = 3600;
     let mut collection = crate::users::UserCollection::default();
     let hash = crate::auth::hash_password(password).unwrap();
     collection
@@ -226,30 +247,8 @@ pub(crate) fn seeded_admin_state(username: &str, password: &str) -> AdminRuntime
             password_changed_at: 1000,
         })
         .unwrap();
-    crate::users::save(&users_file, &collection).unwrap();
-    let mut session_key = [0u8; crate::auth::SESSION_KEY_LEN];
-    for (i, b) in session_key.iter_mut().enumerate() {
-        *b = i as u8;
-    }
-    AdminRuntimeState {
-        stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
-        client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
-        stores_file: std::path::PathBuf::new(),
-        client_instances_file: std::path::PathBuf::new(),
-        stores_data_root: None,
-        rotation_locks: std::sync::Mutex::new(HashMap::new()),
-        admin_enabled: true,
-        allowed_origins: None,
-        web_source: crate::web::WebAssetSource::Embedded,
-        users_file,
-        session_key,
-        session_lifetime_secs: 3600,
-        cookies_secure: false,
-        login_rate_limiter: crate::auth::RateLimiter::new(),
-        session_revocations: crate::auth::SessionRevocations::new(),
-        bootstrap_lock: std::sync::Mutex::new(()),
-        user_collection_lock: std::sync::Mutex::new(()),
-    }
+    crate::users::save(&s.users_file, &collection).unwrap();
+    s
 }
 
 pub(crate) fn session_headers(
@@ -288,13 +287,11 @@ pub(crate) fn service_state_with_runtime_client(
     status: crate::runtime_clients::ClientInstanceStatus,
     store_id: &str,
 ) -> AdminRuntimeState {
-    let mut state_map: HashMap<String, StoreState> = HashMap::new();
-    state_map.insert(
+    let state_map = HashMap::from([(
         store_id.to_string(),
         StoreState::Unlocked(Arc::new(MemTestStore::new())),
-    );
-    let mut records: HashMap<String, LoadedStoreRecord> = HashMap::new();
-    records.insert(
+    )]);
+    let records = HashMap::from([(
         store_id.to_string(),
         LoadedStoreRecord {
             record: underwrap_protocol::config::StoreRecord {
@@ -307,9 +304,8 @@ pub(crate) fn service_state_with_runtime_client(
                 },
             },
         },
-    );
-    let mut client_instances = HashMap::new();
-    client_instances.insert(
+    )]);
+    let client_instances = HashMap::from([(
         "inst_local".to_string(),
         crate::runtime_clients::ClientInstanceRecord {
             id: "inst_local".to_string(),
@@ -324,29 +320,14 @@ pub(crate) fn service_state_with_runtime_client(
             },
             auto_create_wrapper_assets: false,
         },
-    );
-    AdminRuntimeState {
-        stores: Arc::new(std::sync::RwLock::new(StoreRegistry {
-            state: state_map,
-            records,
-        })),
-        client_instances: Arc::new(std::sync::RwLock::new(client_instances)),
-        stores_file: PathBuf::new(),
-        client_instances_file: PathBuf::new(),
-        stores_data_root: None,
-        rotation_locks: std::sync::Mutex::new(HashMap::new()),
-        admin_enabled: true,
-        allowed_origins: None,
-        web_source: crate::web::WebAssetSource::Embedded,
-        users_file: test_users_file(),
-        session_key: [0u8; crate::auth::SESSION_KEY_LEN],
-        session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
-        cookies_secure: false,
-        login_rate_limiter: crate::auth::RateLimiter::new(),
-        session_revocations: crate::auth::SessionRevocations::new(),
-        bootstrap_lock: std::sync::Mutex::new(()),
-        user_collection_lock: std::sync::Mutex::new(()),
-    }
+    )]);
+    let mut s = default_admin_runtime_state();
+    s.stores = Arc::new(std::sync::RwLock::new(StoreRegistry {
+        state: state_map,
+        records,
+    }));
+    s.client_instances = Arc::new(std::sync::RwLock::new(client_instances));
+    s
 }
 
 pub(crate) fn expect_404(
@@ -359,29 +340,10 @@ pub(crate) fn expect_404(
 }
 
 pub(crate) fn fresh_bootstrap_state() -> AdminRuntimeState {
-    let mut key = [0u8; crate::auth::SESSION_KEY_LEN];
-    for (i, b) in key.iter_mut().enumerate() {
-        *b = i as u8;
-    }
-    AdminRuntimeState {
-        stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
-        client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
-        stores_file: std::path::PathBuf::new(),
-        client_instances_file: std::path::PathBuf::new(),
-        stores_data_root: None,
-        rotation_locks: std::sync::Mutex::new(HashMap::new()),
-        admin_enabled: true,
-        allowed_origins: None,
-        web_source: crate::web::WebAssetSource::Embedded,
-        users_file: test_users_file(),
-        session_key: key,
-        session_lifetime_secs: 3600,
-        cookies_secure: false,
-        login_rate_limiter: crate::auth::RateLimiter::new(),
-        session_revocations: crate::auth::SessionRevocations::new(),
-        bootstrap_lock: std::sync::Mutex::new(()),
-        user_collection_lock: std::sync::Mutex::new(()),
-    }
+    let mut s = default_admin_runtime_state();
+    s.session_key = ramp_session_key();
+    s.session_lifetime_secs = 3600;
+    s
 }
 
 pub(crate) async fn read_json(resp: Response<Full<Bytes>>) -> serde_json::Value {
@@ -494,25 +456,12 @@ pub(crate) fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
     std::fs::create_dir_all(&dynamic_dir).unwrap();
     let data_root = tmp.join("data");
     std::fs::create_dir_all(&data_root).unwrap();
-    AdminRuntimeState {
-        stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
-        client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
-        stores_file: tmp.join("stores.json"),
-        client_instances_file: tmp.join("client-instances.json"),
-        stores_data_root: Some(data_root),
-        rotation_locks: std::sync::Mutex::new(HashMap::new()),
-        admin_enabled: true,
-        allowed_origins: None,
-        web_source: crate::web::WebAssetSource::Embedded,
-        users_file: tmp.join("users.json"),
-        session_key: [0u8; crate::auth::SESSION_KEY_LEN],
-        session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
-        cookies_secure: false,
-        login_rate_limiter: crate::auth::RateLimiter::new(),
-        session_revocations: crate::auth::SessionRevocations::new(),
-        bootstrap_lock: std::sync::Mutex::new(()),
-        user_collection_lock: std::sync::Mutex::new(()),
-    }
+    let mut s = default_admin_runtime_state();
+    s.stores_file = tmp.join("stores.json");
+    s.client_instances_file = tmp.join("client-instances.json");
+    s.stores_data_root = Some(data_root);
+    s.users_file = tmp.join("users.json");
+    s
 }
 
 pub(crate) fn create_store_for_test(
