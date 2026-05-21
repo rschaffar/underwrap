@@ -87,13 +87,19 @@ simple kanban board. Move a ticket file between folders to reflect its state:
 Naming convention:
 
 - epics: `epic_<short_title>.md`
-- larger child stories: `NNN_story_<short_title>.md`
-- executable task tickets: `NNN_task_<short_title>.md`
+- larger child stories: `NNNN_story_<short_title>.md`
+- executable task tickets: `NNNN_task_<short_title>.md`
 
-Ordered ticket numbers use a zero-padded 3-digit prefix plus underscore, e.g.
-`000_story_...`, `010_task_...`, `020_task_...`. Lower numbers mean earlier
+Ordered ticket numbers use a zero-padded **4-digit** prefix plus underscore,
+e.g. `1000_story_...`, `1010_task_...`, `1020_task_...`. New tickets start
+from `1000_` and pick a free `NNN0_` block. Lower numbers mean earlier
 intended processing order. When breaking down an epic, create or update the
-story tickets and give both story and task tickets these ordered numeric prefixes.
+story tickets and give both story and task tickets these ordered numeric
+prefixes.
+
+Tickets created before the convention switch still use 3-digit prefixes
+(`000_`–`820_`). Those are not renamed — only new tickets follow the
+4-digit form. Do not reuse a 3-digit prefix even if it looks free.
 
 ## Key files to understand first
 
