@@ -203,6 +203,43 @@ on backward compatibility concerns.
   unprivileged user, spoofing resistance, PID namespace isolation, memory
   protection, core dump prevention, grant-driven wrapper locking
 
+### Test file layout (Rust crates)
+
+Use the **sibling-file submodule pattern** rather than inline `mod tests {}`
+blocks at the bottom of production files:
+
+```
+src/admin_api/csrf.rs           # production code
+src/admin_api/csrf/tests.rs     # tests for csrf.rs
+```
+
+The production file ends with:
+
+```rust
+#[cfg(test)]
+mod tests;
+```
+
+That declaration makes `csrf/tests.rs` a submodule of `csrf`, so `use super::*;`
+inside it reaches every private and `pub(crate)` item — same privacy as an
+inline block. Production files stay free of test scaffolding, and the
+tests still live next to the code they exercise.
+
+Cross-module helpers (fixture builders, fake stores, request builders) go in
+`src/test_support.rs`, declared once at the crate root as
+`#[cfg(test)] pub(crate) mod test_support;`. Each `<module>/tests.rs` then
+imports what it needs via `use crate::test_support::*;`. Helpers used by
+exactly one tests.rs stay in that file.
+
+Exceptions where inline `mod tests { ... }` is fine: modules with one or two
+tiny tests where a separate file would be ceremony for five lines. Threshold
+is judgement — if tests are longer than the production code, split them out.
+Aim to keep any single `tests.rs` under ~600 lines.
+
+Never add `#[cfg(test)] pub(crate) use ...` re-exports at the crate root just
+so an inline test block can reach moved code. If a test needs an item from
+another module, import it directly from where it lives.
+
 ## Architecture notes
 
 **Two-stage wrapper chain:**
