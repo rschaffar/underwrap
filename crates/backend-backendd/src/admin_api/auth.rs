@@ -242,11 +242,8 @@ pub(crate) async fn handle_admin_password_change(
     principal: &crate::users::Principal,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    use underwrap_protocol::service::{AdminOkUserResponse, AdminPasswordChangeRequest};
-    // These two helpers will move to `admin_api::users` in ticket
-    // 770; until then they live in `crate::server` and the auth
-    // module reaches back for them.
     use crate::admin_api::users::{mutate_collection, write_admin_user_audit};
+    use underwrap_protocol::service::{AdminOkUserResponse, AdminPasswordChangeRequest};
 
     let body = match parse_json_body::<AdminPasswordChangeRequest>(request).await {
         Ok(b) => b,

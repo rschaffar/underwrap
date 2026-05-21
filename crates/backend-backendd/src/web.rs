@@ -202,7 +202,7 @@ fn spa_not_available_response() -> Response<Full<Bytes>> {
         <h1>SPA not built</h1>\
         <p>The admin UI bundle is not embedded and \
         <code>UNDERWRAP_BACKENDD_WEB_DIR</code> is not set. \
-        Build <code>web/</code> (ticket 220) or set the env var to a \
+        Build <code>web/</code> or set the env var to a \
         <code>dist/</code> directory.</p>\
         </body></html>";
     Response::builder()

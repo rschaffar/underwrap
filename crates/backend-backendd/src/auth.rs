@@ -12,11 +12,6 @@
 //! - **Constant-time username lookup**: when no operator matches we
 //!   still run Argon2id against a fixed dummy hash so the response
 //!   timing does not reveal user existence.
-//!
-//! Ticket 212 builds on this for CSRF + logout; ticket 213 adds role
-//! middleware; ticket 214 adds bootstrap. The bearer-token path in
-//! `server::authenticate_admin` continues to work in parallel during
-//! the transition.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -69,8 +64,8 @@ pub const LOGIN_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionPayload {
     /// Random 128-bit identifier used by the server-side revocation
-    /// set (ticket 212). Distinct from the AEAD nonce: that protects
-    /// the cookie ciphertext, this names the session for revocation.
+    /// set. Distinct from the AEAD nonce: that protects the cookie
+    /// ciphertext, this names the session for revocation.
     pub session_id: String,
     pub operator_id: String,
     pub username: String,

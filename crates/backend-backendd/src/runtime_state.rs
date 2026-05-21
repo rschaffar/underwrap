@@ -63,19 +63,19 @@ pub(crate) struct AdminRuntimeState {
     pub(crate) cookies_secure: bool,
     /// Per-username login attempt limiter.
     pub(crate) login_rate_limiter: crate::auth::RateLimiter,
-    /// Server-side set of revoked session ids (ticket 212). Logout
-    /// adds the session id here so a stolen-but-still-unexpired cookie
-    /// is rejected on the next request.
+    /// Server-side set of revoked session ids. Logout adds the session
+    /// id here so a stolen-but-still-unexpired cookie is rejected on
+    /// the next request.
     pub(crate) session_revocations: crate::auth::SessionRevocations,
     /// Mutex that serialises bootstrap attempts so concurrent callers
     /// can't both pass the "is operator collection empty" check
     /// before either has written the first record. The lock is held
     /// across the read-collection / write-collection / mark-sentinel
-    /// sequence (ticket 214).
+    /// sequence.
     pub(crate) bootstrap_lock: std::sync::Mutex<()>,
     /// Mutex that serialises operator-collection read-modify-write
     /// cycles so two concurrent admin requests (e.g. two user
     /// renames) can't observe and overwrite each other's intermediate
-    /// state (ticket 240). Held across `load` → mutate → `save`.
+    /// state. Held across `load` → mutate → `save`.
     pub(crate) user_collection_lock: std::sync::Mutex<()>,
 }

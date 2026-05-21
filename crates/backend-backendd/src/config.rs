@@ -23,8 +23,8 @@ pub struct HttpsConfig {
 pub struct AdminConfig {
     /// Optional allowlist of `Origin` (or `Referer`) values for
     /// state-changing requests. When set, every non-GET/HEAD/OPTIONS
-    /// request must carry an Origin matching one of these entries.
-    /// Foundation for the CSRF work in ticket 212.
+    /// request must carry an Origin matching one of these entries —
+    /// the same-origin check that backs CSRF defence.
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
     /// Path to the 32-byte AEAD key file used to sign session cookies.
