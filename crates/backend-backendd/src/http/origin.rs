@@ -77,3 +77,6 @@ pub(crate) fn referer_to_origin(referer: &str) -> Option<String> {
     }
     Some(format!("{scheme}://{authority}"))
 }
+
+#[cfg(test)]
+mod tests;

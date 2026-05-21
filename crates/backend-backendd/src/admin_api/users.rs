@@ -412,3 +412,6 @@ pub(crate) async fn route(
     }
     error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint")
 }
+
+#[cfg(test)]
+mod tests;

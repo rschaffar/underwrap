@@ -400,3 +400,6 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
         &RuntimeWrapperInvocationFinalizeResponse::Ok,
     )
 }
+
+#[cfg(test)]
+mod tests;

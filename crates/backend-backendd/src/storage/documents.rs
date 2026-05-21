@@ -124,3 +124,6 @@ pub(crate) fn resource_secret_dependents(
     ids.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
     Ok((count, ids))
 }
+
+#[cfg(test)]
+mod tests;

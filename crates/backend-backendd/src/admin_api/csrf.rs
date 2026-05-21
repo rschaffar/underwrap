@@ -177,3 +177,6 @@ pub(crate) fn attach_csrf_cookie(
     }
     response
 }
+
+#[cfg(test)]
+mod tests;

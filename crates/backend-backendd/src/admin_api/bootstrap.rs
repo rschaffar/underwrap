@@ -237,3 +237,6 @@ pub(crate) fn audit_bootstrap_attempt(_state: &AdminRuntimeState, username: &str
         result,
     );
 }
+
+#[cfg(test)]
+mod tests;

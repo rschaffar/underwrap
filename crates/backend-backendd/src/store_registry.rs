@@ -289,3 +289,6 @@ pub(crate) fn generate_store_id() -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
     )
 }
+
+#[cfg(test)]
+mod tests;

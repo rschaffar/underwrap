@@ -8,6 +8,8 @@ pub(crate) mod runtime_state;
 pub mod server;
 pub(crate) mod storage;
 pub mod store_registry;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod tls;
 pub mod users;
 pub mod web;

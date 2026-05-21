@@ -104,3 +104,6 @@ pub(crate) fn put_policy_document(
         serde_json::from_str(document_json).context("parsing policy document json")?;
     store.write(POLICY_DOCUMENT_SECRET_ID, document_json.as_bytes())
 }
+
+#[cfg(test)]
+mod tests;
