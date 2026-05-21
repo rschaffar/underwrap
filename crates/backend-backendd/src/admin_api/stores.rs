@@ -109,7 +109,6 @@ fn admin_store_actions(
     usage: &AdminStoreUsageSummary,
     locked: bool,
 ) -> AdminStoreActionState {
-    let can_manage = true;
     let is_encrypted = matches!(
         &loaded.record.storage,
         underwrap_protocol::config::StorageConfig::Encrypted { .. }
@@ -119,14 +118,13 @@ fn admin_store_actions(
     // force-DELETE. For locked stores we cannot inspect contents, so
     // we conservatively offer force-DELETE only.
     let can_delete_without_force =
-        can_manage && usage.mapped_client_instance_count == 0 && !usage.has_secrets && !locked;
-    let can_force_delete =
-        can_manage && usage.mapped_client_instance_count == 0 && (usage.has_secrets || locked);
+        usage.mapped_client_instance_count == 0 && !usage.has_secrets && !locked;
+    let can_force_delete = usage.mapped_client_instance_count == 0 && (usage.has_secrets || locked);
     AdminStoreActionState {
-        can_edit_metadata: can_manage,
-        can_rotate_key: can_manage && is_encrypted && !locked,
-        can_unlock: can_manage && is_encrypted && locked,
-        can_lock: can_manage && is_encrypted && !locked,
+        can_edit_metadata: true,
+        can_rotate_key: is_encrypted && !locked,
+        can_unlock: is_encrypted && locked,
+        can_lock: is_encrypted && !locked,
         can_delete_now: can_delete_without_force,
         can_force_delete,
     }

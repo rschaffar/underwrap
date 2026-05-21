@@ -217,15 +217,14 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
             "client_instance, wrapper, and resource_id must all be non-empty",
         );
     }
-    let new_permission = body.permission.clone();
     if let Some(slot) = doc.permissions.iter_mut().find(|p| {
-        p.client_instance == new_permission.client_instance
-            && p.wrapper == new_permission.wrapper
-            && p.resource_id == new_permission.resource_id
+        p.client_instance == body.permission.client_instance
+            && p.wrapper == body.permission.wrapper
+            && p.resource_id == body.permission.resource_id
     }) {
-        *slot = new_permission.clone();
+        *slot = body.permission.clone();
     } else {
-        doc.permissions.push(new_permission.clone());
+        doc.permissions.push(body.permission.clone());
     }
     doc.permissions.sort_by(|a, b| {
         a.client_instance
@@ -238,7 +237,7 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
             state,
             principal,
             &body.store,
-            &new_permission,
+            &body.permission,
             "wrapper_permission.upsert",
             "failure",
         );
@@ -252,7 +251,7 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
         state,
         principal,
         &body.store,
-        &new_permission,
+        &body.permission,
         "wrapper_permission.upsert",
         "success",
     );

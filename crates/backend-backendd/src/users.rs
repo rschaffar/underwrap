@@ -147,8 +147,7 @@ impl UserCollection {
             .iter()
             .position(|u| u.id == id)
             .with_context(|| format!("user '{id}' not found"))?;
-        let before = self.users[idx].clone();
-        let mut next = before.clone();
+        let mut next = self.users[idx].clone();
         f(&mut next);
         next.username = normalise_username(&next.username);
         if next.username.is_empty() {

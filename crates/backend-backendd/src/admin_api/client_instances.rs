@@ -53,15 +53,12 @@ fn client_instance_status_from_wire(
 fn admin_client_instance_actions(
     record: &crate::runtime_clients::ClientInstanceRecord,
 ) -> AdminClientInstanceActionState {
-    let can_manage = true;
     AdminClientInstanceActionState {
-        can_edit_display_name: can_manage,
-        can_remap_store: can_manage,
-        can_disable: can_manage
-            && record.status == crate::runtime_clients::ClientInstanceStatus::Active,
-        can_enable: can_manage
-            && record.status == crate::runtime_clients::ClientInstanceStatus::Disabled,
-        can_delete: can_manage,
+        can_edit_display_name: true,
+        can_remap_store: true,
+        can_disable: record.status == crate::runtime_clients::ClientInstanceStatus::Active,
+        can_enable: record.status == crate::runtime_clients::ClientInstanceStatus::Disabled,
+        can_delete: true,
     }
 }
 
