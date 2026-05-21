@@ -21,8 +21,8 @@ use underwrap_store::{StorageBackend, save_resource_blob};
 use crate::admin_api::stores::do_admin_store_create;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
-    load_pairs_document, load_policy_document_or_default, load_resources_document,
-    save_pairs_document, save_policy_document, save_resources_document,
+    load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
+    save_policy_document, save_resources_document,
 };
 use crate::store_registry::{LoadedStoreRecord, StoreRegistry, StoreState};
 
@@ -652,7 +652,7 @@ impl RuntimeApiFixture {
     }
 
     pub(crate) fn policy(&self) -> PolicyDocument {
-        load_policy_document_or_default(self.store().as_ref()).unwrap()
+        load_policy_document(self.store().as_ref()).unwrap()
     }
 
     pub(crate) fn save_policy(&self, doc: &PolicyDocument) {

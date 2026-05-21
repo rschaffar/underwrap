@@ -13,7 +13,7 @@ use crate::admin_api::stores::admin_store;
 use crate::http::responses::{error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
-    ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document_or_default,
+    ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document,
     load_resources_document, save_pairs_document,
 };
 
@@ -203,7 +203,7 @@ pub(crate) fn handle_admin_pair_delete(
         return error_response(StatusCode::NOT_FOUND, "not_found", "unknown pair");
     }
 
-    let policy = match load_policy_document_or_default(store.as_ref()) {
+    let policy = match load_policy_document(store.as_ref()) {
         Ok(p) => p,
         Err(e) => {
             return error_response(

@@ -16,8 +16,7 @@ use underwrap_store::{StorageBackend, load_resource_blob, save_resource_blob};
 
 use crate::http::responses::{error_response, json_response};
 use crate::storage::documents::{
-    load_pairs_document, load_policy_document_or_default, load_resources_document,
-    save_pairs_document,
+    load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
 };
 
 /// Result of the policy + pair lookup shared by open and finalize.
@@ -128,7 +127,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_open(
             "wrapper_name and resource_name must be non-empty",
         );
     }
-    let policy = match load_policy_document_or_default(store) {
+    let policy = match load_policy_document(store) {
         Ok(p) => p,
         Err(e) => {
             return error_response(
@@ -244,7 +243,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
             "wrapper_name and resource_name must be non-empty",
         );
     }
-    let policy = match load_policy_document_or_default(store) {
+    let policy = match load_policy_document(store) {
         Ok(p) => p,
         Err(e) => {
             return error_response(

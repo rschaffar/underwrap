@@ -1,7 +1,7 @@
 use super::*;
 use crate::admin_api::policy::handle_admin_wrapper_permission_upsert;
 use crate::admin_api::stores::handle_admin_store_delete;
-use crate::storage::documents::load_policy_document_or_default;
+use crate::storage::documents::load_policy_document;
 use crate::test_support::{
     SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state, response_body_json,
 };
@@ -172,7 +172,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
         assert_eq!(upsert.status(), StatusCode::OK);
     }
 
-    let before = load_policy_document_or_default(
+    let before = load_policy_document(
         state
             .stores
             .read()
@@ -188,7 +188,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
 
     // The doomed instance's permission is gone; the survivor's
     // remains so we know we cascaded by id, not by store-wide nuke.
-    let after = load_policy_document_or_default(
+    let after = load_policy_document(
         state
             .stores
             .read()

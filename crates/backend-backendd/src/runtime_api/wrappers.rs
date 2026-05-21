@@ -14,8 +14,8 @@ use underwrap_store::StorageBackend;
 use crate::http::responses::{error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
-    load_pairs_document, load_policy_document_or_default, load_resources_document,
-    save_pairs_document, save_policy_document, save_resources_document,
+    load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
+    save_policy_document, save_resources_document,
 };
 
 /// Handle `POST /v1/wrappers`.
@@ -151,7 +151,7 @@ pub(crate) fn handle_runtime_wrapper_register(
         // No-op fast path. Still may need to seed Locked permissions
         // for a new `client_instance` re-using pairs another instance
         // already created.
-        let mut policy = match load_policy_document_or_default(store) {
+        let mut policy = match load_policy_document(store) {
             Ok(p) => p,
             Err(e) => {
                 return error_response(
@@ -225,7 +225,7 @@ pub(crate) fn handle_runtime_wrapper_register(
         auto_created_pairs.push(pair.clone());
     }
 
-    let mut policy = match load_policy_document_or_default(store) {
+    let mut policy = match load_policy_document(store) {
         Ok(p) => p,
         Err(e) => {
             return error_response(

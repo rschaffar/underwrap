@@ -96,15 +96,6 @@ pub(crate) fn save_pairs_document(
     )
 }
 
-pub(crate) fn load_policy_document_or_default(
-    store: &dyn StorageBackend,
-) -> Result<PolicyDocument> {
-    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
-        Some(material) => Ok(serde_json::from_slice(material.as_ref())?),
-        None => Ok(PolicyDocument::default()),
-    }
-}
-
 pub(crate) fn save_policy_document(store: &dyn StorageBackend, doc: &PolicyDocument) -> Result<()> {
     store.write(
         POLICY_DOCUMENT_SECRET_ID,

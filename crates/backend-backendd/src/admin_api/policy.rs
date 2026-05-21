@@ -24,7 +24,7 @@ use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
 use crate::http::responses::{error_response, json_response, parse_json_body};
 use crate::runtime_state::AdminRuntimeState;
-use crate::storage::documents::{load_policy_document_or_default, save_policy_document};
+use crate::storage::documents::{load_policy_document, save_policy_document};
 
 /// Strip every wrapper permission whose `client_instance` matches
 /// `client_instance_id` from the policy document of `store_id`. Used
@@ -42,7 +42,7 @@ pub(crate) fn drop_client_instance_permissions(
         // place to apply this kind of cleanup if it ever matters.
         Err(_) => return Ok(()),
     };
-    let mut doc = load_policy_document_or_default(store.as_ref())?;
+    let mut doc = load_policy_document(store.as_ref())?;
     let before = doc.permissions.len();
     doc.permissions
         .retain(|p| p.client_instance != client_instance_id);
@@ -86,19 +86,13 @@ pub(crate) async fn handle_admin_policy_get(
         Err(resp) => return resp,
     };
     match admin_store(state, &body.store) {
-        Ok(store) => {
-            let read_result = store.read(POLICY_DOCUMENT_SECRET_ID).and_then(|m| match m {
-                Some(material) => Ok(serde_json::from_slice(material.as_ref())?),
-                None => Ok(underwrap_protocol::policy::PolicyDocument::default()),
-            });
-            match read_result {
-                Ok(doc) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminPolicyGetResponse { document: doc },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-            }
-        }
+        Ok(store) => match load_policy_document(store.as_ref()) {
+            Ok(doc) => json_response(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminPolicyGetResponse { document: doc },
+            ),
+            Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+        },
         Err(resp) => resp,
     }
 }
@@ -186,7 +180,7 @@ pub(crate) fn handle_admin_wrapper_permissions_list(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    match load_policy_document_or_default(store.as_ref()) {
+    match load_policy_document(store.as_ref()) {
         Ok(doc) => json_response(
             StatusCode::OK,
             &underwrap_protocol::service::AdminWrapperPermissionsListResponse {
@@ -207,7 +201,7 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    let mut doc = match load_policy_document_or_default(store.as_ref()) {
+    let mut doc = match load_policy_document(store.as_ref()) {
         Ok(d) => d,
         Err(e) => {
             return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
@@ -278,7 +272,7 @@ pub(crate) fn handle_admin_wrapper_permission_delete(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    let mut doc = match load_policy_document_or_default(store.as_ref()) {
+    let mut doc = match load_policy_document(store.as_ref()) {
         Ok(d) => d,
         Err(e) => {
             return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
