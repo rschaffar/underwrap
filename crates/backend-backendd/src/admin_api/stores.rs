@@ -474,6 +474,15 @@ fn master_key_hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// 8 random bytes hex-encoded as 16 lowercase characters. Used to make
+/// transient on-disk paths unique without claiming key-grade entropy.
+fn random_hex_8() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[cfg(unix)]
 fn create_data_dir_secure(dir: &Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
@@ -775,14 +784,7 @@ pub(crate) async fn handle_admin_store_rotate_key(
             );
         }
     };
-    let stage_name = format!(
-        ".rotating-{}-{}",
-        name,
-        master_key_hex(&generate_master_key_bytes())
-            .chars()
-            .take(16)
-            .collect::<String>()
-    );
+    let stage_name = format!(".rotating-{}-{}", name, random_hex_8());
     let stage_dir = parent.join(&stage_name);
     if let Err(e) = create_data_dir_secure(&stage_dir) {
         write_admin_store_audit(state, principal, name, "store.rotate-key", "stage-failed");
@@ -859,8 +861,6 @@ pub(crate) async fn handle_admin_store_rotate_key(
     // ends up holding an `Arc` whose `dir` field matches the live
     // directory. (Reusing `new_backend` would carry the staging
     // path even though we just renamed it.)
-    let installed_key = generate_master_key_bytes(); // placeholder, immediately overwritten
-    let _ = installed_key; // keep clippy happy if it ever sees an unused let
     let rotated_backend: Arc<dyn StorageBackend> = {
         // Re-derive the in-memory key from the hex we already
         // computed — that way we don't have to hold on to two
