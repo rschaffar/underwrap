@@ -31,6 +31,12 @@ use underwrap_store::{
     save_resource_blob,
 };
 
+pub(crate) use crate::admin_api::audit::log_admin_event;
+#[cfg(test)]
+pub(crate) use crate::admin_api::csrf::AdminAuth;
+pub(crate) use crate::admin_api::csrf::{
+    AdminAuthError, attach_csrf_cookie, authenticate_admin, check_csrf, resolve_principal,
+};
 pub use crate::config::{
     AdminConfig, BackendConfig, DEFAULT_STORES_FILE, HttpsConfig, HttpsTlsConfig,
 };
@@ -40,6 +46,7 @@ pub(crate) use crate::http::origin::{check_admin_origin, validate_admin_config};
 pub(crate) use crate::http::responses::{
     error_response, json_response, parse_json_body, store_locked_response,
 };
+pub(crate) use crate::runtime_state::AdminRuntimeState;
 pub use crate::store_registry::{
     LoadedStoreRecord, RegistryLookupError, StoreRegistry, StoreState, is_valid_store_id,
     load_store_records,
@@ -48,89 +55,6 @@ pub(crate) use crate::store_registry::{
     generate_store_id, open_initial_stores, save_store_records, validate_store_name,
 };
 pub(crate) use crate::tls::build_https_acceptor;
-
-struct AdminRuntimeState {
-    /// Open store backends + their backend-managed records. Shared
-    /// with the service listener so runtime requests and admin CRUD
-    /// always consult the same live registry without a daemon restart.
-    stores: Arc<std::sync::RwLock<StoreRegistry>>,
-    /// Runtime client-instance registry, shared with the service
-    /// listener so admin mutations can affect new runtime requests
-    /// without a daemon restart.
-    client_instances:
-        Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
-    /// Path of the backend-managed store-registry file.
-    stores_file: PathBuf,
-    /// Path of the backend-managed runtime client-instance registry file.
-    client_instances_file: PathBuf,
-    /// Directory under which the admin "create store" API places the
-    /// data directory of each new dynamic store. The on-disk layout is
-    /// `<stores_data_root>/<store_id>/`; the admin chooses only the
-    /// store's display name. `None` disables creation (returns
-    /// `data_root_not_configured`).
-    stores_data_root: Option<PathBuf>,
-    /// Per-store rotation lock. Held for the duration of
-    /// `rotate-key` so that concurrent writes through the runtime
-    /// service do not land in the pre-swap data directory. Lazily
-    /// populated on first use; entries are never removed (the cost is
-    /// one `Mutex` per known store, which is negligible).
-    rotation_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    /// Whether the browser-facing admin UI/API is enabled on the HTTPS
-    /// listener. When false, `/v1/admin/*` and SPA routes return 404.
-    admin_enabled: bool,
-    /// When present, every state-changing request must carry an `Origin`
-    /// (or `Referer`) matching one of these entries.
-    allowed_origins: Option<Vec<String>>,
-    /// Where to read the SPA bundle from when serving non-API paths.
-    web_source: crate::web::WebAssetSource,
-    /// Path of the backend-managed operator-state file.
-    users_file: PathBuf,
-    /// 32-byte AEAD key used to encrypt session cookies.
-    session_key: [u8; crate::auth::SESSION_KEY_LEN],
-    /// Configured session lifetime in seconds.
-    session_lifetime_secs: u64,
-    /// Whether to mark issued cookies with the `Secure` attribute.
-    /// True when the admin listener terminates TLS.
-    cookies_secure: bool,
-    /// Per-username login attempt limiter.
-    login_rate_limiter: crate::auth::RateLimiter,
-    /// Server-side set of revoked session ids (ticket 212). Logout
-    /// adds the session id here so a stolen-but-still-unexpired cookie
-    /// is rejected on the next request.
-    session_revocations: crate::auth::SessionRevocations,
-    /// Mutex that serialises bootstrap attempts so concurrent callers
-    /// can't both pass the "is operator collection empty" check
-    /// before either has written the first record. The lock is held
-    /// across the read-collection / write-collection / mark-sentinel
-    /// sequence (ticket 214).
-    bootstrap_lock: std::sync::Mutex<()>,
-    /// Mutex that serialises operator-collection read-modify-write
-    /// cycles so two concurrent admin requests (e.g. two user
-    /// renames) can't observe and overwrite each other's intermediate
-    /// state (ticket 240). Held across `load` → mutate → `save`.
-    user_collection_lock: std::sync::Mutex<()>,
-}
-
-fn log_admin_event(
-    action: &str,
-    operator: &str,
-    wrapper: Option<&str>,
-    resource: Option<&str>,
-    secret_id: Option<&str>,
-    operation: Option<&str>,
-    result: &str,
-) {
-    info!(
-        action = %action,
-        operator = %operator,
-        wrapper = ?wrapper,
-        resource = ?resource,
-        secret_id = ?secret_id,
-        operation = ?operation,
-        result = %result,
-        "admin event"
-    );
-}
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores_file = config.stores_file();
@@ -1533,136 +1457,6 @@ fn admin_store(
             "unknown store",
         )),
     }
-}
-
-/// Build a [`Principal`] from an authenticated request. We re-read the
-/// user collection so the current username (after a rename) is always
-/// reflected.
-#[allow(clippy::result_large_err)]
-fn resolve_principal(
-    state: &AdminRuntimeState,
-    auth: &AdminAuth,
-) -> std::result::Result<crate::users::Principal, Response<Full<Bytes>>> {
-    let payload = auth.session();
-    let collection = match crate::users::load(&state.users_file) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(err = %e, "could not load user collection");
-            return Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "user collection unavailable",
-            ));
-        }
-    };
-    match collection.find_by_username(&payload.username) {
-        Some(u) => Ok(crate::users::Principal {
-            id: u.id.clone(),
-            username: u.username.clone(),
-        }),
-        None => Err(error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "session refers to a user that no longer exists",
-        )),
-    }
-}
-
-/// Result of authenticating an admin request.
-#[derive(Debug)]
-struct AdminAuth(crate::auth::SessionPayload);
-
-impl AdminAuth {
-    #[cfg(test)]
-    fn operator(&self) -> &str {
-        &self.0.username
-    }
-
-    fn session(&self) -> &crate::auth::SessionPayload {
-        &self.0
-    }
-}
-
-/// Reasons `authenticate_admin` can fail. Mapped to HTTP responses by
-/// the caller — `Revoked` becomes 401 with `session_revoked`, the rest
-/// become 401 with `unauthorized`.
-#[derive(Debug)]
-enum AdminAuthError {
-    Unauthenticated(&'static str),
-    Revoked,
-}
-
-/// Authenticate an admin request via its session cookie.
-fn authenticate_admin(
-    state: &AdminRuntimeState,
-    headers: &hyper::HeaderMap,
-) -> std::result::Result<AdminAuth, AdminAuthError> {
-    let value = crate::auth::extract_session_cookie(headers)
-        .ok_or(AdminAuthError::Unauthenticated("missing session cookie"))?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    match crate::auth::decrypt_session(value, &state.session_key, now) {
-        Ok(payload) => {
-            if state
-                .session_revocations
-                .is_revoked(&payload.session_id, now)
-                || state
-                    .session_revocations
-                    .is_user_floor_revoked(&payload.username, payload.issued_at)
-            {
-                Err(AdminAuthError::Revoked)
-            } else {
-                Ok(AdminAuth(payload))
-            }
-        }
-        Err(_) => Err(AdminAuthError::Unauthenticated("invalid session cookie")),
-    }
-}
-
-/// Verify the CSRF double-submit on a state-changing session-authenticated
-/// request. Returns `Ok(())` when the request is safe to dispatch.
-/// `GET/HEAD/OPTIONS` are exempt.
-fn check_csrf(
-    method: &Method,
-    headers: &hyper::HeaderMap,
-    session_csrf_secret: &str,
-) -> std::result::Result<(), (&'static str, &'static str)> {
-    if matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS) {
-        return Ok(());
-    }
-    let header_value = headers
-        .get(crate::auth::CSRF_HEADER_NAME)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let header_value = match header_value {
-        Some(v) => v,
-        None => {
-            return Err((
-                "csrf_required",
-                "missing or empty X-CSRF-Token on state-changing request",
-            ));
-        }
-    };
-    let cookie_value = match crate::auth::extract_csrf_cookie(headers) {
-        Some(v) if !v.is_empty() => v,
-        _ => return Err(("csrf_required", "missing CSRF cookie")),
-    };
-    use subtle::ConstantTimeEq;
-    // Header must match the cookie (double-submit) AND match the value
-    // bound into the session (so substituted cookies don't pass).
-    let header_bytes = header_value.as_bytes();
-    let cookie_bytes = cookie_value.as_bytes();
-    let secret_bytes = session_csrf_secret.as_bytes();
-    if header_bytes.len() != cookie_bytes.len() || !bool::from(header_bytes.ct_eq(cookie_bytes)) {
-        return Err(("csrf_mismatch", "X-CSRF-Token does not match CSRF cookie"));
-    }
-    if header_bytes.len() != secret_bytes.len() || !bool::from(header_bytes.ct_eq(secret_bytes)) {
-        return Err(("csrf_mismatch", "X-CSRF-Token does not match session"));
-    }
-    Ok(())
 }
 
 #[derive(serde::Deserialize, ts_rs::TS)]
@@ -5622,30 +5416,6 @@ async fn handle_admin_request(
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     };
     Ok(attach_csrf_cookie(response, &state, &auth))
-}
-
-/// Refresh the CSRF cookie on every authenticated admin response so
-/// the SPA always has a value matching the live session.
-fn attach_csrf_cookie(
-    mut response: Response<Full<Bytes>>,
-    state: &AdminRuntimeState,
-    auth: &AdminAuth,
-) -> Response<Full<Bytes>> {
-    let payload = auth.session();
-    let cookie = crate::auth::render_csrf_cookie(
-        &payload.csrf_secret,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
-    match hyper::header::HeaderValue::from_str(&cookie) {
-        Ok(v) => {
-            response.headers_mut().append(hyper::header::SET_COOKIE, v);
-        }
-        Err(e) => {
-            warn!(err = %e, "could not append CSRF cookie header");
-        }
-    }
-    response
 }
 
 #[cfg(test)]
