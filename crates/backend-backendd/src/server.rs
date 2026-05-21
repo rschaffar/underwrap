@@ -11,17 +11,17 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
+use underwrap_protocol::config::StoreRecord;
 
-use underwrap_protocol::config::{StoreRecord, StoreRegistryDocument};
 use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument, WrapperPermission};
 
 use underwrap_protocol::message::SecretBytes;
@@ -31,213 +31,17 @@ use underwrap_store::{
     save_resource_blob,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpsTlsConfig {
-    pub cert_file: PathBuf,
-    pub key_file: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpsConfig {
-    pub listen: String,
-    pub tls: HttpsTlsConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdminConfig {
-    /// Optional allowlist of `Origin` (or `Referer`) values for
-    /// state-changing requests. When set, every non-GET/HEAD/OPTIONS
-    /// request must carry an Origin matching one of these entries.
-    /// Foundation for the CSRF work in ticket 212.
-    #[serde(default)]
-    pub allowed_origins: Option<Vec<String>>,
-    /// Path to the 32-byte AEAD key file used to sign session cookies.
-    /// Required because admin authentication is session-cookie only.
-    pub session_key_file: PathBuf,
-    /// Session lifetime in seconds. Defaults to
-    /// `auth::DEFAULT_SESSION_LIFETIME_SECS` (12 hours) when unset.
-    #[serde(default)]
-    pub session_lifetime_secs: Option<u64>,
-    /// Directory under which the admin "create store" API places the
-    /// data directories of newly-created dynamic stores. Each store
-    /// lives at `<stores_data_root>/<store_id>/`. Unset disables store
-    /// creation (returns `data_root_not_configured`).
-    #[serde(default)]
-    pub stores_data_root: Option<PathBuf>,
-}
-
-/// Default location of the backend-managed store-registry file.
-pub const DEFAULT_STORES_FILE: &str = "/var/lib/underwrap-backend/stores.json";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackendConfig {
-    /// Path of the backend-managed store-registry file. Missing files
-    /// are treated as an empty registry. Defaults to
-    /// [`DEFAULT_STORES_FILE`].
-    #[serde(default)]
-    pub stores_file: Option<PathBuf>,
-    /// Path of the backend-managed runtime client-instance registry.
-    /// Missing files are treated as an empty registry. Defaults to
-    /// `/var/lib/underwrap-backend/client-instances.json`.
-    #[serde(default)]
-    pub client_instances_file: Option<PathBuf>,
-    /// Path of the backend-managed user-state file. Missing files are
-    /// treated as an empty user collection with bootstrap incomplete.
-    /// Defaults to [`crate::users::DEFAULT_USERS_FILE`].
-    #[serde(default)]
-    pub users_file: Option<PathBuf>,
-    #[serde(default)]
-    pub https: Option<HttpsConfig>,
-    #[serde(default)]
-    pub admin: Option<AdminConfig>,
-}
-
-impl BackendConfig {
-    /// Resolve [`Self::stores_file`] or the project default.
-    pub fn stores_file(&self) -> PathBuf {
-        self.stores_file
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_STORES_FILE))
-    }
-
-    /// Resolve [`Self::client_instances_file`] or the project default.
-    pub fn client_instances_file(&self) -> PathBuf {
-        self.client_instances_file
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("/var/lib/underwrap-backend/client-instances.json"))
-    }
-
-    /// Resolve [`Self::users_file`] or the project default.
-    pub fn users_file(&self) -> PathBuf {
-        self.users_file
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(crate::users::DEFAULT_USERS_FILE))
-    }
-}
-
-/// One store as loaded from the backend-managed store registry and
-/// opened locally.
-#[derive(Debug, Clone)]
-pub struct LoadedStoreRecord {
-    pub record: StoreRecord,
-}
-
-/// Live lock-state of one store. Plain stores are constructed as
-/// [`StoreState::Unlocked`] at startup and stay there for the
-/// lifetime of the process. Encrypted stores boot as
-/// [`StoreState::Locked`] and only transition to `Unlocked` after an
-/// operator submits the master key via `POST .../unlock`. Dropping the
-/// `Arc<dyn StorageBackend>` zeroizes the held `MasterKey`.
-pub enum StoreState {
-    Unlocked(Arc<dyn StorageBackend>),
-    Locked,
-}
-
-impl StoreState {
-    pub fn is_locked(&self) -> bool {
-        matches!(self, StoreState::Locked)
-    }
-
-    pub fn backend(&self) -> Option<&Arc<dyn StorageBackend>> {
-        match self {
-            StoreState::Unlocked(b) => Some(b),
-            StoreState::Locked => None,
-        }
-    }
-}
-
-/// Reason a `StoreRegistry` lookup failed. Translated to HTTP at the
-/// handler boundary: `NotFound → 404`, `Locked → 503 / store_locked`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegistryLookupError {
-    NotFound,
-    Locked,
-}
-
-/// Open backends + provenance metadata for every store visible to the
-/// admin API. Wrapped in an `RwLock` inside [`AdminRuntimeState`] so
-/// the CRUD handlers can mutate it without rebooting the daemon.
-/// Readers consult [`StoreRegistry::unlocked_backend`] to fetch the
-/// live `Arc<dyn StorageBackend>` for a store and surface
-/// [`RegistryLookupError::Locked`] when the store hasn't been
-/// unlocked yet.
-pub struct StoreRegistry {
-    pub state: HashMap<String, StoreState>,
-    pub records: HashMap<String, LoadedStoreRecord>,
-}
-
-impl StoreRegistry {
-    pub fn new() -> Self {
-        Self {
-            state: HashMap::new(),
-            records: HashMap::new(),
-        }
-    }
-
-    /// Return the live backend for `store_id` if it is unlocked, or a
-    /// structured error otherwise. Used by every service / admin
-    /// handler that needs to touch backing storage.
-    pub fn unlocked_backend(
-        &self,
-        store_id: &str,
-    ) -> std::result::Result<Arc<dyn StorageBackend>, RegistryLookupError> {
-        match self.state.get(store_id) {
-            Some(StoreState::Unlocked(b)) => Ok(Arc::clone(b)),
-            Some(StoreState::Locked) => Err(RegistryLookupError::Locked),
-            None => Err(RegistryLookupError::NotFound),
-        }
-    }
-
-    /// `true` when the store exists in the registry and is currently
-    /// in the locked state. `false` for plain stores, for unlocked
-    /// encrypted stores, and for unknown ids.
-    pub fn is_locked(&self, store_id: &str) -> bool {
-        matches!(self.state.get(store_id), Some(StoreState::Locked))
-    }
-
-    /// Install an unlocked backend for `store_id`. Used after a
-    /// successful unlock or by store creation. Returns the previous
-    /// state so the caller can decide what to do (e.g. error out on
-    /// `Unlocked` to avoid a race on already-unlocked stores).
-    pub fn unlock(
-        &mut self,
-        store_id: &str,
-        backend: Arc<dyn StorageBackend>,
-    ) -> Option<StoreState> {
-        self.state
-            .insert(store_id.to_string(), StoreState::Unlocked(backend))
-    }
-
-    /// Transition `store_id` to the locked state, dropping any held
-    /// backend. Returns `true` when the store existed in the registry.
-    pub fn lock(&mut self, store_id: &str) -> bool {
-        if self.state.contains_key(store_id) {
-            self.state.insert(store_id.to_string(), StoreState::Locked);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Test-only: return the unlocked backend for `store_id`,
-    /// panicking with a helpful message if the store is locked or
-    /// unknown. Cuts down on noise in tests that already know the
-    /// store is unlocked because they just created it.
-    #[cfg(test)]
-    pub fn expect_unlocked(&self, store_id: &str) -> Arc<dyn StorageBackend> {
-        match self.state.get(store_id) {
-            Some(StoreState::Unlocked(b)) => Arc::clone(b),
-            Some(StoreState::Locked) => panic!("expected '{store_id}' to be unlocked"),
-            None => panic!("expected '{store_id}' in registry"),
-        }
-    }
-}
-
-impl Default for StoreRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use crate::config::{
+    AdminConfig, BackendConfig, DEFAULT_STORES_FILE, HttpsConfig, HttpsTlsConfig,
+};
+pub use crate::store_registry::{
+    LoadedStoreRecord, RegistryLookupError, StoreRegistry, StoreState, is_valid_store_id,
+    load_store_records,
+};
+pub(crate) use crate::store_registry::{
+    generate_store_id, open_initial_stores, save_store_records, validate_store_name,
+};
+pub(crate) use crate::tls::build_https_acceptor;
 
 struct AdminRuntimeState {
     /// Open store backends + their backend-managed records. Shared
@@ -410,155 +214,6 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
     }
 }
 
-/// Build the initial [`StoreState`] map for the on-disk store
-/// registry. Plain stores are opened immediately and inserted as
-/// [`StoreState::Unlocked`]. Encrypted stores are inserted as
-/// [`StoreState::Locked`] — the backend does not hold their master
-/// key, so they stay locked until an operator submits the key via
-/// `POST /v1/admin/stores/{id}/unlock`.
-fn open_initial_stores(
-    definitions: &HashMap<String, LoadedStoreRecord>,
-) -> Result<HashMap<String, StoreState>> {
-    let mut stores = HashMap::new();
-    for (id, def) in definitions {
-        let state = match &def.record.storage {
-            underwrap_protocol::config::StorageConfig::Plain { .. } => {
-                let backend: Arc<dyn StorageBackend> =
-                    Arc::from(underwrap_store::open(&def.record.storage)?);
-                StoreState::Unlocked(backend)
-            }
-            underwrap_protocol::config::StorageConfig::Encrypted { .. } => {
-                info!(
-                    store = %id,
-                    "encrypted store starts locked; awaiting POST /v1/admin/stores/{{id}}/unlock",
-                );
-                StoreState::Locked
-            }
-        };
-        stores.insert(id.clone(), state);
-    }
-    Ok(stores)
-}
-
-/// Read the backend-managed store-registry file and return the runtime
-/// store map keyed by stable store id. Missing files are treated as an
-/// empty registry so a fresh backend can still boot.
-pub fn load_store_records(stores_file: &Path) -> Result<HashMap<String, LoadedStoreRecord>> {
-    let text = match std::fs::read_to_string(stores_file) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", stores_file.display())),
-    };
-    let doc: StoreRegistryDocument = serde_json::from_str(&text)
-        .with_context(|| format!("parsing store registry {}", stores_file.display()))?;
-    anyhow::ensure!(
-        doc.version == 1,
-        "unsupported store registry version {}",
-        doc.version
-    );
-    let mut out: HashMap<String, LoadedStoreRecord> = HashMap::new();
-    let mut names = std::collections::BTreeSet::new();
-    for record in doc.stores {
-        if !is_valid_store_id(&record.id) {
-            anyhow::bail!(
-                "invalid store id '{}' in {}: must match [a-z0-9][a-z0-9_-]*",
-                record.id,
-                stores_file.display()
-            );
-        }
-        let trimmed_name = record.name.trim();
-        anyhow::ensure!(
-            !trimmed_name.is_empty(),
-            "store '{}' in {} has an empty visible name",
-            record.id,
-            stores_file.display()
-        );
-        let name_key = trimmed_name.to_ascii_lowercase();
-        anyhow::ensure!(
-            names.insert(name_key),
-            "duplicate visible store name '{}' in {}",
-            trimmed_name,
-            stores_file.display()
-        );
-        if out
-            .insert(record.id.clone(), LoadedStoreRecord { record })
-            .is_some()
-        {
-            anyhow::bail!("duplicate store id in {}", stores_file.display());
-        }
-    }
-    Ok(out)
-}
-
-fn save_store_records(
-    stores_file: &Path,
-    records: &HashMap<String, LoadedStoreRecord>,
-) -> Result<()> {
-    let mut stores: Vec<StoreRecord> = records.values().map(|r| r.record.clone()).collect();
-    stores.sort_by(|a, b| a.id.cmp(&b.id));
-    let doc = StoreRegistryDocument { version: 1, stores };
-    let json = serde_json::to_vec_pretty(&doc).context("serialising store registry")?;
-    let dir = stores_file.parent().ok_or_else(|| {
-        anyhow::anyhow!(
-            "stores file path '{}' has no parent directory",
-            stores_file.display()
-        )
-    })?;
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating store-registry dir {}", dir.display()))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("creating temp store-registry under {}", dir.display()))?;
-    use std::io::Write;
-    tmp.write_all(&json)
-        .context("writing store-registry tempfile")?;
-    tmp.as_file()
-        .sync_all()
-        .context("fsync store-registry tempfile")?;
-    tmp.persist(stores_file).map_err(|e| {
-        anyhow::anyhow!(
-            "atomically persisting store registry to {}: {e}",
-            stores_file.display(),
-        )
-    })?;
-    Ok(())
-}
-
-/// A store id must be safe to use as a filename and as a URL path
-/// segment. Lowercase letters, digits, `-`, `_`, starting with an
-/// alphanumeric.
-pub fn is_valid_store_id(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
-        return false;
-    }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-}
-
-fn validate_store_name(name: &str) -> std::result::Result<String, &'static str> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        Err("store name must not be empty")
-    } else {
-        Ok(trimmed.to_string())
-    }
-}
-
-fn generate_store_id() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 10];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    format!(
-        "store_{}",
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    )
-}
-
 fn generate_client_instance_id() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 10];
@@ -590,94 +245,6 @@ fn validate_runtime_client_mappings(
         }
     }
     Ok(())
-}
-
-fn build_https_acceptor(config: &HttpsTlsConfig) -> Result<TlsAcceptor> {
-    use rustls::ServerConfig;
-
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
-    let certs = load_cert_chain(&config.cert_file)?;
-    let key = load_private_key(&config.key_file)?;
-
-    let verifier: Arc<dyn rustls::server::danger::ClientCertVerifier> =
-        Arc::new(FingerprintClientCertVerifier::new());
-
-    let server_config = ServerConfig::builder()
-        .with_client_cert_verifier(verifier)
-        .with_single_cert(certs, key)
-        .context("building rustls server config")?;
-
-    Ok(TlsAcceptor::from(Arc::new(server_config)))
-}
-
-/// Client certificate verifier that accepts any presented leaf at the TLS
-/// layer. Authorization is performed downstream by SHA-256 fingerprint lookup
-/// against the runtime-client registry in [`resolve_runtime_client`]: the
-/// chain, subject, EKU, and validity window of the leaf are not consulted
-/// here, only its hash. An unknown-fingerprint cert still fails at the
-/// application layer; a known-fingerprint cert is admitted regardless of how
-/// it was signed.
-///
-/// The handshake signature is still verified against the leaf's public key so
-/// a stolen cert without its private key cannot be replayed.
-#[derive(Debug)]
-struct FingerprintClientCertVerifier {
-    supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
-}
-
-impl FingerprintClientCertVerifier {
-    fn new() -> Self {
-        let provider = rustls::crypto::ring::default_provider();
-        Self {
-            supported_algs: provider.signature_verification_algorithms,
-        }
-    }
-}
-
-impl rustls::server::danger::ClientCertVerifier for FingerprintClientCertVerifier {
-    fn offer_client_auth(&self) -> bool {
-        true
-    }
-
-    fn client_auth_mandatory(&self) -> bool {
-        false
-    }
-
-    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
-        &[]
-    }
-
-    fn verify_client_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
-        Ok(rustls::server::danger::ClientCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.supported_algs.supported_schemes()
-    }
 }
 
 /// Validate the browser-facing admin configuration.
@@ -744,37 +311,6 @@ fn referer_to_origin(referer: &str) -> Option<String> {
         return None;
     }
     Some(format!("{scheme}://{authority}"))
-}
-
-fn load_cert_chain(path: &Path) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
-    let pem = std::fs::read(path)
-        .with_context(|| format!("reading certificate file {}", path.display()))?;
-    let mut reader = std::io::BufReader::new(pem.as_slice());
-    let certs = rustls_pemfile::certs(&mut reader)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .context("parsing certificate PEM")?;
-    anyhow::ensure!(
-        !certs.is_empty(),
-        "certificate file '{}' contained no certificates",
-        path.display()
-    );
-    Ok(certs)
-}
-
-fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
-    let pem = std::fs::read(path)
-        .with_context(|| format!("reading private key file {}", path.display()))?;
-    let mut reader = std::io::BufReader::new(pem.as_slice());
-    if let Some(key) =
-        rustls_pemfile::private_key(&mut reader).context("parsing private key PEM")?
-    {
-        Ok(key)
-    } else {
-        anyhow::bail!(
-            "private key file '{}' contained no private key",
-            path.display()
-        )
-    }
 }
 
 /// Outcome of authenticating a runtime client request. Carries the
@@ -6230,6 +5766,7 @@ fn attach_csrf_cookie(
 #[cfg(test)]
 mod store_registry_tests {
     use super::*;
+    use underwrap_protocol::config::StoreRegistryDocument;
 
     fn write_registry(path: &Path, stores: Vec<StoreRecord>) {
         let doc = StoreRegistryDocument { version: 1, stores };
