@@ -162,6 +162,7 @@ mod directory_and_status;
 mod last_used;
 mod policy;
 mod resource_blob;
+mod runtime_api;
 mod service_transport;
 mod store_read;
 mod wrapper_permissions;
