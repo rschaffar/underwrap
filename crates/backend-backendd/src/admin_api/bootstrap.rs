@@ -1,0 +1,239 @@
+//! First-operator bootstrap surface:
+//! `GET /v1/admin/auth/bootstrap/status` and
+//! `POST /v1/admin/auth/bootstrap`.
+//!
+//! The status endpoint is unconditional — the SPA pings it to choose
+//! between the login page and the bootstrap page. The bootstrap
+//! endpoint creates the very first admin operator, marks the
+//! persistent sentinel, and issues a session in one round trip.
+//! After this succeeds once, further calls are refused even if every
+//! operator is later deleted.
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::{Request, Response, StatusCode};
+use tracing::{info, warn};
+
+use crate::admin_api::audit::log_admin_event;
+use crate::http::responses::{error_response, json_response, parse_json_body};
+use crate::runtime_state::AdminRuntimeState;
+
+#[derive(serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct BootstrapRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct BootstrapStatusResponse {
+    pub bootstrap_required: bool,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct BootstrapResponse {
+    pub username: String,
+}
+
+/// Handle `GET /v1/admin/auth/bootstrap/status`. Public endpoint:
+/// returns `{ bootstrap_required: true }` only when the operator
+/// collection is empty AND the bootstrap-completed sentinel is unset.
+/// Anything else (operators exist, sentinel set, store error) yields
+/// `false` — the SPA's response is to show the login page.
+pub(crate) fn handle_admin_bootstrap_status(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
+    let sentinel_set = crate::users::bootstrap_completed(&state.users_file).unwrap_or(true);
+    let collection_empty = crate::users::load(&state.users_file)
+        .map(|c| c.is_empty())
+        .unwrap_or(false);
+    json_response(
+        StatusCode::OK,
+        &BootstrapStatusResponse {
+            bootstrap_required: !sentinel_set && collection_empty,
+        },
+    )
+}
+
+/// Handle `POST /v1/admin/auth/bootstrap`. Public endpoint: creates
+/// the very first admin operator, marks the persistent sentinel, and
+/// issues a session in one round trip. After this succeeds, the
+/// endpoint refuses further calls even if every operator is later
+/// deleted.
+pub(crate) async fn handle_admin_bootstrap(
+    state: &AdminRuntimeState,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let session_key = state.session_key;
+    let body = match parse_json_body::<BootstrapRequest>(request).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let username_norm = crate::users::normalise_username(&body.username);
+    if username_norm.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_credentials",
+            "username is required",
+        );
+    }
+    if body.password.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_credentials",
+            "password is required",
+        );
+    }
+
+    // Serialise concurrent bootstrap attempts: two callers must not
+    // both see "users empty + sentinel unset" before either has
+    // written. The lock is held across the whole sequence.
+    let _guard = state.bootstrap_lock.lock().unwrap();
+
+    match crate::users::bootstrap_completed(&state.users_file) {
+        Ok(true) => {
+            audit_bootstrap_attempt(state, &username_norm, "bootstrap_already_completed");
+            return error_response(
+                StatusCode::CONFLICT,
+                "bootstrap_already_completed",
+                "bootstrap has already been completed for this backend",
+            );
+        }
+        Ok(false) => {}
+        Err(e) => {
+            warn!(err = %e, "bootstrap: reading sentinel failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bootstrap sentinel unreadable",
+            );
+        }
+    }
+
+    let collection = match crate::users::load(&state.users_file) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(err = %e, "bootstrap: loading user collection failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "user collection unavailable",
+            );
+        }
+    };
+    if !collection.is_empty() {
+        audit_bootstrap_attempt(state, &username_norm, "users_already_exist");
+        return error_response(
+            StatusCode::CONFLICT,
+            "users_already_exist",
+            "a user already exists; bootstrap requires an empty user collection",
+        );
+    }
+
+    let now = crate::users::now_epoch_secs();
+    let password_hash = match crate::auth::hash_password(&body.password) {
+        Ok(h) => h,
+        Err(e) => {
+            warn!(err = %e, "bootstrap: argon2 hash failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "could not hash password",
+            );
+        }
+    };
+    let record = crate::users::UserRecord {
+        id: crate::users::new_user_id(),
+        username: username_norm.clone(),
+        password_hash,
+        created_at: now,
+        password_changed_at: now,
+    };
+    let mut new_collection = crate::users::UserCollection::default();
+    if let Err(e) = new_collection.add(record.clone()) {
+        warn!(err = %e, "bootstrap: building collection failed");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_credentials",
+            &e.to_string(),
+        );
+    }
+    if let Err(e) = crate::users::save(&state.users_file, &new_collection) {
+        warn!(err = %e, "bootstrap: writing user collection failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "could not persist user",
+        );
+    }
+    if let Err(e) = crate::users::mark_bootstrap_completed(
+        &state.users_file,
+        &crate::users::BootstrapSentinel {
+            completed_at: now,
+            by_username: record.username.clone(),
+        },
+    ) {
+        warn!(err = %e, "bootstrap: writing sentinel failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "could not persist bootstrap sentinel",
+        );
+    }
+    audit_bootstrap_attempt(state, &record.username, "success");
+
+    // Issue a session for the brand-new admin.
+    let payload = crate::auth::new_session_payload(
+        record.id.clone(),
+        record.username.clone(),
+        now,
+        state.session_lifetime_secs,
+    );
+    let encoded = match crate::auth::encrypt_session(&payload, &session_key) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(err = %e, "bootstrap: encrypting session failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "could not issue session",
+            );
+        }
+    };
+    let session_cookie = crate::auth::render_session_cookie(
+        &encoded,
+        state.session_lifetime_secs,
+        state.cookies_secure,
+    );
+    let csrf_cookie = crate::auth::render_csrf_cookie(
+        &payload.csrf_secret,
+        state.session_lifetime_secs,
+        state.cookies_secure,
+    );
+    info!(username = %record.username, "bootstrap: first user created");
+    let body = BootstrapResponse {
+        username: record.username.clone(),
+    };
+    let body_bytes = serde_json::to_vec(&body).expect("serializing bootstrap response");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .header(hyper::header::SET_COOKIE, session_cookie)
+        .header(hyper::header::SET_COOKIE, csrf_cookie)
+        .body(Full::new(Bytes::from(body_bytes)))
+        .expect("building bootstrap response")
+}
+
+/// Log one bootstrap attempt outcome. Best effort: never fails the caller.
+pub(crate) fn audit_bootstrap_attempt(_state: &AdminRuntimeState, username: &str, result: &str) {
+    log_admin_event(
+        "bootstrap_attempt",
+        username,
+        None,
+        None,
+        None,
+        None,
+        result,
+    );
+}

@@ -13,4 +13,6 @@
 //! `stores`, etc.) will land in later modularization steps.
 
 pub(crate) mod audit;
+pub mod auth;
+pub mod bootstrap;
 pub(crate) mod csrf;
