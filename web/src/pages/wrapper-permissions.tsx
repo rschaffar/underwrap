@@ -4,7 +4,6 @@ import {
   ShieldCheck,
   ShieldOff,
   Hourglass,
-  KeyRound,
   Plus,
   FileText,
   Trash2,
@@ -52,11 +51,7 @@ interface WrapperPermissionsPageProps {
 }
 
 /** Canonical kebab string for a permission mode. */
-export type ModeKind =
-  | "locked"
-  | "unlocked"
-  | "unlocked-until"
-  | "per-call-approval";
+export type ModeKind = "locked" | "unlocked" | "unlocked-until";
 
 /** `WrapperApprovalMode` is a tagged union over `kind`; this maps to it. */
 export function modeKind(mode: WrapperApprovalMode): ModeKind {
@@ -630,15 +625,6 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
         </span>
       );
     }
-    case "per-call-approval":
-      return (
-        <span
-          data-testid="mode-per-call-approval"
-          className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-xs text-blue-200"
-        >
-          <KeyRound className="h-3 w-3" aria-hidden /> per-call
-        </span>
-      );
   }
 }
 
@@ -955,12 +941,6 @@ function EditCellDialog({
     }
     return toDatetimeLocal(new Date(Date.now() + 30 * 60 * 1000));
   });
-  const [approvalKey, setApprovalKey] = useState<string>(() => {
-    if (existing && existing.mode.kind === "per-call-approval") {
-      return (existing.mode as { approval_key: string }).approval_key;
-    }
-    return "";
-  });
   const [writable, setWritable] = useState<boolean>(existing?.writable ?? false);
   const [reason, setReason] = useState<string>(existing?.reason ?? "");
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1021,17 +1001,6 @@ function EditCellDialog({
         } as unknown as WrapperApprovalMode;
         break;
       }
-      case "per-call-approval": {
-        if (approvalKey.trim() === "") {
-          setSubmitError("Paste an OpenSSH public key.");
-          return;
-        }
-        mode = {
-          kind: "per-call-approval",
-          approval_key: approvalKey.trim(),
-        } as WrapperApprovalMode;
-        break;
-      }
     }
     upsert.mutate(mode);
   }
@@ -1055,8 +1024,7 @@ function EditCellDialog({
             >
               {resourceName}
             </code>
-            . The mode is checked on every read; per-call-approval also requires a
-            fresh ssh-agent signature.
+            . The mode is checked server-side on every read.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -1064,7 +1032,7 @@ function EditCellDialog({
             className="flex flex-wrap gap-2"
             data-testid="mode-radio-group"
           >
-            {(["locked", "unlocked", "unlocked-until", "per-call-approval"] as const).map(
+            {(["locked", "unlocked", "unlocked-until"] as const).map(
               (k) => (
                 <label
                   key={k}
@@ -1097,20 +1065,6 @@ function EditCellDialog({
                 type="datetime-local"
                 value={untilLocal}
                 onChange={(e) => setUntilLocal(e.target.value)}
-              />
-            </div>
-          ) : null}
-          {kind === "per-call-approval" ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="approval-key">SSH public key (OpenSSH format)</Label>
-              <textarea
-                id="approval-key"
-                rows={3}
-                value={approvalKey}
-                onChange={(e) => setApprovalKey(e.target.value)}
-                spellCheck={false}
-                className="block w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
-                placeholder="ssh-ed25519 AAAA..."
               />
             </div>
           ) : null}

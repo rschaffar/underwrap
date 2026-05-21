@@ -45,7 +45,6 @@ describe("derivation helpers", () => {
       created_by: { kind: "operator", id: "op-1", username: "alice" },
       created_at: 100n,
       last_used_at: null,
-      files_mount_paths: [],
     },
     {
       wrapper: "aws-prod",
@@ -53,7 +52,6 @@ describe("derivation helpers", () => {
       created_by: { kind: "client-instance", id: "ci-runner" },
       created_at: 200n,
       last_used_at: null,
-      files_mount_paths: [],
     },
     {
       wrapper: "gh-authorized",
@@ -61,7 +59,6 @@ describe("derivation helpers", () => {
       created_by: { kind: "operator", id: "op-1", username: "alice" },
       created_at: 150n,
       last_used_at: null,
-      files_mount_paths: [],
     },
   ];
 
@@ -88,7 +85,6 @@ describe("derivation helpers", () => {
         created_by: { kind: "operator", id: "op-1", username: "alice" },
         created_at: 175n,
         last_used_at: null,
-        files_mount_paths: [],
       },
     ];
     const groups = groupPairsByResource(shared);
@@ -129,17 +125,11 @@ describe("derivation helpers", () => {
         until_epoch: 1n,
       } as unknown as WrapperApprovalMode),
     ).toBe("unlocked-until");
-    expect(
-      modeKind({
-        kind: "per-call-approval",
-        approval_key: "k",
-      } as WrapperApprovalMode),
-    ).toBe("per-call-approval");
   });
 });
 
 describe("ModeBadge", () => {
-  it("renders one of the four mode variants", () => {
+  it("renders one of the three mode variants", () => {
     const variants: Array<{ mode: WrapperApprovalMode; testid: string }> = [
       { mode: { kind: "locked" } as WrapperApprovalMode, testid: "mode-locked" },
       {
@@ -152,13 +142,6 @@ describe("ModeBadge", () => {
           until_epoch: 1_700_000_000,
         } as unknown as WrapperApprovalMode,
         testid: "mode-unlocked-until",
-      },
-      {
-        mode: {
-          kind: "per-call-approval",
-          approval_key: "ssh-ed25519 AAAA",
-        } as WrapperApprovalMode,
-        testid: "mode-per-call-approval",
       },
     ];
     for (const v of variants) {
