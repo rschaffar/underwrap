@@ -35,12 +35,6 @@ pub use crate::store_registry::{
     load_store_records,
 };
 
-// `admin_store` is re-exported because most `admin_api/*` modules
-// still import it as `crate::server::admin_store`. The function lives
-// next to its production code in `admin_api::stores`; this re-export
-// is a stop-gap until those imports get updated.
-pub(crate) use crate::admin_api::stores::admin_store;
-
 // Internal helpers used by the runtime bootstrap and the HTTPS connection
 // dispatcher.
 use crate::http::origin::validate_admin_config;

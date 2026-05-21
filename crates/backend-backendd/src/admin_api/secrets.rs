@@ -18,6 +18,7 @@ use underwrap_store::{
     blob_from_resource_entries, expand_blob_to_entries, load_resource_blob, save_resource_blob,
 };
 
+use crate::admin_api::stores::admin_store;
 use crate::http::responses::{error_response, json_response, parse_json_body};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::secret_entries::{
@@ -29,7 +30,6 @@ pub(crate) async fn handle_admin_secret_read(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let body = match parse_json_body::<underwrap_protocol::service::AdminSecretReadRequest>(request)
         .await
     {
@@ -61,7 +61,6 @@ pub(crate) async fn handle_admin_secret_write_endpoint(
     actor: &str,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let body = match parse_json_body::<underwrap_protocol::service::AdminSecretWriteRequest>(
         request,
     )
@@ -80,7 +79,6 @@ pub(crate) async fn handle_admin_secret_list(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let body = match parse_json_body::<underwrap_protocol::service::AdminSecretListRequest>(request)
         .await
     {
@@ -106,7 +104,6 @@ pub(crate) async fn handle_admin_secret_delete(
     // Admin deletes are always allowed once per-store access
     // has been checked; per-resource write flags only gate
     // wrapper-side writes.
-    use crate::server::admin_store;
     let body =
         match parse_json_body::<underwrap_protocol::service::AdminSecretDeleteRequest>(request)
             .await
@@ -135,7 +132,6 @@ pub(crate) async fn handle_admin_secret_rename_endpoint(
     actor: &str,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let body =
         match parse_json_body::<underwrap_protocol::service::AdminSecretRenameRequest>(request)
             .await
@@ -154,7 +150,6 @@ pub(crate) fn handle_admin_secret_write(
     operator: &str,
     body: underwrap_protocol::service::AdminSecretWriteRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let secret_id = match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key) {
         Ok(id) => id,
         Err(resp) => return resp,
@@ -207,7 +202,6 @@ pub(crate) fn handle_admin_secret_rename(
     operator: &str,
     body: underwrap_protocol::service::AdminSecretRenameRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let from_id = match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.from_key)
     {
         Ok(id) => id,

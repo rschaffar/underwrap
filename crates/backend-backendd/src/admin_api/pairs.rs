@@ -9,6 +9,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use crate::http::responses::parse_json_body;
 
 use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::stores::admin_store;
 use crate::http::responses::{error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
@@ -62,7 +63,6 @@ pub(crate) fn handle_admin_pairs_list(
     state: &AdminRuntimeState,
     body: &underwrap_protocol::service::AdminPairsListRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -93,7 +93,6 @@ pub(crate) fn handle_admin_pair_create(
     principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminPairCreateRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     use underwrap_protocol::entities::{EntityCreator, WrapperResourcePairRecord};
     let wrapper = body.wrapper.trim();
     let resource_id = body.resource_id.trim();
@@ -183,7 +182,6 @@ pub(crate) fn handle_admin_pair_delete(
     principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminPairDeleteRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     use underwrap_protocol::service::{
         AdminPairDeleteBlockers, AdminPairDeleteResponse, AdminWrapperPermissionKey,
     };

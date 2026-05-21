@@ -21,6 +21,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID;
 
 use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::stores::admin_store;
 use crate::http::responses::{error_response, json_response, parse_json_body};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{load_policy_document_or_default, save_policy_document};
@@ -78,7 +79,6 @@ pub(crate) async fn handle_admin_policy_get(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let body = match parse_json_body::<underwrap_protocol::service::AdminPolicyGetRequest>(request)
         .await
     {
@@ -107,7 +107,6 @@ pub(crate) async fn handle_admin_policy_put(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let body = match parse_json_body::<underwrap_protocol::service::AdminPolicyPutRequest>(request)
         .await
     {
@@ -183,7 +182,6 @@ pub(crate) fn handle_admin_wrapper_permissions_list(
     state: &AdminRuntimeState,
     body: &underwrap_protocol::service::AdminWrapperPermissionsListRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -205,7 +203,6 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
     principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminWrapperPermissionUpsertRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -277,7 +274,6 @@ pub(crate) fn handle_admin_wrapper_permission_delete(
     principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminWrapperPermissionDeleteRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,

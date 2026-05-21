@@ -17,6 +17,7 @@ use crate::http::responses::parse_json_body;
 use underwrap_store::{load_resource_blob, save_resource_blob};
 
 use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::stores::admin_store;
 use crate::http::responses::{error_response, json_response};
 use crate::runtime_api::wrappers::generate_resource_id;
 use crate::runtime_state::AdminRuntimeState;
@@ -118,7 +119,6 @@ pub(crate) fn handle_admin_resources_list(
     state: &AdminRuntimeState,
     body: &underwrap_protocol::service::AdminResourcesListRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -146,7 +146,6 @@ pub(crate) fn handle_admin_resource_blob_get(
     state: &AdminRuntimeState,
     body: &underwrap_protocol::service::AdminResourceBlobGetRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -184,7 +183,6 @@ pub(crate) fn handle_admin_resource_blob_put(
     operator: &str,
     body: &underwrap_protocol::service::AdminResourceBlobPutRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     use underwrap_protocol::resource_blob::ResourceBlob;
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
@@ -257,7 +255,6 @@ pub(crate) fn handle_admin_resource_create(
     principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminResourceCreateRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     use underwrap_protocol::entities::{EntityCreator, ResourceRecord};
     let name = body.name.trim();
     if name.is_empty() {
@@ -327,7 +324,6 @@ pub(crate) fn handle_admin_resource_delete(
     principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminResourceDeleteRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     use underwrap_protocol::service::{
         AdminResourceDeleteBlockers, AdminResourceDeleteResponse, AdminWrapperPermissionKey,
         ServiceWrapperResourcePair,
@@ -469,7 +465,6 @@ pub(crate) fn handle_admin_resource_rename(
     principal: &crate::users::Principal,
     body: &underwrap_protocol::service::AdminResourceRenameRequest,
 ) -> Response<Full<Bytes>> {
-    use crate::server::admin_store;
     use underwrap_protocol::entities::InsertError;
     let new_name = body.new_name.trim();
     if new_name.is_empty() {
