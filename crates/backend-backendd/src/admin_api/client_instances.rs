@@ -23,7 +23,6 @@ use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::policy::drop_client_instance_permissions;
 use crate::http::responses::{error_response, json_response, parse_json_body};
 use crate::runtime_state::AdminRuntimeState;
-use crate::store_registry::validate_store_name;
 
 pub(crate) fn generate_client_instance_id() -> String {
     crate::ids::random_id("inst")
@@ -184,10 +183,15 @@ pub(crate) fn do_admin_client_instance_create(
     principal: &crate::users::Principal,
     body: AdminClientInstanceCreateRequest,
 ) -> Response<Full<Bytes>> {
-    let display_name = match validate_store_name(&body.display_name) {
-        Ok(v) => v,
-        Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_display_name", msg),
-    };
+    let display_name = body.display_name.trim();
+    if display_name.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_display_name",
+            "display name must not be empty",
+        );
+    }
+    let display_name = display_name.to_string();
     let current_credential =
         match crate::runtime_clients::current_credential_from_pem(body.cert_pem, body.issued_at) {
             Ok(current) => current,
@@ -320,12 +324,15 @@ pub(crate) fn do_admin_client_instance_update(
     let old_store_id = existing.current_store_id.clone();
     let mut updated = existing;
     if let Some(display_name) = body.display_name {
-        let display_name = match validate_store_name(&display_name) {
-            Ok(v) => v,
-            Err(msg) => {
-                return error_response(StatusCode::BAD_REQUEST, "invalid_display_name", msg);
-            }
-        };
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_display_name",
+                "display name must not be empty",
+            );
+        }
+        let display_name = display_name.to_string();
         if instances.iter().any(|(other_id, other)| {
             other_id != id && other.display_name.eq_ignore_ascii_case(&display_name)
         }) {

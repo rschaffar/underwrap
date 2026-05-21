@@ -271,15 +271,6 @@ pub fn is_valid_store_id(name: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
-pub(crate) fn validate_store_name(name: &str) -> std::result::Result<String, &'static str> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        Err("store name must not be empty")
-    } else {
-        Ok(trimmed.to_string())
-    }
-}
-
 pub(crate) fn generate_store_id() -> String {
     crate::ids::random_id("store")
 }

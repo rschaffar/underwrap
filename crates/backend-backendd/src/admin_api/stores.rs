@@ -37,7 +37,6 @@ use crate::http::responses::{
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{
     LoadedStoreRecord, RegistryLookupError, StoreState, generate_store_id, save_store_records,
-    validate_store_name,
 };
 
 /// Resolve a store reference for an authenticated request. Any
@@ -315,10 +314,15 @@ pub(crate) fn do_admin_store_create(
     principal: &crate::users::Principal,
     body: AdminStoreCreateRequest,
 ) -> Response<Full<Bytes>> {
-    let visible_name = match validate_store_name(&body.name) {
-        Ok(name) => name,
-        Err(msg) => return error_response(StatusCode::BAD_REQUEST, "invalid_store_name", msg),
-    };
+    let visible_name = body.name.trim();
+    if visible_name.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_store_name",
+            "store name must not be empty",
+        );
+    }
+    let visible_name = visible_name.to_string();
 
     let store_id = loop {
         let candidate = generate_store_id();
@@ -522,12 +526,15 @@ pub(crate) fn do_admin_store_update(
         };
         let mut record = loaded.record.clone();
         if let Some(new_name) = body.name {
-            let new_name = match validate_store_name(&new_name) {
-                Ok(name) => name,
-                Err(msg) => {
-                    return error_response(StatusCode::BAD_REQUEST, "invalid_store_name", msg);
-                }
-            };
+            let new_name = new_name.trim();
+            if new_name.is_empty() {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_store_name",
+                    "store name must not be empty",
+                );
+            }
+            let new_name = new_name.to_string();
             if reg.records.iter().any(|(other_id, other)| {
                 other_id != name && other.record.name.eq_ignore_ascii_case(&new_name)
             }) {
