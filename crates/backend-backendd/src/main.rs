@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-use underwrap_backendd::{server, users};
+use underwrap_backendd::{BackendConfig, server, users};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -50,7 +50,7 @@ enum AdminCommand {
     },
 }
 
-fn parse_backend_config(config_text: &str) -> Result<server::BackendConfig> {
+fn parse_backend_config(config_text: &str) -> Result<BackendConfig> {
     // Reject the legacy inline `stores:` block up front so an operator
     // gets a clear migration hint instead of a confusing "unknown field"
     // or, worse, a silently-ignored map.
@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
     }
 }
 
-fn run_admin(cmd: AdminCommand, config: server::BackendConfig) -> Result<()> {
+fn run_admin(cmd: AdminCommand, config: BackendConfig) -> Result<()> {
     let users_file = config.users_file();
     match cmd {
         AdminCommand::RecoverUser { username } => {

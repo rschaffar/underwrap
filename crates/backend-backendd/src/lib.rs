@@ -14,3 +14,18 @@ pub(crate) mod test_support;
 pub mod tls;
 pub mod users;
 pub mod web;
+
+// Public-API surface. External consumers (integration-tests, the
+// `ts_export` binding test, and the `underwrap-backendd` binary itself)
+// reach for these types via the crate root.
+pub use crate::admin_api::auth::{LoginRequest, LoginResponse, WhoamiResponse};
+pub use crate::admin_api::bootstrap::{
+    BootstrapRequest, BootstrapResponse, BootstrapStatusResponse,
+};
+pub use crate::config::{
+    AdminConfig, BackendConfig, DEFAULT_STORES_FILE, HttpsConfig, HttpsTlsConfig,
+};
+pub use crate::store_registry::{
+    LoadedStoreRecord, RegistryLookupError, StoreRegistry, StoreState, is_valid_store_id,
+    load_store_records,
+};

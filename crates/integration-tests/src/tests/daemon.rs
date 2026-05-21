@@ -70,18 +70,18 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
         [5u8; underwrap_backendd::auth::SESSION_KEY_LEN],
     )
     .unwrap();
-    let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
+    let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
         stores_file: Some(base.join("stores.json")),
         client_instances_file: Some(base.join("client-instances.json")),
         users_file: Some(base.join("users.json")),
-        https: Some(underwrap_backendd::server::HttpsConfig {
+        https: Some(underwrap_backendd::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),
-            tls: underwrap_backendd::server::HttpsTlsConfig {
+            tls: underwrap_backendd::HttpsTlsConfig {
                 cert_file: server_cert,
                 key_file: server_key,
             },
         }),
-        admin: Some(underwrap_backendd::server::AdminConfig {
+        admin: Some(underwrap_backendd::AdminConfig {
             allowed_origins: None,
             session_key_file,
             session_lifetime_secs: None,
@@ -254,18 +254,18 @@ async fn underwrapd_binary_start_and_read() {
         .unwrap(),
     )
     .unwrap();
-    let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
+    let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
         stores_file: Some(stores_file),
         client_instances_file: Some(client_instances_file),
         users_file: Some(base.join("users.json")),
-        https: Some(underwrap_backendd::server::HttpsConfig {
+        https: Some(underwrap_backendd::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),
-            tls: underwrap_backendd::server::HttpsTlsConfig {
+            tls: underwrap_backendd::HttpsTlsConfig {
                 cert_file: server_cert.clone(),
                 key_file: server_key.clone(),
             },
         }),
-        admin: Some(underwrap_backendd::server::AdminConfig {
+        admin: Some(underwrap_backendd::AdminConfig {
             allowed_origins: None,
             session_key_file: session_key_file.clone(),
             session_lifetime_secs: None,

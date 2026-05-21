@@ -153,18 +153,18 @@ impl TestDaemon {
                 },
             )?,
         )?;
-        let backend_config = underwrap_backendd::server::BackendConfig {
+        let backend_config = underwrap_backendd::BackendConfig {
             stores_file: Some(stores_file),
             client_instances_file: Some(instances_file),
             users_file: Some(base.join("users.json")),
-            https: Some(underwrap_backendd::server::HttpsConfig {
+            https: Some(underwrap_backendd::HttpsConfig {
                 listen: format!("127.0.0.1:{https_port}"),
-                tls: underwrap_backendd::server::HttpsTlsConfig {
+                tls: underwrap_backendd::HttpsTlsConfig {
                     cert_file: pki.server_cert.clone(),
                     key_file: pki.server_key.clone(),
                 },
             }),
-            admin: Some(underwrap_backendd::server::AdminConfig {
+            admin: Some(underwrap_backendd::AdminConfig {
                 allowed_origins: None,
                 session_key_file: session_key_file.clone(),
                 session_lifetime_secs: None,

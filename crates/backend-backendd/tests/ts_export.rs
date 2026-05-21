@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use ts_rs::TS;
 
-use underwrap_backendd::server::{
+use underwrap_backendd::{
     BootstrapRequest, BootstrapResponse, BootstrapStatusResponse, LoginRequest, LoginResponse,
     WhoamiResponse,
 };
