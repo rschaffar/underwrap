@@ -8,9 +8,8 @@
 //!
 //! Each permission carries:
 //!
-//! - a [`WrapperApprovalMode`] (`Locked`, `Unlocked`,
-//!   `UnlockedUntil`, `PerCallApproval`) deciding *if* the permission is
-//!   usable right now;
+//! - a [`WrapperApprovalMode`] (`Locked`, `Unlocked`, `UnlockedUntil`)
+//!   deciding *if* the permission is usable right now;
 //! - a `writable` flag controlling wrapper-side writes through the
 //!   secretsd channel for the `files` and `libsecret` slots (`env`
 //!   has no write path);
@@ -30,9 +29,6 @@ pub enum PolicyDecision {
     Allow,
     /// The permission denies this invocation.
     Deny { reason: String },
-    /// The permission requires a fresh ssh-agent signature over a backend-issued
-    /// nonce, verified against `approval_key`.
-    NeedsApproval { approval_key: String },
 }
 
 /// Runtime mode for one [`WrapperPermission`].
@@ -49,10 +45,6 @@ pub enum WrapperApprovalMode {
     /// Allow invocations until `until_epoch`; deny afterwards. The expiry is
     /// checked lazily on each request — no server-side sweeper.
     UnlockedUntil { until_epoch: u64 },
-    /// Allow invocations only when the caller presents a fresh SSH-agent
-    /// signature verified against `approval_key`. Every request needs its
-    /// own signature.
-    PerCallApproval { approval_key: String },
 }
 
 /// One per-store wrapper permission.
@@ -117,13 +109,9 @@ impl PolicyDocument {
         })
     }
 
-    /// Evaluate the daemon's gate for a given permission tuple.
-    ///
-    /// - `None` → no matching permission exists.
-    /// - `Some(Allow)` → caller may proceed.
-    /// - `Some(Deny { reason })` → caller is rejected.
-    /// - `Some(NeedsApproval { approval_key })` → caller must run the
-    ///   per-call ssh-agent challenge flow.
+    /// Evaluate a permission tuple at a given wall-clock time. Returns
+    /// `None` when no matching permission exists, `Some(Allow)` when
+    /// the caller may proceed, or `Some(Deny)` otherwise.
     pub fn evaluate_permission_at(
         &self,
         client_instance: &str,
@@ -142,20 +130,6 @@ impl PolicyDocument {
         resource_id: &str,
     ) -> Option<PolicyDecision> {
         self.evaluate_permission_at(client_instance, wrapper, resource_id, now_epoch_secs())
-    }
-
-    /// After the caller has satisfied a per-call approval round, the mode
-    /// gate is already known to allow; this returns `Allow` for the
-    /// existing permission tuple and `None` if the permission was deleted
-    /// between the approval round and the second pass.
-    pub fn evaluate_permission_after_approval(
-        &self,
-        client_instance: &str,
-        wrapper: &str,
-        resource_id: &str,
-    ) -> Option<PolicyDecision> {
-        self.find_permission(client_instance, wrapper, resource_id)
-            .map(|_| PolicyDecision::Allow)
     }
 
     /// True when the wrapper is permitted to write to `resource_id`
@@ -188,9 +162,6 @@ fn decide(permission: &WrapperPermission, now_epoch: u64) -> PolicyDecision {
             } else {
                 PolicyDecision::Allow
             }
-        }
-        WrapperApprovalMode::PerCallApproval { approval_key } => {
-            PolicyDecision::NeedsApproval { approval_key }
         }
     }
 }
@@ -264,40 +235,6 @@ mod tests {
     }
 
     #[test]
-    fn per_call_approval_returns_needs_approval() {
-        let doc = doc_with_permission(WrapperApprovalMode::PerCallApproval {
-            approval_key: "ssh-ed25519 AAAA".into(),
-        });
-        match doc
-            .evaluate_permission_at("dev-laptop", "gh-comment", "res_token", 100)
-            .unwrap()
-        {
-            PolicyDecision::NeedsApproval { approval_key } => {
-                assert!(approval_key.starts_with("ssh-ed25519"));
-            }
-            other => panic!("expected NeedsApproval, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn evaluate_after_approval_allows_when_permission_still_exists() {
-        let doc = doc_with_permission(WrapperApprovalMode::PerCallApproval {
-            approval_key: "k".into(),
-        });
-        assert_eq!(
-            doc.evaluate_permission_after_approval("dev-laptop", "gh-comment", "res_token")
-                .unwrap(),
-            PolicyDecision::Allow,
-        );
-        let empty = PolicyDocument::default();
-        assert!(
-            empty
-                .evaluate_permission_after_approval("dev-laptop", "gh-comment", "res_token")
-                .is_none()
-        );
-    }
-
-    #[test]
     fn writable_defaults_to_false_without_permission() {
         let doc = PolicyDocument::default();
         assert!(!doc.writable_for("dev-laptop", "gh", "r"));
@@ -329,16 +266,6 @@ mod tests {
                     resource_id: "r2".into(),
                     mode: WrapperApprovalMode::UnlockedUntil { until_epoch: 42 },
                     writable: true,
-                    reason: None,
-                },
-                WrapperPermission {
-                    client_instance: "b".into(),
-                    wrapper: "w3".into(),
-                    resource_id: "r3".into(),
-                    mode: WrapperApprovalMode::PerCallApproval {
-                        approval_key: "ssh-ed25519 AAAA".into(),
-                    },
-                    writable: false,
                     reason: None,
                 },
             ],

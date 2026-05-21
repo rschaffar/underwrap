@@ -1,7 +1,11 @@
 use super::*;
 use base64::Engine;
 use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
-use underwrap_protocol::service::{ServiceDeleteRequest, ServiceWriteRequest};
+use underwrap_protocol::resource_blob::ResourceBlob;
+use underwrap_protocol::service::{
+    RuntimeWrapperInvocationFinalizeRequest, RuntimeWrapperInvocationFinalizeResponse,
+    RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
+};
 
 #[tokio::test]
 async fn upsert_permission_allows_read_against_fresh_store() {
@@ -64,7 +68,7 @@ async fn deleting_permission_revokes_future_reads() {
     match resp {
         WrapperResponse::Error { code, message } => {
             assert!(matches!(code, ErrorCode::Unauthorized));
-            assert!(message.contains("no permission"));
+            assert!(message.contains("no-permission"));
         }
         other => panic!("expected Error, got {other:?}"),
     }
@@ -132,7 +136,7 @@ async fn ungranted_tuple_for_unrelated_client_instance_still_rejects() {
     match resp {
         WrapperResponse::Error { code, message } => {
             assert!(matches!(code, ErrorCode::Unauthorized));
-            assert!(message.contains("no permission"));
+            assert!(message.contains("no-permission"));
         }
         other => panic!("expected Unauthorized, got {other:?}"),
     }
@@ -180,50 +184,44 @@ async fn backend_rejects_writes_on_readonly_permission_when_daemon_is_bypassed()
     daemon.upsert_permission("test", &permission).await.unwrap();
 
     let client = daemon.direct_service_client().unwrap();
+    let blob = ResourceBlob::empty().to_canonical_bytes().unwrap();
 
-    // Direct /v1/write — using the resource blob key, which is what
-    // a daemon would address on writeback. Must be rejected.
-    let write_resp = client
-        .post(format!("{}/v1/write", daemon.service_url()))
-        .json(&ServiceWriteRequest {
-            secret_id: "resources/github/token".to_string(),
-            material_b64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
+    // Direct finalize attempt against the new endpoint. The backend
+    // must reject because writable=false, regardless of what the
+    // client tries to send.
+    let resp = client
+        .post(format!(
+            "{}/v1/wrapper-invocations/finalize",
+            daemon.service_url()
+        ))
+        .json(&RuntimeWrapperInvocationFinalizeRequest {
+            wrapper_name: "gh-authorized".to_string(),
+            resource_name: "github/token".to_string(),
+            blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&blob)),
         })
         .send()
         .await
         .unwrap();
-    assert_eq!(
-        write_resp.status(),
-        reqwest::StatusCode::FORBIDDEN,
-        "backend must reject /v1/write on a read-only permission regardless of what the client tries to send; got status {} body {}",
-        write_resp.status(),
-        write_resp.text().await.unwrap_or_default(),
+    assert!(
+        resp.status().is_success(),
+        "backend should answer 200 with a structured Deny; got status {}",
+        resp.status(),
     );
-
-    // Direct /v1/delete — same threat model. Must also be rejected.
-    let delete_resp = client
-        .post(format!("{}/v1/delete", daemon.service_url()))
-        .json(&ServiceDeleteRequest {
-            secret_id: "resources/github/token".to_string(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        delete_resp.status(),
-        reqwest::StatusCode::FORBIDDEN,
-        "backend must reject /v1/delete on a read-only permission regardless of what the client tries to send; got status {} body {}",
-        delete_resp.status(),
-        delete_resp.text().await.unwrap_or_default(),
-    );
+    let parsed: RuntimeWrapperInvocationFinalizeResponse = resp.json().await.unwrap();
+    match parsed {
+        RuntimeWrapperInvocationFinalizeResponse::Deny { reason } => {
+            assert_eq!(reason, "not-writable");
+        }
+        other => panic!("expected Deny(not-writable), got {other:?}"),
+    }
 
     daemon.stop().await.unwrap();
 }
 
 /// Flip side of the above: when the permission IS writable, the same
-/// direct call goes through. This guards against the test passing for
-/// the wrong reason (e.g. an unrelated 403 from cert resolution or
-/// route mis-handling).
+/// direct finalize goes through. This guards against the test passing
+/// for the wrong reason (e.g. an unrelated 403 from cert resolution
+/// or route mis-handling).
 #[tokio::test]
 async fn backend_allows_writes_on_writable_permission_via_direct_call() {
     let wrappers = one_wrapper_config();
@@ -239,20 +237,44 @@ async fn backend_allows_writes_on_writable_permission_via_direct_call() {
     daemon.upsert_permission("test", &permission).await.unwrap();
 
     let client = daemon.direct_service_client().unwrap();
-    let write_resp = client
-        .post(format!("{}/v1/write", daemon.service_url()))
-        .json(&ServiceWriteRequest {
-            secret_id: "resources/github/token".to_string(),
-            material_b64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
+    // Fetch the current canonical blob via open so we don't trip
+    // env-section-immutability on the finalize attempt.
+    let open_resp = client
+        .post(format!("{}/v1/wrapper-invocations", daemon.service_url()))
+        .json(&RuntimeWrapperInvocationOpenRequest {
+            wrapper_name: "gh-authorized".to_string(),
+            resource_name: "github/token".to_string(),
         })
         .send()
         .await
         .unwrap();
+    let current_blob_b64 = match open_resp
+        .json::<RuntimeWrapperInvocationOpenResponse>()
+        .await
+        .unwrap()
+    {
+        RuntimeWrapperInvocationOpenResponse::Allow { blob_b64, .. } => blob_b64,
+        other => panic!("expected Allow on open, got {other:?}"),
+    };
+
+    let resp = client
+        .post(format!(
+            "{}/v1/wrapper-invocations/finalize",
+            daemon.service_url()
+        ))
+        .json(&RuntimeWrapperInvocationFinalizeRequest {
+            wrapper_name: "gh-authorized".to_string(),
+            resource_name: "github/token".to_string(),
+            blob_b64: Some(current_blob_b64),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let parsed: RuntimeWrapperInvocationFinalizeResponse = resp.json().await.unwrap();
     assert!(
-        write_resp.status().is_success(),
-        "writable=true must let /v1/write through; got status {} body {}",
-        write_resp.status(),
-        write_resp.text().await.unwrap_or_default(),
+        matches!(parsed, RuntimeWrapperInvocationFinalizeResponse::Ok),
+        "writable=true must let finalize through; got {parsed:?}",
     );
 
     daemon.stop().await.unwrap();

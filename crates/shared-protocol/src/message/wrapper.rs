@@ -8,16 +8,10 @@ use super::errors::ErrorCode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperRequest {
-    /// Normal secret read; may trigger an `ApprovalRequired` response when the
-    /// wrapper is in `PerCallApproval` mode.
+    /// Normal secret read. The daemon authenticates the peer, asks the
+    /// backend to authorise the invocation, and answers with `ReadOk`
+    /// (or `Error`).
     Read { scope: Option<String> },
-    /// Follow-up to an `ApprovalRequired` response: the wrapper presents an
-    /// SSH-agent signature over the daemon-issued nonce.
-    ApprovalProof {
-        challenge_id: String,
-        signature: Vec<u8>,
-        public_key_blob: Vec<u8>,
-    },
 }
 
 impl WireEncode for WrapperRequest {
@@ -26,16 +20,6 @@ impl WireEncode for WrapperRequest {
             Self::Read { scope } => {
                 0u8.encode(out)?;
                 scope.encode(out)
-            }
-            Self::ApprovalProof {
-                challenge_id,
-                signature,
-                public_key_blob,
-            } => {
-                1u8.encode(out)?;
-                challenge_id.encode(out)?;
-                signature.encode(out)?;
-                public_key_blob.encode(out)
             }
         }
     }
@@ -46,11 +30,6 @@ impl WireDecode for WrapperRequest {
         match u8::decode(reader)? {
             0 => Ok(Self::Read {
                 scope: Option::<String>::decode(reader)?,
-            }),
-            1 => Ok(Self::ApprovalProof {
-                challenge_id: String::decode(reader)?,
-                signature: Vec::<u8>::decode(reader)?,
-                public_key_blob: Vec::<u8>::decode(reader)?,
             }),
             other => Err(anyhow!("invalid wrapper request discriminant: {other}")),
         }
@@ -79,15 +58,6 @@ pub enum WrapperResponse {
         /// Empty when the wrapper does not project a `files` slot.
         files_target_paths: Vec<String>,
     },
-    /// The wrapper is in per-call approval mode. The caller must sign `nonce`
-    /// with the private half of `approval_key` (OpenSSH public key) and return
-    /// the signature in a `WrapperRequest::ApprovalProof` on the same
-    /// connection.
-    ApprovalRequired {
-        challenge_id: String,
-        nonce: Vec<u8>,
-        approval_key: String,
-    },
     Error {
         code: ErrorCode,
         message: String,
@@ -113,18 +83,8 @@ impl WireEncode for WrapperResponse {
                 libsecret.encode(out)?;
                 files_target_paths.encode(out)
             }
-            Self::ApprovalRequired {
-                challenge_id,
-                nonce,
-                approval_key,
-            } => {
-                1u8.encode(out)?;
-                challenge_id.encode(out)?;
-                nonce.encode(out)?;
-                approval_key.encode(out)
-            }
             Self::Error { code, message } => {
-                2u8.encode(out)?;
+                1u8.encode(out)?;
                 code.encode(out)?;
                 message.encode(out)
             }
@@ -143,12 +103,7 @@ impl WireDecode for WrapperResponse {
                 libsecret: bool::decode(reader)?,
                 files_target_paths: Vec::<String>::decode(reader)?,
             }),
-            1 => Ok(Self::ApprovalRequired {
-                challenge_id: String::decode(reader)?,
-                nonce: Vec::<u8>::decode(reader)?,
-                approval_key: String::decode(reader)?,
-            }),
-            2 => Ok(Self::Error {
+            1 => Ok(Self::Error {
                 code: ErrorCode::decode(reader)?,
                 message: String::decode(reader)?,
             }),

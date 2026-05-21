@@ -22,9 +22,6 @@ use underwrap_protocol::exec::{ExecBundle, ExecResourceBinding};
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
 
-mod ssh_agent;
-use ssh_agent::sign_with_ssh_agent;
-
 /// Fixed config directory used when running with elevated privileges.
 const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
 
@@ -386,26 +383,7 @@ fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
     let req = WrapperRequest::Read { scope };
     write_frame_sync(&mut stream, &req)?;
 
-    let mut response: WrapperResponse = read_frame_sync(&mut stream)?;
-    if let WrapperResponse::ApprovalRequired {
-        challenge_id,
-        nonce,
-        approval_key,
-    } = &response
-    {
-        let (signature, public_key_blob) = sign_with_ssh_agent(nonce)?;
-        let proof = WrapperRequest::ApprovalProof {
-            challenge_id: challenge_id.clone(),
-            signature,
-            public_key_blob,
-        };
-        eprintln!(
-            "underwrap-exec: per-call approval requested by daemon (key starts with {})",
-            approval_key.split_whitespace().next().unwrap_or("?")
-        );
-        write_frame_sync(&mut stream, &proof)?;
-        response = read_frame_sync(&mut stream)?;
-    }
+    let response: WrapperResponse = read_frame_sync(&mut stream)?;
 
     let (env_bindings, resource_id, resource_name, access, libsecret, files_target_paths) =
         match response {
@@ -431,9 +409,6 @@ fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
                     );
                 }
                 bail!("daemon denied request ({code:?}): {message}");
-            }
-            WrapperResponse::ApprovalRequired { .. } => {
-                bail!("daemon issued a second approval challenge; refusing");
             }
         };
 

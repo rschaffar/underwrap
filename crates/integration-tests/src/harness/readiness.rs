@@ -129,8 +129,16 @@ pub(crate) async fn wait_for_service(
         .identity(reqwest::Identity::from_pem(&identity_pem)?)
         .build()?;
 
+    // Probe the new resource-vocabulary runtime API. An empty
+    // wrappers register is a stateless round-trip that confirms the
+    // backend is listening AND the cert is authorized.
+    let probe = underwrap_protocol::service::RuntimeWrapperRegisterRequest { wrappers: vec![] };
     for _ in 0..3000 {
-        if let Ok(response) = client.get(format!("{url}/v1/status")).send().await
+        if let Ok(response) = client
+            .post(format!("{url}/v1/wrappers"))
+            .json(&probe)
+            .send()
+            .await
             && response.status().is_success()
         {
             return Ok(());

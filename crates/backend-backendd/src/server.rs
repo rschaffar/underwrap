@@ -955,200 +955,6 @@ async fn handle_service_request(
         }
     };
     let response = match (request.method(), request.uri().path()) {
-        (&Method::GET, "/v1/status") => json_response(
-            StatusCode::OK,
-            &underwrap_protocol::service::ServiceStatusResponse {
-                ok: true,
-                principal: principal.clone(),
-            },
-        ),
-        (&Method::POST, "/v1/read") => {
-            match parse_json_body::<underwrap_protocol::service::ServiceReadRequest>(request).await
-            {
-                Ok(body) => {
-                    match runtime_read_gate(store.as_ref(), &principal, &body.secret_id, false) {
-                        Ok(()) => match store.read(&body.secret_id) {
-                            Ok(material) => json_response(
-                                StatusCode::OK,
-                                &underwrap_protocol::service::ServiceReadResponse {
-                                    material_b64: material.map(|material| {
-                                        base64::engine::general_purpose::STANDARD
-                                            .encode(material.as_ref())
-                                    }),
-                                },
-                            ),
-                            Err(e) => error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "internal",
-                                &format!("storage error: {e}"),
-                            ),
-                        },
-                        Err(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
-                    }
-                }
-                Err(response) => response,
-            }
-        }
-        (&Method::POST, "/v1/write") => {
-            match parse_json_body::<underwrap_protocol::service::ServiceWriteRequest>(request).await
-            {
-                Ok(body) => {
-                    match runtime_read_gate(store.as_ref(), &principal, &body.secret_id, true) {
-                        Ok(()) => {
-                            match base64::engine::general_purpose::STANDARD
-                                .decode(&body.material_b64)
-                            {
-                                Ok(material) => match store.write(&body.secret_id, &material) {
-                                    Ok(()) => json_response(
-                                        StatusCode::OK,
-                                        &underwrap_protocol::service::ServiceWriteResponse {
-                                            ok: true,
-                                        },
-                                    ),
-                                    Err(e) => error_response(
-                                        StatusCode::INTERNAL_SERVER_ERROR,
-                                        "internal",
-                                        &format!("storage error: {e}"),
-                                    ),
-                                },
-                                Err(e) => error_response(
-                                    StatusCode::BAD_REQUEST,
-                                    "invalid_request",
-                                    &format!("invalid base64 payload: {e}"),
-                                ),
-                            }
-                        }
-                        Err(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
-                    }
-                }
-                Err(response) => response,
-            }
-        }
-        (&Method::POST, "/v1/list") => {
-            match parse_json_body::<underwrap_protocol::service::ServiceListRequest>(request).await
-            {
-                Ok(body) => {
-                    match runtime_prefix_gate(store.as_ref(), &principal, &body.prefix, false) {
-                        Ok(()) => match store.list(&body.prefix) {
-                            Ok(ids) => json_response(
-                                StatusCode::OK,
-                                &underwrap_protocol::service::ServiceListResponse { ids },
-                            ),
-                            Err(e) => error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "internal",
-                                &format!("storage error: {e}"),
-                            ),
-                        },
-                        Err(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
-                    }
-                }
-                Err(response) => response,
-            }
-        }
-        (&Method::POST, "/v1/read-prefixes") => {
-            match parse_json_body::<underwrap_protocol::service::ServiceReadPrefixesRequest>(
-                request,
-            )
-            .await
-            {
-                Ok(body) => {
-                    let mut blocked: Option<String> = None;
-                    for prefix in &body.prefixes {
-                        if let Err(reason) =
-                            runtime_prefix_gate(store.as_ref(), &principal, prefix, false)
-                        {
-                            blocked = Some(reason);
-                            break;
-                        }
-                    }
-                    match blocked {
-                        Some(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
-                        None => match store.read_prefixes(&body.prefixes) {
-                            Ok(entries) => {
-                                let mut entries: Vec<_> = entries
-                                    .into_iter()
-                                    .map(|(id, material)| {
-                                        underwrap_protocol::service::ServiceBundleEntry {
-                                            id,
-                                            material_b64: base64::engine::general_purpose::STANDARD
-                                                .encode(material.as_ref()),
-                                        }
-                                    })
-                                    .collect();
-                                entries.sort_by(|a, b| a.id.cmp(&b.id));
-                                json_response(
-                                    StatusCode::OK,
-                                    &underwrap_protocol::service::ServiceReadPrefixesResponse {
-                                        entries,
-                                    },
-                                )
-                            }
-                            Err(e) => error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "internal",
-                                &format!("storage error: {e}"),
-                            ),
-                        },
-                    }
-                }
-                Err(response) => response,
-            }
-        }
-        (&Method::POST, "/v1/runtime/wrappers/register") => match parse_json_body::<
-            underwrap_protocol::service::ServiceWrapperRegisterRequest,
-        >(request)
-        .await
-        {
-            Ok(body) => {
-                let auto_create_enabled = state
-                    .client_instances
-                    .read()
-                    .unwrap()
-                    .get(&principal)
-                    .map(|r| r.auto_create_wrapper_assets)
-                    .unwrap_or(false);
-                let now = crate::users::now_epoch_secs();
-                match apply_runtime_wrapper_register(
-                    &*store,
-                    &principal,
-                    auto_create_enabled,
-                    &body,
-                    now,
-                ) {
-                    Ok(response) => json_response(StatusCode::OK, &response),
-                    Err(e) => error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &format!("runtime register storage error: {e}"),
-                    ),
-                }
-            }
-            Err(response) => response,
-        },
-        (&Method::POST, "/v1/delete") => {
-            match parse_json_body::<underwrap_protocol::service::ServiceDeleteRequest>(request)
-                .await
-            {
-                Ok(body) => {
-                    match runtime_read_gate(store.as_ref(), &principal, &body.secret_id, true) {
-                        Ok(()) => match store.delete(&body.secret_id) {
-                            Ok(existed) => json_response(
-                                StatusCode::OK,
-                                &underwrap_protocol::service::ServiceDeleteResponse { existed },
-                            ),
-                            Err(e) => error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "internal",
-                                &format!("storage error: {e}"),
-                            ),
-                        },
-                        Err(reason) => error_response(StatusCode::FORBIDDEN, "forbidden", &reason),
-                    }
-                }
-                Err(response) => response,
-            }
-        }
         (&Method::POST, "/v1/wrappers") => match parse_json_body::<
             underwrap_protocol::service::RuntimeWrapperRegisterRequest,
         >(request)
@@ -1194,85 +1000,6 @@ async fn handle_service_request(
 /// Reads on resources the principal has *no* grant for are denied —
 /// closing the trust hole where a daemon with a tampered config could
 /// previously fetch any secret out of the store.
-fn runtime_read_gate(
-    store: &dyn StorageBackend,
-    principal: &str,
-    secret_id: &str,
-    write: bool,
-) -> std::result::Result<(), String> {
-    if secret_id.starts_with("__underwrap/") {
-        return Ok(());
-    }
-    let resource_id_owned: String;
-    let resource_id: &str = if let Some(rest) = secret_id.strip_prefix("resources/") {
-        rest
-    } else if let Some(r) = underwrap_protocol::resource::resource_from_secret_id(secret_id) {
-        resource_id_owned = r.to_string();
-        // Storing to a local then re-borrowing keeps the branch types
-        // aligned: both branches return `&str`.
-        let _ = &resource_id_owned;
-        r
-    } else {
-        return Err(format!(
-            "secret id '{secret_id}' is not a canonical resource key"
-        ));
-    };
-    // Deny-by-default: an absent policy document is treated like an
-    // empty one. The wrapper-register handler seeds a `Locked`
-    // permission for every new `(client_instance, wrapper, resource)`
-    // pair, so a missing document here always means "no permission has
-    // been granted yet".
-    let doc = match store
-        .read(POLICY_DOCUMENT_SECRET_ID)
-        .map_err(|e| format!("loading policy: {e}"))?
-    {
-        Some(material) => serde_json::from_slice::<PolicyDocument>(material.as_ref())
-            .map_err(|e| format!("parsing policy: {e}"))?,
-        None => PolicyDocument::default(),
-    };
-    // Multiple wrappers may share one resource on the frontend side
-    // (e.g. a read-only wrapper and a write wrapper that both project
-    // `test/dir-a`). The backend cannot tell which wrapper issued the
-    // request — only the client_instance is on the wire — so the
-    // sanity gate matches on `(client_instance, resource_id)` and
-    // accepts the request when **any** permission for that pair is
-    // suitable. The wrapper-specific writability check still happens
-    // in the daemon before the request reaches us.
-    let matching: Vec<&WrapperPermission> = doc
-        .permissions
-        .iter()
-        .filter(|p| p.client_instance == principal && p.resource_id == resource_id)
-        .collect();
-    if matching.is_empty() {
-        return Err(format!(
-            "no wrapper permission for ({principal}, *, '{resource_id}')"
-        ));
-    }
-    if write && !matching.iter().any(|p| p.writable) {
-        return Err(format!(
-            "no writable wrapper permission for ({principal}, *, '{resource_id}')"
-        ));
-    }
-    // Bump last_used_at on every matching pair. The backend can't
-    // distinguish which wrapper issued the request from the wire, so
-    // when multiple wrappers project the same resource we surface
-    // recency on each one. Failure here is non-fatal — it must never
-    // block a successful read.
-    let bump_wrappers: Vec<String> = matching.iter().map(|p| p.wrapper.clone()).collect();
-    for wrapper in &bump_wrappers {
-        if let Err(e) = bump_pair_last_used(store, wrapper, resource_id) {
-            warn!(
-                audit = "pair_last_used_bump_failed",
-                principal = %principal,
-                wrapper = %wrapper,
-                resource_id = %resource_id,
-                err = %e,
-            );
-        }
-    }
-    Ok(())
-}
-
 /// Set `last_used_at` on the `(wrapper, resource_id)` pair to the
 /// current wall-clock second. Idempotent at one-second resolution:
 /// the pairs document is only rewritten if the new timestamp differs
@@ -1296,59 +1023,6 @@ fn bump_pair_last_used(store: &dyn StorageBackend, wrapper: &str, resource_id: &
     }
     pair.last_used_at = Some(now);
     save_pairs_document(store, &doc)
-}
-
-/// Gate a prefix request (`/v1/list`, `/v1/read-prefixes`). A bare
-/// resource-slot prefix like `github/token/env` is permitted; the same
-/// policy lookup as the single-secret gate applies.
-fn runtime_prefix_gate(
-    store: &dyn StorageBackend,
-    principal: &str,
-    prefix: &str,
-    write: bool,
-) -> std::result::Result<(), String> {
-    if prefix.starts_with("__underwrap/") || prefix == "__underwrap" {
-        return Ok(());
-    }
-    // Strip the trailing `/<slot>` if present so we extract the
-    // resource id even when the prefix is `<resource_id>/env` (no
-    // trailing `/`).
-    let resource_id: &str = match prefix.rsplit_once('/') {
-        Some((
-            head,
-            underwrap_protocol::resource::ENV_SLOT
-            | underwrap_protocol::resource::FILES_SLOT
-            | underwrap_protocol::resource::LIBSECRET_SLOT,
-        )) => head,
-        // Fall back to interpreting the prefix as the resource id
-        // itself. Bare `<resource_id>` listings are still gated.
-        _ => prefix,
-    };
-    let doc = match store
-        .read(POLICY_DOCUMENT_SECRET_ID)
-        .map_err(|e| format!("loading policy: {e}"))?
-    {
-        Some(material) => serde_json::from_slice::<PolicyDocument>(material.as_ref())
-            .map_err(|e| format!("parsing policy: {e}"))?,
-        None => PolicyDocument::default(),
-    };
-    // See `runtime_read_gate` for the wildcard-wrapper rationale.
-    let matching: Vec<&WrapperPermission> = doc
-        .permissions
-        .iter()
-        .filter(|p| p.client_instance == principal && p.resource_id == resource_id)
-        .collect();
-    if matching.is_empty() {
-        return Err(format!(
-            "no wrapper permission for ({principal}, *, '{resource_id}')"
-        ));
-    }
-    if write && !matching.iter().any(|p| p.writable) {
-        return Err(format!(
-            "no writable wrapper permission for ({principal}, *, '{resource_id}')"
-        ));
-    }
-    Ok(())
 }
 
 async fn parse_json_body<T: serde::de::DeserializeOwned>(
@@ -1777,7 +1451,6 @@ fn admin_ui_overview_for_store(
         locked: 0,
         unlocked: 0,
         unlocked_until: 0,
-        per_call_approval: 0,
     };
     let mut writable_permission_count = 0usize;
     for permission in &policy.permissions {
@@ -1788,9 +1461,6 @@ fn admin_ui_overview_for_store(
             }
             underwrap_protocol::policy::WrapperApprovalMode::UnlockedUntil { .. } => {
                 wrapper_counts.unlocked_until += 1
-            }
-            underwrap_protocol::policy::WrapperApprovalMode::PerCallApproval { .. } => {
-                wrapper_counts.per_call_approval += 1
             }
         }
         if permission.writable {
@@ -1806,224 +1476,26 @@ fn admin_ui_overview_for_store(
     })
 }
 
-/// Apply a `POST /v1/runtime/wrappers/register` request.
+/// Handle `POST /v1/wrappers`.
 ///
 /// Computes the diff between the request's pairs and what's already
 /// in the resource/pair documents, then either auto-creates the
 /// missing entities (if the calling client instance is opted in) or
 /// returns a structured refusal listing what would have been created.
 /// On the happy path the documents are written back; on the refusal
-/// path the store is untouched.
-fn apply_runtime_wrapper_register(
-    store: &dyn StorageBackend,
-    client_instance_id: &str,
-    auto_create_enabled: bool,
-    request: &underwrap_protocol::service::ServiceWrapperRegisterRequest,
-    now_epoch: u64,
-) -> Result<underwrap_protocol::service::ServiceWrapperRegisterResponse> {
-    use underwrap_protocol::entities::{EntityCreator, ResourceRecord, WrapperResourcePairRecord};
-    use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
-    use underwrap_protocol::service::{
-        ServiceWrapperRegisterReject, ServiceWrapperRegisterResponse, ServiceWrapperResourcePair,
-    };
-
-    let mut resources = load_resources_document(store)?;
-    let mut pairs = load_pairs_document(store)?;
-
-    // Build the (incoming resource name) → (resolved resource id) map.
-    // The daemon caches this so subsequent runtime calls speak in ids;
-    // a rename of a resource won't invalidate the cache.
-    let mut resolved_resource_ids: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut missing_resources_set: std::collections::BTreeSet<String> =
-        std::collections::BTreeSet::new();
-    for pair in &request.pairs {
-        match resources.find_by_name(&pair.resource) {
-            Some(record) => {
-                resolved_resource_ids.insert(pair.resource.clone(), record.id.clone());
-            }
-            None => {
-                missing_resources_set.insert(pair.resource.clone());
-            }
-        }
-    }
-
-    // Refresh `files_mount_paths` on existing pairs from the latest
-    // daemon-reported config. This lets the SPA show accurate mount
-    // locations even when an operator edits wrapper mount paths
-    // between daemon restarts.
-    let mut refreshed = false;
-    for incoming in &request.pairs {
-        let Some(rid) = resolved_resource_ids.get(&incoming.resource) else {
-            continue;
-        };
-        if let Some(existing) = pairs
-            .pairs
-            .iter_mut()
-            .find(|p| p.wrapper == incoming.wrapper && p.resource_id == *rid)
-            && existing.files_mount_paths != incoming.files_mount_paths
-        {
-            existing.files_mount_paths = incoming.files_mount_paths.clone();
-            refreshed = true;
-        }
-    }
-
-    // A "missing pair" is any incoming pair whose (wrapper, resolved
-    // resource id) is not already in the pairs document. Pairs whose
-    // resource isn't even resolved yet (auto-create disabled and a new
-    // resource name was sent) trivially count as missing.
-    let missing_pairs: Vec<ServiceWrapperResourcePair> = request
-        .pairs
-        .iter()
-        .filter(|p| match resolved_resource_ids.get(&p.resource) {
-            Some(rid) => pairs.find(&p.wrapper, rid).is_none(),
-            None => true,
-        })
-        .cloned()
-        .collect();
-
-    // Auto-seed a `Locked` permission for every incoming
-    // `(client_instance, wrapper, resource_id)` whose resource id is
-    // already resolved (i.e. the resource exists or is about to be
-    // created on this call). This makes "default = locked" a backend
-    // invariant: a freshly-registered daemon's wrappers show up in the
-    // admin SPA as locked rows, and reads/writes deny until an
-    // operator unlocks them explicitly. Idempotent on re-register.
-    //
-    // We compute the seed list now but only persist it on the
-    // committing branches below — the refusal branch leaves the store
-    // untouched.
-    let seed_locked_permissions = |policy: &mut PolicyDocument,
-                                   resolved: &std::collections::HashMap<String, String>|
-     -> bool {
-        let mut dirty = false;
-        for incoming in &request.pairs {
-            let Some(rid) = resolved.get(&incoming.resource) else {
-                continue;
-            };
-            let already = policy.permissions.iter().any(|p| {
-                p.client_instance == client_instance_id
-                    && p.wrapper == incoming.wrapper
-                    && p.resource_id == *rid
-            });
-            if !already {
-                policy.permissions.push(WrapperPermission {
-                    client_instance: client_instance_id.to_string(),
-                    wrapper: incoming.wrapper.clone(),
-                    resource_id: rid.clone(),
-                    mode: WrapperApprovalMode::Locked,
-                    writable: false,
-                    reason: None,
-                });
-                dirty = true;
-            }
-        }
-        dirty
-    };
-
-    if missing_resources_set.is_empty() && missing_pairs.is_empty() && !refreshed {
-        // Even the no-op fast path may need to seed Locked permissions
-        // for a new `client_instance` re-using pairs that an earlier
-        // instance already created.
-        let mut policy = load_policy_document_or_default(store)?;
-        if seed_locked_permissions(&mut policy, &resolved_resource_ids) {
-            save_policy_document(store, &policy)?;
-        }
-        return Ok(ServiceWrapperRegisterResponse {
-            resolved_resource_ids,
-            ..Default::default()
-        });
-    }
-
-    if !auto_create_enabled {
-        return Ok(ServiceWrapperRegisterResponse {
-            created_resources: Vec::new(),
-            created_pairs: Vec::new(),
-            resolved_resource_ids,
-            rejected: Some(ServiceWrapperRegisterReject::AutoCreateDisabled {
-                missing_resources: missing_resources_set.into_iter().collect(),
-                missing_pairs,
-            }),
-        });
-    }
-
-    let creator = EntityCreator::ClientInstance {
-        id: client_instance_id.to_string(),
-    };
-
-    let mut created_resources: Vec<String> = Vec::new();
-    for name in &missing_resources_set {
-        let id = generate_resource_id();
-        // `insert` rejects duplicates on id AND name; the missing-set
-        // guarantees no duplicate name and the id is freshly generated.
-        resources
-            .insert(ResourceRecord {
-                id: id.clone(),
-                name: name.clone(),
-                created_by: creator.clone(),
-                created_at: now_epoch,
-            })
-            .expect("missing-set guarantees no duplicate");
-        resolved_resource_ids.insert(name.clone(), id);
-        created_resources.push(name.clone());
-    }
-
-    let mut created_pairs: Vec<ServiceWrapperResourcePair> = Vec::new();
-    for pair in &missing_pairs {
-        let rid = resolved_resource_ids
-            .get(&pair.resource)
-            .expect("resource id resolved for every missing pair after auto-create");
-        pairs
-            .insert(WrapperResourcePairRecord {
-                wrapper: pair.wrapper.clone(),
-                resource_id: rid.clone(),
-                created_by: creator.clone(),
-                created_at: now_epoch,
-                last_used_at: None,
-                files_mount_paths: pair.files_mount_paths.clone(),
-            })
-            .expect("missing-set guarantees no duplicate");
-        created_pairs.push(pair.clone());
-    }
-
-    let mut policy = load_policy_document_or_default(store)?;
-    let policy_dirty = seed_locked_permissions(&mut policy, &resolved_resource_ids);
-
-    if !created_resources.is_empty() {
-        save_resources_document(store, &resources)?;
-    }
-    if !created_pairs.is_empty() || refreshed {
-        save_pairs_document(store, &pairs)?;
-    }
-    if policy_dirty {
-        save_policy_document(store, &policy)?;
-    }
-
-    Ok(ServiceWrapperRegisterResponse {
-        created_resources,
-        created_pairs,
-        resolved_resource_ids,
-        rejected: None,
-    })
-}
-
-/// Handle `POST /v1/wrappers`.
-///
-/// Translates the resource-vocabulary register request into the
-/// shared `apply_runtime_wrapper_register` helper. Mount paths are
-/// not on the new wire — the daemon keeps them locally — so they go
-/// through as empty vectors. The auto-create flag is looked up on
-/// the calling client instance, matching the existing endpoint.
+/// path the store is untouched. Permissions for newly-paired
+/// `(client_instance, wrapper, resource)` rows are seeded `Locked`
+/// so a freshly-registered daemon shows up as deny-by-default in the
+/// admin SPA.
 fn handle_runtime_wrapper_register(
     state: &AdminRuntimeState,
     store: &dyn StorageBackend,
     principal: &str,
     body: &underwrap_protocol::service::RuntimeWrapperRegisterRequest,
 ) -> Response<Full<Bytes>> {
-    use underwrap_protocol::service::{
-        RuntimeWrapperRegisterPair, RuntimeWrapperRegisterResponse, ServiceWrapperRegisterReject,
-        ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
-    };
+    use underwrap_protocol::entities::{EntityCreator, ResourceRecord, WrapperResourcePairRecord};
+    use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
+    use underwrap_protocol::service::{RuntimeWrapperRegisterPair, RuntimeWrapperRegisterResponse};
 
     for pair in &body.wrappers {
         if pair.wrapper_name.trim().is_empty() {
@@ -2042,17 +1514,6 @@ fn handle_runtime_wrapper_register(
         }
     }
 
-    let legacy = ServiceWrapperRegisterRequest {
-        pairs: body
-            .wrappers
-            .iter()
-            .map(|p| ServiceWrapperResourcePair {
-                wrapper: p.wrapper_name.clone(),
-                resource: p.resource_name.clone(),
-                files_mount_paths: Vec::new(),
-            })
-            .collect(),
-    };
     let auto_create_enabled = state
         .client_instances
         .read()
@@ -2061,45 +1522,212 @@ fn handle_runtime_wrapper_register(
         .map(|r| r.auto_create_wrapper_assets)
         .unwrap_or(false);
     let now = crate::users::now_epoch_secs();
-    match apply_runtime_wrapper_register(store, principal, auto_create_enabled, &legacy, now) {
-        Ok(resp) => match resp.rejected {
-            Some(ServiceWrapperRegisterReject::AutoCreateDisabled {
-                missing_resources,
+
+    let mut resources = match load_resources_document(store) {
+        Ok(d) => d,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading resources document: {e:#}"),
+            );
+        }
+    };
+    let mut pairs = match load_pairs_document(store) {
+        Ok(d) => d,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading pairs document: {e:#}"),
+            );
+        }
+    };
+
+    // Build the (incoming resource name) → (resolved resource id) map.
+    let mut resolved_resource_ids: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut missing_resources_set: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    for pair in &body.wrappers {
+        match resources.find_by_name(&pair.resource_name) {
+            Some(record) => {
+                resolved_resource_ids.insert(pair.resource_name.clone(), record.id.clone());
+            }
+            None => {
+                missing_resources_set.insert(pair.resource_name.clone());
+            }
+        }
+    }
+
+    // A "missing pair" is any incoming pair whose (wrapper, resolved
+    // resource id) is not already in the pairs document. Pairs whose
+    // resource isn't even resolved yet (auto-create disabled and a new
+    // resource name was sent) trivially count as missing.
+    let missing_pairs: Vec<RuntimeWrapperRegisterPair> = body
+        .wrappers
+        .iter()
+        .filter(|p| match resolved_resource_ids.get(&p.resource_name) {
+            Some(rid) => pairs.find(&p.wrapper_name, rid).is_none(),
+            None => true,
+        })
+        .cloned()
+        .collect();
+
+    // Auto-seed a `Locked` permission for every incoming
+    // `(client_instance, wrapper, resource_id)` whose resource id is
+    // resolved. Computed now, persisted only on committing branches.
+    let seed_locked_permissions = |policy: &mut PolicyDocument,
+                                   resolved: &std::collections::HashMap<String, String>|
+     -> bool {
+        let mut dirty = false;
+        for incoming in &body.wrappers {
+            let Some(rid) = resolved.get(&incoming.resource_name) else {
+                continue;
+            };
+            let already = policy.permissions.iter().any(|p| {
+                p.client_instance == principal
+                    && p.wrapper == incoming.wrapper_name
+                    && p.resource_id == *rid
+            });
+            if !already {
+                policy.permissions.push(WrapperPermission {
+                    client_instance: principal.to_string(),
+                    wrapper: incoming.wrapper_name.clone(),
+                    resource_id: rid.clone(),
+                    mode: WrapperApprovalMode::Locked,
+                    writable: false,
+                    reason: None,
+                });
+                dirty = true;
+            }
+        }
+        dirty
+    };
+
+    if missing_resources_set.is_empty() && missing_pairs.is_empty() {
+        // No-op fast path. Still may need to seed Locked permissions
+        // for a new `client_instance` re-using pairs another instance
+        // already created.
+        let mut policy = match load_policy_document_or_default(store) {
+            Ok(p) => p,
+            Err(e) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &format!("loading policy: {e:#}"),
+                );
+            }
+        };
+        if seed_locked_permissions(&mut policy, &resolved_resource_ids)
+            && let Err(e) = save_policy_document(store, &policy)
+        {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("saving policy: {e:#}"),
+            );
+        }
+        return json_response(
+            StatusCode::OK,
+            &RuntimeWrapperRegisterResponse::Ok {
+                auto_created_resources: Vec::new(),
+                auto_created_pairs: Vec::new(),
+            },
+        );
+    }
+
+    if !auto_create_enabled {
+        return json_response(
+            StatusCode::OK,
+            &RuntimeWrapperRegisterResponse::AutoCreateDisabled {
+                missing_resources: missing_resources_set.into_iter().collect(),
                 missing_pairs,
-            }) => json_response(
-                StatusCode::OK,
-                &RuntimeWrapperRegisterResponse::AutoCreateDisabled {
-                    missing_resources,
-                    missing_pairs: missing_pairs
-                        .into_iter()
-                        .map(|p| RuntimeWrapperRegisterPair {
-                            wrapper_name: p.wrapper,
-                            resource_name: p.resource,
-                        })
-                        .collect(),
-                },
-            ),
-            None => json_response(
-                StatusCode::OK,
-                &RuntimeWrapperRegisterResponse::Ok {
-                    auto_created_resources: resp.created_resources,
-                    auto_created_pairs: resp
-                        .created_pairs
-                        .into_iter()
-                        .map(|p| RuntimeWrapperRegisterPair {
-                            wrapper_name: p.wrapper,
-                            resource_name: p.resource,
-                        })
-                        .collect(),
-                },
-            ),
-        },
-        Err(e) => error_response(
+            },
+        );
+    }
+
+    let creator = EntityCreator::ClientInstance {
+        id: principal.to_string(),
+    };
+
+    let mut auto_created_resources: Vec<String> = Vec::new();
+    for name in &missing_resources_set {
+        let id = generate_resource_id();
+        resources
+            .insert(ResourceRecord {
+                id: id.clone(),
+                name: name.clone(),
+                created_by: creator.clone(),
+                created_at: now,
+            })
+            .expect("missing-set guarantees no duplicate");
+        resolved_resource_ids.insert(name.clone(), id);
+        auto_created_resources.push(name.clone());
+    }
+
+    let mut auto_created_pairs: Vec<RuntimeWrapperRegisterPair> = Vec::new();
+    for pair in &missing_pairs {
+        let rid = resolved_resource_ids
+            .get(&pair.resource_name)
+            .expect("resource id resolved for every missing pair after auto-create");
+        pairs
+            .insert(WrapperResourcePairRecord {
+                wrapper: pair.wrapper_name.clone(),
+                resource_id: rid.clone(),
+                created_by: creator.clone(),
+                created_at: now,
+                last_used_at: None,
+            })
+            .expect("missing-set guarantees no duplicate");
+        auto_created_pairs.push(pair.clone());
+    }
+
+    let mut policy = match load_policy_document_or_default(store) {
+        Ok(p) => p,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading policy: {e:#}"),
+            );
+        }
+    };
+    let policy_dirty = seed_locked_permissions(&mut policy, &resolved_resource_ids);
+
+    if !auto_created_resources.is_empty()
+        && let Err(e) = save_resources_document(store, &resources)
+    {
+        return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
-            &format!("register failed: {e:#}"),
-        ),
+            &format!("saving resources: {e:#}"),
+        );
     }
+    if !auto_created_pairs.is_empty()
+        && let Err(e) = save_pairs_document(store, &pairs)
+    {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("saving pairs: {e:#}"),
+        );
+    }
+    if policy_dirty && let Err(e) = save_policy_document(store, &policy) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &format!("saving policy: {e:#}"),
+        );
+    }
+
+    json_response(
+        StatusCode::OK,
+        &RuntimeWrapperRegisterResponse::Ok {
+            auto_created_resources,
+            auto_created_pairs,
+        },
+    )
 }
 
 /// Result of the policy + pair lookup shared by open and finalize.
@@ -2142,7 +1770,12 @@ fn resolve_invocation<'a>(
         return Ok(InvocationLookup::NoPermission);
     };
     match &permission.mode {
-        WrapperApprovalMode::Locked => Ok(InvocationLookup::Denied("locked".to_string())),
+        WrapperApprovalMode::Locked => Ok(InvocationLookup::Denied(
+            permission
+                .reason
+                .clone()
+                .unwrap_or_else(|| "locked".to_string()),
+        )),
         WrapperApprovalMode::Unlocked => Ok(InvocationLookup::Allowed {
             resource_id: resource.id.clone(),
             permission,
@@ -2157,13 +1790,6 @@ fn resolve_invocation<'a>(
                 })
             }
         }
-        // PerCallApproval is being removed in ticket 620; until the
-        // variant is deleted from the schema, treat it as a hard deny
-        // on the new endpoints — operators using these endpoints must
-        // pick one of the three remaining modes.
-        WrapperApprovalMode::PerCallApproval { .. } => Ok(InvocationLookup::Denied(
-            "per-call-approval-removed".to_string(),
-        )),
     }
 }
 
@@ -2269,6 +1895,7 @@ fn handle_runtime_wrapper_invocation_open(
     json_response(
         StatusCode::OK,
         &RuntimeWrapperInvocationOpenResponse::Allow {
+            resource_id,
             blob_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
             writable,
         },
@@ -5495,7 +5122,6 @@ fn handle_admin_resource_delete(
         .map(|p| ServiceWrapperResourcePair {
             wrapper: p.wrapper.clone(),
             resource: target_name.clone(),
-            files_mount_paths: p.files_mount_paths.clone(),
         })
         .collect();
     let pair_count = u32::try_from(dependent_pairs.len()).unwrap_or(u32::MAX);
@@ -5738,7 +5364,6 @@ fn handle_admin_pair_create(
         },
         created_at: crate::users::now_epoch_secs(),
         last_used_at: None,
-        files_mount_paths: Vec::new(),
     };
     pairs
         .insert(record.clone())
@@ -6831,7 +6456,6 @@ mod tests {
             },
             created_at: 42,
             last_used_at: None,
-            files_mount_paths: Vec::new(),
         })
         .unwrap();
         save_pairs_document(&store, &doc).unwrap();
@@ -6856,406 +6480,6 @@ mod tests {
 
         let err = put_policy_document(&stores, "work", "not-json").unwrap_err();
         assert!(err.to_string().contains("parsing policy document json"));
-    }
-
-    #[test]
-    fn runtime_register_noops_when_nothing_is_missing_regardless_of_flag() {
-        use underwrap_protocol::service::{
-            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
-        };
-        let store = TestStore::new();
-        // Seed with the flag on.
-        apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            true,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![ServiceWrapperResourcePair {
-                    wrapper: "gh".into(),
-                    resource: "github/token".into(),
-                    files_mount_paths: Vec::new(),
-                }],
-            },
-            10,
-        )
-        .unwrap();
-        // Now register the same pair set with the flag off: nothing is
-        // missing, so the call succeeds with no refusal.
-        let resp = apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            false,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![ServiceWrapperResourcePair {
-                    wrapper: "gh".into(),
-                    resource: "github/token".into(),
-                    files_mount_paths: Vec::new(),
-                }],
-            },
-            20,
-        )
-        .unwrap();
-        assert!(resp.created_resources.is_empty());
-        assert!(resp.created_pairs.is_empty());
-        assert!(resp.rejected.is_none());
-    }
-
-    #[test]
-    fn runtime_register_noops_when_nothing_is_missing() {
-        use underwrap_protocol::service::{
-            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
-        };
-        let store = TestStore::new();
-        // Seed an existing resource + pair so the second register
-        // call has nothing to do.
-        apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            true,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![ServiceWrapperResourcePair {
-                    wrapper: "gh".into(),
-                    resource: "github/token".into(),
-                    files_mount_paths: Vec::new(),
-                }],
-            },
-            10,
-        )
-        .unwrap();
-
-        let resp = apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            true,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![ServiceWrapperResourcePair {
-                    wrapper: "gh".into(),
-                    resource: "github/token".into(),
-                    files_mount_paths: Vec::new(),
-                }],
-            },
-            20,
-        )
-        .unwrap();
-        assert!(resp.created_resources.is_empty());
-        assert!(resp.created_pairs.is_empty());
-        assert!(resp.rejected.is_none());
-        // The provenance from the first call is untouched.
-        let pairs = load_pairs_document(&store).unwrap();
-        assert_eq!(pairs.pairs[0].created_at, 10);
-    }
-
-    #[test]
-    fn runtime_register_refuses_when_auto_create_disabled_and_lists_missing() {
-        use underwrap_protocol::service::{
-            ServiceWrapperRegisterReject, ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
-        };
-        let store = TestStore::new();
-        let resp = apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            false,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![
-                    ServiceWrapperResourcePair {
-                        wrapper: "gh".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                    ServiceWrapperResourcePair {
-                        wrapper: "tf".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                ],
-            },
-            10,
-        )
-        .unwrap();
-        assert!(resp.created_resources.is_empty());
-        assert!(resp.created_pairs.is_empty());
-        match resp.rejected.expect("rejected response") {
-            ServiceWrapperRegisterReject::AutoCreateDisabled {
-                missing_resources,
-                missing_pairs,
-            } => {
-                assert_eq!(missing_resources, vec!["github/token".to_string()]);
-                assert_eq!(missing_pairs.len(), 2);
-            }
-        }
-        // Refusal path writes nothing.
-        assert_eq!(load_resources_document(&store).unwrap().resources.len(), 0);
-        assert_eq!(load_pairs_document(&store).unwrap().pairs.len(), 0);
-    }
-
-    #[test]
-    fn runtime_register_creates_missing_when_auto_create_enabled() {
-        use underwrap_protocol::entities::EntityCreator;
-        use underwrap_protocol::service::{
-            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
-        };
-        let store = TestStore::new();
-        let resp = apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            true,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![
-                    ServiceWrapperResourcePair {
-                        wrapper: "gh".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                    ServiceWrapperResourcePair {
-                        wrapper: "tf".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                ],
-            },
-            42,
-        )
-        .unwrap();
-        assert!(resp.rejected.is_none());
-        assert_eq!(resp.created_resources, vec!["github/token".to_string()]);
-        assert_eq!(resp.created_pairs.len(), 2);
-
-        let resources = load_resources_document(&store).unwrap();
-        assert_eq!(resources.resources.len(), 1);
-        match &resources.resources[0].created_by {
-            EntityCreator::ClientInstance { id } => assert_eq!(id, "inst_a"),
-            _ => panic!("expected ClientInstance creator"),
-        }
-        assert_eq!(resources.resources[0].created_at, 42);
-
-        let pairs = load_pairs_document(&store).unwrap();
-        assert_eq!(pairs.pairs.len(), 2);
-    }
-
-    #[test]
-    fn runtime_register_only_creates_truly_missing_entries() {
-        use underwrap_protocol::service::{
-            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
-        };
-        let store = TestStore::new();
-        // First call creates everything for inst_a.
-        apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            true,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![ServiceWrapperResourcePair {
-                    wrapper: "gh".into(),
-                    resource: "github/token".into(),
-                    files_mount_paths: Vec::new(),
-                }],
-            },
-            10,
-        )
-        .unwrap();
-
-        // Second call from inst_b adds a new pair on the existing
-        // resource. The resource record is left alone, the new pair
-        // gets created.
-        let resp = apply_runtime_wrapper_register(
-            &store,
-            "inst_b",
-            true,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![
-                    ServiceWrapperResourcePair {
-                        wrapper: "gh".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                    ServiceWrapperResourcePair {
-                        wrapper: "tf".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                ],
-            },
-            20,
-        )
-        .unwrap();
-        assert!(resp.created_resources.is_empty(), "resource already there");
-        assert_eq!(resp.created_pairs.len(), 1);
-        assert_eq!(resp.created_pairs[0].wrapper, "tf");
-        let resources = load_resources_document(&store).unwrap();
-        assert_eq!(
-            resources.resources[0].created_at, 10,
-            "provenance untouched"
-        );
-    }
-
-    #[test]
-    fn runtime_register_seeds_locked_permissions_by_default() {
-        use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
-        use underwrap_protocol::service::{
-            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
-        };
-
-        let store = TestStore::new();
-        // A fresh register call creates the resource, the pair, and
-        // seeds one `Locked` wrapper permission per incoming pair.
-        let resp = apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            true,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![
-                    ServiceWrapperResourcePair {
-                        wrapper: "gh".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                    ServiceWrapperResourcePair {
-                        wrapper: "tf".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                ],
-            },
-            42,
-        )
-        .unwrap();
-        assert!(resp.rejected.is_none());
-        let rid = resp.resolved_resource_ids["github/token"].clone();
-
-        let policy = load_policy_document_or_default(&store).unwrap();
-        assert_eq!(policy.permissions.len(), 2);
-        for perm in &policy.permissions {
-            assert_eq!(perm.client_instance, "inst_a");
-            assert_eq!(perm.resource_id, rid);
-            assert!(matches!(perm.mode, WrapperApprovalMode::Locked));
-            assert!(!perm.writable, "default must be read-only too");
-            assert!(perm.reason.is_none());
-        }
-        let mut wrappers: Vec<&str> = policy
-            .permissions
-            .iter()
-            .map(|p| p.wrapper.as_str())
-            .collect();
-        wrappers.sort();
-        assert_eq!(wrappers, vec!["gh", "tf"]);
-
-        // Re-registering the same set is idempotent: no duplicate
-        // permission rows, and a prior operator unlock survives.
-        save_policy_document(
-            &store,
-            &PolicyDocument {
-                permissions: vec![
-                    WrapperPermission {
-                        client_instance: "inst_a".into(),
-                        wrapper: "gh".into(),
-                        resource_id: rid.clone(),
-                        mode: WrapperApprovalMode::Unlocked,
-                        writable: true,
-                        reason: Some("unlocked by operator".into()),
-                    },
-                    WrapperPermission {
-                        client_instance: "inst_a".into(),
-                        wrapper: "tf".into(),
-                        resource_id: rid.clone(),
-                        mode: WrapperApprovalMode::Locked,
-                        writable: false,
-                        reason: None,
-                    },
-                ],
-            },
-        )
-        .unwrap();
-
-        apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            true,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![
-                    ServiceWrapperResourcePair {
-                        wrapper: "gh".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                    ServiceWrapperResourcePair {
-                        wrapper: "tf".into(),
-                        resource: "github/token".into(),
-                        files_mount_paths: Vec::new(),
-                    },
-                ],
-            },
-            99,
-        )
-        .unwrap();
-        let after = load_policy_document_or_default(&store).unwrap();
-        assert_eq!(after.permissions.len(), 2, "no duplicates on re-register");
-        let gh = after
-            .permissions
-            .iter()
-            .find(|p| p.wrapper == "gh")
-            .unwrap();
-        assert!(
-            matches!(gh.mode, WrapperApprovalMode::Unlocked),
-            "operator unlock survives re-register"
-        );
-        assert!(gh.writable);
-        assert_eq!(gh.reason.as_deref(), Some("unlocked by operator"));
-
-        // A second client_instance registering the same (already
-        // existing) pair gets its own Locked permission seeded — the
-        // pair exists, but `inst_b` had no grant for it.
-        apply_runtime_wrapper_register(
-            &store,
-            "inst_b",
-            true,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![ServiceWrapperResourcePair {
-                    wrapper: "gh".into(),
-                    resource: "github/token".into(),
-                    files_mount_paths: Vec::new(),
-                }],
-            },
-            100,
-        )
-        .unwrap();
-        let cross = load_policy_document_or_default(&store).unwrap();
-        let inst_b_perm = cross
-            .permissions
-            .iter()
-            .find(|p| p.client_instance == "inst_b" && p.wrapper == "gh")
-            .expect("inst_b should get its own locked permission");
-        assert!(matches!(inst_b_perm.mode, WrapperApprovalMode::Locked));
-        assert!(!inst_b_perm.writable);
-    }
-
-    #[test]
-    fn runtime_register_refusal_does_not_seed_permissions() {
-        use underwrap_protocol::service::{
-            ServiceWrapperRegisterRequest, ServiceWrapperResourcePair,
-        };
-
-        let store = TestStore::new();
-        let resp = apply_runtime_wrapper_register(
-            &store,
-            "inst_a",
-            false,
-            &ServiceWrapperRegisterRequest {
-                pairs: vec![ServiceWrapperResourcePair {
-                    wrapper: "gh".into(),
-                    resource: "github/token".into(),
-                    files_mount_paths: Vec::new(),
-                }],
-            },
-            10,
-        )
-        .unwrap();
-        assert!(resp.rejected.is_some());
-        // Refusal leaves every document untouched, including the
-        // policy document.
-        assert!(
-            store.read(POLICY_DOCUMENT_SECRET_ID).unwrap().is_none(),
-            "refusal path must not write a policy document"
-        );
     }
 
     fn test_users_file() -> PathBuf {
@@ -9660,7 +8884,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 },
                 created_at: 100,
                 last_used_at: None,
-                files_mount_paths: Vec::new(),
             })
             .unwrap();
         pairs
@@ -9672,7 +8895,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 },
                 created_at: 100,
                 last_used_at: None,
-                files_mount_paths: Vec::new(),
             })
             .unwrap();
         save_pairs_document(store, &pairs).unwrap();
@@ -10147,7 +9369,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
                 },
                 created_at: 1,
                 last_used_at: None,
-                files_mount_paths: Vec::new(),
             })
             .unwrap();
         save_pairs_document(store.as_ref(), &pairs).unwrap();
@@ -10274,8 +9495,13 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
         let parsed: RuntimeWrapperInvocationOpenResponse =
             serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
         match parsed {
-            RuntimeWrapperInvocationOpenResponse::Allow { blob_b64, writable } => {
+            RuntimeWrapperInvocationOpenResponse::Allow {
+                resource_id,
+                blob_b64,
+                writable,
+            } => {
                 assert!(writable, "fixture seeds writable=true");
+                assert_eq!(resource_id, fx.resource_id);
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(&blob_b64)
                     .unwrap();

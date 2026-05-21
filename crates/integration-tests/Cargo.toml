@@ -18,6 +18,7 @@ path = "src/lib.rs"
 
 [dependencies]
 shared-protocol = { workspace = true }
+shared-store = { workspace = true }
 frontend-underwrapd = { path = "../frontend-underwrapd" }
 backend-backendd = { path = "../backend-backendd" }
 tokio = { workspace = true }
@@ -28,10 +29,7 @@ reqwest = { workspace = true }
 rustls = { workspace = true }
 rcgen = { workspace = true }
 libc = { workspace = true }
-ssh-key = { workspace = true }
-signature = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
-ed25519-dalek = "2"
 tempfile = "3"

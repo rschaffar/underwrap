@@ -27,10 +27,8 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 libc = { workspace = true }
 reqwest = { workspace = true }
-ssh-key = { workspace = true }
-rand = { workspace = true }
-signature = { workspace = true }
+rustls = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-ed25519-dalek = "2"

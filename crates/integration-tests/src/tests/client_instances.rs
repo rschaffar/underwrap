@@ -50,8 +50,7 @@ async fn disabling_runtime_client_instance_blocks_fresh_runtime_connections() {
 
     let first = daemon.read_request("gh-authorized").await.unwrap();
     assert_eq!(expect_single_env_string(first), "ghp_before_disable");
-    let status = daemon.direct_service_status().await.unwrap();
-    assert!(status.ok);
+    daemon.direct_service_status().await.unwrap();
 
     let client_id = daemon.list_client_instances().await.unwrap().items[0]
         .id
@@ -122,8 +121,11 @@ async fn disabling_runtime_client_instance_blocks_next_wrapper_read_without_rest
 
     let second = daemon.read_request("gh-authorized").await.unwrap();
     match second {
-        WrapperResponse::Error { code, .. } => {
-            assert!(matches!(code, ErrorCode::Internal));
+        WrapperResponse::Error { code, message } => {
+            assert!(
+                matches!(code, ErrorCode::Unauthorized),
+                "expected Unauthorized after revocation, got {code:?} ({message})",
+            );
         }
         other => panic!("expected Error after disable, got {other:?}"),
     }
@@ -153,8 +155,11 @@ async fn deleting_runtime_client_instance_blocks_next_wrapper_read_without_resta
 
     let second = daemon.read_request("gh-authorized").await.unwrap();
     match second {
-        WrapperResponse::Error { code, .. } => {
-            assert!(matches!(code, ErrorCode::Internal));
+        WrapperResponse::Error { code, message } => {
+            assert!(
+                matches!(code, ErrorCode::Unauthorized),
+                "expected Unauthorized after revocation, got {code:?} ({message})",
+            );
         }
         other => panic!("expected Error after delete, got {other:?}"),
     }

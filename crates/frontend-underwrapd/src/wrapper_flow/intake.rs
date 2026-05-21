@@ -9,13 +9,11 @@ use underwrap_protocol::message::{ErrorCode, WrapperRequest, WrapperResponse};
 
 use crate::audit;
 use crate::peer_auth::{PeerCred, get_peer_cred};
-use crate::server::State;
 
 const WRAPPER_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) async fn authorize_wrapper_peer(
     stream: &mut UnixStream,
-    _state: &State,
     wrapper_name: &str,
     expected_gid: u32,
 ) -> Result<Option<(Option<PeerCred>, u32)>> {

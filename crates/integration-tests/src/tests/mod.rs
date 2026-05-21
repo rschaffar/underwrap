@@ -164,6 +164,5 @@ mod policy;
 mod resource_blob;
 mod service_transport;
 mod store_read;
-mod wrapper_approval;
 mod wrapper_permissions;
 mod wrapper_writeback;

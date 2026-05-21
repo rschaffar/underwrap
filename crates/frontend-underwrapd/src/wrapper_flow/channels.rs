@@ -1,50 +1,28 @@
 use anyhow::{Context, Result};
-use std::sync::Arc;
 use tokio::net::UnixStream;
 use tracing::{error, info};
 
-use underwrap_protocol::config::AccessMode;
-use underwrap_protocol::message::WrapperResponse;
+use crate::wrapper_resource_channel::{ChannelContext, run_channel};
 
-use crate::server::{Enrolled, State};
+use super::read::OpenedInvocation;
 
 /// Set up the single wrapper-resource channel for the resource the
-/// daemon authorized in `process_read_for`. Only called when the
-/// response is `ReadOk`. The channel handler enforces the access mode
-/// on `Checkin` and serves `Checkout` / `UsageSignal` unconditionally.
-/// Exactly one fd is sent via SCM_RIGHTS, immediately after the
-/// `ReadOk` response itself.
+/// backend authorized. Exactly one fd is sent via SCM_RIGHTS,
+/// immediately after the `ReadOk` response itself. The channel
+/// handler serves `Checkout` / `Checkin` / `UsageSignal` against the
+/// backend on behalf of the wrapper.
 pub(super) async fn establish_scoped_channels(
     stream: &UnixStream,
-    response: &WrapperResponse,
     wrapper_name: &str,
-    state: &State,
-    enrolled: &Enrolled,
-    resource_access: Option<&(String, AccessMode)>,
+    opened: OpenedInvocation,
 ) {
-    let WrapperResponse::ReadOk { .. } = response else {
-        return;
-    };
-    let Some((resource_id, access)) = resource_access else {
-        return;
-    };
-
-    match setup_wrapper_resource_channel(
-        stream,
-        wrapper_name,
-        resource_id,
-        *access,
-        state,
-        enrolled,
-    )
-    .await
-    {
-        Ok(()) => {
-            info!(wrapper = %wrapper_name, resource = %resource_id, ?access, "wrapper-resource channel established");
-        }
-        Err(e) => {
-            error!(wrapper = %wrapper_name, resource = %resource_id, err = %e, "failed to setup wrapper-resource channel");
-        }
+    match setup_wrapper_resource_channel(stream, wrapper_name, opened).await {
+        Ok(()) => info!(wrapper = %wrapper_name, "wrapper-resource channel established"),
+        Err(e) => error!(
+            wrapper = %wrapper_name,
+            err = %format!("{e:#}"),
+            "failed to setup wrapper-resource channel",
+        ),
     }
 }
 
@@ -74,31 +52,23 @@ async fn setup_scoped_channel(
 async fn setup_wrapper_resource_channel(
     stream: &UnixStream,
     wrapper_name: &str,
-    resource_id: &str,
-    access: AccessMode,
-    state: &State,
-    enrolled: &Enrolled,
+    opened: OpenedInvocation,
 ) -> Result<()> {
-    let store = Arc::clone(&enrolled.store);
-    let logical_name = state
-        .config
-        .wrappers
-        .get(wrapper_name)
-        .and_then(|def| def.logical_name.clone())
-        .unwrap_or_else(|| wrapper_name.to_string());
-    let ctx = crate::wrapper_resource_channel::ChannelContext {
+    let ctx = ChannelContext {
         wrapper_name: wrapper_name.to_string(),
-        resource_id: resource_id.to_string(),
-        access,
-        client_instance: enrolled.client_instance.clone(),
-        logical_name,
+        logical_wrapper_name: opened.logical_wrapper_name,
+        resource_name: opened.resource_name,
+        resource_id: opened.resource_id,
+        access: opened.access,
+        cached_blob: opened.blob_bytes,
     };
+    let backend = opened.backend;
     setup_scoped_channel(
         stream,
         "wrapper-resource channel fd",
         move |daemon_stream| {
             tokio::spawn(async move {
-                crate::wrapper_resource_channel::run_channel(daemon_stream, store, ctx).await;
+                run_channel(daemon_stream, backend, ctx).await;
             });
         },
     )

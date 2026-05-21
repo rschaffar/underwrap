@@ -155,6 +155,15 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         resp.text().await.unwrap_or_default(),
     );
 
+    // Delete the (wrapper, resource) pair record too — the new test
+    // harness seeds one inside `store_secret` so the open-invocation
+    // gate can find it, and the resource delete refuses while any
+    // pair references the resource.
+    daemon
+        .delete_pair("test", "gh-authorized", &resource_id)
+        .await
+        .unwrap();
+
     let ok = daemon.delete_resource("test", &resource_id).await.unwrap();
     assert!(ok.ok, "delete should succeed after blockers cleared");
 

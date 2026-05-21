@@ -83,139 +83,6 @@ pub struct AdminPasswordChangeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceStatusResponse {
-    pub ok: bool,
-    pub principal: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceReadRequest {
-    pub secret_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceReadResponse {
-    pub material_b64: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceWriteRequest {
-    pub secret_id: String,
-    pub material_b64: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceWriteResponse {
-    pub ok: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceListRequest {
-    pub prefix: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceListResponse {
-    pub ids: Vec<String>,
-}
-
-// ===== Runtime wrapper register =====
-//
-// `POST /v1/runtime/wrappers/register` is the auto-create endpoint
-// wrappers hit at daemon startup. The backend reads the calling
-// client-instance's `auto_create_wrapper_assets` flag to decide whether
-// missing resources and pairs may be inserted on this principal's
-// behalf. The endpoint is upsert-only — existing entities are never
-// modified, removals never happen, and provenance is set once on
-// first sight.
-
-/// One `(wrapper, resource)` pair on the wire. The minimal payload
-/// needed to drive auto-create; the persisted shape adds provenance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
-pub struct ServiceWrapperResourcePair {
-    pub wrapper: String,
-    pub resource: String,
-    /// Target-home-relative mount paths the wrapper bind-mounts this
-    /// resource's `files` slot at. Empty when the wrapper does not
-    /// project `files` for this resource. Mount paths are runtime
-    /// metadata: the backend persists them on the pair record so the
-    /// admin SPA can render the resolved location of a stored file.
-    #[serde(default)]
-    pub files_mount_paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceWrapperRegisterRequest {
-    pub pairs: Vec<ServiceWrapperResourcePair>,
-}
-
-/// Reason a register call was rejected at the policy gate. Today the
-/// only reason is "this client instance is not opted-in"; the variant
-/// is structured so we can add more reasons without breaking clients.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum ServiceWrapperRegisterReject {
-    /// The calling client instance does not have
-    /// `auto_create_wrapper_assets` enabled. Lists the entities that
-    /// would have been created so the operator can see what's missing
-    /// without flipping the flag blindly.
-    AutoCreateDisabled {
-        missing_resources: Vec<String>,
-        missing_pairs: Vec<ServiceWrapperResourcePair>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct ServiceWrapperRegisterResponse {
-    /// Resources that were newly created on this call. Empty when
-    /// every named resource already existed.
-    #[serde(default)]
-    pub created_resources: Vec<String>,
-    /// Pairs that were newly created on this call.
-    #[serde(default)]
-    pub created_pairs: Vec<ServiceWrapperResourcePair>,
-    /// Map from the resource names the daemon sent to the canonical
-    /// resource ids the backend resolved (or just generated) for them.
-    /// The daemon caches this so subsequent runtime calls address the
-    /// resource by its stable id — a rename of the resource name on
-    /// the backend will not invalidate cached entries.
-    #[serde(default)]
-    pub resolved_resource_ids: std::collections::HashMap<String, String>,
-    /// Populated when the call was refused; in that case no
-    /// `created_*` entries are produced and the backend writes
-    /// nothing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rejected: Option<ServiceWrapperRegisterReject>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceReadPrefixesRequest {
-    pub prefixes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceBundleEntry {
-    pub id: String,
-    pub material_b64: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceReadPrefixesResponse {
-    pub entries: Vec<ServiceBundleEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceDeleteRequest {
-    pub secret_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceDeleteResponse {
-    pub existed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceErrorResponse {
     pub code: String,
     pub message: String,
@@ -509,7 +376,6 @@ pub struct AdminUiWrapperCounts {
     pub locked: usize,
     pub unlocked: usize,
     pub unlocked_until: usize,
-    pub per_call_approval: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -859,9 +725,16 @@ pub struct AdminPairDeleteResponse {
     pub blocked_by: Option<AdminPairDeleteBlockers>,
 }
 
-// `ServiceWrapperResourcePair` is shared between the runtime register
-// endpoint and the admin delete-blocker shape; the persisted record
-// adds provenance fields on top.
+/// One `(wrapper, resource)` pair on the admin wire. Used in
+/// resource-delete blocker payloads to name the dependent pairs that
+/// would have to be cleaned up before the delete can proceed. The
+/// persisted record (`WrapperResourcePairRecord`) adds provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct ServiceWrapperResourcePair {
+    pub wrapper: String,
+    pub resource: String,
+}
 
 // ===== Runtime API (resource-vocabulary; replaces the legacy
 // per-key /v1/read /v1/write /v1/list /v1/delete /v1/read-prefixes
@@ -929,6 +802,11 @@ pub struct RuntimeWrapperInvocationOpenRequest {
 #[serde(tag = "outcome", rename_all = "kebab-case")]
 pub enum RuntimeWrapperInvocationOpenResponse {
     Allow {
+        /// Stable backend resource id (e.g. `res_<hex>`). The daemon
+        /// relays this to the wrapper inside `WrapperResponse::ReadOk`
+        /// as an opaque identifier; the daemon itself never has to
+        /// look it up.
+        resource_id: String,
         /// Canonical resource blob, base64-encoded.
         blob_b64: String,
         /// Whether the matched permission allows wrapper-side writes.
@@ -974,13 +852,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn service_structs_roundtrip_with_json() {
-        let req = ServiceWriteRequest {
-            secret_id: "github/token".to_string(),
-            material_b64: "Z2hwX3Rlc3Q=".to_string(),
+    fn runtime_register_request_roundtrips() {
+        let req = RuntimeWrapperRegisterRequest {
+            wrappers: vec![RuntimeWrapperRegisterPair {
+                wrapper_name: "gh".into(),
+                resource_name: "github/token".into(),
+            }],
         };
         let json = serde_json::to_string(&req).unwrap();
-        let parsed: ServiceWriteRequest = serde_json::from_str(&json).unwrap();
+        let parsed: RuntimeWrapperRegisterRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, req);
     }
 }

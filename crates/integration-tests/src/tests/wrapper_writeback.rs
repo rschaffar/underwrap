@@ -174,6 +174,20 @@ fn blob_with_env(key: &str, value: &[u8]) -> ResourceBlob {
     blob
 }
 
+/// Same shape as [`blob_with_env`] but writes to the `files` section
+/// instead. The env section is admin-only on the new wire — any
+/// runtime writeback that changes env is rejected with
+/// `env-section-immutable` — so tests that need to verify a
+/// successful Checkin under a writable grant must mutate a writable
+/// slot. `files` carries through cleanly.
+fn blob_with_files_entry(key: &str, value: &[u8]) -> ResourceBlob {
+    let mut blob = ResourceBlob::empty();
+    let mut files = BTreeMap::new();
+    files.insert(key.to_string(), SecretBytes::from(value.to_vec()));
+    blob.files = files;
+    blob
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -227,7 +241,7 @@ async fn clean_run_only_sends_usage_signal() {
 async fn writable_grant_persists_checkin() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
 
-    let initial = blob_with_env("GH_TOKEN", b"ghp_initial");
+    let initial = blob_with_files_entry(".config/gh/hosts.yml", b"github.com:\n  user: alice\n");
     put_blob(&daemon, "github/token", &initial).await;
     daemon
         .put_policy(
@@ -244,7 +258,7 @@ async fn writable_grant_persists_checkin() {
         .await
         .unwrap();
 
-    let mutated = blob_with_env("GH_TOKEN", b"ghp_mutated_by_target");
+    let mutated = blob_with_files_entry(".config/gh/hosts.yml", b"github.com:\n  user: bob\n");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
@@ -434,8 +448,8 @@ async fn noncanonical_checkin_rejected() {
                 code: ResourceErrorCode::InvalidRequest,
                 message,
             } => assert!(
-                message.contains("noncanonical_blob"),
-                "expected noncanonical_blob marker, got: {message}",
+                message.contains("noncanonical-blob") || message.contains("noncanonical_blob"),
+                "expected noncanonical-blob marker, got: {message}",
             ),
             other => panic!("expected InvalidRequest, got {other:?}"),
         }
@@ -535,7 +549,7 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
     let resource_id = seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
     seed_writable_permission(&daemon, "gh-writeback", &resource_id).await;
 
-    let mutated = blob_with_env("GH_TOKEN", b"ghp_mutated");
+    let mutated = blob_with_files_entry(".config/gh/hosts.yml", b"host: example");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {

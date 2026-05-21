@@ -37,6 +37,10 @@ pub struct TestDaemon {
     pub admin_url: String,
     pub service_url: String,
     pub storage_dir: PathBuf,
+    /// Root directory under which the backend's admin-created stores
+    /// live. Used by [`Self::store_dir_for`] to compute the on-disk
+    /// path of a store other than the seeded "test" one.
+    pub stores_data_root: PathBuf,
     admin_session_cookie: String,
     admin_csrf_token: String,
     admin_client: reqwest::Client,
@@ -164,7 +168,7 @@ impl TestDaemon {
                 allowed_origins: None,
                 session_key_file: session_key_file.clone(),
                 session_lifetime_secs: None,
-                stores_data_root: Some(stores_data_root),
+                stores_data_root: Some(stores_data_root.clone()),
             }),
         };
         let backend_shutdown = Arc::new(Notify::new());
@@ -223,6 +227,7 @@ impl TestDaemon {
             admin_url,
             service_url: service_url.clone(),
             storage_dir,
+            stores_data_root,
             admin_session_cookie,
             admin_csrf_token,
             admin_client,
@@ -254,6 +259,7 @@ impl TestDaemon {
     }
 
     /// Get a raw connection to a wrapper socket for multi-message tests.
+    #[allow(dead_code)]
     pub async fn connect_wrapper(&self, wrapper: &str) -> Result<UnixStream> {
         Ok(UnixStream::connect(self.wrapper_socket(wrapper)?).await?)
     }
@@ -310,19 +316,134 @@ impl TestDaemon {
         secret_id: &str,
         material: &str,
     ) -> Result<()> {
-        // The wrapper-side read gates on a `WrapperPermission` matching
-        // `(client_instance, wrapper, resource)`; seed a permission for
-        // this daemon's instance so the read flow under test still
-        // passes. The `secret_id` argument is the resource id.
-        self.put_policy(
-            store,
-            &PolicyDocument {
-                permissions: vec![self.current_permission(wrapper, secret_id)],
-            },
-        )
-        .await?;
+        // The new resource-vocabulary backend resolves a resource by
+        // name (and rejects unregistered pairs) before consulting the
+        // policy, so seed the resource + pair records too. The legacy
+        // fixtures pre-dated the resource catalog and used the
+        // resource id as both the storage prefix and the policy key.
+        self.ensure_pair_in_store(store, wrapper, secret_id)?;
+        self.put_policy_for_store(store, secret_id, wrapper).await?;
         self.admin_write_raw(store, wrapper, secret_id, material)
             .await
+    }
+
+    /// Like `put_policy` but skips the cross-store pair-seeding done
+    /// inside `put_policy`. Used by `store_secret` which already
+    /// seeded the pair into the target store explicitly.
+    async fn put_policy_for_store(
+        &self,
+        store: &str,
+        resource_id: &str,
+        wrapper: &str,
+    ) -> Result<()> {
+        let doc = PolicyDocument {
+            permissions: vec![self.current_permission(wrapper, resource_id)],
+        };
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/policy/put")
+            .json(&underwrap_protocol::service::AdminPolicyPutRequest {
+                store: store.to_string(),
+                document: doc,
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        Ok(())
+    }
+
+    /// Compute the on-disk directory backing `store_id`. For the
+    /// pre-seeded "test" store this is the `storage_dir` field; for
+    /// any other store id (admin-created on the fly) the backend
+    /// places it under `stores_data_root/<store_id>/`.
+    pub fn store_dir_for(&self, store_id: &str) -> PathBuf {
+        if store_id == "test" {
+            self.storage_dir.clone()
+        } else {
+            self.stores_data_root.join(store_id)
+        }
+    }
+
+    /// Seed a `ResourceRecord` (with id == name == `resource_id`) and a
+    /// `WrapperResourcePairRecord` directly into the "test" store.
+    /// Convenience wrapper around [`Self::ensure_pair_in_store`].
+    pub fn ensure_pair(&self, wrapper: &str, resource_id: &str) -> Result<()> {
+        self.ensure_pair_in_store("test", wrapper, resource_id)
+    }
+
+    /// Same as [`Self::ensure_pair`] but targets a specific store
+    /// directory. Use for tests that remap the daemon to a
+    /// non-default store. Idempotent. Bypasses the admin API
+    /// (which would auto-assign a `res_<hex>` id) so legacy fixtures
+    /// that reference the resource id as a string keep working.
+    pub fn ensure_pair_in_store(
+        &self,
+        store_id: &str,
+        wrapper: &str,
+        resource_id: &str,
+    ) -> Result<()> {
+        use underwrap_protocol::entities::{
+            EntityCreator, PAIRS_DOCUMENT_SECRET_ID, PairsDocument, RESOURCES_DOCUMENT_SECRET_ID,
+            ResourceRecord, ResourcesDocument, WrapperResourcePairRecord,
+        };
+        use underwrap_store::StorageBackend;
+
+        let dir = self.store_dir_for(store_id);
+        let store = underwrap_store::PlainBackend::open(&dir)?;
+        let mut resources: ResourcesDocument = match store
+            .read(RESOURCES_DOCUMENT_SECRET_ID)
+            .context("read resources")?
+        {
+            Some(m) => serde_json::from_slice::<ResourcesDocument>(m.as_ref())
+                .context("decode resources")?,
+            None => ResourcesDocument::default(),
+        };
+        if resources.find_by_id(resource_id).is_none() {
+            resources
+                .insert(ResourceRecord {
+                    id: resource_id.to_string(),
+                    name: resource_id.to_string(),
+                    created_by: EntityCreator::Operator {
+                        id: "test-op".into(),
+                        username: "tester".into(),
+                    },
+                    created_at: 1,
+                })
+                .map_err(|e| anyhow::anyhow!("insert resource: {e}"))?;
+            store.write(
+                RESOURCES_DOCUMENT_SECRET_ID,
+                &serde_json::to_vec(&resources).context("encode resources")?,
+            )?;
+        }
+        let mut pairs: PairsDocument =
+            match store.read(PAIRS_DOCUMENT_SECRET_ID).context("read pairs")? {
+                Some(m) => {
+                    serde_json::from_slice::<PairsDocument>(m.as_ref()).context("decode pairs")?
+                }
+                None => PairsDocument::default(),
+            };
+        if pairs.find(wrapper, resource_id).is_none() {
+            pairs
+                .insert(WrapperResourcePairRecord {
+                    wrapper: wrapper.to_string(),
+                    resource_id: resource_id.to_string(),
+                    created_by: EntityCreator::Operator {
+                        id: "test-op".into(),
+                        username: "tester".into(),
+                    },
+                    created_at: 1,
+                    last_used_at: None,
+                })
+                .map_err(|e| anyhow::anyhow!("insert pair: {e}"))?;
+            store.write(
+                PAIRS_DOCUMENT_SECRET_ID,
+                &serde_json::to_vec(&pairs).context("encode pairs")?,
+            )?;
+        }
+        Ok(())
     }
 
     /// Write a secret through the admin API *without* touching the
@@ -354,9 +475,13 @@ impl TestDaemon {
         Ok(())
     }
 
-    pub async fn direct_service_status(
-        &self,
-    ) -> Result<underwrap_protocol::service::ServiceStatusResponse> {
+    /// Probe whether this daemon's runtime credential is currently
+    /// authorized at the backend. Issues an empty `POST /v1/wrappers`
+    /// register call — which round-trips without changing any state
+    /// — and reports success/failure. Used by tests that revoke the
+    /// credential mid-flight and want to assert the next runtime
+    /// connection fails.
+    pub async fn direct_service_status(&self) -> Result<()> {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let ca_pem = std::fs::read(&self.service_ca_cert)?;
         let cert_pem = std::fs::read(&self.service_client_cert)?;
@@ -369,7 +494,8 @@ impl TestDaemon {
             .identity(reqwest::Identity::from_pem(&identity_pem)?)
             .build()?;
         let response = client
-            .get(format!("{}/v1/status", self.service_url))
+            .post(format!("{}/v1/wrappers", self.service_url))
+            .json(&underwrap_protocol::service::RuntimeWrapperRegisterRequest { wrappers: vec![] })
             .send()
             .await?;
         anyhow::ensure!(
@@ -377,7 +503,7 @@ impl TestDaemon {
             "service API returned {}",
             response.status()
         );
-        Ok(response.json().await?)
+        Ok(())
     }
 
     /// Build an mTLS-authenticated reqwest client that authenticates as
@@ -574,6 +700,30 @@ impl TestDaemon {
             .await?)
     }
 
+    pub async fn delete_pair(
+        &self,
+        store: &str,
+        wrapper: &str,
+        resource_id: &str,
+    ) -> Result<underwrap_protocol::service::AdminPairDeleteResponse> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/pairs/delete")
+            .json(&underwrap_protocol::service::AdminPairDeleteRequest {
+                store: store.to_string(),
+                wrapper: wrapper.to_string(),
+                resource_id: resource_id.to_string(),
+            })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default(),
+        );
+        Ok(response.json().await?)
+    }
+
     pub async fn create_pair(
         &self,
         store: &str,
@@ -635,6 +785,12 @@ impl TestDaemon {
     }
 
     pub async fn put_policy(&self, store: &str, doc: &PolicyDocument) -> Result<()> {
+        // The backend requires a (wrapper, resource) pair record for
+        // every permission tuple; seed any missing ones before the
+        // policy lands. Idempotent.
+        for p in &doc.permissions {
+            self.ensure_pair(&p.wrapper, &p.resource_id)?;
+        }
         let response = self
             .admin_request(reqwest::Method::POST, "/v1/admin/policy/put")
             .json(&underwrap_protocol::service::AdminPolicyPutRequest {
@@ -656,6 +812,7 @@ impl TestDaemon {
         store: &str,
         permission: &WrapperPermission,
     ) -> Result<()> {
+        self.ensure_pair(&permission.wrapper, &permission.resource_id)?;
         let response = self
             .admin_request(
                 reqwest::Method::POST,

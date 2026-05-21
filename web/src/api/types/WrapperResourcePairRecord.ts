@@ -10,13 +10,7 @@ import type { EntityCreator } from "./EntityCreator";
  * the reference.
  *
  * `last_used_at` is bumped server-side on every successful runtime
- * read against the pair. `None` means the pair has never been used
- * since the record was created.
- *
- * `files_mount_paths` is the set of target-home-relative paths the
- * wrapper bind-mounts this resource's `files` slot at, last
- * reported by the daemon during register. Empty for pairs whose
- * wrapper does not project `files`. The SPA uses it to render the
- * resolved location of a stored file (mount + inner path).
+ * open and finalize against the pair. `None` means the pair has
+ * never been used since the record was created.
  */
-export type WrapperResourcePairRecord = { wrapper: string, resource_id: string, created_by: EntityCreator, created_at: bigint, last_used_at: bigint | null, files_mount_paths: Array<string>, };
+export type WrapperResourcePairRecord = { wrapper: string, resource_id: string, created_by: EntityCreator, created_at: bigint, last_used_at: bigint | null, };

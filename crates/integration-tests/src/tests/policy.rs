@@ -92,7 +92,7 @@ async fn wrapper_read_is_denied_when_no_grant_for_principal() {
     match resp {
         WrapperResponse::Error { code, message } => {
             assert!(matches!(code, ErrorCode::Unauthorized));
-            assert!(message.contains("no permission"));
+            assert!(message.contains("no-permission"));
         }
         other => panic!("expected Error, got {other:?}"),
     }

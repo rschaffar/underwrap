@@ -207,6 +207,53 @@ async fn underwrapd_binary_start_and_read() {
         .unwrap(),
     )
     .unwrap();
+
+    // Seed the resource + pair documents directly in the store. The
+    // new resource-vocabulary backend resolves the wrapper's resource
+    // by name and refuses the open when no `(wrapper, resource)` pair
+    // exists. Auto-create is off in this test; the backend stores
+    // these documents in the same plain directory.
+    let secrets_dir = base.join("secrets");
+    std::fs::create_dir_all(&secrets_dir).unwrap();
+    let resources_dir = secrets_dir.join("__underwrap/resources");
+    std::fs::create_dir_all(&resources_dir).unwrap();
+    std::fs::write(
+        resources_dir.join("document"),
+        serde_json::to_vec_pretty(&underwrap_protocol::entities::ResourcesDocument {
+            version: underwrap_protocol::entities::ENTITY_SCHEMA_VERSION,
+            resources: vec![underwrap_protocol::entities::ResourceRecord {
+                id: "s/t".into(),
+                name: "s/t".into(),
+                created_by: underwrap_protocol::entities::EntityCreator::Operator {
+                    id: "test-op".into(),
+                    username: "tester".into(),
+                },
+                created_at: 1,
+            }],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let pairs_dir = secrets_dir.join("__underwrap/pairs");
+    std::fs::create_dir_all(&pairs_dir).unwrap();
+    std::fs::write(
+        pairs_dir.join("document"),
+        serde_json::to_vec_pretty(&underwrap_protocol::entities::PairsDocument {
+            version: underwrap_protocol::entities::ENTITY_SCHEMA_VERSION,
+            pairs: vec![underwrap_protocol::entities::WrapperResourcePairRecord {
+                wrapper: "w".into(),
+                resource_id: "s/t".into(),
+                created_by: underwrap_protocol::entities::EntityCreator::Operator {
+                    id: "test-op".into(),
+                    username: "tester".into(),
+                },
+                created_at: 1,
+                last_used_at: None,
+            }],
+        })
+        .unwrap(),
+    )
+    .unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::server::BackendConfig {
         stores_file: Some(stores_file),
         client_instances_file: Some(client_instances_file),

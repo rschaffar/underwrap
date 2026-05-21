@@ -3,4 +3,4 @@
 /**
  * Runtime mode for one [`WrapperPermission`].
  */
-export type WrapperApprovalMode = { "kind": "locked" } | { "kind": "unlocked" } | { "kind": "unlocked-until", until_epoch: bigint, } | { "kind": "per-call-approval", approval_key: string, };
+export type WrapperApprovalMode = { "kind": "locked" } | { "kind": "unlocked" } | { "kind": "unlocked-until", until_epoch: bigint, };
