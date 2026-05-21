@@ -5,6 +5,7 @@ pub(crate) mod http;
 pub mod runtime_clients;
 pub(crate) mod runtime_state;
 pub mod server;
+pub(crate) mod storage;
 pub mod store_registry;
 pub mod tls;
 pub mod users;
