@@ -352,20 +352,3 @@ client sees its `SetSecret` as succeeding.
 `frontend-secretsd`. It is **never** propagated into the target
 process's environment.
 
-## Completed work
-
-The libsecret mode is implemented. See the architecture notes above
-and `docs/security.md` for the full design and security analysis. The
-atomic resource-blob storage layout, last-used tracking, always-rw
-namespace mount, and read-only writeback warning have all landed
-(tickets/03_done/epic_atomic_resource_blobs.md). The runtime-API
-redesign collapsing the daemon to a thin client + deleting the
-per-key endpoints + dropping SSH per-call approval landed under
-`tickets/03_done/epic_runtime_api_redesign.md` together with its
-integration-test sweep and prose-docs sweep.
-
-## Planned work
-
-- `tickets/01_todo/650_task_vm_test_update.md` — NixOS VM test
-  updates (backend-restart self-heal, env immutability through the
-  full stack, no-`PerCallApproval` admin assertion).
