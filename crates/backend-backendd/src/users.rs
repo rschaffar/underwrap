@@ -27,8 +27,7 @@ pub const DEFAULT_USERS_FILE: &str = "/var/lib/underwrap-backend/users.json";
 /// on-disk shape changes incompatibly.
 pub const COLLECTION_VERSION: u32 = 2;
 
-/// Schema version for the persisted user-state file. v1 carried a
-/// per-record `role` and `granted_stores`; v2 drops both.
+/// Schema version for the persisted user-state file.
 const STATE_FILE_VERSION: u32 = 2;
 
 /// One user account.
@@ -192,16 +191,11 @@ pub struct BootstrapSentinel {
     pub by_username: String,
 }
 
-/// Persisted shape on disk. Accepts v1 (legacy operators.json) and v2
-/// (current users.json). v1 records may carry `role` and
-/// `granted_stores`; both are deserialised into `IgnoredAny` and
-/// silently dropped on re-save.
+/// Persisted shape on disk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct UserStateDocument {
     #[serde(default = "default_state_file_version")]
     version: u32,
-    /// v2 field name. v1 used `operators`; the loader maps it across
-    /// before deserialising into this shape.
     #[serde(default)]
     users: Vec<UserRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -298,68 +292,14 @@ fn load_state_document(path: &Path) -> Result<UserStateDocument> {
         }
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    // First peek at the version so we can route v1 (legacy
-    // `operators` key, plus `role` and `granted_stores` per record)
-    // through a compatibility deserialiser.
-    let raw: serde_json::Value = serde_json::from_str(&text)
+    let doc: UserStateDocument = serde_json::from_str(&text)
         .with_context(|| format!("parsing user-state file {}", path.display()))?;
-    let version = raw
-        .get("version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(STATE_FILE_VERSION as u64) as u32;
-    match version {
-        2 => serde_json::from_value(raw)
-            .with_context(|| format!("parsing user-state file {}", path.display())),
-        1 => parse_v1_document(raw, path),
-        other => anyhow::bail!(
-            "user-state file {} has version {other}, expected {STATE_FILE_VERSION}",
-            path.display()
-        ),
-    }
-}
-
-/// v1 layout: `{ version: 1, operators: [...], bootstrap_completed }`,
-/// where each operator record has `role` and `granted_stores` fields
-/// alongside the same shape we keep in v2. We drop both extra fields
-/// silently — the cutover discards every authorisation distinction.
-fn parse_v1_document(mut raw: serde_json::Value, path: &Path) -> Result<UserStateDocument> {
-    let bootstrap_completed = raw
-        .get("bootstrap_completed")
-        .filter(|v| !v.is_null())
-        .cloned();
-    let operators = raw
-        .get_mut("operators")
-        .and_then(|v| v.as_array_mut())
-        .map(std::mem::take)
-        .unwrap_or_default();
-    let mut users = Vec::with_capacity(operators.len());
-    for mut entry in operators {
-        if let serde_json::Value::Object(map) = &mut entry {
-            map.remove("role");
-            map.remove("granted_stores");
-        }
-        let user: UserRecord = serde_json::from_value(entry).with_context(|| {
-            format!(
-                "parsing legacy operator record from {} during v1→v2 migration",
-                path.display()
-            )
-        })?;
-        users.push(user);
-    }
-    let bootstrap_completed = match bootstrap_completed {
-        Some(v) => Some(serde_json::from_value(v).with_context(|| {
-            format!(
-                "parsing legacy bootstrap_completed in {} during v1→v2 migration",
-                path.display()
-            )
-        })?),
-        None => None,
-    };
-    Ok(UserStateDocument {
-        version: STATE_FILE_VERSION,
-        users,
-        bootstrap_completed,
-    })
+    anyhow::ensure!(
+        doc.version == STATE_FILE_VERSION,
+        "unsupported user-state file version {}",
+        doc.version,
+    );
+    Ok(doc)
 }
 
 fn save_state_document(path: &Path, doc: &UserStateDocument) -> Result<()> {
@@ -556,50 +496,13 @@ mod tests {
     }
 
     #[test]
-    fn load_v1_state_file_migrates_to_v2_dropping_role_and_grants() {
+    fn load_rejects_v1_state_file() {
         let path = test_state_path();
-        let v1 = serde_json::json!({
-            "version": 1,
-            "operators": [
-                {
-                    "id": "0123456789abcdef0123456789abcdef",
-                    "username": "alice",
-                    "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-                    "role": "admin",
-                    "granted_stores": ["alpha", "beta"],
-                    "created_at": 1000,
-                    "password_changed_at": 1000
-                },
-                {
-                    "id": "fedcba9876543210fedcba9876543210",
-                    "username": "bob",
-                    "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-                    "role": "operator",
-                    "granted_stores": [],
-                    "created_at": 2000,
-                    "password_changed_at": 2000
-                }
-            ],
-            "bootstrap_completed": { "completed_at": 1234, "by_username": "alice" }
-        });
-        std::fs::write(&path, serde_json::to_string(&v1).unwrap()).unwrap();
-
-        let collection = load(&path).unwrap();
-        assert_eq!(collection.len(), 2);
-        assert!(collection.find_by_username("alice").is_some());
-        assert!(collection.find_by_username("bob").is_some());
-        // Sentinel survives the migration.
-        let sentinel = load_bootstrap_sentinel(&path).unwrap().unwrap();
-        assert_eq!(sentinel.by_username, "alice");
-
-        // Re-save: file is now v2 with `users` (not `operators`) and
-        // no role/granted_stores fields.
-        save(&path, &collection).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("\"version\": 2"));
-        assert!(text.contains("\"users\""));
-        assert!(!text.contains("\"operators\""));
-        assert!(!text.contains("\"role\""));
-        assert!(!text.contains("\"granted_stores\""));
+        std::fs::write(&path, r#"{"version":1,"operators":[]}"#).unwrap();
+        let err = load(&path).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported user-state file version")
+        );
     }
 }
