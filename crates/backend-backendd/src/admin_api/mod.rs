@@ -15,6 +15,7 @@
 pub(crate) mod audit;
 pub mod auth;
 pub mod bootstrap;
+pub(crate) mod client_instances;
 pub(crate) mod csrf;
 pub(crate) mod overview;
 pub(crate) mod pairs;
