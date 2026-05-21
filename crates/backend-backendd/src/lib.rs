@@ -2,6 +2,7 @@ pub(crate) mod admin_api;
 pub mod auth;
 pub mod config;
 pub(crate) mod http;
+pub(crate) mod ids;
 pub(crate) mod runtime_api;
 pub mod runtime_clients;
 pub(crate) mod runtime_state;

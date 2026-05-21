@@ -281,13 +281,7 @@ pub(crate) fn validate_store_name(name: &str) -> std::result::Result<String, &'s
 }
 
 pub(crate) fn generate_store_id() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 10];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    format!(
-        "store_{}",
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    )
+    crate::ids::random_id("store")
 }
 
 #[cfg(test)]

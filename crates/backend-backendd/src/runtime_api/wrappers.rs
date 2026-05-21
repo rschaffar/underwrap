@@ -276,13 +276,7 @@ pub(crate) fn handle_runtime_wrapper_register(
 /// `generate_client_instance_id` in shape so the two id namespaces
 /// look related but distinct.
 pub(crate) fn generate_resource_id() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 10];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    format!(
-        "res_{}",
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    )
+    crate::ids::random_id("res")
 }
 
 #[cfg(test)]

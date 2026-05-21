@@ -26,13 +26,7 @@ use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::validate_store_name;
 
 pub(crate) fn generate_client_instance_id() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 10];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    format!(
-        "inst_{}",
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    )
+    crate::ids::random_id("inst")
 }
 
 fn client_instance_status_to_wire(

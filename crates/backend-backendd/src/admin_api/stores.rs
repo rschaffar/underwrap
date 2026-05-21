@@ -474,15 +474,6 @@ fn master_key_hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 8 random bytes hex-encoded as 16 lowercase characters. Used to make
-/// transient on-disk paths unique without claiming key-grade entropy.
-fn random_hex_8() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 8];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 #[cfg(unix)]
 fn create_data_dir_secure(dir: &Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
@@ -784,7 +775,7 @@ pub(crate) async fn handle_admin_store_rotate_key(
             );
         }
     };
-    let stage_name = format!(".rotating-{}-{}", name, random_hex_8());
+    let stage_name = format!(".rotating-{}-{}", name, crate::ids::random_hex_8());
     let stage_dir = parent.join(&stage_name);
     if let Err(e) = create_data_dir_secure(&stage_dir) {
         write_admin_store_audit(state, principal, name, "store.rotate-key", "stage-failed");
