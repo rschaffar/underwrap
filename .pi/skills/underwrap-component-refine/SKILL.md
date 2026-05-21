@@ -15,6 +15,62 @@ and never moves tickets. Its output is a findings report and a proposed
 ticket plan written under `tickets/_review/`. Execution is a separate
 session that picks the tickets up via `underwrap-ticket-workflow`.
 
+## Posture: still greenfield, aiming for a clean first release
+
+This project has **not shipped a first release yet**. There is no
+external user base, no compatibility surface, and no migration burden.
+The goal of every review pass is to make the first release look like the
+code was written this way from the start.
+
+Judgement calls follow from that:
+
+- **No backwards-compatibility concerns.** It is fine — and often
+  preferable — to rename types, change config schemas, restructure the
+  NixOS module surface, and reshape IPC wire types when doing so
+  makes the first release cleaner. Existing 3-digit tickets and
+  finished work do **not** create a constraint; only the code as it
+  stands does.
+- **Replace awkward early designs rather than paper over them.** If a
+  module exists because of how something was done six months ago and
+  there is now a clearly better shape, propose the replacement, not
+  the polish.
+- **No legacy/parallel modes.** Per the user's standing feedback, do
+  not propose intermediate "live alongside the old thing" states.
+  Cutovers happen in one ticket where reasonable.
+- **No ticket references in the code.** The codebase must not carry
+  pointers into the ticket tree — no `// see ticket 820`, no
+  `// TODO(NNNN)` referencing a ticket number, no commit-hash
+  references, no `// from epic_backend_modularization`, no doc
+  comments naming tickets, no module headers naming the epic that
+  introduced them. Tickets and commit messages are the right place
+  for that context; the code is not. Treat every such reference as a
+  finding and route it through the project-wide sweep below.
+- **No migration / old-version support.** There is nothing deployed
+  yet, so there is nothing to migrate from. Flag and remove any code
+  whose only purpose is to handle a previous shape of the world:
+  - schema-version fields, `version: u32` discriminators, or
+    `match version { 1 => ..., 2 => ... }` branches when only one
+    shape was ever live
+  - `serde(default)` / `Option<T>` fields that exist only to tolerate
+    older serialized blobs
+  - protocol-negotiation code, capability flags, or "fallback to old
+    behaviour" arms that were added pre-first-release
+  - database / store migration steps that could be folded into the
+    initial schema
+  - "kept for backwards compat with X" comments, transitional helper
+    functions, dual-write paths, dual-read paths
+  - retired-format constants, enum variants marked deprecated, types
+    suffixed `V1`/`Legacy`/`Old`
+  Code we ship at the first release is **version 1, full stop.**
+  Anything that hedges against an earlier state is dead weight to
+  remove now while it's still cheap. Real versioning will start
+  *after* the first release, when there are actual deployed clients
+  to migrate.
+- **Security boundaries are not greenfield.** The "Hard rules" section
+  below still applies — refactor freedom never extends to weakening a
+  security mechanism described in `CLAUDE.md` "Security-critical
+  rules" or in `docs/security.md`.
+
 ## Inputs
 
 The user names a **component**. A component is one of:
@@ -64,9 +120,24 @@ actionable without re-reading. Do not edit code in this phase.
 4. **Dead code & API hygiene** — unused items, over-broad `pub`, leaky
    re-exports, `#[cfg(test)] pub(crate) use` shims at the crate root
    (forbidden by `CLAUDE.md`).
-5. **Test layout & coverage** — sibling-file `tests.rs` pattern
-   compliance, `test_support.rs` usage, behavioural coverage gaps,
-   oversized `tests.rs` files (>600 lines).
+5. **Test layout & coverage** — `AGENTS.md` mandates the
+   **sibling-file `tests.rs` submodule pattern**: production code never
+   carries an inline `#[cfg(test)] mod tests { ... }` block at the
+   bottom of the file. Tests live in a sibling file
+   (`foo/tests.rs` for `foo.rs`), declared from the production file
+   with a one-line `#[cfg(test)] mod tests;`. Cross-module helpers go
+   in `src/test_support.rs`, single-file helpers stay in that file's
+   `tests.rs`. Flag, with location, every occurrence of:
+   - inline `mod tests { ... }` blocks of more than a few lines (the
+     "tiny exception" is judgement; treat anything over ~30 lines or
+     longer than its surrounding production code as a violation)
+   - `#[cfg(test)] pub(crate) use ...` re-exports at the crate root
+     that exist purely so an inline test block can reach moved code
+     (explicitly forbidden by `AGENTS.md`)
+   - `tests.rs` files over ~600 lines that should be split
+   - missing `test_support.rs` when the same fixture is hand-rolled in
+     multiple `tests.rs` siblings
+   - behavioural coverage gaps in the production code in scope
 6. **Complexity** — long functions, deep nesting, gnarly match arms,
    control flow that's hard to read at a glance.
 7. **Duplication / missed reuse** — repeated patterns that should be
@@ -93,10 +164,68 @@ actionable without re-reading. Do not edit code in this phase.
    structured fields, log-level hygiene, missing audit events.
 9. **Greenfield cleanups** — compat shims, parallel-with-legacy code,
    awkward early design choices that `CLAUDE.md` explicitly calls
-   replaceable.
+   replaceable, and **ticket references inside source/config/docs**
+   (see the "Posture" section above). Any `// see ticket NNN`,
+   `// TODO(NNNN)` with a ticket number, `// from epic_*`, or
+   doc-comment / module-header pointer to a ticket is a finding.
 10. **Doc & comment hygiene** — missing rustdoc on `pub` items,
     WHAT-comments that should be deleted (per the global comment rule),
     stale references to renamed things.
+
+### 2a. Project-wide sweep for repo-conventions
+
+Some categories above describe repo-wide conventions — when a finding
+shows the convention is violated inside the component in scope, the
+**same violation almost certainly exists in other components too**, and
+fixing it once per review is wasteful. Before writing the report, run a
+quick repo-wide grep for each of the following and fold every hit into
+the findings list (not just the ones inside the component scope):
+
+- **Inline `mod tests {}` blocks** — `rg -n '^#\[cfg\(test\)\][[:space:]]*\nmod tests \{' crates/`
+  or equivalent. Every match outside the "tiny exception" threshold
+  (see category 5) becomes a finding flagged
+  **`scope: project-wide`**.
+- **`#[cfg(test)] pub(crate) use` re-exports at crate roots** —
+  `rg -n '#\[cfg\(test\)\][[:space:]]*\n[[:space:]]*pub\(crate\) use' crates/`.
+  All hits are findings; the rule has no exceptions.
+- **`tests.rs` files over ~600 lines** — `find crates -name tests.rs -size +24k`
+  as a rough proxy, then verify line count.
+- **Ticket references in code, config, or docs** — `rg -n -i
+  '(ticket[[:space:]]*[0-9]{3,4}|epic_[a-z_]+|story_[a-z_]+|TODO\([0-9]{3,4}\)|FIXME\([0-9]{3,4}\))'
+  crates/ web/ nix/ docs/ examples/`. Every hit is a finding;
+  see-also `git grep` for anything inside `.md` files under
+  `docs/`. The rule has no exceptions: tickets and commits carry
+  history, code does not.
+- **Old-version / migration support** — none should exist yet (see
+  the "Posture" section). Sweep with patterns such as:
+  - `rg -n -i '(backward|backwards|backcompat|back-compat|legacy|deprecated|migration|migrate_from)' crates/ web/ nix/ docs/`
+  - `rg -n '\b(V[0-9]+|Legacy|Old)\b' crates/` for types/enum
+    variants suffixed with version markers
+  - `rg -n 'serde\(default' crates/` and check whether each
+    `#[serde(default)]` exists to tolerate an older blob or has a
+    real present-tense reason
+  - `rg -n 'schema_?version|protocol_?version|format_?version' crates/`
+  - `rg -n 'TODO.*(remove|drop|delete).*(old|legacy|once|after.*release)' crates/`
+  Each hit must be examined: is this guarding against a previous
+  shape that was never deployed? If yes, finding; route as a
+  pure-refactor removal (no behaviour change because the old
+  behaviour was never reachable). If a hit turns out to guard a
+  *current* shape, note it as a false positive in the report and
+  move on — do not produce a finding.
+- **WHAT-comments** that just narrate the next line of code, when seen
+  in scope and clearly part of a wider habit — note this as a
+  project-wide sweep candidate but do not enumerate every occurrence
+  outside scope (judgement: too noisy to grep mechanically).
+
+Findings produced by this sweep that fall outside the named component
+get their own ticket in the plan, separate from the in-scope tickets,
+with the title prefix `repo_sweep_` (e.g.
+`1030_task_repo_sweep_relocate_inline_tests.md`). One sweep ticket per
+convention, not one per offending file.
+
+Repo-wide sweep findings must still cite `file:line` for every
+occurrence and must use the same scope-discipline routing as in-scope
+findings (pure refactor only; no behaviour change).
 
 ### 3. Findings & triage
 
@@ -122,7 +251,9 @@ Scope: <one short paragraph from phase 1>
 
 - **Category:** <one of the ten>
 - **Severity:** must-fix | nice-to-have | out-of-scope
-- **Location:** path/to/file.rs:NN-NN
+- **Scope:** in-component | project-wide
+- **Location(s):** path/to/file.rs:NN-NN (list all sites for
+  project-wide findings)
 - **Observation:** <what is there now, quoting the relevant lines>
 - **Recommendation:** <concrete change>
 - **Behavior change?** no | yes — <why it's still safe / why it routes elsewhere>
