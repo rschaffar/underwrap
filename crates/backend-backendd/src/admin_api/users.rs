@@ -42,7 +42,6 @@ pub(crate) fn user_detail(record: &crate::users::UserRecord) -> AdminUserDetailR
 }
 
 pub(crate) fn write_admin_user_audit(
-    _state: &AdminRuntimeState,
     actor: &crate::users::Principal,
     target_username: &str,
     action: &str,
@@ -212,14 +211,7 @@ pub(crate) fn handle_admin_user_create(
     });
     match result {
         Ok(saved) => {
-            write_admin_user_audit(
-                state,
-                principal,
-                &target_username,
-                "user.create",
-                None,
-                "success",
-            );
+            write_admin_user_audit(principal, &target_username, "user.create", None, "success");
             json_response(StatusCode::OK, &user_detail(&saved))
         }
         Err(e) => {
@@ -231,7 +223,6 @@ pub(crate) fn handle_admin_user_create(
                 ),
             };
             write_admin_user_audit(
-                state,
                 principal,
                 &target_username,
                 "user.create",
@@ -273,14 +264,7 @@ pub(crate) fn handle_admin_user_update(
     });
     match result {
         Ok(updated) => {
-            write_admin_user_audit(
-                state,
-                principal,
-                &updated.username,
-                "user.update",
-                None,
-                "success",
-            );
+            write_admin_user_audit(principal, &updated.username, "user.update", None, "success");
             json_response(StatusCode::OK, &user_detail(&updated))
         }
         Err(e) => {
@@ -291,14 +275,7 @@ pub(crate) fn handle_admin_user_update(
                     error_response(StatusCode::BAD_REQUEST, "invalid_user", &e.to_string()),
                 ),
             };
-            write_admin_user_audit(
-                state,
-                principal,
-                &id_owned,
-                "user.update",
-                reason,
-                "failure",
-            );
+            write_admin_user_audit(principal, &id_owned, "user.update", reason, "failure");
             response
         }
     }
@@ -347,7 +324,6 @@ pub(crate) async fn handle_admin_user_reset_password(
                 .session_revocations
                 .revoke_username(&target_username, now);
             write_admin_user_audit(
-                state,
                 principal,
                 &target_username,
                 "user.password.reset",
@@ -365,7 +341,6 @@ pub(crate) async fn handle_admin_user_reset_password(
                 ),
             };
             write_admin_user_audit(
-                state,
                 principal,
                 &id_owned,
                 "user.password.reset",
@@ -390,14 +365,7 @@ pub(crate) fn handle_admin_user_delete(
             state
                 .session_revocations
                 .revoke_username(&removed.username, now);
-            write_admin_user_audit(
-                state,
-                principal,
-                &removed.username,
-                "user.delete",
-                None,
-                "success",
-            );
+            write_admin_user_audit(principal, &removed.username, "user.delete", None, "success");
             json_response(StatusCode::OK, &AdminOkUserResponse { ok: true })
         }
         Err(e) => {
@@ -408,14 +376,7 @@ pub(crate) fn handle_admin_user_delete(
                     error_response(StatusCode::BAD_REQUEST, "invalid_user", &e.to_string()),
                 ),
             };
-            write_admin_user_audit(
-                state,
-                principal,
-                &id_owned,
-                "user.delete",
-                reason,
-                "failure",
-            );
+            write_admin_user_audit(principal, &id_owned, "user.delete", reason, "failure");
             response
         }
     }

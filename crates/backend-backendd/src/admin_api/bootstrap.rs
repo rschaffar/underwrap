@@ -94,7 +94,6 @@ pub(crate) async fn handle_admin_bootstrap(
     match crate::users::bootstrap_completed(&state.users_file) {
         Ok(true) => {
             audit_bootstrap_attempt(
-                state,
                 &username_norm,
                 Some("bootstrap-already-completed"),
                 "failure",
@@ -128,12 +127,7 @@ pub(crate) async fn handle_admin_bootstrap(
         }
     };
     if !collection.is_empty() {
-        audit_bootstrap_attempt(
-            state,
-            &username_norm,
-            Some("users-already-exist"),
-            "failure",
-        );
+        audit_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
         return error_response(
             StatusCode::CONFLICT,
             "users_already_exist",
@@ -191,7 +185,7 @@ pub(crate) async fn handle_admin_bootstrap(
             "could not persist bootstrap sentinel",
         );
     }
-    audit_bootstrap_attempt(state, &record.username, None, "success");
+    audit_bootstrap_attempt(&record.username, None, "success");
 
     // Issue a session for the brand-new admin.
     let payload = crate::auth::new_session_payload(
@@ -236,12 +230,7 @@ pub(crate) async fn handle_admin_bootstrap(
 }
 
 /// Log one bootstrap attempt outcome. Best effort: never fails the caller.
-pub(crate) fn audit_bootstrap_attempt(
-    _state: &AdminRuntimeState,
-    username: &str,
-    operation: Option<&str>,
-    result: &str,
-) {
+pub(crate) fn audit_bootstrap_attempt(username: &str, operation: Option<&str>, result: &str) {
     log_admin_event(
         "bootstrap.attempt",
         username,

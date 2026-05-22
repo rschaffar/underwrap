@@ -51,7 +51,6 @@ pub(crate) fn drop_client_instance_permissions(
 }
 
 pub(crate) fn write_admin_permission_audit(
-    _state: &AdminRuntimeState,
     actor: &crate::users::Principal,
     store_name: &str,
     permission: &underwrap_protocol::policy::WrapperPermission,
@@ -226,7 +225,6 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
     });
     if let Err(e) = save_policy_document(store.as_ref(), &doc) {
         write_admin_permission_audit(
-            state,
             principal,
             &body.store,
             &body.permission,
@@ -241,7 +239,6 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
         );
     }
     write_admin_permission_audit(
-        state,
         principal,
         &body.store,
         &body.permission,
@@ -300,7 +297,6 @@ pub(crate) fn handle_admin_wrapper_permission_delete(
         reason: None,
     };
     write_admin_permission_audit(
-        state,
         principal,
         &body.store,
         &removed_permission,

@@ -379,7 +379,6 @@ pub(crate) fn run_bootstrap(
     let _guard = state.bootstrap_lock.lock().unwrap();
     if crate::users::bootstrap_completed(&state.users_file).unwrap_or(true) {
         audit_bootstrap_attempt(
-            state,
             &username_norm,
             Some("bootstrap-already-completed"),
             "failure",
@@ -392,12 +391,7 @@ pub(crate) fn run_bootstrap(
     }
     let collection = crate::users::load(&state.users_file).unwrap();
     if !collection.is_empty() {
-        audit_bootstrap_attempt(
-            state,
-            &username_norm,
-            Some("users-already-exist"),
-            "failure",
-        );
+        audit_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
         return error_response(
             StatusCode::CONFLICT,
             "users_already_exist",
@@ -424,7 +418,7 @@ pub(crate) fn run_bootstrap(
         },
     )
     .unwrap();
-    audit_bootstrap_attempt(state, &record.username, None, "success");
+    audit_bootstrap_attempt(&record.username, None, "success");
     let payload = crate::auth::new_session_payload(
         record.id.clone(),
         record.username.clone(),

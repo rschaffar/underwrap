@@ -278,7 +278,6 @@ pub(crate) async fn handle_admin_password_change(
     };
     if !crate::auth::verify_password(&current_hash, &body.current_password) {
         write_admin_user_audit(
-            state,
             principal,
             &principal.username,
             "user.password.change",
@@ -314,7 +313,6 @@ pub(crate) async fn handle_admin_password_change(
     match result {
         Ok(()) => {
             write_admin_user_audit(
-                state,
                 principal,
                 &principal.username,
                 "user.password.change",

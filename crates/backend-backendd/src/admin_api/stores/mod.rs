@@ -262,7 +262,6 @@ pub(super) fn create_data_dir_secure(dir: &Path) -> Result<()> {
 }
 
 pub(crate) fn write_admin_store_audit(
-    _state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     store_name: &str,
     action: &str,

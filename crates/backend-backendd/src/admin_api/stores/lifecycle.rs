@@ -99,7 +99,6 @@ pub(super) async fn handle_admin_store_rotate_key(
     let stage_dir = parent.join(&stage_name);
     if let Err(e) = create_data_dir_secure(&stage_dir) {
         write_admin_store_audit(
-            state,
             principal,
             name,
             "store.rotate-key",
@@ -121,7 +120,6 @@ pub(super) async fn handle_admin_store_rotate_key(
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&stage_dir);
                 write_admin_store_audit(
-                    state,
                     principal,
                     name,
                     "store.rotate-key",
@@ -140,7 +138,6 @@ pub(super) async fn handle_admin_store_rotate_key(
         current_backend.as_ref(),
         &new_backend,
         &stage_dir,
-        state,
         principal,
         name,
     ) {
@@ -155,7 +152,6 @@ pub(super) async fn handle_admin_store_rotate_key(
     if let Err(e) = std::fs::rename(&dir, &backup_dir) {
         let _ = std::fs::remove_dir_all(&stage_dir);
         write_admin_store_audit(
-            state,
             principal,
             name,
             "store.rotate-key",
@@ -178,7 +174,6 @@ pub(super) async fn handle_admin_store_rotate_key(
         let _ = std::fs::rename(&backup_dir, &dir);
         let _ = std::fs::remove_dir_all(&stage_dir);
         write_admin_store_audit(
-            state,
             principal,
             name,
             "store.rotate-key",
@@ -209,7 +204,6 @@ pub(super) async fn handle_admin_store_rotate_key(
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&backup_dir);
                 write_admin_store_audit(
-                    state,
                     principal,
                     name,
                     "store.rotate-key",
@@ -228,7 +222,6 @@ pub(super) async fn handle_admin_store_rotate_key(
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&backup_dir);
                 write_admin_store_audit(
-                    state,
                     principal,
                     name,
                     "store.rotate-key",
@@ -271,7 +264,7 @@ pub(super) async fn handle_admin_store_rotate_key(
         }
     }
 
-    write_admin_store_audit(state, principal, name, "store.rotate-key", None, "success");
+    write_admin_store_audit(principal, name, "store.rotate-key", None, "success");
     json_response(
         StatusCode::OK,
         &AdminStoreRotateKeyResponse {
@@ -296,7 +289,6 @@ fn reencrypt_into(
     from: &dyn StorageBackend,
     to: &dyn StorageBackend,
     stage_dir: &Path,
-    state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     store_name: &str,
 ) -> std::result::Result<(), Response<Full<Bytes>>> {
@@ -305,7 +297,6 @@ fn reencrypt_into(
         Err(e) => {
             let _ = std::fs::remove_dir_all(stage_dir);
             write_admin_store_audit(
-                state,
                 principal,
                 store_name,
                 "store.rotate-key",
@@ -329,7 +320,6 @@ fn reencrypt_into(
     ) {
         let _ = std::fs::remove_dir_all(stage_dir);
         write_admin_store_audit(
-            state,
             principal,
             store_name,
             "store.rotate-key",
@@ -352,7 +342,6 @@ fn reencrypt_into(
             Err(e) => {
                 let _ = std::fs::remove_dir_all(stage_dir);
                 write_admin_store_audit(
-                    state,
                     principal,
                     store_name,
                     "store.rotate-key",
@@ -369,7 +358,6 @@ fn reencrypt_into(
         if let Err(e) = to.write(&id, material.as_ref()) {
             let _ = std::fs::remove_dir_all(stage_dir);
             write_admin_store_audit(
-                state,
                 principal,
                 store_name,
                 "store.rotate-key",
@@ -453,7 +441,6 @@ pub(crate) fn handle_admin_store_unlock(
         Ok(k) => k,
         Err(e) => {
             write_admin_store_audit(
-                state,
                 principal,
                 name,
                 "store.unlock",
@@ -471,7 +458,6 @@ pub(crate) fn handle_admin_store_unlock(
         Ok(b) => b,
         Err(e) => {
             write_admin_store_audit(
-                state,
                 principal,
                 name,
                 "store.unlock",
@@ -489,7 +475,6 @@ pub(crate) fn handle_admin_store_unlock(
         Ok(Some(plain)) if plain.as_ref() == underwrap_store::ENCRYPTED_CANARY_PLAINTEXT => {}
         Ok(Some(_)) => {
             write_admin_store_audit(
-                state,
                 principal,
                 name,
                 "store.unlock",
@@ -504,7 +489,6 @@ pub(crate) fn handle_admin_store_unlock(
         }
         Ok(None) => {
             write_admin_store_audit(
-                state,
                 principal,
                 name,
                 "store.unlock",
@@ -519,7 +503,6 @@ pub(crate) fn handle_admin_store_unlock(
         }
         Err(_) => {
             write_admin_store_audit(
-                state,
                 principal,
                 name,
                 "store.unlock",
@@ -537,7 +520,7 @@ pub(crate) fn handle_admin_store_unlock(
         let mut reg = state.stores.write().unwrap();
         reg.unlock(name, Arc::new(backend));
     }
-    write_admin_store_audit(state, principal, name, "store.unlock", None, "success");
+    write_admin_store_audit(principal, name, "store.unlock", None, "success");
     json_response(StatusCode::OK, &serde_json::json!({ "ok": true }))
 }
 
@@ -569,7 +552,7 @@ pub(super) fn handle_admin_store_lock(
     reg.lock(name);
     drop(reg);
     let result = if was_locked { "noop" } else { "success" };
-    write_admin_store_audit(state, principal, name, "store.lock", None, result);
+    write_admin_store_audit(principal, name, "store.lock", None, result);
     json_response(
         StatusCode::OK,
         &serde_json::json!({ "ok": true, "was_locked": was_locked }),
