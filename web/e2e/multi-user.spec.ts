@@ -1,5 +1,5 @@
 /**
- * Multi-user authz e2e (ticket 243).
+ * Multi-user authz e2e.
  *
  * Walks the full grant-aware operator flow against a real backendd:
  *

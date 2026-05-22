@@ -72,9 +72,8 @@ pub(crate) async fn bootstrap_admin(
 /// collisions are rare in the test harness. The previous monotonic
 /// counter starting at 43000 had the much worse failure mode of
 /// reusing the same port across `cargo test` runs while it was still
-/// in `TIME_WAIT` (ticket 280). Holding the listener open until the
-/// real server binds would close the race but requires restructuring
-/// the harness — see the ticket for the deferred follow-up.
+/// in `TIME_WAIT`. Holding the listener open until the real server
+/// binds would close the race but requires restructuring the harness.
 pub(crate) fn pick_unused_port() -> Result<u16> {
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").context("binding ephemeral port for harness")?;
@@ -87,9 +86,9 @@ pub(crate) fn pick_unused_port() -> Result<u16> {
 }
 
 // Total window: 3000 × 20 ms ≈ 60 s. The previous 2 s budget flaked
-// under contended Nix-sandbox loads (ticket 281) — the loop exits as
-// soon as the listener answers, so a longer ceiling costs nothing on
-// the happy path. The contention is real: `cargo test --workspace`
+// under contended Nix-sandbox loads — the loop exits as soon as the
+// listener answers, so a longer ceiling costs nothing on the happy
+// path. The contention is real: `cargo test --workspace`
 // runs many test binaries in parallel, and backend startup can still
 // be delayed substantially by general CPU / I/O contention.
 pub(crate) async fn wait_for_admin(url: &str, ca_cert: &Path) -> Result<()> {

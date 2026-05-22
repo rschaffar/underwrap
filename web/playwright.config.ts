@@ -35,8 +35,8 @@ export default defineConfig({
 
   projects: [
     {
-      // Ticket 252: 1280-wide desktop project — the default scope
-      // for every test that isn't viewport-specific.
+      // 1280-wide desktop project — the default scope for every test
+      // that isn't viewport-specific.
       name: "desktop-1280",
       use: {
         ...devices["Desktop Chrome"],

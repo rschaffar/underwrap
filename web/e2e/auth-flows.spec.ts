@@ -1,7 +1,6 @@
 /**
  * Baseline auth e2e — runs against a freshly-spawned backendd per
- * test. The scenarios cover the must-not-regress paths called out in
- * ticket 224:
+ * test. The scenarios cover the must-not-regress paths:
  *
  *   1. bootstrap → login → dashboard
  *   2. login with the wrong password → inline error

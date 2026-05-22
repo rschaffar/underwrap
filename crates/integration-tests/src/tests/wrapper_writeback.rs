@@ -464,7 +464,7 @@ async fn noncanonical_checkin_rejected() {
 }
 
 // ===========================================================================
-// last_used_at coverage (ticket 423)
+// last_used_at coverage
 // ===========================================================================
 //
 // Every successful backend access for a `resources/<id>` path bumps the

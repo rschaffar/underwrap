@@ -98,7 +98,7 @@ fn serve_web_request_returns_hashed_asset_with_immutable_cache() {
 }
 
 #[test]
-fn serve_web_request_history_fallback_returns_index_for_unknown_paths() {
+fn serve_web_request_spa_fallback_returns_index_for_unknown_paths() {
     let (_dir, source) = fixture_source();
     let resp = serve_web_request(&Method::GET, "/users/123/edit", &source);
     assert_eq!(resp.status(), StatusCode::OK);
@@ -109,7 +109,7 @@ fn serve_web_request_history_fallback_returns_index_for_unknown_paths() {
 }
 
 #[test]
-fn serve_web_request_history_fallback_does_not_apply_to_missing_assets() {
+fn serve_web_request_spa_fallback_does_not_apply_to_missing_assets() {
     // An unknown path under /assets/ also falls back to index.html
     // because the SPA owns the routing decisions; the SPA itself
     // will surface a real 404 inside the page if needed. This
@@ -140,8 +140,8 @@ fn serve_web_request_returns_placeholder_when_no_index() {
 fn serve_web_request_rejects_path_traversal_with_fallback() {
     let (_dir, source) = fixture_source();
     // Traversal segments are normalised to a rejected marker, so the
-    // lookup fails and the handler serves index.html (history
-    // fallback). It must never read outside the asset root.
+    // lookup fails and the handler serves index.html (SPA fallback).
+    // It must never read outside the asset root.
     let resp = serve_web_request(&Method::GET, "/../../../etc/passwd", &source);
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(

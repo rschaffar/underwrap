@@ -70,7 +70,7 @@ export interface BackendInstance {
    *  stores land at `<dataRoot>/<store_id>/`. */
   dataRoot: string;
   /** Absolute path of the configured `keys_dir`. Encrypted-store key
-   *  files (ticket 234) are generated here, one per store. */
+   *  files are generated here, one per store. */
   keysDir: string;
   /** Tear down: SIGTERM the process, wait for exit, remove the temp dir. */
   cleanup: () => Promise<void>;

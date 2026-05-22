@@ -1,5 +1,5 @@
 /**
- * Stores page e2e (ticket 233).
+ * Stores page e2e.
  *
  * Reuses the per-test `backendWithAdmin` fixture so the page renders
  * against a real backend. The fixture's default store is `default`
@@ -70,8 +70,8 @@ test("creating an encrypted store reveals the master key once and leaves no trac
   await createDlg
     .getByLabel(/backend/i)
     .selectOption("encrypted");
-  // The free-form key file path field is gone in ticket 234 — the
-  // backend chooses where to put it.
+  // The free-form key file path field is gone — the backend chooses
+  // where to put it.
   await expect(createDlg.getByLabel(/key file/i)).toBeHidden();
   await createDlg.getByRole("button", { name: /^create$/i }).click();
 
@@ -245,10 +245,9 @@ test("non-admin operator sees the nav item hidden", async ({
   page,
   backendWithAdmin,
 }) => {
-  // The fixture only creates an admin operator today; a dedicated
-  // operator-role e2e lives alongside ticket 240 once user CRUD
-  // lands. For now, assert the admin path works (which exercises
-  // the gating from the *true* branch).
+  // The fixture only creates an admin operator today. For now,
+  // assert the admin path works (which exercises the gating from
+  // the *true* branch).
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/stores`);
   await expect(

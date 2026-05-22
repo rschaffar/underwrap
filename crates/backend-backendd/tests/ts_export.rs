@@ -168,7 +168,7 @@ fn ts_bindings_in_sync_with_rust() {
         AdminUiOverviewResponse,
         AdminUiOverviewStore,
         AdminUiWrapperCounts,
-        // Admin Resource/Pair CRUD (ticket 384)
+        // Admin Resource/Pair CRUD
         AdminWrapperPermissionKey,
         AdminResourcesListRequest,
         AdminResourcesListResponse,
@@ -188,7 +188,7 @@ fn ts_bindings_in_sync_with_rust() {
         AdminPairDeleteBlockers,
         AdminPairDeleteResponse,
         ServiceWrapperResourcePair,
-        // Admin resource blob round-trip (ticket 404)
+        // Admin resource blob round-trip
         AdminResourceBlobGetRequest,
         AdminResourceBlobGetResponse,
         AdminResourceBlobPutRequest,

@@ -1,5 +1,5 @@
 /**
- * Dashboard render smoke test (ticket 294).
+ * Dashboard render smoke test.
  *
  * The dashboard is a placeholder landing page today, but it sits on
  * the critical post-login path: every authenticated session lands

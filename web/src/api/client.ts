@@ -290,7 +290,7 @@ export function postBootstrap(body: BootstrapRequest): Promise<BootstrapResponse
   });
 }
 
-// ----- Stores admin (ticket 231) -----
+// ----- Stores admin -----
 
 export function fetchStores(): Promise<AdminStoresListResponse> {
   return apiJson<AdminStoresListResponse>("/v1/admin/stores");
@@ -409,7 +409,7 @@ export function deleteClientInstance(id: string): Promise<AdminOkResponse> {
   );
 }
 
-// ----- Users admin (ticket 240) -----
+// ----- Users admin -----
 
 export function fetchUsers(): Promise<AdminUsersListResponse> {
   return apiJson<AdminUsersListResponse>("/v1/admin/users");
@@ -498,7 +498,7 @@ export function postPolicyGet(
   });
 }
 
-// ----- Secrets CRUD (ticket 300, Option A) -----
+// ----- Secrets CRUD -----
 
 export function postSecretList(
   body: AdminSecretListRequest,
@@ -554,7 +554,7 @@ export function postWrapperPermissionDelete(
   });
 }
 
-// ----- Resources and wrapper/resource pairs (ticket 384) -----
+// ----- Resources and wrapper/resource pairs -----
 
 export function postResourcesList(
   body: AdminResourcesListRequest,

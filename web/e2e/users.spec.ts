@@ -1,5 +1,5 @@
 /**
- * Dedicated Users CRUD e2e (ticket 293).
+ * Dedicated Users CRUD e2e.
  *
  * `multi-user.spec.ts` already walks the create → operator-login →
  * password-change story end to end. This spec covers the rest of the

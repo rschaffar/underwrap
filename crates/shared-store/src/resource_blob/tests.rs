@@ -99,7 +99,7 @@ fn sample_blob(env_value: &str) -> ResourceBlob {
 fn plain_backend_one_file_per_resource() {
     // Each saved resource lands as exactly one file on disk under
     // the `resources/<id>` path — the atomic-blob storage shape
-    // for plain stores. (Ticket 405.)
+    // for plain stores.
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = tmp.path().join("secrets");
     let backend = crate::PlainBackend::open(&dir).unwrap();
@@ -124,7 +124,7 @@ fn encrypted_backend_one_file_per_resource() {
     // Same invariant on the encrypted backend: one file per
     // resource keyed under `resources/<id>`. Encryption produces
     // one nonce per write, so this is also the "one nonce per
-    // resource per save" assertion in disguise. (Ticket 405.)
+    // resource per save" assertion in disguise.
     let tmp = tempfile::TempDir::new().unwrap();
     let key: [u8; 32] = rand::random();
     let dir = tmp.path().join("secrets");

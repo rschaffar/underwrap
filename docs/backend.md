@@ -58,8 +58,8 @@ only the secret material that the authorized read flow exposes.
 ## Backend configuration
 
 `underwrap-backendd` takes a single YAML config. Store definitions
-live in their own per-store YAML files under two directories, *not*
-inline in this config (changed in ticket 230). All paths are absolute.
+live in the backend-managed store registry (`stores_file`), *not*
+inline in this config. All paths are absolute.
 
 ```yaml
 # Optional — defaults kick in when omitted. Missing registry files are

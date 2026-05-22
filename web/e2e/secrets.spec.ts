@@ -1,5 +1,5 @@
 /**
- * Secrets CRUD e2e (ticket 300, Option A).
+ * Secrets CRUD e2e.
  *
  * Exercises the /secrets page end-to-end against a real backend:
  *

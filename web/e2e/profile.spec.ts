@@ -1,5 +1,5 @@
 /**
- * Profile page e2e (ticket 294).
+ * Profile page e2e.
  *
  * The multi-user spec already exercises the operator-side flow
  * (operator logs in, visits /profile, changes their own password).

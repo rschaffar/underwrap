@@ -108,7 +108,7 @@ def admin_api(url, path, payload=None, method="POST"):
     """Make an authenticated admin API call. Uses the session cookies
     populated by `bootstrap_admin_session` for the listener at `url`
     and adds an `X-CSRF-Token` header on every state-changing request
-    so the backend's CSRF double-submit check (ticket 212) passes.
+    so the backend's CSRF double-submit check passes.
     """
     is_state_changing = method not in ("GET", "HEAD", "OPTIONS")
     cookie_jar = _COOKIE_JAR.get(url)
@@ -366,9 +366,8 @@ def boot_and_service_checks():
     machine.succeed("id underwrap-local")
     machine.succeed("id underwrap-tunnel")
 
-    # Ticket 231 replaced the bare `{stores: [...]}` response with a
-    # richer per-store list. Assert the surfaced names match what
-    # each daemon's `stores_declarative_dir` actually contains.
+    # Assert the per-store admin list surfaces the names that each
+    # daemon's `stores_declarative_dir` actually contains.
     local_stores = admin_api(ADMIN_LOCAL, "/v1/admin/stores", None, method="GET")["items"]
     remote_stores = admin_api(ADMIN_REMOTE, "/v1/admin/stores", None, method="GET")["items"]
     assert [s["name"] for s in local_stores] == ["local"]
@@ -1136,8 +1135,7 @@ def local_directory_credentials():
     machine.log("PASS: directory writeback drops runs that introduce symlinks")
 
     # Seed the per-grant `writable=true` for the wrappers used by
-    # the atomic-writeback scenarios (story 410 / ticket 432). They
-    # share the dir-a resource.
+    # the atomic-writeback scenarios. They share the dir-a resource.
     for wrapper in [
         "test-dir-write-then-sleep",
         "test-dir-touch",
@@ -1169,7 +1167,6 @@ def local_directory_credentials():
 def local_atomic_writeback():
     # ============================================================
     # LOCAL INSTANCE: atomic resource-blob writeback decision tree
-    # (story 410 / ticket 432)
     #
     # End-to-end coverage of the wrapper-resource Checkout / Checkin /
     # UsageSignal / drop+warn paths. Each scenario starts from a
@@ -1918,7 +1915,7 @@ def instance_isolation():
 
 def runtime_api_invariants():
     # ============================================================
-    # RUNTIME API INVARIANTS (epic_runtime_api_redesign)
+    # RUNTIME API INVARIANTS
     # ============================================================
     #
     # Pins the trust-boundary properties of the new three-endpoint
