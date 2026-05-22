@@ -18,7 +18,7 @@ import { WrapperPermissionsPage } from "@/pages/wrapper-permissions/page";
 import { SecretsPage } from "@/pages/secrets/page";
 import { StoresPage } from "@/pages/stores/page";
 import { ClientInstancesPage } from "@/pages/client-instances/page";
-import { UsersPage } from "@/pages/users";
+import { UsersPage } from "@/pages/users/page";
 import { ProfilePage } from "@/pages/profile";
 import {
   ApiError,
