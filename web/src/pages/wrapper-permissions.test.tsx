@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 
+import { ModeBadge } from "./wrapper-permissions/table";
 import {
-  ModeBadge,
   deriveClientInstances,
   groupPairsByResource,
   modeKind,
   sortPairs,
   wrapperResourceKey,
-} from "./wrapper-permissions";
+} from "./wrapper-permissions/derivations";
 import { formatEpochRelative } from "@/lib/epoch";
 import type {
   WrapperPermission,

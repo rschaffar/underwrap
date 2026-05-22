@@ -14,7 +14,7 @@ import { AppShell } from "@/components/app-shell";
 import { Dashboard } from "@/pages/dashboard";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
-import { WrapperPermissionsPage } from "@/pages/wrapper-permissions";
+import { WrapperPermissionsPage } from "@/pages/wrapper-permissions/page";
 import { SecretsPage } from "@/pages/secrets/page";
 import { StoresPage } from "@/pages/stores/page";
 import { ClientInstancesPage } from "@/pages/client-instances";
