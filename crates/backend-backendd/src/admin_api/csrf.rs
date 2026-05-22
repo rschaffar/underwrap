@@ -55,10 +55,7 @@ pub(crate) fn authenticate_admin(
 ) -> std::result::Result<AdminAuth, AdminAuthError> {
     let value = crate::auth::extract_session_cookie(headers)
         .ok_or(AdminAuthError::Unauthenticated("missing session cookie"))?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = crate::users::now_epoch_secs();
     match crate::auth::decrypt_session(value, &state.session_key, now) {
         Ok(payload) => {
             if state

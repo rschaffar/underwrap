@@ -148,10 +148,7 @@ pub(crate) async fn handle_admin_login(
         }
     };
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = crate::users::now_epoch_secs();
     let payload = crate::auth::new_session_payload(
         user.id.clone(),
         user.username.clone(),
@@ -180,10 +177,7 @@ pub(crate) fn handle_admin_logout(
     state: &AdminRuntimeState,
     session: &crate::auth::SessionPayload,
 ) -> Response<Full<Bytes>> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = crate::users::now_epoch_secs();
     state
         .session_revocations
         .revoke(session.session_id.clone(), session.expires_at, now);
@@ -220,10 +214,7 @@ pub(crate) fn handle_admin_whoami(
             },
         );
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = crate::users::now_epoch_secs();
     let payload = match crate::auth::decrypt_session(value, &state.session_key, now) {
         Ok(p) => p,
         Err(_) => {

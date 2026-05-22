@@ -258,10 +258,7 @@ pub(crate) fn session_headers(
     csrf_header: Option<&str>,
 ) -> (hyper::HeaderMap, crate::auth::SessionPayload) {
     let key = state.session_key;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = crate::users::now_epoch_secs();
     let payload = crate::auth::new_session_payload("op-1".into(), username.into(), now, 3600);
     let session_cookie = crate::auth::encrypt_session(&payload, &key).unwrap();
     let mut cookie_parts = vec![format!("__Host-uw-session={session_cookie}")];

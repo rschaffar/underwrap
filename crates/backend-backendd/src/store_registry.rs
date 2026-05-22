@@ -253,17 +253,7 @@ pub(crate) fn save_store_records(
 /// segment. Lowercase letters, digits, `-`, `_`, starting with an
 /// alphanumeric.
 pub fn is_valid_store_id(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
-        return false;
-    }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    crate::ids::is_valid_simple_id(name)
 }
 
 #[cfg(test)]

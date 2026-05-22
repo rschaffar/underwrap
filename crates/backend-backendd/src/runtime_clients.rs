@@ -49,8 +49,7 @@ pub struct ClientInstancesDocument {
 }
 
 pub fn cert_fingerprint_from_der(cert_der: &[u8]) -> String {
-    let digest = Sha256::digest(cert_der);
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(Sha256::digest(cert_der))
 }
 
 pub fn cert_fingerprint_from_pem(cert_pem: &str) -> Result<String> {
@@ -206,17 +205,7 @@ pub fn save_client_instances(
 }
 
 pub fn is_valid_client_instance_id(id: &str) -> bool {
-    if id.is_empty() {
-        return false;
-    }
-    let mut chars = id.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
-        return false;
-    }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    crate::ids::is_valid_simple_id(id)
 }
 
 #[cfg(test)]

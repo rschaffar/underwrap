@@ -53,10 +53,7 @@ fn resolve_principal_session_fails_when_user_was_deleted() {
 fn authenticate_admin_rejects_revoked_session() {
     let state = seeded_admin_state("alice", "hunter2");
     let (headers, payload) = session_headers(&state, "alice", false, None);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = crate::users::now_epoch_secs();
     state
         .session_revocations
         .revoke(payload.session_id.clone(), payload.expires_at, now);

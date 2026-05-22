@@ -238,7 +238,7 @@ pub(super) fn generate_master_key_bytes() -> [u8; 32] {
 
 /// Hex-encode a 32-byte master key as 64 lowercase characters.
 pub(super) fn master_key_hex(bytes: &[u8; 32]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(bytes)
 }
 
 #[cfg(unix)]

@@ -44,12 +44,9 @@ async fn unknown_user_login_pipeline_uses_dummy_hash() {
 async fn whoami_resolves_username_from_collection() {
     let state = seeded_admin_state("alice", "hunter2");
     let key = state.session_key;
-    // `handle_admin_whoami` reads SystemTime::now() internally, so
+    // `handle_admin_whoami` reads now_epoch_secs() internally, so
     // give the cookie a real-clock issued_at.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = crate::users::now_epoch_secs();
     let payload = crate::auth::new_session_payload("op-1".into(), "alice".into(), now, 3600);
     let cookie_value = crate::auth::encrypt_session(&payload, &key).unwrap();
 
