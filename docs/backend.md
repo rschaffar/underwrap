@@ -488,8 +488,8 @@ three slots inline:
 `BTreeMap` everywhere keeps key order deterministic; combined with
 `serde_jcs` the canonical bytes are byte-identical for any two
 logically-equal blobs. Change detection at the wrapper end-of-run
-will be a byte comparison once the wrapper-side rewrite (story 410)
-lands; today the daemon still re-serializes on every flush.
+will be a byte comparison once the wrapper-side rewrite lands;
+today the daemon still re-serializes on every flush.
 
 `PlainBackend` stores the blob as one file per resource;
 `EncryptedBackend` AEAD-encrypts the blob as one ciphertext with one

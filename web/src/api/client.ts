@@ -286,7 +286,7 @@ export function deleteStore(
   );
 }
 
-// ----- Client instances admin (story 340) -----
+// ----- Client instances admin -----
 
 export function fetchClientInstances(): Promise<AdminClientInstancesListResponse> {
   return apiJson<AdminClientInstancesListResponse>("/v1/admin/client-instances");

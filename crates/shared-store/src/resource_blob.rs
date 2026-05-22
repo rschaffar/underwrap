@@ -9,8 +9,8 @@
 //!
 //! The bridge functions exist because the wrapper-side IPC still
 //! addresses entries individually by `<resource_id>/<slot>/<inner>`
-//! ids; story 410 will rewire wrappers to operate on the structured
-//! `ResourceBlob` directly and these bridge functions will go away.
+//! ids; once wrappers operate on the structured `ResourceBlob`
+//! directly, these bridge functions will go away.
 //!
 //! See [`underwrap_protocol::resource_blob`] for the schema and
 //! canonicalization rules.
