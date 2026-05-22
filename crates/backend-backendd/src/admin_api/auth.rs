@@ -32,28 +32,23 @@ use crate::users::{Principal, UserRecord};
 
 pub(crate) type AdminAuthSession = AuthSession<AuthBackend>;
 
-#[derive(serde::Deserialize, ts_rs::TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct LoginRequest {
     username: String,
     password: String,
 }
 
-#[derive(serde::Serialize, ts_rs::TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct LoginResponse {
     pub username: String,
 }
 
-#[derive(serde::Serialize, ts_rs::TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct WhoamiResponse {
     pub authenticated: bool,
-    // `skip_serializing_if = "Option::is_none"` omits the JSON key when None;
-    // `#[ts(optional)]` makes ts-rs emit `username?: string` (instead of the
-    // default `string | null`) so the SPA type matches the wire format.
+    /// Omitted when the request has no session so the wire shape stays
+    /// `{ authenticated: false }` for the unauthenticated case.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub username: Option<String>,
 }
 

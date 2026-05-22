@@ -19,7 +19,6 @@ anyhow = { workspace = true }
 libc = { workspace = true }
 tokio = { workspace = true }
 zeroize = { workspace = true }
-ts-rs = { workspace = true }
 utoipa = { workspace = true }
 base64 = { workspace = true }
 

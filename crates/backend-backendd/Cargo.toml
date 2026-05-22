@@ -48,7 +48,6 @@ argon2 = "0.5"
 tower-sessions = { workspace = true }
 axum-login = { workspace = true }
 axum_csrf = { workspace = true }
-ts-rs = { workspace = true }
 utoipa = { workspace = true }
 utoipa-axum = { workspace = true }
 

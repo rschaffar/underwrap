@@ -4135,7 +4135,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Omitted when the request has no session so the wire shape stays\n`{ authenticated: false }` for the unauthenticated case."
           }
         }
       },

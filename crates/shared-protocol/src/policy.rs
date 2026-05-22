@@ -17,7 +17,6 @@
 //!   permissions UI.
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// Reserved secret id used to persist the policy document inside a backend store.
 pub const POLICY_DOCUMENT_SECRET_ID: &str = "__underwrap/policy/document";
@@ -32,8 +31,7 @@ pub enum PolicyDecision {
 }
 
 /// Runtime mode for one [`WrapperPermission`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum WrapperApprovalMode {
@@ -44,10 +42,7 @@ pub enum WrapperApprovalMode {
     Unlocked,
     /// Allow invocations until `until_epoch`; deny afterwards. The expiry is
     /// checked lazily on each request — no server-side sweeper.
-    UnlockedUntil {
-        #[ts(type = "number")]
-        until_epoch: u64,
-    },
+    UnlockedUntil { until_epoch: u64 },
 }
 
 /// One per-store wrapper permission.
@@ -57,8 +52,7 @@ pub enum WrapperApprovalMode {
 /// error code `duplicate_permission`. `resource_id` is the stable
 /// backend id, so renaming a resource preserves every permission
 /// that references it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct WrapperPermission {
     pub client_instance: String,
     pub wrapper: String,
@@ -73,13 +67,11 @@ pub struct WrapperPermission {
     /// Operator-facing free-form note. Surfaced in the wrapper
     /// permissions UI tooltip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub reason: Option<String>,
 }
 
 /// Store-backed policy document.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 pub struct PolicyDocument {
     /// The flat list of wrapper permissions. One per
     /// `(client_instance, wrapper, resource)` tuple.

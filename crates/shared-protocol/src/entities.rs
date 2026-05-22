@@ -24,7 +24,6 @@
 //! never appear in the secret browser even though they live in the
 //! same store backend.
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// Reserved secret id used to persist the [`ResourcesDocument`].
 pub const RESOURCES_DOCUMENT_SECRET_ID: &str = "__underwrap/resources/document";
@@ -35,8 +34,7 @@ pub const PAIRS_DOCUMENT_SECRET_ID: &str = "__underwrap/pairs/document";
 /// register resources/pairs by hand through the admin API) from
 /// runtime client instances (which auto-create on startup when their
 /// `auto_create_wrapper_assets` flag is on).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum EntityCreator {
     /// An admin operator created this entity through the admin API.
@@ -66,8 +64,7 @@ pub enum EntityCreator {
 /// `name` is the operator-facing label. Mutable via the admin rename
 /// endpoint; what wrapper configs reference (operator-friendly); what
 /// the SPA shows. Duplicates rejected on insert and on rename.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ResourceRecord {
     pub id: String,
     pub name: String,
@@ -85,8 +82,7 @@ pub struct ResourceRecord {
 /// `last_used_at` is bumped server-side on every successful runtime
 /// open and finalize against the pair. `None` means the pair has
 /// never been used since the record was created.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct WrapperResourcePairRecord {
     pub wrapper: String,
     pub resource_id: String,
@@ -98,16 +94,14 @@ pub struct WrapperResourcePairRecord {
 
 /// Store-backed resources document. Missing-document-means-empty
 /// semantics (see [`ResourcesDocument::default`]).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ResourcesDocument {
     #[serde(default)]
     pub resources: Vec<ResourceRecord>,
 }
 
 /// Store-backed pairs document.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct PairsDocument {
     #[serde(default)]
     pub pairs: Vec<WrapperResourcePairRecord>,

@@ -20,7 +20,6 @@
 //! wire (e.g. legacy fixtures).
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 pub const ENV_SLOT: &str = "env";
 pub const FILES_SLOT: &str = "files";
@@ -44,8 +43,7 @@ pub fn libsecret_resource(resource_id: &str) -> String {
 }
 
 /// The three logical slots inside a resource blob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ResourceSlot {
     Env,

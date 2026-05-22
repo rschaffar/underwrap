@@ -253,8 +253,15 @@ front-end consumable.
 
 Regenerate the spec by running `cargo test --workspace`; the
 `openapi_export.rs` drift test rewrites `openapi.json` in place and
-fails until the file is committed. The same spec drives the front-end
-client generator (see ticket 1750).
+fails until the file is committed.
+
+The SPA's API client (`web/src/api/client.ts`, built on
+`openapi-fetch`) consumes the same spec: `npm run generate:api`
+re-runs `openapi-typescript` against `openapi.json` to produce
+`web/src/api/schema.ts`. The `prebuild` and `pretest` npm hooks fire
+this automatically, so a stale spec breaks the SPA build at the
+earliest possible point. There is no separate ts-rs binding step —
+the OpenAPI schema is the single source of typed truth.
 
 Two SecuritySchemes are referenced from individual operations:
 `session_cookie` (the opaque `__Host-uw-session` cookie issued by

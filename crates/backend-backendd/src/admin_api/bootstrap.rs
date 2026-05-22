@@ -26,21 +26,18 @@ use crate::admin_api::auth::AdminAuthSession;
 use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 
-#[derive(serde::Deserialize, ts_rs::TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct BootstrapRequest {
     pub username: String,
     pub password: String,
 }
 
-#[derive(serde::Serialize, ts_rs::TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct BootstrapStatusResponse {
     pub bootstrap_required: bool,
 }
 
-#[derive(serde::Serialize, ts_rs::TS, utoipa::ToSchema)]
-#[ts(export)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct BootstrapResponse {
     pub username: String,
 }
