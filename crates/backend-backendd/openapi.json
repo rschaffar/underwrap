@@ -263,7 +263,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_list",
+        "operationId": "axum_client_instances_list",
         "responses": {
           "200": {
             "description": "All client instances with action state and store mapping.",
@@ -286,7 +286,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_create",
+        "operationId": "axum_client_instances_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -344,7 +344,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_detail",
+        "operationId": "axum_client_instances_detail",
         "parameters": [
           {
             "name": "id",
@@ -388,7 +388,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_update",
+        "operationId": "axum_client_instances_update",
         "parameters": [
           {
             "name": "id",
@@ -455,7 +455,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_delete",
+        "operationId": "axum_client_instances_delete",
         "parameters": [
           {
             "name": "id",
@@ -504,7 +504,7 @@
         "tags": [
           "pairs"
         ],
-        "operationId": "axum_create",
+        "operationId": "axum_pairs_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -582,7 +582,7 @@
         "tags": [
           "pairs"
         ],
-        "operationId": "axum_delete",
+        "operationId": "axum_pairs_delete",
         "requestBody": {
           "content": {
             "application/json": {
@@ -650,7 +650,7 @@
         "tags": [
           "pairs"
         ],
-        "operationId": "axum_list",
+        "operationId": "axum_pairs_list",
         "requestBody": {
           "content": {
             "application/json": {
@@ -834,7 +834,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_blob_get",
+        "operationId": "axum_resources_blob_get",
         "requestBody": {
           "content": {
             "application/json": {
@@ -892,7 +892,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_blob_put",
+        "operationId": "axum_resources_blob_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -960,7 +960,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_create",
+        "operationId": "axum_resources_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1038,7 +1038,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_delete",
+        "operationId": "axum_resources_delete",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1106,7 +1106,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_list",
+        "operationId": "axum_resources_list",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1164,7 +1164,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_rename",
+        "operationId": "axum_resources_rename",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1242,7 +1242,7 @@
         "tags": [
           "secrets"
         ],
-        "operationId": "axum_delete",
+        "operationId": "axum_secrets_delete",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1300,7 +1300,7 @@
         "tags": [
           "secrets"
         ],
-        "operationId": "axum_list",
+        "operationId": "axum_secrets_list",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1416,7 +1416,7 @@
         "tags": [
           "secrets"
         ],
-        "operationId": "axum_rename",
+        "operationId": "axum_secrets_rename",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1552,7 +1552,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_list",
+        "operationId": "axum_stores_list",
         "responses": {
           "200": {
             "description": "Every store in the registry plus per-store usage projections.",
@@ -1575,7 +1575,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_create",
+        "operationId": "axum_stores_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1643,7 +1643,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_detail",
+        "operationId": "axum_stores_detail",
         "parameters": [
           {
             "name": "name",
@@ -1687,7 +1687,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_update",
+        "operationId": "axum_stores_update",
         "parameters": [
           {
             "name": "name",
@@ -1754,7 +1754,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_delete",
+        "operationId": "axum_stores_delete",
         "parameters": [
           {
             "name": "name",
@@ -1822,7 +1822,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_lock",
+        "operationId": "axum_stores_lock",
         "parameters": [
           {
             "name": "name",
@@ -1871,7 +1871,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_rotate_key",
+        "operationId": "axum_stores_rotate_key",
         "parameters": [
           {
             "name": "name",
@@ -1940,7 +1940,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_unlock",
+        "operationId": "axum_stores_unlock",
         "parameters": [
           {
             "name": "name",

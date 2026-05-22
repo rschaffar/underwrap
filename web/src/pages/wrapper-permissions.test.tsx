@@ -41,21 +41,21 @@ describe("derivation helpers", () => {
       wrapper: "jira-readonly",
       resource_id: "jira/api",
       created_by: { kind: "operator", id: "op-1", username: "alice" },
-      created_at: 100n,
+      created_at: 100,
       last_used_at: null,
     },
     {
       wrapper: "aws-prod",
       resource_id: "aws/prod",
       created_by: { kind: "client-instance", id: "ci-runner" },
-      created_at: 200n,
+      created_at: 200,
       last_used_at: null,
     },
     {
       wrapper: "gh-authorized",
       resource_id: "github/token",
       created_by: { kind: "operator", id: "op-1", username: "alice" },
-      created_at: 150n,
+      created_at: 150,
       last_used_at: null,
     },
   ];
@@ -81,7 +81,7 @@ describe("derivation helpers", () => {
         wrapper: "gh-cli",
         resource_id: "github/token",
         created_by: { kind: "operator", id: "op-1", username: "alice" },
-        created_at: 175n,
+        created_at: 175,
         last_used_at: null,
       },
     ];
@@ -98,13 +98,13 @@ describe("derivation helpers", () => {
   it("formatEpochRelative renders 'never' for null/undefined/zero", () => {
     expect(formatEpochRelative(null)).toBe("never");
     expect(formatEpochRelative(undefined)).toBe("never");
-    expect(formatEpochRelative(0n)).toBe("never");
+    expect(formatEpochRelative(0)).toBe("never");
   });
 
   it("formatEpochRelative renders a relative label for a recent epoch", () => {
     // Anchor "now" so the test isn't time-sensitive. 90 seconds ago.
     const now = 1_700_000_000_000;
-    const epoch = BigInt(now / 1000 - 90);
+    const epoch = (now / 1000 - 90);
     const label = formatEpochRelative(epoch, now);
     // Intl.RelativeTimeFormat localizes the output. Just assert it
     // contains a unit hint, not the exact phrasing.

@@ -288,11 +288,15 @@ pub(crate) fn write_admin_store_audit(
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
-        .routes(routes!(axum_list, axum_create))
-        .routes(routes!(axum_detail, axum_update, axum_delete))
-        .routes(routes!(axum_rotate_key))
-        .routes(routes!(axum_unlock))
-        .routes(routes!(axum_lock))
+        .routes(routes!(axum_stores_list, axum_stores_create))
+        .routes(routes!(
+            axum_stores_detail,
+            axum_stores_update,
+            axum_stores_delete
+        ))
+        .routes(routes!(axum_stores_rotate_key))
+        .routes(routes!(axum_stores_unlock))
+        .routes(routes!(axum_stores_lock))
 }
 
 #[utoipa::path(
@@ -304,7 +308,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
         (status = 200, description = "Every store in the registry plus per-store usage projections.", body = AdminStoresListResponse),
     ),
 )]
-async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
+async fn axum_stores_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
     handle_admin_stores_list(&state)
 }
 
@@ -321,7 +325,7 @@ async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full
         (status = 500, description = "Backend could not persist the registry.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_create(
+async fn axum_stores_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminStoreCreateRequest>,
@@ -340,7 +344,7 @@ async fn axum_create(
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_detail(
+async fn axum_stores_detail(
     State(state): State<Arc<AdminRuntimeState>>,
     AxumPath(name): AxumPath<String>,
 ) -> Response<Full<Bytes>> {
@@ -360,7 +364,7 @@ async fn axum_detail(
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_update(
+async fn axum_stores_update(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
@@ -390,7 +394,7 @@ struct DeleteQuery {
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_delete(
+async fn axum_stores_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
@@ -416,7 +420,7 @@ async fn axum_delete(
         (status = 500, description = "Rotation failed mid-flight.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_rotate_key(
+async fn axum_stores_rotate_key(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
@@ -437,7 +441,7 @@ async fn axum_rotate_key(
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_unlock(
+async fn axum_stores_unlock(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
@@ -457,7 +461,7 @@ async fn axum_unlock(
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_lock(
+async fn axum_stores_lock(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,

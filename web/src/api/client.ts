@@ -1,24 +1,36 @@
 /**
- * Typed fetch wrapper for the admin API.
+ * Typed admin-API client.
  *
- * - Always sends cookies (`credentials: "include"`) so the
- *   `__Host-uw-session` and `__Host-uw-csrf` cookies set by the
- *   backend are visible on every request.
- * - Captures the HMAC authenticity token off every admin response's
- *   `X-CSRF-Token` response header (synchronizer-token pattern, served
- *   by `axum_csrf`) and replays it as `X-CSRF-Token` on the next
- *   state-changing request. The CSRF cookie itself is `HttpOnly` — JS
- *   never reads it, the token round-trip happens entirely via
- *   response/request headers.
- * - Surfaces backend errors as typed [`ApiError`] objects carrying the
- *   stable `code` (`csrf_required`, `bad_origin`, `session_revoked`,
- *   etc.) so callers can switch on it without parsing strings.
- * - Never logs request or response bodies. Secret material flows
- *   through this client; accidental leaks via console.log would be a
- *   security regression.
+ * Built on top of `openapi-fetch` against the schema generated from
+ * `crates/backend-backendd/openapi.json` (see `npm run generate:api`).
+ * The schema is the source of truth — every request body, response
+ * shape, and path is inferred from it. Hand-edits to the typed call
+ * surface go through the Rust handler annotations, not this file.
+ *
+ * Cross-cutting behaviour layered on top:
+ *
+ * - `credentials: "include"` so the `__Host-uw-session` and
+ *   `__Host-uw-csrf` cookies set by the backend are visible on every
+ *   request.
+ * - `X-CSRF-Token` synchronizer-token capture+replay. The token is
+ *   served by `axum_csrf` on every admin response's `X-CSRF-Token`
+ *   header; we cache it in module scope and replay it on the next
+ *   non-GET/HEAD/OPTIONS request. The CSRF cookie itself is
+ *   `HttpOnly` — JS never reads it.
+ * - Non-2xx responses are converted into typed [`ApiError`] objects
+ *   carrying the stable `code` field so callers can `switch` on it
+ *   without parsing strings.
+ * - No request or response bodies are ever logged. Secret material
+ *   flows through this client; accidental leaks via `console.log`
+ *   would be a security regression.
  */
 
+import createClient, { type Middleware } from "openapi-fetch";
+
+import type { components, paths } from "./schema";
+
 const CSRF_HEADER_NAME = "X-CSRF-Token";
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export class ApiError extends Error {
   readonly status: number;
@@ -31,23 +43,6 @@ export class ApiError extends Error {
   }
 }
 
-export interface RequestOptions extends Omit<RequestInit, "body"> {
-  /**
-   * JSON body. Will be `JSON.stringify`-ed and sent with
-   * `Content-Type: application/json`. Mutually exclusive with
-   * `rawBody`.
-   */
-  json?: unknown;
-  /** Raw body bytes; the caller is responsible for headers. */
-  rawBody?: BodyInit | null;
-}
-
-const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
-
-// Most-recent HMAC authenticity token observed on an admin response's
-// `X-CSRF-Token` header. Held in module scope so it survives across
-// navigation but does NOT persist across reloads — a fresh page load
-// re-fetches `whoami`, which carries a fresh token.
 let csrfToken: string | null = null;
 
 /** Exposed for tests only — resets the cached CSRF token. */
@@ -55,483 +50,392 @@ export function _resetCsrfTokenForTesting(): void {
   csrfToken = null;
 }
 
-async function parseError(res: Response): Promise<ApiError> {
-  // The backend's error payload is `{ code, message }`. Bodies that
-  // don't parse get a generic mapping so the caller still gets a
-  // typed throw.
-  try {
-    const data = (await res.json()) as { code?: string; message?: string };
-    return new ApiError(
-      res.status,
-      data.code ?? "error",
-      data.message ?? res.statusText,
-    );
-  } catch {
-    return new ApiError(res.status, "error", res.statusText);
-  }
-}
+const csrfMiddleware: Middleware = {
+  async onRequest({ request }) {
+    if (!SAFE_METHODS.has(request.method) && csrfToken !== null) {
+      request.headers.set(CSRF_HEADER_NAME, csrfToken);
+    }
+    return request;
+  },
+  async onResponse({ response }) {
+    const fresh = response.headers.get(CSRF_HEADER_NAME);
+    if (fresh !== null && fresh !== "") {
+      csrfToken = fresh;
+    }
+    return response;
+  },
+};
 
-export async function apiFetch(
-  path: string,
-  options: RequestOptions = {},
-): Promise<Response> {
-  const { json, rawBody, headers, ...rest } = options;
-  const method = (rest.method ?? "GET").toUpperCase();
-  const finalHeaders = new Headers(headers);
-  let body: BodyInit | null = null;
-  if (json !== undefined) {
-    finalHeaders.set("Content-Type", "application/json");
-    body = JSON.stringify(json);
-  } else if (rawBody !== undefined) {
-    body = rawBody;
-  }
-  if (!SAFE_METHODS.has(method) && csrfToken !== null) {
-    finalHeaders.set(CSRF_HEADER_NAME, csrfToken);
-  }
-  const res = await fetch(path, {
-    ...rest,
-    method,
-    headers: finalHeaders,
-    credentials: "include",
-    body,
-  });
-  const freshToken = res.headers.get(CSRF_HEADER_NAME);
-  if (freshToken !== null && freshToken !== "") {
-    csrfToken = freshToken;
-  }
-  if (!res.ok) {
-    throw await parseError(res);
-  }
-  return res;
-}
+// `openapi-fetch` resolves request URLs through `new URL(path, base)`,
+// which rejects bare paths. Anchor the client at the current page
+// origin in the browser (and in jsdom under test, where the document
+// URL is set in `vite.config.ts`). On a fresh SSR pass we leave it
+// empty — there is no such pass in this SPA today.
+const apiBaseUrl =
+  typeof window !== "undefined" ? window.location.origin : "";
 
-export async function apiJson<T>(
-  path: string,
-  options: RequestOptions = {},
+export const client = createClient<paths>({
+  baseUrl: apiBaseUrl,
+  credentials: "include",
+  // Resolve `globalThis.fetch` at call time, not at module-load time.
+  // openapi-fetch captures its `fetch` option in `createClient` by
+  // default, which makes `vi.spyOn(globalThis, "fetch")` in tests a
+  // no-op (the client still calls the original implementation). This
+  // shim closes that gap with no production cost.
+  fetch: (input: Request) => globalThis.fetch(input),
+});
+client.use(csrfMiddleware);
+
+export async function unwrap<T>(
+  call: Promise<{ data?: T; error?: unknown; response: Response }>,
 ): Promise<T> {
-  const res = await apiFetch(path, options);
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  const { data, error, response } = await call;
+  if (response.ok) {
+    return (data ?? (undefined as unknown)) as T;
+  }
+  const envelope = (error ?? {}) as { code?: string; message?: string };
+  throw new ApiError(
+    response.status,
+    envelope.code ?? "error",
+    envelope.message ?? response.statusText,
+  );
 }
 
-// ----- Typed admin-API helpers -----
+// ----- Named schema types for callsite ergonomics -----
 //
-// All request/response shapes come from `@/api/types`, the barrel for the
-// TypeScript bindings ts-rs generates from the Rust DTOs in
-// `crates/shared-protocol` and `crates/backend-backendd`. Editing those
-// files by hand will fail `cargo test --test ts_export`; regenerate by
-// running `cargo test --workspace` instead.
+// Re-exported under their schema names so callsites can write
+// `import type { LoginRequest } from "@/api/client"` the same way they
+// used to. The shapes come from openapi-typescript's `components`
+// table, which mirrors the Rust DTOs 1:1 via utoipa::ToSchema.
+type S = components["schemas"];
+export type AdminClientInstanceCreateRequest = S["AdminClientInstanceCreateRequest"];
+export type AdminClientInstanceDetailResponse = S["AdminClientInstanceDetailResponse"];
+export type AdminClientInstanceListItem = S["AdminClientInstanceListItem"];
+export type AdminClientInstanceUpdateRequest = S["AdminClientInstanceUpdateRequest"];
+export type AdminClientInstanceStatus = S["AdminClientInstanceStatus"];
+export type AdminClientInstancesListResponse = S["AdminClientInstancesListResponse"];
+export type AdminOkResponse = S["AdminOkResponse"];
+export type AdminOkUserResponse = S["AdminOkUserResponse"];
+export type AdminPairCreateRequest = S["AdminPairCreateRequest"];
+export type AdminPairCreateResponse = S["AdminPairCreateResponse"];
+export type AdminPairDeleteRequest = S["AdminPairDeleteRequest"];
+export type AdminPairDeleteResponse = S["AdminPairDeleteResponse"];
+export type AdminPairsListRequest = S["AdminPairsListRequest"];
+export type AdminPairsListResponse = S["AdminPairsListResponse"];
+export type AdminPasswordChangeRequest = S["AdminPasswordChangeRequest"];
+export type AdminPolicyGetRequest = S["AdminPolicyGetRequest"];
+export type AdminPolicyGetResponse = S["AdminPolicyGetResponse"];
+export type AdminPolicyPutRequest = S["AdminPolicyPutRequest"];
+export type AdminResourceBlobGetRequest = S["AdminResourceBlobGetRequest"];
+export type AdminResourceBlobGetResponse = S["AdminResourceBlobGetResponse"];
+export type AdminResourceBlobPutRequest = S["AdminResourceBlobPutRequest"];
+export type AdminResourceBlobPutResponse = S["AdminResourceBlobPutResponse"];
+export type AdminResourceCreateRequest = S["AdminResourceCreateRequest"];
+export type AdminResourceCreateResponse = S["AdminResourceCreateResponse"];
+export type AdminResourceDeleteBlockers = S["AdminResourceDeleteBlockers"];
+export type AdminResourceDeleteRequest = S["AdminResourceDeleteRequest"];
+export type AdminResourceDeleteResponse = S["AdminResourceDeleteResponse"];
+export type AdminResourceRenameRequest = S["AdminResourceRenameRequest"];
+export type AdminResourceRenameResponse = S["AdminResourceRenameResponse"];
+export type AdminResourcesListRequest = S["AdminResourcesListRequest"];
+export type AdminResourcesListResponse = S["AdminResourcesListResponse"];
+export type AdminSecretDeleteRequest = S["AdminSecretDeleteRequest"];
+export type AdminSecretDeleteResponse = S["AdminSecretDeleteResponse"];
+export type AdminSecretEntry = S["AdminSecretEntry"];
+export type AdminSecretListRequest = S["AdminSecretListRequest"];
+export type AdminSecretListResponse = S["AdminSecretListResponse"];
+export type AdminSecretReadRequest = S["AdminSecretReadRequest"];
+export type AdminSecretReadResponse = S["AdminSecretReadResponse"];
+export type AdminSecretRenameRequest = S["AdminSecretRenameRequest"];
+export type AdminSecretWriteRequest = S["AdminSecretWriteRequest"];
+export type AdminStoreActionState = S["AdminStoreActionState"];
+export type AdminStoreBackendKind = S["AdminStoreBackendKind"];
+export type AdminStoreCreateRequest = S["AdminStoreCreateRequest"];
+export type AdminStoreCreateResponse = S["AdminStoreCreateResponse"];
+export type AdminStoreDeleteResponse = S["AdminStoreDeleteResponse"];
+export type AdminStoreDetailResponse = S["AdminStoreDetailResponse"];
+export type AdminStoreListItem = S["AdminStoreListItem"];
+export type AdminStoreRotateKeyResponse = S["AdminStoreRotateKeyResponse"];
+export type AdminStoreUnlockRequest = S["AdminStoreUnlockRequest"];
+export type AdminStoreUpdateRequest = S["AdminStoreUpdateRequest"];
+export type AdminStoreUsageSummary = S["AdminStoreUsageSummary"];
+export type AdminStoresListResponse = S["AdminStoresListResponse"];
+export type AdminUiOverviewResponse = S["AdminUiOverviewResponse"];
+export type AdminUiOverviewStore = S["AdminUiOverviewStore"];
+export type AdminUiWrapperCounts = S["AdminUiWrapperCounts"];
+export type AdminUserCreateRequest = S["AdminUserCreateRequest"];
+export type AdminUserDetailResponse = S["AdminUserDetailResponse"];
+export type AdminUserListItem = S["AdminUserListItem"];
+export type AdminUserResetPasswordRequest = S["AdminUserResetPasswordRequest"];
+export type AdminUserUpdateRequest = S["AdminUserUpdateRequest"];
+export type AdminUsersListResponse = S["AdminUsersListResponse"];
+export type AdminWrapperPermissionDeleteRequest = S["AdminWrapperPermissionDeleteRequest"];
+export type AdminWrapperPermissionKey = S["AdminWrapperPermissionKey"];
+export type AdminWrapperPermissionUpsertRequest = S["AdminWrapperPermissionUpsertRequest"];
+export type AdminWrapperPermissionsListRequest = S["AdminWrapperPermissionsListRequest"];
+export type AdminWrapperPermissionsListResponse = S["AdminWrapperPermissionsListResponse"];
+export type BootstrapRequest = S["BootstrapRequest"];
+export type BootstrapResponse = S["BootstrapResponse"];
+export type BootstrapStatusResponse = S["BootstrapStatusResponse"];
+export type EntityCreator = S["EntityCreator"];
+export type LoginRequest = S["LoginRequest"];
+export type LoginResponse = S["LoginResponse"];
+export type PolicyDocument = S["PolicyDocument"];
+export type ResourceRecord = S["ResourceRecord"];
+export type ResourceSlot = S["ResourceSlot"];
+export type ServiceWrapperResourcePair = S["ServiceWrapperResourcePair"];
+export type WhoamiResponse = S["WhoamiResponse"];
+export type WrapperApprovalMode = S["WrapperApprovalMode"];
+export type WrapperPermission = S["WrapperPermission"];
+export type WrapperResourcePairRecord = S["WrapperResourcePairRecord"];
 
-export type * from "@/api/types";
+// ----- Per-endpoint helpers -----
 
-import type {
-  AdminClientInstanceCreateRequest,
-  AdminClientInstanceDetailResponse,
-  AdminClientInstancesListResponse,
-  AdminClientInstanceUpdateRequest,
-  AdminOkResponse,
-  AdminOkUserResponse,
-  AdminPairCreateRequest,
-  AdminPairCreateResponse,
-  AdminPairDeleteRequest,
-  AdminPairDeleteResponse,
-  AdminPairsListRequest,
-  AdminPairsListResponse,
-  AdminPasswordChangeRequest,
-  AdminPolicyGetRequest,
-  AdminPolicyGetResponse,
-  AdminResourceCreateRequest,
-  AdminResourceCreateResponse,
-  AdminResourceDeleteRequest,
-  AdminResourceDeleteResponse,
-  AdminResourceRenameRequest,
-  AdminResourceRenameResponse,
-  AdminResourcesListRequest,
-  AdminResourcesListResponse,
-  AdminSecretDeleteRequest,
-  AdminSecretDeleteResponse,
-  AdminSecretListRequest,
-  AdminSecretListResponse,
-  AdminSecretReadRequest,
-  AdminSecretReadResponse,
-  AdminSecretRenameRequest,
-  AdminSecretWriteRequest,
-  AdminStoreCreateRequest,
-  AdminStoreCreateResponse,
-  AdminStoreDeleteResponse,
-  AdminStoreDetailResponse,
-  AdminStoreRotateKeyResponse,
-  AdminStoreUnlockRequest,
-  AdminStoreUpdateRequest,
-  AdminStoresListResponse,
-  AdminUserCreateRequest,
-  AdminUserDetailResponse,
-  AdminUserResetPasswordRequest,
-  AdminUserUpdateRequest,
-  AdminUsersListResponse,
-  AdminWrapperPermissionDeleteRequest,
-  AdminWrapperPermissionsListRequest,
-  AdminWrapperPermissionsListResponse,
-  AdminWrapperPermissionUpsertRequest,
-  BootstrapRequest,
-  BootstrapResponse,
-  BootstrapStatusResponse,
-  LoginRequest,
-  LoginResponse,
-  WhoamiResponse,
-} from "@/api/types";
-
-export function fetchWhoami(): Promise<WhoamiResponse> {
-  return apiJson<WhoamiResponse>("/v1/admin/auth/whoami");
+export function fetchWhoami() {
+  return unwrap(client.GET("/v1/admin/auth/whoami"));
 }
 
-export function fetchBootstrapStatus(): Promise<BootstrapStatusResponse> {
-  return apiJson<BootstrapStatusResponse>("/v1/admin/auth/bootstrap/status");
+export function fetchBootstrapStatus() {
+  return unwrap(client.GET("/v1/admin/auth/bootstrap/status"));
 }
 
-export function postLogin(body: LoginRequest): Promise<LoginResponse> {
-  return apiJson<LoginResponse>("/v1/admin/auth/login", {
-    method: "POST",
-    json: body,
-  });
+export function postLogin(body: LoginRequest) {
+  return unwrap(client.POST("/v1/admin/auth/login", { body }));
 }
 
-export function postLogout(): Promise<void> {
-  return apiJson<void>("/v1/admin/auth/logout", { method: "POST" });
+export function postLogout() {
+  return unwrap(client.POST("/v1/admin/auth/logout"));
 }
 
-export function postBootstrap(body: BootstrapRequest): Promise<BootstrapResponse> {
-  return apiJson<BootstrapResponse>("/v1/admin/auth/bootstrap", {
-    method: "POST",
-    json: body,
-  });
+export function postBootstrap(body: BootstrapRequest) {
+  return unwrap(client.POST("/v1/admin/auth/bootstrap", { body }));
+}
+
+export function postPasswordChange(body: AdminPasswordChangeRequest) {
+  return unwrap(client.POST("/v1/admin/auth/password", { body }));
 }
 
 // ----- Stores admin -----
 
-export function fetchStores(): Promise<AdminStoresListResponse> {
-  return apiJson<AdminStoresListResponse>("/v1/admin/stores");
+export function fetchStores() {
+  return unwrap(client.GET("/v1/admin/stores"));
 }
 
-export function fetchStore(storeId: string): Promise<AdminStoreDetailResponse> {
-  return apiJson<AdminStoreDetailResponse>(
-    `/v1/admin/stores/${encodeURIComponent(storeId)}`,
+export function fetchStore(storeId: string) {
+  return unwrap(
+    client.GET("/v1/admin/stores/{name}", { params: { path: { name: storeId } } }),
   );
 }
 
-export function postStoreCreate(
-  body: AdminStoreCreateRequest,
-): Promise<AdminStoreCreateResponse> {
-  return apiJson<AdminStoreCreateResponse>("/v1/admin/stores", {
-    method: "POST",
-    json: body,
-  });
+export function postStoreCreate(body: AdminStoreCreateRequest) {
+  return unwrap(client.POST("/v1/admin/stores", { body }));
 }
 
-export function postStoreRotateKey(
-  storeId: string,
-): Promise<AdminStoreRotateKeyResponse> {
-  return apiJson<AdminStoreRotateKeyResponse>(
-    `/v1/admin/stores/${encodeURIComponent(storeId)}/rotate-key`,
-    { method: "POST" },
+export function postStoreRotateKey(storeId: string) {
+  return unwrap(
+    client.POST("/v1/admin/stores/{name}/rotate-key", {
+      params: { path: { name: storeId } },
+    }),
   );
 }
 
-/**
- * Unlock an encrypted store by submitting its 64-character hex master
- * key. The hex value is held only in this function's call frame —
- * never read into a long-lived variable, written to storage, or
- * embedded in the URL.
- */
 export function postStoreUnlock(
   storeId: string,
   body: AdminStoreUnlockRequest,
-): Promise<void> {
-  return apiJson<void>(
-    `/v1/admin/stores/${encodeURIComponent(storeId)}/unlock`,
-    { method: "POST", json: body },
+) {
+  return unwrap(
+    client.POST("/v1/admin/stores/{name}/unlock", {
+      params: { path: { name: storeId } },
+      body,
+    }),
   );
 }
 
-/**
- * Lock an encrypted store, dropping the in-memory master key. Runtime
- * requests against the store will fail with `store_locked` until an
- * admin unlocks it again.
- */
-export function postStoreLock(storeId: string): Promise<void> {
-  return apiJson<void>(
-    `/v1/admin/stores/${encodeURIComponent(storeId)}/lock`,
-    { method: "POST" },
+export function postStoreLock(storeId: string) {
+  return unwrap(
+    client.POST("/v1/admin/stores/{name}/lock", {
+      params: { path: { name: storeId } },
+    }),
   );
 }
 
 export function putStoreUpdate(
   storeId: string,
   body: AdminStoreUpdateRequest,
-): Promise<AdminStoreDetailResponse> {
-  return apiJson<AdminStoreDetailResponse>(
-    `/v1/admin/stores/${encodeURIComponent(storeId)}`,
-    { method: "PUT", json: body },
+) {
+  return unwrap(
+    client.PUT("/v1/admin/stores/{name}", {
+      params: { path: { name: storeId } },
+      body,
+    }),
   );
 }
 
-export function deleteStore(
-  storeId: string,
-  opts: { force?: boolean } = {},
-): Promise<AdminStoreDeleteResponse> {
-  const query = opts.force ? "?force=true" : "";
-  return apiJson<AdminStoreDeleteResponse>(
-    `/v1/admin/stores/${encodeURIComponent(storeId)}${query}`,
-    { method: "DELETE" },
+export function deleteStore(storeId: string, opts: { force?: boolean } = {}) {
+  return unwrap(
+    client.DELETE("/v1/admin/stores/{name}", {
+      params: {
+        path: { name: storeId },
+        query: opts.force ? { force: "true" } : undefined,
+      },
+    }),
   );
 }
 
 // ----- Client instances admin -----
 
-export function fetchClientInstances(): Promise<AdminClientInstancesListResponse> {
-  return apiJson<AdminClientInstancesListResponse>("/v1/admin/client-instances");
+export function fetchClientInstances() {
+  return unwrap(client.GET("/v1/admin/client-instances"));
 }
 
-export function fetchClientInstance(
-  id: string,
-): Promise<AdminClientInstanceDetailResponse> {
-  return apiJson<AdminClientInstanceDetailResponse>(
-    `/v1/admin/client-instances/${encodeURIComponent(id)}`,
+export function fetchClientInstance(id: string) {
+  return unwrap(
+    client.GET("/v1/admin/client-instances/{id}", { params: { path: { id } } }),
   );
 }
 
 export function postClientInstanceCreate(
   body: AdminClientInstanceCreateRequest,
-): Promise<AdminClientInstanceDetailResponse> {
-  return apiJson<AdminClientInstanceDetailResponse>(
-    "/v1/admin/client-instances",
-    { method: "POST", json: body },
-  );
+) {
+  return unwrap(client.POST("/v1/admin/client-instances", { body }));
 }
 
 export function putClientInstanceUpdate(
   id: string,
   body: AdminClientInstanceUpdateRequest,
-): Promise<AdminClientInstanceDetailResponse> {
-  return apiJson<AdminClientInstanceDetailResponse>(
-    `/v1/admin/client-instances/${encodeURIComponent(id)}`,
-    { method: "PUT", json: body },
+) {
+  return unwrap(
+    client.PUT("/v1/admin/client-instances/{id}", {
+      params: { path: { id } },
+      body,
+    }),
   );
 }
 
-export function deleteClientInstance(id: string): Promise<AdminOkResponse> {
-  return apiJson<AdminOkResponse>(
-    `/v1/admin/client-instances/${encodeURIComponent(id)}`,
-    { method: "DELETE" },
+export function deleteClientInstance(id: string) {
+  return unwrap(
+    client.DELETE("/v1/admin/client-instances/{id}", {
+      params: { path: { id } },
+    }),
   );
 }
 
 // ----- Users admin -----
 
-export function fetchUsers(): Promise<AdminUsersListResponse> {
-  return apiJson<AdminUsersListResponse>("/v1/admin/users");
+export function fetchUsers() {
+  return unwrap(client.GET("/v1/admin/users"));
 }
 
-export function fetchUser(id: string): Promise<AdminUserDetailResponse> {
-  return apiJson<AdminUserDetailResponse>(
-    `/v1/admin/users/${encodeURIComponent(id)}`,
-  );
+export function fetchUser(id: string) {
+  return unwrap(client.GET("/v1/admin/users/{id}", { params: { path: { id } } }));
 }
 
-export function postUserCreate(
-  body: AdminUserCreateRequest,
-): Promise<AdminUserDetailResponse> {
-  return apiJson<AdminUserDetailResponse>("/v1/admin/users", {
-    method: "POST",
-    json: body,
-  });
+export function postUserCreate(body: AdminUserCreateRequest) {
+  return unwrap(client.POST("/v1/admin/users", { body }));
 }
 
-export function putUserUpdate(
-  id: string,
-  body: AdminUserUpdateRequest,
-): Promise<AdminUserDetailResponse> {
-  return apiJson<AdminUserDetailResponse>(
-    `/v1/admin/users/${encodeURIComponent(id)}`,
-    { method: "PUT", json: body },
+export function putUserUpdate(id: string, body: AdminUserUpdateRequest) {
+  return unwrap(
+    client.PUT("/v1/admin/users/{id}", { params: { path: { id } }, body }),
   );
 }
 
 export function postUserResetPassword(
   id: string,
   body: AdminUserResetPasswordRequest,
-): Promise<AdminOkUserResponse> {
-  return apiJson<AdminOkUserResponse>(
-    `/v1/admin/users/${encodeURIComponent(id)}/password`,
-    { method: "POST", json: body },
+) {
+  return unwrap(
+    client.POST("/v1/admin/users/{id}/password", {
+      params: { path: { id } },
+      body,
+    }),
   );
 }
 
-export function deleteUser(id: string): Promise<AdminOkUserResponse> {
-  return apiJson<AdminOkUserResponse>(
-    `/v1/admin/users/${encodeURIComponent(id)}`,
-    { method: "DELETE" },
+export function deleteUser(id: string) {
+  return unwrap(
+    client.DELETE("/v1/admin/users/{id}", { params: { path: { id } } }),
   );
 }
 
-export function postPasswordChange(
-  body: AdminPasswordChangeRequest,
-): Promise<AdminOkUserResponse> {
-  return apiJson<AdminOkUserResponse>("/v1/admin/auth/password", {
-    method: "POST",
-    json: body,
-  });
-}
-
-// ----- Wrapper permissions -----
+// ----- Wrapper permissions / policy -----
 
 export function postWrapperPermissionsList(
   body: AdminWrapperPermissionsListRequest,
-): Promise<AdminWrapperPermissionsListResponse> {
-  return apiJson<AdminWrapperPermissionsListResponse>(
-    "/v1/admin/wrapper-permissions/list",
-    {
-      method: "POST",
-      json: body,
-    },
+) {
+  return unwrap(
+    client.POST("/v1/admin/wrapper-permissions/list", { body }),
   );
 }
 
 export function postWrapperPermissionUpsert(
   body: AdminWrapperPermissionUpsertRequest,
-): Promise<AdminOkResponse> {
-  return apiJson<AdminOkResponse>("/v1/admin/wrapper-permissions/upsert", {
-    method: "POST",
-    json: body,
-  });
-}
-
-export function postPolicyGet(
-  body: AdminPolicyGetRequest,
-): Promise<AdminPolicyGetResponse> {
-  return apiJson<AdminPolicyGetResponse>("/v1/admin/policy/get", {
-    method: "POST",
-    json: body,
-  });
-}
-
-// ----- Secrets CRUD -----
-
-export function postSecretList(
-  body: AdminSecretListRequest,
-): Promise<AdminSecretListResponse> {
-  return apiJson<AdminSecretListResponse>("/v1/admin/secret/list", {
-    method: "POST",
-    json: body,
-  });
-}
-
-export function postSecretRead(
-  body: AdminSecretReadRequest,
-): Promise<AdminSecretReadResponse> {
-  return apiJson<AdminSecretReadResponse>("/v1/admin/secret/read", {
-    method: "POST",
-    json: body,
-  });
-}
-
-export function postSecretWrite(
-  body: AdminSecretWriteRequest,
-): Promise<AdminOkResponse> {
-  return apiJson<AdminOkResponse>("/v1/admin/secret/write", {
-    method: "POST",
-    json: body,
-  });
-}
-
-export function postSecretDelete(
-  body: AdminSecretDeleteRequest,
-): Promise<AdminSecretDeleteResponse> {
-  return apiJson<AdminSecretDeleteResponse>("/v1/admin/secret/delete", {
-    method: "POST",
-    json: body,
-  });
-}
-
-export function postSecretRename(
-  body: AdminSecretRenameRequest,
-): Promise<AdminOkResponse> {
-  return apiJson<AdminOkResponse>("/v1/admin/secret/rename", {
-    method: "POST",
-    json: body,
-  });
+) {
+  return unwrap(
+    client.POST("/v1/admin/wrapper-permissions/upsert", { body }),
+  );
 }
 
 export function postWrapperPermissionDelete(
   body: AdminWrapperPermissionDeleteRequest,
-): Promise<AdminOkResponse> {
-  return apiJson<AdminOkResponse>("/v1/admin/wrapper-permissions/delete", {
-    method: "POST",
-    json: body,
-  });
+) {
+  return unwrap(
+    client.POST("/v1/admin/wrapper-permissions/delete", { body }),
+  );
+}
+
+export function postPolicyGet(body: AdminPolicyGetRequest) {
+  return unwrap(client.POST("/v1/admin/policy/get", { body }));
+}
+
+// ----- Secrets CRUD -----
+
+export function postSecretList(body: AdminSecretListRequest) {
+  return unwrap(client.POST("/v1/admin/secret/list", { body }));
+}
+
+export function postSecretRead(body: AdminSecretReadRequest) {
+  return unwrap(client.POST("/v1/admin/secret/read", { body }));
+}
+
+export function postSecretWrite(body: AdminSecretWriteRequest) {
+  return unwrap(client.POST("/v1/admin/secret/write", { body }));
+}
+
+export function postSecretDelete(body: AdminSecretDeleteRequest) {
+  return unwrap(client.POST("/v1/admin/secret/delete", { body }));
+}
+
+export function postSecretRename(body: AdminSecretRenameRequest) {
+  return unwrap(client.POST("/v1/admin/secret/rename", { body }));
 }
 
 // ----- Resources and wrapper/resource pairs -----
 
-export function postResourcesList(
-  body: AdminResourcesListRequest,
-): Promise<AdminResourcesListResponse> {
-  return apiJson<AdminResourcesListResponse>("/v1/admin/resources/list", {
-    method: "POST",
-    json: body,
-  });
+export function postResourcesList(body: AdminResourcesListRequest) {
+  return unwrap(client.POST("/v1/admin/resources/list", { body }));
 }
 
-export function postResourceCreate(
-  body: AdminResourceCreateRequest,
-): Promise<AdminResourceCreateResponse> {
-  return apiJson<AdminResourceCreateResponse>("/v1/admin/resources/create", {
-    method: "POST",
-    json: body,
-  });
+export function postResourceCreate(body: AdminResourceCreateRequest) {
+  return unwrap(client.POST("/v1/admin/resources/create", { body }));
 }
 
-export function postResourceDelete(
-  body: AdminResourceDeleteRequest,
-): Promise<AdminResourceDeleteResponse> {
-  return apiJson<AdminResourceDeleteResponse>("/v1/admin/resources/delete", {
-    method: "POST",
-    json: body,
-  });
+export function postResourceDelete(body: AdminResourceDeleteRequest) {
+  return unwrap(client.POST("/v1/admin/resources/delete", { body }));
 }
 
-export function postResourceRename(
-  body: AdminResourceRenameRequest,
-): Promise<AdminResourceRenameResponse> {
-  return apiJson<AdminResourceRenameResponse>("/v1/admin/resources/rename", {
-    method: "POST",
-    json: body,
-  });
+export function postResourceRename(body: AdminResourceRenameRequest) {
+  return unwrap(client.POST("/v1/admin/resources/rename", { body }));
 }
 
-export function postPairsList(
-  body: AdminPairsListRequest,
-): Promise<AdminPairsListResponse> {
-  return apiJson<AdminPairsListResponse>("/v1/admin/pairs/list", {
-    method: "POST",
-    json: body,
-  });
+export function postPairsList(body: AdminPairsListRequest) {
+  return unwrap(client.POST("/v1/admin/pairs/list", { body }));
 }
 
-export function postPairCreate(
-  body: AdminPairCreateRequest,
-): Promise<AdminPairCreateResponse> {
-  return apiJson<AdminPairCreateResponse>("/v1/admin/pairs/create", {
-    method: "POST",
-    json: body,
-  });
+export function postPairCreate(body: AdminPairCreateRequest) {
+  return unwrap(client.POST("/v1/admin/pairs/create", { body }));
 }
 
-export function postPairDelete(
-  body: AdminPairDeleteRequest,
-): Promise<AdminPairDeleteResponse> {
-  return apiJson<AdminPairDeleteResponse>("/v1/admin/pairs/delete", {
-    method: "POST",
-    json: body,
-  });
+export function postPairDelete(body: AdminPairDeleteRequest) {
+  return unwrap(client.POST("/v1/admin/pairs/delete", { body }));
 }

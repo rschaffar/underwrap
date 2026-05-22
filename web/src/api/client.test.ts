@@ -1,20 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
 import {
   ApiError,
   _resetCsrfTokenForTesting,
-  apiFetch,
-  apiJson,
-  fetchBootstrapStatus,
+  client,
   fetchWhoami,
-  postBootstrap,
   postLogin,
   postLogout,
-  postPairCreate,
-  postPairDelete,
-  postPairsList,
-  postResourceCreate,
-  postResourceDelete,
-  postResourcesList,
+  postSecretRead,
 } from "./client";
 
 function mockResponse(
@@ -47,92 +40,89 @@ function mockResponseWithCsrf(
 
 afterEach(() => {
   vi.restoreAllMocks();
-  // Reset the module-scoped CSRF token so state doesn't leak between
-  // tests.
   _resetCsrfTokenForTesting();
 });
 
-describe("apiFetch", () => {
+describe("typed admin client", () => {
   it("sends credentials on every request", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockResponse(200, { ok: true }));
-    await apiFetch("/v1/admin/auth/whoami");
+      .mockResolvedValue(mockResponse(200, { authenticated: false }));
+    await fetchWhoami();
     expect(spy).toHaveBeenCalledTimes(1);
-    const init = spy.mock.calls[0]![1]!;
-    expect(init.credentials).toBe("include");
+    // openapi-fetch passes the request object as a Request instance.
+    const req = spy.mock.calls[0]![0] as Request;
+    expect(req.credentials).toBe("include");
   });
 
   it("replays the cached X-CSRF-Token on POST after seeing it on a prior response", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
-        mockResponseWithCsrf(200, { ok: true }, "auth-token"),
+        mockResponseWithCsrf(200, { authenticated: false }, "auth-token"),
       )
-      .mockResolvedValueOnce(mockResponse(200, { ok: true }));
-    // First request: bootstrap-style GET that primes the token cache.
-    await apiFetch("/v1/admin/auth/whoami");
-    // Second request: state-changing POST should now send the token.
-    await apiFetch("/v1/admin/anything", {
-      method: "POST",
-      json: { a: 1 },
-    });
-    const headers = new Headers(spy.mock.calls[1]![1]!.headers);
-    expect(headers.get("X-CSRF-Token")).toBe("auth-token");
-    expect(headers.get("Content-Type")).toBe("application/json");
+      .mockResolvedValueOnce(mockResponse(200, { username: "alice" }));
+    await fetchWhoami();
+    await postLogin({ username: "alice", password: "irrelevant" });
+    const req = spy.mock.calls[1]![0] as Request;
+    expect(req.headers.get("X-CSRF-Token")).toBe("auth-token");
   });
 
   it("does not attach X-CSRF-Token on GET", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockResponseWithCsrf(200, { ok: true }, "tok"));
-    await apiFetch("/v1/admin/auth/whoami");
-    const headers = new Headers(spy.mock.calls[0]![1]!.headers);
-    expect(headers.get("X-CSRF-Token")).toBeNull();
+      .mockResolvedValue(
+        mockResponseWithCsrf(200, { authenticated: false }, "tok"),
+      );
+    await fetchWhoami();
+    const req = spy.mock.calls[0]![0] as Request;
+    expect(req.headers.get("X-CSRF-Token")).toBeNull();
   });
 
   it("does not attach X-CSRF-Token on POST when no prior response has primed the token", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockResponse(200, { ok: true }));
-    await apiFetch("/v1/admin/anything", { method: "POST", json: { a: 1 } });
-    const headers = new Headers(spy.mock.calls[0]![1]!.headers);
-    expect(headers.get("X-CSRF-Token")).toBeNull();
+      .mockResolvedValue(mockResponse(200, { username: "alice" }));
+    await postLogin({ username: "alice", password: "irrelevant" });
+    const req = spy.mock.calls[0]![0] as Request;
+    expect(req.headers.get("X-CSRF-Token")).toBeNull();
   });
 
   it("throws typed ApiError on non-2xx with backend code", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse(401, { code: "session_revoked", message: "go away" }),
     );
-    await expect(apiFetch("/v1/admin/secret/read", { method: "POST" })).rejects
-      .toMatchObject({
-        name: "ApiError",
-        status: 401,
-        code: "session_revoked",
-        message: "go away",
-      });
+    await expect(
+      postSecretRead({
+        store: "default",
+        resource_id: "res_x",
+        slot: "env",
+        key: "K",
+      }),
+    ).rejects.toMatchObject({
+      name: "ApiError",
+      status: 401,
+      code: "session_revoked",
+      message: "go away",
+    });
   });
 
   it("falls back to a generic code when the error body isn't JSON", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("not json", { status: 500 }),
     );
-    const err = await apiFetch("/v1/admin/whatever").catch((e) => e);
+    const err = await fetchWhoami().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
-    expect(err.status).toBe(500);
-    expect(err.code).toBe("error");
+    expect((err as ApiError).status).toBe(500);
+    expect((err as ApiError).code).toBe("error");
   });
 
-  it("forwards rawBody verbatim and does not stringify it", async () => {
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockResponse(200, { ok: true }));
-    const blob = new Blob(["raw bytes"]);
-    await apiFetch("/v1/admin/upload", { method: "POST", rawBody: blob });
-    const init = spy.mock.calls[0]![1]!;
-    expect(init.body).toBe(blob);
-    // Content-Type is NOT auto-set for rawBody — the caller owns it.
-    expect(new Headers(init.headers).get("Content-Type")).toBeNull();
+  it("returns undefined for 204 No Content responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 204 }),
+    );
+    const result = await postLogout();
+    expect(result).toBeUndefined();
   });
 
   it("does not log request or response bodies (paranoia)", async () => {
@@ -140,123 +130,26 @@ describe("apiFetch", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse(200, { secret: "do-not-leak" }),
+      mockResponse(200, { material_b64: "do-not-leak" }),
     );
-    const result = await apiJson<{ secret: string }>("/v1/admin/secret/read", {
-      method: "POST",
-      json: { sensitive: "input" },
+    const result = await postSecretRead({
+      store: "default",
+      resource_id: "res_x",
+      slot: "env",
+      key: "sensitive-key",
     });
-    expect(result.secret).toBe("do-not-leak");
+    expect(result?.material_b64).toBe("do-not-leak");
     for (const spy of [log, warn, error]) {
       for (const call of spy.mock.calls) {
         const stringified = call.map(String).join(" ");
         expect(stringified).not.toContain("do-not-leak");
-        expect(stringified).not.toContain("sensitive");
+        expect(stringified).not.toContain("sensitive-key");
       }
     }
   });
-});
 
-describe("auth endpoint helpers", () => {
-  it("routes each helper to the documented admin path", async () => {
-    const calls: Array<[string, string]> = [];
-    vi.spyOn(globalThis, "fetch").mockImplementation(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        calls.push([String(input), init?.method ?? "GET"]);
-        if (String(input).endsWith("/auth/bootstrap/status")) {
-          return mockResponse(200, { bootstrap_required: false });
-        }
-        if (String(input).endsWith("/auth/whoami")) {
-          return mockResponse(200, { authenticated: false });
-        }
-        // 204 → apiJson returns undefined; covers postLogout.
-        return new Response(null, { status: 204 });
-      },
-    );
-
-    await fetchWhoami();
-    await fetchBootstrapStatus();
-    await postLogin({ username: "u", password: "p" });
-    await postLogout();
-    await postBootstrap({ username: "u", password: "longenoughpw1234" });
-
-    expect(calls).toEqual([
-      ["/v1/admin/auth/whoami", "GET"],
-      ["/v1/admin/auth/bootstrap/status", "GET"],
-      ["/v1/admin/auth/login", "POST"],
-      ["/v1/admin/auth/logout", "POST"],
-      ["/v1/admin/auth/bootstrap", "POST"],
-    ]);
-  });
-});
-
-describe("resources and pairs admin helpers", () => {
-  it("each helper hits the documented POST route with the request body", async () => {
-    const calls: Array<{ path: string; method: string; body: unknown }> = [];
-    vi.spyOn(globalThis, "fetch").mockImplementation(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const body = init?.body
-          ? JSON.parse(init.body as string)
-          : undefined;
-        calls.push({
-          path: String(input),
-          method: init?.method ?? "GET",
-          body,
-        });
-        // All responses follow the same shape: stub with the empty-list /
-        // ok shapes; tests below only verify request wiring, not response
-        // contents.
-        if (String(input).endsWith("/resources/list")) {
-          return mockResponse(200, { resources: [] });
-        }
-        if (String(input).endsWith("/pairs/list")) {
-          return mockResponse(200, { pairs: [] });
-        }
-        if (String(input).endsWith("/resources/create")) {
-          return mockResponse(200, {
-            resource: {
-              id: "res_r",
-              name: "r",
-              created_by: { kind: "operator", id: "op", username: "a" },
-              created_at: 1,
-            },
-          });
-        }
-        if (String(input).endsWith("/pairs/create")) {
-          return mockResponse(200, {
-            pair: {
-              wrapper: "gh",
-              resource_id: "res_r",
-              created_by: { kind: "operator", id: "op", username: "a" },
-              created_at: 1,
-            },
-          });
-        }
-        return mockResponse(200, { ok: true });
-      },
-    );
-
-    await postResourcesList({ store: "work" });
-    await postResourceCreate({ store: "work", name: "r" });
-    await postResourceDelete({ store: "work", id: "res_r" });
-    await postPairsList({ store: "work" });
-    await postPairCreate({ store: "work", wrapper: "gh", resource_id: "res_r" });
-    await postPairDelete({ store: "work", wrapper: "gh", resource_id: "res_r" });
-
-    expect(calls.map((c) => [c.path, c.method])).toEqual([
-      ["/v1/admin/resources/list", "POST"],
-      ["/v1/admin/resources/create", "POST"],
-      ["/v1/admin/resources/delete", "POST"],
-      ["/v1/admin/pairs/list", "POST"],
-      ["/v1/admin/pairs/create", "POST"],
-      ["/v1/admin/pairs/delete", "POST"],
-    ]);
-    expect(calls[0]!.body).toEqual({ store: "work" });
-    expect(calls[1]!.body).toEqual({ store: "work", name: "r" });
-    expect(calls[4]!.body).toEqual({
-      store: "work",
-      wrapper: "gh",
-      resource_id: "res_r",
-    });
+  it("exposes the raw openapi-fetch client for advanced usage", () => {
+    expect(typeof client.GET).toBe("function");
+    expect(typeof client.POST).toBe("function");
   });
 });

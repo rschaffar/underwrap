@@ -189,14 +189,15 @@ describe("StoresPage", () => {
     await user.click(submit);
 
     // Assert that postStoreUnlock fired against the right path with
-    // the right body.
-    const callsToUnlock = fetchMock.mock.calls.filter(([url]) =>
-      String(url).endsWith("/v1/admin/stores/store_shared/unlock"),
-    );
-    expect(callsToUnlock).toHaveLength(1);
-    const init = callsToUnlock[0]?.[1] as RequestInit | undefined;
-    expect(init?.method).toBe("POST");
-    const body = JSON.parse(String(init?.body));
+    // the right body. openapi-fetch passes a `Request` object as the
+    // first arg, so we read URL/method/body off it.
+    const unlockReqs = fetchMock.mock.calls
+      .map(([first]) => first as Request)
+      .filter((req) => req.url.endsWith("/v1/admin/stores/store_shared/unlock"));
+    expect(unlockReqs).toHaveLength(1);
+    const req = unlockReqs[0]!;
+    expect(req.method).toBe("POST");
+    const body = JSON.parse(await req.text());
     expect(body).toEqual({ key_hex: sampleHex });
   });
 

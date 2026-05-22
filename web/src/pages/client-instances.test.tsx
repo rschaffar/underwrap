@@ -37,7 +37,7 @@ describe("ClientInstancesPage", () => {
         id: "store_work",
         name: "Work",
         backend: "plain" as const,
-        created_at: 1n,
+        created_at: 1,
         locked: false,
         usage: { mapped_client_instance_count: 1, has_secrets: true },
         actions: {
@@ -53,7 +53,7 @@ describe("ClientInstancesPage", () => {
         id: "store_other",
         name: "Other",
         backend: "plain" as const,
-        created_at: 2n,
+        created_at: 2,
         locked: false,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
@@ -76,7 +76,7 @@ describe("ClientInstancesPage", () => {
         current_store_id: "store_work",
         current_store_name: "Work",
         status: "active" as const,
-        last_seen_at: 1_700_000_000n,
+        last_seen_at: 1_700_000_000,
         current_credential_fingerprint: "fp-work",
         auto_create_wrapper_assets: false,
         actions: {
@@ -140,7 +140,7 @@ describe("ClientInstancesPage", () => {
       current_store_id: body.current_store_id ?? (id === "client_work" ? "store_work" : "store_other"),
       current_store_name: body.current_store_id === "store_other" ? "Other" : body.current_store_id === "store_work" ? "Work" : id === "client_work" ? "Work" : "Other",
       status: body.status ?? (id === "client_work" ? "active" : "disabled"),
-      last_seen_at: id === "client_work" ? 1_700_000_000n : undefined,
+      last_seen_at: id === "client_work" ? 1_700_000_000 : undefined,
       current_credential_fingerprint: id === "client_work" ? "fp-work" : "fp-old",
       current_credential_issued_at: undefined,
       auto_create_wrapper_assets: false,

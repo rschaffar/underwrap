@@ -144,7 +144,7 @@ export function ClientInstancesPage() {
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={item.status} />{" "}
-                      <AutoCreateBadge enabled={item.auto_create_wrapper_assets} />
+                      <AutoCreateBadge enabled={item.auto_create_wrapper_assets ?? false} />
                     </td>
                     <td className="px-4 py-3 text-(--color-muted)">{formatEpochAbsolute(item.last_seen_at)}</td>
                     <td className="px-4 py-3 text-right">

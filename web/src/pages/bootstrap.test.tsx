@@ -80,10 +80,11 @@ describe("BootstrapPage", () => {
     );
 
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
-    const [path, init] = fetchSpy.mock.calls[0]!;
-    expect(path).toBe("/v1/admin/auth/bootstrap");
-    expect(init?.method).toBe("POST");
-    expect(init?.body).toBe(
+    const req = fetchSpy.mock.calls[0]![0] as Request;
+    expect(req.url.endsWith("/v1/admin/auth/bootstrap")).toBe(true);
+    expect(req.method).toBe("POST");
+    const body = await req.text();
+    expect(body).toBe(
       JSON.stringify({ username: "root", password: "longenoughpw1234" }),
     );
   });

@@ -257,9 +257,9 @@ pub(crate) fn handle_admin_pair_delete(
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
-        .routes(routes!(axum_list))
-        .routes(routes!(axum_create))
-        .routes(routes!(axum_delete))
+        .routes(routes!(axum_pairs_list))
+        .routes(routes!(axum_pairs_create))
+        .routes(routes!(axum_pairs_delete))
 }
 
 #[utoipa::path(
@@ -274,7 +274,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_list(
+async fn axum_pairs_list(
     State(state): State<Arc<AdminRuntimeState>>,
     Body(parsed): Body<AdminPairsListRequest>,
 ) -> Response<Full<Bytes>> {
@@ -295,7 +295,7 @@ async fn axum_list(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_create(
+async fn axum_pairs_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminPairCreateRequest>,
@@ -316,7 +316,7 @@ async fn axum_create(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_delete(
+async fn axum_pairs_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminPairDeleteRequest>,

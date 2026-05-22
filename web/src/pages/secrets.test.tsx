@@ -40,7 +40,7 @@ describe("SecretsPage", () => {
         id: "store_default",
         name: "default",
         backend: "plain" as const,
-        created_at: 0n,
+        created_at: 0,
         locked: false,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
@@ -109,7 +109,7 @@ describe("SecretsPage", () => {
           id: "res_gh",
           name: "github/gh",
           created_by: { kind: "operator", id: "op-1", username: "alice" },
-          created_at: 1_700_000_000n,
+          created_at: 1_700_000_000,
         },
       ],
     });
@@ -135,7 +135,7 @@ describe("SecretsPage", () => {
           id: "res_auto",
           name: "auto/created",
           created_by: { kind: "client-instance", id: "inst_abc123" },
-          created_at: 1_700_000_000n,
+          created_at: 1_700_000_000,
         },
       ],
     });

@@ -450,12 +450,12 @@ pub(crate) fn handle_admin_resource_rename(
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
-        .routes(routes!(axum_list))
-        .routes(routes!(axum_create))
-        .routes(routes!(axum_delete))
-        .routes(routes!(axum_rename))
-        .routes(routes!(axum_blob_get))
-        .routes(routes!(axum_blob_put))
+        .routes(routes!(axum_resources_list))
+        .routes(routes!(axum_resources_create))
+        .routes(routes!(axum_resources_delete))
+        .routes(routes!(axum_resources_rename))
+        .routes(routes!(axum_resources_blob_get))
+        .routes(routes!(axum_resources_blob_put))
 }
 
 #[utoipa::path(
@@ -470,7 +470,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_list(
+async fn axum_resources_list(
     State(state): State<Arc<AdminRuntimeState>>,
     Body(parsed): Body<AdminResourcesListRequest>,
 ) -> Response<Full<Bytes>> {
@@ -491,7 +491,7 @@ async fn axum_list(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_create(
+async fn axum_resources_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminResourceCreateRequest>,
@@ -512,7 +512,7 @@ async fn axum_create(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_delete(
+async fn axum_resources_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminResourceDeleteRequest>,
@@ -534,7 +534,7 @@ async fn axum_delete(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_rename(
+async fn axum_resources_rename(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminResourceRenameRequest>,
@@ -554,7 +554,7 @@ async fn axum_rename(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_blob_get(
+async fn axum_resources_blob_get(
     State(state): State<Arc<AdminRuntimeState>>,
     Body(parsed): Body<AdminResourceBlobGetRequest>,
 ) -> Response<Full<Bytes>> {
@@ -574,7 +574,7 @@ async fn axum_blob_get(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_blob_put(
+async fn axum_resources_blob_put(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminResourceBlobPutRequest>,

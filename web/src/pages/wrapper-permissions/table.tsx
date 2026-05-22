@@ -158,7 +158,7 @@ function CellContent({ permission }: { permission: WrapperPermission | null }) {
   if (!permission) {
     return <ModeBadge mode={{ kind: "locked" }} />;
   }
-  return <ModeBadge mode={permission.mode} />;
+  return <ModeBadge mode={permission.mode ?? { kind: "locked" }} />;
 }
 
 export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {

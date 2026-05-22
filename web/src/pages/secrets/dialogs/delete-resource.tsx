@@ -72,12 +72,12 @@ export function DeleteResourceDialog({
                 <li>
                   <strong>{blockers.secret_count}</strong> secret
                   {blockers.secret_count === 1 ? "" : "s"}
-                  {blockers.sample_secret_ids.length > 0 ? (
+                  {(blockers.sample_secret_ids ?? []).length > 0 ? (
                     <>
                       {" "}
                       (e.g.{" "}
                       <code className="font-mono">
-                        {blockers.sample_secret_ids.join(", ")}
+                        {(blockers.sample_secret_ids ?? []).join(", ")}
                       </code>
                       )
                     </>
@@ -88,12 +88,12 @@ export function DeleteResourceDialog({
                 <li>
                   <strong>{blockers.pair_count}</strong> wrapper/resource
                   pair{blockers.pair_count === 1 ? "" : "s"}
-                  {blockers.sample_pairs.length > 0 ? (
+                  {(blockers.sample_pairs ?? []).length > 0 ? (
                     <>
                       {" "}
                       (e.g.{" "}
                       <code className="font-mono">
-                        {blockers.sample_pairs
+                        {(blockers.sample_pairs ?? [])
                           .map((p) => `${p.wrapper}/${p.resource}`)
                           .join(", ")}
                       </code>

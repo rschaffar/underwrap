@@ -493,8 +493,15 @@ pub(crate) fn handle_admin_client_instance_delete(
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
-        .routes(routes!(axum_list, axum_create))
-        .routes(routes!(axum_detail, axum_update, axum_delete))
+        .routes(routes!(
+            axum_client_instances_list,
+            axum_client_instances_create
+        ))
+        .routes(routes!(
+            axum_client_instances_detail,
+            axum_client_instances_update,
+            axum_client_instances_delete
+        ))
 }
 
 #[utoipa::path(
@@ -506,7 +513,9 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
         (status = 200, description = "All client instances with action state and store mapping.", body = AdminClientInstancesListResponse),
     ),
 )]
-async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
+async fn axum_client_instances_list(
+    State(state): State<Arc<AdminRuntimeState>>,
+) -> Response<Full<Bytes>> {
     handle_admin_client_instances_list(&state)
 }
 
@@ -522,7 +531,7 @@ async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full
         (status = 409, description = "Instance id already exists.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_create(
+async fn axum_client_instances_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminClientInstanceCreateRequest>,
@@ -541,7 +550,7 @@ async fn axum_create(
         (status = 404, description = "Instance not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_detail(
+async fn axum_client_instances_detail(
     State(state): State<Arc<AdminRuntimeState>>,
     Path(id): Path<String>,
 ) -> Response<Full<Bytes>> {
@@ -561,7 +570,7 @@ async fn axum_detail(
         (status = 404, description = "Instance / target store not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_update(
+async fn axum_client_instances_update(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
@@ -581,7 +590,7 @@ async fn axum_update(
         (status = 404, description = "Instance not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_delete(
+async fn axum_client_instances_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,

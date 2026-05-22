@@ -45,10 +45,10 @@ export function EditCellDialog({
 }) {
   const qc = useQueryClient();
   const [kind, setKind] = useState<ModeKind>(
-    existing ? existing.mode.kind : "locked",
+    existing?.mode?.kind ?? "locked",
   );
   const [untilLocal, setUntilLocal] = useState<string>(() => {
-    if (existing && existing.mode.kind === "unlocked-until") {
+    if (existing?.mode?.kind === "unlocked-until") {
       return toDatetimeLocal(new Date(existing.mode.until_epoch * 1000));
     }
     return toDatetimeLocal(new Date(Date.now() + 30 * 60 * 1000));

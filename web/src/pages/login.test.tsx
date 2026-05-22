@@ -47,11 +47,13 @@ describe("LoginPage", () => {
 
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [path, init] = fetchSpy.mock.calls[0]!;
-    expect(path).toBe("/v1/admin/auth/login");
-    expect(init?.method).toBe("POST");
-    // The body must contain what the user typed and nothing else.
-    expect(init?.body).toBe(
+    // openapi-fetch passes a `Request` object as the first arg, not a
+    // (path, init) tuple, so we read everything off it.
+    const req = fetchSpy.mock.calls[0]![0] as Request;
+    expect(req.url.endsWith("/v1/admin/auth/login")).toBe(true);
+    expect(req.method).toBe("POST");
+    const body = await req.text();
+    expect(body).toBe(
       JSON.stringify({ username: "alice", password: "hunter2" }),
     );
   });

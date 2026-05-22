@@ -373,9 +373,9 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
         .routes(routes!(axum_read))
         .routes(routes!(axum_write))
-        .routes(routes!(axum_list))
-        .routes(routes!(axum_delete))
-        .routes(routes!(axum_rename))
+        .routes(routes!(axum_secrets_list))
+        .routes(routes!(axum_secrets_delete))
+        .routes(routes!(axum_secrets_rename))
 }
 
 #[utoipa::path(
@@ -430,7 +430,7 @@ async fn axum_write(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_list(
+async fn axum_secrets_list(
     State(state): State<Arc<AdminRuntimeState>>,
     Body(parsed): Body<AdminSecretListRequest>,
 ) -> Response<Full<Bytes>> {
@@ -449,7 +449,7 @@ async fn axum_list(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_delete(
+async fn axum_secrets_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminSecretDeleteRequest>,
@@ -470,7 +470,7 @@ async fn axum_delete(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_rename(
+async fn axum_secrets_rename(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<AdminSecretRenameRequest>,

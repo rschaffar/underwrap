@@ -75,7 +75,7 @@ export function DeletePairDialog({
             Cannot delete — {blockers.permission_count} wrapper permission
             {blockers.permission_count === 1 ? "" : "s"} still reference this pair:
             <ul className="mt-1 list-disc pl-5">
-              {blockers.sample_permissions.map((p) => (
+              {(blockers.sample_permissions ?? []).map((p) => (
                 <li
                   key={`${p.client_instance}|${p.wrapper}|${p.resource_id}`}
                   className="font-mono"
