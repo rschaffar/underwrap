@@ -44,7 +44,12 @@
               # disk and compares to the freshly-regenerated content;
               # without them in the sandbox source the test sees
               # "expected … actual <empty>" and fails.
-              || (pkgs.lib.hasInfix "/web/src/api/types/" path);
+              || (pkgs.lib.hasInfix "/web/src/api/types/" path)
+              # Same deal for the committed OpenAPI spec at
+              # `crates/backend-backendd/openapi.json` — the
+              # `openapi_export` drift test reads it off disk and
+              # rewrites + panics on any mismatch.
+              || (pkgs.lib.hasSuffix "/openapi.json" path);
             name = "source";
           };
 
