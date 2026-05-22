@@ -1168,6 +1168,10 @@ export interface components {
         };
         WhoamiResponse: {
             authenticated: boolean;
+            /**
+             * @description Omitted when the request has no session so the wire shape stays
+             *     `{ authenticated: false }` for the unauthenticated case.
+             */
             username?: string | null;
         };
         /** @description Runtime mode for one [`WrapperPermission`]. */
