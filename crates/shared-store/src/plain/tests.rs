@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn test_backend() -> (tempfile::TempDir, PlainBackend) {
