@@ -82,6 +82,53 @@ pub(crate) fn resolve_invocation<'a>(
     }
 }
 
+/// Drive `resolve_invocation` to either an Allow tuple
+/// `(resource_id, writable)` or a structured Deny response built via
+/// `into_deny`. Folds the four-arm `InvocationLookup` match and the
+/// policy-load / lookup 500 paths into a single call site so the open
+/// and finalize handlers share one prelude.
+#[allow(clippy::result_large_err)]
+pub(crate) fn resolve_invocation_or_deny<F>(
+    store: &dyn StorageBackend,
+    principal: &str,
+    wrapper_name: &str,
+    resource_name: &str,
+    into_deny: F,
+) -> std::result::Result<(String, bool), Response<Full<Bytes>>>
+where
+    F: Fn(String) -> Response<Full<Bytes>>,
+{
+    let policy = match load_policy_document(store) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("loading policy: {e:#}"),
+            ));
+        }
+    };
+    let lookup = match resolve_invocation(store, principal, wrapper_name, resource_name, &policy) {
+        Ok(l) => l,
+        Err(e) => {
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("policy lookup failed: {e:#}"),
+            ));
+        }
+    };
+    match lookup {
+        InvocationLookup::UnregisteredPair => Err(into_deny("unregistered-pair".to_string())),
+        InvocationLookup::NoPermission => Err(into_deny("no-permission".to_string())),
+        InvocationLookup::Denied(reason) => Err(into_deny(reason)),
+        InvocationLookup::Allowed {
+            resource_id,
+            permission,
+        } => Ok((resource_id, permission.writable)),
+    }
+}
+
 /// Set `last_used_at` on the `(wrapper, resource_id)` pair to the
 /// current wall-clock second. Idempotent at one-second resolution:
 /// the pairs document is only rewritten if the new timestamp differs
@@ -127,59 +174,20 @@ pub(crate) fn handle_runtime_wrapper_invocation_open(
             "wrapper_name and resource_name must be non-empty",
         );
     }
-    let policy = match load_policy_document(store) {
-        Ok(p) => p,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading policy: {e:#}"),
-            );
-        }
-    };
-    let lookup = match resolve_invocation(
+    let (resource_id, writable) = match resolve_invocation_or_deny(
         store,
         principal,
         &body.wrapper_name,
         &body.resource_name,
-        &policy,
-    ) {
-        Ok(l) => l,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("policy lookup failed: {e:#}"),
-            );
-        }
-    };
-    let (resource_id, writable) = match lookup {
-        InvocationLookup::UnregisteredPair => {
-            return json_response(
-                StatusCode::OK,
-                &RuntimeWrapperInvocationOpenResponse::Deny {
-                    reason: "unregistered-pair".to_string(),
-                },
-            );
-        }
-        InvocationLookup::NoPermission => {
-            return json_response(
-                StatusCode::OK,
-                &RuntimeWrapperInvocationOpenResponse::Deny {
-                    reason: "no-permission".to_string(),
-                },
-            );
-        }
-        InvocationLookup::Denied(reason) => {
-            return json_response(
+        |reason| {
+            json_response(
                 StatusCode::OK,
                 &RuntimeWrapperInvocationOpenResponse::Deny { reason },
-            );
-        }
-        InvocationLookup::Allowed {
-            resource_id,
-            permission,
-        } => (resource_id, permission.writable),
+            )
+        },
+    ) {
+        Ok(t) => t,
+        Err(response) => return response,
     };
     let blob = match load_resource_blob(store, &resource_id) {
         Ok(b) => b,
@@ -243,59 +251,20 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
             "wrapper_name and resource_name must be non-empty",
         );
     }
-    let policy = match load_policy_document(store) {
-        Ok(p) => p,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading policy: {e:#}"),
-            );
-        }
-    };
-    let lookup = match resolve_invocation(
+    let (resource_id, writable) = match resolve_invocation_or_deny(
         store,
         principal,
         &body.wrapper_name,
         &body.resource_name,
-        &policy,
-    ) {
-        Ok(l) => l,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("policy lookup failed: {e:#}"),
-            );
-        }
-    };
-    let (resource_id, writable) = match lookup {
-        InvocationLookup::UnregisteredPair => {
-            return json_response(
-                StatusCode::OK,
-                &RuntimeWrapperInvocationFinalizeResponse::Deny {
-                    reason: "unregistered-pair".to_string(),
-                },
-            );
-        }
-        InvocationLookup::NoPermission => {
-            return json_response(
-                StatusCode::OK,
-                &RuntimeWrapperInvocationFinalizeResponse::Deny {
-                    reason: "no-permission".to_string(),
-                },
-            );
-        }
-        InvocationLookup::Denied(reason) => {
-            return json_response(
+        |reason| {
+            json_response(
                 StatusCode::OK,
                 &RuntimeWrapperInvocationFinalizeResponse::Deny { reason },
-            );
-        }
-        InvocationLookup::Allowed {
-            resource_id,
-            permission,
-        } => (resource_id, permission.writable),
+            )
+        },
+    ) {
+        Ok(t) => t,
+        Err(response) => return response,
     };
 
     if let Some(blob_b64) = &body.blob_b64 {
