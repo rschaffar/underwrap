@@ -4,11 +4,8 @@
 //! Only "plain" sessions are supported — all communication is over a
 //! local Unix socket inside a PID namespace, so DH encryption is unnecessary.
 
-#[path = "dbus_service/collection.rs"]
 mod collection;
-#[path = "dbus_service/item.rs"]
 mod item;
-#[path = "dbus_service/service.rs"]
 mod service;
 
 pub use collection::CollectionInterface;

@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::info;
 
-use underwrap_backendd::{BackendConfig, server, users};
+use underwrap_backendd::{BackendConfig, cli::recover_user, server};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -50,10 +50,6 @@ enum AdminCommand {
     },
 }
 
-fn parse_backend_config(config_text: &str) -> Result<BackendConfig> {
-    serde_yaml::from_str(config_text).context("parsing config")
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Harden: non-dumpable + no core dumps. The backend daemon holds secrets.
@@ -88,7 +84,7 @@ async fn main() -> Result<()> {
 
     let config_text = std::fs::read_to_string(&cli.config)
         .with_context(|| format!("reading config from {}", cli.config.display()))?;
-    let config = parse_backend_config(&config_text)?;
+    let config = underwrap_backendd::cli::parse_backend_config(&config_text)?;
 
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => {
@@ -119,39 +115,6 @@ fn run_admin(cmd: AdminCommand, config: BackendConfig) -> Result<()> {
     }
 }
 
-/// Add a user to the on-disk collection. Refuses if a user with the
-/// same username already exists. Doesn't touch the
-/// bootstrap-completed sentinel — recovery is intentionally not a
-/// substitute for the online bootstrap (which is what locks the
-/// endpoint going forward).
-fn recover_user(path: &Path, username: &str, password: &str) -> Result<()> {
-    if password.is_empty() {
-        anyhow::bail!("recover-user: password must not be empty");
-    }
-    let normalised = users::normalise_username(username);
-    if normalised.is_empty() {
-        anyhow::bail!("recover-user: username must not be empty");
-    }
-    let mut collection = users::load(path)?;
-    if collection.find_by_username(&normalised).is_some() {
-        anyhow::bail!(
-            "recover-user: user '{}' already exists; refusing to overwrite",
-            normalised
-        );
-    }
-    let hash = underwrap_backendd::auth::hash_password(password)?;
-    let now = users::now_epoch_secs();
-    collection.add(users::UserRecord {
-        id: users::new_user_id(),
-        username: normalised,
-        password_hash: hash,
-        created_at: now,
-        password_changed_at: now,
-    })?;
-    users::save(path, &collection)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,41 +125,6 @@ mod tests {
         let cli = Cli::parse_from(["underwrap-backendd", "--config", "/tmp/backend.yaml"]);
         assert_eq!(cli.config, PathBuf::from("/tmp/backend.yaml"));
         assert!(cli.command.is_none());
-    }
-
-    #[test]
-    fn parse_backend_config_parses_minimal_yaml() {
-        // Empty YAML works because the backend-managed store registry
-        // path and https+admin blocks are optional.
-        let config = parse_backend_config("{}\n").unwrap();
-        assert!(config.stores_file.is_none());
-        assert!(config.client_instances_file.is_none());
-        assert!(config.https.is_none());
-        assert!(config.admin.is_none());
-    }
-
-    #[test]
-    fn parse_backend_config_accepts_dir_overrides() {
-        let config = parse_backend_config(
-            r#"
-stores_file: /var/u/stores.json
-client_instances_file: /var/u/client-instances.json
-users_file: /var/u/users.json
-"#,
-        )
-        .unwrap();
-        assert_eq!(
-            config.stores_file(),
-            std::path::PathBuf::from("/var/u/stores.json"),
-        );
-        assert_eq!(
-            config.client_instances_file(),
-            std::path::PathBuf::from("/var/u/client-instances.json"),
-        );
-        assert_eq!(
-            config.users_file(),
-            std::path::PathBuf::from("/var/u/users.json"),
-        );
     }
 
     #[test]
@@ -214,41 +142,5 @@ users_file: /var/u/users.json
             }
             _ => panic!("expected recover-user subcommand, got {:?}", cli.command),
         }
-    }
-
-    #[test]
-    fn recover_user_writes_user_to_empty_state_file() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let users_file = dir.path().join("users.json");
-
-        recover_user(&users_file, "Alice", "hunter2").unwrap();
-
-        // Read it back: user landed in the state file with a
-        // verifiable password.
-        let coll = users::load(&users_file).unwrap();
-        let u = coll.find_by_username("alice").unwrap();
-        assert!(underwrap_backendd::auth::verify_password(
-            &u.password_hash,
-            "hunter2"
-        ));
-        // Sentinel is NOT set — recovery deliberately stays "offline".
-        assert!(!users::bootstrap_completed(&users_file).unwrap());
-    }
-
-    #[test]
-    fn recover_user_refuses_existing_username() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let users_file = dir.path().join("users.json");
-        recover_user(&users_file, "alice", "p1").unwrap();
-        let err = recover_user(&users_file, "Alice", "p2").unwrap_err();
-        assert!(err.to_string().contains("already exists"));
-    }
-
-    #[test]
-    fn recover_user_rejects_empty_password() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let users_file = dir.path().join("users.json");
-        let err = recover_user(&users_file, "alice", "").unwrap_err();
-        assert!(err.to_string().contains("password"));
     }
 }

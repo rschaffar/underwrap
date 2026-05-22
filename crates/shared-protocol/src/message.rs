@@ -2,13 +2,9 @@
 //!
 //! All messages use the binary framing/codec defined in [`crate::ipc`].
 
-#[path = "message/common.rs"]
 mod common;
-#[path = "message/errors.rs"]
 mod errors;
-#[path = "message/wrapper.rs"]
 mod wrapper;
-#[path = "message/wrapper_resource.rs"]
 mod wrapper_resource;
 
 pub use common::SecretBytes;
