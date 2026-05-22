@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { StoresPage } from "./stores";
+import { StoresPage } from "./stores/page";
 
 function mockJson(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
