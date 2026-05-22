@@ -7,11 +7,15 @@
 //! permissions so authorizations don't silently survive across the
 //! reassignment.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::{Path, State};
+use axum::routing::get;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response, StatusCode};
-use std::collections::HashMap;
+use hyper::{Response, StatusCode};
 
 use underwrap_protocol::service::{
     AdminClientInstanceActionState, AdminClientInstanceCreateRequest,
@@ -21,8 +25,9 @@ use underwrap_protocol::service::{
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::policy::drop_client_instance_permissions;
-use crate::http::responses::{error_response, json_response, parse_json_body};
+use crate::http::responses::{error_response, json_response, parse_body};
 use crate::runtime_state::AdminRuntimeState;
+use crate::users::Principal;
 
 pub(crate) fn write_admin_client_instance_audit(
     operator: &str,
@@ -178,21 +183,6 @@ pub(crate) fn handle_admin_client_instance_detail(
     }
 }
 
-/// HTTP entry point. Split from [`handle_admin_client_instance_create`]
-/// so unit tests in `client_instances/tests.rs` can drive the create
-/// directly without synthesising a `Request<Incoming>`.
-pub(crate) async fn handle_admin_client_instance_create_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<AdminClientInstanceCreateRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_client_instance_create(state, principal, &body)
-}
-
 pub(crate) fn handle_admin_client_instance_create(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -303,22 +293,6 @@ pub(crate) fn handle_admin_client_instance_create(
         StatusCode::OK,
         &admin_client_instance_detail(&record, current_store_name, actions),
     )
-}
-
-/// HTTP entry point. Split from [`handle_admin_client_instance_update`]
-/// so unit tests in `client_instances/tests.rs` can drive the update
-/// directly without synthesising a `Request<Incoming>`.
-pub(crate) async fn handle_admin_client_instance_update_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    id: &str,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<AdminClientInstanceUpdateRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_client_instance_update(state, principal, id, &body)
 }
 
 pub(crate) fn handle_admin_client_instance_update(
@@ -516,44 +490,60 @@ pub(crate) fn handle_admin_client_instance_delete(
     )
 }
 
-pub(crate) async fn route(
-    method: &Method,
-    path: &str,
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route(
+            "/v1/admin/client-instances",
+            get(axum_list).post(axum_create),
+        )
+        .route(
+            "/v1/admin/client-instances/{id}",
+            get(axum_detail).put(axum_update).delete(axum_delete),
+        )
+}
+
+async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
+    handle_admin_client_instances_list(&state)
+}
+
+async fn axum_create(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
 ) -> Response<Full<Bytes>> {
-    if path == "/v1/admin/client-instances" {
-        return match *method {
-            Method::GET => handle_admin_client_instances_list(state),
-            Method::POST => {
-                handle_admin_client_instance_create_endpoint(state, principal, request).await
-            }
-            _ => error_response(
-                StatusCode::METHOD_NOT_ALLOWED,
-                "method_not_allowed",
-                "GET or POST",
-            ),
-        };
-    }
-    if let Some(rest) = path.strip_prefix("/v1/admin/client-instances/")
-        && !rest.is_empty()
-        && !rest.contains('/')
-    {
-        return match *method {
-            Method::GET => handle_admin_client_instance_detail(state, rest),
-            Method::PUT => {
-                handle_admin_client_instance_update_endpoint(state, principal, rest, request).await
-            }
-            Method::DELETE => handle_admin_client_instance_delete(state, principal, rest),
-            _ => error_response(
-                StatusCode::METHOD_NOT_ALLOWED,
-                "method_not_allowed",
-                "GET, PUT, or DELETE",
-            ),
-        };
-    }
-    error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint")
+    let parsed: AdminClientInstanceCreateRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_client_instance_create(&state, &principal, &parsed)
+}
+
+async fn axum_detail(
+    State(state): State<Arc<AdminRuntimeState>>,
+    Path(id): Path<String>,
+) -> Response<Full<Bytes>> {
+    handle_admin_client_instance_detail(&state, &id)
+}
+
+async fn axum_update(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: AdminClientInstanceUpdateRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_client_instance_update(&state, &principal, &id, &parsed)
+}
+
+async fn axum_delete(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Path(id): Path<String>,
+) -> Response<Full<Bytes>> {
+    handle_admin_client_instance_delete(&state, &principal, &id)
 }
 
 #[cfg(test)]

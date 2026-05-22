@@ -6,11 +6,15 @@
 //! is the only multi-step one and is intentionally a single
 //! load-modify-save against the blob so the file flip stays atomic.
 
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::State;
+use axum::routing::post;
 use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Response, StatusCode};
 
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource::ResourceSlot;
@@ -20,12 +24,13 @@ use underwrap_store::{
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
-use crate::http::responses::{error_response, json_response, parse_json_body};
+use crate::http::responses::{error_response, json_response, parse_body};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::secret_entries::{
     delete_resource_entry, list_secret_entries, read_resource_entry,
     validate_and_compose_secret_id, write_resource_entry,
 };
+use crate::users::Principal;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_admin_secret_audit(
@@ -77,16 +82,10 @@ pub(crate) fn write_admin_secret_rename_audit(
     );
 }
 
-pub(crate) async fn handle_admin_secret_read(
+pub(crate) fn handle_admin_secret_read(
     state: &AdminRuntimeState,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminSecretReadRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminSecretReadRequest>(request)
-        .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     let secret_id = match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key) {
         Ok(id) => id,
         Err(resp) => return resp,
@@ -107,34 +106,10 @@ pub(crate) async fn handle_admin_secret_read(
     }
 }
 
-/// HTTP entry point. Split from [`handle_admin_secret_write`] so unit
-/// tests in `secrets/tests.rs` can drive the write directly.
-pub(crate) async fn handle_admin_secret_write_endpoint(
+pub(crate) fn handle_admin_secret_list(
     state: &AdminRuntimeState,
-    actor: &str,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminSecretListRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminSecretWriteRequest>(
-        request,
-    )
-    .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_secret_write(state, actor, &body)
-}
-
-pub(crate) async fn handle_admin_secret_list(
-    state: &AdminRuntimeState,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminSecretListRequest>(request)
-        .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     match admin_store(state, &body.store) {
         Ok(store) => match list_secret_entries(store.as_ref(), body.resource_id.as_deref()) {
             Ok(entries) => json_response(
@@ -147,21 +122,14 @@ pub(crate) async fn handle_admin_secret_list(
     }
 }
 
-pub(crate) async fn handle_admin_secret_delete(
+pub(crate) fn handle_admin_secret_delete(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminSecretDeleteRequest,
 ) -> Response<Full<Bytes>> {
     // Admin deletes are always allowed once per-store access
     // has been checked; per-resource write flags only gate
     // wrapper-side writes.
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminSecretDeleteRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
     let secret_id = match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key) {
         Ok(id) => id,
         Err(resp) => return resp,
@@ -201,23 +169,6 @@ pub(crate) async fn handle_admin_secret_delete(
             error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
         }
     }
-}
-
-/// HTTP entry point. Split from [`handle_admin_secret_rename`] so unit
-/// tests in `secrets/tests.rs` can drive the rename directly.
-pub(crate) async fn handle_admin_secret_rename_endpoint(
-    state: &AdminRuntimeState,
-    actor: &str,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminSecretRenameRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
-    handle_admin_secret_rename(state, actor, &body)
 }
 
 pub(crate) fn handle_admin_secret_write(
@@ -413,27 +364,71 @@ pub(crate) fn handle_admin_secret_rename(
     )
 }
 
-pub(crate) async fn route(
-    method: &Method,
-    path: &str,
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route("/v1/admin/secret/read", post(axum_read))
+        .route("/v1/admin/secret/write", post(axum_write))
+        .route("/v1/admin/secret/list", post(axum_list))
+        .route("/v1/admin/secret/delete", post(axum_delete))
+        .route("/v1/admin/secret/rename", post(axum_rename))
+}
+
+async fn axum_read(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
 ) -> Response<Full<Bytes>> {
-    match (method, path) {
-        (&Method::POST, "/v1/admin/secret/read") => handle_admin_secret_read(state, request).await,
-        (&Method::POST, "/v1/admin/secret/write") => {
-            handle_admin_secret_write_endpoint(state, &principal.username, request).await
-        }
-        (&Method::POST, "/v1/admin/secret/list") => handle_admin_secret_list(state, request).await,
-        (&Method::POST, "/v1/admin/secret/delete") => {
-            handle_admin_secret_delete(state, principal, request).await
-        }
-        (&Method::POST, "/v1/admin/secret/rename") => {
-            handle_admin_secret_rename_endpoint(state, &principal.username, request).await
-        }
-        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
-    }
+    let parsed: underwrap_protocol::service::AdminSecretReadRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_secret_read(&state, &parsed)
+}
+
+async fn axum_write(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminSecretWriteRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_secret_write(&state, &principal.username, &parsed)
+}
+
+async fn axum_list(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminSecretListRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_secret_list(&state, &parsed)
+}
+
+async fn axum_delete(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminSecretDeleteRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_secret_delete(&state, &principal, &parsed)
+}
+
+async fn axum_rename(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminSecretRenameRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_secret_rename(&state, &principal.username, &parsed)
 }
 
 #[cfg(test)]

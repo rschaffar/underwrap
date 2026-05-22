@@ -1,21 +1,24 @@
 //! Wrapper / resource pair admin CRUD:
 //! `/v1/admin/pairs/{list, create, delete}`.
 
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::State;
+use axum::routing::post;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response, StatusCode};
-
-use crate::http::responses::parse_json_body;
+use hyper::{Response, StatusCode};
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
-use crate::http::responses::{error_response, json_response};
+use crate::http::responses::{error_response, json_response, parse_body};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
     ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document,
     load_resources_document, save_pairs_document,
 };
+use crate::users::Principal;
 
 pub(crate) fn write_admin_pair_audit(
     operator: &str,
@@ -37,49 +40,10 @@ pub(crate) fn write_admin_pair_audit(
     );
 }
 
-/// HTTP entry point. Split from [`handle_admin_pair_create`] so unit
-/// tests in `pairs/tests.rs` can drive the handler directly without
-/// synthesising a `Request<Incoming>`.
-pub(crate) async fn handle_admin_pair_create_endpoint(
+pub(crate) fn handle_admin_pairs_list(
     state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminPairsListRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminPairCreateRequest>(request)
-        .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_pair_create(state, principal, &body)
-}
-
-/// HTTP entry point. Split from [`handle_admin_pair_delete`] so unit
-/// tests in `pairs/tests.rs` can drive the handler directly.
-pub(crate) async fn handle_admin_pair_delete_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminPairDeleteRequest>(request)
-        .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_pair_delete(state, principal, &body)
-}
-
-pub(crate) async fn handle_admin_pairs_list(
-    state: &AdminRuntimeState,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminPairsListRequest>(request)
-        .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -287,23 +251,46 @@ pub(crate) fn handle_admin_pair_delete(
     )
 }
 
-pub(crate) async fn route(
-    method: &Method,
-    path: &str,
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route("/v1/admin/pairs/list", post(axum_list))
+        .route("/v1/admin/pairs/create", post(axum_create))
+        .route("/v1/admin/pairs/delete", post(axum_delete))
+}
+
+async fn axum_list(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
 ) -> Response<Full<Bytes>> {
-    match (method, path) {
-        (&Method::POST, "/v1/admin/pairs/list") => handle_admin_pairs_list(state, request).await,
-        (&Method::POST, "/v1/admin/pairs/create") => {
-            handle_admin_pair_create_endpoint(state, principal, request).await
-        }
-        (&Method::POST, "/v1/admin/pairs/delete") => {
-            handle_admin_pair_delete_endpoint(state, principal, request).await
-        }
-        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
-    }
+    let parsed: underwrap_protocol::service::AdminPairsListRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_pairs_list(&state, &parsed)
+}
+
+async fn axum_create(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminPairCreateRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_pair_create(&state, &principal, &parsed)
+}
+
+async fn axum_delete(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminPairDeleteRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_pair_delete(&state, &principal, &parsed)
 }
 
 #[cfg(test)]

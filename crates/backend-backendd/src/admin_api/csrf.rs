@@ -16,16 +16,21 @@
 //!    `Set-Cookie` so the SPA always has a value matching the live
 //!    session.
 
+use std::sync::Arc;
+
+use axum::extract::{Request, State};
+use axum::middleware::Next;
+use axum::response::IntoResponse;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Method, Response, StatusCode};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::http::responses::error_response;
 use crate::runtime_state::AdminRuntimeState;
 
 /// Result of authenticating an admin request.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct AdminAuth(pub(crate) crate::auth::SessionPayload);
 
 impl AdminAuth {
@@ -153,6 +158,11 @@ pub(crate) fn resolve_principal(
 
 /// Refresh the CSRF cookie on every authenticated admin response so
 /// the SPA always has a value matching the live session.
+///
+/// The production path uses [`attach_csrf_cookie_layer`], which inlines
+/// the same logic into an Axum middleware. This standalone form is
+/// retained as a unit-test entry point.
+#[cfg(test)]
 pub(crate) fn attach_csrf_cookie(
     mut response: Response<Full<Bytes>>,
     state: &AdminRuntimeState,
@@ -161,6 +171,106 @@ pub(crate) fn attach_csrf_cookie(
     let payload = auth.session();
     let cookie = crate::auth::render_csrf_cookie(
         &payload.csrf_secret,
+        state.session_lifetime_secs,
+        state.cookies_secure,
+    );
+    match hyper::header::HeaderValue::from_str(&cookie) {
+        Ok(v) => {
+            response.headers_mut().append(hyper::header::SET_COOKIE, v);
+        }
+        Err(e) => {
+            warn!(err = %e, "could not append CSRF cookie header");
+        }
+    }
+    response
+}
+
+/// Axum middleware that authenticates the request via the session
+/// cookie and inserts the `AdminAuth` extension. Short-circuits with
+/// 401 on missing/invalid/revoked.
+pub(crate) async fn authenticate_layer(
+    State(state): State<Arc<AdminRuntimeState>>,
+    mut request: Request,
+    next: Next,
+) -> axum::response::Response {
+    let auth = match authenticate_admin(&state, request.headers()) {
+        Ok(a) => a,
+        Err(AdminAuthError::Revoked) => {
+            warn!("rejected admin request: session revoked");
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "session_revoked",
+                "session has been revoked",
+            )
+            .into_response();
+        }
+        Err(AdminAuthError::Unauthenticated(reason)) => {
+            warn!(reason = reason, "rejected admin request");
+            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", reason)
+                .into_response();
+        }
+    };
+    request.extensions_mut().insert(auth);
+    next.run(request).await
+}
+
+/// Axum middleware that runs the CSRF double-submit check against the
+/// `AdminAuth` extension. Must run after [`authenticate_layer`].
+pub(crate) async fn check_csrf_layer(request: Request, next: Next) -> axum::response::Response {
+    let auth = request
+        .extensions()
+        .get::<AdminAuth>()
+        .expect("authenticate_layer must run before check_csrf_layer")
+        .clone();
+    if let Err((code, msg)) = check_csrf(request.method(), request.headers(), &auth.0.csrf_secret) {
+        warn!(reason = msg, code = code, "rejected admin request (csrf)");
+        return error_response(StatusCode::FORBIDDEN, code, msg).into_response();
+    }
+    next.run(request).await
+}
+
+/// Axum middleware that resolves the live `Principal` from the user
+/// collection and inserts it as a request extension. Must run after
+/// [`authenticate_layer`].
+pub(crate) async fn resolve_principal_layer(
+    State(state): State<Arc<AdminRuntimeState>>,
+    mut request: Request,
+    next: Next,
+) -> axum::response::Response {
+    let auth = request
+        .extensions()
+        .get::<AdminAuth>()
+        .expect("authenticate_layer must run before resolve_principal_layer")
+        .clone();
+    let principal = match resolve_principal(&state, &auth) {
+        Ok(p) => p,
+        Err(resp) => return resp.into_response(),
+    };
+    info!(
+        user = %principal.username,
+        method = %request.method(),
+        path = request.uri().path(),
+        "admin request",
+    );
+    request.extensions_mut().insert(principal);
+    next.run(request).await
+}
+
+/// Axum middleware (run as `map_response` via `from_fn`) that refreshes
+/// the CSRF cookie on every authenticated admin response.
+pub(crate) async fn attach_csrf_cookie_layer(
+    State(state): State<Arc<AdminRuntimeState>>,
+    request: Request,
+    next: Next,
+) -> axum::response::Response {
+    let auth = request
+        .extensions()
+        .get::<AdminAuth>()
+        .expect("authenticate_layer must run before attach_csrf_cookie_layer")
+        .clone();
+    let mut response = next.run(request).await;
+    let cookie = crate::auth::render_csrf_cookie(
+        &auth.0.csrf_secret,
         state.session_lifetime_secs,
         state.cookies_secure,
     );

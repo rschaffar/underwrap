@@ -2,8 +2,7 @@
 
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Response, StatusCode};
 use std::sync::Arc;
 
 use underwrap_protocol::config::StoreRecord;
@@ -14,7 +13,7 @@ use underwrap_protocol::service::{
 };
 use underwrap_store::StorageBackend;
 
-use crate::http::responses::{error_response, json_response, parse_json_body};
+use crate::http::responses::{error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{LoadedStoreRecord, StoreState, save_store_records};
 
@@ -87,25 +86,6 @@ pub(super) fn handle_admin_store_detail(
     )
 }
 
-/// HTTP entry point. Split from [`handle_admin_store_create`] so
-/// `test_support::create_store_for_test` and `stores/crud/tests.rs`
-/// can drive the create directly without synthesising a request.
-pub(super) async fn handle_admin_store_create_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<AdminStoreCreateRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_store_create(state, principal, &body)
-}
-
-/// Body-already-parsed half of [`handle_admin_store_create_endpoint`].
-/// Split out so unit tests can drive it without synthesising a
-/// `Request<Incoming>` (which `hyper` doesn't expose constructors
-/// for). The HTTP-shaped handler above is exercised by Playwright.
 pub(crate) fn handle_admin_store_create(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -249,21 +229,6 @@ pub(crate) fn handle_admin_store_create(
             key_hex: generated_key_hex,
         },
     )
-}
-
-/// HTTP entry point. Split from [`handle_admin_store_update`] so unit
-/// tests in `stores/crud/tests.rs` can drive the update directly.
-pub(super) async fn handle_admin_store_update_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    name: &str,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<AdminStoreUpdateRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_store_update(state, principal, name, &body)
 }
 
 pub(crate) fn handle_admin_store_update(

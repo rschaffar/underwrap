@@ -14,33 +14,38 @@
 //! lock on the in-memory registry update.
 
 use anyhow::{Context, Result};
+use axum::Router;
+use axum::extract::{Path as AxumPath, Query, State};
+use axum::routing::get;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Response, StatusCode};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use underwrap_protocol::service::{
-    AdminStoreActionState, AdminStoreBackendKind, AdminStoreDetailResponse, AdminStoreListItem,
+    AdminStoreActionState, AdminStoreBackendKind, AdminStoreCreateRequest,
+    AdminStoreDetailResponse, AdminStoreListItem, AdminStoreUnlockRequest, AdminStoreUpdateRequest,
     AdminStoreUsageSummary,
 };
 use underwrap_store::StorageBackend;
 
 use crate::admin_api::audit::log_admin_event;
-use crate::http::responses::{error_response, store_locked_response};
+use crate::http::responses::{error_response, parse_body, store_locked_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{LoadedStoreRecord, RegistryLookupError};
+use crate::users::Principal;
 
 pub(crate) mod crud;
 pub(crate) mod lifecycle;
 
 use crud::{
-    handle_admin_store_create_endpoint, handle_admin_store_delete, handle_admin_store_detail,
-    handle_admin_store_update_endpoint, handle_admin_stores_list,
+    handle_admin_store_create, handle_admin_store_delete, handle_admin_store_detail,
+    handle_admin_store_update, handle_admin_stores_list,
 };
 use lifecycle::{
-    handle_admin_store_lock, handle_admin_store_rotate_key, handle_admin_store_unlock_endpoint,
+    handle_admin_store_lock, handle_admin_store_rotate_key, handle_admin_store_unlock,
 };
 
 /// Resolve a store reference for an authenticated request. Any
@@ -280,80 +285,109 @@ pub(crate) fn write_admin_store_audit(
     );
 }
 
-pub(crate) async fn route(
-    method: &Method,
-    path: &str,
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route("/v1/admin/stores", get(axum_list).post(axum_create))
+        .route(
+            "/v1/admin/stores/{name}",
+            get(axum_detail).put(axum_update).delete(axum_delete),
+        )
+        .route(
+            "/v1/admin/stores/{name}/rotate-key",
+            axum::routing::post(axum_rotate_key),
+        )
+        .route(
+            "/v1/admin/stores/{name}/unlock",
+            axum::routing::post(axum_unlock),
+        )
+        .route(
+            "/v1/admin/stores/{name}/lock",
+            axum::routing::post(axum_lock),
+        )
+}
+
+async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
+    handle_admin_stores_list(&state)
+}
+
+async fn axum_create(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
 ) -> Response<Full<Bytes>> {
-    if path == "/v1/admin/stores" {
-        return match *method {
-            Method::GET => handle_admin_stores_list(state),
-            Method::POST => handle_admin_store_create_endpoint(state, principal, request).await,
-            _ => error_response(
-                StatusCode::METHOD_NOT_ALLOWED,
-                "method_not_allowed",
-                "GET or POST",
-            ),
-        };
-    }
-    if let Some(rest) = path.strip_prefix("/v1/admin/stores/") {
-        if let Some(name) = rest.strip_suffix("/rotate-key")
-            && !name.is_empty()
-            && !name.contains('/')
-        {
-            return match *method {
-                Method::POST => handle_admin_store_rotate_key(state, principal, name).await,
-                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
-            };
-        }
-        if let Some(name) = rest.strip_suffix("/unlock")
-            && !name.is_empty()
-            && !name.contains('/')
-        {
-            return match *method {
-                Method::POST => {
-                    handle_admin_store_unlock_endpoint(state, principal, name, request).await
-                }
-                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
-            };
-        }
-        if let Some(name) = rest.strip_suffix("/lock")
-            && !name.is_empty()
-            && !name.contains('/')
-        {
-            return match *method {
-                Method::POST => handle_admin_store_lock(state, principal, name),
-                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
-            };
-        }
-        if !rest.is_empty() && !rest.contains('/') {
-            return match *method {
-                Method::GET => handle_admin_store_detail(state, rest),
-                Method::PUT => {
-                    handle_admin_store_update_endpoint(state, principal, rest, request).await
-                }
-                Method::DELETE => {
-                    let force = request
-                        .uri()
-                        .query()
-                        .map(|q| {
-                            q.split('&')
-                                .any(|pair| matches!(pair, "force=true" | "force=1" | "force"))
-                        })
-                        .unwrap_or(false);
-                    handle_admin_store_delete(state, principal, rest, force)
-                }
-                _ => error_response(
-                    StatusCode::METHOD_NOT_ALLOWED,
-                    "method_not_allowed",
-                    "GET, PUT, or DELETE",
-                ),
-            };
-        }
-    }
-    error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint")
+    let parsed: AdminStoreCreateRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_store_create(&state, &principal, &parsed)
+}
+
+async fn axum_detail(
+    State(state): State<Arc<AdminRuntimeState>>,
+    AxumPath(name): AxumPath<String>,
+) -> Response<Full<Bytes>> {
+    handle_admin_store_detail(&state, &name)
+}
+
+async fn axum_update(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: AdminStoreUpdateRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_store_update(&state, &principal, &name, &parsed)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DeleteQuery {
+    #[serde(default)]
+    force: Option<String>,
+}
+
+async fn axum_delete(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+    Query(query): Query<DeleteQuery>,
+) -> Response<Full<Bytes>> {
+    let force = query
+        .force
+        .as_deref()
+        .is_some_and(|v| matches!(v, "true" | "1" | ""));
+    handle_admin_store_delete(&state, &principal, &name, force)
+}
+
+async fn axum_rotate_key(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+) -> Response<Full<Bytes>> {
+    handle_admin_store_rotate_key(&state, &principal, &name).await
+}
+
+async fn axum_unlock(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: AdminStoreUnlockRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_store_unlock(&state, &principal, &name, &parsed)
+}
+
+async fn axum_lock(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+) -> Response<Full<Bytes>> {
+    handle_admin_store_lock(&state, &principal, &name)
 }
 
 #[cfg(test)]

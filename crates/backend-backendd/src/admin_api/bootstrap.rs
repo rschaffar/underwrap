@@ -9,14 +9,18 @@
 //! After this succeeds once, further calls are refused even if every
 //! operator is later deleted.
 
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::State;
+use axum::routing::{get, post};
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Response, StatusCode};
 use tracing::{info, warn};
 
 use crate::admin_api::audit::log_admin_event;
-use crate::http::responses::{error_response, json_response, parse_json_body};
+use crate::http::responses::{error_response, json_response, parse_body};
 use crate::runtime_state::AdminRuntimeState;
 
 #[derive(serde::Deserialize, ts_rs::TS)]
@@ -61,14 +65,10 @@ pub(crate) fn handle_admin_bootstrap_status(state: &AdminRuntimeState) -> Respon
 /// issues a session in one round trip. After this succeeds, the
 /// endpoint refuses further calls even if every operator is later
 /// deleted.
-pub(crate) async fn handle_admin_bootstrap(
+pub(crate) fn handle_admin_bootstrap(
     state: &AdminRuntimeState,
-    request: Request<Incoming>,
+    body: &BootstrapRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<BootstrapRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     let username_norm = crate::users::normalise_username(&body.username);
     if username_norm.is_empty() {
         return error_response(
@@ -201,6 +201,32 @@ pub(crate) async fn handle_admin_bootstrap(
             username: record.username.clone(),
         },
     )
+}
+
+pub(crate) fn public_router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route(
+            "/v1/admin/auth/bootstrap/status",
+            get(axum_bootstrap_status),
+        )
+        .route("/v1/admin/auth/bootstrap", post(axum_bootstrap))
+}
+
+async fn axum_bootstrap_status(
+    State(state): State<Arc<AdminRuntimeState>>,
+) -> Response<Full<Bytes>> {
+    handle_admin_bootstrap_status(&state)
+}
+
+async fn axum_bootstrap(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: BootstrapRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_bootstrap(&state, &parsed)
 }
 
 /// Log one bootstrap attempt outcome. Best effort: never fails the caller.

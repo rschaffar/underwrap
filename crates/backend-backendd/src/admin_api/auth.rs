@@ -6,14 +6,21 @@
 //! SPA can use it for the login / bootstrap redirect dance. Password
 //! change is the self-service "rotate my own password" surface.
 
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::State;
+use axum::routing::{get, post};
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::HeaderMap;
+use hyper::{Response, StatusCode};
 use tracing::{info, warn};
 
-use crate::http::responses::{error_response, json_response, parse_json_body};
+use crate::admin_api::csrf::AdminAuth;
+use crate::http::responses::{error_response, json_response, parse_body};
 use crate::runtime_state::AdminRuntimeState;
+use crate::users::Principal;
 
 /// Issue a freshly-encrypted session cookie + matching CSRF cookie and
 /// return the 200 response with the JSON `body`. Shared by login,
@@ -82,15 +89,10 @@ pub struct WhoamiResponse {
     pub username: Option<String>,
 }
 
-pub(crate) async fn handle_admin_login(
+pub(crate) fn handle_admin_login(
     state: &AdminRuntimeState,
-    request: Request<Incoming>,
+    body: &LoginRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<LoginRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-
     let username_norm = crate::users::normalise_username(&body.username);
     if username_norm.is_empty() {
         return error_response(
@@ -246,18 +248,14 @@ pub(crate) fn handle_admin_whoami(
 /// `POST /v1/admin/auth/password` — self-service password change for
 /// the currently authenticated user. Requires the current password as
 /// proof-of-possession.
-pub(crate) async fn handle_admin_password_change(
+pub(crate) fn handle_admin_password_change(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminPasswordChangeRequest,
 ) -> Response<Full<Bytes>> {
     use crate::admin_api::users::{mutate_collection, write_admin_user_audit};
-    use underwrap_protocol::service::{AdminOkUserResponse, AdminPasswordChangeRequest};
+    use underwrap_protocol::service::AdminOkUserResponse;
 
-    let body = match parse_json_body::<AdminPasswordChangeRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     if body.new_password.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -342,24 +340,53 @@ pub(crate) async fn handle_admin_password_change(
     }
 }
 
-/// Authenticated auth routes — currently just `auth/password`.
-/// Login + whoami are public (dispatched inline before the
-/// session-cookie gate). `auth/logout` is dispatched inline in
-/// [`crate::admin_api::handle_admin_request`] because it consumes the
-/// `AdminAuth` struct, not the resolved `Principal`.
-pub(crate) async fn route(
-    method: &Method,
-    path: &str,
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+pub(crate) fn public_router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route("/v1/admin/auth/login", post(axum_login))
+        .route("/v1/admin/auth/whoami", get(axum_whoami))
+}
+
+pub(crate) fn protected_router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route("/v1/admin/auth/password", post(axum_password_change))
+        .route("/v1/admin/auth/logout", post(axum_logout))
+}
+
+async fn axum_login(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
 ) -> Response<Full<Bytes>> {
-    match (method, path) {
-        (&Method::POST, "/v1/admin/auth/password") => {
-            handle_admin_password_change(state, principal, request).await
-        }
-        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
-    }
+    let parsed: LoginRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_login(&state, &parsed)
+}
+
+async fn axum_whoami(
+    State(state): State<Arc<AdminRuntimeState>>,
+    headers: HeaderMap,
+) -> Response<Full<Bytes>> {
+    handle_admin_whoami(&state, &headers)
+}
+
+async fn axum_logout(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(auth): axum::Extension<AdminAuth>,
+) -> Response<Full<Bytes>> {
+    handle_admin_logout(&state, auth.session())
+}
+
+async fn axum_password_change(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminPasswordChangeRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_password_change(&state, &principal, &parsed)
 }
 
 #[cfg(test)]

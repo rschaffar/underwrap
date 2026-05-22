@@ -2,8 +2,7 @@
 
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Response, StatusCode};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::warn;
@@ -11,9 +10,7 @@ use tracing::warn;
 use underwrap_protocol::service::AdminStoreRotateKeyResponse;
 use underwrap_store::StorageBackend;
 
-use crate::http::responses::{
-    error_response, json_response, parse_json_body, store_locked_response,
-};
+use crate::http::responses::{error_response, json_response, store_locked_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{StoreState, save_store_records};
 
@@ -381,25 +378,6 @@ fn reencrypt_into(
 /// the registry. Wrong keys never transition the registry to
 /// `Unlocked`; the registry stays `Locked` and the response surfaces a
 /// structured `key_mismatch` code.
-/// HTTP entry point. Split from [`handle_admin_store_unlock`] so unit
-/// tests in `stores/lifecycle/tests.rs` can drive the unlock directly.
-pub(super) async fn handle_admin_store_unlock_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    name: &str,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminStoreUnlockRequest>(
-        request,
-    )
-    .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_store_unlock(state, principal, name, &body)
-}
-
 pub(crate) fn handle_admin_store_unlock(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,

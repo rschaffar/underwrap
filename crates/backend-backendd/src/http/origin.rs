@@ -7,10 +7,18 @@
 //! malformed allowlist entries; [`check_admin_origin`] runs on every
 //! state-changing admin request once the daemon is live.
 
+use std::sync::Arc;
+
 use anyhow::Result;
-use hyper::Method;
+use axum::extract::{Request, State};
+use axum::middleware::Next;
+use axum::response::Response;
+use hyper::{Method, StatusCode};
+use tracing::warn;
 
 use crate::config::AdminConfig;
+use crate::http::responses::error_response;
+use crate::runtime_state::AdminRuntimeState;
 
 /// Validate the browser-facing admin configuration.
 pub(crate) fn validate_admin_config(config: &AdminConfig) -> Result<()> {
@@ -76,6 +84,25 @@ pub(crate) fn referer_to_origin(referer: &str) -> Option<String> {
         return None;
     }
     Some(format!("{scheme}://{authority}"))
+}
+
+/// Axum middleware that runs the origin check before the inner service.
+/// Short-circuits with `403 bad_origin` on rejection.
+pub(crate) async fn origin_layer(
+    State(state): State<Arc<AdminRuntimeState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    use axum::response::IntoResponse;
+    if let Err(reason) = check_admin_origin(
+        request.method(),
+        request.headers(),
+        state.allowed_origins.as_deref(),
+    ) {
+        warn!(reason = reason, "rejected admin request (origin check)");
+        return error_response(StatusCode::FORBIDDEN, "bad_origin", reason).into_response();
+    }
+    next.run(request).await
 }
 
 #[cfg(test)]

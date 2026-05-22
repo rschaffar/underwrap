@@ -5,24 +5,18 @@
 //! Content-Type) consistent across the surface.
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use http_body_util::Full;
+use hyper::{Response, StatusCode};
 
-pub(crate) async fn parse_json_body<T: serde::de::DeserializeOwned>(
-    request: Request<Incoming>,
+/// Parse `Bytes` (collected by Axum's request body extractor) into the
+/// caller's request type, returning the canonical `invalid_request`
+/// 400 on failure. Axum's built-in `Json` extractor would produce a
+/// different error envelope, so we keep ours.
+#[allow(clippy::result_large_err)]
+pub(crate) fn parse_body<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
 ) -> std::result::Result<T, Response<Full<Bytes>>> {
-    let body = match request.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(e) => {
-            return Err(error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                &format!("failed to read request body: {e}"),
-            ));
-        }
-    };
-    serde_json::from_slice(&body).map_err(|e| {
+    serde_json::from_slice(bytes).map_err(|e| {
         error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",

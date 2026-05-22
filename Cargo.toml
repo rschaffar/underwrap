@@ -36,9 +36,11 @@ clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
-axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio", "matched-path", "tower-log", "query"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace"] }
 hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
 http-body-util = "0.1"
 bytes = "1"
 rustls = "0.23"

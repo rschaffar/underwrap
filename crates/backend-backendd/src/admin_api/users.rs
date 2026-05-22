@@ -6,11 +6,15 @@
 //! by the user-collection mutex and the uniqueness / last-user
 //! invariants live in one place.
 
+use std::sync::Arc;
+
 use anyhow::Result;
+use axum::Router;
+use axum::extract::{Path, State};
+use axum::routing::get;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Response, StatusCode};
 use tracing::warn;
 
 use underwrap_protocol::service::{
@@ -19,9 +23,9 @@ use underwrap_protocol::service::{
 };
 
 use crate::admin_api::audit::log_admin_event;
-use crate::http::responses::{error_response, json_response, parse_json_body};
+use crate::http::responses::{error_response, json_response, parse_body};
 use crate::runtime_state::AdminRuntimeState;
-use crate::users::UserMutationError;
+use crate::users::{Principal, UserMutationError};
 
 pub(crate) fn user_list_item(record: &crate::users::UserRecord) -> AdminUserListItem {
     AdminUserListItem {
@@ -153,20 +157,6 @@ pub(crate) fn handle_admin_user_detail(
     }
 }
 
-/// HTTP entry point. Split from [`handle_admin_user_create`] so unit
-/// tests in `users/tests.rs` can drive the create directly.
-pub(crate) async fn handle_admin_user_create_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<AdminUserCreateRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_user_create(state, principal, &body)
-}
-
 pub(crate) fn handle_admin_user_create(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -236,21 +226,6 @@ pub(crate) fn handle_admin_user_create(
     }
 }
 
-/// HTTP entry point. Split from [`handle_admin_user_update`] so unit
-/// tests in `users/tests.rs` can drive the update directly.
-pub(crate) async fn handle_admin_user_update_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    id: &str,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<AdminUserUpdateRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_user_update(state, principal, id, &body)
-}
-
 pub(crate) fn handle_admin_user_update(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -285,16 +260,12 @@ pub(crate) fn handle_admin_user_update(
     }
 }
 
-pub(crate) async fn handle_admin_user_reset_password(
+pub(crate) fn handle_admin_user_reset_password(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     id: &str,
-    request: Request<Incoming>,
+    body: &AdminUserResetPasswordRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<AdminUserResetPasswordRequest>(request).await {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     if body.password.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -386,52 +357,79 @@ pub(crate) fn handle_admin_user_delete(
     }
 }
 
-pub(crate) async fn route(
-    method: &Method,
-    path: &str,
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route(
+            "/v1/admin/users",
+            get(axum_users_list).post(axum_user_create),
+        )
+        .route(
+            "/v1/admin/users/{id}",
+            get(axum_user_detail)
+                .put(axum_user_update)
+                .delete(axum_user_delete),
+        )
+        .route(
+            "/v1/admin/users/{id}/password",
+            axum::routing::post(axum_user_reset_password),
+        )
+}
+
+async fn axum_users_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
+    handle_admin_users_list(&state)
+}
+
+async fn axum_user_create(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
 ) -> Response<Full<Bytes>> {
-    if path == "/v1/admin/users" {
-        return match *method {
-            Method::GET => handle_admin_users_list(state),
-            Method::POST => handle_admin_user_create_endpoint(state, principal, request).await,
-            _ => error_response(
-                StatusCode::METHOD_NOT_ALLOWED,
-                "method_not_allowed",
-                "GET or POST",
-            ),
-        };
-    }
-    if let Some(rest) = path.strip_prefix("/v1/admin/users/") {
-        if let Some(id) = rest.strip_suffix("/password")
-            && !id.is_empty()
-            && !id.contains('/')
-        {
-            return match *method {
-                Method::POST => {
-                    handle_admin_user_reset_password(state, principal, id, request).await
-                }
-                _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
-            };
-        }
-        if !rest.is_empty() && !rest.contains('/') {
-            return match *method {
-                Method::GET => handle_admin_user_detail(state, rest),
-                Method::PUT => {
-                    handle_admin_user_update_endpoint(state, principal, rest, request).await
-                }
-                Method::DELETE => handle_admin_user_delete(state, principal, rest),
-                _ => error_response(
-                    StatusCode::METHOD_NOT_ALLOWED,
-                    "method_not_allowed",
-                    "GET, PUT, or DELETE",
-                ),
-            };
-        }
-    }
-    error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint")
+    let parsed: AdminUserCreateRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_user_create(&state, &principal, &parsed)
+}
+
+async fn axum_user_detail(
+    State(state): State<Arc<AdminRuntimeState>>,
+    Path(id): Path<String>,
+) -> Response<Full<Bytes>> {
+    handle_admin_user_detail(&state, &id)
+}
+
+async fn axum_user_update(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: AdminUserUpdateRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_user_update(&state, &principal, &id, &parsed)
+}
+
+async fn axum_user_delete(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Path(id): Path<String>,
+) -> Response<Full<Bytes>> {
+    handle_admin_user_delete(&state, &principal, &id)
+}
+
+async fn axum_user_reset_password(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: AdminUserResetPasswordRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_user_reset_password(&state, &principal, &id, &parsed)
 }
 
 #[cfg(test)]

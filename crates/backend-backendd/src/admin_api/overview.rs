@@ -6,10 +6,12 @@
 //! from a tile they can't act on directly.
 
 use anyhow::Result;
+use axum::Router;
+use axum::extract::State;
+use axum::routing::get;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Response, StatusCode};
 use std::sync::Arc;
 
 use underwrap_store::StorageBackend;
@@ -91,15 +93,10 @@ pub(crate) fn handle_admin_ui_overview(state: &AdminRuntimeState) -> Response<Fu
     }
 }
 
-pub(crate) async fn route(
-    method: &Method,
-    path: &str,
-    state: &AdminRuntimeState,
-    _principal: &crate::users::Principal,
-    _request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    match (method, path) {
-        (&Method::GET, "/v1/admin/ui/overview") => handle_admin_ui_overview(state),
-        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
-    }
+pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new().route("/v1/admin/ui/overview", get(axum_overview))
+}
+
+async fn axum_overview(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
+    handle_admin_ui_overview(&state)
 }

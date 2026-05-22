@@ -6,25 +6,28 @@
 //! resource. Delete refuses with structured blockers if secrets,
 //! pairs, or wrapper permissions still reference the resource.
 
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::State;
+use axum::routing::post;
 use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response, StatusCode};
-
-use crate::http::responses::parse_json_body;
+use hyper::{Response, StatusCode};
 
 use underwrap_store::{load_resource_blob, save_resource_blob};
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
-use crate::http::responses::{error_response, json_response};
+use crate::http::responses::{error_response, json_response, parse_body};
 use crate::runtime_api::wrappers::generate_resource_id;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
     ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document,
     load_resources_document, resource_secret_dependents, save_resources_document,
 };
+use crate::users::Principal;
 
 pub(crate) fn write_admin_resource_audit(
     operator: &str,
@@ -43,73 +46,6 @@ pub(crate) fn write_admin_resource_audit(
         operation,
         result,
     );
-}
-
-/// HTTP entry point. Split from [`handle_admin_resources_list`] so
-/// unit tests in `resources/tests.rs` can drive the handler directly.
-pub(crate) async fn handle_admin_resources_list_endpoint(
-    state: &AdminRuntimeState,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminResourcesListRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
-    handle_admin_resources_list(state, &body)
-}
-
-/// HTTP entry point. Split from [`handle_admin_resource_create`] so
-/// unit tests in `resources/tests.rs` can drive the handler directly.
-pub(crate) async fn handle_admin_resource_create_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminResourceCreateRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
-    handle_admin_resource_create(state, principal, &body)
-}
-
-/// HTTP entry point. Split from [`handle_admin_resource_delete`] so
-/// unit tests in `resources/tests.rs` can drive the handler directly.
-pub(crate) async fn handle_admin_resource_delete_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminResourceDeleteRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
-    handle_admin_resource_delete(state, principal, &body)
-}
-
-/// HTTP entry point. Split from [`handle_admin_resource_rename`] so
-/// unit tests in `resources/tests.rs` can drive the handler directly.
-pub(crate) async fn handle_admin_resource_rename_endpoint(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminResourceRenameRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
-    handle_admin_resource_rename(state, principal, &body)
 }
 
 pub(crate) fn handle_admin_resources_list(
@@ -138,17 +74,10 @@ pub(crate) fn handle_admin_resources_list(
     }
 }
 
-pub(crate) async fn handle_admin_resource_blob_get(
+pub(crate) fn handle_admin_resource_blob_get(
     state: &AdminRuntimeState,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminResourceBlobGetRequest,
 ) -> Response<Full<Bytes>> {
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminResourceBlobGetRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -181,19 +110,12 @@ pub(crate) async fn handle_admin_resource_blob_get(
     )
 }
 
-pub(crate) async fn handle_admin_resource_blob_put(
+pub(crate) fn handle_admin_resource_blob_put(
     state: &AdminRuntimeState,
     operator: &str,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminResourceBlobPutRequest,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::resource_blob::ResourceBlob;
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminResourceBlobPutRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -519,34 +441,84 @@ pub(crate) fn handle_admin_resource_rename(
     )
 }
 
-pub(crate) async fn route(
-    method: &Method,
-    path: &str,
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route("/v1/admin/resources/list", post(axum_list))
+        .route("/v1/admin/resources/create", post(axum_create))
+        .route("/v1/admin/resources/delete", post(axum_delete))
+        .route("/v1/admin/resources/rename", post(axum_rename))
+        .route("/v1/admin/resources/blob/get", post(axum_blob_get))
+        .route("/v1/admin/resources/blob/put", post(axum_blob_put))
+}
+
+async fn axum_list(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
 ) -> Response<Full<Bytes>> {
-    match (method, path) {
-        (&Method::POST, "/v1/admin/resources/list") => {
-            handle_admin_resources_list_endpoint(state, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/create") => {
-            handle_admin_resource_create_endpoint(state, principal, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/delete") => {
-            handle_admin_resource_delete_endpoint(state, principal, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/rename") => {
-            handle_admin_resource_rename_endpoint(state, principal, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/blob/get") => {
-            handle_admin_resource_blob_get(state, request).await
-        }
-        (&Method::POST, "/v1/admin/resources/blob/put") => {
-            handle_admin_resource_blob_put(state, &principal.username, request).await
-        }
-        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
-    }
+    let parsed: underwrap_protocol::service::AdminResourcesListRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_resources_list(&state, &parsed)
+}
+
+async fn axum_create(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminResourceCreateRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_resource_create(&state, &principal, &parsed)
+}
+
+async fn axum_delete(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminResourceDeleteRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_resource_delete(&state, &principal, &parsed)
+}
+
+async fn axum_rename(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminResourceRenameRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_resource_rename(&state, &principal, &parsed)
+}
+
+async fn axum_blob_get(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminResourceBlobGetRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_resource_blob_get(&state, &parsed)
+}
+
+async fn axum_blob_put(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminResourceBlobPutRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_resource_blob_put(&state, &principal.username, &parsed)
 }
 
 #[cfg(test)]

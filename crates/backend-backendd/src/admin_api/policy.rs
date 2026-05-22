@@ -12,17 +12,22 @@
 //! admin module calls when an instance is reassigned to a different
 //! store.
 
+use std::sync::Arc;
+
 use anyhow::Result;
+use axum::Router;
+use axum::extract::State;
+use axum::routing::post;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Response, StatusCode};
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
-use crate::http::responses::{error_response, json_response, parse_json_body};
+use crate::http::responses::{error_response, json_response, parse_body};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{load_policy_document, save_policy_document};
+use crate::users::Principal;
 
 /// Strip every wrapper permission whose `client_instance` matches
 /// `client_instance_id` from the policy document of `store_id`. Used
@@ -73,16 +78,10 @@ pub(crate) fn write_admin_permission_audit(
     );
 }
 
-pub(crate) async fn handle_admin_policy_get(
+pub(crate) fn handle_admin_policy_get(
     state: &AdminRuntimeState,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminPolicyGetRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminPolicyGetRequest>(request)
-        .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     match admin_store(state, &body.store) {
         Ok(store) => match load_policy_document(store.as_ref()) {
             Ok(doc) => json_response(
@@ -95,16 +94,10 @@ pub(crate) async fn handle_admin_policy_get(
     }
 }
 
-pub(crate) async fn handle_admin_policy_put(
+pub(crate) fn handle_admin_policy_put(
     state: &AdminRuntimeState,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminPolicyPutRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminPolicyPutRequest>(request)
-        .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     match admin_store(state, &body.store) {
         Ok(store) => match save_policy_document(store.as_ref(), &body.document) {
             Ok(()) => json_response(
@@ -117,37 +110,10 @@ pub(crate) async fn handle_admin_policy_put(
     }
 }
 
-/// HTTP entry point. Split from [`handle_admin_wrapper_permission_upsert`]
-/// so unit tests in `client_instances/tests.rs` can drive the upsert
-/// directly without synthesising a `Request<Incoming>`.
-pub(crate) async fn handle_admin_wrapper_permission_upsert_endpoint(
+pub(crate) fn handle_admin_wrapper_permissions_list(
     state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminWrapperPermissionsListRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<
-        underwrap_protocol::service::AdminWrapperPermissionUpsertRequest,
-    >(request)
-    .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_wrapper_permission_upsert(state, principal, &body)
-}
-
-pub(crate) async fn handle_admin_wrapper_permissions_list(
-    state: &AdminRuntimeState,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<
-        underwrap_protocol::service::AdminWrapperPermissionsListRequest,
-    >(request)
-    .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -232,19 +198,11 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
     )
 }
 
-pub(crate) async fn handle_admin_wrapper_permission_delete(
+pub(crate) fn handle_admin_wrapper_permission_delete(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
-    request: Request<Incoming>,
+    body: &underwrap_protocol::service::AdminWrapperPermissionDeleteRequest,
 ) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<
-        underwrap_protocol::service::AdminWrapperPermissionDeleteRequest,
-    >(request)
-    .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -298,25 +256,80 @@ pub(crate) async fn handle_admin_wrapper_permission_delete(
     )
 }
 
-pub(crate) async fn route(
-    method: &Method,
-    path: &str,
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    request: Request<Incoming>,
+pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
+    Router::new()
+        .route("/v1/admin/policy/get", post(axum_policy_get))
+        .route("/v1/admin/policy/put", post(axum_policy_put))
+        .route(
+            "/v1/admin/wrapper-permissions/list",
+            post(axum_permissions_list),
+        )
+        .route(
+            "/v1/admin/wrapper-permissions/upsert",
+            post(axum_permission_upsert),
+        )
+        .route(
+            "/v1/admin/wrapper-permissions/delete",
+            post(axum_permission_delete),
+        )
+}
+
+async fn axum_policy_get(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
 ) -> Response<Full<Bytes>> {
-    match (method, path) {
-        (&Method::POST, "/v1/admin/policy/get") => handle_admin_policy_get(state, request).await,
-        (&Method::POST, "/v1/admin/policy/put") => handle_admin_policy_put(state, request).await,
-        (&Method::POST, "/v1/admin/wrapper-permissions/list") => {
-            handle_admin_wrapper_permissions_list(state, request).await
-        }
-        (&Method::POST, "/v1/admin/wrapper-permissions/upsert") => {
-            handle_admin_wrapper_permission_upsert_endpoint(state, principal, request).await
-        }
-        (&Method::POST, "/v1/admin/wrapper-permissions/delete") => {
-            handle_admin_wrapper_permission_delete(state, principal, request).await
-        }
-        _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
-    }
+    let parsed: underwrap_protocol::service::AdminPolicyGetRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_policy_get(&state, &parsed)
+}
+
+async fn axum_policy_put(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminPolicyPutRequest = match parse_body(&body) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    handle_admin_policy_put(&state, &parsed)
+}
+
+async fn axum_permissions_list(
+    State(state): State<Arc<AdminRuntimeState>>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminWrapperPermissionsListRequest =
+        match parse_body(&body) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+    handle_admin_wrapper_permissions_list(&state, &parsed)
+}
+
+async fn axum_permission_upsert(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminWrapperPermissionUpsertRequest =
+        match parse_body(&body) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+    handle_admin_wrapper_permission_upsert(&state, &principal, &parsed)
+}
+
+async fn axum_permission_delete(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
+    let parsed: underwrap_protocol::service::AdminWrapperPermissionDeleteRequest =
+        match parse_body(&body) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+    handle_admin_wrapper_permission_delete(&state, &principal, &parsed)
 }
