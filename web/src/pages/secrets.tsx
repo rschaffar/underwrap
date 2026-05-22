@@ -32,7 +32,6 @@ import {
   type AdminSecretListResponse,
   type AdminSecretReadResponse,
   type AdminStoresListResponse,
-  type EntityCreator,
   fetchClientInstances,
   fetchStores,
   postResourceCreate,
@@ -49,6 +48,7 @@ import {
   type WhoamiResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
+import { describeCreator } from "@/lib/creator";
 
 interface SecretsPageProps {
   /**
@@ -527,18 +527,6 @@ function ResourceBlock({
       </div>
     </details>
   );
-}
-
-function describeCreator(
-  creator: EntityCreator,
-  displayNameById?: Map<string, string>,
-): string {
-  switch (creator.kind) {
-    case "operator":
-      return creator.username;
-    case "client-instance":
-      return `client ${displayNameById?.get(creator.id) ?? creator.id}`;
-  }
 }
 
 function SlotSection({

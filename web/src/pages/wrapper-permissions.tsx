@@ -27,7 +27,6 @@ import {
   type AdminResourcesListResponse,
   type AdminStoresListResponse,
   type AdminWrapperPermissionsListResponse,
-  type EntityCreator,
   fetchClientInstances,
   fetchStores,
   postPairCreate,
@@ -45,6 +44,12 @@ import {
   type WrapperResourcePairRecord,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
+import {
+  formatEpochAbsolute,
+  formatEpochRelative,
+  toDatetimeLocal,
+} from "@/lib/epoch";
+import { describeCreator } from "@/lib/creator";
 
 interface WrapperPermissionsPageProps {
   principal?: WhoamiResponse | null;
@@ -66,48 +71,6 @@ export interface WrapperResource {
 
 export function wrapperResourceKey(wr: WrapperResource): string {
   return `${wr.wrapper}|${wr.resource_id}`;
-}
-
-/** Format a u64 epoch as a relative time label ("3 min ago"). */
-export function formatRelativeFromEpoch(
-  epoch: bigint | number | null | undefined,
-  now: number = Date.now(),
-): string {
-  if (epoch === null || epoch === undefined) return "never";
-  const n = typeof epoch === "bigint" ? Number(epoch) : epoch;
-  if (!n) return "never";
-  const diffSecs = Math.round(now / 1000 - n);
-  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-  const abs = Math.abs(diffSecs);
-  if (abs < 60) return rtf.format(-diffSecs, "second");
-  if (abs < 3600) return rtf.format(-Math.round(diffSecs / 60), "minute");
-  if (abs < 86400) return rtf.format(-Math.round(diffSecs / 3600), "hour");
-  return rtf.format(-Math.round(diffSecs / 86400), "day");
-}
-
-/** Format a u64 epoch as a full local ISO-style timestamp for tooltips. */
-function formatEpochFull(epoch: bigint | number | null | undefined): string {
-  if (epoch === null || epoch === undefined) return "never";
-  const n = typeof epoch === "bigint" ? Number(epoch) : epoch;
-  if (!n) return "never";
-  return new Date(n * 1000).toLocaleString();
-}
-
-/**
- * Render an `EntityCreator` as a short human-readable label. When the
- * creator is a runtime client instance, prefer the operator-facing
- * display name resolved from `displayNameById` over the opaque id.
- */
-function describeCreator(
-  creator: EntityCreator,
-  displayNameById?: Map<string, string>,
-): string {
-  switch (creator.kind) {
-    case "operator":
-      return creator.username;
-    case "client-instance":
-      return `client ${displayNameById?.get(creator.id) ?? creator.id}`;
-  }
 }
 
 /** Collect every distinct runtime client instance mentioned in permissions. */
@@ -495,7 +458,7 @@ function ResourceGroupedPairsTable({
                 wrapper: pair.wrapper,
                 resource_id: pair.resource_id,
               };
-              const provenance = `Created ${formatEpochFull(
+              const provenance = `Created ${formatEpochAbsolute(
                 pair.created_at,
               )} by ${describeCreator(pair.created_by, displayNameById)}`;
               const isFirstInGroup = indexWithinGroup === 0;
@@ -529,13 +492,13 @@ function ResourceGroupedPairsTable({
                   </td>
                   <td
                     className="px-4 py-3 text-xs text-(--color-muted)"
-                    title={`Last used: ${formatEpochFull(pair.last_used_at)}`}
+                    title={`Last used: ${formatEpochAbsolute(pair.last_used_at)}`}
                     data-testid={`wrappers-last-used-${pair.wrapper}-${pair.resource_id}`}
                   >
                     {pair.last_used_at == null ? (
                       <span className="opacity-60">never used</span>
                     ) : (
-                      <>used {formatRelativeFromEpoch(pair.last_used_at)}</>
+                      <>used {formatEpochRelative(pair.last_used_at)}</>
                     )}
                   </td>
                   {clientInstances.map((c) => {
@@ -1128,12 +1091,3 @@ function EditCellDialog({
   );
 }
 
-function toDatetimeLocal(date: Date): string {
-  // <input type="datetime-local"> wants `YYYY-MM-DDTHH:MM` in the
-  // browser's local timezone with no timezone suffix. The
-  // tzoffset arithmetic shifts a UTC Date back into local space
-  // before slicing the ISO string.
-  const offsetMs = date.getTimezoneOffset() * 60_000;
-  const local = new Date(date.getTime() - offsetMs);
-  return local.toISOString().slice(0, 16);
-}

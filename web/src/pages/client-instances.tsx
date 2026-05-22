@@ -25,15 +25,9 @@ import {
   type WhoamiResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
+import { formatEpochAbsolute } from "@/lib/epoch";
 
 type ClientStatusFilter = "all" | "active" | "disabled";
-
-function formatEpoch(epoch?: bigint | number): string {
-  if (epoch === undefined) return "Never";
-  const n = typeof epoch === "bigint" ? Number(epoch) : epoch;
-  if (!n) return "Never";
-  return new Date(n * 1000).toLocaleString();
-}
 
 function toDetail(
   item: AdminClientInstancesListResponse["items"][number],
@@ -161,7 +155,7 @@ export function ClientInstancesPage(_props: {
                       <StatusBadge status={item.status} />{" "}
                       <AutoCreateBadge enabled={item.auto_create_wrapper_assets} />
                     </td>
-                    <td className="px-4 py-3 text-(--color-muted)">{formatEpoch(item.last_seen_at)}</td>
+                    <td className="px-4 py-3 text-(--color-muted)">{formatEpochAbsolute(item.last_seen_at)}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex gap-2">
                         <Button

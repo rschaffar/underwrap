@@ -4,12 +4,12 @@ import { render } from "@testing-library/react";
 import {
   ModeBadge,
   deriveClientInstances,
-  formatRelativeFromEpoch,
   groupPairsByResource,
   modeKind,
   sortPairs,
   wrapperResourceKey,
 } from "./wrapper-permissions";
+import { formatEpochRelative } from "@/lib/epoch";
 import type {
   WrapperPermission,
   WrapperApprovalMode,
@@ -97,17 +97,17 @@ describe("derivation helpers", () => {
     expect(github.pairs.map((p) => p.wrapper)).toEqual(["gh-authorized", "gh-cli"]);
   });
 
-  it("formatRelativeFromEpoch renders 'never' for null/undefined/zero", () => {
-    expect(formatRelativeFromEpoch(null)).toBe("never");
-    expect(formatRelativeFromEpoch(undefined)).toBe("never");
-    expect(formatRelativeFromEpoch(0n)).toBe("never");
+  it("formatEpochRelative renders 'never' for null/undefined/zero", () => {
+    expect(formatEpochRelative(null)).toBe("never");
+    expect(formatEpochRelative(undefined)).toBe("never");
+    expect(formatEpochRelative(0n)).toBe("never");
   });
 
-  it("formatRelativeFromEpoch renders a relative label for a recent epoch", () => {
+  it("formatEpochRelative renders a relative label for a recent epoch", () => {
     // Anchor "now" so the test isn't time-sensitive. 90 seconds ago.
     const now = 1_700_000_000_000;
     const epoch = BigInt(now / 1000 - 90);
-    const label = formatRelativeFromEpoch(epoch, now);
+    const label = formatEpochRelative(epoch, now);
     // Intl.RelativeTimeFormat localizes the output. Just assert it
     // contains a unit hint, not the exact phrasing.
     expect(label.length).toBeGreaterThan(0);

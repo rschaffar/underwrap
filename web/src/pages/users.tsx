@@ -35,6 +35,7 @@ import {
   type WhoamiResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
+import { formatEpochDate } from "@/lib/epoch";
 
 interface UsersPageProps {
   /** Whoami payload from the router context. Used to mark the current
@@ -123,16 +124,6 @@ export function UsersPage({ principal }: UsersPageProps) {
   );
 }
 
-// ---------- Helpers ----------
-
-function formatEpoch(epoch: bigint | number): string {
-  // u64 fields come over the wire as bigint; the visible Date range
-  // we'd ever show comfortably fits in a JS number.
-  const n = typeof epoch === "bigint" ? Number(epoch) : epoch;
-  if (!n) return "—";
-  return new Date(n * 1000).toLocaleDateString();
-}
-
 // ---------- Table ----------
 
 interface UsersTableProps {
@@ -183,10 +174,10 @@ function UsersTable({
                   ) : null}
                 </td>
                 <td className="px-4 py-3 text-(--color-muted)">
-                  {formatEpoch(u.created_at)}
+                  {formatEpochDate(u.created_at)}
                 </td>
                 <td className="px-4 py-3 text-(--color-muted)">
-                  {formatEpoch(u.password_changed_at)}
+                  {formatEpochDate(u.password_changed_at)}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="inline-flex gap-2">
