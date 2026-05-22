@@ -24,10 +24,6 @@ use crate::admin_api::policy::drop_client_instance_permissions;
 use crate::http::responses::{error_response, json_response, parse_json_body};
 use crate::runtime_state::AdminRuntimeState;
 
-pub(crate) fn generate_client_instance_id() -> String {
-    crate::ids::random_id("inst")
-}
-
 fn client_instance_status_to_wire(
     status: crate::runtime_clients::ClientInstanceStatus,
 ) -> AdminClientInstanceStatus {
@@ -209,17 +205,13 @@ pub(crate) fn handle_admin_client_instance_create(
             return error_response(StatusCode::BAD_REQUEST, "unknown_store", "unknown store");
         }
     }
-    let id = loop {
-        let candidate = generate_client_instance_id();
-        if !state
+    let id = crate::ids::fresh_id("inst", |candidate| {
+        state
             .client_instances
             .read()
             .unwrap()
-            .contains_key(&candidate)
-        {
-            break candidate;
-        }
-    };
+            .contains_key(candidate)
+    });
     let mut instances = state.client_instances.write().unwrap();
     if instances
         .values()

@@ -271,9 +271,5 @@ pub fn is_valid_store_id(name: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
-pub(crate) fn generate_store_id() -> String {
-    crate::ids::random_id("store")
-}
-
 #[cfg(test)]
 mod tests;

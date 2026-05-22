@@ -36,7 +36,7 @@ use crate::http::responses::{
 };
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{
-    LoadedStoreRecord, RegistryLookupError, StoreState, generate_store_id, save_store_records,
+    LoadedStoreRecord, RegistryLookupError, StoreState, save_store_records,
 };
 
 /// Resolve a store reference for an authenticated request. Any
@@ -322,18 +322,9 @@ pub(crate) fn handle_admin_store_create(
     }
     let visible_name = visible_name.to_string();
 
-    let store_id = loop {
-        let candidate = generate_store_id();
-        if !state
-            .stores
-            .read()
-            .unwrap()
-            .records
-            .contains_key(&candidate)
-        {
-            break candidate;
-        }
-    };
+    let store_id = crate::ids::fresh_id("store", |candidate| {
+        state.stores.read().unwrap().records.contains_key(candidate)
+    });
 
     let validated_dir = match resolve_store_dir(state, &store_id) {
         Ok(p) => p,
