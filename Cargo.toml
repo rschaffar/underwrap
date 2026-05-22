@@ -61,4 +61,6 @@ base64 = "0.22"
 hex = "0.4"
 signature = "2"
 ts-rs = "12"
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
 serde_jcs = "0.2"

@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub(crate) mod http;
 pub(crate) mod ids;
+pub mod openapi;
 pub(crate) mod runtime_api;
 pub mod runtime_clients;
 pub(crate) mod runtime_state;

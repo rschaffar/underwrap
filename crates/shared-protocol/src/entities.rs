@@ -35,7 +35,7 @@ pub const PAIRS_DOCUMENT_SECRET_ID: &str = "__underwrap/pairs/document";
 /// register resources/pairs by hand through the admin API) from
 /// runtime client instances (which auto-create on startup when their
 /// `auto_create_wrapper_assets` flag is on).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum EntityCreator {
@@ -66,7 +66,7 @@ pub enum EntityCreator {
 /// `name` is the operator-facing label. Mutable via the admin rename
 /// endpoint; what wrapper configs reference (operator-friendly); what
 /// the SPA shows. Duplicates rejected on insert and on rename.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct ResourceRecord {
     pub id: String,
@@ -85,7 +85,7 @@ pub struct ResourceRecord {
 /// `last_used_at` is bumped server-side on every successful runtime
 /// open and finalize against the pair. `None` means the pair has
 /// never been used since the record was created.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct WrapperResourcePairRecord {
     pub wrapper: String,
@@ -98,7 +98,7 @@ pub struct WrapperResourcePairRecord {
 
 /// Store-backed resources document. Missing-document-means-empty
 /// semantics (see [`ResourcesDocument::default`]).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct ResourcesDocument {
     #[serde(default)]
@@ -106,7 +106,7 @@ pub struct ResourcesDocument {
 }
 
 /// Store-backed pairs document.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct PairsDocument {
     #[serde(default)]

@@ -44,7 +44,7 @@ pub fn libsecret_resource(resource_id: &str) -> String {
 }
 
 /// The three logical slots inside a resource blob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS, utoipa::ToSchema)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum ResourceSlot {

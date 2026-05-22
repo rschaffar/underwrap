@@ -125,4 +125,3 @@ async fn head_request_returns_empty_body_with_headers() {
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     assert!(body.is_empty(), "HEAD body must be empty");
 }
-

@@ -16,7 +16,7 @@ use crate::resource::ResourceSlot;
 /// One user record as visible to the admin UI. Mirrors
 /// `crate::users::UserRecord` minus the password hash, which the API
 /// never returns.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminUserListItem {
     pub id: String,
@@ -25,13 +25,13 @@ pub struct AdminUserListItem {
     pub password_changed_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminUsersListResponse {
     pub users: Vec<AdminUserListItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminUserDetailResponse {
     pub id: String,
@@ -40,7 +40,7 @@ pub struct AdminUserDetailResponse {
     pub password_changed_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminUserCreateRequest {
     pub username: String,
@@ -49,7 +49,7 @@ pub struct AdminUserCreateRequest {
     pub password: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminUserUpdateRequest {
     /// New username. Omit to keep the existing one.
@@ -58,13 +58,13 @@ pub struct AdminUserUpdateRequest {
     pub username: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminUserResetPasswordRequest {
     pub password: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminOkUserResponse {
     pub ok: bool,
@@ -75,7 +75,7 @@ pub struct AdminOkUserResponse {
 /// session. Distinct from `POST /v1/admin/users/{id}/password`, which
 /// is the admin reset path and doesn't require the target's old
 /// password.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPasswordChangeRequest {
     pub current_password: String,
@@ -92,7 +92,7 @@ pub struct ServiceErrorResponse {
 /// admin UI can switch on it without having to mirror the full
 /// `StorageConfig` discriminant logic; per-kind details (currently
 /// only `dir`) live on the detail response.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum AdminStoreBackendKind {
@@ -100,7 +100,7 @@ pub enum AdminStoreBackendKind {
     Encrypted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreUsageSummary {
     /// How many runtime client instances currently map to this store.
@@ -109,7 +109,7 @@ pub struct AdminStoreUsageSummary {
     pub has_secrets: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreActionState {
     /// Whether this principal may edit the store metadata.
@@ -130,7 +130,7 @@ pub struct AdminStoreActionState {
     pub can_force_delete: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreListItem {
     /// Stable internal identifier used for routing and runtime mapping.
@@ -151,13 +151,13 @@ pub struct AdminStoreListItem {
     pub actions: AdminStoreActionState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoresListResponse {
     pub items: Vec<AdminStoreListItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreDetailResponse {
     /// Stable internal identifier used for routing and runtime mapping.
@@ -182,7 +182,7 @@ pub struct AdminStoreDetailResponse {
     pub actions: AdminStoreActionState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreCreateRequest {
     pub name: String,
@@ -197,7 +197,7 @@ pub struct AdminStoreCreateRequest {
 /// key (hex-encoded) and is returned **exactly once** — subsequent GETs
 /// of the store never expose the key value. Plain stores have
 /// `key_hex == None`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreCreateResponse {
     pub store: AdminStoreDetailResponse,
@@ -212,7 +212,7 @@ pub struct AdminStoreCreateResponse {
 /// response is sent; `warning` carries a one-line reminder that the
 /// operator is solely responsible for saving the new value (the
 /// backend does not store it on disk).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreRotateKeyResponse {
     pub key_hex: String,
@@ -222,13 +222,13 @@ pub struct AdminStoreRotateKeyResponse {
 /// Body of `POST /v1/admin/stores/{id}/unlock`. The operator pastes
 /// in the 64-character hex master key that was issued at store
 /// creation (or rotation). Whitespace around the value is tolerated.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreUnlockRequest {
     pub key_hex: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreUpdateRequest {
     /// New display name. Pass an empty string to clear it (invalid);
@@ -243,7 +243,7 @@ pub struct AdminStoreUpdateRequest {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminStoreDeleteResponse {
     pub ok: bool,
@@ -255,7 +255,7 @@ pub struct AdminStoreDeleteResponse {
     pub cleanup_hint: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 #[serde(rename_all = "kebab-case")]
 pub enum AdminClientInstanceStatus {
@@ -263,7 +263,7 @@ pub enum AdminClientInstanceStatus {
     Disabled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminClientInstanceActionState {
     /// Whether this principal may edit the display-name metadata.
@@ -280,7 +280,7 @@ pub struct AdminClientInstanceActionState {
     pub can_delete: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminClientInstanceListItem {
     pub id: String,
@@ -300,13 +300,13 @@ pub struct AdminClientInstanceListItem {
     pub actions: AdminClientInstanceActionState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminClientInstancesListResponse {
     pub items: Vec<AdminClientInstanceListItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminClientInstanceDetailResponse {
     pub id: String,
@@ -328,7 +328,7 @@ pub struct AdminClientInstanceDetailResponse {
     pub actions: AdminClientInstanceActionState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminClientInstanceCreateRequest {
     pub display_name: String,
@@ -345,7 +345,7 @@ pub struct AdminClientInstanceCreateRequest {
     pub auto_create_wrapper_assets: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminClientInstanceUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -370,7 +370,7 @@ pub struct AdminClientInstanceUpdateRequest {
     pub auto_create_wrapper_assets: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminUiWrapperCounts {
     pub locked: usize,
@@ -378,7 +378,7 @@ pub struct AdminUiWrapperCounts {
     pub unlocked_until: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminUiOverviewStore {
     pub store: String,
@@ -390,7 +390,7 @@ pub struct AdminUiOverviewStore {
     pub writable_permission_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminUiOverviewResponse {
     pub stores: Vec<AdminUiOverviewStore>,
@@ -406,7 +406,7 @@ pub struct AdminUiOverviewResponse {
 // "first-match `/<slot>/` wins" parsing ambiguity from the admin
 // surface and lets us validate keys per slot.
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminSecretReadRequest {
     pub store: String,
@@ -415,13 +415,13 @@ pub struct AdminSecretReadRequest {
     pub key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminSecretReadResponse {
     pub material_b64: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminSecretWriteRequest {
     pub store: String,
@@ -431,7 +431,7 @@ pub struct AdminSecretWriteRequest {
     pub material_b64: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminSecretListRequest {
     pub store: String,
@@ -443,7 +443,7 @@ pub struct AdminSecretListRequest {
 }
 
 /// One per-slot entry as listed by the admin surface.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminSecretEntry {
     pub resource_id: String,
@@ -451,13 +451,13 @@ pub struct AdminSecretEntry {
     pub key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminSecretListResponse {
     pub entries: Vec<AdminSecretEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminSecretDeleteRequest {
     pub store: String,
@@ -474,7 +474,7 @@ pub struct AdminSecretDeleteRequest {
 /// `material_b64 = None` means "keep the existing material under
 /// `from_key`"; `Some(_)` overwrites in the same step. Rename refuses
 /// when `to_key` already exists (callers must delete it explicitly).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminSecretRenameRequest {
     pub store: String,
@@ -487,25 +487,25 @@ pub struct AdminSecretRenameRequest {
     pub material_b64: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminSecretDeleteResponse {
     pub existed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPolicyGetRequest {
     pub store: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPolicyGetResponse {
     pub document: PolicyDocument,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPolicyPutRequest {
     pub store: String,
@@ -519,26 +519,26 @@ pub struct AdminPolicyPutRequest {
 // `writable` flag on the permission decides wrapper-side writes for
 // the `files`/`libsecret` slots.
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminWrapperPermissionsListRequest {
     pub store: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminWrapperPermissionsListResponse {
     pub permissions: Vec<WrapperPermission>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminWrapperPermissionUpsertRequest {
     pub store: String,
     pub permission: WrapperPermission,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminWrapperPermissionDeleteRequest {
     pub store: String,
@@ -547,7 +547,7 @@ pub struct AdminWrapperPermissionDeleteRequest {
     pub resource_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminOkResponse {
     pub ok: bool,
@@ -562,7 +562,7 @@ pub struct AdminOkResponse {
 /// The composite key for a wrapper permission. Used in delete-refusal
 /// responses so the SPA can render a "you must clear these wrapper
 /// permissions first" list.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminWrapperPermissionKey {
     pub client_instance: String,
@@ -570,32 +570,32 @@ pub struct AdminWrapperPermissionKey {
     pub resource_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourcesListRequest {
     pub store: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourcesListResponse {
     pub resources: Vec<ResourceRecord>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceCreateRequest {
     pub store: String,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceCreateResponse {
     pub resource: ResourceRecord,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceDeleteRequest {
     pub store: String,
@@ -604,7 +604,7 @@ pub struct AdminResourceDeleteRequest {
 
 /// Rename an existing resource by id. The id stays stable; the name
 /// changes. Returns the updated record.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceRenameRequest {
     pub store: String,
@@ -612,14 +612,14 @@ pub struct AdminResourceRenameRequest {
     pub new_name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceRenameResponse {
     pub resource: ResourceRecord,
 }
 
 /// Request whole-blob get/put for a resource.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceBlobGetRequest {
     pub store: String,
@@ -628,13 +628,13 @@ pub struct AdminResourceBlobGetRequest {
 
 /// JCS-canonical JSON bytes of the resource blob, base64-encoded for
 /// HTTP transport.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceBlobGetResponse {
     pub blob_b64: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceBlobPutRequest {
     pub store: String,
@@ -642,7 +642,7 @@ pub struct AdminResourceBlobPutRequest {
     pub blob_b64: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceBlobPutResponse {
     pub ok: bool,
@@ -651,7 +651,7 @@ pub struct AdminResourceBlobPutResponse {
 /// Counts plus a short sample of names per dependent kind. The sample
 /// is capped server-side so a heavily-used resource doesn't return
 /// thousands of strings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema, Default)]
 #[ts(export)]
 pub struct AdminResourceDeleteBlockers {
     pub secret_count: u32,
@@ -665,7 +665,7 @@ pub struct AdminResourceDeleteBlockers {
     pub sample_permissions: Vec<AdminWrapperPermissionKey>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminResourceDeleteResponse {
     pub ok: bool,
@@ -674,19 +674,19 @@ pub struct AdminResourceDeleteResponse {
     pub blocked_by: Option<AdminResourceDeleteBlockers>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPairsListRequest {
     pub store: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPairsListResponse {
     pub pairs: Vec<WrapperResourcePairRecord>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPairCreateRequest {
     pub store: String,
@@ -694,13 +694,13 @@ pub struct AdminPairCreateRequest {
     pub resource_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPairCreateResponse {
     pub pair: WrapperResourcePairRecord,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPairDeleteRequest {
     pub store: String,
@@ -708,7 +708,7 @@ pub struct AdminPairDeleteRequest {
     pub resource_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema, Default)]
 #[ts(export)]
 pub struct AdminPairDeleteBlockers {
     pub permission_count: u32,
@@ -716,7 +716,7 @@ pub struct AdminPairDeleteBlockers {
     pub sample_permissions: Vec<AdminWrapperPermissionKey>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct AdminPairDeleteResponse {
     pub ok: bool,
@@ -729,7 +729,7 @@ pub struct AdminPairDeleteResponse {
 /// resource-delete blocker payloads to name the dependent pairs that
 /// would have to be cleaned up before the delete can proceed. The
 /// persisted record (`WrapperResourcePairRecord`) adds provenance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct ServiceWrapperResourcePair {
     pub wrapper: String,

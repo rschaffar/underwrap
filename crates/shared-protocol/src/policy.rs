@@ -32,7 +32,7 @@ pub enum PolicyDecision {
 }
 
 /// Runtime mode for one [`WrapperPermission`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 #[derive(Default)]
@@ -57,7 +57,7 @@ pub enum WrapperApprovalMode {
 /// error code `duplicate_permission`. `resource_id` is the stable
 /// backend id, so renaming a resource preserves every permission
 /// that references it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct WrapperPermission {
     pub client_instance: String,
@@ -78,7 +78,7 @@ pub struct WrapperPermission {
 }
 
 /// Store-backed policy document.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct PolicyDocument {
     /// The flat list of wrapper permissions. One per

@@ -29,20 +29,20 @@ use crate::users::{Principal, UserRecord};
 
 pub(crate) type AdminAuthSession = AuthSession<AuthBackend>;
 
-#[derive(serde::Deserialize, ts_rs::TS)]
+#[derive(serde::Deserialize, ts_rs::TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct LoginRequest {
     username: String,
     password: String,
 }
 
-#[derive(serde::Serialize, ts_rs::TS)]
+#[derive(serde::Serialize, ts_rs::TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct LoginResponse {
     pub username: String,
 }
 
-#[derive(serde::Serialize, ts_rs::TS)]
+#[derive(serde::Serialize, ts_rs::TS, utoipa::ToSchema)]
 #[ts(export)]
 pub struct WhoamiResponse {
     pub authenticated: bool,
