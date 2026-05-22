@@ -182,11 +182,6 @@ pub fn load_store_records(stores_file: &Path) -> Result<HashMap<String, LoadedSt
     };
     let doc: StoreRegistryDocument = serde_json::from_str(&text)
         .with_context(|| format!("parsing store registry {}", stores_file.display()))?;
-    anyhow::ensure!(
-        doc.version == 1,
-        "unsupported store registry version {}",
-        doc.version
-    );
     let mut out: HashMap<String, LoadedStoreRecord> = HashMap::new();
     let mut names = std::collections::BTreeSet::new();
     for record in doc.stores {
@@ -227,7 +222,7 @@ pub(crate) fn save_store_records(
 ) -> Result<()> {
     let mut stores: Vec<StoreRecord> = records.values().map(|r| r.record.clone()).collect();
     stores.sort_by(|a, b| a.id.cmp(&b.id));
-    let doc = StoreRegistryDocument { version: 1, stores };
+    let doc = StoreRegistryDocument { stores };
     let json = serde_json::to_vec_pretty(&doc).context("serialising store registry")?;
     let dir = stores_file.parent().ok_or_else(|| {
         anyhow::anyhow!(

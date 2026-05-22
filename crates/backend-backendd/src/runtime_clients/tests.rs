@@ -46,15 +46,6 @@ fn save_and_load_round_trip() {
 }
 
 #[test]
-fn invalid_version_is_rejected() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let path = tmp.path().join("client-instances.json");
-    std::fs::write(&path, r#"{"version":99,"instances":[]}"#).unwrap();
-    let err = load_client_instances(&path).expect_err("unsupported version must fail");
-    assert!(format!("{err:#}").contains("unsupported runtime client registry version"));
-}
-
-#[test]
 fn duplicate_id_is_rejected() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("client-instances.json");
@@ -62,7 +53,6 @@ fn duplicate_id_is_rejected() {
     let mut b = sample("inst_b");
     b.id = a.id.clone();
     let doc = ClientInstancesDocument {
-        version: 1,
         instances: vec![a, b],
     };
     std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
@@ -79,7 +69,6 @@ fn duplicate_fingerprint_is_rejected() {
     b.current_credential.cert_fingerprint = a.current_credential.cert_fingerprint.clone();
     b.current_credential.cert_pem = a.current_credential.cert_pem.clone();
     let doc = ClientInstancesDocument {
-        version: 1,
         instances: vec![a, b],
     };
     std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
@@ -94,7 +83,6 @@ fn mismatched_current_credential_fingerprint_is_rejected() {
     let mut rec = sample("inst_a");
     rec.current_credential.cert_fingerprint = "wrong".into();
     let doc = ClientInstancesDocument {
-        version: 1,
         instances: vec![rec],
     };
     std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
@@ -120,7 +108,6 @@ fn empty_required_fields_are_rejected() {
     let mut rec = sample("inst_a");
     rec.display_name.clear();
     let doc = ClientInstancesDocument {
-        version: 1,
         instances: vec![rec],
     };
     std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();

@@ -176,7 +176,6 @@ async fn underwrapd_binary_start_and_read() {
     std::fs::write(
         &stores_file,
         serde_json::to_vec_pretty(&underwrap_protocol::config::StoreRegistryDocument {
-            version: 1,
             stores: vec![test_store],
         })
         .unwrap(),
@@ -200,7 +199,6 @@ async fn underwrapd_binary_start_and_read() {
         &client_instances_file,
         serde_json::to_vec_pretty(
             &underwrap_backendd::runtime_clients::ClientInstancesDocument {
-                version: 1,
                 instances: vec![client_instance],
             },
         )
@@ -220,7 +218,6 @@ async fn underwrapd_binary_start_and_read() {
     std::fs::write(
         resources_dir.join("document"),
         serde_json::to_vec_pretty(&underwrap_protocol::entities::ResourcesDocument {
-            version: underwrap_protocol::entities::ENTITY_SCHEMA_VERSION,
             resources: vec![underwrap_protocol::entities::ResourceRecord {
                 id: "s/t".into(),
                 name: "s/t".into(),
@@ -239,7 +236,6 @@ async fn underwrapd_binary_start_and_read() {
     std::fs::write(
         pairs_dir.join("document"),
         serde_json::to_vec_pretty(&underwrap_protocol::entities::PairsDocument {
-            version: underwrap_protocol::entities::ENTITY_SCHEMA_VERSION,
             pairs: vec![underwrap_protocol::entities::WrapperResourcePairRecord {
                 wrapper: "w".into(),
                 resource_id: "s/t".into(),

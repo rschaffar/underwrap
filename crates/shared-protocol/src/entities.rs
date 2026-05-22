@@ -12,9 +12,7 @@
 //! first creation. Provenance fields are write-once.
 //!
 //! Storage shape mirrors `PolicyDocument` (see `policy.rs`): a JSON
-//! document keyed at a reserved `__underwrap/...` secret id, with a
-//! schema version tag so deserialisation can reject unknown versions
-//! loudly.
+//! document keyed at a reserved `__underwrap/...` secret id.
 //!
 //! The wrapper-permission model (`WrapperPermission`, keyed on
 //! `(client_instance, wrapper, resource)`) is intentionally untouched
@@ -32,10 +30,6 @@ use ts_rs::TS;
 pub const RESOURCES_DOCUMENT_SECRET_ID: &str = "__underwrap/resources/document";
 /// Reserved secret id used to persist the [`PairsDocument`].
 pub const PAIRS_DOCUMENT_SECRET_ID: &str = "__underwrap/pairs/document";
-
-/// Current schema version for both entity documents. Deserialisation
-/// rejects any other value rather than silently coercing.
-pub const ENTITY_SCHEMA_VERSION: u32 = 1;
 
 /// Who created an entity record. Distinguishes admin operators (who
 /// register resources/pairs by hand through the admin API) from
@@ -104,39 +98,19 @@ pub struct WrapperResourcePairRecord {
 
 /// Store-backed resources document. Missing-document-means-empty
 /// semantics (see [`ResourcesDocument::default`]).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct ResourcesDocument {
-    pub version: u32,
     #[serde(default)]
     pub resources: Vec<ResourceRecord>,
 }
 
-impl Default for ResourcesDocument {
-    fn default() -> Self {
-        Self {
-            version: ENTITY_SCHEMA_VERSION,
-            resources: Vec::new(),
-        }
-    }
-}
-
 /// Store-backed pairs document.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 pub struct PairsDocument {
-    pub version: u32,
     #[serde(default)]
     pub pairs: Vec<WrapperResourcePairRecord>,
-}
-
-impl Default for PairsDocument {
-    fn default() -> Self {
-        Self {
-            version: ENTITY_SCHEMA_VERSION,
-            pairs: Vec::new(),
-        }
-    }
 }
 
 /// Reason why an entity insert was rejected.
@@ -261,12 +235,10 @@ mod tests {
     }
 
     #[test]
-    fn default_documents_are_empty_and_versioned() {
+    fn default_documents_are_empty() {
         let r = ResourcesDocument::default();
-        assert_eq!(r.version, ENTITY_SCHEMA_VERSION);
         assert!(r.resources.is_empty());
         let p = PairsDocument::default();
-        assert_eq!(p.version, ENTITY_SCHEMA_VERSION);
         assert!(p.pairs.is_empty());
     }
 
@@ -307,15 +279,6 @@ mod tests {
         let json = serde_json::to_string(&doc).unwrap();
         let parsed: PairsDocument = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, doc);
-    }
-
-    #[test]
-    fn unknown_version_is_rejected_by_callers() {
-        // Round-trip leaves the version field as-is; callers must
-        // check it on load. The default's value is well-defined.
-        let raw = r#"{"version": 999, "resources": []}"#;
-        let parsed: ResourcesDocument = serde_json::from_str(raw).unwrap();
-        assert_ne!(parsed.version, ENTITY_SCHEMA_VERSION);
     }
 
     #[test]

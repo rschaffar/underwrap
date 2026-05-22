@@ -4,10 +4,9 @@
 //! (`RESOURCES_DOCUMENT_SECRET_ID`), and the pairs document
 //! (`PAIRS_DOCUMENT_SECRET_ID`).
 //!
-//! Each pair of `load_*` / `save_*` functions hides the schema-version
-//! check and the `serde_json` round-trip so handlers can think in
-//! domain terms (`PolicyDocument`, `ResourcesDocument`,
-//! `PairsDocument`).
+//! Each pair of `load_*` / `save_*` functions hides the `serde_json`
+//! round-trip so handlers can think in domain terms (`PolicyDocument`,
+//! `ResourcesDocument`, `PairsDocument`).
 
 use anyhow::{Context, Result};
 
@@ -35,19 +34,10 @@ pub(crate) fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyD
 pub(crate) fn load_resources_document(
     store: &dyn StorageBackend,
 ) -> Result<underwrap_protocol::entities::ResourcesDocument> {
-    use underwrap_protocol::entities::{
-        ENTITY_SCHEMA_VERSION, RESOURCES_DOCUMENT_SECRET_ID, ResourcesDocument,
-    };
+    use underwrap_protocol::entities::{RESOURCES_DOCUMENT_SECRET_ID, ResourcesDocument};
     match store.read(RESOURCES_DOCUMENT_SECRET_ID)? {
         Some(material) => {
-            let doc: ResourcesDocument = serde_json::from_slice(material.as_ref())
-                .context("parsing backend resources document")?;
-            anyhow::ensure!(
-                doc.version == ENTITY_SCHEMA_VERSION,
-                "unsupported resources document version {}",
-                doc.version,
-            );
-            Ok(doc)
+            serde_json::from_slice(material.as_ref()).context("parsing backend resources document")
         }
         None => Ok(ResourcesDocument::default()),
     }
@@ -67,19 +57,10 @@ pub(crate) fn save_resources_document(
 pub(crate) fn load_pairs_document(
     store: &dyn StorageBackend,
 ) -> Result<underwrap_protocol::entities::PairsDocument> {
-    use underwrap_protocol::entities::{
-        ENTITY_SCHEMA_VERSION, PAIRS_DOCUMENT_SECRET_ID, PairsDocument,
-    };
+    use underwrap_protocol::entities::{PAIRS_DOCUMENT_SECRET_ID, PairsDocument};
     match store.read(PAIRS_DOCUMENT_SECRET_ID)? {
         Some(material) => {
-            let doc: PairsDocument = serde_json::from_slice(material.as_ref())
-                .context("parsing backend pairs document")?;
-            anyhow::ensure!(
-                doc.version == ENTITY_SCHEMA_VERSION,
-                "unsupported pairs document version {}",
-                doc.version,
-            );
-            Ok(doc)
+            serde_json::from_slice(material.as_ref()).context("parsing backend pairs document")
         }
         None => Ok(PairsDocument::default()),
     }

@@ -127,7 +127,6 @@ impl TestDaemon {
         std::fs::write(
             &stores_file,
             serde_json::to_vec_pretty(&underwrap_protocol::config::StoreRegistryDocument {
-                version: 1,
                 stores: vec![test_store],
             })?,
         )?;
@@ -148,7 +147,6 @@ impl TestDaemon {
             &instances_file,
             serde_json::to_vec_pretty(
                 &underwrap_backendd::runtime_clients::ClientInstancesDocument {
-                    version: 1,
                     instances: vec![runtime_client],
                 },
             )?,

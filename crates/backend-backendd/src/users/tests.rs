@@ -79,14 +79,6 @@ fn save_and_load_round_trip() {
 }
 
 #[test]
-fn load_rejects_unknown_state_file_version() {
-    let path = test_state_path();
-    std::fs::write(&path, r#"{"version":99,"users":[]}"#).unwrap();
-    let err = load(&path).unwrap_err();
-    assert!(err.to_string().contains("version"));
-}
-
-#[test]
 fn bootstrap_sentinel_absent_by_default() {
     let path = test_state_path();
     assert!(!bootstrap_completed(&path).unwrap());
@@ -155,15 +147,4 @@ fn debug_redacts_password_hash() {
     c.add(r).unwrap();
     let dbg = format!("{c:?}");
     assert!(!dbg.contains("argon2"));
-}
-
-#[test]
-fn load_rejects_v1_state_file() {
-    let path = test_state_path();
-    std::fs::write(&path, r#"{"version":1,"operators":[]}"#).unwrap();
-    let err = load(&path).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("unsupported user-state file version")
-    );
 }

@@ -23,13 +23,6 @@ use serde::{Deserialize, Serialize};
 /// Default location of the backend-managed user-state file.
 pub const DEFAULT_USERS_FILE: &str = "/var/lib/underwrap-backend/users.json";
 
-/// Schema version for the persisted user collection. Bump when the
-/// on-disk shape changes incompatibly.
-pub const COLLECTION_VERSION: u32 = 2;
-
-/// Schema version for the persisted user-state file.
-const STATE_FILE_VERSION: u32 = 2;
-
 /// One user account.
 ///
 /// `password_hash` is an Argon2id PHC string. It must never appear in
@@ -67,9 +60,8 @@ pub struct Principal {
 }
 
 /// The in-memory user collection.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserCollection {
-    pub version: u32,
     pub users: Vec<UserRecord>,
 }
 
@@ -79,18 +71,8 @@ impl std::fmt::Debug for UserCollection {
         // implement Debug here to keep the same redaction-by-default
         // posture for the wrapper.
         f.debug_struct("UserCollection")
-            .field("version", &self.version)
             .field("users", &self.users)
             .finish()
-    }
-}
-
-impl Default for UserCollection {
-    fn default() -> Self {
-        Self {
-            version: COLLECTION_VERSION,
-            users: Vec::new(),
-        }
     }
 }
 
@@ -191,28 +173,12 @@ pub struct BootstrapSentinel {
 }
 
 /// Persisted shape on disk.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 struct UserStateDocument {
-    #[serde(default = "default_state_file_version")]
-    version: u32,
     #[serde(default)]
     users: Vec<UserRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bootstrap_completed: Option<BootstrapSentinel>,
-}
-
-impl Default for UserStateDocument {
-    fn default() -> Self {
-        Self {
-            version: STATE_FILE_VERSION,
-            users: Vec::new(),
-            bootstrap_completed: None,
-        }
-    }
-}
-
-fn default_state_file_version() -> u32 {
-    STATE_FILE_VERSION
 }
 
 /// Normalise a username: trimmed, lowercase. Usernames are compared
@@ -244,23 +210,13 @@ pub fn now_epoch_secs() -> u64 {
 /// caller treats that as "bootstrap required".
 pub fn load(path: &Path) -> Result<UserCollection> {
     let doc = load_state_document(path)?;
-    Ok(UserCollection {
-        version: COLLECTION_VERSION,
-        users: doc.users,
-    })
+    Ok(UserCollection { users: doc.users })
 }
 
 /// Persist the user collection while preserving the bootstrap
 /// sentinel already present in the user-state file.
 pub fn save(path: &Path, collection: &UserCollection) -> Result<()> {
-    anyhow::ensure!(
-        collection.version == COLLECTION_VERSION,
-        "user collection has version {}, expected {}",
-        collection.version,
-        COLLECTION_VERSION
-    );
     let mut doc = load_state_document(path)?;
-    doc.version = STATE_FILE_VERSION;
     doc.users = collection.users.clone();
     save_state_document(path, &doc)
 }
@@ -293,21 +249,10 @@ fn load_state_document(path: &Path) -> Result<UserStateDocument> {
     };
     let doc: UserStateDocument = serde_json::from_str(&text)
         .with_context(|| format!("parsing user-state file {}", path.display()))?;
-    anyhow::ensure!(
-        doc.version == STATE_FILE_VERSION,
-        "unsupported user-state file version {}",
-        doc.version,
-    );
     Ok(doc)
 }
 
 fn save_state_document(path: &Path, doc: &UserStateDocument) -> Result<()> {
-    anyhow::ensure!(
-        doc.version == STATE_FILE_VERSION,
-        "user-state file has version {}, expected {}",
-        doc.version,
-        STATE_FILE_VERSION
-    );
     let json = serde_json::to_vec_pretty(doc).context("serialising user-state file")?;
     let dir = path.parent().ok_or_else(|| {
         anyhow::anyhow!(

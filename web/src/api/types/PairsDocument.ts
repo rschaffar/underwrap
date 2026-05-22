@@ -4,4 +4,4 @@ import type { WrapperResourcePairRecord } from "./WrapperResourcePairRecord";
 /**
  * Store-backed pairs document.
  */
-export type PairsDocument = { version: number, pairs: Array<WrapperResourcePairRecord>, };
+export type PairsDocument = { pairs: Array<WrapperResourcePairRecord>, };

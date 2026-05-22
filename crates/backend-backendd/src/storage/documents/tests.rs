@@ -19,9 +19,7 @@ fn policy_document_roundtrips_through_management_helpers() {
 
 #[test]
 fn resources_document_roundtrips_through_load_save() {
-    use underwrap_protocol::entities::{
-        EntityCreator, RESOURCES_DOCUMENT_SECRET_ID, ResourceRecord, ResourcesDocument,
-    };
+    use underwrap_protocol::entities::{EntityCreator, ResourceRecord, ResourcesDocument};
     let store = TestStore::new();
     assert_eq!(
         load_resources_document(&store).unwrap(),
@@ -40,23 +38,11 @@ fn resources_document_roundtrips_through_load_save() {
     .unwrap();
     save_resources_document(&store, &doc).unwrap();
     assert_eq!(load_resources_document(&store).unwrap(), doc);
-
-    // Force an unsupported version on disk: load must refuse.
-    store
-        .write(
-            RESOURCES_DOCUMENT_SECRET_ID,
-            br#"{"version": 999, "resources": []}"#,
-        )
-        .unwrap();
-    let err = load_resources_document(&store).unwrap_err();
-    assert!(err.to_string().contains("unsupported resources document"));
 }
 
 #[test]
 fn pairs_document_roundtrips_through_load_save() {
-    use underwrap_protocol::entities::{
-        EntityCreator, PAIRS_DOCUMENT_SECRET_ID, PairsDocument, WrapperResourcePairRecord,
-    };
+    use underwrap_protocol::entities::{EntityCreator, PairsDocument, WrapperResourcePairRecord};
     let store = TestStore::new();
     assert_eq!(
         load_pairs_document(&store).unwrap(),
@@ -75,15 +61,6 @@ fn pairs_document_roundtrips_through_load_save() {
     .unwrap();
     save_pairs_document(&store, &doc).unwrap();
     assert_eq!(load_pairs_document(&store).unwrap(), doc);
-
-    store
-        .write(
-            PAIRS_DOCUMENT_SECRET_ID,
-            br#"{"version": 999, "pairs": []}"#,
-        )
-        .unwrap();
-    let err = load_pairs_document(&store).unwrap_err();
-    assert!(err.to_string().contains("unsupported pairs document"));
 }
 
 #[test]

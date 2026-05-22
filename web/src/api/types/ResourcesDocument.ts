@@ -5,4 +5,4 @@ import type { ResourceRecord } from "./ResourceRecord";
  * Store-backed resources document. Missing-document-means-empty
  * semantics (see [`ResourcesDocument::default`]).
  */
-export type ResourcesDocument = { version: number, resources: Array<ResourceRecord>, };
+export type ResourcesDocument = { resources: Array<ResourceRecord>, };

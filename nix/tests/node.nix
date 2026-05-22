@@ -29,7 +29,6 @@ let
   # The backend now reads its store registry from a single JSON
   # document at a fixed path; we seed one document per daemon.
   remoteStoresJson = pkgs.writeText "underwrap-backend-remote-stores.json" (builtins.toJSON {
-    version = 1;
     stores = [
       {
         id = "remote";
@@ -41,7 +40,6 @@ let
     ];
   });
   localStoresJson = pkgs.writeText "underwrap-backend-local-stores.json" (builtins.toJSON {
-    version = 1;
     stores = [
       {
         id = "local";
@@ -58,32 +56,34 @@ let
   # `validate_runtime_client_mappings` will match incoming mTLS
   # connections against.
   remoteClientInstancesJson = pkgs.writeText "underwrap-backend-remote-client-instances.json" (builtins.toJSON {
-    version = 1;
     instances = [
       {
         id = "inst_underwrap-tunnel";
         display_name = "underwrap-tunnel";
         current_store_id = "remote";
         status = "active";
+        last_seen_at = null;
         current_credential = {
           cert_fingerprint = tunnelClientFingerprint;
           cert_pem = builtins.readFile ../../testdata/pki/client-tunnel.pem;
+          issued_at = null;
         };
         auto_create_wrapper_assets = false;
       }
     ];
   });
   localClientInstancesJson = pkgs.writeText "underwrap-backend-local-client-instances.json" (builtins.toJSON {
-    version = 1;
     instances = [
       {
         id = "inst_underwrap-local";
         display_name = "underwrap-local";
         current_store_id = "local";
         status = "active";
+        last_seen_at = null;
         current_credential = {
           cert_fingerprint = localClientFingerprint;
           cert_pem = builtins.readFile ../../testdata/pki/client-local.pem;
+          issued_at = null;
         };
         auto_create_wrapper_assets = false;
       }

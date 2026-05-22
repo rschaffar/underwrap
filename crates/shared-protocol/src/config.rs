@@ -90,27 +90,11 @@ pub struct StoreRecord {
     pub storage: StorageConfig,
 }
 
-/// Versioned backend-managed store registry persisted by
-/// `underwrap-backendd` itself.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Backend-managed store registry persisted by `underwrap-backendd`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoreRegistryDocument {
-    #[serde(default = "default_store_registry_version")]
-    pub version: u32,
     #[serde(default)]
     pub stores: Vec<StoreRecord>,
-}
-
-impl Default for StoreRegistryDocument {
-    fn default() -> Self {
-        Self {
-            version: default_store_registry_version(),
-            stores: Vec::new(),
-        }
-    }
-}
-
-fn default_store_registry_version() -> u32 {
-    1
 }
 
 fn default_storage_dir() -> PathBuf {

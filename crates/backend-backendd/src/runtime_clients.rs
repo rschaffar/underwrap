@@ -17,9 +17,7 @@ pub struct CurrentCredentialRecord {
     pub cert_fingerprint: String,
     /// PEM-encoded current client certificate.
     pub cert_pem: String,
-    /// Unix-epoch second the credential was issued. Optional so older
-    /// test fixtures can omit it cleanly.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Unix-epoch second the credential was issued, when known.
     pub issued_at: Option<u64>,
 }
 
@@ -41,31 +39,13 @@ pub struct ClientInstanceRecord {
     /// When set, this instance's wrappers may auto-create resource
     /// and wrapper/resource-pair records on the runtime register
     /// endpoint. Off by default; an admin must flip it on explicitly.
-    /// Pre-existing records on disk that predate this field default
-    /// to `false`.
-    #[serde(default)]
     pub auto_create_wrapper_assets: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientInstancesDocument {
-    #[serde(default = "default_client_instances_version")]
-    pub version: u32,
     #[serde(default)]
     pub instances: Vec<ClientInstanceRecord>,
-}
-
-impl Default for ClientInstancesDocument {
-    fn default() -> Self {
-        Self {
-            version: default_client_instances_version(),
-            instances: Vec::new(),
-        }
-    }
-}
-
-fn default_client_instances_version() -> u32 {
-    1
 }
 
 pub fn cert_fingerprint_from_der(cert_der: &[u8]) -> String {
@@ -114,11 +94,6 @@ pub fn load_client_instances(path: &Path) -> Result<HashMap<String, ClientInstan
     };
     let doc: ClientInstancesDocument = serde_json::from_str(&text)
         .with_context(|| format!("parsing runtime client registry {}", path.display()))?;
-    anyhow::ensure!(
-        doc.version == default_client_instances_version(),
-        "unsupported runtime client registry version {}",
-        doc.version
-    );
 
     let mut out = HashMap::new();
     let mut display_names = BTreeSet::new();
@@ -199,10 +174,7 @@ pub fn save_client_instances(
 ) -> Result<()> {
     let mut records: Vec<ClientInstanceRecord> = instances.values().cloned().collect();
     records.sort_by(|a, b| a.id.cmp(&b.id));
-    let doc = ClientInstancesDocument {
-        version: default_client_instances_version(),
-        instances: records,
-    };
+    let doc = ClientInstancesDocument { instances: records };
     let json = serde_json::to_vec_pretty(&doc).context("serialising runtime client registry")?;
     let dir = path.parent().ok_or_else(|| {
         anyhow::anyhow!(

@@ -100,7 +100,6 @@ Example dynamic store record:
 
 ```json
 {
-  "version": 1,
   "stores": [
     {
       "id": "store_scratch",

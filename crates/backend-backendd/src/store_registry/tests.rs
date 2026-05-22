@@ -3,7 +3,7 @@ use std::path::Path;
 use underwrap_protocol::config::{StoreRecord, StoreRegistryDocument};
 
 fn write_registry(path: &Path, stores: Vec<StoreRecord>) {
-    let doc = StoreRegistryDocument { version: 1, stores };
+    let doc = StoreRegistryDocument { stores };
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
 }
