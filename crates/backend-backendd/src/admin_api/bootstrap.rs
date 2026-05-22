@@ -228,7 +228,7 @@ pub(crate) async fn handle_admin_bootstrap(
 /// Log one bootstrap attempt outcome. Best effort: never fails the caller.
 pub(crate) fn audit_bootstrap_attempt(_state: &AdminRuntimeState, username: &str, result: &str) {
     log_admin_event(
-        "bootstrap_attempt",
+        "bootstrap.attempt",
         username,
         None,
         None,

@@ -17,6 +17,25 @@ use crate::storage::documents::{
     load_resources_document, save_pairs_document,
 };
 
+pub(crate) fn write_admin_pair_audit(
+    operator: &str,
+    wrapper: &str,
+    resource_id: &str,
+    action: &str,
+    result: &str,
+) {
+    let resource = format!("pair:{wrapper}/{resource_id}");
+    log_admin_event(
+        action,
+        operator,
+        Some(wrapper),
+        Some(&resource),
+        None,
+        None,
+        result,
+    );
+}
+
 pub(crate) async fn handle_admin_pairs_list_endpoint(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
@@ -159,13 +178,11 @@ pub(crate) fn handle_admin_pair_create(
             &format!("persisting pairs document: {e:#}"),
         );
     }
-    log_admin_event(
-        "pair.create",
+    write_admin_pair_audit(
         &principal.username,
-        Some(wrapper),
-        Some(resource_id),
-        None,
-        None,
+        wrapper,
+        resource_id,
+        "pair.create",
         "success",
     );
     json_response(
@@ -225,13 +242,11 @@ pub(crate) fn handle_admin_pair_delete(
     sample_permissions.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
 
     if permission_count > 0 {
-        log_admin_event(
-            "pair.delete",
+        write_admin_pair_audit(
             &principal.username,
-            Some(&body.wrapper),
-            Some(&body.resource_id),
-            None,
-            None,
+            &body.wrapper,
+            &body.resource_id,
+            "pair.delete",
             "blocked",
         );
         return json_response(
@@ -254,13 +269,11 @@ pub(crate) fn handle_admin_pair_delete(
             &format!("persisting pairs document: {e:#}"),
         );
     }
-    log_admin_event(
-        "pair.delete",
+    write_admin_pair_audit(
         &principal.username,
-        Some(&body.wrapper),
-        Some(&body.resource_id),
-        None,
-        None,
+        &body.wrapper,
+        &body.resource_id,
+        "pair.delete",
         "success",
     );
     json_response(

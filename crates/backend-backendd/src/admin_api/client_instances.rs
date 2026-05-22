@@ -24,6 +24,16 @@ use crate::admin_api::policy::drop_client_instance_permissions;
 use crate::http::responses::{error_response, json_response, parse_json_body};
 use crate::runtime_state::AdminRuntimeState;
 
+pub(crate) fn write_admin_client_instance_audit(
+    operator: &str,
+    id: &str,
+    action: &str,
+    result: &str,
+) {
+    let resource = format!("client-instance:{id}");
+    log_admin_event(action, operator, None, Some(&resource), None, None, result);
+}
+
 fn client_instance_status_to_wire(
     status: crate::runtime_clients::ClientInstanceStatus,
 ) -> AdminClientInstanceStatus {
@@ -256,13 +266,10 @@ pub(crate) fn handle_admin_client_instance_create(
             &format!("{e:#}"),
         );
     }
-    log_admin_event(
-        "client-instance.create",
+    write_admin_client_instance_audit(
         &principal.username,
-        None,
-        Some(format!("client-instance:{id}").as_str()),
-        None,
-        None,
+        &id,
+        "client-instance.create",
         "success",
     );
     let current_store_name = {
@@ -409,15 +416,7 @@ pub(crate) fn handle_admin_client_instance_update(
             "failed to strip wrapper permissions for remapped client instance",
         );
     }
-    log_admin_event(
-        "client-instance.update",
-        &principal.username,
-        None,
-        Some(format!("client-instance:{id}").as_str()),
-        None,
-        None,
-        "success",
-    );
+    write_admin_client_instance_audit(&principal.username, id, "client-instance.update", "success");
     let current_store_name = {
         let stores = state.stores.read().unwrap();
         match stores.records.get(&updated.current_store_id) {
@@ -482,15 +481,7 @@ pub(crate) fn handle_admin_client_instance_delete(
             "failed to strip wrapper permissions for deleted client instance",
         );
     }
-    log_admin_event(
-        "client-instance.delete",
-        &principal.username,
-        None,
-        Some(format!("client-instance:{id}").as_str()),
-        None,
-        None,
-        "success",
-    );
+    write_admin_client_instance_audit(&principal.username, id, "client-instance.delete", "success");
     json_response(
         StatusCode::OK,
         &underwrap_protocol::service::AdminOkResponse { ok: true },
