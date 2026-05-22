@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Dark-shell tokens carried over from apps/admin-ui/app/globals.css. */
+/* Dark-shell design tokens; Tailwind v4 reads them via @theme. */
 @theme {
   --color-bg: #071018;
   --color-surface-0: #0c1722;

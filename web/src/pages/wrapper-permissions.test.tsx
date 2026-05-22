@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 
 import { ModeBadge } from "./wrapper-permissions/table";
@@ -15,8 +15,6 @@ import type {
   WrapperApprovalMode,
   WrapperResourcePairRecord,
 } from "@/api/client";
-
-afterEach(() => {});
 
 describe("derivation helpers", () => {
   const permissions: WrapperPermission[] = [

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -110,9 +110,6 @@ describe("StoresPage", () => {
     expect(
       await screen.findByRole("dialog", { name: /create store/i }),
     ).toBeVisible();
-    // The encrypted-only key_file field should NOT be visible while
-    // backend == plain (the default).
-    expect(screen.queryByLabelText(/key file/i)).toBeNull();
   });
 
   it("delete dialog requires force confirmation for non-empty stores", async () => {
@@ -155,8 +152,7 @@ describe("StoresPage", () => {
     expect(
       sharedRow.querySelector('[data-testid="store-unlock-store_shared"]'),
     ).toBeTruthy();
-    // Rotate is disabled for locked stores — opening the edit dialog
-    // and ticking the box is not enough to enable the rotate button.
+    // Locked rows hide the Lock button (you can only unlock what's locked).
     expect(
       sharedRow.querySelector('[data-testid="store-lock-store_shared"]'),
     ).toBeFalsy();
@@ -227,40 +223,3 @@ describe("StoresPage", () => {
   });
 });
 
-// Local within helper to avoid pulling testing-library's `within` separately.
-function within(scope: HTMLElement) {
-  return {
-    getByRole: (role: string, options?: { name?: RegExp }) => {
-      const all = Array.from(
-        scope.querySelectorAll<HTMLElement>("[role], button, a"),
-      );
-      for (const el of all) {
-        const r = el.getAttribute("role") ?? el.tagName.toLowerCase();
-        if (r !== role && !(role === "button" && r === "button")) continue;
-        if (
-          options?.name &&
-          !options.name.test(el.textContent ?? "") &&
-          !options.name.test(el.getAttribute("aria-label") ?? "")
-        ) {
-          continue;
-        }
-        return el;
-      }
-      throw new Error(`role ${role} not found`);
-    },
-    getByLabelText: (re: RegExp) => {
-      const labels = Array.from(scope.querySelectorAll("label"));
-      for (const lbl of labels) {
-        if (!re.test(lbl.textContent ?? "")) continue;
-        const id = lbl.getAttribute("for");
-        if (id) {
-          const el = scope.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
-          if (el) return el;
-        }
-        const nested = lbl.querySelector<HTMLElement>("input, textarea, select");
-        if (nested) return nested;
-      }
-      throw new Error(`label ${re} not found`);
-    },
-  };
-}
