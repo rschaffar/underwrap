@@ -58,7 +58,6 @@ pub(crate) async fn handle_admin_pair_delete_endpoint(
     handle_admin_pair_delete(state, principal, &body)
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_pairs_list(
     state: &AdminRuntimeState,
     body: &underwrap_protocol::service::AdminPairsListRequest,
@@ -87,7 +86,6 @@ pub(crate) fn handle_admin_pairs_list(
     }
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_pair_create(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -176,7 +174,6 @@ pub(crate) fn handle_admin_pair_create(
     )
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_pair_delete(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,

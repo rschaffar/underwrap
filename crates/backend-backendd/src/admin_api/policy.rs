@@ -164,7 +164,6 @@ pub(crate) async fn handle_admin_wrapper_permission_delete_endpoint(
     handle_admin_wrapper_permission_delete(state, principal, &body)
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_wrapper_permissions_list(
     state: &AdminRuntimeState,
     body: &underwrap_protocol::service::AdminWrapperPermissionsListRequest,
@@ -184,7 +183,6 @@ pub(crate) fn handle_admin_wrapper_permissions_list(
     }
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_wrapper_permission_upsert(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -254,7 +252,6 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
     )
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_wrapper_permission_delete(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,

@@ -114,7 +114,6 @@ pub(crate) async fn handle_admin_resource_rename_endpoint(
     handle_admin_resource_rename(state, principal, &body)
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_resources_list(
     state: &AdminRuntimeState,
     body: &underwrap_protocol::service::AdminResourcesListRequest,
@@ -141,7 +140,6 @@ pub(crate) fn handle_admin_resources_list(
     }
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_resource_blob_get(
     state: &AdminRuntimeState,
     body: &underwrap_protocol::service::AdminResourceBlobGetRequest,
@@ -318,7 +316,6 @@ pub(crate) fn handle_admin_resource_create(
     )
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_resource_delete(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -459,7 +456,6 @@ pub(crate) fn handle_admin_resource_delete(
     )
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_resource_rename(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,

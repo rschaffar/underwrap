@@ -236,7 +236,6 @@ pub(crate) fn handle_admin_whoami(
 /// `POST /v1/admin/auth/password` — self-service password change for
 /// the currently authenticated user. Requires the current password as
 /// proof-of-possession.
-#[allow(clippy::result_large_err)]
 pub(crate) async fn handle_admin_password_change(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,

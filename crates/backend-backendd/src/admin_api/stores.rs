@@ -222,7 +222,6 @@ pub(crate) fn handle_admin_stores_list(state: &AdminRuntimeState) -> Response<Fu
     json_response(StatusCode::OK, &AdminStoresListResponse { items })
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_store_detail(
     state: &AdminRuntimeState,
     name: &str,
@@ -284,7 +283,6 @@ pub(crate) fn resolve_store_dir(
     Ok(root.join(store_id))
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) async fn handle_admin_store_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -301,7 +299,6 @@ pub(crate) async fn handle_admin_store_create_endpoint(
 /// Split out so unit tests can drive it without synthesising a
 /// `Request<Incoming>` (which `hyper` doesn't expose constructors
 /// for). The HTTP-shaped handler above is exercised by Playwright.
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_store_create(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -482,7 +479,6 @@ fn create_data_dir_secure(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) async fn handle_admin_store_update_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -496,7 +492,6 @@ pub(crate) async fn handle_admin_store_update_endpoint(
     handle_admin_store_update(state, principal, name, &body)
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_store_update(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -582,7 +577,6 @@ pub(crate) fn handle_admin_store_update(
     )
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_store_delete(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -1047,7 +1041,6 @@ pub(crate) async fn handle_admin_store_unlock_endpoint(
     handle_admin_store_unlock(state, principal, name, &body)
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_store_unlock(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -1149,7 +1142,6 @@ pub(crate) fn handle_admin_store_unlock(
 /// held `MasterKey` zeroes on drop. Plain stores reject the
 /// operation; already-locked stores succeed as a no-op so the admin
 /// SPA can call this without racing the current state.
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_store_lock(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,

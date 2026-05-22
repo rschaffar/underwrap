@@ -75,7 +75,6 @@ where
     Ok(out)
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_users_list(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
     let collection = match crate::users::load(&state.users_file) {
         Ok(c) => c,
@@ -93,7 +92,6 @@ pub(crate) fn handle_admin_users_list(state: &AdminRuntimeState) -> Response<Ful
     json_response(StatusCode::OK, &AdminUsersListResponse { users })
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_user_detail(
     state: &AdminRuntimeState,
     id: &str,
@@ -115,7 +113,6 @@ pub(crate) fn handle_admin_user_detail(
     }
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) async fn handle_admin_user_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -128,7 +125,6 @@ pub(crate) async fn handle_admin_user_create_endpoint(
     handle_admin_user_create(state, principal, &body)
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_user_create(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -190,7 +186,6 @@ pub(crate) fn handle_admin_user_create(
     }
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) async fn handle_admin_user_update_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -204,7 +199,6 @@ pub(crate) async fn handle_admin_user_update_endpoint(
     handle_admin_user_update(state, principal, id, &body)
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_user_update(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -248,7 +242,6 @@ pub(crate) fn handle_admin_user_update(
     }
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) async fn handle_admin_user_reset_password(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -321,7 +314,6 @@ pub(crate) async fn handle_admin_user_reset_password(
     }
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn handle_admin_user_delete(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
