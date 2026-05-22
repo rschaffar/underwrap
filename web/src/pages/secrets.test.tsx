@@ -73,7 +73,7 @@ describe("SecretsPage", () => {
         { resource_id: "aws/access-key", slot: "env", key: "AWS_KEY" },
       ],
     });
-    renderWithQuery(<SecretsPage principal={null} />);
+    renderWithQuery(<SecretsPage />);
 
     const ghToken = await screen.findByTestId("resource-block-github/token");
     const ghGh = await screen.findByTestId("resource-block-github/gh");
@@ -113,14 +113,7 @@ describe("SecretsPage", () => {
       ],
     });
 
-    renderWithQuery(
-      <SecretsPage
-        principal={{
-          authenticated: true,
-          username: "alice",
-        }}
-      />,
-    );
+    renderWithQuery(<SecretsPage />);
 
     const block = await screen.findByTestId("resource-block-res_gh");
     expect(block).toBeInTheDocument();
@@ -166,7 +159,7 @@ describe("SecretsPage", () => {
       ],
     });
 
-    renderWithQuery(<SecretsPage principal={null} />);
+    renderWithQuery(<SecretsPage />);
 
     const provenance = await screen.findByTestId(
       "resource-provenance-res_auto",

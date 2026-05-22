@@ -43,21 +43,11 @@ import {
   postSecretWrite,
   type ResourceRecord,
   type ResourceSlot,
-  type WhoamiResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 import { describeCreator } from "@/lib/creator";
 import { useStoreSelector } from "@/hooks/use-store-selector";
 import { useStoreLookups } from "@/hooks/use-store-lookups";
-
-interface SecretsPageProps {
-  /**
-   * Whoami payload from the router context. Used to gate
-   * destructive actions for non-admin operators (though the backend
-   * is the source of truth).
-   */
-  principal: WhoamiResponse | null;
-}
 
 /** The three backend slots every resource has. */
 export const SECRET_SLOTS = ["env", "files", "libsecret"] as const satisfies ReadonlyArray<ResourceSlot>;
@@ -117,7 +107,7 @@ export function groupSecretEntries(
   );
 }
 
-export function SecretsPage({ principal: _principal }: SecretsPageProps) {
+export function SecretsPage() {
   useEffect(() => {
     document.title = "underwrap — secrets";
   }, []);

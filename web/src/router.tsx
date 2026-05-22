@@ -171,21 +171,13 @@ const indexRoute = new Route({
 const storesRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/stores",
-  component: function StoresRouteComponent() {
-    // `principal` is set on the root route's beforeLoad; pass it
-    // down so admin-gating doesn't re-fetch.
-    const ctx = storesRoute.useRouteContext();
-    return <StoresPage principal={ctx.principal} />;
-  },
+  component: StoresPage,
 });
 
 const clientInstancesRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/client-instances",
-  component: function ClientInstancesRouteComponent() {
-    const ctx = clientInstancesRoute.useRouteContext();
-    return <ClientInstancesPage principal={ctx.principal} />;
-  },
+  component: ClientInstancesPage,
 });
 
 const usersRoute = new Route({
@@ -209,19 +201,13 @@ const profileRoute = new Route({
 const wrapperPermissionsRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/wrappers",
-  component: function WrapperPermissionsRouteComponent() {
-    const ctx = wrapperPermissionsRoute.useRouteContext();
-    return <WrapperPermissionsPage principal={ctx.principal} />;
-  },
+  component: WrapperPermissionsPage,
 });
 
 const secretsRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/secrets",
-  component: function SecretsRouteComponent() {
-    const ctx = secretsRoute.useRouteContext();
-    return <SecretsPage principal={ctx.principal} />;
-  },
+  component: SecretsPage,
 });
 
 // ----- Public auth routes -----

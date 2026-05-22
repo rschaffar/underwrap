@@ -36,7 +36,6 @@ import {
   postWrapperPermissionUpsert,
   postWrapperPermissionsList,
   type ResourceRecord,
-  type WhoamiResponse,
   type WrapperApprovalMode,
   type WrapperPermission,
   type WrapperResourcePairRecord,
@@ -50,10 +49,6 @@ import {
 import { describeCreator } from "@/lib/creator";
 import { useStoreSelector } from "@/hooks/use-store-selector";
 import { useStoreLookups } from "@/hooks/use-store-lookups";
-
-interface WrapperPermissionsPageProps {
-  principal?: WhoamiResponse | null;
-}
 
 /** Canonical kebab string for a permission mode. */
 export type ModeKind = "locked" | "unlocked" | "unlocked-until";
@@ -136,7 +131,7 @@ export function groupPairsByResource(
     .sort((a, b) => a.resource.localeCompare(b.resource));
 }
 
-export function WrapperPermissionsPage(_props: WrapperPermissionsPageProps = {}) {
+export function WrapperPermissionsPage() {
   useEffect(() => {
     document.title = "underwrap — wrapper permissions";
   }, []);

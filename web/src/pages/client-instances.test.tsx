@@ -156,7 +156,7 @@ describe("ClientInstancesPage", () => {
 
   it("shows display name, store, and status for each instance", async () => {
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true }} />,
+      <ClientInstancesPage />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -168,7 +168,7 @@ describe("ClientInstancesPage", () => {
   it("keeps disabled instances visible and filterable", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true }} />,
+      <ClientInstancesPage />,
     );
 
     await screen.findByTestId("client-instance-row-client_work");
@@ -183,7 +183,7 @@ describe("ClientInstancesPage", () => {
   it("remaps an instance to another store from the unified edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true }} />,
+      <ClientInstancesPage />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -200,7 +200,7 @@ describe("ClientInstancesPage", () => {
   it("disables an active instance via the confirmation dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true }} />,
+      <ClientInstancesPage />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -216,7 +216,7 @@ describe("ClientInstancesPage", () => {
   it("creates a client instance via the create dialog using a pasted cert PEM", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true }} />,
+      <ClientInstancesPage />,
     );
 
     await screen.findByTestId("client-instance-row-client_work");
@@ -240,7 +240,7 @@ describe("ClientInstancesPage", () => {
   it("renames an instance via the unified edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true }} />,
+      <ClientInstancesPage />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -259,7 +259,7 @@ describe("ClientInstancesPage", () => {
   it("replaces the registered cert via the unified edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true }} />,
+      <ClientInstancesPage />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");
@@ -277,7 +277,7 @@ describe("ClientInstancesPage", () => {
   it("toggles auto-create wrapper assets via the edit dialog", async () => {
     const user = userEvent.setup();
     renderWithQuery(
-      <ClientInstancesPage principal={{ authenticated: true }} />,
+      <ClientInstancesPage />,
     );
 
     const row = await screen.findByTestId("client-instance-row-client_work");

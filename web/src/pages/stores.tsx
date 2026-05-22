@@ -35,16 +35,8 @@ import {
   postStoreRotateKey,
   postStoreUnlock,
   putStoreUpdate,
-  type WhoamiResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
-
-interface StoresPageProps {
-  /** Whoami payload from the root router context. Currently unused — all
-   *  authenticated users have full access — but retained so the route
-   *  call sites don't need to change. */
-  principal?: WhoamiResponse | null;
-}
 
 function toStoreDetail(
   item: AdminStoresListResponse["items"][number],
@@ -86,7 +78,7 @@ function storeDeleteTitle(
   return "Store cannot currently be deleted.";
 }
 
-export function StoresPage(_props: StoresPageProps = {}) {
+export function StoresPage() {
   useEffect(() => {
     document.title = "underwrap — stores";
   }, []);

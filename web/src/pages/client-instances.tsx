@@ -24,7 +24,6 @@ import {
   fetchStores,
   postClientInstanceCreate,
   putClientInstanceUpdate,
-  type WhoamiResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 import { formatEpochAbsolute } from "@/lib/epoch";
@@ -47,9 +46,7 @@ function statusMatches(
   return filter === "all" || item.status === filter;
 }
 
-export function ClientInstancesPage(_props: {
-  principal?: WhoamiResponse | null;
-} = {}) {
+export function ClientInstancesPage() {
   const qc = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<ClientStatusFilter>("all");
   const [creating, setCreating] = useState(false);

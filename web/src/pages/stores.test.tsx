@@ -86,9 +86,7 @@ describe("StoresPage", () => {
     );
     render(
       withQuery(
-        <StoresPage
-          principal={{ authenticated: true }}
-        />,
+        <StoresPage />,
       ),
     );
     const workRow = (await screen.findByText("work")).closest("tr")!;
@@ -104,9 +102,7 @@ describe("StoresPage", () => {
     );
     render(
       withQuery(
-        <StoresPage
-          principal={{ authenticated: true }}
-        />,
+        <StoresPage />,
       ),
     );
     await screen.findByText("work");
@@ -126,9 +122,7 @@ describe("StoresPage", () => {
     );
     render(
       withQuery(
-        <StoresPage
-          principal={{ authenticated: true }}
-        />,
+        <StoresPage />,
       ),
     );
     await screen.findByText("scratch");
@@ -150,9 +144,7 @@ describe("StoresPage", () => {
     );
     render(
       withQuery(
-        <StoresPage
-          principal={{ authenticated: true }}
-        />,
+        <StoresPage />,
       ),
     );
     const sharedRow = (await screen.findByText("shared")).closest("tr")!;
@@ -185,9 +177,7 @@ describe("StoresPage", () => {
     const user = userEvent.setup();
     render(
       withQuery(
-        <StoresPage
-          principal={{ authenticated: true }}
-        />,
+        <StoresPage />,
       ),
     );
     const unlockBtn = await screen.findByTestId("store-unlock-store_shared");
@@ -220,9 +210,7 @@ describe("StoresPage", () => {
     );
     render(
       withQuery(
-        <StoresPage
-          principal={{ authenticated: true }}
-        />,
+        <StoresPage />,
       ),
     );
     const sharedRow = (await screen.findByText("shared")).closest("tr")!;
