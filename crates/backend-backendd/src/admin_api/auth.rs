@@ -305,9 +305,6 @@ pub(crate) async fn handle_admin_password_change(
     let id_owned = principal.id.clone();
     let now = crate::users::now_epoch_secs();
     let result = mutate_collection(state, |c| {
-        if c.find_by_id(&id_owned).is_none() {
-            anyhow::bail!("not_found");
-        }
         c.update(&id_owned, |u| {
             u.password_hash = new_hash.clone();
             u.password_changed_at = now;

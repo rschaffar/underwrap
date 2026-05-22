@@ -21,6 +21,7 @@ use underwrap_protocol::service::{
 use crate::admin_api::audit::log_admin_event;
 use crate::http::responses::{error_response, json_response, parse_json_body};
 use crate::runtime_state::AdminRuntimeState;
+use crate::users::UserMutationError;
 
 pub(crate) fn user_list_item(record: &crate::users::UserRecord) -> AdminUserListItem {
     AdminUserListItem {
@@ -65,6 +66,11 @@ pub(crate) fn write_admin_user_audit(
 /// may mutate the collection in-place; on `Ok(_)` we persist and
 /// return whatever the closure returned. On `Err(_)` the collection is
 /// *not* persisted.
+///
+/// The closure returns `anyhow::Result<T>` so user-level mutation
+/// errors flow through via `From<UserMutationError> for anyhow::Error`
+/// (auto-derived by `thiserror`); handlers then `downcast_ref` to
+/// match on the variant.
 pub(crate) fn mutate_collection<T, F>(state: &AdminRuntimeState, f: F) -> Result<T>
 where
     F: FnOnce(&mut crate::users::UserCollection) -> Result<T>,
@@ -74,6 +80,40 @@ where
     let out = f(&mut collection)?;
     crate::users::save(&state.users_file, &collection)?;
     Ok(out)
+}
+
+/// Map a `UserMutationError` to the audit reason + HTTP response
+/// that the user-CRUD handlers emit. Keeps every handler's failure
+/// path in one place so the wire shape stays byte-for-byte consistent.
+fn user_mutation_response(
+    err: &UserMutationError,
+) -> (Option<&'static str>, Response<Full<Bytes>>) {
+    match err {
+        UserMutationError::NotFound(_) => (
+            Some("not-found"),
+            error_response(StatusCode::NOT_FOUND, "not_found", "unknown user"),
+        ),
+        UserMutationError::DuplicateUsername(_) => (
+            Some("already-exists"),
+            error_response(
+                StatusCode::CONFLICT,
+                "username_already_exists",
+                &err.to_string(),
+            ),
+        ),
+        UserMutationError::LastUserProtected => (
+            Some("last-user-protected"),
+            error_response(
+                StatusCode::CONFLICT,
+                "last_user_protected",
+                "cannot delete the last remaining user",
+            ),
+        ),
+        UserMutationError::InvalidUsername | UserMutationError::BadHash => (
+            None,
+            error_response(StatusCode::BAD_REQUEST, "invalid_user", &err.to_string()),
+        ),
+    }
 }
 
 pub(crate) fn handle_admin_users_list(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
@@ -183,11 +223,12 @@ pub(crate) fn handle_admin_user_create(
             json_response(StatusCode::OK, &user_detail(&saved))
         }
         Err(e) => {
-            let msg = e.to_string();
-            let reason = if msg.contains("already exists") {
-                Some("already-exists")
-            } else {
-                None
+            let (reason, response) = match e.downcast_ref::<UserMutationError>() {
+                Some(mut_err) => user_mutation_response(mut_err),
+                None => (
+                    None,
+                    error_response(StatusCode::BAD_REQUEST, "invalid_user", &e.to_string()),
+                ),
             };
             write_admin_user_audit(
                 state,
@@ -197,11 +238,7 @@ pub(crate) fn handle_admin_user_create(
                 reason,
                 "failure",
             );
-            if reason == Some("already-exists") {
-                error_response(StatusCode::CONFLICT, "username_already_exists", &msg)
-            } else {
-                error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg)
-            }
+            response
         }
     }
 }
@@ -227,9 +264,6 @@ pub(crate) fn handle_admin_user_update(
 ) -> Response<Full<Bytes>> {
     let id_owned = id.to_string();
     let result = mutate_collection(state, |c| {
-        if c.find_by_id(&id_owned).is_none() {
-            anyhow::bail!("not_found");
-        }
         let updated = c.update(&id_owned, |u| {
             if let Some(username) = &body.username {
                 u.username = username.clone();
@@ -250,13 +284,12 @@ pub(crate) fn handle_admin_user_update(
             json_response(StatusCode::OK, &user_detail(&updated))
         }
         Err(e) => {
-            let msg = e.to_string();
-            let reason = if msg.contains("not_found") || msg.contains("not found") {
-                Some("not-found")
-            } else if msg.contains("already exists") {
-                Some("already-exists")
-            } else {
-                None
+            let (reason, response) = match e.downcast_ref::<UserMutationError>() {
+                Some(mut_err) => user_mutation_response(mut_err),
+                None => (
+                    None,
+                    error_response(StatusCode::BAD_REQUEST, "invalid_user", &e.to_string()),
+                ),
             };
             write_admin_user_audit(
                 state,
@@ -266,15 +299,7 @@ pub(crate) fn handle_admin_user_update(
                 reason,
                 "failure",
             );
-            match reason {
-                Some("not-found") => {
-                    error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
-                }
-                Some("already-exists") => {
-                    error_response(StatusCode::CONFLICT, "username_already_exists", &msg)
-                }
-                _ => error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg),
-            }
+            response
         }
     }
 }
@@ -310,9 +335,6 @@ pub(crate) async fn handle_admin_user_reset_password(
     let id_owned = id.to_string();
     let now = crate::users::now_epoch_secs();
     let result = mutate_collection(state, |c| {
-        if c.find_by_id(&id_owned).is_none() {
-            anyhow::bail!("not_found");
-        }
         let updated = c.update(&id_owned, |u| {
             u.password_hash = new_hash.clone();
             u.password_changed_at = now;
@@ -335,11 +357,12 @@ pub(crate) async fn handle_admin_user_reset_password(
             json_response(StatusCode::OK, &AdminOkUserResponse { ok: true })
         }
         Err(e) => {
-            let msg = e.to_string();
-            let reason = if msg.contains("not_found") {
-                Some("not-found")
-            } else {
-                None
+            let (reason, response) = match e.downcast_ref::<UserMutationError>() {
+                Some(mut_err) => user_mutation_response(mut_err),
+                None => (
+                    None,
+                    error_response(StatusCode::BAD_REQUEST, "invalid_user", &e.to_string()),
+                ),
             };
             write_admin_user_audit(
                 state,
@@ -349,11 +372,7 @@ pub(crate) async fn handle_admin_user_reset_password(
                 reason,
                 "failure",
             );
-            if reason == Some("not-found") {
-                error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
-            } else {
-                error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg)
-            }
+            response
         }
     }
 }
@@ -365,12 +384,7 @@ pub(crate) fn handle_admin_user_delete(
 ) -> Response<Full<Bytes>> {
     let id_owned = id.to_string();
     let now = crate::users::now_epoch_secs();
-    let result = mutate_collection(state, |c| {
-        if c.find_by_id(&id_owned).is_none() {
-            anyhow::bail!("not_found");
-        }
-        c.remove(&id_owned)
-    });
+    let result = mutate_collection(state, |c| Ok(c.remove(&id_owned)?));
     match result {
         Ok(removed) => {
             state
@@ -387,13 +401,12 @@ pub(crate) fn handle_admin_user_delete(
             json_response(StatusCode::OK, &AdminOkUserResponse { ok: true })
         }
         Err(e) => {
-            let msg = e.to_string();
-            let reason = if msg.contains("not_found") {
-                Some("not-found")
-            } else if msg.contains("last_user_protected") {
-                Some("last-user-protected")
-            } else {
-                None
+            let (reason, response) = match e.downcast_ref::<UserMutationError>() {
+                Some(mut_err) => user_mutation_response(mut_err),
+                None => (
+                    None,
+                    error_response(StatusCode::BAD_REQUEST, "invalid_user", &e.to_string()),
+                ),
             };
             write_admin_user_audit(
                 state,
@@ -403,17 +416,7 @@ pub(crate) fn handle_admin_user_delete(
                 reason,
                 "failure",
             );
-            match reason {
-                Some("not-found") => {
-                    error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
-                }
-                Some("last-user-protected") => error_response(
-                    StatusCode::CONFLICT,
-                    "last_user_protected",
-                    "cannot delete the last remaining user",
-                ),
-                _ => error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg),
-            }
+            response
         }
     }
 }

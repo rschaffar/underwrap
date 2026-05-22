@@ -358,6 +358,7 @@ dependencies = [
  "shared-store",
  "subtle",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-rustls",
  "tracing",

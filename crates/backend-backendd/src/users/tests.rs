@@ -31,7 +31,7 @@ fn add_rejects_duplicate_username_case_insensitively() {
     let mut c = UserCollection::default();
     c.add(sample_record("Alice")).unwrap();
     let err = c.add(sample_record("alice")).unwrap_err();
-    assert!(err.to_string().contains("already exists"));
+    assert!(matches!(err, UserMutationError::DuplicateUsername(_)));
     assert_eq!(c.users[0].username, "alice");
 }
 
@@ -39,7 +39,7 @@ fn add_rejects_duplicate_username_case_insensitively() {
 fn add_rejects_empty_username() {
     let mut c = UserCollection::default();
     let err = c.add(sample_record("   ")).unwrap_err();
-    assert!(err.to_string().contains("non-empty"));
+    assert!(matches!(err, UserMutationError::InvalidUsername));
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn add_rejects_non_argon2_hash() {
     let mut bad = sample_record("alice");
     bad.password_hash = "plaintext".to_string();
     let err = c.add(bad).unwrap_err();
-    assert!(err.to_string().contains("argon2"));
+    assert!(matches!(err, UserMutationError::BadHash));
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn remove_refuses_last_user() {
     c.add(sample_record("alice")).unwrap();
     let id = c.users[0].id.clone();
     let err = c.remove(&id).unwrap_err();
-    assert_eq!(err.to_string(), "last_user_protected");
+    assert!(matches!(err, UserMutationError::LastUserProtected));
     assert_eq!(c.len(), 1, "the only user must still be present");
 }
 

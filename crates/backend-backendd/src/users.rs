@@ -19,6 +19,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Typed errors produced by mutating operations on [`UserCollection`].
+///
+/// Handlers match on the variant to pick the HTTP status and structured
+/// `code` returned to admin clients; the rendered message stays as
+/// fallback text for the response body.
+#[derive(Debug, Error)]
+pub enum UserMutationError {
+    #[error("user '{0}' not found")]
+    NotFound(String),
+    #[error("user '{0}' already exists")]
+    DuplicateUsername(String),
+    #[error("cannot delete the last remaining user")]
+    LastUserProtected,
+    #[error("username must not be empty")]
+    InvalidUsername,
+    #[error("password_hash must be a PHC-encoded argon2 hash")]
+    BadHash,
+}
 
 /// Default location of the backend-managed user-state file.
 pub const DEFAULT_USERS_FILE: &str = "/var/lib/underwrap-backend/users.json";
@@ -96,16 +116,16 @@ impl UserCollection {
     }
 
     /// Append a record. Refuses duplicate usernames.
-    pub fn add(&mut self, mut record: UserRecord) -> Result<()> {
+    pub fn add(&mut self, mut record: UserRecord) -> Result<(), UserMutationError> {
         record.username = normalise_username(&record.username);
         if record.username.is_empty() {
-            anyhow::bail!("user username must be non-empty");
+            return Err(UserMutationError::InvalidUsername);
         }
         if !record.password_hash.starts_with("$argon2") {
-            anyhow::bail!("user password_hash must be a PHC-encoded argon2 hash");
+            return Err(UserMutationError::BadHash);
         }
         if self.find_by_username(&record.username).is_some() {
-            anyhow::bail!("user '{}' already exists", record.username);
+            return Err(UserMutationError::DuplicateUsername(record.username));
         }
         self.users.push(record);
         Ok(())
@@ -120,7 +140,7 @@ impl UserCollection {
     /// closure receives a mutable reference and may rename the record;
     /// uniqueness and PHC-hash invariants are re-checked here so
     /// callers don't have to.
-    pub fn update<F>(&mut self, id: &str, f: F) -> Result<&UserRecord>
+    pub fn update<F>(&mut self, id: &str, f: F) -> Result<&UserRecord, UserMutationError>
     where
         F: FnOnce(&mut UserRecord),
     {
@@ -128,37 +148,35 @@ impl UserCollection {
             .users
             .iter()
             .position(|u| u.id == id)
-            .with_context(|| format!("user '{id}' not found"))?;
+            .ok_or_else(|| UserMutationError::NotFound(id.to_string()))?;
         let mut next = self.users[idx].clone();
         f(&mut next);
         next.username = normalise_username(&next.username);
         if next.username.is_empty() {
-            anyhow::bail!("user username must be non-empty");
+            return Err(UserMutationError::InvalidUsername);
         }
         if !next.password_hash.starts_with("$argon2") {
-            anyhow::bail!("user password_hash must be a PHC-encoded argon2 hash");
+            return Err(UserMutationError::BadHash);
         }
         // Reject username conflicts with any *other* user.
         if let Some(other) = self.find_by_username(&next.username)
             && other.id != next.id
         {
-            anyhow::bail!("user '{}' already exists", next.username);
+            return Err(UserMutationError::DuplicateUsername(next.username));
         }
         self.users[idx] = next;
         Ok(&self.users[idx])
     }
 
-    /// Remove the user with id `id`. Refuses to remove the last user
-    /// (returns an error whose `to_string()` is exactly
-    /// `last_user_protected`).
-    pub fn remove(&mut self, id: &str) -> Result<UserRecord> {
+    /// Remove the user with id `id`. Refuses to remove the last user.
+    pub fn remove(&mut self, id: &str) -> Result<UserRecord, UserMutationError> {
         let idx = self
             .users
             .iter()
             .position(|u| u.id == id)
-            .with_context(|| format!("user '{id}' not found"))?;
+            .ok_or_else(|| UserMutationError::NotFound(id.to_string()))?;
         if self.users.len() <= 1 {
-            anyhow::bail!("last_user_protected");
+            return Err(UserMutationError::LastUserProtected);
         }
         Ok(self.users.remove(idx))
     }
