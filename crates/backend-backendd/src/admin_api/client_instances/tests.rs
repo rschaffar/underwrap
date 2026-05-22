@@ -18,7 +18,7 @@ fn client_instance_crud_and_store_mapping_round_trip() {
     let work_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -27,17 +27,17 @@ fn client_instance_crud_and_store_mapping_round_trip() {
     let other_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "other".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
         },
     );
 
-    let create = do_admin_client_instance_create(
+    let create = handle_admin_client_instance_create(
         &state,
         &p,
-        AdminClientInstanceCreateRequest {
+        &AdminClientInstanceCreateRequest {
             display_name: "laptop-work".into(),
             current_store_id: work_id.clone(),
             status: AdminClientInstanceStatus::Active,
@@ -68,11 +68,11 @@ fn client_instance_crud_and_store_mapping_round_trip() {
     assert_eq!(delete_in_use.status(), StatusCode::CONFLICT);
     assert_eq!(response_body_json(delete_in_use)["code"], "store_in_use");
 
-    let update = do_admin_client_instance_update(
+    let update = handle_admin_client_instance_update(
         &state,
         &p,
         &client_id,
-        AdminClientInstanceUpdateRequest {
+        &AdminClientInstanceUpdateRequest {
             display_name: Some("laptop-renamed".into()),
             current_store_id: Some(other_id.clone()),
             status: Some(AdminClientInstanceStatus::Disabled),
@@ -113,7 +113,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
     let store_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -213,7 +213,7 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     let store_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -222,10 +222,10 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
 
     // Default: when the create request omits the flag the stored
     // value is false and the detail/list response reports it.
-    let create = do_admin_client_instance_create(
+    let create = handle_admin_client_instance_create(
         &state,
         &p,
-        AdminClientInstanceCreateRequest {
+        &AdminClientInstanceCreateRequest {
             display_name: "default-flag".into(),
             current_store_id: store_id.clone(),
             status: AdminClientInstanceStatus::Active,
@@ -240,11 +240,11 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     let id = created["id"].as_str().unwrap().to_string();
 
     // Update toggles it on.
-    let toggled = do_admin_client_instance_update(
+    let toggled = handle_admin_client_instance_update(
         &state,
         &p,
         &id,
-        AdminClientInstanceUpdateRequest {
+        &AdminClientInstanceUpdateRequest {
             display_name: None,
             current_store_id: None,
             status: None,
@@ -262,11 +262,11 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     assert!(reloaded.get(&id).unwrap().auto_create_wrapper_assets);
 
     // Update without the flag leaves it alone.
-    let kept = do_admin_client_instance_update(
+    let kept = handle_admin_client_instance_update(
         &state,
         &p,
         &id,
-        AdminClientInstanceUpdateRequest {
+        &AdminClientInstanceUpdateRequest {
             display_name: Some("renamed".into()),
             current_store_id: None,
             status: None,
@@ -278,11 +278,11 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     assert_eq!(response_body_json(kept)["auto_create_wrapper_assets"], true);
 
     // And it can be toggled back off explicitly.
-    let off = do_admin_client_instance_update(
+    let off = handle_admin_client_instance_update(
         &state,
         &p,
         &id,
-        AdminClientInstanceUpdateRequest {
+        &AdminClientInstanceUpdateRequest {
             display_name: None,
             current_store_id: None,
             status: None,

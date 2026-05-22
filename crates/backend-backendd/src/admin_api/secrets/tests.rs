@@ -16,7 +16,7 @@ fn admin_secret_rename_moves_entry_atomically() {
     let write = handle_admin_secret_write(
         &state,
         "alice",
-        underwrap_protocol::service::AdminSecretWriteRequest {
+        &underwrap_protocol::service::AdminSecretWriteRequest {
             store: store_id.clone(),
             resource_id: resource_id.clone(),
             slot: underwrap_protocol::resource::ResourceSlot::Files,
@@ -30,7 +30,7 @@ fn admin_secret_rename_moves_entry_atomically() {
     let rename = handle_admin_secret_rename(
         &state,
         "alice",
-        underwrap_protocol::service::AdminSecretRenameRequest {
+        &underwrap_protocol::service::AdminSecretRenameRequest {
             store: store_id.clone(),
             resource_id: resource_id.clone(),
             slot: underwrap_protocol::resource::ResourceSlot::Files,
@@ -60,7 +60,7 @@ fn admin_secret_rename_refuses_when_target_exists() {
         let _ = handle_admin_secret_write(
             &state,
             "alice",
-            underwrap_protocol::service::AdminSecretWriteRequest {
+            &underwrap_protocol::service::AdminSecretWriteRequest {
                 store: store_id.clone(),
                 resource_id: resource_id.clone(),
                 slot: underwrap_protocol::resource::ResourceSlot::Files,
@@ -72,7 +72,7 @@ fn admin_secret_rename_refuses_when_target_exists() {
     let resp = handle_admin_secret_rename(
         &state,
         "alice",
-        underwrap_protocol::service::AdminSecretRenameRequest {
+        &underwrap_protocol::service::AdminSecretRenameRequest {
             store: store_id.clone(),
             resource_id: resource_id.clone(),
             slot: underwrap_protocol::resource::ResourceSlot::Files,

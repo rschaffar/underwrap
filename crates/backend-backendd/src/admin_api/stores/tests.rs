@@ -71,7 +71,7 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
         backend: AdminStoreBackendKind::Plain,
         description: Some("the work store".into()),
     };
-    let resp = do_admin_store_create(&state, &p, create);
+    let resp = handle_admin_store_create(&state, &p, &create);
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = response_body_json(resp);
@@ -111,11 +111,11 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     assert_eq!(body["actions"]["can_edit_metadata"], true);
     assert_eq!(body["actions"]["can_delete_now"], true);
     // Update description.
-    let resp = do_admin_store_update(
+    let resp = handle_admin_store_update(
         &state,
         &p,
         &store_id,
-        AdminStoreUpdateRequest {
+        &AdminStoreUpdateRequest {
             name: None,
             description: Some("renamed".into()),
         },
@@ -124,11 +124,11 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     let resp = handle_admin_store_detail(&state, &store_id);
     assert_eq!(response_body_json(resp)["description"], "renamed");
     // Clearing description with an empty string nulls it out.
-    let resp = do_admin_store_update(
+    let resp = handle_admin_store_update(
         &state,
         &p,
         &store_id,
-        AdminStoreUpdateRequest {
+        &AdminStoreUpdateRequest {
             name: None,
             description: Some(String::new()),
         },
@@ -156,10 +156,10 @@ fn create_refuses_when_stores_data_root_unconfigured() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut state = crud_state(tmp.path());
     state.stores_data_root = None;
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &admin_principal(&[]),
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "stray".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -180,8 +180,8 @@ fn create_refuses_duplicate_name() {
         backend: AdminStoreBackendKind::Plain,
         description: None,
     };
-    let _first = do_admin_store_create(&state, &p, req.clone());
-    let resp = do_admin_store_create(&state, &p, req);
+    let _first = handle_admin_store_create(&state, &p, &req);
+    let resp = handle_admin_store_create(&state, &p, &req);
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body = response_body_json(resp);
     assert_eq!(body["code"], "store_name_already_exists");
@@ -195,7 +195,7 @@ fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
     let store_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -228,10 +228,10 @@ fn create_plain_store_returns_no_key_hex() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     let p = admin_principal(&[]);
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -252,10 +252,10 @@ fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     let p = admin_principal(&[]);
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -323,10 +323,10 @@ async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     let p = admin_principal(&[]);
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -393,7 +393,7 @@ async fn rotate_key_refuses_plain_store() {
     let store_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -412,7 +412,7 @@ async fn rotate_key_refuses_locked_store() {
     let store_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -434,7 +434,7 @@ async fn rotate_key_succeeds_on_unlocked_encrypted_store() {
     let store_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -449,10 +449,10 @@ fn unlock_round_trip_succeeds_with_correct_hex() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     let p = admin_principal(&[]);
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -467,11 +467,11 @@ fn unlock_round_trip_succeeds_with_correct_hex() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(state.stores.read().unwrap().is_locked(&store_id));
 
-    let resp = do_admin_store_unlock(
+    let resp = handle_admin_store_unlock(
         &state,
         &p,
         &store_id,
-        underwrap_protocol::service::AdminStoreUnlockRequest { key_hex },
+        &underwrap_protocol::service::AdminStoreUnlockRequest { key_hex },
     );
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(!state.stores.read().unwrap().is_locked(&store_id));
@@ -482,10 +482,10 @@ fn unlock_rejects_wrong_hex_and_keeps_store_locked() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     let p = admin_principal(&[]);
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -499,11 +499,11 @@ fn unlock_rejects_wrong_hex_and_keeps_store_locked() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let bogus_hex = "0".repeat(64);
-    let resp = do_admin_store_unlock(
+    let resp = handle_admin_store_unlock(
         &state,
         &p,
         &store_id,
-        underwrap_protocol::service::AdminStoreUnlockRequest { key_hex: bogus_hex },
+        &underwrap_protocol::service::AdminStoreUnlockRequest { key_hex: bogus_hex },
     );
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(response_body_json(resp)["code"], "key_mismatch");
@@ -515,10 +515,10 @@ fn unlock_rejects_invalid_hex_format() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     let p = admin_principal(&[]);
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -530,11 +530,11 @@ fn unlock_rejects_invalid_hex_format() {
         .to_string();
     let resp = handle_admin_store_lock(&state, &p, &store_id);
     assert_eq!(resp.status(), StatusCode::OK);
-    let resp = do_admin_store_unlock(
+    let resp = handle_admin_store_unlock(
         &state,
         &p,
         &store_id,
-        underwrap_protocol::service::AdminStoreUnlockRequest {
+        &underwrap_protocol::service::AdminStoreUnlockRequest {
             key_hex: "not hex".into(),
         },
     );
@@ -550,17 +550,17 @@ fn unlock_refuses_plain_store() {
     let store_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
         },
     );
-    let resp = do_admin_store_unlock(
+    let resp = handle_admin_store_unlock(
         &state,
         &p,
         &store_id,
-        underwrap_protocol::service::AdminStoreUnlockRequest {
+        &underwrap_protocol::service::AdminStoreUnlockRequest {
             key_hex: "0".repeat(64),
         },
     );
@@ -573,10 +573,10 @@ fn unlock_refuses_already_unlocked_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     let p = admin_principal(&[]);
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -585,11 +585,11 @@ fn unlock_refuses_already_unlocked_store() {
     let body = response_body_json(resp);
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
     let key_hex = body["key_hex"].as_str().unwrap().to_string();
-    let resp = do_admin_store_unlock(
+    let resp = handle_admin_store_unlock(
         &state,
         &p,
         &store_id,
-        underwrap_protocol::service::AdminStoreUnlockRequest { key_hex },
+        &underwrap_protocol::service::AdminStoreUnlockRequest { key_hex },
     );
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     assert_eq!(response_body_json(resp)["code"], "already_unlocked");
@@ -600,10 +600,10 @@ fn lock_transitions_unlocked_encrypted_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     let p = admin_principal(&[]);
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -632,7 +632,7 @@ fn lock_refuses_plain_store() {
     let store_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -648,10 +648,10 @@ fn canary_is_hidden_from_admin_has_secrets_view() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     let p = admin_principal(&[]);
-    let resp = do_admin_store_create(
+    let resp = handle_admin_store_create(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
@@ -675,7 +675,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
     let plain_id = create_store_for_test(
         &state,
         &admin,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -684,7 +684,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
     let encrypted_id = create_store_for_test(
         &state,
         &admin,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,

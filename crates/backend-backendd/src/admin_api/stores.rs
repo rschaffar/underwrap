@@ -290,7 +290,7 @@ pub(crate) fn resolve_store_dir(
 }
 
 #[allow(clippy::result_large_err)]
-pub(crate) async fn handle_admin_store_create(
+pub(crate) async fn handle_admin_store_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     request: Request<Incoming>,
@@ -299,18 +299,18 @@ pub(crate) async fn handle_admin_store_create(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    do_admin_store_create(state, principal, body)
+    handle_admin_store_create(state, principal, &body)
 }
 
-/// Body-already-parsed half of [`handle_admin_store_create`]. Split
-/// out so unit tests can drive it without synthesising a
+/// Body-already-parsed half of [`handle_admin_store_create_endpoint`].
+/// Split out so unit tests can drive it without synthesising a
 /// `Request<Incoming>` (which `hyper` doesn't expose constructors
 /// for). The HTTP-shaped handler above is exercised by Playwright.
 #[allow(clippy::result_large_err)]
-pub(crate) fn do_admin_store_create(
+pub(crate) fn handle_admin_store_create(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
-    body: AdminStoreCreateRequest,
+    body: &AdminStoreCreateRequest,
 ) -> Response<Full<Bytes>> {
     let visible_name = body.name.trim();
     if visible_name.is_empty() {
@@ -497,7 +497,7 @@ fn create_data_dir_secure(dir: &Path) -> Result<()> {
 }
 
 #[allow(clippy::result_large_err)]
-pub(crate) async fn handle_admin_store_update(
+pub(crate) async fn handle_admin_store_update_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     name: &str,
@@ -507,15 +507,15 @@ pub(crate) async fn handle_admin_store_update(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    do_admin_store_update(state, principal, name, body)
+    handle_admin_store_update(state, principal, name, &body)
 }
 
 #[allow(clippy::result_large_err)]
-pub(crate) fn do_admin_store_update(
+pub(crate) fn handle_admin_store_update(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     name: &str,
-    body: AdminStoreUpdateRequest,
+    body: &AdminStoreUpdateRequest,
 ) -> Response<Full<Bytes>> {
     let updated = {
         let reg = state.stores.read().unwrap();
@@ -523,7 +523,7 @@ pub(crate) fn do_admin_store_update(
             return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
         };
         let mut record = loaded.record.clone();
-        if let Some(new_name) = body.name {
+        if let Some(new_name) = &body.name {
             let new_name = new_name.trim();
             if new_name.is_empty() {
                 return error_response(
@@ -544,11 +544,11 @@ pub(crate) fn do_admin_store_update(
             }
             record.name = new_name;
         }
-        if let Some(new_desc) = body.description {
+        if let Some(new_desc) = &body.description {
             record.description = if new_desc.is_empty() {
                 None
             } else {
-                Some(new_desc)
+                Some(new_desc.clone())
             };
         }
         record
@@ -1044,7 +1044,7 @@ fn reencrypt_into(
 /// the registry. Wrong keys never transition the registry to
 /// `Unlocked`; the registry stays `Locked` and the response surfaces a
 /// structured `key_mismatch` code.
-pub(crate) async fn handle_admin_store_unlock(
+pub(crate) async fn handle_admin_store_unlock_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     name: &str,
@@ -1058,15 +1058,15 @@ pub(crate) async fn handle_admin_store_unlock(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    do_admin_store_unlock(state, principal, name, body)
+    handle_admin_store_unlock(state, principal, name, &body)
 }
 
 #[allow(clippy::result_large_err)]
-pub(crate) fn do_admin_store_unlock(
+pub(crate) fn handle_admin_store_unlock(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     name: &str,
-    body: underwrap_protocol::service::AdminStoreUnlockRequest,
+    body: &underwrap_protocol::service::AdminStoreUnlockRequest,
 ) -> Response<Full<Bytes>> {
     let dir = {
         let reg = state.stores.read().unwrap();
@@ -1223,7 +1223,7 @@ pub(crate) async fn route(
     if path == "/v1/admin/stores" {
         return match *method {
             Method::GET => handle_admin_stores_list(state),
-            Method::POST => handle_admin_store_create(state, principal, request).await,
+            Method::POST => handle_admin_store_create_endpoint(state, principal, request).await,
             _ => error_response(
                 StatusCode::METHOD_NOT_ALLOWED,
                 "method_not_allowed",
@@ -1246,7 +1246,9 @@ pub(crate) async fn route(
             && !name.contains('/')
         {
             return match *method {
-                Method::POST => handle_admin_store_unlock(state, principal, name, request).await,
+                Method::POST => {
+                    handle_admin_store_unlock_endpoint(state, principal, name, request).await
+                }
                 _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST"),
             };
         }
@@ -1262,7 +1264,9 @@ pub(crate) async fn route(
         if !rest.is_empty() && !rest.contains('/') {
             return match *method {
                 Method::GET => handle_admin_store_detail(state, rest),
-                Method::PUT => handle_admin_store_update(state, principal, rest, request).await,
+                Method::PUT => {
+                    handle_admin_store_update_endpoint(state, principal, rest, request).await
+                }
                 Method::DELETE => {
                     let force = request
                         .uri()

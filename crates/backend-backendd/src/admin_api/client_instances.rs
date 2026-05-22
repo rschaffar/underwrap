@@ -163,7 +163,7 @@ pub(crate) fn handle_admin_client_instance_detail(
     }
 }
 
-pub(crate) async fn handle_admin_client_instance_create(
+pub(crate) async fn handle_admin_client_instance_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     request: Request<Incoming>,
@@ -172,13 +172,13 @@ pub(crate) async fn handle_admin_client_instance_create(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    do_admin_client_instance_create(state, principal, body)
+    handle_admin_client_instance_create(state, principal, &body)
 }
 
-pub(crate) fn do_admin_client_instance_create(
+pub(crate) fn handle_admin_client_instance_create(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
-    body: AdminClientInstanceCreateRequest,
+    body: &AdminClientInstanceCreateRequest,
 ) -> Response<Full<Bytes>> {
     let display_name = body.display_name.trim();
     if display_name.is_empty() {
@@ -189,17 +189,19 @@ pub(crate) fn do_admin_client_instance_create(
         );
     }
     let display_name = display_name.to_string();
-    let current_credential =
-        match crate::runtime_clients::current_credential_from_pem(body.cert_pem, body.issued_at) {
-            Ok(current) => current,
-            Err(e) => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_client_certificate",
-                    &format!("parsing client certificate: {e:#}"),
-                );
-            }
-        };
+    let current_credential = match crate::runtime_clients::current_credential_from_pem(
+        body.cert_pem.clone(),
+        body.issued_at,
+    ) {
+        Ok(current) => current,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_client_certificate",
+                &format!("parsing client certificate: {e:#}"),
+            );
+        }
+    };
     let cert_fingerprint = current_credential.cert_fingerprint.clone();
     {
         let stores = state.stores.read().unwrap();
@@ -245,7 +247,7 @@ pub(crate) fn do_admin_client_instance_create(
     let record = crate::runtime_clients::ClientInstanceRecord {
         id: id.clone(),
         display_name,
-        current_store_id: body.current_store_id,
+        current_store_id: body.current_store_id.clone(),
         status: client_instance_status_from_wire(body.status),
         last_seen_at: None,
         current_credential,
@@ -291,7 +293,7 @@ pub(crate) fn do_admin_client_instance_create(
     )
 }
 
-pub(crate) async fn handle_admin_client_instance_update(
+pub(crate) async fn handle_admin_client_instance_update_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     id: &str,
@@ -301,14 +303,14 @@ pub(crate) async fn handle_admin_client_instance_update(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    do_admin_client_instance_update(state, principal, id, body)
+    handle_admin_client_instance_update(state, principal, id, &body)
 }
 
-pub(crate) fn do_admin_client_instance_update(
+pub(crate) fn handle_admin_client_instance_update(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     id: &str,
-    body: AdminClientInstanceUpdateRequest,
+    body: &AdminClientInstanceUpdateRequest,
 ) -> Response<Full<Bytes>> {
     let mut instances = state.client_instances.write().unwrap();
     let Some(existing) = instances.get(id).cloned() else {
@@ -320,7 +322,7 @@ pub(crate) fn do_admin_client_instance_update(
     };
     let old_store_id = existing.current_store_id.clone();
     let mut updated = existing;
-    if let Some(display_name) = body.display_name {
+    if let Some(display_name) = &body.display_name {
         let display_name = display_name.trim();
         if display_name.is_empty() {
             return error_response(
@@ -344,34 +346,36 @@ pub(crate) fn do_admin_client_instance_update(
         }
         updated.display_name = display_name;
     }
-    if let Some(current_store_id) = body.current_store_id {
+    if let Some(current_store_id) = &body.current_store_id {
         if !state
             .stores
             .read()
             .unwrap()
             .records
-            .contains_key(&current_store_id)
+            .contains_key(current_store_id)
         {
             return error_response(StatusCode::BAD_REQUEST, "unknown_store", "unknown store");
         }
-        updated.current_store_id = current_store_id;
+        updated.current_store_id = current_store_id.clone();
     }
     if let Some(status) = body.status {
         updated.status = client_instance_status_from_wire(status);
     }
-    if let Some(cert_pem) = body.cert_pem {
+    if let Some(cert_pem) = &body.cert_pem {
         let now = crate::users::now_epoch_secs();
-        let new_credential =
-            match crate::runtime_clients::current_credential_from_pem(cert_pem, Some(now)) {
-                Ok(current) => current,
-                Err(e) => {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_client_certificate",
-                        &format!("parsing client certificate: {e:#}"),
-                    );
-                }
-            };
+        let new_credential = match crate::runtime_clients::current_credential_from_pem(
+            cert_pem.clone(),
+            Some(now),
+        ) {
+            Ok(current) => current,
+            Err(e) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_client_certificate",
+                    &format!("parsing client certificate: {e:#}"),
+                );
+            }
+        };
         if instances.iter().any(|(other_id, other)| {
             other_id != id
                 && other.current_credential.cert_fingerprint == new_credential.cert_fingerprint
@@ -505,7 +509,9 @@ pub(crate) async fn route(
     if path == "/v1/admin/client-instances" {
         return match *method {
             Method::GET => handle_admin_client_instances_list(state),
-            Method::POST => handle_admin_client_instance_create(state, principal, request).await,
+            Method::POST => {
+                handle_admin_client_instance_create_endpoint(state, principal, request).await
+            }
             _ => error_response(
                 StatusCode::METHOD_NOT_ALLOWED,
                 "method_not_allowed",
@@ -520,7 +526,7 @@ pub(crate) async fn route(
         return match *method {
             Method::GET => handle_admin_client_instance_detail(state, rest),
             Method::PUT => {
-                handle_admin_client_instance_update(state, principal, rest, request).await
+                handle_admin_client_instance_update_endpoint(state, principal, rest, request).await
             }
             Method::DELETE => handle_admin_client_instance_delete(state, principal, rest),
             _ => error_response(

@@ -18,7 +18,7 @@ use underwrap_protocol::policy::PolicyDocument;
 use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest};
 use underwrap_store::{StorageBackend, save_resource_blob};
 
-use crate::admin_api::stores::do_admin_store_create;
+use crate::admin_api::stores::handle_admin_store_create;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
@@ -467,9 +467,9 @@ pub(crate) fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
 pub(crate) fn create_store_for_test(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
-    body: AdminStoreCreateRequest,
+    body: &AdminStoreCreateRequest,
 ) -> String {
-    let resp = do_admin_store_create(state, principal, body);
+    let resp = handle_admin_store_create(state, principal, body);
     assert_eq!(resp.status(), StatusCode::OK);
     response_body_json(resp)["store"]["id"]
         .as_str()
@@ -519,7 +519,7 @@ pub(crate) fn entity_test_state_with_store(tmp: &std::path::Path) -> (AdminRunti
     let id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
@@ -620,7 +620,7 @@ pub(crate) fn make_runtime_api_fixture() -> RuntimeApiFixture {
     let store_id = create_store_for_test(
         &state,
         &p,
-        AdminStoreCreateRequest {
+        &AdminStoreCreateRequest {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,

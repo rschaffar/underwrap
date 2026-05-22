@@ -69,10 +69,7 @@ pub(crate) async fn handle_admin_secret_write_endpoint(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    match admin_store(state, &body.store) {
-        Ok(_) => handle_admin_secret_write(state, actor, body),
-        Err(resp) => resp,
-    }
+    handle_admin_secret_write(state, actor, &body)
 }
 
 pub(crate) async fn handle_admin_secret_list(
@@ -139,16 +136,13 @@ pub(crate) async fn handle_admin_secret_rename_endpoint(
             Ok(b) => b,
             Err(resp) => return resp,
         };
-    match admin_store(state, &body.store) {
-        Ok(_) => handle_admin_secret_rename(state, actor, body),
-        Err(resp) => resp,
-    }
+    handle_admin_secret_rename(state, actor, &body)
 }
 
 pub(crate) fn handle_admin_secret_write(
     state: &AdminRuntimeState,
     operator: &str,
-    body: underwrap_protocol::service::AdminSecretWriteRequest,
+    body: &underwrap_protocol::service::AdminSecretWriteRequest,
 ) -> Response<Full<Bytes>> {
     let secret_id = match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key) {
         Ok(id) => id,
@@ -200,7 +194,7 @@ pub(crate) fn handle_admin_secret_write(
 pub(crate) fn handle_admin_secret_rename(
     state: &AdminRuntimeState,
     operator: &str,
-    body: underwrap_protocol::service::AdminSecretRenameRequest,
+    body: &underwrap_protocol::service::AdminSecretRenameRequest,
 ) -> Response<Full<Bytes>> {
     let from_id = match validate_and_compose_secret_id(&body.resource_id, body.slot, &body.from_key)
     {
@@ -244,9 +238,9 @@ pub(crate) fn handle_admin_secret_rename(
 
     // Resolve material: caller-provided overrides; else carry the
     // existing value across.
-    let new_material: SecretBytes = match body.material_b64 {
+    let new_material: SecretBytes = match &body.material_b64 {
         None => existing,
-        Some(b64) => match base64::engine::general_purpose::STANDARD.decode(&b64) {
+        Some(b64) => match base64::engine::general_purpose::STANDARD.decode(b64) {
             Ok(bytes) => SecretBytes::from(bytes),
             Err(e) => {
                 return error_response(

@@ -116,7 +116,7 @@ pub(crate) fn handle_admin_user_detail(
 }
 
 #[allow(clippy::result_large_err)]
-pub(crate) async fn handle_admin_user_create(
+pub(crate) async fn handle_admin_user_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     request: Request<Incoming>,
@@ -125,14 +125,14 @@ pub(crate) async fn handle_admin_user_create(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    do_admin_user_create(state, principal, body)
+    handle_admin_user_create(state, principal, &body)
 }
 
 #[allow(clippy::result_large_err)]
-pub(crate) fn do_admin_user_create(
+pub(crate) fn handle_admin_user_create(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
-    body: AdminUserCreateRequest,
+    body: &AdminUserCreateRequest,
 ) -> Response<Full<Bytes>> {
     if body.password.is_empty() {
         return error_response(
@@ -191,7 +191,7 @@ pub(crate) fn do_admin_user_create(
 }
 
 #[allow(clippy::result_large_err)]
-pub(crate) async fn handle_admin_user_update(
+pub(crate) async fn handle_admin_user_update_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     id: &str,
@@ -201,15 +201,15 @@ pub(crate) async fn handle_admin_user_update(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    do_admin_user_update(state, principal, id, body)
+    handle_admin_user_update(state, principal, id, &body)
 }
 
 #[allow(clippy::result_large_err)]
-pub(crate) fn do_admin_user_update(
+pub(crate) fn handle_admin_user_update(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
     id: &str,
-    body: AdminUserUpdateRequest,
+    body: &AdminUserUpdateRequest,
 ) -> Response<Full<Bytes>> {
     let id_owned = id.to_string();
     let result = mutate_collection(state, |c| {
@@ -377,7 +377,7 @@ pub(crate) async fn route(
     if path == "/v1/admin/users" {
         return match *method {
             Method::GET => handle_admin_users_list(state),
-            Method::POST => handle_admin_user_create(state, principal, request).await,
+            Method::POST => handle_admin_user_create_endpoint(state, principal, request).await,
             _ => error_response(
                 StatusCode::METHOD_NOT_ALLOWED,
                 "method_not_allowed",
@@ -400,7 +400,9 @@ pub(crate) async fn route(
         if !rest.is_empty() && !rest.contains('/') {
             return match *method {
                 Method::GET => handle_admin_user_detail(state, rest),
-                Method::PUT => handle_admin_user_update(state, principal, rest, request).await,
+                Method::PUT => {
+                    handle_admin_user_update_endpoint(state, principal, rest, request).await
+                }
                 Method::DELETE => handle_admin_user_delete(state, principal, rest),
                 _ => error_response(
                     StatusCode::METHOD_NOT_ALLOWED,

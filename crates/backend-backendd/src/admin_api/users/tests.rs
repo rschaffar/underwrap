@@ -9,10 +9,10 @@ fn user_create_persists_record_and_omits_password_hash_from_response() {
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
     let p = admin_principal(&[]);
-    let resp = do_admin_user_create(
+    let resp = handle_admin_user_create(
         &state,
         &p,
-        underwrap_protocol::service::AdminUserCreateRequest {
+        &underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: "hunter2-bob".into(),
         },
@@ -56,7 +56,7 @@ fn user_create_refuses_duplicate_username_case_insensitively() {
         username: "Alice".into(), // collides after normalisation
         password: "any-pass".into(),
     };
-    let resp = do_admin_user_create(&state, &p, req());
+    let resp = handle_admin_user_create(&state, &p, &req());
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body = response_body_json(resp);
     assert_eq!(body["code"], "username_already_exists");
@@ -67,10 +67,10 @@ fn user_create_refuses_empty_password() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
-    let resp = do_admin_user_create(
+    let resp = handle_admin_user_create(
         &state,
         &admin_principal(&[]),
-        underwrap_protocol::service::AdminUserCreateRequest {
+        &underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: String::new(),
         },
@@ -86,10 +86,10 @@ fn users_list_omits_password_hash_for_every_record() {
     seed_admin_into(&state, "alice");
     let p = admin_principal(&[]);
     for u in ["bob", "carol"] {
-        do_admin_user_create(
+        handle_admin_user_create(
             &state,
             &p,
-            underwrap_protocol::service::AdminUserCreateRequest {
+            &underwrap_protocol::service::AdminUserCreateRequest {
                 username: u.into(),
                 password: format!("{u}-pass"),
             },
@@ -111,10 +111,10 @@ fn user_update_renames_user() {
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
     let p = admin_principal(&[]);
-    let create_resp = do_admin_user_create(
+    let create_resp = handle_admin_user_create(
         &state,
         &p,
-        underwrap_protocol::service::AdminUserCreateRequest {
+        &underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: "x".into(),
         },
@@ -123,11 +123,11 @@ fn user_update_renames_user() {
         .as_str()
         .unwrap()
         .to_string();
-    let resp = do_admin_user_update(
+    let resp = handle_admin_user_update(
         &state,
         &p,
         &bob_id,
-        underwrap_protocol::service::AdminUserUpdateRequest {
+        &underwrap_protocol::service::AdminUserUpdateRequest {
             username: Some("robert".into()),
         },
     );
@@ -157,10 +157,10 @@ fn user_delete_succeeds_when_another_user_exists() {
     let state = crud_state(tmp.path());
     let alice_id = seed_admin_into(&state, "alice");
     let p = admin_principal_with_id(&alice_id);
-    let create = do_admin_user_create(
+    let create = handle_admin_user_create(
         &state,
         &p,
-        underwrap_protocol::service::AdminUserCreateRequest {
+        &underwrap_protocol::service::AdminUserCreateRequest {
             username: "second".into(),
             password: "x".into(),
         },
@@ -179,10 +179,10 @@ fn user_reset_password_changes_hash_and_revokes_sessions() {
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
     let p = admin_principal(&[]);
-    let create = do_admin_user_create(
+    let create = handle_admin_user_create(
         &state,
         &p,
-        underwrap_protocol::service::AdminUserCreateRequest {
+        &underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: "old-pass".into(),
         },
@@ -199,13 +199,9 @@ fn user_reset_password_changes_hash_and_revokes_sessions() {
         .password_hash
         .clone();
 
-    // do_admin_user_create is sync, but reset_password takes a
-    // `Request<Incoming>` — synthesise the body-already-parsed
-    // path by inlining the logic. Easiest: drive
-    // mutate_collection + the underlying state directly via a
-    // tiny helper test that exercises the public path through
-    // an `async` wrapper would need a runtime; we mimic the
-    // server logic here instead.
+    // reset_password takes a `Request<Incoming>` which `hyper`
+    // doesn't expose constructors for, so we mimic the server-side
+    // logic directly here.
     let new_hash = crate::auth::hash_password("new-pass").unwrap();
     let now = crate::users::now_epoch_secs();
     mutate_collection(&state, |c| {
@@ -242,10 +238,10 @@ fn debug_redacts_password_hash_in_collection_logging() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
-    do_admin_user_create(
+    handle_admin_user_create(
         &state,
         &admin_principal(&[]),
-        underwrap_protocol::service::AdminUserCreateRequest {
+        &underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: "x".into(),
         },
