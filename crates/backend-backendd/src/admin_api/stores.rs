@@ -71,13 +71,8 @@ fn saturating_u32(value: usize) -> u32 {
     value.min(u32::MAX as usize) as u32
 }
 
-#[allow(clippy::result_large_err)]
-fn admin_store_usage(
-    state: &AdminRuntimeState,
-    store_id: &str,
-    store: &dyn underwrap_store::StorageBackend,
-) -> std::result::Result<AdminStoreUsageSummary, Response<Full<Bytes>>> {
-    let mapped_client_instance_count = saturating_u32(
+fn mapped_client_instance_count(state: &AdminRuntimeState, store_id: &str) -> u32 {
+    saturating_u32(
         state
             .client_instances
             .read()
@@ -85,7 +80,16 @@ fn admin_store_usage(
             .values()
             .filter(|instance| instance.current_store_id == store_id)
             .count(),
-    );
+    )
+}
+
+#[allow(clippy::result_large_err)]
+fn admin_store_usage(
+    state: &AdminRuntimeState,
+    store_id: &str,
+    store: &dyn underwrap_store::StorageBackend,
+) -> std::result::Result<AdminStoreUsageSummary, Response<Full<Bytes>>> {
+    let mapped_client_instance_count = mapped_client_instance_count(state, store_id);
     let has_secrets = match store.list("") {
         Ok(ids) => ids
             .iter()
@@ -184,17 +188,8 @@ fn admin_store_usage_for_locked(
     state: &AdminRuntimeState,
     store_id: &str,
 ) -> AdminStoreUsageSummary {
-    let mapped_client_instance_count = saturating_u32(
-        state
-            .client_instances
-            .read()
-            .unwrap()
-            .values()
-            .filter(|instance| instance.current_store_id == store_id)
-            .count(),
-    );
     AdminStoreUsageSummary {
-        mapped_client_instance_count,
+        mapped_client_instance_count: mapped_client_instance_count(state, store_id),
         has_secrets: false,
     }
 }
