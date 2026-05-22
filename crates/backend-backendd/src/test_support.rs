@@ -367,7 +367,6 @@ pub(crate) fn run_bootstrap(
     use crate::http::responses::error_response;
     // Mirror the validation in `handle_admin_bootstrap` minus the
     // request-body parsing, which `parse_json_body` already covers.
-    let session_key = state.session_key;
     let username_norm = crate::users::normalise_username(username);
     if username_norm.is_empty() || password.is_empty() {
         return error_response(
@@ -425,24 +424,7 @@ pub(crate) fn run_bootstrap(
         now,
         state.session_lifetime_secs,
     );
-    let encoded = crate::auth::encrypt_session(&payload, &session_key).unwrap();
-    let session_cookie = crate::auth::render_session_cookie(
-        &encoded,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
-    let csrf_cookie = crate::auth::render_csrf_cookie(
-        &payload.csrf_secret,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .header(hyper::header::SET_COOKIE, session_cookie)
-        .header(hyper::header::SET_COOKIE, csrf_cookie)
-        .body(Full::new(Bytes::from_static(b"{}")))
-        .expect("response")
+    crate::admin_api::auth::issue_session_response(state, &payload, &serde_json::json!({}))
 }
 
 pub(crate) fn admin_principal(_stores: &[&str]) -> crate::users::Principal {

@@ -15,6 +15,48 @@ use tracing::{info, warn};
 use crate::http::responses::{error_response, json_response, parse_json_body};
 use crate::runtime_state::AdminRuntimeState;
 
+/// Issue a freshly-encrypted session cookie + matching CSRF cookie and
+/// return the 200 response with the JSON `body`. Shared by login,
+/// bootstrap, and the bootstrap test helper.
+///
+/// On `encrypt_session` failure the response is a 500 — there is no
+/// way to keep going without a session cookie.
+pub(crate) fn issue_session_response<B: serde::Serialize>(
+    state: &AdminRuntimeState,
+    payload: &crate::auth::SessionPayload,
+    body: &B,
+) -> Response<Full<Bytes>> {
+    let encoded = match crate::auth::encrypt_session(payload, &state.session_key) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(err = %e, "encrypt_session failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "failed to issue session",
+            );
+        }
+    };
+    let session_cookie = crate::auth::render_session_cookie(
+        &encoded,
+        state.session_lifetime_secs,
+        state.cookies_secure,
+    );
+    let csrf_cookie = crate::auth::render_csrf_cookie(
+        &payload.csrf_secret,
+        state.session_lifetime_secs,
+        state.cookies_secure,
+    );
+    let body_bytes = serde_json::to_vec(body).expect("serializing session response body");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .header(hyper::header::SET_COOKIE, session_cookie)
+        .header(hyper::header::SET_COOKIE, csrf_cookie)
+        .body(Full::new(Bytes::from(body_bytes)))
+        .expect("building session response")
+}
+
 #[derive(serde::Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct LoginRequest {
@@ -44,7 +86,6 @@ pub(crate) async fn handle_admin_login(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    let session_key = state.session_key;
     let body = match parse_json_body::<LoginRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -117,42 +158,17 @@ pub(crate) async fn handle_admin_login(
         now,
         state.session_lifetime_secs,
     );
-    let encoded = match crate::auth::encrypt_session(&payload, &session_key) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(err = %e, "login: failed to encrypt session");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "failed to issue session",
-            );
-        }
-    };
-    let session_cookie = crate::auth::render_session_cookie(
-        &encoded,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
-    let csrf_cookie = crate::auth::render_csrf_cookie(
-        &payload.csrf_secret,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
 
     state.login_rate_limiter.reset(&username_norm);
     info!(username = %user.username, "login succeeded");
 
-    let body = LoginResponse {
-        username: user.username.clone(),
-    };
-    let body_bytes = serde_json::to_vec(&body).expect("serializing login response");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .header(hyper::header::SET_COOKIE, session_cookie)
-        .header(hyper::header::SET_COOKIE, csrf_cookie)
-        .body(Full::new(Bytes::from(body_bytes)))
-        .expect("building login response")
+    issue_session_response(
+        state,
+        &payload,
+        &LoginResponse {
+            username: user.username.clone(),
+        },
+    )
 }
 
 /// Handle `POST /v1/admin/auth/logout`. Revokes the current session id

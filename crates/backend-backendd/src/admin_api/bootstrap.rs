@@ -65,7 +65,6 @@ pub(crate) async fn handle_admin_bootstrap(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    let session_key = state.session_key;
     let body = match parse_json_body::<BootstrapRequest>(request).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -194,39 +193,14 @@ pub(crate) async fn handle_admin_bootstrap(
         now,
         state.session_lifetime_secs,
     );
-    let encoded = match crate::auth::encrypt_session(&payload, &session_key) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(err = %e, "bootstrap: encrypting session failed");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "could not issue session",
-            );
-        }
-    };
-    let session_cookie = crate::auth::render_session_cookie(
-        &encoded,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
-    let csrf_cookie = crate::auth::render_csrf_cookie(
-        &payload.csrf_secret,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
     info!(username = %record.username, "bootstrap: first user created");
-    let body = BootstrapResponse {
-        username: record.username.clone(),
-    };
-    let body_bytes = serde_json::to_vec(&body).expect("serializing bootstrap response");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .header(hyper::header::SET_COOKIE, session_cookie)
-        .header(hyper::header::SET_COOKIE, csrf_cookie)
-        .body(Full::new(Bytes::from(body_bytes)))
-        .expect("building bootstrap response")
+    crate::admin_api::auth::issue_session_response(
+        state,
+        &payload,
+        &BootstrapResponse {
+            username: record.username.clone(),
+        },
+    )
 }
 
 /// Log one bootstrap attempt outcome. Best effort: never fails the caller.
