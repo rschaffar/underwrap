@@ -9,17 +9,18 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use axum::Router;
 use axum::extract::{Path, State};
-use axum::routing::get;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
 use tracing::warn;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use underwrap_protocol::service::{
     AdminOkUserResponse, AdminUserCreateRequest, AdminUserDetailResponse, AdminUserListItem,
     AdminUserResetPasswordRequest, AdminUserUpdateRequest, AdminUsersListResponse,
+    ServiceErrorResponse,
 };
 
 use crate::admin_api::audit::log_admin_event;
@@ -361,28 +362,43 @@ pub(crate) fn handle_admin_user_delete(
     }
 }
 
-pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route(
-            "/v1/admin/users",
-            get(axum_users_list).post(axum_user_create),
-        )
-        .route(
-            "/v1/admin/users/{id}",
-            get(axum_user_detail)
-                .put(axum_user_update)
-                .delete(axum_user_delete),
-        )
-        .route(
-            "/v1/admin/users/{id}/password",
-            axum::routing::post(axum_user_reset_password),
-        )
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_users_list, axum_user_create))
+        .routes(routes!(
+            axum_user_detail,
+            axum_user_update,
+            axum_user_delete
+        ))
+        .routes(routes!(axum_user_reset_password))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/admin/users",
+    tag = "users",
+    security(("session_cookie" = [])),
+    responses(
+        (status = 200, description = "List of every operator in the collection.", body = AdminUsersListResponse),
+        (status = 500, description = "Backend could not read the operator collection.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_users_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
     handle_admin_users_list(&state)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/users",
+    tag = "users",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminUserCreateRequest,
+    responses(
+        (status = 200, description = "Operator created.", body = AdminOkUserResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 409, description = "Username already exists.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_user_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -391,6 +407,19 @@ async fn axum_user_create(
     handle_admin_user_create(&state, &principal, &parsed)
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/admin/users/{id}",
+    tag = "users",
+    security(("session_cookie" = [])),
+    params(
+        ("id" = String, Path, description = "Operator id."),
+    ),
+    responses(
+        (status = 200, description = "Operator record.", body = AdminUserDetailResponse),
+        (status = 404, description = "Operator not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_user_detail(
     State(state): State<Arc<AdminRuntimeState>>,
     Path(id): Path<String>,
@@ -398,6 +427,22 @@ async fn axum_user_detail(
     handle_admin_user_detail(&state, &id)
 }
 
+#[utoipa::path(
+    put,
+    path = "/v1/admin/users/{id}",
+    tag = "users",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(
+        ("id" = String, Path, description = "Operator id."),
+    ),
+    request_body = AdminUserUpdateRequest,
+    responses(
+        (status = 200, description = "Operator updated.", body = AdminOkUserResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Operator not found.", body = ServiceErrorResponse),
+        (status = 409, description = "Username collision.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_user_update(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -407,6 +452,20 @@ async fn axum_user_update(
     handle_admin_user_update(&state, &principal, &id, &parsed)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/users/{id}",
+    tag = "users",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(
+        ("id" = String, Path, description = "Operator id."),
+    ),
+    responses(
+        (status = 200, description = "Operator deleted; all sessions held by the deleted user are invalidated automatically.", body = AdminOkUserResponse),
+        (status = 400, description = "Cannot delete the last operator.", body = ServiceErrorResponse),
+        (status = 404, description = "Operator not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_user_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -415,6 +474,21 @@ async fn axum_user_delete(
     handle_admin_user_delete(&state, &principal, &id)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/users/{id}/password",
+    tag = "users",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(
+        ("id" = String, Path, description = "Operator id."),
+    ),
+    request_body = AdminUserResetPasswordRequest,
+    responses(
+        (status = 200, description = "Password reset; the target user's sessions are invalidated automatically.", body = AdminOkUserResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Operator not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_user_reset_password(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,

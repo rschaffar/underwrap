@@ -11,14 +11,15 @@
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
 use tracing::{info, warn};
+use underwrap_protocol::service::ServiceErrorResponse;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::auth::AdminAuthSession;
@@ -212,21 +213,38 @@ pub(crate) async fn handle_admin_bootstrap(
     )
 }
 
-pub(crate) fn public_router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route(
-            "/v1/admin/auth/bootstrap/status",
-            get(axum_bootstrap_status),
-        )
-        .route("/v1/admin/auth/bootstrap", post(axum_bootstrap))
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_bootstrap_status))
+        .routes(routes!(axum_bootstrap))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/admin/auth/bootstrap/status",
+    tag = "bootstrap",
+    responses(
+        (status = 200, description = "True only when the operator collection is empty and the bootstrap-completed sentinel is unset.", body = BootstrapStatusResponse),
+    ),
+)]
 async fn axum_bootstrap_status(
     State(state): State<Arc<AdminRuntimeState>>,
 ) -> Response<Full<Bytes>> {
     handle_admin_bootstrap_status(&state)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/auth/bootstrap",
+    tag = "bootstrap",
+    request_body = BootstrapRequest,
+    responses(
+        (status = 200, description = "First operator created; session issued in the same response.", body = BootstrapResponse),
+        (status = 400, description = "Validation failed (e.g. password too short).", body = ServiceErrorResponse),
+        (status = 409, description = "Bootstrap already completed; further attempts are refused.", body = ServiceErrorResponse),
+        (status = 500, description = "Backend could not write the operator collection.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_bootstrap(
     auth_session: AdminAuthSession,
     State(state): State<Arc<AdminRuntimeState>>,

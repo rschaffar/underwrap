@@ -6,15 +6,15 @@
 //! from a tile they can't act on directly.
 
 use anyhow::Result;
-use axum::Router;
 use axum::extract::State;
-use axum::routing::get;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
 use std::sync::Arc;
-
+use underwrap_protocol::service::{AdminUiOverviewResponse, ServiceErrorResponse};
 use underwrap_store::StorageBackend;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::http::responses::{error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
@@ -93,10 +93,20 @@ pub(crate) fn handle_admin_ui_overview(state: &AdminRuntimeState) -> Response<Fu
     }
 }
 
-pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new().route("/v1/admin/ui/overview", get(axum_overview))
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new().routes(routes!(axum_overview))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/admin/ui/overview",
+    tag = "overview",
+    security(("session_cookie" = [])),
+    responses(
+        (status = 200, description = "Per-store resource + permission-mode summary for the SPA dashboard. Locked encrypted stores are silently skipped.", body = AdminUiOverviewResponse),
+        (status = 400, description = "Backend could not read a store's resource/policy document.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_overview(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
     handle_admin_ui_overview(&state)
 }

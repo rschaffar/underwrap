@@ -13,6 +13,13 @@ use utoipa::Modify;
 use utoipa::OpenApi;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
 
+/// OpenAPI 3.1 document including the live admin path table. Used by
+/// the drift test in `tests/openapi_export.rs` and by future tooling
+/// that wants to consume the spec directly.
+pub fn admin_openapi_spec() -> utoipa::openapi::OpenApi {
+    crate::admin_api::admin_openapi_spec()
+}
+
 /// Top-level OpenAPI document. Subdomain routers are added by the
 /// `admin_api::admin_router` builder via `utoipa-axum`'s
 /// `OpenApiRouter::routes(..)` calls; this struct just sets the metadata

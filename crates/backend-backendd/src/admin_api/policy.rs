@@ -15,12 +15,17 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use axum::Router;
 use axum::extract::State;
-use axum::routing::post;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
+use underwrap_protocol::service::{
+    AdminOkResponse, AdminPolicyGetRequest, AdminPolicyGetResponse, AdminPolicyPutRequest,
+    AdminWrapperPermissionDeleteRequest, AdminWrapperPermissionUpsertRequest,
+    AdminWrapperPermissionsListRequest, AdminWrapperPermissionsListResponse, ServiceErrorResponse,
+};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
@@ -256,57 +261,110 @@ pub(crate) fn handle_admin_wrapper_permission_delete(
     )
 }
 
-pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route("/v1/admin/policy/get", post(axum_policy_get))
-        .route("/v1/admin/policy/put", post(axum_policy_put))
-        .route(
-            "/v1/admin/wrapper-permissions/list",
-            post(axum_permissions_list),
-        )
-        .route(
-            "/v1/admin/wrapper-permissions/upsert",
-            post(axum_permission_upsert),
-        )
-        .route(
-            "/v1/admin/wrapper-permissions/delete",
-            post(axum_permission_delete),
-        )
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_policy_get))
+        .routes(routes!(axum_policy_put))
+        .routes(routes!(axum_permissions_list))
+        .routes(routes!(axum_permission_upsert))
+        .routes(routes!(axum_permission_delete))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/policy/get",
+    tag = "policy",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminPolicyGetRequest,
+    responses(
+        (status = 200, description = "Policy document for the store.", body = AdminPolicyGetResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_policy_get(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<underwrap_protocol::service::AdminPolicyGetRequest>,
+    Body(parsed): Body<AdminPolicyGetRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_policy_get(&state, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/policy/put",
+    tag = "policy",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminPolicyPutRequest,
+    responses(
+        (status = 200, description = "Policy document replaced.", body = AdminOkResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_policy_put(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<underwrap_protocol::service::AdminPolicyPutRequest>,
+    Body(parsed): Body<AdminPolicyPutRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_policy_put(&state, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/wrapper-permissions/list",
+    tag = "policy",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminWrapperPermissionsListRequest,
+    responses(
+        (status = 200, description = "List of wrapper permissions for the store.", body = AdminWrapperPermissionsListResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_permissions_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<underwrap_protocol::service::AdminWrapperPermissionsListRequest>,
+    Body(parsed): Body<AdminWrapperPermissionsListRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_wrapper_permissions_list(&state, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/wrapper-permissions/upsert",
+    tag = "policy",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminWrapperPermissionUpsertRequest,
+    responses(
+        (status = 200, description = "Permission upserted.", body = AdminOkResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store / wrapper / resource not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_permission_upsert(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminWrapperPermissionUpsertRequest>,
+    Body(parsed): Body<AdminWrapperPermissionUpsertRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_wrapper_permission_upsert(&state, &principal, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/wrapper-permissions/delete",
+    tag = "policy",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminWrapperPermissionDeleteRequest,
+    responses(
+        (status = 200, description = "Permission removed.", body = AdminOkResponse),
+        (status = 404, description = "Store / permission not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_permission_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminWrapperPermissionDeleteRequest>,
+    Body(parsed): Body<AdminWrapperPermissionDeleteRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_wrapper_permission_delete(&state, &principal, &parsed)
 }

@@ -14,9 +14,7 @@
 
 use std::path::PathBuf;
 
-use utoipa::OpenApi;
-
-use underwrap_backendd::openapi::ApiDoc;
+use underwrap_backendd::openapi::admin_openapi_spec;
 
 fn openapi_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("openapi.json")
@@ -24,7 +22,7 @@ fn openapi_path() -> PathBuf {
 
 #[test]
 fn openapi_spec_round_trips() {
-    let doc = ApiDoc::openapi();
+    let doc = admin_openapi_spec();
     let serialized = serde_json::to_string_pretty(&doc).expect("OpenApi serializes to JSON");
     // Trailing newline so editors / pre-commit hooks don't fight over it.
     let expected = format!("{serialized}\n");

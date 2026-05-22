@@ -82,7 +82,7 @@ pub struct AdminPasswordChangeRequest {
     pub new_password: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ServiceErrorResponse {
     pub code: String,
     pub message: String,

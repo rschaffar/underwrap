@@ -8,8 +8,1451 @@
     },
     "version": "0.1.0"
   },
-  "paths": {},
+  "paths": {
+    "/v1/admin/auth/bootstrap": {
+      "post": {
+        "tags": [
+          "bootstrap"
+        ],
+        "operationId": "axum_bootstrap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "First operator created; session issued in the same response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed (e.g. password too short).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bootstrap already completed; further attempts are refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Backend could not write the operator collection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/bootstrap/status": {
+      "get": {
+        "tags": [
+          "bootstrap"
+        ],
+        "operationId": "axum_bootstrap_status",
+        "responses": {
+          "200": {
+            "description": "True only when the operator collection is empty and the bootstrap-completed sentinel is unset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "axum_login_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Login succeeded; session cookie set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid username or password.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate-limited; too many login attempts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Backend could not read user collection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "axum_logout",
+        "responses": {
+          "204": {
+            "description": "Session destroyed and cookie cleared."
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "axum_password_change",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPasswordChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Password changed; new session issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed (e.g. new password too short).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Current password is incorrect.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Backend could not persist the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/auth/whoami": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "axum_whoami",
+        "responses": {
+          "200": {
+            "description": "Returns the current operator, or `authenticated: false` if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhoamiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/policy/get": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "axum_policy_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPolicyGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Policy document for the store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPolicyGetResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/policy/put": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "axum_policy_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPolicyPutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Policy document replaced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/ui/overview": {
+      "get": {
+        "tags": [
+          "overview"
+        ],
+        "operationId": "axum_overview",
+        "responses": {
+          "200": {
+            "description": "Per-store resource + permission-mode summary for the SPA dashboard. Locked encrypted stores are silently skipped.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUiOverviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Backend could not read a store's resource/policy document.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "axum_users_list",
+        "responses": {
+          "200": {
+            "description": "List of every operator in the collection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUsersListResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Backend could not read the operator collection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "axum_user_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Operator created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Username already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users/{id}": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "axum_user_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Operator id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Operator record.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserDetailResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "axum_user_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Operator id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Operator updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Username collision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "axum_user_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Operator id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Operator deleted; all sessions held by the deleted user are invalidated automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Cannot delete the last operator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users/{id}/password": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "axum_user_reset_password",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Operator id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserResetPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Password reset; the target user's sessions are invalidated automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/wrapper-permissions/delete": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "axum_permission_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminWrapperPermissionDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Permission removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / permission not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/wrapper-permissions/list": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "axum_permissions_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminWrapperPermissionsListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "List of wrapper permissions for the store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminWrapperPermissionsListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/wrapper-permissions/upsert": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "axum_permission_upsert",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminWrapperPermissionUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Permission upserted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / wrapper / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    }
+  },
   "components": {
+    "schemas": {
+      "AdminOkResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminOkUserResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminPasswordChangeRequest": {
+        "type": "object",
+        "description": "Self-service password change for the currently authenticated user.\nRequires the current password as proof-of-possession of the\nsession. Distinct from `POST /v1/admin/users/{id}/password`, which\nis the admin reset path and doesn't require the target's old\npassword.",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminPolicyGetRequest": {
+        "type": "object",
+        "required": [
+          "store"
+        ],
+        "properties": {
+          "store": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminPolicyGetResponse": {
+        "type": "object",
+        "required": [
+          "document"
+        ],
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/PolicyDocument"
+          }
+        }
+      },
+      "AdminPolicyPutRequest": {
+        "type": "object",
+        "required": [
+          "store",
+          "document"
+        ],
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/PolicyDocument"
+          },
+          "store": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUiOverviewResponse": {
+        "type": "object",
+        "required": [
+          "stores"
+        ],
+        "properties": {
+          "stores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminUiOverviewStore"
+            }
+          }
+        }
+      },
+      "AdminUiOverviewStore": {
+        "type": "object",
+        "required": [
+          "store",
+          "resource_count",
+          "wrapper_counts",
+          "writable_permission_count"
+        ],
+        "properties": {
+          "resource_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "store": {
+            "type": "string"
+          },
+          "wrapper_counts": {
+            "$ref": "#/components/schemas/AdminUiWrapperCounts"
+          },
+          "writable_permission_count": {
+            "type": "integer",
+            "description": "Number of wrapper permissions with `writable = true`. Surfaced\non the dashboard overview as a quick \"how many wrapper writes\nare open\" signal.",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminUiWrapperCounts": {
+        "type": "object",
+        "required": [
+          "locked",
+          "unlocked",
+          "unlocked_until"
+        ],
+        "properties": {
+          "locked": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unlocked": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unlocked_until": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminUserCreateRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "Plaintext on the wire (over TLS). Hashed server-side with\nArgon2id before any storage step. Never echoed back."
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUserDetailResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "username",
+          "created_at",
+          "password_changed_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "password_changed_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUserListItem": {
+        "type": "object",
+        "description": "One user record as visible to the admin UI. Mirrors\n`crate::users::UserRecord` minus the password hash, which the API\nnever returns.",
+        "required": [
+          "id",
+          "username",
+          "created_at",
+          "password_changed_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "password_changed_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUserResetPasswordRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUserUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New username. Omit to keep the existing one."
+          }
+        }
+      },
+      "AdminUsersListResponse": {
+        "type": "object",
+        "required": [
+          "users"
+        ],
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminUserListItem"
+            }
+          }
+        }
+      },
+      "AdminWrapperPermissionDeleteRequest": {
+        "type": "object",
+        "required": [
+          "store",
+          "client_instance",
+          "wrapper",
+          "resource_id"
+        ],
+        "properties": {
+          "client_instance": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "wrapper": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminWrapperPermissionUpsertRequest": {
+        "type": "object",
+        "required": [
+          "store",
+          "permission"
+        ],
+        "properties": {
+          "permission": {
+            "$ref": "#/components/schemas/WrapperPermission"
+          },
+          "store": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminWrapperPermissionsListRequest": {
+        "type": "object",
+        "required": [
+          "store"
+        ],
+        "properties": {
+          "store": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminWrapperPermissionsListResponse": {
+        "type": "object",
+        "required": [
+          "permissions"
+        ],
+        "properties": {
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WrapperPermission"
+            }
+          }
+        }
+      },
+      "BootstrapRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "BootstrapResponse": {
+        "type": "object",
+        "required": [
+          "username"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "BootstrapStatusResponse": {
+        "type": "object",
+        "required": [
+          "bootstrap_required"
+        ],
+        "properties": {
+          "bootstrap_required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "required": [
+          "username"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "PolicyDocument": {
+        "type": "object",
+        "description": "Store-backed policy document.",
+        "properties": {
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WrapperPermission"
+            },
+            "description": "The flat list of wrapper permissions. One per\n`(client_instance, wrapper, resource)` tuple."
+          }
+        }
+      },
+      "ServiceErrorResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "WhoamiResponse": {
+        "type": "object",
+        "required": [
+          "authenticated"
+        ],
+        "properties": {
+          "authenticated": {
+            "type": "boolean"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "WrapperApprovalMode": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Deny every invocation through this permission.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "locked"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Allow every invocation through this permission.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unlocked"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Allow invocations until `until_epoch`; deny afterwards. The expiry is\nchecked lazily on each request — no server-side sweeper.",
+            "required": [
+              "until_epoch",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unlocked-until"
+                ]
+              },
+              "until_epoch": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "Runtime mode for one [`WrapperPermission`]."
+      },
+      "WrapperPermission": {
+        "type": "object",
+        "description": "One per-store wrapper permission.\n\nThe tuple `(client_instance, wrapper, resource_id)` is the unique\nkey; persistence layers MUST reject duplicates with the stable\nerror code `duplicate_permission`. `resource_id` is the stable\nbackend id, so renaming a resource preserves every permission\nthat references it.",
+        "required": [
+          "client_instance",
+          "wrapper",
+          "resource_id"
+        ],
+        "properties": {
+          "client_instance": {
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/WrapperApprovalMode"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Operator-facing free-form note. Surfaced in the wrapper\npermissions UI tooltip."
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "wrapper": {
+            "type": "string"
+          },
+          "writable": {
+            "type": "boolean",
+            "description": "Whether the wrapper may write to this resource through the\nsecretsd channel. Applies to the `files` and `libsecret` slots;\n`env` has no wrapper-side write path. Defaults to `false`."
+          }
+        }
+      }
+    },
     "securitySchemes": {
       "csrf_header": {
         "type": "apiKey",

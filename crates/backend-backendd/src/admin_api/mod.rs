@@ -53,8 +53,12 @@ use axum_login::AuthManagerLayerBuilder;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::cookie::time::Duration as TimeDuration;
 use tower_sessions::{Expiry, SessionManagerLayer};
+use utoipa::OpenApi as _;
+use utoipa::openapi::OpenApi;
+use utoipa_axum::router::OpenApiRouter;
 
 use crate::http::origin::origin_layer;
+use crate::openapi::ApiDoc;
 use crate::runtime_state::AdminRuntimeState;
 
 use self::csrf::{
@@ -65,11 +69,19 @@ use self::csrf::{
 /// `Secure; Path=/; no Domain`, which closes subdomain confusion.
 pub(crate) const SESSION_COOKIE_NAME: &str = "__Host-uw-session";
 
-/// Build the admin sub-router for `/v1/admin/*`. The returned router
-/// is parameterized by `Arc<AdminRuntimeState>` so the caller composes
-/// it with the runtime router and provides state once via
+/// Build the admin sub-router for `/v1/admin/*` together with the
+/// `utoipa` OpenAPI document derived from each subdomain's
+/// `#[utoipa::path(...)]` annotations. The returned router is
+/// parameterized by `Arc<AdminRuntimeState>` so the caller composes it
+/// with the runtime router and provides state once via
 /// `.with_state(...)`.
-pub(crate) fn admin_router(state: Arc<AdminRuntimeState>) -> Router<Arc<AdminRuntimeState>> {
+///
+/// The OpenAPI document is the same one the
+/// `openapi_export.rs` drift test asserts on; it is also what the
+/// front-end client generator (ticket 1750) consumes.
+pub(crate) fn admin_router_and_openapi(
+    state: Arc<AdminRuntimeState>,
+) -> (Router<Arc<AdminRuntimeState>>, OpenApi) {
     // ---- tower-sessions + axum-login ----------------------------------
     let session_lifetime =
         TimeDuration::seconds(i64::try_from(state.session_lifetime_secs).unwrap_or(i64::MAX));
@@ -86,8 +98,15 @@ pub(crate) fn admin_router(state: Arc<AdminRuntimeState>) -> Router<Arc<AdminRun
     // ---- axum_csrf ----------------------------------------------------
     let csrf_layer = CsrfLayer::new(state.csrf_config.clone());
 
-    // ---- routers ------------------------------------------------------
-    let public = auth::public_router().merge(bootstrap::public_router());
+    // ---- OpenApiRouter composition ------------------------------------
+    //
+    // Each subdomain returns an `OpenApiRouter<S>`; subdomains that
+    // have already been migrated to `#[utoipa::path]` annotations are
+    // merged directly so their paths land in the spec. Unmigrated
+    // subdomains still return plain `axum::Router<S>` and are wrapped
+    // via `OpenApiRouter::from(...)` — their handlers contribute
+    // routes but no OpenAPI paths, which is exactly the incremental
+    // shape we want during the 1740 rollout.
 
     // `.layer` wraps the current router with the supplied middleware,
     // so layers read inside-out — the *first* `.layer(...)` call is
@@ -98,16 +117,7 @@ pub(crate) fn admin_router(state: Arc<AdminRuntimeState>) -> Router<Arc<AdminRun
     //
     // …which means we register them bottom-up in code: resolve first
     // (innermost), then verify, then require_login (outermost).
-    let protected = Router::new()
-        .merge(auth::protected_router())
-        .merge(users::router())
-        .merge(stores::router())
-        .merge(client_instances::router())
-        .merge(secrets::router())
-        .merge(resources::router())
-        .merge(pairs::router())
-        .merge(policy::router())
-        .merge(overview::router())
+    let protected = build_protected_router()
         .layer(from_fn_with_state(state.clone(), resolve_principal_layer))
         .layer(from_fn(verify_csrf_layer))
         .layer(from_fn(require_login_layer));
@@ -117,10 +127,55 @@ pub(crate) fn admin_router(state: Arc<AdminRuntimeState>) -> Router<Arc<AdminRun
     // a fresh `X-CSRF-Token` even on public endpoints (login,
     // whoami). The auth layer must also wrap both because
     // `handle_admin_login` calls `auth_session.login(&user)`.
-    public
+    let composed = OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .merge(build_public_router())
         .merge(protected)
         .layer(from_fn(attach_csrf_response_layer))
         .layer(csrf_layer)
         .layer(auth_layer)
-        .layer(from_fn_with_state(state, origin_layer))
+        .layer(from_fn_with_state(state, origin_layer));
+
+    composed.split_for_parts()
+}
+
+/// Public sub-router (login, whoami, bootstrap). Shared between the
+/// live HTTPS listener and the OpenAPI export drift test.
+fn build_public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .merge(auth::public_router())
+        .merge(bootstrap::openapi_router())
+}
+
+/// Protected sub-router, without any tower layers applied. Used both
+/// by the live router (where layers wrap this output) and by the
+/// OpenAPI export test (which only cares about the path table).
+fn build_protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .merge(auth::protected_router())
+        .merge(users::openapi_router())
+        .merge(OpenApiRouter::from(stores::router()))
+        .merge(OpenApiRouter::from(client_instances::router()))
+        .merge(OpenApiRouter::from(secrets::router()))
+        .merge(OpenApiRouter::from(resources::router()))
+        .merge(OpenApiRouter::from(pairs::router()))
+        .merge(policy::openapi_router())
+        .merge(overview::openapi_router())
+}
+
+/// OpenAPI-only export. Constructs the same router tree as the live
+/// `admin_router_and_openapi` (minus the tower layers, which don't
+/// affect the spec) and returns just the `OpenApi` document.
+pub(crate) fn admin_openapi_spec() -> OpenApi {
+    OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .merge(build_public_router())
+        .merge(build_protected_router())
+        .into_openapi()
+}
+
+/// Backwards-compatible wrapper that drops the OpenAPI document. Kept
+/// for code paths that don't care about the spec (the live HTTPS
+/// listener). The drift test calls
+/// [`admin_router_and_openapi`] directly to inspect the spec.
+pub(crate) fn admin_router(state: Arc<AdminRuntimeState>) -> Router<Arc<AdminRuntimeState>> {
+    admin_router_and_openapi(state).0
 }

@@ -12,15 +12,18 @@
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
 use axum_login::AuthSession;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
 use tracing::{info, warn};
+use underwrap_protocol::service::{
+    AdminOkUserResponse, AdminPasswordChangeRequest, ServiceErrorResponse,
+};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::auth::{AuthBackend, AuthError, Credentials};
 use crate::http::responses::{Body, error_response, json_response};
@@ -275,18 +278,30 @@ pub(crate) async fn handle_admin_password_change(
     }
 }
 
-pub(crate) fn public_router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route("/v1/admin/auth/login", post(axum_login_route))
-        .route("/v1/admin/auth/whoami", get(axum_whoami))
+pub(crate) fn public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_login_route))
+        .routes(routes!(axum_whoami))
 }
 
-pub(crate) fn protected_router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route("/v1/admin/auth/password", post(axum_password_change))
-        .route("/v1/admin/auth/logout", post(axum_logout))
+pub(crate) fn protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_password_change))
+        .routes(routes!(axum_logout))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Login succeeded; session cookie set.", body = LoginResponse),
+        (status = 401, description = "Invalid username or password.", body = ServiceErrorResponse),
+        (status = 429, description = "Rate-limited; too many login attempts.", body = ServiceErrorResponse),
+        (status = 500, description = "Backend could not read user collection.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_login_route(
     auth_session: AdminAuthSession,
     Body(parsed): Body<LoginRequest>,
@@ -296,19 +311,49 @@ async fn axum_login_route(
         .into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/admin/auth/whoami",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Returns the current operator, or `authenticated: false` if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.", body = WhoamiResponse),
+    ),
+)]
 async fn axum_whoami(auth_session: AdminAuthSession) -> axum::response::Response {
     handle_admin_whoami(auth_session).await.into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/auth/logout",
+    tag = "auth",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    responses(
+        (status = 204, description = "Session destroyed and cookie cleared."),
+    ),
+)]
 async fn axum_logout(auth_session: AdminAuthSession) -> axum::response::Response {
     handle_admin_logout(auth_session).await.into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/auth/password",
+    tag = "auth",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminPasswordChangeRequest,
+    responses(
+        (status = 200, description = "Password changed; new session issued.", body = AdminOkUserResponse),
+        (status = 400, description = "Validation failed (e.g. new password too short).", body = ServiceErrorResponse),
+        (status = 401, description = "Current password is incorrect.", body = ServiceErrorResponse),
+        (status = 500, description = "Backend could not persist the change.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_password_change(
     auth_session: AdminAuthSession,
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminPasswordChangeRequest>,
+    Body(parsed): Body<AdminPasswordChangeRequest>,
 ) -> axum::response::Response {
     handle_admin_password_change(auth_session, state, principal, parsed)
         .await
