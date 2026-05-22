@@ -9,7 +9,7 @@ use base64::Engine;
 fn admin_secret_rename_moves_entry_atomically() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resource_id = create_resource_id_for_test(&state, &p, &store_id, "github/token");
 
     // Seed an entry.
@@ -54,7 +54,7 @@ fn admin_secret_rename_moves_entry_atomically() {
 fn admin_secret_rename_refuses_when_target_exists() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resource_id = create_resource_id_for_test(&state, &p, &store_id, "r");
     for k in ["a", "b"] {
         let _ = handle_admin_secret_write(

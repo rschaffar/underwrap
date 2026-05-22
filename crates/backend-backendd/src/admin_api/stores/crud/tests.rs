@@ -22,7 +22,7 @@ fn list_returns_empty_when_nothing_configured() {
 fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let create = AdminStoreCreateRequest {
         name: "work".to_string(),
         backend: AdminStoreBackendKind::Plain,
@@ -115,7 +115,7 @@ fn create_refuses_when_stores_data_root_unconfigured() {
     state.stores_data_root = None;
     let resp = handle_admin_store_create(
         &state,
-        &admin_principal(&[]),
+        &admin_principal(),
         &AdminStoreCreateRequest {
             name: "stray".into(),
             backend: AdminStoreBackendKind::Plain,
@@ -131,7 +131,7 @@ fn create_refuses_when_stores_data_root_unconfigured() {
 fn create_refuses_duplicate_name() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let req = AdminStoreCreateRequest {
         name: "work".to_string(),
         backend: AdminStoreBackendKind::Plain,
@@ -148,7 +148,7 @@ fn create_refuses_duplicate_name() {
 fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let store_id = create_store_for_test(
         &state,
         &p,
@@ -184,7 +184,7 @@ fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
 fn create_plain_store_returns_no_key_hex() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_store_create(
         &state,
         &p,
@@ -208,7 +208,7 @@ fn create_plain_store_returns_no_key_hex() {
 fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_store_create(
         &state,
         &p,
@@ -278,7 +278,7 @@ fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
 fn canary_is_hidden_from_admin_has_secrets_view() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_store_create(
         &state,
         &p,
@@ -302,7 +302,7 @@ fn canary_is_hidden_from_admin_has_secrets_view() {
 fn store_management_view_reflects_usage_for_authenticated_user() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let admin = admin_principal(&[]);
+    let admin = admin_principal();
     let plain_id = create_store_for_test(
         &state,
         &admin,

@@ -8,7 +8,7 @@ use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest
 async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_store_create(
         &state,
         &p,
@@ -75,7 +75,7 @@ async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
 async fn rotate_key_refuses_plain_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let store_id = create_store_for_test(
         &state,
         &p,
@@ -94,7 +94,7 @@ async fn rotate_key_refuses_plain_store() {
 async fn rotate_key_refuses_locked_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let store_id = create_store_for_test(
         &state,
         &p,
@@ -116,7 +116,7 @@ async fn rotate_key_refuses_locked_store() {
 async fn rotate_key_succeeds_on_unlocked_encrypted_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let store_id = create_store_for_test(
         &state,
         &p,
@@ -134,7 +134,7 @@ async fn rotate_key_succeeds_on_unlocked_encrypted_store() {
 fn unlock_round_trip_succeeds_with_correct_hex() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_store_create(
         &state,
         &p,
@@ -167,7 +167,7 @@ fn unlock_round_trip_succeeds_with_correct_hex() {
 fn unlock_rejects_wrong_hex_and_keeps_store_locked() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_store_create(
         &state,
         &p,
@@ -200,7 +200,7 @@ fn unlock_rejects_wrong_hex_and_keeps_store_locked() {
 fn unlock_rejects_invalid_hex_format() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_store_create(
         &state,
         &p,
@@ -232,7 +232,7 @@ fn unlock_rejects_invalid_hex_format() {
 fn unlock_refuses_plain_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let store_id = create_store_for_test(
         &state,
         &p,
@@ -258,7 +258,7 @@ fn unlock_refuses_plain_store() {
 fn unlock_refuses_already_unlocked_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_store_create(
         &state,
         &p,
@@ -285,7 +285,7 @@ fn unlock_refuses_already_unlocked_store() {
 fn lock_transitions_unlocked_encrypted_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_store_create(
         &state,
         &p,
@@ -314,7 +314,7 @@ fn lock_transitions_unlocked_encrypted_store() {
 fn lock_refuses_plain_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let store_id = create_store_for_test(
         &state,
         &p,

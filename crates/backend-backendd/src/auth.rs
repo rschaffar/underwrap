@@ -3,10 +3,10 @@
 //! - **Login**: `POST /v1/admin/auth/login` accepts `{username, password}`,
 //!   verifies an Argon2id PHC hash from the operator collection, and on
 //!   success issues an AEAD-encrypted session cookie.
-//! - **Sessions**: the 32-byte session key file (already used by the
-//!   Next.js BFF) is repurposed as a ChaCha20-Poly1305 AEAD key. The
-//!   payload contains `(operator_id, issued_at, expiry, csrf_secret,
-//!   nonce)`. Tampering trips the AEAD tag.
+//! - **Sessions**: the 32-byte session key file is loaded as the
+//!   ChaCha20-Poly1305 AEAD key. The payload contains
+//!   `(operator_id, issued_at, expiry, csrf_secret, nonce)`. Tampering
+//!   trips the AEAD tag.
 //! - **Rate limiting**: a simple per-username token bucket gates login
 //!   attempts so an attacker cannot brute force a single account.
 //! - **Constant-time username lookup**: when no operator matches we
@@ -27,8 +27,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 /// Length of the session AEAD key, in bytes. The session key file must
-/// contain exactly this many bytes (the Next.js BFF used the same
-/// length).
+/// contain exactly this many random bytes.
 pub const SESSION_KEY_LEN: usize = 32;
 
 /// Default session lifetime when `AdminConfig.session_lifetime_secs` is

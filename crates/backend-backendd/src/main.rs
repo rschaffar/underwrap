@@ -51,21 +51,7 @@ enum AdminCommand {
 }
 
 fn parse_backend_config(config_text: &str) -> Result<BackendConfig> {
-    // Reject the legacy inline `stores:` block up front so an operator
-    // gets a clear migration hint instead of a confusing "unknown field"
-    // or, worse, a silently-ignored map.
-    let raw: serde_yaml::Value =
-        serde_yaml::from_str(config_text).context("parsing config as YAML")?;
-    if let serde_yaml::Value::Mapping(map) = &raw
-        && map.contains_key(serde_yaml::Value::String("stores".into()))
-    {
-        anyhow::bail!(
-            "the inline `stores:` map in backend.yaml is no longer supported. \
-             Stores now live in the backend-managed store registry file \
-             (`stores_file`, default /var/lib/underwrap-backend/stores.json)."
-        );
-    }
-    serde_yaml::from_value(raw).context("parsing config")
+    serde_yaml::from_str(config_text).context("parsing config")
 }
 
 #[tokio::main]
@@ -187,24 +173,6 @@ mod tests {
         assert!(config.client_instances_file.is_none());
         assert!(config.https.is_none());
         assert!(config.admin.is_none());
-    }
-
-    #[test]
-    fn parse_backend_config_rejects_legacy_inline_stores_with_migration_hint() {
-        let err = parse_backend_config(
-            r#"
-stores:
-  default:
-    backend: plain
-    dir: /var/lib/underwrap-backend/secrets
-"#,
-        )
-        .expect_err("inline `stores:` must be rejected after the store-registry refactor");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("stores_file") && msg.contains("no longer supported"),
-            "error message must guide the operator to the new layout, got: {msg}",
-        );
     }
 
     #[test]

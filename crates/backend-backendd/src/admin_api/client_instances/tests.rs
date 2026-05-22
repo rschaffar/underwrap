@@ -14,7 +14,7 @@ use underwrap_protocol::service::{
 fn client_instance_crud_and_store_mapping_round_trip() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let work_id = create_store_for_test(
         &state,
         &p,
@@ -109,7 +109,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
 
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let store_id = create_store_for_test(
         &state,
         &p,
@@ -216,7 +216,7 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
     use underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID;
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let old_store_id = create_store_for_test(
         &state,
         &p,
@@ -298,7 +298,7 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
 fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let store_id = create_store_for_test(
         &state,
         &p,

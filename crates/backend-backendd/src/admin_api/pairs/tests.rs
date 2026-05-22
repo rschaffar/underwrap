@@ -8,7 +8,7 @@ use crate::test_support::{
 fn admin_pair_create_requires_existing_resource_and_refuses_duplicates() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
 
     // No resource → 400 unknown_resource.
     let missing = handle_admin_pair_create(
@@ -53,7 +53,7 @@ fn admin_pair_delete_refuses_when_permissions_reference_the_pair() {
     use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
 
     let resource_id = create_resource_id_for_test(&state, &p, &store_id, "r");
     handle_admin_pair_create(

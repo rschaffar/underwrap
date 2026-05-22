@@ -8,7 +8,7 @@ fn user_create_persists_record_and_omits_password_hash_from_response() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resp = handle_admin_user_create(
         &state,
         &p,
@@ -51,7 +51,7 @@ fn user_create_refuses_duplicate_username_case_insensitively() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let req = || underwrap_protocol::service::AdminUserCreateRequest {
         username: "Alice".into(), // collides after normalisation
         password: "any-pass".into(),
@@ -69,7 +69,7 @@ fn user_create_refuses_empty_password() {
     seed_admin_into(&state, "alice");
     let resp = handle_admin_user_create(
         &state,
-        &admin_principal(&[]),
+        &admin_principal(),
         &underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: String::new(),
@@ -84,7 +84,7 @@ fn users_list_omits_password_hash_for_every_record() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     for u in ["bob", "carol"] {
         handle_admin_user_create(
             &state,
@@ -110,7 +110,7 @@ fn user_update_renames_user() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let create_resp = handle_admin_user_create(
         &state,
         &p,
@@ -178,7 +178,7 @@ fn user_reset_password_changes_hash_and_revokes_sessions() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let create = handle_admin_user_create(
         &state,
         &p,
@@ -240,7 +240,7 @@ fn debug_redacts_password_hash_in_collection_logging() {
     seed_admin_into(&state, "alice");
     handle_admin_user_create(
         &state,
-        &admin_principal(&[]),
+        &admin_principal(),
         &underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: "x".into(),

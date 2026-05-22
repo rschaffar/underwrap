@@ -8,9 +8,7 @@
 //! the individual pieces through the call chain.
 //!
 //! Fields are `pub(crate)` so the modules under `admin_api/` and
-//! `runtime_api/` can read them directly. Splitting this struct into
-//! smaller per-concern structs is deferred — see
-//! `epic_backend_modularization`.
+//! `runtime_api/` can read them directly.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

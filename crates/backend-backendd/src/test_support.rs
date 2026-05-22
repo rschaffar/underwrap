@@ -424,7 +424,7 @@ pub(crate) fn run_bootstrap(
     crate::admin_api::auth::issue_session_response(state, &payload, &serde_json::json!({}))
 }
 
-pub(crate) fn admin_principal(_stores: &[&str]) -> crate::users::Principal {
+pub(crate) fn admin_principal() -> crate::users::Principal {
     crate::users::Principal {
         id: "admin-id".into(),
         username: "alice".into(),
@@ -498,7 +498,7 @@ impl CollectBytesSync for Full<Bytes> {
 
 pub(crate) fn entity_test_state_with_store(tmp: &std::path::Path) -> (AdminRuntimeState, String) {
     let state = crud_state(tmp);
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let id = create_store_for_test(
         &state,
         &p,
@@ -599,7 +599,7 @@ pub(crate) fn make_runtime_api_fixture() -> RuntimeApiFixture {
 
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let store_id = create_store_for_test(
         &state,
         &p,

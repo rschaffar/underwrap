@@ -1,3 +1,18 @@
+//! Runtime client-instance registry: the per-frontend records that the
+//! backend's mTLS layer matches incoming runtime connections against.
+//!
+//! Each [`ClientInstanceRecord`] anchors one logical frontend daemon to
+//! exactly one [`CurrentCredentialRecord`] (the PEM-encoded client
+//! certificate + its SHA-256 fingerprint, plus an optional `issued_at`).
+//! On startup the backend loads the [`ClientInstancesDocument`] from
+//! `client_instances_file`, validates uniqueness on id / display name /
+//! fingerprint, and keeps the resolved map in
+//! [`crate::runtime_state::ServiceRuntimeState`] for handshake lookups.
+//!
+//! The mTLS-presented client certificate's fingerprint
+//! (`cert_fingerprint_from_der`) is the sole identity signal — there is
+//! no shared secret, no token, no allowlist beyond this registry.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

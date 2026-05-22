@@ -229,7 +229,10 @@ pub(crate) fn handle_admin_whoami(
     };
     // Confirm the username still resolves to a live user record; a
     // deleted user invalidates the session.
-    let collection = crate::users::load(&state.users_file).unwrap_or_default();
+    let collection = crate::users::load(&state.users_file).unwrap_or_else(|e| {
+        warn!(err = %e, "whoami: user collection unreadable; treating as empty");
+        crate::users::UserCollection::default()
+    });
     let exists = collection.find_by_username(&payload.username).is_some();
     json_response(
         StatusCode::OK,

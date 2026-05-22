@@ -10,7 +10,7 @@ use crate::test_support::{
 fn admin_resource_create_then_list_round_trip_with_operator_provenance() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
 
     let create = handle_admin_resource_create(
         &state,
@@ -42,7 +42,7 @@ fn admin_resource_create_then_list_round_trip_with_operator_provenance() {
 fn admin_resource_create_refuses_duplicate_name() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let body = underwrap_protocol::service::AdminResourceCreateRequest {
         store: store_id,
         name: "github/token".into(),
@@ -58,7 +58,7 @@ fn admin_resource_create_refuses_duplicate_name() {
 fn admin_resource_delete_succeeds_when_no_dependents() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resource_id = create_resource_id_for_test(&state, &p, &store_id, "github/token");
     let del = handle_admin_resource_delete(
         &state,
@@ -90,7 +90,7 @@ fn admin_resource_delete_succeeds_when_no_dependents() {
 fn admin_resource_rename_flips_name_and_keeps_id() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let resource_id = create_resource_id_for_test(&state, &p, &store_id, "github/token");
 
     let resp = handle_admin_resource_rename(
@@ -121,7 +121,7 @@ fn admin_resource_rename_flips_name_and_keeps_id() {
 fn admin_resource_rename_refuses_when_target_name_taken() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
     let a = create_resource_id_for_test(&state, &p, &store_id, "a");
     let _b = create_resource_id_for_test(&state, &p, &store_id, "b");
 
@@ -143,7 +143,7 @@ fn admin_resource_delete_refuses_with_structured_blockers() {
     use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let p = admin_principal(&[]);
+    let p = admin_principal();
 
     // Resource exists.
     let resource_id = create_resource_id_for_test(&state, &p, &store_id, "github/token");
