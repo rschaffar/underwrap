@@ -19,7 +19,8 @@
 use anyhow::{Context, Result};
 use axum::Extension;
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::Request;
+use axum::http::Method;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use hyper::StatusCode;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -34,6 +35,7 @@ use crate::admin_api::admin_router;
 use crate::http::responses::error_response;
 use crate::runtime_api::{PeerCertificates, runtime_router};
 use crate::runtime_state::AdminRuntimeState;
+use crate::web::serve_spa;
 
 pub(crate) mod origin;
 pub(crate) mod responses;
@@ -66,7 +68,7 @@ fn build_app(state: Arc<AdminRuntimeState>) -> Router {
         Router::new()
             .merge(runtime)
             .merge(admin)
-            .fallback(spa_fallback_handler)
+            .fallback(spa_or_not_found)
             .with_state(state)
     } else {
         Router::new()
@@ -76,18 +78,14 @@ fn build_app(state: Arc<AdminRuntimeState>) -> Router {
     }
 }
 
-/// Top-level fallback when the admin UI is enabled. Anything that
-/// reaches this is either a SPA path (`/`, `/users`, `/assets/...`) or
-/// an unknown JSON path; `serve_web_request` decides via its own
-/// history-fallback rules.
-async fn spa_fallback_handler(
-    State(state): State<Arc<AdminRuntimeState>>,
-    request: Request,
-) -> AxumResponse {
-    let method = request.method().clone();
-    let path = request.uri().path().to_string();
-    if crate::web::is_spa_request(&method, &path) {
-        return crate::web::serve_web_request(&method, &path, &state.web_source).into_response();
+/// Top-level fallback for the admin listener: serve the SPA for
+/// GET/HEAD that no JSON route claimed, return the canonical
+/// `not_found` envelope for every other method. This is what makes a
+/// stray `POST /v1/status` look like an unknown endpoint instead of a
+/// SPA-flavoured 405.
+async fn spa_or_not_found(req: Request) -> AxumResponse {
+    if matches!(*req.method(), Method::GET | Method::HEAD) {
+        return serve_spa(req).await;
     }
     error_response(StatusCode::NOT_FOUND, "not_found", "unknown endpoint").into_response()
 }

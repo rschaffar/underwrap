@@ -9,8 +9,11 @@
  * The backend listens on a random localhost TLS port with a freshly-
  * generated self-signed cert. Playwright is configured with
  * `ignoreHTTPSErrors: true` so the browser will accept it. The SPA is
- * served from `web/dist/` via `UNDERWRAP_BACKENDD_WEB_DIR`, exercising
- * the same single-origin layout we ship in production.
+ * served by the embedded `rust_embed` table; in debug builds rust-embed
+ * reads dynamically from the `UNDERWRAP_WEB_DIST` compile-time path
+ * (defaulted to `<workspace>/web/dist` by `build.rs`), so a fresh
+ * `npm run build` is enough between e2e runs — the daemon binary
+ * itself doesn't have to be rebuilt.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
@@ -25,7 +28,6 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomBytes } from "node:crypto";
 import selfsigned from "selfsigned";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,7 +41,7 @@ function defaultBackendBinary(): string {
   );
 }
 
-function defaultWebDir(): string {
+function builtSpaDir(): string {
   return join(REPO_ROOT, "web", "dist");
 }
 
@@ -98,10 +100,11 @@ export async function startBackend(
         "UNDERWRAP_BACKENDD_BINARY) before `npm run test:e2e`.",
     );
   }
-  const webDir = defaultWebDir();
-  if (!existsSync(webDir) || !existsSync(join(webDir, "index.html"))) {
+  const spaDir = builtSpaDir();
+  if (!existsSync(spaDir) || !existsSync(join(spaDir, "index.html"))) {
     throw new Error(
-      `Built SPA not found at ${webDir}. Run \`npm run build\` first.`,
+      `Built SPA not found at ${spaDir}. Run \`npm run build\` first — ` +
+        "the debug daemon reads it dynamically via rust-embed's debug mode.",
     );
   }
 
@@ -132,9 +135,6 @@ export async function startBackend(
   );
   writeFileSync(certPath, pems.cert);
   writeFileSync(keyPath, pems.private);
-
-  const sessionKeyPath = join(tmpDir, "session.key");
-  writeFileSync(sessionKeyPath, randomBytes(32));
 
   const storeDir = join(tmpDir, "store");
   mkdirSync(storeDir);
@@ -183,7 +183,6 @@ export async function startBackend(
     `    cert_file: ${JSON.stringify(certPath)}`,
     `    key_file: ${JSON.stringify(keyPath)}`,
     "admin:",
-    `  session_key_file: ${JSON.stringify(sessionKeyPath)}`,
     "  allowed_origins:",
     `    - "${baseUrl}"`,
     `    - "https://127.0.0.1:${port}"`,
@@ -196,7 +195,6 @@ export async function startBackend(
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    UNDERWRAP_BACKENDD_WEB_DIR: webDir,
     // Stay quiet by default; flip to "debug" if a test hangs and you
     // need to see the backend's reasoning.
     RUST_LOG: process.env.UNDERWRAP_E2E_RUST_LOG ?? "warn",

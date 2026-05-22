@@ -173,7 +173,6 @@ pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
         rotation_locks: std::sync::Mutex::new(HashMap::new()),
         admin_enabled: true,
         allowed_origins: None,
-        web_source: crate::web::WebAssetSource::Embedded,
         users_file: users_file.clone(),
         auth_backend: crate::auth::AuthBackend::new(users_file),
         session_store: tower_sessions::MemoryStore::default(),

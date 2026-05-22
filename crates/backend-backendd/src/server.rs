@@ -54,7 +54,6 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: admin_config.is_some(),
             allowed_origins: admin_config.and_then(|cfg| cfg.allowed_origins.clone()),
-            web_source: crate::web::WebAssetSource::from_env(),
             users_file: users_file.clone(),
             auth_backend: crate::auth::AuthBackend::new(users_file.clone()),
             session_store: tower_sessions::MemoryStore::default(),

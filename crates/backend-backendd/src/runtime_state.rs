@@ -51,8 +51,6 @@ pub(crate) struct AdminRuntimeState {
     /// When present, every state-changing request must carry an `Origin`
     /// (or `Referer`) matching one of these entries.
     pub(crate) allowed_origins: Option<Vec<String>>,
-    /// Where to read the SPA bundle from when serving non-API paths.
-    pub(crate) web_source: crate::web::WebAssetSource,
     /// Path of the backend-managed operator-state file.
     pub(crate) users_file: PathBuf,
     /// `axum-login` backend resolving credentials and user ids against
