@@ -1,0 +1,265 @@
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Plus } from "lucide-react";
+
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
+import {
+  type AdminSecretListResponse,
+  type AdminStoresListResponse,
+  fetchStores,
+  postSecretList,
+  type ResourceRecord,
+} from "@/api/client";
+import { describeApiError } from "@/lib/error-message";
+import { useStoreSelector } from "@/hooks/use-store-selector";
+import { useStoreLookups } from "@/hooks/use-store-lookups";
+
+import {
+  type SecretAddress,
+  type SecretResourceGroup,
+  type SecretSlot,
+  groupSecretEntries,
+} from "./model";
+import { ResourceBlock } from "./resource-block";
+import { RevealSecretDialog } from "./dialogs/reveal";
+import { WriteSecretDialog } from "./dialogs/write";
+import { CreateResourceDialog } from "./dialogs/create-resource";
+import { DeleteSecretDialog } from "./dialogs/delete-secret";
+import { RenameResourceDialog } from "./dialogs/rename-resource";
+import { DeleteResourceDialog } from "./dialogs/delete-resource";
+
+export function SecretsPage() {
+  useEffect(() => {
+    document.title = "underwrap — secrets";
+  }, []);
+
+  const stores = useQuery<AdminStoresListResponse>({
+    queryKey: ["admin", "stores"],
+    queryFn: fetchStores,
+  });
+  const { storeName, setStoreName } = useStoreSelector(stores.data?.items);
+
+  const list = useQuery<AdminSecretListResponse>({
+    queryKey: ["admin", "secrets", storeName],
+    queryFn: () => postSecretList({ store: storeName! }),
+    enabled: !!storeName,
+  });
+  const { resources, displayNameById, resourceNameById } =
+    useStoreLookups(storeName);
+
+  // Resource id → record lookup for the provenance display. Different
+  // shape from `resourceNameById` (which only carries the name), so
+  // kept page-local rather than pushed into the shared hook.
+  const resourceProvenance = useMemo(() => {
+    const map = new Map<string, ResourceRecord>();
+    for (const r of resources) {
+      map.set(r.id, r);
+    }
+    return map;
+  }, [resources]);
+
+  const grouped = useMemo(
+    () => groupSecretEntries(list.data?.entries ?? []),
+    [list.data],
+  );
+
+  const allResources = useMemo<SecretResourceGroup[]>(() => {
+    const byResource = new Map<string, SecretResourceGroup>();
+    for (const g of grouped) {
+      byResource.set(g.resource_id, g);
+    }
+    for (const record of resources) {
+      if (!byResource.has(record.id)) {
+        byResource.set(record.id, {
+          resource_id: record.id,
+          env: [],
+          files: [],
+          libsecret: [],
+        });
+      }
+    }
+    return [...byResource.values()].sort((a, b) => {
+      const an = resourceNameById.get(a.resource_id) ?? a.resource_id;
+      const bn = resourceNameById.get(b.resource_id) ?? b.resource_id;
+      return an.localeCompare(bn);
+    });
+  }, [grouped, resources, resourceNameById]);
+
+  const [revealing, setRevealing] = useState<SecretAddress | null>(null);
+  const [editing, setEditing] = useState<SecretAddress | null>(null);
+  const [creating, setCreating] = useState<
+    { resource_id: string; slot: SecretSlot } | null
+  >(null);
+  const [creatingResource, setCreatingResource] = useState(false);
+  const [deleting, setDeleting] = useState<SecretAddress | null>(null);
+  const [deletingResource, setDeletingResource] = useState<string | null>(null);
+  const [renamingResource, setRenamingResource] = useState<string | null>(null);
+
+  if (!storeName) {
+    return (
+      <div className="space-y-4">
+        <h2 className="text-xl font-semibold text-(--color-fg)">Secrets</h2>
+        {stores.isLoading ? (
+          <p className="text-sm text-(--color-muted)">Loading…</p>
+        ) : (
+          <Alert variant="warning" className="text-sm">
+            No stores are visible to you. Ask an admin for a grant on
+            at least one store.
+          </Alert>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <header className="flex flex-wrap items-baseline justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold text-(--color-fg)">Secrets</h2>
+          <p className="mt-1 text-sm text-(--color-muted)">
+            Stored credential material. Per-resource toggles in each
+            block decide whether the wrapper can write back to
+            <code>files</code> or <code>libsecret</code> entries;
+            admin writes through this page are always allowed.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => setCreatingResource(true)}
+          >
+            <Plus className="mr-1.5 h-4 w-4" aria-hidden />
+            Create resource
+          </Button>
+          <label className="text-sm text-(--color-muted)">
+            Store:{" "}
+            <Select
+              data-testid="secrets-store-select"
+              value={storeName}
+              onChange={(e) => setStoreName(e.target.value)}
+              className="ml-1 h-auto w-auto px-2 py-1"
+            >
+              {(stores.data?.items ?? []).map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
+          </label>
+        </div>
+      </header>
+
+      {list.isLoading ? (
+        <p className="text-sm text-(--color-muted)">Loading…</p>
+      ) : list.error ? (
+        <p role="alert" className="text-sm text-rose-300">
+          {describeApiError(list.error)}
+        </p>
+      ) : allResources.length === 0 ? (
+        <p className="text-sm text-(--color-muted)">
+          No resources are known to this store yet. Use{" "}
+          <strong className="text-(--color-fg)">Create resource</strong>{" "}
+          to add one, or wait for a wrapper to auto-create one on
+          startup (when its client instance is opted in).
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {allResources.map((group) => (
+            <ResourceBlock
+              key={group.resource_id}
+              group={group}
+              provenance={resourceProvenance.get(group.resource_id)}
+              displayNameById={displayNameById}
+              onReveal={(entry) =>
+                setRevealing({
+                  resource_id: group.resource_id,
+                  slot: entry.slot,
+                  key: entry.key,
+                })
+              }
+              onEdit={(entry) =>
+                setEditing({
+                  resource_id: group.resource_id,
+                  slot: entry.slot,
+                  key: entry.key,
+                })
+              }
+              onDelete={(entry) =>
+                setDeleting({
+                  resource_id: group.resource_id,
+                  slot: entry.slot,
+                  key: entry.key,
+                })
+              }
+              onDeleteResource={() => setDeletingResource(group.resource_id)}
+              onRenameResource={() => setRenamingResource(group.resource_id)}
+              onAddEntry={(slot) =>
+                setCreating({ resource_id: group.resource_id, slot })
+              }
+            />
+          ))}
+        </div>
+      )}
+
+      {revealing ? (
+        <RevealSecretDialog
+          storeName={storeName}
+          address={revealing}
+          onClose={() => setRevealing(null)}
+        />
+      ) : null}
+      {creating ? (
+        <WriteSecretDialog
+          storeName={storeName}
+          mode="create"
+          address={{ ...creating, key: "" }}
+          onClose={() => setCreating(null)}
+        />
+      ) : null}
+      {creatingResource ? (
+        <CreateResourceDialog
+          storeName={storeName}
+          existingResources={resources.map((r) => r.name)}
+          onClose={() => setCreatingResource(false)}
+        />
+      ) : null}
+      {editing ? (
+        <WriteSecretDialog
+          storeName={storeName}
+          mode="edit"
+          address={editing}
+          onClose={() => setEditing(null)}
+        />
+      ) : null}
+      {deleting ? (
+        <DeleteSecretDialog
+          storeName={storeName}
+          address={deleting}
+          onClose={() => setDeleting(null)}
+        />
+      ) : null}
+      {deletingResource ? (
+        <DeleteResourceDialog
+          storeName={storeName}
+          resourceId={deletingResource}
+          resourceName={resourceNameById.get(deletingResource) ?? deletingResource}
+          onClose={() => setDeletingResource(null)}
+        />
+      ) : null}
+      {renamingResource ? (
+        <RenameResourceDialog
+          storeName={storeName}
+          resourceId={renamingResource}
+          currentName={
+            resourceNameById.get(renamingResource) ?? renamingResource
+          }
+          existingNames={resources.map((r) => r.name)}
+          onClose={() => setRenamingResource(null)}
+        />
+      ) : null}
+    </div>
+  );
+}

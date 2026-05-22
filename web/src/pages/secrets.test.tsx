@@ -2,7 +2,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { SecretsPage, groupSecretEntries } from "./secrets";
+import { SecretsPage } from "./secrets/page";
+import { groupSecretEntries } from "./secrets/model";
 
 // Mock the API surface; the unit tests assert rendering decisions
 // only and stay hermetic from a real backend.

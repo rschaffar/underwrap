@@ -15,7 +15,7 @@ import { Dashboard } from "@/pages/dashboard";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
 import { WrapperPermissionsPage } from "@/pages/wrapper-permissions";
-import { SecretsPage } from "@/pages/secrets";
+import { SecretsPage } from "@/pages/secrets/page";
 import { StoresPage } from "@/pages/stores/page";
 import { ClientInstancesPage } from "@/pages/client-instances";
 import { UsersPage } from "@/pages/users";
