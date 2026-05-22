@@ -26,18 +26,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  type AdminClientInstancesListResponse,
-  type AdminResourcesListResponse,
   type AdminSecretEntry,
   type AdminSecretListResponse,
   type AdminSecretReadResponse,
   type AdminStoresListResponse,
-  fetchClientInstances,
   fetchStores,
   postResourceCreate,
   postResourceDelete,
   postResourceRename,
-  postResourcesList,
   postSecretDelete,
   postSecretList,
   postSecretRead,
@@ -49,6 +45,8 @@ import {
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 import { describeCreator } from "@/lib/creator";
+import { useStoreSelector } from "@/hooks/use-store-selector";
+import { useStoreLookups } from "@/hooks/use-store-lookups";
 
 interface SecretsPageProps {
   /**
@@ -122,85 +120,42 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
     document.title = "underwrap — secrets";
   }, []);
 
-  // Store selector — URL-persisted, same shape as the Wrapper permissions page.
   const stores = useQuery<AdminStoresListResponse>({
     queryKey: ["admin", "stores"],
     queryFn: fetchStores,
   });
-  const initialStore = (() => {
-    if (typeof window === "undefined") return null;
-    return new URLSearchParams(window.location.search).get("store");
-  })();
-  const [storeName, setStoreName] = useState<string | null>(initialStore);
-  useEffect(() => {
-    if (storeName) return;
-    const first = stores.data?.items[0]?.id;
-    if (first) setStoreName(first);
-  }, [storeName, stores.data]);
-  useEffect(() => {
-    if (!storeName) return;
-    const url = new URL(window.location.href);
-    url.searchParams.set("store", storeName);
-    window.history.replaceState({}, "", url.toString());
-  }, [storeName]);
+  const { storeName, setStoreName } = useStoreSelector(stores.data?.items);
 
   const list = useQuery<AdminSecretListResponse>({
     queryKey: ["admin", "secrets", storeName],
     queryFn: () => postSecretList({ store: storeName! }),
     enabled: !!storeName,
   });
-  // Resources are first-class backend records — these drive the
-  // "empty resource" rows (resources that exist but have no secrets
-  // yet) and the provenance display.
-  const resourcesList = useQuery<AdminResourcesListResponse>({
-    queryKey: ["admin", "resources", storeName],
-    queryFn: () => postResourcesList({ store: storeName! }),
-    enabled: !!storeName,
-  });
-  // Client-instance directory powers `displayNameById` so resource
-  // provenance shows the operator-facing name instead of the opaque
-  // backend id when a client instance auto-created a resource.
-  const clientInstancesList = useQuery<AdminClientInstancesListResponse>({
-    queryKey: ["admin", "client-instances"],
-    queryFn: fetchClientInstances,
-  });
-  const displayNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const i of clientInstancesList.data?.items ?? []) {
-      map.set(i.id, i.display_name);
-    }
-    return map;
-  }, [clientInstancesList.data]);
+  const { resources, displayNameById, resourceNameById } =
+    useStoreLookups(storeName);
+
+  // Resource id → record lookup for the provenance display. Different
+  // shape from `resourceNameById` (which only carries the name), so
+  // kept page-local rather than pushed into the shared hook.
   const resourceProvenance = useMemo(() => {
     const map = new Map<string, ResourceRecord>();
-    for (const r of resourcesList.data?.resources ?? []) {
+    for (const r of resources) {
       map.set(r.id, r);
     }
     return map;
-  }, [resourcesList.data]);
+  }, [resources]);
 
   const grouped = useMemo(
     () => groupSecretEntries(list.data?.entries ?? []),
     [list.data],
   );
 
-  // Resources known to this store, keyed internally by resource id.
-  // The catalog provides the display name; orphan groups (a resource
-  // id that appears in secrets but not in the catalog) fall back to
-  // displaying the id.
-  const resourceNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const r of resourcesList.data?.resources ?? []) {
-      map.set(r.id, r.name);
-    }
-    return map;
-  }, [resourcesList.data]);
   const allResources = useMemo<SecretResourceGroup[]>(() => {
     const byResource = new Map<string, SecretResourceGroup>();
     for (const g of grouped) {
       byResource.set(g.resource_id, g);
     }
-    for (const record of resourcesList.data?.resources ?? []) {
+    for (const record of resources) {
       if (!byResource.has(record.id)) {
         byResource.set(record.id, {
           resource_id: record.id,
@@ -215,7 +170,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
       const bn = resourceNameById.get(b.resource_id) ?? b.resource_id;
       return an.localeCompare(bn);
     });
-  }, [grouped, resourcesList.data, resourceNameById]);
+  }, [grouped, resources, resourceNameById]);
 
   const [revealing, setRevealing] = useState<SecretAddress | null>(null);
   const [editing, setEditing] = useState<SecretAddress | null>(null);
@@ -355,9 +310,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
       {creatingResource ? (
         <CreateResourceDialog
           storeName={storeName}
-          existingResources={(resourcesList.data?.resources ?? []).map(
-            (r) => r.name,
-          )}
+          existingResources={resources.map((r) => r.name)}
           onClose={() => setCreatingResource(false)}
         />
       ) : null}
@@ -391,7 +344,7 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
           currentName={
             resourceNameById.get(renamingResource) ?? renamingResource
           }
-          existingNames={(resourcesList.data?.resources ?? []).map((r) => r.name)}
+          existingNames={resources.map((r) => r.name)}
           onClose={() => setRenamingResource(null)}
         />
       ) : null}

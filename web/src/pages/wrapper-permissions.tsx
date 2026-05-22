@@ -22,18 +22,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  type AdminClientInstancesListResponse,
   type AdminPairsListResponse,
-  type AdminResourcesListResponse,
   type AdminStoresListResponse,
   type AdminWrapperPermissionsListResponse,
-  fetchClientInstances,
   fetchStores,
   postPairCreate,
   postPairDelete,
   postPairsList,
   postResourceCreate,
-  postResourcesList,
   postWrapperPermissionDelete,
   postWrapperPermissionUpsert,
   postWrapperPermissionsList,
@@ -50,6 +46,8 @@ import {
   toDatetimeLocal,
 } from "@/lib/epoch";
 import { describeCreator } from "@/lib/creator";
+import { useStoreSelector } from "@/hooks/use-store-selector";
+import { useStoreLookups } from "@/hooks/use-store-lookups";
 
 interface WrapperPermissionsPageProps {
   principal?: WhoamiResponse | null;
@@ -147,24 +145,7 @@ export function WrapperPermissionsPage(_props: WrapperPermissionsPageProps = {})
     queryKey: ["admin", "stores"],
     queryFn: fetchStores,
   });
-  const initialStore = (() => {
-    if (typeof window === "undefined") return null;
-    return new URLSearchParams(window.location.search).get("store");
-  })();
-  const [storeName, setStoreName] = useState<string | null>(initialStore);
-
-  useEffect(() => {
-    if (storeName) return;
-    const first = stores.data?.items[0]?.id;
-    if (first) setStoreName(first);
-  }, [storeName, stores.data]);
-
-  useEffect(() => {
-    if (!storeName) return;
-    const url = new URL(window.location.href);
-    url.searchParams.set("store", storeName);
-    window.history.replaceState({}, "", url.toString());
-  }, [storeName]);
+  const { storeName, setStoreName } = useStoreSelector(stores.data?.items);
 
   const permissions = useQuery<AdminWrapperPermissionsListResponse>({
     queryKey: ["admin", "wrapper-permissions", storeName],
@@ -176,32 +157,13 @@ export function WrapperPermissionsPage(_props: WrapperPermissionsPageProps = {})
     queryFn: () => postPairsList({ store: storeName! }),
     enabled: !!storeName,
   });
-  const resources = useQuery<AdminResourcesListResponse>({
-    queryKey: ["admin", "resources", storeName],
-    queryFn: () => postResourcesList({ store: storeName! }),
-    enabled: !!storeName,
-  });
-  // The pairs and wrapper permissions reference client instances by
-  // id; the operator-facing column header shows the editable display
-  // name resolved from this list.
-  const clientInstancesList = useQuery<AdminClientInstancesListResponse>({
-    queryKey: ["admin", "client-instances"],
-    queryFn: fetchClientInstances,
-  });
-  const displayNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const item of clientInstancesList.data?.items ?? []) {
-      map.set(item.id, item.display_name);
-    }
-    return map;
-  }, [clientInstancesList.data]);
-  const resourceNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const r of resources.data?.resources ?? []) {
-      map.set(r.id, r.name);
-    }
-    return map;
-  }, [resources.data]);
+  const {
+    resources,
+    clientInstances: clientInstanceItems,
+    displayNameById,
+    resourceNameById,
+  } = useStoreLookups(storeName);
+
   const pairRecords = useMemo(
     () => sortPairs(pairs.data?.pairs ?? []),
     [pairs.data],
@@ -211,11 +173,11 @@ export function WrapperPermissionsPage(_props: WrapperPermissionsPageProps = {})
       storeName
         ? clientInstancesForStore(
             storeName,
-            clientInstancesList.data?.items ?? [],
+            clientInstanceItems,
             permissions.data?.permissions ?? [],
           )
         : deriveClientInstances(permissions.data?.permissions ?? []),
-    [storeName, clientInstancesList.data, permissions.data],
+    [storeName, clientInstanceItems, permissions.data],
   );
 
   /** Map `(client_instance, wrapper, resource)` → permission. */
@@ -367,7 +329,7 @@ export function WrapperPermissionsPage(_props: WrapperPermissionsPageProps = {})
       {creatingPair ? (
         <CreatePairDialog
           storeName={storeName}
-          existingResources={resources.data?.resources ?? []}
+          existingResources={resources}
           existingPairs={pairRecords}
           onClose={() => setCreatingPair(false)}
           onCreated={() => {
