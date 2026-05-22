@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -358,14 +359,7 @@ function CreateClientInstanceDialog({
               expected.
             </span>
           </label>
-          {submitError ? (
-            <p
-              role="alert"
-              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-            >
-              {submitError}
-            </p>
-          ) : null}
+          {submitError ? <Alert>{submitError}</Alert> : null}
         </div>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
@@ -511,14 +505,7 @@ function EditClientInstanceDialog({
               and wrapper/resource pairs on startup.
             </span>
           </label>
-          {submitError ? (
-            <p
-              role="alert"
-              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-            >
-              {submitError}
-            </p>
-          ) : null}
+          {submitError ? <Alert>{submitError}</Alert> : null}
         </div>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
@@ -616,14 +603,7 @@ function DeleteClientInstanceDialog({
             for runtime requests.
           </DialogDescription>
         </DialogHeader>
-        {submitError ? (
-          <p
-            role="alert"
-            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            {submitError}
-          </p>
-        ) : null}
+        {submitError ? <Alert>{submitError}</Alert> : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
@@ -676,14 +656,7 @@ function SetStatusDialog({
               : "Re-enabling this instance allows new runtime requests again immediately."}
           </DialogDescription>
         </DialogHeader>
-        {submitError ? (
-          <p
-            role="alert"
-            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            {submitError}
-          </p>
-        ) : null}
+        {submitError ? <Alert>{submitError}</Alert> : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel

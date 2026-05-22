@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Copy, Check } from "lucide-react";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -88,12 +89,7 @@ export function PolicyViewerDialog({
         {policy.isLoading ? (
           <p className="text-sm text-(--color-muted)">Loading policy…</p>
         ) : policy.error ? (
-          <p
-            role="alert"
-            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            {describeApiError(policy.error)}
-          </p>
+          <Alert>{describeApiError(policy.error)}</Alert>
         ) : (
           <div className="space-y-3">
             <div className="flex items-center gap-3 text-xs">

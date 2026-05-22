@@ -9,6 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { PolicyViewerDialog } from "@/components/policy-viewer-dialog";
 import {
@@ -215,13 +216,10 @@ export function WrapperPermissionsPage(_props: WrapperPermissionsPageProps = {})
         {stores.isLoading ? (
           <p className="text-sm text-(--color-muted)">Loading…</p>
         ) : (
-          <p
-            role="alert"
-            className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
-          >
+          <Alert variant="warning" className="text-sm">
             No stores are visible to you. Ask an admin for access to
             at least one store.
-          </p>
+          </Alert>
         )}
       </div>
     );
@@ -706,14 +704,7 @@ function CreatePairDialog({
               </select>
             )}
           </div>
-          {submitError ? (
-            <p
-              role="alert"
-              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-            >
-              {submitError}
-            </p>
-          ) : null}
+          {submitError ? <Alert>{submitError}</Alert> : null}
         </div>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
@@ -784,10 +775,7 @@ function DeletePairDialog({
           </DialogDescription>
         </DialogHeader>
         {blockers ? (
-          <div
-            role="alert"
-            className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
-          >
+          <Alert variant="warning">
             Cannot delete — {blockers.permission_count} wrapper permission
             {blockers.permission_count === 1 ? "" : "s"} still reference this pair:
             <ul className="mt-1 list-disc pl-5">
@@ -803,16 +791,9 @@ function DeletePairDialog({
             <p className="mt-2 text-amber-200/80">
               Clear those permissions in the table above, then try again.
             </p>
-          </div>
+          </Alert>
         ) : null}
-        {submitError ? (
-          <p
-            role="alert"
-            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            {submitError}
-          </p>
-        ) : null}
+        {submitError ? <Alert>{submitError}</Alert> : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
@@ -1010,14 +991,7 @@ function EditCellDialog({
               onChange={(e) => setReason(e.target.value)}
             />
           </div>
-          {submitError ? (
-            <p
-              role="alert"
-              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-            >
-              {submitError}
-            </p>
-          ) : null}
+          {submitError ? <Alert>{submitError}</Alert> : null}
         </div>
         <DialogFooter className="sm:justify-between">
           {existing ? (

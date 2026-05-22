@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/ui/alert";
 import { ApiError, postLogin } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
@@ -111,14 +112,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                 </FormItem>
               )}
             />
-            {submitError ? (
-              <p
-                role="alert"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {submitError}
-              </p>
-            ) : null}
+            {submitError ? <Alert>{submitError}</Alert> : null}
             <Button
               type="submit"
               className="w-full"

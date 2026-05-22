@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -442,14 +443,14 @@ function CreateStoreDialog({
               )}
             />
             {form.watch("backend") === "encrypted" ? (
-              <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <Alert variant="warning">
                 The backend will generate a fresh 32-byte master key
                 in memory and show it to you once after creation. The
                 key is <strong>never written to disk</strong>; you must
                 save it somewhere safe yourself. After any backend
                 restart the store is locked until an admin re-enters
                 this key.
-              </p>
+              </Alert>
             ) : null}
             <FormField
               control={form.control}
@@ -464,14 +465,7 @@ function CreateStoreDialog({
                 </FormItem>
               )}
             />
-            {submitError ? (
-              <p
-                role="alert"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {submitError}
-              </p>
-            ) : null}
+            {submitError ? <Alert>{submitError}</Alert> : null}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
@@ -588,14 +582,7 @@ function EditStoreDialog({
                 </FormItem>
               )}
             />
-            {submitError ? (
-              <p
-                role="alert"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {submitError}
-              </p>
-            ) : null}
+            {submitError ? <Alert>{submitError}</Alert> : null}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
@@ -619,10 +606,10 @@ function EditStoreDialog({
               rotation completes — save it before closing the dialog.
             </p>
             {store.locked ? (
-              <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <Alert variant="warning">
                 The store is locked. Unlock it first; rotation needs
                 the current key to read existing ciphertext.
-              </p>
+              </Alert>
             ) : null}
             <label className="flex items-start gap-2 text-xs text-(--color-muted)">
               <input
@@ -636,14 +623,7 @@ function EditStoreDialog({
                 new master key will be issued.
               </span>
             </label>
-            {rotateWarning ? (
-              <p
-                role="alert"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {rotateWarning}
-              </p>
-            ) : null}
+            {rotateWarning ? <Alert>{rotateWarning}</Alert> : null}
             <Button
               type="button"
               variant="destructive"
@@ -874,13 +854,7 @@ function UnlockStoreDialog({
               )}
             />
             {submitError ? (
-              <p
-                role="alert"
-                data-testid="store-unlock-error"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {submitError}
-              </p>
+              <Alert data-testid="store-unlock-error">{submitError}</Alert>
             ) : null}
             <DialogFooter>
               <Button
@@ -943,14 +917,7 @@ function LockStoreDialog({
             until you unlock again by re-pasting the master key.
           </DialogDescription>
         </DialogHeader>
-        {submitError ? (
-          <p
-            role="alert"
-            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            {submitError}
-          </p>
-        ) : null}
+        {submitError ? <Alert>{submitError}</Alert> : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
@@ -1044,18 +1011,18 @@ function DeleteStoreDialog({
         </DialogHeader>
         <div className="space-y-3">
           {blockedByMapping ? (
-            <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            <Alert variant="warning">
               This store is still mapped to {store.usage.mapped_client_instance_count} client
               {store.usage.mapped_client_instance_count === 1 ? "" : "s"}. Remap or disable those
               instances before deleting the store.
-            </p>
+            </Alert>
           ) : null}
           {requiresForce ? (
-            <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            <Alert variant="warning">
               This store currently contains secrets. Deleting it requires an explicit force-delete
               confirmation; the backend will remove only the store record and leave the on-disk data
               directory in place for manual follow-up.
-            </p>
+            </Alert>
           ) : null}
           {store.actions.can_force_delete ? (
             <label className="flex items-center gap-2 text-xs text-(--color-muted)">
@@ -1067,14 +1034,7 @@ function DeleteStoreDialog({
               Force delete even if the store contains secrets
             </label>
           ) : null}
-          {submitError ? (
-            <p
-              role="alert"
-              className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-            >
-              {submitError}
-            </p>
-          ) : null}
+          {submitError ? <Alert>{submitError}</Alert> : null}
         </div>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>

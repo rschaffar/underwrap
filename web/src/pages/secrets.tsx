@@ -5,6 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { ChevronRight, Eye, Pencil, Plus, Trash2 } from "lucide-react";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -189,13 +190,10 @@ export function SecretsPage({ principal: _principal }: SecretsPageProps) {
         {stores.isLoading ? (
           <p className="text-sm text-(--color-muted)">Loading…</p>
         ) : (
-          <p
-            role="alert"
-            className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
-          >
+          <Alert variant="warning" className="text-sm">
             No stores are visible to you. Ask an admin for a grant on
             at least one store.
-          </p>
+          </Alert>
         )}
       </div>
     );
@@ -650,21 +648,13 @@ function RevealSecretDialog({
         ) : read.isLoading ? (
           <p className="text-sm text-(--color-muted)">Loading…</p>
         ) : read.error ? (
-          <p
-            role="alert"
-            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            {describeApiError(read.error)}
-          </p>
+          <Alert>{describeApiError(read.error)}</Alert>
         ) : decoded == null ? (
-          <p
-            role="alert"
-            className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
-          >
+          <Alert variant="warning">
             {read.data?.material_b64 == null
               ? "The secret does not exist (or was removed)."
               : "The secret material could not be decoded as UTF-8 text."}
-          </p>
+          </Alert>
         ) : (
           <div className="space-y-2">
             <Label htmlFor="reveal-value">Value</Label>
@@ -860,14 +850,7 @@ function WriteSecretDialog({
                 </FormItem>
               )}
             />
-            {submitError ? (
-              <p
-                role="alert"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {submitError}
-              </p>
-            ) : null}
+            {submitError ? <Alert>{submitError}</Alert> : null}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
@@ -1043,14 +1026,7 @@ function DeleteSecretDialog({
             from <code>{storeName}</code>. This cannot be undone.
           </DialogDescription>
         </DialogHeader>
-        {submitError ? (
-          <p
-            role="alert"
-            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            {submitError}
-          </p>
-        ) : null}
+        {submitError ? <Alert>{submitError}</Alert> : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
@@ -1245,9 +1221,9 @@ function DeleteResourceDialog({
           </DialogDescription>
         </DialogHeader>
         {blockers ? (
-          <div
-            role="alert"
-            className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+          <Alert
+            variant="warning"
+            className="space-y-2"
             data-testid="resource-delete-blockers"
           >
             <p>Cannot delete — the following still reference this resource:</p>
@@ -1296,16 +1272,9 @@ function DeleteResourceDialog({
             <p className="text-amber-200/80">
               Clear those dependents first, then try again.
             </p>
-          </div>
+          </Alert>
         ) : null}
-        {submitError ? (
-          <p
-            role="alert"
-            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            {submitError}
-          </p>
-        ) : null}
+        {submitError ? <Alert>{submitError}</Alert> : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel

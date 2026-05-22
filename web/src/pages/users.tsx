@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -329,14 +330,7 @@ function CreateUserDialog({
                 </FormItem>
               )}
             />
-            {submitError ? (
-              <p
-                role="alert"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {submitError}
-              </p>
-            ) : null}
+            {submitError ? <Alert>{submitError}</Alert> : null}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
@@ -425,14 +419,7 @@ function EditUserDialog({
                 </FormItem>
               )}
             />
-            {submitError ? (
-              <p
-                role="alert"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {submitError}
-              </p>
-            ) : null}
+            {submitError ? <Alert>{submitError}</Alert> : null}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
@@ -529,14 +516,7 @@ function ResetPasswordDialog({
                 </FormItem>
               )}
             />
-            {submitError ? (
-              <p
-                role="alert"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {submitError}
-              </p>
-            ) : null}
+            {submitError ? <Alert>{submitError}</Alert> : null}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
@@ -585,21 +565,13 @@ function DeleteUserDialog({
           </DialogDescription>
         </DialogHeader>
         {isLastUser ? (
-          <p
-            role="alert"
-            className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
-          >
+          <Alert variant="warning">
             This is the last remaining user. The backend refuses to
             delete it; create another user first.
-          </p>
+          </Alert>
         ) : null}
         {submitError ? (
-          <p
-            role="alert"
-            className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            {submitError}
-          </p>
+          <Alert>{submitError}</Alert>
         ) : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>

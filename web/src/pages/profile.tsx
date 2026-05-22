@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Form,
@@ -137,21 +138,9 @@ export function ProfilePage({ principal }: ProfilePageProps) {
                 </FormItem>
               )}
             />
-            {submitError ? (
-              <p
-                role="alert"
-                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-              >
-                {submitError}
-              </p>
-            ) : null}
+            {submitError ? <Alert>{submitError}</Alert> : null}
             {success ? (
-              <p
-                role="status"
-                className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200"
-              >
-                Password updated.
-              </p>
+              <Alert variant="success">Password updated.</Alert>
             ) : null}
             <Button type="submit" disabled={mut.isPending}>
               {mut.isPending ? "Saving…" : "Save"}
