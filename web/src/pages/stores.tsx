@@ -5,6 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -430,13 +431,10 @@ function CreateStoreDialog({
                 <FormItem>
                   <FormLabel>Backend</FormLabel>
                   <FormControl>
-                    <select
-                      {...field}
-                      className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
-                    >
+                    <Select {...field}>
                       <option value="plain">plain</option>
                       <option value="encrypted">encrypted</option>
-                    </select>
+                    </Select>
                   </FormControl>
                   <FormMessage />
                 </FormItem>

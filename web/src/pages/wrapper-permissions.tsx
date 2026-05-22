@@ -11,6 +11,7 @@ import {
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { PolicyViewerDialog } from "@/components/policy-viewer-dialog";
 import {
   Dialog,
@@ -259,18 +260,18 @@ export function WrapperPermissionsPage(_props: WrapperPermissionsPageProps = {})
           </Button>
           <label className="text-sm text-(--color-muted)">
             Store:{" "}
-            <select
+            <Select
               data-testid="wrappers-store-select"
               value={storeName}
               onChange={(e) => setStoreName(e.target.value)}
-              className="ml-1 rounded-md border border-(--color-line) bg-(--color-surface-0) px-2 py-1 text-sm text-(--color-fg)"
+              className="ml-1 h-auto w-auto px-2 py-1"
             >
               {(stores.data?.items ?? []).map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         </div>
       </header>
@@ -690,18 +691,18 @@ function CreatePairDialog({
                 autoComplete="off"
               />
             ) : (
-              <select
+              <Select
                 data-testid="pair-resource-select"
                 value={resourceId}
                 onChange={(e) => setResourceId(e.target.value)}
-                className="block w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-2 py-1.5 text-sm text-(--color-fg)"
+                className="h-auto px-2 py-1.5"
               >
                 {existingResources.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             )}
           </div>
           {submitError ? <Alert>{submitError}</Alert> : null}

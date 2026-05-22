@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -94,16 +95,16 @@ export function ClientInstancesPage(_props: {
         <div className="flex items-end gap-3">
           <div className="space-y-1">
             <Label htmlFor="status-filter">Status filter</Label>
-            <select
+            <Select
               id="status-filter"
-              className="flex h-9 rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
+              className="w-auto"
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as ClientStatusFilter)}
             >
               <option value="all">All</option>
               <option value="active">Active</option>
               <option value="disabled">Disabled</option>
-            </select>
+            </Select>
           </div>
           <Button
             type="button"
@@ -303,30 +304,28 @@ function CreateClientInstanceDialog({
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="create-store">Target store</Label>
-            <select
+            <Select
               id="create-store"
               value={storeId}
               onChange={(e) => setStoreId(e.target.value)}
-              className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
             >
               {stores.map((store) => (
                 <option key={store.id} value={store.id}>
                   {store.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="create-status">Status</Label>
-            <select
+            <Select
               id="create-status"
               value={status}
               onChange={(e) => setStatus(e.target.value as "active" | "disabled")}
-              className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
             >
               <option value="active">Active</option>
               <option value="disabled">Disabled</option>
-            </select>
+            </Select>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="create-cert-pem">Certificate PEM</Label>
@@ -457,11 +456,10 @@ function EditClientInstanceDialog({
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="edit-store">Target store</Label>
-            <select
+            <Select
               id="edit-store"
               value={storeId}
               onChange={(e) => setStoreId(e.target.value)}
-              className="flex h-9 w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 text-sm text-(--color-fg)"
             >
               {stores.map((store) => (
                 <option key={store.id} value={store.id}>
@@ -469,7 +467,7 @@ function EditClientInstanceDialog({
                   {store.id === instance.current_store_id ? " (current)" : ""}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="edit-cert-pem">New certificate PEM (optional)</Label>
