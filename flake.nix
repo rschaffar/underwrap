@@ -84,7 +84,17 @@
             src = ./web;
             # If this hash drifts the build fails with the
             # offending hash printed; copy it back into this file.
-            npmDepsHash = "sha256-X+ZNwLIoxjcf9vpfQeRP6wdQHWft/2jkkIVwTft7nJY=";
+            npmDepsHash = "sha256-953WYvZOCLf2OEvkZftxMMHz73aTuBrq+qtMI8B2HtU=";
+            # The npm `prebuild` hook runs `openapi-typescript` against
+            # `../crates/backend-backendd/openapi.json`, which lives
+            # outside the `./web` source root. Stage it at the
+            # expected relative path before the build phase so the
+            # generator can find it.
+            preBuild = ''
+              mkdir -p ../crates/backend-backendd
+              cp ${./crates/backend-backendd/openapi.json} \
+                ../crates/backend-backendd/openapi.json
+            '';
             npmBuildScript = "build";
             installPhase = ''
               runHook preInstall
