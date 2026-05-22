@@ -174,7 +174,14 @@ fn user_delete_succeeds_when_another_user_exists() {
 }
 
 #[test]
-fn user_reset_password_changes_hash_and_revokes_sessions() {
+fn user_reset_password_changes_hash() {
+    // Per-user session revocation is no longer enforced by an
+    // explicit floor table — `axum_login` does it automatically by
+    // storing the password-hash bytes in each session and verifying
+    // them on every request via `session_auth_hash()`. So this test
+    // only needs to confirm the on-disk hash actually rotates; the
+    // session-side check is covered by the `auth/tests.rs` test
+    // `session_auth_hash_changes_when_password_rotates`.
     let tmp = tempfile::TempDir::new().unwrap();
     let state = crud_state(tmp.path());
     seed_admin_into(&state, "alice");
@@ -199,9 +206,6 @@ fn user_reset_password_changes_hash_and_revokes_sessions() {
         .password_hash
         .clone();
 
-    // reset_password takes a `Request<Incoming>` which `hyper`
-    // doesn't expose constructors for, so we mimic the server-side
-    // logic directly here.
     let new_hash = crate::auth::hash_password("new-pass").unwrap();
     let now = crate::users::now_epoch_secs();
     mutate_collection(&state, |c| {
@@ -212,7 +216,6 @@ fn user_reset_password_changes_hash_and_revokes_sessions() {
         Ok(())
     })
     .unwrap();
-    state.session_revocations.revoke_username("bob", now);
 
     let hash_after = crate::users::load(&state.users_file)
         .unwrap()
@@ -221,12 +224,6 @@ fn user_reset_password_changes_hash_and_revokes_sessions() {
         .password_hash
         .clone();
     assert_ne!(hash_before, hash_after, "hash must change");
-    assert!(
-        state
-            .session_revocations
-            .is_user_floor_revoked("bob", now - 1),
-        "sessions issued before the reset must be revoked",
-    );
 }
 
 #[test]

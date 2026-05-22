@@ -26,9 +26,6 @@ use crate::storage::documents::{
 };
 use crate::store_registry::{LoadedStoreRecord, StoreRegistry, StoreState};
 
-#[allow(unused_imports)] // re-exported for convenience to callers
-pub(crate) use crate::admin_api::csrf::AdminAuth;
-
 /// A sample client cert in PEM form used by tests that need to seed
 /// a runtime-client record without going through the create API
 /// (which validates the PEM).
@@ -161,10 +158,12 @@ pub(crate) fn test_users_file() -> PathBuf {
 }
 
 /// Canonical "blank" AdminRuntimeState: empty registry, no client
-/// instances, admin enabled, embedded SPA, zeroed session key, a
-/// fresh temporary users file. Every named builder below starts
-/// here and mutates the one or two fields it actually cares about.
+/// instances, admin enabled, embedded SPA, fresh in-memory session
+/// store, a fresh temporary users file. Every named builder below
+/// starts here and mutates the one or two fields it actually cares
+/// about.
 pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
+    let users_file = test_users_file();
     AdminRuntimeState {
         stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
         client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
@@ -175,23 +174,15 @@ pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
         admin_enabled: true,
         allowed_origins: None,
         web_source: crate::web::WebAssetSource::Embedded,
-        users_file: test_users_file(),
-        session_key: [0u8; crate::auth::SESSION_KEY_LEN],
+        users_file: users_file.clone(),
+        auth_backend: crate::auth::AuthBackend::new(users_file),
+        session_store: tower_sessions::MemoryStore::default(),
+        csrf_config: crate::admin_api::csrf::build_csrf_config(false),
         session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
         cookies_secure: false,
-        login_rate_limiter: crate::auth::RateLimiter::new(),
-        session_revocations: crate::auth::SessionRevocations::new(),
         bootstrap_lock: std::sync::Mutex::new(()),
         user_collection_lock: std::sync::Mutex::new(()),
     }
-}
-
-fn ramp_session_key() -> [u8; crate::auth::SESSION_KEY_LEN] {
-    let mut key = [0u8; crate::auth::SESSION_KEY_LEN];
-    for (i, b) in key.iter_mut().enumerate() {
-        *b = i as u8;
-    }
-    key
 }
 
 pub(crate) fn test_admin_state(
@@ -210,17 +201,6 @@ pub(crate) fn test_admin_state(
     s
 }
 
-pub(crate) fn headers_with_session_cookie(value: Option<&str>) -> hyper::HeaderMap {
-    let mut headers = hyper::HeaderMap::new();
-    if let Some(v) = value {
-        headers.insert(
-            hyper::header::COOKIE,
-            hyper::header::HeaderValue::from_str(&format!("__Host-uw-session={v}")).unwrap(),
-        );
-    }
-    headers
-}
-
 pub(crate) fn headers_with(pairs: &[(&str, &str)]) -> hyper::HeaderMap {
     let mut headers = hyper::HeaderMap::new();
     for (k, v) in pairs {
@@ -234,7 +214,6 @@ pub(crate) fn headers_with(pairs: &[(&str, &str)]) -> hyper::HeaderMap {
 
 pub(crate) fn seeded_admin_state(username: &str, password: &str) -> AdminRuntimeState {
     let mut s = default_admin_runtime_state();
-    s.session_key = ramp_session_key();
     s.session_lifetime_secs = 3600;
     let mut collection = crate::users::UserCollection::default();
     let hash = crate::auth::hash_password(password).unwrap();
@@ -248,35 +227,13 @@ pub(crate) fn seeded_admin_state(username: &str, password: &str) -> AdminRuntime
         })
         .unwrap();
     crate::users::save(&s.users_file, &collection).unwrap();
+    // Rebuild the `AuthBackend` so it points at the now-written users
+    // file. The backend reads the file from disk on every
+    // `authenticate` / `get_user` call, but the path is captured at
+    // construction time, so re-pointing it here makes login tests
+    // resolve against the freshly-seeded record.
+    s.auth_backend = crate::auth::AuthBackend::new(s.users_file.clone());
     s
-}
-
-pub(crate) fn session_headers(
-    state: &AdminRuntimeState,
-    username: &str,
-    with_csrf_cookie: bool,
-    csrf_header: Option<&str>,
-) -> (hyper::HeaderMap, crate::auth::SessionPayload) {
-    let key = state.session_key;
-    let now = crate::users::now_epoch_secs();
-    let payload = crate::auth::new_session_payload("op-1".into(), username.into(), now, 3600);
-    let session_cookie = crate::auth::encrypt_session(&payload, &key).unwrap();
-    let mut cookie_parts = vec![format!("__Host-uw-session={session_cookie}")];
-    if with_csrf_cookie {
-        cookie_parts.push(format!("__Host-uw-csrf={}", payload.csrf_secret));
-    }
-    let mut headers = hyper::HeaderMap::new();
-    headers.insert(
-        hyper::header::COOKIE,
-        hyper::header::HeaderValue::from_str(&cookie_parts.join("; ")).unwrap(),
-    );
-    if let Some(value) = csrf_header {
-        headers.insert(
-            hyper::header::HeaderName::from_static("x-csrf-token"),
-            hyper::header::HeaderValue::from_str(value).unwrap(),
-        );
-    }
-    (headers, payload)
 }
 
 pub(crate) fn service_state_with_runtime_client(
@@ -338,7 +295,6 @@ pub(crate) fn expect_404(
 
 pub(crate) fn fresh_bootstrap_state() -> AdminRuntimeState {
     let mut s = default_admin_runtime_state();
-    s.session_key = ramp_session_key();
     s.session_lifetime_secs = 3600;
     s
 }
@@ -415,13 +371,17 @@ pub(crate) fn run_bootstrap(
     )
     .unwrap();
     audit_bootstrap_attempt(&record.username, None, "success");
-    let payload = crate::auth::new_session_payload(
-        record.id.clone(),
-        record.username.clone(),
-        now,
-        state.session_lifetime_secs,
-    );
-    crate::admin_api::auth::issue_session_response(state, &payload, &serde_json::json!({}))
+    // Production bootstrap also calls `AuthSession::login(&record)` to
+    // emit the session + CSRF cookies. That path is exercised by the
+    // integration tests; in unit tests we just need to confirm the
+    // DB-side state transition, so emit a plain 200 response with no
+    // cookies.
+    crate::http::responses::json_response(
+        StatusCode::OK,
+        &crate::admin_api::bootstrap::BootstrapResponse {
+            username: record.username.clone(),
+        },
+    )
 }
 
 pub(crate) fn admin_principal() -> crate::users::Principal {

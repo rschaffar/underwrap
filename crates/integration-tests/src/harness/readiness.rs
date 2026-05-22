@@ -22,8 +22,23 @@ fn parse_cookie_value(set_cookie: &str, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(crate) fn csrf_cookie_header(session_cookie: &str, csrf_token: &str) -> String {
-    format!("__Host-uw-session={session_cookie}; __Host-uw-csrf={csrf_token}")
+/// Compose the `Cookie:` header used by admin-API requests: the
+/// opaque `tower-sessions` session id plus the random `axum_csrf`
+/// token-cookie. The cookie holds the *raw* token; the
+/// `X-CSRF-Token` request header carries the HMAC authenticity token
+/// derived from it.
+pub(crate) fn csrf_cookie_header(session_cookie: &str, csrf_cookie: &str) -> String {
+    format!("__Host-uw-session={session_cookie}; __Host-uw-csrf={csrf_cookie}")
+}
+
+/// Material the harness needs to authenticate subsequent admin
+/// requests after a successful bootstrap or login: the session
+/// cookie value, the CSRF cookie value, and the HMAC authenticity
+/// token to echo back in `X-CSRF-Token`.
+pub(crate) struct AdminCredentials {
+    pub session_cookie: String,
+    pub csrf_cookie: String,
+    pub csrf_token: String,
 }
 
 pub(crate) async fn bootstrap_admin(
@@ -31,7 +46,7 @@ pub(crate) async fn bootstrap_admin(
     ca_cert: &Path,
     username: &str,
     password: &str,
-) -> Result<(String, String)> {
+) -> Result<AdminCredentials> {
     let client = admin_client(ca_cert, std::time::Duration::from_secs(5))?;
     let response = client
         .post(format!("{url}/v1/admin/auth/bootstrap"))
@@ -46,6 +61,12 @@ pub(crate) async fn bootstrap_admin(
         "bootstrap returned {}",
         response.status()
     );
+    let csrf_token = response
+        .headers()
+        .get("X-CSRF-Token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .context("bootstrap response missing X-CSRF-Token header")?;
     let cookies = response.headers().get_all(reqwest::header::SET_COOKIE);
     let mut session_cookie = None;
     let mut csrf_cookie = None;
@@ -59,7 +80,11 @@ pub(crate) async fn bootstrap_admin(
     }
     let session_cookie = session_cookie.context("bootstrap response missing session cookie")?;
     let csrf_cookie = csrf_cookie.context("bootstrap response missing csrf cookie")?;
-    Ok((session_cookie, csrf_cookie))
+    Ok(AdminCredentials {
+        session_cookie,
+        csrf_cookie,
+        csrf_token,
+    })
 }
 
 /// Ask the kernel for an unused TCP port on loopback, then release

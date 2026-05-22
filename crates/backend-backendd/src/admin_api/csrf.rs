@@ -1,250 +1,189 @@
-//! Session-cookie authentication, CSRF double-submit gate, principal
-//! resolver, and CSRF-cookie refresher for the admin API.
+//! Admin API authentication and CSRF infrastructure.
 //!
-//! Every admin request that targets a non-public endpoint flows
-//! through, in order:
+//! Sessions are managed by [`tower_sessions`] (in-memory store, opaque
+//! ID cookie) and the per-request user lookup is provided by
+//! [`axum_login::AuthSession`] over [`crate::auth::AuthBackend`]. This
+//! module owns:
 //!
-//! 1. [`authenticate_admin`] — decrypts the AEAD session cookie and
-//!    rejects revoked sessions.
-//! 2. [`check_csrf`] — on state-changing methods, verifies the
-//!    `X-CSRF-Token` header matches both the `__Host-uw-csrf` cookie
-//!    (double-submit) and the value bound into the session payload
-//!    (so cookie substitution alone doesn't pass).
-//! 3. [`resolve_principal`] — re-reads the user collection so renames
-//!    take effect immediately.
-//! 4. After the handler runs, [`attach_csrf_cookie`] refreshes the
-//!    `Set-Cookie` so the SPA always has a value matching the live
-//!    session.
+//! - [`build_csrf_config`] — the project-wide [`axum_csrf::CsrfConfig`]
+//!   (cookie name, attributes, HMAC salt).
+//! - [`require_login_layer`] — a small predicate middleware that
+//!   short-circuits with our canonical `{code, message}` 401 envelope
+//!   when no user is on the [`AuthSession`]. Equivalent in behaviour to
+//!   `axum_login::login_required!`, but emits the same JSON error shape
+//!   as the rest of the admin API.
+//! - [`verify_csrf_layer`] — verifies `X-CSRF-Token` against the
+//!   request's [`CsrfToken`] via HMAC on state-changing methods.
+//! - [`attach_csrf_response_layer`] — writes the CSRF `Set-Cookie` and
+//!   the matching `X-CSRF-Token` response header on every response so
+//!   the SPA can pick the token off the response and echo it on the
+//!   next state-changing call.
+//! - [`resolve_principal_layer`] — turns the authenticated
+//!   [`UserRecord`] into a live [`Principal`] (re-read from the
+//!   collection so a rename takes effect immediately) and inserts it
+//!   as a request extension.
 
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
 use axum::middleware::Next;
-use axum::response::IntoResponse;
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Method, Response, StatusCode};
+use axum::response::{IntoResponse, Response as AxumResponse};
+use axum_csrf::{CsrfConfig, CsrfToken};
+use axum_login::AuthSession;
+use hyper::header::HeaderValue;
+use hyper::{Method, StatusCode};
+use tower_sessions::cookie::SameSite;
 use tracing::{info, warn};
 
+use crate::auth::AuthBackend;
 use crate::http::responses::error_response;
 use crate::runtime_state::AdminRuntimeState;
+use crate::users::{Principal, UserRecord};
 
-/// Result of authenticating an admin request.
-#[derive(Clone, Debug)]
-pub(crate) struct AdminAuth(pub(crate) crate::auth::SessionPayload);
+/// CSRF cookie name. The `__Host-` prefix requires `Secure; Path=/`
+/// and forbids a `Domain` attribute, which closes off cookie-write
+/// attacks from related subdomains.
+pub(crate) const CSRF_COOKIE_NAME: &str = "__Host-uw-csrf";
 
-impl AdminAuth {
-    #[cfg(test)]
-    pub(crate) fn operator(&self) -> &str {
-        &self.0.username
-    }
+/// HTTP header the SPA sends carrying the HMAC-authenticity token for
+/// the request's CSRF cookie.
+pub(crate) const CSRF_HEADER_NAME: &str = "X-CSRF-Token";
 
-    pub(crate) fn session(&self) -> &crate::auth::SessionPayload {
-        &self.0
+/// HMAC salt used by `axum_csrf` to derive the per-request
+/// authenticity token from the cookie's random token. A fresh value
+/// per daemon restart is fine — sessions don't survive restarts
+/// either (in-memory store), and there is no requirement for tokens
+/// to remain valid across restarts.
+fn random_csrf_salt() -> String {
+    use rand::RngCore;
+    let mut buf = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut buf);
+    hex::encode(buf)
+}
+
+/// Build the project-wide CSRF config. `cookies_secure` should be true
+/// whenever the admin listener terminates TLS.
+pub(crate) fn build_csrf_config(cookies_secure: bool) -> CsrfConfig {
+    CsrfConfig::default()
+        .with_cookie_name(CSRF_COOKIE_NAME)
+        .with_cookie_path("/")
+        .with_cookie_same_site(SameSite::Strict)
+        .with_secure(cookies_secure)
+        .with_http_only(true)
+        .with_salt(random_csrf_salt())
+}
+
+/// Reject the request with our canonical 401 JSON envelope when no
+/// user is attached to the session.
+pub(crate) async fn require_login_layer(
+    auth_session: AuthSession<AuthBackend>,
+    request: Request,
+    next: Next,
+) -> AxumResponse {
+    if auth_session.user.is_some() {
+        next.run(request).await
+    } else {
+        warn!("rejected admin request: not authenticated");
+        error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "authentication required",
+        )
+        .into_response()
     }
 }
 
-/// Reasons `authenticate_admin` can fail. Mapped to HTTP responses by
-/// the caller — `Revoked` becomes 401 with `session_revoked`, the rest
-/// become 401 with `unauthorized`.
-#[derive(Debug)]
-pub(crate) enum AdminAuthError {
-    Unauthenticated(&'static str),
-    Revoked,
-}
-
-/// Authenticate an admin request via its session cookie.
-pub(crate) fn authenticate_admin(
-    state: &AdminRuntimeState,
-    headers: &hyper::HeaderMap,
-) -> std::result::Result<AdminAuth, AdminAuthError> {
-    let value = crate::auth::extract_session_cookie(headers)
-        .ok_or(AdminAuthError::Unauthenticated("missing session cookie"))?;
-    let now = crate::users::now_epoch_secs();
-    match crate::auth::decrypt_session(value, &state.session_key, now) {
-        Ok(payload) => {
-            if state
-                .session_revocations
-                .is_revoked(&payload.session_id, now)
-                || state
-                    .session_revocations
-                    .is_user_floor_revoked(&payload.username, payload.issued_at)
-            {
-                Err(AdminAuthError::Revoked)
-            } else {
-                Ok(AdminAuth(payload))
-            }
-        }
-        Err(_) => Err(AdminAuthError::Unauthenticated("invalid session cookie")),
+/// Verify `X-CSRF-Token` against the request's [`CsrfToken`] on
+/// state-changing methods. `GET`/`HEAD`/`OPTIONS` are exempt.
+pub(crate) async fn verify_csrf_layer(request: Request, next: Next) -> AxumResponse {
+    if matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    ) {
+        return next.run(request).await;
     }
-}
-
-/// Verify the CSRF double-submit on a state-changing session-authenticated
-/// request. Returns `Ok(())` when the request is safe to dispatch.
-/// `GET/HEAD/OPTIONS` are exempt.
-pub(crate) fn check_csrf(
-    method: &Method,
-    headers: &hyper::HeaderMap,
-    session_csrf_secret: &str,
-) -> std::result::Result<(), (&'static str, &'static str)> {
-    if matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS) {
-        return Ok(());
-    }
-    let header_value = headers
-        .get(crate::auth::CSRF_HEADER_NAME)
+    let Some(token) = request.extensions().get::<CsrfToken>().cloned() else {
+        warn!("rejected admin request: CSRF layer missing");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "CSRF layer not initialised",
+        )
+        .into_response();
+    };
+    let header_value = request
+        .headers()
+        .get(CSRF_HEADER_NAME)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let header_value = match header_value {
-        Some(v) => v,
-        None => {
-            return Err((
-                "csrf_required",
-                "missing or empty X-CSRF-Token on state-changing request",
-            ));
-        }
+    let Some(header_value) = header_value else {
+        warn!("rejected admin request: missing X-CSRF-Token");
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "csrf_required",
+            "missing or empty X-CSRF-Token on state-changing request",
+        )
+        .into_response();
     };
-    let cookie_value = match crate::auth::extract_csrf_cookie(headers) {
-        Some(v) if !v.is_empty() => v,
-        _ => return Err(("csrf_required", "missing CSRF cookie")),
-    };
-    use subtle::ConstantTimeEq;
-    // Header must match the cookie (double-submit) AND match the value
-    // bound into the session (so substituted cookies don't pass).
-    let header_bytes = header_value.as_bytes();
-    let cookie_bytes = cookie_value.as_bytes();
-    let secret_bytes = session_csrf_secret.as_bytes();
-    if header_bytes.len() != cookie_bytes.len() || !bool::from(header_bytes.ct_eq(cookie_bytes)) {
-        return Err(("csrf_mismatch", "X-CSRF-Token does not match CSRF cookie"));
+    if token.verify(header_value).is_err() {
+        warn!("rejected admin request: X-CSRF-Token did not verify");
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "csrf_mismatch",
+            "X-CSRF-Token does not match session",
+        )
+        .into_response();
     }
-    if header_bytes.len() != secret_bytes.len() || !bool::from(header_bytes.ct_eq(secret_bytes)) {
-        return Err(("csrf_mismatch", "X-CSRF-Token does not match session"));
-    }
-    Ok(())
+    next.run(request).await
 }
 
-/// Build a [`crate::users::Principal`] from an authenticated request.
-/// We re-read the user collection so the current username (after a
-/// rename) is always reflected.
-#[allow(clippy::result_large_err)]
-pub(crate) fn resolve_principal(
-    state: &AdminRuntimeState,
-    auth: &AdminAuth,
-) -> std::result::Result<crate::users::Principal, Response<Full<Bytes>>> {
-    let payload = auth.session();
-    let collection = match crate::users::load(&state.users_file) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(err = %e, "could not load user collection");
-            return Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "user collection unavailable",
-            ));
-        }
+/// Append the CSRF `Set-Cookie` and the matching `X-CSRF-Token`
+/// response header on every response. This lets the SPA learn the
+/// current authenticity token off the most recent response without
+/// having to call a dedicated endpoint.
+pub(crate) async fn attach_csrf_response_layer(request: Request, next: Next) -> AxumResponse {
+    let token = request.extensions().get::<CsrfToken>().cloned();
+    let response = next.run(request).await;
+    let Some(token) = token else {
+        return response;
     };
-    match collection.find_by_username(&payload.username) {
-        Some(u) => Ok(crate::users::Principal {
-            id: u.id.clone(),
-            username: u.username.clone(),
-        }),
-        None => Err(error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "session refers to a user that no longer exists",
-        )),
-    }
-}
-
-/// Refresh the CSRF cookie on every authenticated admin response so
-/// the SPA always has a value matching the live session.
-///
-/// The production path uses [`attach_csrf_cookie_layer`], which inlines
-/// the same logic into an Axum middleware. This standalone form is
-/// retained as a unit-test entry point.
-#[cfg(test)]
-pub(crate) fn attach_csrf_cookie(
-    mut response: Response<Full<Bytes>>,
-    state: &AdminRuntimeState,
-    auth: &AdminAuth,
-) -> Response<Full<Bytes>> {
-    let payload = auth.session();
-    let cookie = crate::auth::render_csrf_cookie(
-        &payload.csrf_secret,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
-    match hyper::header::HeaderValue::from_str(&cookie) {
-        Ok(v) => {
-            response.headers_mut().append(hyper::header::SET_COOKIE, v);
-        }
-        Err(e) => {
-            warn!(err = %e, "could not append CSRF cookie header");
-        }
+    let header_value = token.authenticity_token().ok();
+    // `(CsrfToken, axum_response::Response).into_response()` applies
+    // the token's `IntoResponseParts` impl — that is the path through
+    // `axum_csrf` that emits the `Set-Cookie` for the CSRF cookie.
+    let mut response = (token, response).into_response();
+    if let Some(value) = header_value
+        && let Ok(v) = HeaderValue::from_str(&value)
+    {
+        response.headers_mut().insert(CSRF_HEADER_NAME, v);
     }
     response
 }
 
-/// Axum middleware that authenticates the request via the session
-/// cookie and inserts the `AdminAuth` extension. Short-circuits with
-/// 401 on missing/invalid/revoked.
-pub(crate) async fn authenticate_layer(
-    State(state): State<Arc<AdminRuntimeState>>,
-    mut request: Request,
-    next: Next,
-) -> axum::response::Response {
-    let auth = match authenticate_admin(&state, request.headers()) {
-        Ok(a) => a,
-        Err(AdminAuthError::Revoked) => {
-            warn!("rejected admin request: session revoked");
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                "session_revoked",
-                "session has been revoked",
-            )
-            .into_response();
-        }
-        Err(AdminAuthError::Unauthenticated(reason)) => {
-            warn!(reason = reason, "rejected admin request");
-            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", reason)
-                .into_response();
-        }
-    };
-    request.extensions_mut().insert(auth);
-    next.run(request).await
-}
-
-/// Axum middleware that runs the CSRF double-submit check against the
-/// `AdminAuth` extension. Must run after [`authenticate_layer`].
-pub(crate) async fn check_csrf_layer(request: Request, next: Next) -> axum::response::Response {
-    let auth = request
-        .extensions()
-        .get::<AdminAuth>()
-        .expect("authenticate_layer must run before check_csrf_layer")
-        .clone();
-    if let Err((code, msg)) = check_csrf(request.method(), request.headers(), &auth.0.csrf_secret) {
-        warn!(reason = msg, code = code, "rejected admin request (csrf)");
-        return error_response(StatusCode::FORBIDDEN, code, msg).into_response();
-    }
-    next.run(request).await
-}
-
-/// Axum middleware that resolves the live `Principal` from the user
-/// collection and inserts it as a request extension. Must run after
-/// [`authenticate_layer`].
+/// Read the authenticated [`UserRecord`] from the request's
+/// [`AuthSession`], re-resolve the live operator (in case of rename),
+/// log a structured admin event, and insert a [`Principal`] extension
+/// for downstream handlers.
 pub(crate) async fn resolve_principal_layer(
     State(state): State<Arc<AdminRuntimeState>>,
+    auth_session: AuthSession<AuthBackend>,
     mut request: Request,
     next: Next,
-) -> axum::response::Response {
-    let auth = request
-        .extensions()
-        .get::<AdminAuth>()
-        .expect("authenticate_layer must run before resolve_principal_layer")
-        .clone();
-    let principal = match resolve_principal(&state, &auth) {
+) -> AxumResponse {
+    let Some(user) = auth_session.user.clone() else {
+        // `require_login_layer` runs ahead of us, so this is a bug:
+        // the chain didn't gate authentication. Fail closed.
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "authentication required",
+        )
+        .into_response();
+    };
+    let principal = match resolve_live_principal(&state, &user) {
         Ok(p) => p,
-        Err(resp) => return resp.into_response(),
+        Err(resp) => return resp,
     };
     info!(
         user = %principal.username,
@@ -256,33 +195,40 @@ pub(crate) async fn resolve_principal_layer(
     next.run(request).await
 }
 
-/// Axum middleware (run as `map_response` via `from_fn`) that refreshes
-/// the CSRF cookie on every authenticated admin response.
-pub(crate) async fn attach_csrf_cookie_layer(
-    State(state): State<Arc<AdminRuntimeState>>,
-    request: Request,
-    next: Next,
-) -> axum::response::Response {
-    let auth = request
-        .extensions()
-        .get::<AdminAuth>()
-        .expect("authenticate_layer must run before attach_csrf_cookie_layer")
-        .clone();
-    let mut response = next.run(request).await;
-    let cookie = crate::auth::render_csrf_cookie(
-        &auth.0.csrf_secret,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
-    match hyper::header::HeaderValue::from_str(&cookie) {
-        Ok(v) => {
-            response.headers_mut().append(hyper::header::SET_COOKIE, v);
-        }
+/// Look up the operator record from disk so a rename or password
+/// change since the session was issued is reflected on this request.
+/// A missing record (operator deleted between requests) maps to a 401
+/// — the session's stored auth hash will mismatch on the next
+/// request anyway, but rejecting here keeps the response consistent.
+#[allow(clippy::result_large_err)]
+fn resolve_live_principal(
+    state: &AdminRuntimeState,
+    user: &UserRecord,
+) -> std::result::Result<Principal, AxumResponse> {
+    let collection = match crate::users::load(&state.users_file) {
+        Ok(c) => c,
         Err(e) => {
-            warn!(err = %e, "could not append CSRF cookie header");
+            warn!(err = %e, "could not load user collection");
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "user collection unavailable",
+            )
+            .into_response());
         }
+    };
+    match collection.find_by_id(&user.id) {
+        Some(live) => Ok(Principal {
+            id: live.id.clone(),
+            username: live.username.clone(),
+        }),
+        None => Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "session refers to a user that no longer exists",
+        )
+        .into_response()),
     }
-    response
 }
 
 #[cfg(test)]

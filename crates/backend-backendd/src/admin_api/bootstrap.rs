@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::State;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use bytes::Bytes;
 use http_body_util::Full;
@@ -20,6 +21,7 @@ use hyper::{Response, StatusCode};
 use tracing::{info, warn};
 
 use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::auth::AdminAuthSession;
 use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 
@@ -65,7 +67,8 @@ pub(crate) fn handle_admin_bootstrap_status(state: &AdminRuntimeState) -> Respon
 /// issues a session in one round trip. After this succeeds, the
 /// endpoint refuses further calls even if every operator is later
 /// deleted.
-pub(crate) fn handle_admin_bootstrap(
+pub(crate) async fn handle_admin_bootstrap(
+    mut auth_session: AdminAuthSession,
     state: &AdminRuntimeState,
     body: &BootstrapRequest,
 ) -> Response<Full<Bytes>> {
@@ -87,8 +90,10 @@ pub(crate) fn handle_admin_bootstrap(
 
     // Serialise concurrent bootstrap attempts: two callers must not
     // both see "users empty + sentinel unset" before either has
-    // written. The lock is held across the whole sequence.
-    let _guard = state.bootstrap_lock.lock().unwrap();
+    // written. The lock is held only across the synchronous DB work
+    // — it is released before we hit any `.await` so the request
+    // future stays `Send`.
+    let bootstrap_guard = state.bootstrap_lock.lock().unwrap();
 
     match crate::users::bootstrap_completed(&state.users_file) {
         Ok(true) => {
@@ -185,18 +190,22 @@ pub(crate) fn handle_admin_bootstrap(
         );
     }
     audit_bootstrap_attempt(&record.username, None, "success");
+    drop(bootstrap_guard);
 
-    // Issue a session for the brand-new admin.
-    let payload = crate::auth::new_session_payload(
-        record.id.clone(),
-        record.username.clone(),
-        now,
-        state.session_lifetime_secs,
-    );
+    // Issue a session for the brand-new admin: `AuthSession::login`
+    // calls `cycle_id()` server-side so the bootstrap response is the
+    // first time the SPA learns a session id.
+    if let Err(e) = auth_session.login(&record).await {
+        warn!(err = ?e, "bootstrap: AuthSession::login failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "failed to issue session",
+        );
+    }
     info!(username = %record.username, "bootstrap: first user created");
-    crate::admin_api::auth::issue_session_response(
-        state,
-        &payload,
+    json_response(
+        StatusCode::OK,
         &BootstrapResponse {
             username: record.username.clone(),
         },
@@ -219,10 +228,13 @@ async fn axum_bootstrap_status(
 }
 
 async fn axum_bootstrap(
+    auth_session: AdminAuthSession,
     State(state): State<Arc<AdminRuntimeState>>,
     Body(parsed): Body<BootstrapRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_bootstrap(&state, &parsed)
+) -> axum::response::Response {
+    handle_admin_bootstrap(auth_session, &state, &parsed)
+        .await
+        .into_response()
 }
 
 /// Log one bootstrap attempt outcome. Best effort: never fails the caller.

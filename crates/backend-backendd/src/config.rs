@@ -27,9 +27,6 @@ pub struct AdminConfig {
     /// the same-origin check that backs CSRF defence.
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
-    /// Path to the 32-byte AEAD key file used to sign session cookies.
-    /// Required because admin authentication is session-cookie only.
-    pub session_key_file: PathBuf,
     /// Session lifetime in seconds. Defaults to
     /// `auth::DEFAULT_SESSION_LIFETIME_SECS` (12 hours) when unset.
     #[serde(default)]

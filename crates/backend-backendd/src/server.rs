@@ -45,10 +45,6 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             .with_context(|| format!("binding HTTPS listener {}", https_config.listen))?;
         let tls_acceptor = build_https_acceptor(&https_config.tls)?;
         let admin_config = config.admin.as_ref();
-        let session_key = match admin_config {
-            Some(admin) => crate::auth::load_session_key(&admin.session_key_file)?,
-            None => [0u8; crate::auth::SESSION_KEY_LEN],
-        };
         let state = Arc::new(AdminRuntimeState {
             stores: Arc::clone(&store_registry),
             client_instances: Arc::clone(&client_instances),
@@ -60,13 +56,13 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             allowed_origins: admin_config.and_then(|cfg| cfg.allowed_origins.clone()),
             web_source: crate::web::WebAssetSource::from_env(),
             users_file: users_file.clone(),
-            session_key,
+            auth_backend: crate::auth::AuthBackend::new(users_file.clone()),
+            session_store: tower_sessions::MemoryStore::default(),
+            csrf_config: crate::admin_api::csrf::build_csrf_config(true),
             session_lifetime_secs: admin_config
                 .and_then(|cfg| cfg.session_lifetime_secs)
                 .unwrap_or(crate::auth::DEFAULT_SESSION_LIFETIME_SECS),
             cookies_secure: true,
-            login_rate_limiter: crate::auth::RateLimiter::new(),
-            session_revocations: crate::auth::SessionRevocations::new(),
             bootstrap_lock: std::sync::Mutex::new(()),
             user_collection_lock: std::sync::Mutex::new(()),
         });

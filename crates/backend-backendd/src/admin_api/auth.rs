@@ -1,68 +1,33 @@
 //! Admin login surface: `/v1/admin/auth/{login, logout, whoami, password}`.
 //!
-//! Login issues a session cookie + matching CSRF cookie. Logout
-//! revokes the current session id server-side and clears both
-//! cookies. Whoami is intentionally tolerant of missing auth so the
-//! SPA can use it for the login / bootstrap redirect dance. Password
-//! change is the self-service "rotate my own password" surface.
+//! Sessions are issued via [`tower_sessions`] / [`axum_login`]: on a
+//! successful password check the handler calls
+//! [`AuthSession::login`], which writes an opaque session id to the
+//! `__Host-uw-session` cookie and persists the user id + password-hash
+//! bytes in the in-memory store. Logout calls
+//! [`AuthSession::logout`], which flushes the store entry and clears
+//! the cookie. Whoami is tolerant of missing auth so the SPA can use
+//! it to drive the login / bootstrap redirect dance without producing
+//! 401s.
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::State;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use axum_login::AuthSession;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::HeaderMap;
 use hyper::{Response, StatusCode};
 use tracing::{info, warn};
 
-use crate::admin_api::csrf::AdminAuth;
+use crate::auth::{AuthBackend, AuthError, Credentials};
 use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
-use crate::users::Principal;
+use crate::users::{Principal, UserRecord};
 
-/// Issue a freshly-encrypted session cookie + matching CSRF cookie and
-/// return the 200 response with the JSON `body`. Shared by login,
-/// bootstrap, and the bootstrap test helper.
-///
-/// On `encrypt_session` failure the response is a 500 — there is no
-/// way to keep going without a session cookie.
-pub(crate) fn issue_session_response<B: serde::Serialize>(
-    state: &AdminRuntimeState,
-    payload: &crate::auth::SessionPayload,
-    body: &B,
-) -> Response<Full<Bytes>> {
-    let encoded = match crate::auth::encrypt_session(payload, &state.session_key) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(err = %e, "encrypt_session failed");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "failed to issue session",
-            );
-        }
-    };
-    let session_cookie = crate::auth::render_session_cookie(
-        &encoded,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
-    let csrf_cookie = crate::auth::render_csrf_cookie(
-        &payload.csrf_secret,
-        state.session_lifetime_secs,
-        state.cookies_secure,
-    );
-    let body_bytes = serde_json::to_vec(body).expect("serializing session response body");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .header(hyper::header::SET_COOKIE, session_cookie)
-        .header(hyper::header::SET_COOKIE, csrf_cookie)
-        .body(Full::new(Bytes::from(body_bytes)))
-        .expect("building session response")
-}
+pub(crate) type AdminAuthSession = AuthSession<AuthBackend>;
 
 #[derive(serde::Deserialize, ts_rs::TS)]
 #[ts(export)]
@@ -89,169 +54,117 @@ pub struct WhoamiResponse {
     pub username: Option<String>,
 }
 
-pub(crate) fn handle_admin_login(
-    state: &AdminRuntimeState,
-    body: &LoginRequest,
+pub(crate) async fn handle_admin_login(
+    mut auth_session: AdminAuthSession,
+    body: LoginRequest,
 ) -> Response<Full<Bytes>> {
-    let username_norm = crate::users::normalise_username(&body.username);
-    if username_norm.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_credentials",
-            "username is required",
-        );
-    }
-    if body.password.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_credentials",
-            "password is required",
-        );
-    }
-
-    if !state.login_rate_limiter.check_and_record(&username_norm) {
-        warn!(username = %username_norm, "login rate-limited");
-        return error_response(
-            StatusCode::TOO_MANY_REQUESTS,
-            "rate_limited",
-            "too many login attempts; please wait and try again",
-        );
-    }
-
-    let collection = match crate::users::load(&state.users_file) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(err = %e, "login: failed to read user collection");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "user collection unavailable",
-            );
-        }
+    let username = body.username.clone();
+    let creds = Credentials {
+        username: body.username,
+        password: body.password,
     };
-
-    // Always run argon2 verify, even on unknown user, to keep timing
-    // independent of user existence.
-    let lookup = collection.find_by_username(&username_norm);
-    let hash_to_check = lookup
-        .map(|u| u.password_hash.as_str())
-        .unwrap_or(crate::auth::DUMMY_PASSWORD_HASH);
-    let password_ok = crate::auth::verify_password(hash_to_check, &body.password);
-
-    let user = match (lookup, password_ok) {
-        (Some(u), true) => u,
-        _ => {
-            info!(username = %username_norm, "login failed");
+    let user = match auth_session.authenticate(creds).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            info!(username = %username, "login failed");
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 "invalid_credentials",
                 "invalid username or password",
             );
         }
+        Err(axum_login::Error::Backend(AuthError::RateLimited)) => {
+            warn!(username = %username, "login rate-limited");
+            return error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "too many login attempts; please wait and try again",
+            );
+        }
+        Err(axum_login::Error::Backend(AuthError::UserCollection(err))) => {
+            warn!(err = %err, "login: failed to read user collection");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "user collection unavailable",
+            );
+        }
+        Err(axum_login::Error::Session(err)) => {
+            warn!(err = ?err, "login: session backend failure");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "session backend unavailable",
+            );
+        }
     };
-
-    let now = crate::users::now_epoch_secs();
-    let payload = crate::auth::new_session_payload(
-        user.id.clone(),
-        user.username.clone(),
-        now,
-        state.session_lifetime_secs,
-    );
-
-    state.login_rate_limiter.reset(&username_norm);
+    if let Err(e) = auth_session.login(&user).await {
+        warn!(err = ?e, "login: AuthSession::login failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "failed to issue session",
+        );
+    }
     info!(username = %user.username, "login succeeded");
-
-    issue_session_response(
-        state,
-        &payload,
+    json_response(
+        StatusCode::OK,
         &LoginResponse {
-            username: user.username.clone(),
+            username: user.username,
         },
     )
 }
 
-/// Handle `POST /v1/admin/auth/logout`. Revokes the current session id
-/// server-side and clears both cookies in the response. The CSRF
-/// double-submit check is enforced by `handle_admin_request` before we
-/// get here, so the caller has already proved possession of the
-/// session's csrf_secret.
-pub(crate) fn handle_admin_logout(
-    state: &AdminRuntimeState,
-    session: &crate::auth::SessionPayload,
+pub(crate) async fn handle_admin_logout(
+    mut auth_session: AdminAuthSession,
 ) -> Response<Full<Bytes>> {
-    let now = crate::users::now_epoch_secs();
-    state
-        .session_revocations
-        .revoke(session.session_id.clone(), session.expires_at, now);
-    info!(username = %session.username, "logout: session revoked");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .header(
-            hyper::header::SET_COOKIE,
-            crate::auth::render_session_cookie_clear(state.cookies_secure),
-        )
-        .header(
-            hyper::header::SET_COOKIE,
-            crate::auth::render_csrf_cookie_clear(state.cookies_secure),
-        )
-        .body(Full::new(Bytes::from_static(b"{}")))
-        .expect("building logout response")
+    let username = auth_session.user.as_ref().map(|u| u.username.clone());
+    if let Err(e) = auth_session.logout().await {
+        warn!(err = ?e, "logout: AuthSession::logout failed");
+        // Fall through — we still want to respond 200 with the
+        // session-clearing cookie that tower-sessions emits, so a
+        // partially failed flush doesn't strand the client.
+    }
+    if let Some(name) = username {
+        info!(username = %name, "logout: session flushed");
+    }
+    json_response(StatusCode::OK, &serde_json::json!({}))
 }
 
-pub(crate) fn handle_admin_whoami(
-    state: &AdminRuntimeState,
-    headers: &hyper::HeaderMap,
-) -> Response<Full<Bytes>> {
+pub(crate) async fn handle_admin_whoami(auth_session: AdminAuthSession) -> Response<Full<Bytes>> {
     // whoami is intentionally tolerant of missing auth (returns
-    // authenticated:false) so the SPA can use it to drive the
-    // login/bootstrap redirect dance without producing 401s in the
-    // browser devtools.
-    let Some(value) = crate::auth::extract_session_cookie(headers) else {
-        return json_response(
+    // `authenticated: false`) so the SPA can use it to drive the
+    // login / bootstrap redirect dance without producing 401s in the
+    // browser devtools. `axum_login` already invalidated the session
+    // if the operator was deleted or had its password rotated since
+    // it was issued, so `auth_session.user.is_some()` is the
+    // authoritative answer here.
+    match auth_session.user {
+        Some(u) => json_response(
+            StatusCode::OK,
+            &WhoamiResponse {
+                authenticated: true,
+                username: Some(u.username),
+            },
+        ),
+        None => json_response(
             StatusCode::OK,
             &WhoamiResponse {
                 authenticated: false,
                 username: None,
             },
-        );
-    };
-    let now = crate::users::now_epoch_secs();
-    let payload = match crate::auth::decrypt_session(value, &state.session_key, now) {
-        Ok(p) => p,
-        Err(_) => {
-            return json_response(
-                StatusCode::OK,
-                &WhoamiResponse {
-                    authenticated: false,
-                    username: None,
-                },
-            );
-        }
-    };
-    // Confirm the username still resolves to a live user record; a
-    // deleted user invalidates the session.
-    let collection = crate::users::load(&state.users_file).unwrap_or_else(|e| {
-        warn!(err = %e, "whoami: user collection unreadable; treating as empty");
-        crate::users::UserCollection::default()
-    });
-    let exists = collection.find_by_username(&payload.username).is_some();
-    json_response(
-        StatusCode::OK,
-        &WhoamiResponse {
-            authenticated: exists,
-            username: Some(payload.username),
-        },
-    )
+        ),
+    }
 }
 
 /// `POST /v1/admin/auth/password` — self-service password change for
 /// the currently authenticated user. Requires the current password as
 /// proof-of-possession.
-pub(crate) fn handle_admin_password_change(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    body: &underwrap_protocol::service::AdminPasswordChangeRequest,
+pub(crate) async fn handle_admin_password_change(
+    mut auth_session: AdminAuthSession,
+    state: Arc<AdminRuntimeState>,
+    principal: Principal,
+    body: underwrap_protocol::service::AdminPasswordChangeRequest,
 ) -> Response<Full<Bytes>> {
     use crate::admin_api::users::{mutate_collection, write_admin_user_audit};
     use underwrap_protocol::service::AdminOkUserResponse;
@@ -286,7 +199,7 @@ pub(crate) fn handle_admin_password_change(
     };
     if !crate::auth::verify_password(&current_hash, &body.current_password) {
         write_admin_user_audit(
-            principal,
+            &principal,
             &principal.username,
             "user.password.change",
             Some("wrong-current-password"),
@@ -310,10 +223,11 @@ pub(crate) fn handle_admin_password_change(
         }
     };
     let id_owned = principal.id.clone();
+    let new_hash_for_closure = new_hash.clone();
     let now = crate::users::now_epoch_secs();
-    let result = mutate_collection(state, |c| {
+    let result = mutate_collection(&state, |c| {
         c.update(&id_owned, |u| {
-            u.password_hash = new_hash.clone();
+            u.password_hash = new_hash_for_closure.clone();
             u.password_changed_at = now;
         })?;
         Ok(())
@@ -321,12 +235,33 @@ pub(crate) fn handle_admin_password_change(
     match result {
         Ok(()) => {
             write_admin_user_audit(
-                principal,
+                &principal,
                 &principal.username,
                 "user.password.change",
                 None,
                 "success",
             );
+            // The user's other sessions (and indeed every other
+            // session ever issued under the *old* password hash)
+            // will be invalidated automatically the next time their
+            // owners hit any admin URL — `axum_login` re-reads
+            // `session_auth_hash()` on every request and flushes the
+            // session when it doesn't match. Refresh *this*
+            // session's stored hash so the operator that just
+            // changed their own password isn't immediately
+            // logged out on the next request.
+            let updated_user = UserRecord {
+                id: principal.id.clone(),
+                username: principal.username.clone(),
+                password_hash: new_hash,
+                created_at: 0,
+                password_changed_at: now,
+            };
+            if let Err(e) = auth_session.login(&updated_user).await {
+                warn!(err = ?e, "auth.password: refreshing AuthSession after password change");
+                // Not fatal: response still succeeds, but the
+                // operator will need to log in again.
+            }
             json_response(StatusCode::OK, &AdminOkUserResponse { ok: true })
         }
         Err(e) => {
@@ -342,7 +277,7 @@ pub(crate) fn handle_admin_password_change(
 
 pub(crate) fn public_router() -> Router<Arc<AdminRuntimeState>> {
     Router::new()
-        .route("/v1/admin/auth/login", post(axum_login))
+        .route("/v1/admin/auth/login", post(axum_login_route))
         .route("/v1/admin/auth/whoami", get(axum_whoami))
 }
 
@@ -352,33 +287,32 @@ pub(crate) fn protected_router() -> Router<Arc<AdminRuntimeState>> {
         .route("/v1/admin/auth/logout", post(axum_logout))
 }
 
-async fn axum_login(
-    State(state): State<Arc<AdminRuntimeState>>,
+async fn axum_login_route(
+    auth_session: AdminAuthSession,
     Body(parsed): Body<LoginRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_login(&state, &parsed)
+) -> axum::response::Response {
+    handle_admin_login(auth_session, parsed)
+        .await
+        .into_response()
 }
 
-async fn axum_whoami(
-    State(state): State<Arc<AdminRuntimeState>>,
-    headers: HeaderMap,
-) -> Response<Full<Bytes>> {
-    handle_admin_whoami(&state, &headers)
+async fn axum_whoami(auth_session: AdminAuthSession) -> axum::response::Response {
+    handle_admin_whoami(auth_session).await.into_response()
 }
 
-async fn axum_logout(
-    State(state): State<Arc<AdminRuntimeState>>,
-    axum::Extension(auth): axum::Extension<AdminAuth>,
-) -> Response<Full<Bytes>> {
-    handle_admin_logout(&state, auth.session())
+async fn axum_logout(auth_session: AdminAuthSession) -> axum::response::Response {
+    handle_admin_logout(auth_session).await.into_response()
 }
 
 async fn axum_password_change(
+    auth_session: AdminAuthSession,
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(parsed): Body<underwrap_protocol::service::AdminPasswordChangeRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_password_change(&state, &principal, &parsed)
+) -> axum::response::Response {
+    handle_admin_password_change(auth_session, state, principal, parsed)
+        .await
+        .into_response()
 }
 
 #[cfg(test)]

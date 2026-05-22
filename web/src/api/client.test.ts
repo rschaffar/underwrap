@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  _resetCsrfTokenForTesting,
   apiFetch,
   apiJson,
   fetchBootstrapStatus,
@@ -29,16 +30,26 @@ function mockResponse(
   });
 }
 
+function mockResponseWithCsrf(
+  status: number,
+  body: unknown,
+  csrfToken: string,
+): Response {
+  const text = typeof body === "string" ? body : JSON.stringify(body);
+  return new Response(text, {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
-  // Reset cookies between tests so CSRF state doesn't leak.
-  document.cookie
-    .split(";")
-    .filter((c) => c.includes("="))
-    .forEach((c) => {
-      const name = c.split("=")[0]?.trim();
-      if (name) document.cookie = `${name}=; Max-Age=0; Path=/`;
-    });
+  // Reset the module-scoped CSRF token so state doesn't leak between
+  // tests.
+  _resetCsrfTokenForTesting();
 });
 
 describe("apiFetch", () => {
@@ -52,26 +63,39 @@ describe("apiFetch", () => {
     expect(init.credentials).toBe("include");
   });
 
-  it("attaches X-CSRF-Token from the cookie on POST", async () => {
-    document.cookie = "__Host-uw-csrf=token-from-cookie; Path=/; Secure";
+  it("replays the cached X-CSRF-Token on POST after seeing it on a prior response", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockResponse(200, { ok: true }));
+      .mockResolvedValueOnce(
+        mockResponseWithCsrf(200, { ok: true }, "auth-token"),
+      )
+      .mockResolvedValueOnce(mockResponse(200, { ok: true }));
+    // First request: bootstrap-style GET that primes the token cache.
+    await apiFetch("/v1/admin/auth/whoami");
+    // Second request: state-changing POST should now send the token.
     await apiFetch("/v1/admin/anything", {
       method: "POST",
       json: { a: 1 },
     });
-    const headers = new Headers(spy.mock.calls[0]![1]!.headers);
-    expect(headers.get("X-CSRF-Token")).toBe("token-from-cookie");
+    const headers = new Headers(spy.mock.calls[1]![1]!.headers);
+    expect(headers.get("X-CSRF-Token")).toBe("auth-token");
     expect(headers.get("Content-Type")).toBe("application/json");
   });
 
   it("does not attach X-CSRF-Token on GET", async () => {
-    document.cookie = "__Host-uw-csrf=token-from-cookie; Path=/; Secure";
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponseWithCsrf(200, { ok: true }, "tok"));
+    await apiFetch("/v1/admin/auth/whoami");
+    const headers = new Headers(spy.mock.calls[0]![1]!.headers);
+    expect(headers.get("X-CSRF-Token")).toBeNull();
+  });
+
+  it("does not attach X-CSRF-Token on POST when no prior response has primed the token", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(mockResponse(200, { ok: true }));
-    await apiFetch("/v1/admin/auth/whoami");
+    await apiFetch("/v1/admin/anything", { method: "POST", json: { a: 1 } });
     const headers = new Headers(spy.mock.calls[0]![1]!.headers);
     expect(headers.get("X-CSRF-Token")).toBeNull();
   });

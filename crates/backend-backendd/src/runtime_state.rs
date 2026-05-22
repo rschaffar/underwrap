@@ -14,6 +14,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum_csrf::CsrfConfig;
+use tower_sessions::MemoryStore;
+
 use crate::store_registry::StoreRegistry;
 
 pub(crate) struct AdminRuntimeState {
@@ -52,19 +55,26 @@ pub(crate) struct AdminRuntimeState {
     pub(crate) web_source: crate::web::WebAssetSource,
     /// Path of the backend-managed operator-state file.
     pub(crate) users_file: PathBuf,
-    /// 32-byte AEAD key used to encrypt session cookies.
-    pub(crate) session_key: [u8; crate::auth::SESSION_KEY_LEN],
-    /// Configured session lifetime in seconds.
+    /// `axum-login` backend resolving credentials and user ids against
+    /// the operator collection. Cloning shares the per-username
+    /// login-rate-limiter state, so callers should clone this and not
+    /// construct fresh instances.
+    pub(crate) auth_backend: crate::auth::AuthBackend,
+    /// In-memory session store handed to `tower-sessions`. Held here
+    /// so request handlers can address the store directly when
+    /// needed.
+    pub(crate) session_store: MemoryStore,
+    /// `axum_csrf` config — cookie name, attributes, HMAC salt. The
+    /// CSRF layer reads this; admin handlers also consult it when
+    /// emitting fresh tokens.
+    pub(crate) csrf_config: CsrfConfig,
+    /// Configured session lifetime in seconds. Used as the
+    /// `Max-Age` on the session and CSRF cookies and as the
+    /// inactivity expiry on the session store.
     pub(crate) session_lifetime_secs: u64,
     /// Whether to mark issued cookies with the `Secure` attribute.
     /// True when the admin listener terminates TLS.
     pub(crate) cookies_secure: bool,
-    /// Per-username login attempt limiter.
-    pub(crate) login_rate_limiter: crate::auth::RateLimiter,
-    /// Server-side set of revoked session ids. Logout adds the session
-    /// id here so a stolen-but-still-unexpired cookie is rejected on
-    /// the next request.
-    pub(crate) session_revocations: crate::auth::SessionRevocations,
     /// Mutex that serialises bootstrap attempts so concurrent callers
     /// can't both pass the "is operator collection empty" check
     /// before either has written the first record. The lock is held

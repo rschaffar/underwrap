@@ -76,7 +76,6 @@ https:
     key_file: /etc/underwrap-backend/server.key
 
 admin:
-  session_key_file: /run/keys/underwrap-admin-session-key
   # Directory the admin "create store" API places new dynamic stores
   # under. Each new store lands at `<stores_data_root>/<store_id>/`.
   # Unset disables store creation.

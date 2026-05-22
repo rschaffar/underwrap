@@ -67,7 +67,6 @@ https:
     key_file: /etc/underwrap-backend/server.key
 
 admin:
-  session_key_file: /run/keys/underwrap-admin-session-key
 ```
 
 Provision the admin session key:

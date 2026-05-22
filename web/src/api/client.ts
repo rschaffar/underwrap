@@ -1,12 +1,15 @@
 /**
  * Typed fetch wrapper for the admin API.
  *
- * - Always sends cookies (`credentials: "include"`) so the session
- *   and CSRF cookies set by the backend are visible on every request.
- * - Reads `__Host-uw-csrf` from `document.cookie` and attaches it as
- *   `X-CSRF-Token` on any non-GET request — the double-submit
- *   half-of the CSRF check (the backend also verifies against the
- *   session's csrf_secret).
+ * - Always sends cookies (`credentials: "include"`) so the
+ *   `__Host-uw-session` and `__Host-uw-csrf` cookies set by the
+ *   backend are visible on every request.
+ * - Captures the HMAC authenticity token off every admin response's
+ *   `X-CSRF-Token` response header (synchronizer-token pattern, served
+ *   by `axum_csrf`) and replays it as `X-CSRF-Token` on the next
+ *   state-changing request. The CSRF cookie itself is `HttpOnly` — JS
+ *   never reads it, the token round-trip happens entirely via
+ *   response/request headers.
  * - Surfaces backend errors as typed [`ApiError`] objects carrying the
  *   stable `code` (`csrf_required`, `bad_origin`, `session_revoked`,
  *   etc.) so callers can switch on it without parsing strings.
@@ -15,7 +18,6 @@
  *   security regression.
  */
 
-const CSRF_COOKIE_NAME = "__Host-uw-csrf";
 const CSRF_HEADER_NAME = "X-CSRF-Token";
 
 export class ApiError extends Error {
@@ -42,18 +44,15 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-function readCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const all = document.cookie.split(";");
-  for (const part of all) {
-    const trimmed = part.trim();
-    const eq = trimmed.indexOf("=");
-    if (eq < 0) continue;
-    if (trimmed.slice(0, eq) === name) {
-      return trimmed.slice(eq + 1);
-    }
-  }
-  return null;
+// Most-recent HMAC authenticity token observed on an admin response's
+// `X-CSRF-Token` header. Held in module scope so it survives across
+// navigation but does NOT persist across reloads — a fresh page load
+// re-fetches `whoami`, which carries a fresh token.
+let csrfToken: string | null = null;
+
+/** Exposed for tests only — resets the cached CSRF token. */
+export function _resetCsrfTokenForTesting(): void {
+  csrfToken = null;
 }
 
 async function parseError(res: Response): Promise<ApiError> {
@@ -86,11 +85,8 @@ export async function apiFetch(
   } else if (rawBody !== undefined) {
     body = rawBody;
   }
-  if (!SAFE_METHODS.has(method)) {
-    const token = readCookie(CSRF_COOKIE_NAME);
-    if (token !== null) {
-      finalHeaders.set(CSRF_HEADER_NAME, token);
-    }
+  if (!SAFE_METHODS.has(method) && csrfToken !== null) {
+    finalHeaders.set(CSRF_HEADER_NAME, csrfToken);
   }
   const res = await fetch(path, {
     ...rest,
@@ -99,6 +95,10 @@ export async function apiFetch(
     credentials: "include",
     body,
   });
+  const freshToken = res.headers.get(CSRF_HEADER_NAME);
+  if (freshToken !== null && freshToken !== "") {
+    csrfToken = freshToken;
+  }
   if (!res.ok) {
     throw await parseError(res);
   }

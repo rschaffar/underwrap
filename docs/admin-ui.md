@@ -22,19 +22,28 @@ management.
 ## Authentication
 
 - **Argon2id** password hashing.
-- **AEAD-encrypted session cookies** signed and encrypted with a
-  32-byte key configured via `admin.session_key_file`.
-- **Double-submit CSRF** for every state-changing request: the SPA
-  reads the `__Host-uw-csrf` cookie and echoes it back via the
-  `X-CSRF-Token` header.
+- **Opaque session cookies** issued by `tower-sessions` (`__Host-uw-session`,
+  `Secure; HttpOnly; SameSite=Strict; Path=/`) backed by an in-memory
+  store. Sessions do not survive a daemon restart — operators
+  re-authenticate on reboot.
+- **Synchronizer-token CSRF** via `axum_csrf`: the backend issues an
+  HMAC-bound token in the `__Host-uw-csrf` cookie and the matching
+  `X-CSRF-Token` response header. The SPA picks the token off the
+  response header and echoes it back as `X-CSRF-Token` on every
+  state-changing request.
+- **Per-username login rate limit** (5 attempts / 60 s) plus a
+  constant-time Argon2 verify against a dummy hash on unknown
+  usernames to prevent enumeration.
+- **Server-side session revocation on password rotation / user
+  deletion**: `axum-login` stores the password-hash bytes in each
+  session and re-checks them on every request via
+  `session_auth_hash()`, so rotating a password or deleting a user
+  invalidates every existing session for that operator on the next
+  request — no separate revocation table required.
 - **Same-origin checks** for state-changing requests via the
   `admin.allowed_origins` allowlist.
 - **First-use bootstrap** flow that the SPA detects automatically via
   `GET /v1/admin/auth/bootstrap/status`.
-
-A legacy bearer-token auth path remains in the backend for scripts and
-the integration-test harness; new deployments should use the cookie
-flow exclusively.
 
 ## Surface today
 

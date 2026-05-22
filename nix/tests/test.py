@@ -24,9 +24,10 @@ ADMIN_BOOTSTRAP_USER = "tester"
 ADMIN_BOOTSTRAP_PASSWORD = "hunter2"
 
 # Per-admin session-cookie state, populated by `bootstrap_admin_session`
-# during boot. `_COOKIE_JAR[url]` is the path of curl's cookie file on
-# the VM; `_CSRF_TOKEN[url]` is the value of the `__Host-uw-csrf` cookie
-# extracted from it.
+# during boot. `_COOKIE_JAR[url]` is curl's cookie file on the VM
+# (carries `__Host-uw-session` and `__Host-uw-csrf` cookies);
+# `_CSRF_TOKEN[url]` is the HMAC authenticity token from the most
+# recent admin response's `X-CSRF-Token` header.
 _COOKIE_JAR = {}
 _CSRF_TOKEN = {}
 
@@ -36,12 +37,23 @@ def _cookie_jar_path(url):
     return f"/tmp/underwrap-admin-cookies-{safe}.txt"
 
 
+def _extract_csrf_response_header(headers_text):
+    """Return the value of the `X-CSRF-Token` response header from a
+    curl `-D-` dump, or `None` if missing."""
+    for line in headers_text.splitlines():
+        # Case-insensitive header match.
+        if ":" in line and line.split(":", 1)[0].strip().lower() == "x-csrf-token":
+            return line.split(":", 1)[1].strip()
+    return None
+
+
 def bootstrap_admin_session(url):
     """Create the first operator on an admin listener and capture its
-    session cookies. Must be called exactly once per backend boot —
-    subsequent bootstrap POSTs would return 409.
+    session cookies + CSRF authenticity token. Must be called exactly
+    once per backend boot — subsequent bootstrap POSTs would return 409.
     """
     cookie_jar = _cookie_jar_path(url)
+    headers_file = f"{cookie_jar}.headers"
     payload = json.dumps({
         "username": ADMIN_BOOTSTRAP_USER,
         "password": ADMIN_BOOTSTRAP_PASSWORD,
@@ -50,6 +62,7 @@ def bootstrap_admin_session(url):
         "curl", "-fsS",
         "--cacert", CA_CERT,
         "-c", cookie_jar,
+        "-D", headers_file,
         "-X", "POST",
         "-H", f"Origin: {url}",
         "-H", "Content-Type: application/json",
@@ -58,14 +71,11 @@ def bootstrap_admin_session(url):
     ]
     machine.succeed(" ".join(shlex.quote(p) for p in cmd))
 
-    # Extract the CSRF cookie value from the Netscape-format cookie jar.
-    # Field 6 is the cookie name, field 7 is the value.
-    csrf = machine.succeed(
-        f"awk '$6==\"__Host-uw-csrf\"{{print $7}}' {shlex.quote(cookie_jar)}"
-    ).strip()
+    headers = machine.succeed(f"cat {shlex.quote(headers_file)}")
+    csrf = _extract_csrf_response_header(headers)
     if not csrf:
         raise AssertionError(
-            f"bootstrap_admin_session: no __Host-uw-csrf cookie in {cookie_jar}"
+            f"bootstrap_admin_session: no X-CSRF-Token response header in {headers_file}"
         )
 
     _COOKIE_JAR[url] = cookie_jar
@@ -75,9 +85,10 @@ def bootstrap_admin_session(url):
 def login_admin_session(url):
     """Re-authenticate against an already-bootstrapped backend, e.g.
     after a daemon restart that wiped the in-memory session state.
-    Captures a fresh session+CSRF cookie pair from
+    Captures a fresh session cookie + CSRF authenticity token from
     `/v1/admin/auth/login`."""
     cookie_jar = _cookie_jar_path(url)
+    headers_file = f"{cookie_jar}.headers"
     payload = json.dumps({
         "username": ADMIN_BOOTSTRAP_USER,
         "password": ADMIN_BOOTSTRAP_PASSWORD,
@@ -86,6 +97,7 @@ def login_admin_session(url):
         "curl", "-fsS",
         "--cacert", CA_CERT,
         "-c", cookie_jar,
+        "-D", headers_file,
         "-X", "POST",
         "-H", f"Origin: {url}",
         "-H", "Content-Type: application/json",
@@ -93,12 +105,11 @@ def login_admin_session(url):
         f"{url}/v1/admin/auth/login",
     ]
     machine.succeed(" ".join(shlex.quote(p) for p in cmd))
-    csrf = machine.succeed(
-        f"awk '$6==\"__Host-uw-csrf\"{{print $7}}' {shlex.quote(cookie_jar)}"
-    ).strip()
+    headers = machine.succeed(f"cat {shlex.quote(headers_file)}")
+    csrf = _extract_csrf_response_header(headers)
     if not csrf:
         raise AssertionError(
-            f"login_admin_session: no __Host-uw-csrf cookie in {cookie_jar}"
+            f"login_admin_session: no X-CSRF-Token response header in {headers_file}"
         )
     _COOKIE_JAR[url] = cookie_jar
     _CSRF_TOKEN[url] = csrf
@@ -1945,6 +1956,11 @@ def runtime_api_invariants():
         f"wrapper must self-heal after backend restart, got: {output}"
     )
     machine.log("PASS: daemon self-heals after backend restart")
+
+    # The in-memory `tower-sessions` store does not survive the
+    # restart above, so the admin session captured at boot is gone.
+    # Re-login before any admin API call after a backend restart.
+    login_admin_session(ADMIN_LOCAL)
 
     # ----------------------------------------------------------
     # PerCallApproval variant is gone — admin policy/put rejects

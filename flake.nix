@@ -88,7 +88,7 @@
             src = ./web;
             # If this hash drifts the build fails with the
             # offending hash printed; copy it back into this file.
-            npmDepsHash = "sha256-jm+65/wCgwVd6vwbVg/2noOax2H6bLjRa19txQ0zXmc=";
+            npmDepsHash = "sha256-X+ZNwLIoxjcf9vpfQeRP6wdQHWft/2jkkIVwTft7nJY=";
             npmBuildScript = "build";
             installPhase = ''
               runHook preInstall

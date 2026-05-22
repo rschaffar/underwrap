@@ -1,13 +1,11 @@
 use super::*;
 use crate::test_support::headers_with;
 use hyper::Method;
-use std::path::PathBuf;
 
 #[test]
 fn validate_admin_config_allows_nonempty_origin_entries() {
     let cfg = AdminConfig {
         allowed_origins: Some(vec!["https://ok.example".to_string()]),
-        session_key_file: PathBuf::from("/dev/null"),
         session_lifetime_secs: None,
         stores_data_root: None,
     };
@@ -18,7 +16,6 @@ fn validate_admin_config_allows_nonempty_origin_entries() {
 fn validate_admin_config_rejects_empty_origin_entry() {
     let cfg = AdminConfig {
         allowed_origins: Some(vec!["https://ok.example".to_string(), "  ".to_string()]),
-        session_key_file: PathBuf::from("/dev/null"),
         session_lifetime_secs: None,
         stores_data_root: None,
     };

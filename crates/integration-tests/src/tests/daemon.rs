@@ -61,15 +61,9 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
     let server_cert = base.join("server.pem");
     let server_key = base.join("server.key");
     let ca_cert = base.join("ca.pem");
-    let session_key_file = base.join("admin-session-key");
     std::fs::write(&server_cert, crate::harness::TEST_SERVER_PEM).unwrap();
     std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
-    std::fs::write(
-        &session_key_file,
-        [5u8; underwrap_backendd::auth::SESSION_KEY_LEN],
-    )
-    .unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
         stores_file: Some(base.join("stores.json")),
         client_instances_file: Some(base.join("client-instances.json")),
@@ -83,7 +77,6 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
         }),
         admin: Some(underwrap_backendd::AdminConfig {
             allowed_origins: None,
-            session_key_file,
             session_lifetime_secs: None,
             stores_data_root: Some(base.join("stores-data-root")),
         }),
@@ -150,17 +143,11 @@ async fn underwrapd_binary_start_and_read() {
     let ca_cert = base.join("ca.pem");
     let client_cert = base.join("client.pem");
     let client_key = base.join("client.key");
-    let session_key_file = base.join("admin-session-key");
     std::fs::write(&server_cert, crate::harness::TEST_SERVER_PEM).unwrap();
     std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
     std::fs::write(&client_cert, crate::harness::TEST_CLIENT_LOCAL_PEM).unwrap();
     std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
-    std::fs::write(
-        &session_key_file,
-        [6u8; underwrap_backendd::auth::SESSION_KEY_LEN],
-    )
-    .unwrap();
 
     let stores_file = base.join("stores.json");
     let client_instances_file = base.join("client-instances.json");
@@ -263,7 +250,6 @@ async fn underwrapd_binary_start_and_read() {
         }),
         admin: Some(underwrap_backendd::AdminConfig {
             allowed_origins: None,
-            session_key_file: session_key_file.clone(),
             session_lifetime_secs: None,
             stores_data_root: None,
         }),
@@ -280,10 +266,13 @@ async fn underwrapd_binary_start_and_read() {
         .unwrap();
 
     wait_for_admin(&admin_url, &ca_cert).await.unwrap();
-    let (admin_session_cookie, admin_csrf_token) =
-        bootstrap_admin(&admin_url, &ca_cert, "tester", "hunter2")
-            .await
-            .unwrap();
+    let crate::harness::AdminCredentials {
+        session_cookie: admin_session_cookie,
+        csrf_cookie: admin_csrf_cookie,
+        csrf_token: admin_csrf_token,
+    } = bootstrap_admin(&admin_url, &ca_cert, "tester", "hunter2")
+        .await
+        .unwrap();
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .add_root_certificate(
@@ -354,7 +343,7 @@ async fn underwrapd_binary_start_and_read() {
         .post(format!("{admin_url}/v1/admin/secret/write"))
         .header(
             reqwest::header::COOKIE,
-            csrf_cookie_header(&admin_session_cookie, &admin_csrf_token),
+            csrf_cookie_header(&admin_session_cookie, &admin_csrf_cookie),
         )
         .header("X-CSRF-Token", &admin_csrf_token)
         .json(&underwrap_protocol::service::AdminSecretWriteRequest {
@@ -376,7 +365,7 @@ async fn underwrapd_binary_start_and_read() {
         .post(format!("{admin_url}/v1/admin/policy/put"))
         .header(
             reqwest::header::COOKIE,
-            csrf_cookie_header(&admin_session_cookie, &admin_csrf_token),
+            csrf_cookie_header(&admin_session_cookie, &admin_csrf_cookie),
         )
         .header("X-CSRF-Token", &admin_csrf_token)
         .json(&underwrap_protocol::service::AdminPolicyPutRequest {

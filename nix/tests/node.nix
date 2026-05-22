@@ -172,20 +172,6 @@ in {
   environment.systemPackages = [ underwrapPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl pkgs.jq ];
 
   # Pre-seeded 32-byte session AEAD keys (one per daemon). The local
-  # admin listener used to be the only one needing one; under the
-  # new model both listeners are unified HTTPS endpoints that mix
-  # the runtime service API and the admin SPA, so each needs a key.
-  environment.etc."underwrap-admin-session.key" = {
-    text = "01234567890123456789012345678901";
-    mode = "0644";
-  };
-  environment.etc."underwrap-admin-session-remote.key" = {
-    # Exactly 32 bytes (no trailing newline — the backend's load
-    # requires `len == 32` precisely).
-    text = "0123456789abcdef0123456789abcdef";
-    mode = "0644";
-  };
-
   # CA cert at a stable path so the test driver's curl invocations can
   # validate the daemon's HTTPS listeners. Backends already trust this
   # CA for mTLS client cert validation; this exposes the cert itself
@@ -232,7 +218,6 @@ in {
             };
           };
           admin = {
-            session_key_file = "/etc/underwrap-admin-session-remote.key";
             allowed_origins = [ "https://127.0.0.1:18444" ];
             stores_data_root = "/var/lib/underwrap-backend/data-root";
           };
@@ -315,7 +300,6 @@ in {
             };
           };
           admin = {
-            session_key_file = "/etc/underwrap-admin-session.key";
             allowed_origins = [ "https://127.0.0.1:18443" ];
             stores_data_root = "/var/lib/underwrap-backend-local/data-root";
           };

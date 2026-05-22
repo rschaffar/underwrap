@@ -55,15 +55,11 @@ async fn bootstrap_succeeds_on_empty_store_and_sets_sentinel() {
     let collection = crate::users::load(&state.users_file).unwrap();
     let u = collection.find_by_username("alice").unwrap();
     assert!(crate::auth::verify_password(&u.password_hash, "hunter2"));
-    // Session + CSRF cookies present.
-    let cookies: Vec<String> = resp
-        .headers()
-        .get_all(hyper::header::SET_COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
-        .collect();
-    assert!(cookies.iter().any(|c| c.starts_with("__Host-uw-session=")));
-    assert!(cookies.iter().any(|c| c.starts_with("__Host-uw-csrf=")));
+    // Session and CSRF cookies are emitted by the
+    // `tower-sessions` / `axum-login` / `axum_csrf` layers, not by
+    // the bootstrap handler itself. The integration tests cover the
+    // full layered response; here we just confirm the unit-level DB
+    // side-effects.
 }
 
 #[tokio::test]

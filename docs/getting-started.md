@@ -65,7 +65,6 @@ https:
     key_file: /etc/underwrap-backend/server.key
 
 admin:
-  session_key_file: /run/keys/underwrap-admin-session-key
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 

@@ -36,7 +36,7 @@ clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
-axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio", "matched-path", "tower-log", "query"] }
+axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio", "matched-path", "tower-log", "query", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 hyper = { version = "1", features = ["http1", "server"] }
@@ -52,6 +52,9 @@ x509-parser = "0.18"
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 chacha20poly1305 = "0.10"
 rand = "0.8"
+tower-sessions = "0.14"
+axum-login = "0.18"
+axum_csrf = { version = "0.11", features = ["layer"] }
 zeroize = { version = "1", features = ["derive"] }
 ssh-key = { version = "0.6", features = ["ed25519", "rsa", "std"] }
 base64 = "0.22"

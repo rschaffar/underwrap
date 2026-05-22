@@ -96,9 +96,9 @@ The guarantee below applies when all of the following hold:
   - does not persist the token to any path readable by the caller,
   - does not accept attacker-controlled flags or configuration that
     cause it to write the token anywhere the caller can read.
-- The mTLS client cert and key, the backend admin token, and the
-  admin UI session key retain their default ownership and mode
-  (readable only by the daemon user that needs them).
+- The mTLS client cert and key, and the backend admin token,
+  retain their default ownership and mode (readable only by the
+  daemon user that needs them).
 
 ### Guarantee
 
@@ -774,8 +774,27 @@ but not the basic wrapper flow on the target host.
   validation, no subject/SAN/EKU consultation, and no enrollment
   signing key on the backend.
 - **Admin** (`/v1/admin/*`) — same HTTPS listener, no client certificate.
-  Operators authenticate with username + Argon2id password hash + signed
-  session cookie (HMAC-SHA256) + per-session CSRF token on every POST.
+  Operators authenticate with username + Argon2id password hash. Sessions
+  use [`tower-sessions`] with an in-memory store: the `__Host-uw-session`
+  cookie carries only an opaque session id, the server-side store
+  carries the operator id and a copy of the operator's
+  password-hash bytes via `axum-login`'s `session_auth_hash()`
+  mechanism. Rotating a password (or deleting an operator)
+  invalidates every existing session for that operator on the next
+  request because `axum-login` re-checks the hash against the
+  current operator record. Sessions do not survive a daemon
+  restart — operators re-authenticate on reboot.
+
+  CSRF protection uses [`axum_csrf`]'s synchronizer-token pattern:
+  the backend issues a random token bound to the `__Host-uw-csrf`
+  cookie and an HMAC-derived authenticity token in the
+  `X-CSRF-Token` response header. The SPA captures that token from
+  responses and echoes it back as `X-CSRF-Token` on every
+  state-changing request; the server re-derives the HMAC from the
+  cookie and verifies. A per-username login rate limit
+  (5 attempts / 60 s) plus a constant-time Argon2id verify against
+  a fixed dummy hash on unknown usernames close the enumeration /
+  brute-force oracles.
 
 The CSR-signing model from earlier iterations has been removed: the
 backend no longer holds a private CA key, no `issuer_cert_file` /

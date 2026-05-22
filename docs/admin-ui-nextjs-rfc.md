@@ -48,7 +48,6 @@ instance and its own operator auth/session state.
 ## Current runtime YAML
 
 ```yaml
-session_key_file: /run/keys/underwrap-admin-ui.session
 
 operators:
   alice:

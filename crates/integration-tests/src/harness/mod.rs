@@ -27,7 +27,8 @@ pub(crate) use pki::{
 use pki::{principal_client_name, test_pki_paths};
 use readiness::wait_for_path;
 pub(crate) use readiness::{
-    bootstrap_admin, csrf_cookie_header, pick_unused_port, wait_for_admin, wait_for_service,
+    AdminCredentials, bootstrap_admin, csrf_cookie_header, pick_unused_port, wait_for_admin,
+    wait_for_service,
 };
 
 /// A running test daemon with temp dirs and sockets.
@@ -42,6 +43,7 @@ pub struct TestDaemon {
     /// path of a store other than the seeded "test" one.
     pub stores_data_root: PathBuf,
     admin_session_cookie: String,
+    admin_csrf_cookie: String,
     admin_csrf_token: String,
     admin_client: reqwest::Client,
     pub service_ca_cert: PathBuf,
@@ -106,11 +108,6 @@ impl TestDaemon {
         let pki = test_pki_paths(base, client_name)?;
         let ready_pki = test_pki_paths(base, principal_client_name(accepted_principal)?)?;
 
-        let session_key_file = base.join("admin-session-key");
-        std::fs::write(
-            &session_key_file,
-            [7u8; underwrap_backendd::auth::SESSION_KEY_LEN],
-        )?;
         let stores_file = base.join("stores.json");
         let instances_file = base.join("client-instances.json");
         let stores_data_root = base.join("stores-data-root");
@@ -164,7 +161,6 @@ impl TestDaemon {
             }),
             admin: Some(underwrap_backendd::AdminConfig {
                 allowed_origins: None,
-                session_key_file: session_key_file.clone(),
                 session_lifetime_secs: None,
                 stores_data_root: Some(stores_data_root.clone()),
             }),
@@ -182,8 +178,11 @@ impl TestDaemon {
         });
 
         wait_for_admin(&admin_url, &pki.ca_cert).await?;
-        let (admin_session_cookie, admin_csrf_token) =
-            bootstrap_admin(&admin_url, &pki.ca_cert, "tester", "hunter2").await?;
+        let AdminCredentials {
+            session_cookie: admin_session_cookie,
+            csrf_cookie: admin_csrf_cookie,
+            csrf_token: admin_csrf_token,
+        } = bootstrap_admin(&admin_url, &pki.ca_cert, "tester", "hunter2").await?;
         let admin_client = reqwest::Client::builder()
             .use_rustls_tls()
             .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
@@ -227,6 +226,7 @@ impl TestDaemon {
             storage_dir,
             stores_data_root,
             admin_session_cookie,
+            admin_csrf_cookie,
             admin_csrf_token,
             admin_client,
             service_ca_cert: pki.ca_cert.clone(),
@@ -292,7 +292,7 @@ impl TestDaemon {
             .request(method.clone(), format!("{}{}", self.admin_url, path))
             .header(
                 reqwest::header::COOKIE,
-                csrf_cookie_header(&self.admin_session_cookie, &self.admin_csrf_token),
+                csrf_cookie_header(&self.admin_session_cookie, &self.admin_csrf_cookie),
             );
         if is_state_changing {
             builder.header("X-CSRF-Token", &self.admin_csrf_token)

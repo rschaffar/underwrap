@@ -122,7 +122,6 @@ The Next.js admin UI reads its runtime config from the file pointed to by
 `UNDERWRAP_ADMIN_UI_CONFIG`.
 
 ```yaml
-session_key_file: /run/keys/underwrap-admin-ui.session
 
 operators:
   alice:
@@ -134,8 +133,6 @@ backend:
   token_file: /run/keys/underwrap-admin-backend
 ```
 
-- `session_key_file` must contain exactly 32 random bytes; they sign the
-  session cookie. Rotating this key invalidates all existing sessions.
 - `operators` may be empty or omitted. In that case the admin UI exposes
   the first-use bootstrap flow and stores the created operator hash in
   local state under `UNDERWRAP_ADMIN_UI_STATE_DIR`.

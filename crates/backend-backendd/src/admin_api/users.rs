@@ -295,9 +295,13 @@ pub(crate) fn handle_admin_user_reset_password(
     });
     match result {
         Ok(target_username) => {
-            state
-                .session_revocations
-                .revoke_username(&target_username, now);
+            // The target operator's existing sessions are invalidated
+            // automatically: `axum_login` records the password-hash
+            // bytes in each session and re-checks them on every
+            // request via `session_auth_hash()`. Once we write the
+            // new hash here, the next request that arrives carrying
+            // any pre-rotation session for this user fails the
+            // hash check and the session is flushed server-side.
             write_admin_user_audit(
                 principal,
                 &target_username,
@@ -333,13 +337,13 @@ pub(crate) fn handle_admin_user_delete(
     id: &str,
 ) -> Response<Full<Bytes>> {
     let id_owned = id.to_string();
-    let now = crate::users::now_epoch_secs();
     let result = mutate_collection(state, |c| Ok(c.remove(&id_owned)?));
     match result {
         Ok(removed) => {
-            state
-                .session_revocations
-                .revoke_username(&removed.username, now);
+            // Per-user session revocation is automatic: once the
+            // record is gone, `AuthBackend::get_user` returns None on
+            // any subsequent request, `auth_session.user` is None,
+            // and the `require_login_layer` rejects with 401.
             write_admin_user_audit(principal, &removed.username, "user.delete", None, "success");
             json_response(StatusCode::OK, &AdminOkUserResponse { ok: true })
         }
