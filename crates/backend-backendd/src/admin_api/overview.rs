@@ -21,7 +21,6 @@ use crate::storage::documents::{load_policy_document, load_resources_document};
 pub(crate) fn admin_ui_overview_for_store(
     store_name: &str,
     store: &dyn StorageBackend,
-    _now_epoch: u64,
 ) -> Result<underwrap_protocol::service::AdminUiOverviewStore> {
     let resources = load_resources_document(store)?;
     let policy = load_policy_document(store)?;
@@ -62,10 +61,6 @@ pub(crate) fn admin_ui_overview_for_store(
 }
 
 pub(crate) fn handle_admin_ui_overview(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
-    let now_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
     // Snapshot the unlocked backends so we can release the
     // read lock before doing I/O against each store. Locked
     // encrypted stores are silently skipped — the SPA's
@@ -82,7 +77,7 @@ pub(crate) fn handle_admin_ui_overview(state: &AdminRuntimeState) -> Response<Fu
     };
     match snapshot
         .iter()
-        .map(|(name, store)| admin_ui_overview_for_store(name, store.as_ref(), now_epoch))
+        .map(|(name, store)| admin_ui_overview_for_store(name, store.as_ref()))
         .collect::<Result<Vec<_>>>()
     {
         Ok(mut stores) => {
