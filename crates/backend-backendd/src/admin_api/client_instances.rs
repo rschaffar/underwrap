@@ -10,17 +10,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::{Path, State};
-use axum::routing::get;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use underwrap_protocol::service::{
     AdminClientInstanceActionState, AdminClientInstanceCreateRequest,
     AdminClientInstanceDetailResponse, AdminClientInstanceListItem, AdminClientInstanceStatus,
-    AdminClientInstanceUpdateRequest, AdminClientInstancesListResponse,
+    AdminClientInstanceUpdateRequest, AdminClientInstancesListResponse, AdminOkResponse,
+    ServiceErrorResponse,
 };
 
 use crate::admin_api::audit::log_admin_event;
@@ -490,22 +491,37 @@ pub(crate) fn handle_admin_client_instance_delete(
     )
 }
 
-pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route(
-            "/v1/admin/client-instances",
-            get(axum_list).post(axum_create),
-        )
-        .route(
-            "/v1/admin/client-instances/{id}",
-            get(axum_detail).put(axum_update).delete(axum_delete),
-        )
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_list, axum_create))
+        .routes(routes!(axum_detail, axum_update, axum_delete))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/admin/client-instances",
+    tag = "client_instances",
+    security(("session_cookie" = [])),
+    responses(
+        (status = 200, description = "All client instances with action state and store mapping.", body = AdminClientInstancesListResponse),
+    ),
+)]
 async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
     handle_admin_client_instances_list(&state)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/client-instances",
+    tag = "client_instances",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminClientInstanceCreateRequest,
+    responses(
+        (status = 200, description = "Client instance registered.", body = AdminClientInstanceDetailResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 409, description = "Instance id already exists.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -514,6 +530,17 @@ async fn axum_create(
     handle_admin_client_instance_create(&state, &principal, &parsed)
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/admin/client-instances/{id}",
+    tag = "client_instances",
+    security(("session_cookie" = [])),
+    params(("id" = String, Path, description = "Client instance id.")),
+    responses(
+        (status = 200, description = "Client instance detail.", body = AdminClientInstanceDetailResponse),
+        (status = 404, description = "Instance not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_detail(
     State(state): State<Arc<AdminRuntimeState>>,
     Path(id): Path<String>,
@@ -521,6 +548,19 @@ async fn axum_detail(
     handle_admin_client_instance_detail(&state, &id)
 }
 
+#[utoipa::path(
+    put,
+    path = "/v1/admin/client-instances/{id}",
+    tag = "client_instances",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("id" = String, Path, description = "Client instance id.")),
+    request_body = AdminClientInstanceUpdateRequest,
+    responses(
+        (status = 200, description = "Instance updated. Remapping to a new store drops the prior store's wrapper permissions for this instance.", body = AdminClientInstanceDetailResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Instance / target store not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_update(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -530,6 +570,17 @@ async fn axum_update(
     handle_admin_client_instance_update(&state, &principal, &id, &parsed)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/client-instances/{id}",
+    tag = "client_instances",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("id" = String, Path, description = "Client instance id.")),
+    responses(
+        (status = 200, description = "Instance removed; its wrapper permissions are dropped from the mapped store.", body = AdminOkResponse),
+        (status = 404, description = "Instance not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,

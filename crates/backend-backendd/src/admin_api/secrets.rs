@@ -8,16 +8,21 @@
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::State;
-use axum::routing::post;
 use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource::ResourceSlot;
+use underwrap_protocol::service::{
+    AdminOkResponse, AdminSecretDeleteRequest, AdminSecretDeleteResponse, AdminSecretListRequest,
+    AdminSecretListResponse, AdminSecretReadRequest, AdminSecretReadResponse,
+    AdminSecretRenameRequest, AdminSecretWriteRequest, ServiceErrorResponse,
+};
 use underwrap_store::{
     blob_from_resource_entries, expand_blob_to_entries, load_resource_blob, save_resource_blob,
 };
@@ -364,49 +369,111 @@ pub(crate) fn handle_admin_secret_rename(
     )
 }
 
-pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route("/v1/admin/secret/read", post(axum_read))
-        .route("/v1/admin/secret/write", post(axum_write))
-        .route("/v1/admin/secret/list", post(axum_list))
-        .route("/v1/admin/secret/delete", post(axum_delete))
-        .route("/v1/admin/secret/rename", post(axum_rename))
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_read))
+        .routes(routes!(axum_write))
+        .routes(routes!(axum_list))
+        .routes(routes!(axum_delete))
+        .routes(routes!(axum_rename))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/secret/read",
+    tag = "secrets",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminSecretReadRequest,
+    responses(
+        (status = 200, description = "Secret value for the (`resource_id`, `slot`, `key`) tuple, base64-encoded.", body = AdminSecretReadResponse),
+        (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_read(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<underwrap_protocol::service::AdminSecretReadRequest>,
+    Body(parsed): Body<AdminSecretReadRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_secret_read(&state, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/secret/write",
+    tag = "secrets",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminSecretWriteRequest,
+    responses(
+        (status = 200, description = "Secret written.", body = AdminOkResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_write(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminSecretWriteRequest>,
+    Body(parsed): Body<AdminSecretWriteRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_secret_write(&state, &principal.username, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/secret/list",
+    tag = "secrets",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminSecretListRequest,
+    responses(
+        (status = 200, description = "Keys present in the requested resource slot.", body = AdminSecretListResponse),
+        (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<underwrap_protocol::service::AdminSecretListRequest>,
+    Body(parsed): Body<AdminSecretListRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_secret_list(&state, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/secret/delete",
+    tag = "secrets",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminSecretDeleteRequest,
+    responses(
+        (status = 200, description = "Secret removed.", body = AdminSecretDeleteResponse),
+        (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminSecretDeleteRequest>,
+    Body(parsed): Body<AdminSecretDeleteRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_secret_delete(&state, &principal, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/secret/rename",
+    tag = "secrets",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminSecretRenameRequest,
+    responses(
+        (status = 200, description = "Secret renamed.", body = AdminOkResponse),
+        (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
+        (status = 409, description = "Target key already exists.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_rename(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminSecretRenameRequest>,
+    Body(parsed): Body<AdminSecretRenameRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_secret_rename(&state, &principal.username, &parsed)
 }

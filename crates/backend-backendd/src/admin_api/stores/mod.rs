@@ -14,20 +14,21 @@
 //! lock on the in-memory registry update.
 
 use anyhow::{Context, Result};
-use axum::Router;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::routing::get;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use underwrap_protocol::service::{
     AdminStoreActionState, AdminStoreBackendKind, AdminStoreCreateRequest,
-    AdminStoreDetailResponse, AdminStoreListItem, AdminStoreUnlockRequest, AdminStoreUpdateRequest,
-    AdminStoreUsageSummary,
+    AdminStoreCreateResponse, AdminStoreDeleteResponse, AdminStoreDetailResponse,
+    AdminStoreListItem, AdminStoreRotateKeyResponse, AdminStoreUnlockRequest,
+    AdminStoreUpdateRequest, AdminStoreUsageSummary, AdminStoresListResponse, ServiceErrorResponse,
 };
 use underwrap_store::StorageBackend;
 
@@ -285,31 +286,41 @@ pub(crate) fn write_admin_store_audit(
     );
 }
 
-pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route("/v1/admin/stores", get(axum_list).post(axum_create))
-        .route(
-            "/v1/admin/stores/{name}",
-            get(axum_detail).put(axum_update).delete(axum_delete),
-        )
-        .route(
-            "/v1/admin/stores/{name}/rotate-key",
-            axum::routing::post(axum_rotate_key),
-        )
-        .route(
-            "/v1/admin/stores/{name}/unlock",
-            axum::routing::post(axum_unlock),
-        )
-        .route(
-            "/v1/admin/stores/{name}/lock",
-            axum::routing::post(axum_lock),
-        )
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_list, axum_create))
+        .routes(routes!(axum_detail, axum_update, axum_delete))
+        .routes(routes!(axum_rotate_key))
+        .routes(routes!(axum_unlock))
+        .routes(routes!(axum_lock))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/admin/stores",
+    tag = "stores",
+    security(("session_cookie" = [])),
+    responses(
+        (status = 200, description = "Every store in the registry plus per-store usage projections.", body = AdminStoresListResponse),
+    ),
+)]
 async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
     handle_admin_stores_list(&state)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/stores",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminStoreCreateRequest,
+    responses(
+        (status = 200, description = "Store created and added to the registry.", body = AdminStoreCreateResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 409, description = "Store name already exists.", body = ServiceErrorResponse),
+        (status = 500, description = "Backend could not persist the registry.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -318,6 +329,17 @@ async fn axum_create(
     handle_admin_store_create(&state, &principal, &parsed)
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/admin/stores/{name}",
+    tag = "stores",
+    security(("session_cookie" = [])),
+    params(("name" = String, Path, description = "Store id (display name).")),
+    responses(
+        (status = 200, description = "Store detail with backend kind, action state, usage summary.", body = AdminStoreDetailResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_detail(
     State(state): State<Arc<AdminRuntimeState>>,
     AxumPath(name): AxumPath<String>,
@@ -325,6 +347,19 @@ async fn axum_detail(
     handle_admin_store_detail(&state, &name)
 }
 
+#[utoipa::path(
+    put,
+    path = "/v1/admin/stores/{name}",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("name" = String, Path, description = "Store id.")),
+    request_body = AdminStoreUpdateRequest,
+    responses(
+        (status = 200, description = "Store updated.", body = AdminStoreDetailResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_update(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -340,6 +375,21 @@ struct DeleteQuery {
     force: Option<String>,
 }
 
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/stores/{name}",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(
+        ("name" = String, Path, description = "Store id."),
+        ("force" = Option<String>, Query, description = "Pass `true` / `1` / empty to bypass the empty-store guard."),
+    ),
+    responses(
+        (status = 200, description = "Store removed.", body = AdminStoreDeleteResponse),
+        (status = 400, description = "Store is non-empty and `force` was not set.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -353,6 +403,19 @@ async fn axum_delete(
     handle_admin_store_delete(&state, &principal, &name, force)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/stores/{name}/rotate-key",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("name" = String, Path, description = "Store id.")),
+    responses(
+        (status = 200, description = "Key rotated; old material persisted alongside the new one.", body = AdminStoreRotateKeyResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 500, description = "Rotation failed mid-flight.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_rotate_key(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -361,6 +424,19 @@ async fn axum_rotate_key(
     handle_admin_store_rotate_key(&state, &principal, &name).await
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/stores/{name}/unlock",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("name" = String, Path, description = "Store id.")),
+    request_body = AdminStoreUnlockRequest,
+    responses(
+        (status = 200, description = "Store unlocked.", body = AdminStoreDetailResponse),
+        (status = 400, description = "Wrong key / passphrase.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_unlock(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
@@ -370,6 +446,17 @@ async fn axum_unlock(
     handle_admin_store_unlock(&state, &principal, &name, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/stores/{name}/lock",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("name" = String, Path, description = "Store id.")),
+    responses(
+        (status = 200, description = "Store locked; in-memory key material wiped.", body = AdminStoreDetailResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_lock(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,

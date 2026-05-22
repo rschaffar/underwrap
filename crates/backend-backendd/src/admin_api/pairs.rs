@@ -3,12 +3,16 @@
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::State;
-use axum::routing::post;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
+use underwrap_protocol::service::{
+    AdminPairCreateRequest, AdminPairCreateResponse, AdminPairDeleteRequest,
+    AdminPairDeleteResponse, AdminPairsListRequest, AdminPairsListResponse, ServiceErrorResponse,
+};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
@@ -251,32 +255,71 @@ pub(crate) fn handle_admin_pair_delete(
     )
 }
 
-pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route("/v1/admin/pairs/list", post(axum_list))
-        .route("/v1/admin/pairs/create", post(axum_create))
-        .route("/v1/admin/pairs/delete", post(axum_delete))
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_list))
+        .routes(routes!(axum_create))
+        .routes(routes!(axum_delete))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/pairs/list",
+    tag = "pairs",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminPairsListRequest,
+    responses(
+        (status = 200, description = "Wrapper / resource pairs in the store.", body = AdminPairsListResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<underwrap_protocol::service::AdminPairsListRequest>,
+    Body(parsed): Body<AdminPairsListRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_pairs_list(&state, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/pairs/create",
+    tag = "pairs",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminPairCreateRequest,
+    responses(
+        (status = 200, description = "Pair created.", body = AdminPairCreateResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store / wrapper / resource not found.", body = ServiceErrorResponse),
+        (status = 409, description = "Pair already exists.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminPairCreateRequest>,
+    Body(parsed): Body<AdminPairCreateRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_pair_create(&state, &principal, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/pairs/delete",
+    tag = "pairs",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminPairDeleteRequest,
+    responses(
+        (status = 200, description = "Pair removed.", body = AdminPairDeleteResponse),
+        (status = 400, description = "Pair still referenced by wrapper permissions — see the `blocked_by` field.", body = AdminPairDeleteResponse),
+        (status = 404, description = "Store / pair not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminPairDeleteRequest>,
+    Body(parsed): Body<AdminPairDeleteRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_pair_delete(&state, &principal, &parsed)
 }

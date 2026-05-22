@@ -8,13 +8,20 @@
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::State;
-use axum::routing::post;
 use base64::Engine;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
+use underwrap_protocol::service::{
+    AdminResourceBlobGetRequest, AdminResourceBlobGetResponse, AdminResourceBlobPutRequest,
+    AdminResourceBlobPutResponse, AdminResourceCreateRequest, AdminResourceCreateResponse,
+    AdminResourceDeleteRequest, AdminResourceDeleteResponse, AdminResourceRenameRequest,
+    AdminResourceRenameResponse, AdminResourcesListRequest, AdminResourcesListResponse,
+    ServiceErrorResponse,
+};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use underwrap_store::{load_resource_blob, save_resource_blob};
 
@@ -441,58 +448,136 @@ pub(crate) fn handle_admin_resource_rename(
     )
 }
 
-pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
-    Router::new()
-        .route("/v1/admin/resources/list", post(axum_list))
-        .route("/v1/admin/resources/create", post(axum_create))
-        .route("/v1/admin/resources/delete", post(axum_delete))
-        .route("/v1/admin/resources/rename", post(axum_rename))
-        .route("/v1/admin/resources/blob/get", post(axum_blob_get))
-        .route("/v1/admin/resources/blob/put", post(axum_blob_put))
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(axum_list))
+        .routes(routes!(axum_create))
+        .routes(routes!(axum_delete))
+        .routes(routes!(axum_rename))
+        .routes(routes!(axum_blob_get))
+        .routes(routes!(axum_blob_put))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/resources/list",
+    tag = "resources",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminResourcesListRequest,
+    responses(
+        (status = 200, description = "Resources in the store.", body = AdminResourcesListResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<underwrap_protocol::service::AdminResourcesListRequest>,
+    Body(parsed): Body<AdminResourcesListRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_resources_list(&state, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/resources/create",
+    tag = "resources",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminResourceCreateRequest,
+    responses(
+        (status = 200, description = "Resource created.", body = AdminResourceCreateResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 409, description = "Resource name already exists.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminResourceCreateRequest>,
+    Body(parsed): Body<AdminResourceCreateRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_resource_create(&state, &principal, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/resources/delete",
+    tag = "resources",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminResourceDeleteRequest,
+    responses(
+        (status = 200, description = "Resource deleted.", body = AdminResourceDeleteResponse),
+        (status = 400, description = "Resource still referenced by pairs / permissions / secrets — see the `blockers` field.", body = AdminResourceDeleteResponse),
+        (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminResourceDeleteRequest>,
+    Body(parsed): Body<AdminResourceDeleteRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_resource_delete(&state, &principal, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/resources/rename",
+    tag = "resources",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminResourceRenameRequest,
+    responses(
+        (status = 200, description = "Resource renamed.", body = AdminResourceRenameResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
+        (status = 409, description = "Target name already exists.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_rename(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminResourceRenameRequest>,
+    Body(parsed): Body<AdminResourceRenameRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_resource_rename(&state, &principal, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/resources/blob/get",
+    tag = "resources",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminResourceBlobGetRequest,
+    responses(
+        (status = 200, description = "Canonical JCS-encoded resource blob (base64-encoded in `blob_b64`).", body = AdminResourceBlobGetResponse),
+        (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_blob_get(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<underwrap_protocol::service::AdminResourceBlobGetRequest>,
+    Body(parsed): Body<AdminResourceBlobGetRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_resource_blob_get(&state, &parsed)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/admin/resources/blob/put",
+    tag = "resources",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminResourceBlobPutRequest,
+    responses(
+        (status = 200, description = "Blob written; the env section is enforced immutable so changes there are rejected.", body = AdminResourceBlobPutResponse),
+        (status = 400, description = "Blob failed canonicalisation or env-section-immutable check.", body = ServiceErrorResponse),
+        (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
 async fn axum_blob_put(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<underwrap_protocol::service::AdminResourceBlobPutRequest>,
+    Body(parsed): Body<AdminResourceBlobPutRequest>,
 ) -> Response<Full<Bytes>> {
     handle_admin_resource_blob_put(&state, &principal.username, &parsed)
 }

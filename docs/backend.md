@@ -243,6 +243,27 @@ shares the same server certificate. Operator requests authenticate with
 session cookies; state-changing requests must also satisfy the CSRF and
 `allowed_origins` checks.
 
+The complete admin API contract is described by the OpenAPI 3.1 document
+at `crates/backend-backendd/openapi.json`, derived from
+`#[utoipa::path(...)]` annotations on each handler plus
+`#[derive(utoipa::ToSchema)]` on each DTO. The mTLS runtime API
+(`/v1/wrappers`, `/v1/wrapper-invocations*`) is deliberately *not* in
+the spec — it is an internal daemon-to-backend contract, not a
+front-end consumable.
+
+Regenerate the spec by running `cargo test --workspace`; the
+`openapi_export.rs` drift test rewrites `openapi.json` in place and
+fails until the file is committed. The same spec drives the front-end
+client generator (see ticket 1750).
+
+Two SecuritySchemes are referenced from individual operations:
+`session_cookie` (the opaque `__Host-uw-session` cookie issued by
+tower-sessions) and `csrf_header` (the synchronizer `X-CSRF-Token`
+header issued by `axum_csrf`). Public endpoints (login, whoami,
+bootstrap) carry neither; read-only protected endpoints carry only
+`session_cookie`; state-changing protected endpoints carry both.
+
+
 - `GET /v1/admin/client-instances` — list runtime client instances.
 - `POST /v1/admin/client-instances` — register a new runtime client
   instance from an operator-pasted self-signed cert PEM. The backend
