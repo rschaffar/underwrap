@@ -674,9 +674,8 @@ The target host only needs outbound mTLS access to the backend.
 
 ## Mutation gating
 
-The ticket-245 rewrite replaced the per-secret unlock-until model
-with a single global toggle per store, `writes_enabled`. Default:
-`false`. Every write path in the admin API
+Each store carries a single global toggle, `writes_enabled`.
+Default: `false`. Every write path in the admin API
 (`/v1/admin/secret/{write,delete}`) consults the flag; when it is
 off, the request rejects with `403 writes_globally_disabled` and
 nothing reaches storage.

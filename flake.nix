@@ -81,8 +81,7 @@
           # `$UNDERWRAP_WEB_DIST` interpolation in
           # `crates/backend-backendd/src/web.rs`. The Rust build
           # itself doesn't depend on `nodejs`; only this derivation
-          # does, so the resulting binary closure stays
-          # node-free (ticket 202).
+          # does, so the resulting binary closure stays node-free.
           underwrapWebDist = pkgs.buildNpmPackage {
             pname = "underwrap-web-dist";
             version = "0.1.0";

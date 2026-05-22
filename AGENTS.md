@@ -97,10 +97,6 @@ intended processing order. When breaking down an epic, create or update the
 story tickets and give both story and task tickets these ordered numeric
 prefixes.
 
-Tickets created before the convention switch still use 3-digit prefixes
-(`000_`–`820_`). Those are not renamed — only new tickets follow the
-4-digit form. Do not reuse a 3-digit prefix even if it looks free.
-
 ## Key files to understand first
 
 - `crates/frontend-exec/src/main.rs` — two-stage wrapper entry point;

@@ -45,12 +45,8 @@ When creating new ticket files (e.g. materialising a plan from
 `tickets/_review/` produced by `underwrap-component-refine`), use a
 zero-padded **4-digit** prefix at or above `1000_`. Pick a free `NNN0_`
 block that doesn't collide with anything in `tickets/01_todo/`,
-`tickets/02_inprogress/`, or `tickets/03_done/`.
-
-Existing tickets with 3-digit prefixes (`000_`–`820_`) are **not**
-renamed. Do not reuse a 3-digit prefix even if it looks free. The
-canonical statement of this rule lives in `AGENTS.md` under "Ticket
-system".
+`tickets/02_inprogress/`, or `tickets/03_done/`. The canonical statement
+of this rule lives in `AGENTS.md` under "Ticket system".
 
 ## Testing expectation
 

@@ -280,8 +280,6 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
         },
     );
     assert_eq!(update.status(), StatusCode::OK);
-    // Test infra has no warn!-line capture; the log assertion (the
-    // ticket's "c" criterion) is intentionally omitted here.
     assert_eq!(
         state
             .client_instances

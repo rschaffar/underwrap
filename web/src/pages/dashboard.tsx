@@ -4,8 +4,7 @@ export function Dashboard() {
       <header>
         <h2 className="text-xl font-semibold text-(--color-fg)">Dashboard</h2>
         <p className="mt-1 text-sm text-(--color-muted)">
-          The SPA shell is up. Routes, data loaders, and screens land in
-          subsequent tickets (221–224, then the feature stories).
+          The SPA shell is up.
         </p>
       </header>
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">

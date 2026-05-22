@@ -27,9 +27,8 @@ Judgement calls follow from that:
 - **No backwards-compatibility concerns.** It is fine — and often
   preferable — to rename types, change config schemas, restructure the
   NixOS module surface, and reshape IPC wire types when doing so
-  makes the first release cleaner. Existing 3-digit tickets and
-  finished work do **not** create a constraint; only the code as it
-  stands does.
+  makes the first release cleaner. Finished work does **not** create
+  a constraint; only the code as it stands does.
 - **Replace awkward early designs rather than paper over them.** If a
   module exists because of how something was done six months ago and
   there is now a clearly better shape, propose the replacement, not
@@ -38,11 +37,10 @@ Judgement calls follow from that:
   not propose intermediate "live alongside the old thing" states.
   Cutovers happen in one ticket where reasonable.
 - **No ticket references in the code.** The codebase must not carry
-  pointers into the ticket tree — no `// see ticket 820`, no
+  pointers into the ticket tree — no `// see ticket NNNN`, no
   `// TODO(NNNN)` referencing a ticket number, no commit-hash
-  references, no `// from epic_backend_modularization`, no doc
-  comments naming tickets, no module headers naming the epic that
-  introduced them. Tickets and commit messages are the right place
+  references, no `// from epic_<name>`, no doc comments naming
+  tickets, no module headers naming the epic that introduced them. Tickets and commit messages are the right place
   for that context; the code is not. Treat every such reference as a
   finding and route it through the project-wide sweep below.
 - **No migration / old-version support.** There is nothing deployed
@@ -303,10 +301,8 @@ Pick per component:
 
 - **Epic + numbered tasks** when there are **6 or more** proposed task
   tickets, or when at least one task is non-trivial (>~200 LoC of
-  movement). Mirror the structure of
-  `tickets/01_todo/epic_backend_modularization.md`: one
-  `epic_<component>_refinement.md`, one
-  `NNN_story_<component>_refinement.md`, and the `NNN_task_*.md`
+  movement). Lay out one `epic_<component>_refinement.md`, one
+  `NNNN_story_<component>_refinement.md`, and the `NNNN_task_*.md`
   children under it.
 - **Flat task tickets only** when there are 5 or fewer, all small and
   independent. Use just `NNN_task_<short_title>.md` files.
@@ -320,10 +316,6 @@ New tickets use a **4-digit** zero-padded prefix (`NNNN_`). Pick a free
 `tickets/01_todo/`, `tickets/02_inprogress/`, or `tickets/03_done/`.
 Tasks within an epic are ordered so that later tasks build on earlier
 ones (same convention as the existing epics).
-
-Older tickets still use 3-digit prefixes (`000_`–`820_`); do not reuse
-those even if a slot looks free, and do not rename them. The 4-digit
-convention only applies to new tickets.
 
 ## Scope discipline
 

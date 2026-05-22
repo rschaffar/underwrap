@@ -272,8 +272,7 @@ pub fn verify_password(hash: &str, password: &str) -> bool {
 }
 
 /// Hash a password with Argon2id and the OWASP-recommended params for
-/// the `argon2` crate's defaults. Used by future bootstrap / user-CRUD
-/// tickets; included here so tests have a way to produce real hashes.
+/// the `argon2` crate's defaults.
 pub fn hash_password(password: &str) -> Result<String> {
     use argon2::password_hash::{PasswordHasher, SaltString};
     use rand::rngs::OsRng;
