@@ -24,7 +24,7 @@ describe("derivation helpers", () => {
       client_instance: "dev-laptop",
       wrapper: "gh-authorized",
       resource_id: "github/token",
-      mode: { kind: "unlocked" } as WrapperApprovalMode,
+      mode: { kind: "unlocked" },
       writable: false,
       reason: undefined,
     },
@@ -32,7 +32,7 @@ describe("derivation helpers", () => {
       client_instance: "ci-runner",
       wrapper: "aws-prod",
       resource_id: "aws/prod",
-      mode: { kind: "locked" } as WrapperApprovalMode,
+      mode: { kind: "locked" },
       writable: false,
       reason: undefined,
     },
@@ -115,15 +115,10 @@ describe("derivation helpers", () => {
   });
 
   it("modeKind unwraps the tag for each variant", () => {
-    expect(modeKind({ kind: "locked" } as WrapperApprovalMode)).toBe("locked");
-    expect(modeKind({ kind: "unlocked" } as WrapperApprovalMode)).toBe(
-      "unlocked",
-    );
+    expect(modeKind({ kind: "locked" })).toBe("locked");
+    expect(modeKind({ kind: "unlocked" })).toBe("unlocked");
     expect(
-      modeKind({
-        kind: "unlocked-until",
-        until_epoch: 1n,
-      } as unknown as WrapperApprovalMode),
+      modeKind({ kind: "unlocked-until", until_epoch: 1 }),
     ).toBe("unlocked-until");
   });
 });
@@ -131,16 +126,10 @@ describe("derivation helpers", () => {
 describe("ModeBadge", () => {
   it("renders one of the three mode variants", () => {
     const variants: Array<{ mode: WrapperApprovalMode; testid: string }> = [
-      { mode: { kind: "locked" } as WrapperApprovalMode, testid: "mode-locked" },
+      { mode: { kind: "locked" }, testid: "mode-locked" },
+      { mode: { kind: "unlocked" }, testid: "mode-unlocked" },
       {
-        mode: { kind: "unlocked" } as WrapperApprovalMode,
-        testid: "mode-unlocked",
-      },
-      {
-        mode: {
-          kind: "unlocked-until",
-          until_epoch: 1_700_000_000,
-        } as unknown as WrapperApprovalMode,
+        mode: { kind: "unlocked-until", until_epoch: 1_700_000_000 },
         testid: "mode-unlocked-until",
       },
     ];

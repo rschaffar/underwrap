@@ -44,7 +44,10 @@ pub enum WrapperApprovalMode {
     Unlocked,
     /// Allow invocations until `until_epoch`; deny afterwards. The expiry is
     /// checked lazily on each request — no server-side sweeper.
-    UnlockedUntil { until_epoch: u64 },
+    UnlockedUntil {
+        #[ts(type = "number")]
+        until_epoch: u64,
+    },
 }
 
 /// One per-store wrapper permission.

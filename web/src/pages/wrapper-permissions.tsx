@@ -55,7 +55,7 @@ export type ModeKind = "locked" | "unlocked" | "unlocked-until";
 
 /** `WrapperApprovalMode` is a tagged union over `kind`; this maps to it. */
 export function modeKind(mode: WrapperApprovalMode): ModeKind {
-  return mode.kind as ModeKind;
+  return mode.kind;
 }
 
 /** A `(wrapper, resource_id)` pair — one row in the table. */
@@ -506,7 +506,7 @@ function ResourceGroupedPairsTable({
  */
 function CellContent({ permission }: { permission: WrapperPermission | null }) {
   if (!permission) {
-    return <ModeBadge mode={{ kind: "locked" } as WrapperApprovalMode} />;
+    return <ModeBadge mode={{ kind: "locked" }} />;
   }
   return <ModeBadge mode={permission.mode} />;
 }
@@ -532,8 +532,7 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
         </span>
       );
     case "unlocked-until": {
-      const until = Number((mode as { until_epoch: bigint | number }).until_epoch);
-      const date = new Date(until * 1000);
+      const date = new Date(mode.until_epoch * 1000);
       return (
         <span
           data-testid="mode-unlocked-until"
@@ -832,14 +831,11 @@ function EditCellDialog({
 }) {
   const qc = useQueryClient();
   const [kind, setKind] = useState<ModeKind>(
-    existing ? (existing.mode.kind as ModeKind) : "locked",
+    existing ? existing.mode.kind : "locked",
   );
   const [untilLocal, setUntilLocal] = useState<string>(() => {
     if (existing && existing.mode.kind === "unlocked-until") {
-      const epoch = Number(
-        (existing.mode as { until_epoch: bigint | number }).until_epoch,
-      );
-      return toDatetimeLocal(new Date(epoch * 1000));
+      return toDatetimeLocal(new Date(existing.mode.until_epoch * 1000));
     }
     return toDatetimeLocal(new Date(Date.now() + 30 * 60 * 1000));
   });
@@ -886,10 +882,10 @@ function EditCellDialog({
     let mode: WrapperApprovalMode;
     switch (kind) {
       case "locked":
-        mode = { kind: "locked" } as WrapperApprovalMode;
+        mode = { kind: "locked" };
         break;
       case "unlocked":
-        mode = { kind: "unlocked" } as WrapperApprovalMode;
+        mode = { kind: "unlocked" };
         break;
       case "unlocked-until": {
         const until = new Date(untilLocal).getTime();
@@ -900,7 +896,7 @@ function EditCellDialog({
         mode = {
           kind: "unlocked-until",
           until_epoch: Math.floor(until / 1000),
-        } as unknown as WrapperApprovalMode;
+        };
         break;
       }
     }
