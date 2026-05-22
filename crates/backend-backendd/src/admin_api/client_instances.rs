@@ -405,10 +405,16 @@ pub(crate) fn handle_admin_client_instance_update(
     if old_store_id != updated.current_store_id
         && let Err(e) = drop_client_instance_permissions(state, &old_store_id, id)
     {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("clearing prior-store permissions: {e:#}"),
+        // Best-effort: log and continue. The remap already persisted
+        // to disk, so failing the response with 500 would leave the
+        // caller thinking the update did not take while the registry
+        // already holds the new mapping. Mirrors the delete path's
+        // treatment of the same cascade.
+        tracing::warn!(
+            client_instance = %id,
+            store = %old_store_id,
+            err = %format!("{e:#}"),
+            "failed to strip wrapper permissions for remapped client instance",
         );
     }
     log_admin_event(
