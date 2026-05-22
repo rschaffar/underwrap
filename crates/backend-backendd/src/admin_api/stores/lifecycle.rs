@@ -381,6 +381,8 @@ fn reencrypt_into(
 /// the registry. Wrong keys never transition the registry to
 /// `Unlocked`; the registry stays `Locked` and the response surfaces a
 /// structured `key_mismatch` code.
+/// HTTP entry point. Split from [`handle_admin_store_unlock`] so unit
+/// tests in `stores/lifecycle/tests.rs` can drive the unlock directly.
 pub(super) async fn handle_admin_store_unlock_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,

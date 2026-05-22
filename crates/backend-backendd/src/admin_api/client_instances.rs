@@ -178,6 +178,9 @@ pub(crate) fn handle_admin_client_instance_detail(
     }
 }
 
+/// HTTP entry point. Split from [`handle_admin_client_instance_create`]
+/// so unit tests in `client_instances/tests.rs` can drive the create
+/// directly without synthesising a `Request<Incoming>`.
 pub(crate) async fn handle_admin_client_instance_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -302,6 +305,9 @@ pub(crate) fn handle_admin_client_instance_create(
     )
 }
 
+/// HTTP entry point. Split from [`handle_admin_client_instance_update`]
+/// so unit tests in `client_instances/tests.rs` can drive the update
+/// directly without synthesising a `Request<Incoming>`.
 pub(crate) async fn handle_admin_client_instance_update_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,

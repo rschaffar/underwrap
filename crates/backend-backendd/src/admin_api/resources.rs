@@ -45,6 +45,8 @@ pub(crate) fn write_admin_resource_audit(
     );
 }
 
+/// HTTP entry point. Split from [`handle_admin_resources_list`] so
+/// unit tests in `resources/tests.rs` can drive the handler directly.
 pub(crate) async fn handle_admin_resources_list_endpoint(
     state: &AdminRuntimeState,
     request: Request<Incoming>,
@@ -59,35 +61,8 @@ pub(crate) async fn handle_admin_resources_list_endpoint(
     handle_admin_resources_list(state, &body)
 }
 
-pub(crate) async fn handle_admin_resource_blob_get_endpoint(
-    state: &AdminRuntimeState,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminResourceBlobGetRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
-    handle_admin_resource_blob_get(state, &body)
-}
-
-pub(crate) async fn handle_admin_resource_blob_put_endpoint(
-    state: &AdminRuntimeState,
-    operator: &str,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body =
-        match parse_json_body::<underwrap_protocol::service::AdminResourceBlobPutRequest>(request)
-            .await
-        {
-            Ok(b) => b,
-            Err(resp) => return resp,
-        };
-    handle_admin_resource_blob_put(state, operator, &body)
-}
-
+/// HTTP entry point. Split from [`handle_admin_resource_create`] so
+/// unit tests in `resources/tests.rs` can drive the handler directly.
 pub(crate) async fn handle_admin_resource_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -103,6 +78,8 @@ pub(crate) async fn handle_admin_resource_create_endpoint(
     handle_admin_resource_create(state, principal, &body)
 }
 
+/// HTTP entry point. Split from [`handle_admin_resource_delete`] so
+/// unit tests in `resources/tests.rs` can drive the handler directly.
 pub(crate) async fn handle_admin_resource_delete_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -118,6 +95,8 @@ pub(crate) async fn handle_admin_resource_delete_endpoint(
     handle_admin_resource_delete(state, principal, &body)
 }
 
+/// HTTP entry point. Split from [`handle_admin_resource_rename`] so
+/// unit tests in `resources/tests.rs` can drive the handler directly.
 pub(crate) async fn handle_admin_resource_rename_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -159,10 +138,17 @@ pub(crate) fn handle_admin_resources_list(
     }
 }
 
-pub(crate) fn handle_admin_resource_blob_get(
+pub(crate) async fn handle_admin_resource_blob_get(
     state: &AdminRuntimeState,
-    body: &underwrap_protocol::service::AdminResourceBlobGetRequest,
+    request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
+    let body =
+        match parse_json_body::<underwrap_protocol::service::AdminResourceBlobGetRequest>(request)
+            .await
+        {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        };
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -195,12 +181,19 @@ pub(crate) fn handle_admin_resource_blob_get(
     )
 }
 
-pub(crate) fn handle_admin_resource_blob_put(
+pub(crate) async fn handle_admin_resource_blob_put(
     state: &AdminRuntimeState,
     operator: &str,
-    body: &underwrap_protocol::service::AdminResourceBlobPutRequest,
+    request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     use underwrap_protocol::resource_blob::ResourceBlob;
+    let body =
+        match parse_json_body::<underwrap_protocol::service::AdminResourceBlobPutRequest>(request)
+            .await
+        {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        };
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -547,10 +540,10 @@ pub(crate) async fn route(
             handle_admin_resource_rename_endpoint(state, principal, request).await
         }
         (&Method::POST, "/v1/admin/resources/blob/get") => {
-            handle_admin_resource_blob_get_endpoint(state, request).await
+            handle_admin_resource_blob_get(state, request).await
         }
         (&Method::POST, "/v1/admin/resources/blob/put") => {
-            handle_admin_resource_blob_put_endpoint(state, &principal.username, request).await
+            handle_admin_resource_blob_put(state, &principal.username, request).await
         }
         _ => error_response(StatusCode::NOT_FOUND, "not_found", "unknown admin endpoint"),
     }

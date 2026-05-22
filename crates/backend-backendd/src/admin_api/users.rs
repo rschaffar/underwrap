@@ -153,6 +153,8 @@ pub(crate) fn handle_admin_user_detail(
     }
 }
 
+/// HTTP entry point. Split from [`handle_admin_user_create`] so unit
+/// tests in `users/tests.rs` can drive the create directly.
 pub(crate) async fn handle_admin_user_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -234,6 +236,8 @@ pub(crate) fn handle_admin_user_create(
     }
 }
 
+/// HTTP entry point. Split from [`handle_admin_user_update`] so unit
+/// tests in `users/tests.rs` can drive the update directly.
 pub(crate) async fn handle_admin_user_update_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,

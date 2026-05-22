@@ -107,6 +107,8 @@ pub(crate) async fn handle_admin_secret_read(
     }
 }
 
+/// HTTP entry point. Split from [`handle_admin_secret_write`] so unit
+/// tests in `secrets/tests.rs` can drive the write directly.
 pub(crate) async fn handle_admin_secret_write_endpoint(
     state: &AdminRuntimeState,
     actor: &str,
@@ -201,6 +203,8 @@ pub(crate) async fn handle_admin_secret_delete(
     }
 }
 
+/// HTTP entry point. Split from [`handle_admin_secret_rename`] so unit
+/// tests in `secrets/tests.rs` can drive the rename directly.
 pub(crate) async fn handle_admin_secret_rename_endpoint(
     state: &AdminRuntimeState,
     actor: &str,

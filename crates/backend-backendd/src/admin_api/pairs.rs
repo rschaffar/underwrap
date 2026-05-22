@@ -37,19 +37,9 @@ pub(crate) fn write_admin_pair_audit(
     );
 }
 
-pub(crate) async fn handle_admin_pairs_list_endpoint(
-    state: &AdminRuntimeState,
-    request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
-    let body = match parse_json_body::<underwrap_protocol::service::AdminPairsListRequest>(request)
-        .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    handle_admin_pairs_list(state, &body)
-}
-
+/// HTTP entry point. Split from [`handle_admin_pair_create`] so unit
+/// tests in `pairs/tests.rs` can drive the handler directly without
+/// synthesising a `Request<Incoming>`.
 pub(crate) async fn handle_admin_pair_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -64,6 +54,8 @@ pub(crate) async fn handle_admin_pair_create_endpoint(
     handle_admin_pair_create(state, principal, &body)
 }
 
+/// HTTP entry point. Split from [`handle_admin_pair_delete`] so unit
+/// tests in `pairs/tests.rs` can drive the handler directly.
 pub(crate) async fn handle_admin_pair_delete_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -78,10 +70,16 @@ pub(crate) async fn handle_admin_pair_delete_endpoint(
     handle_admin_pair_delete(state, principal, &body)
 }
 
-pub(crate) fn handle_admin_pairs_list(
+pub(crate) async fn handle_admin_pairs_list(
     state: &AdminRuntimeState,
-    body: &underwrap_protocol::service::AdminPairsListRequest,
+    request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
+    let body = match parse_json_body::<underwrap_protocol::service::AdminPairsListRequest>(request)
+        .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
     let store = match admin_store(state, &body.store) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -297,9 +295,7 @@ pub(crate) async fn route(
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     match (method, path) {
-        (&Method::POST, "/v1/admin/pairs/list") => {
-            handle_admin_pairs_list_endpoint(state, request).await
-        }
+        (&Method::POST, "/v1/admin/pairs/list") => handle_admin_pairs_list(state, request).await,
         (&Method::POST, "/v1/admin/pairs/create") => {
             handle_admin_pair_create_endpoint(state, principal, request).await
         }

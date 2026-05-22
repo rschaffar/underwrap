@@ -87,6 +87,9 @@ pub(super) fn handle_admin_store_detail(
     )
 }
 
+/// HTTP entry point. Split from [`handle_admin_store_create`] so
+/// `test_support::create_store_for_test` and `stores/crud/tests.rs`
+/// can drive the create directly without synthesising a request.
 pub(super) async fn handle_admin_store_create_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
@@ -248,6 +251,8 @@ pub(crate) fn handle_admin_store_create(
     )
 }
 
+/// HTTP entry point. Split from [`handle_admin_store_update`] so unit
+/// tests in `stores/crud/tests.rs` can drive the update directly.
 pub(super) async fn handle_admin_store_update_endpoint(
     state: &AdminRuntimeState,
     principal: &crate::users::Principal,
