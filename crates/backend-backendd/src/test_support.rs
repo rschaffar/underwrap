@@ -18,7 +18,7 @@ use underwrap_protocol::policy::PolicyDocument;
 use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest};
 use underwrap_store::{StorageBackend, save_resource_blob};
 
-use crate::admin_api::stores::handle_admin_store_create;
+use crate::admin_api::stores::crud::handle_admin_store_create;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,

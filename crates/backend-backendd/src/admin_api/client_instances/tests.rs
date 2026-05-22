@@ -1,6 +1,6 @@
 use super::*;
 use crate::admin_api::policy::handle_admin_wrapper_permission_upsert;
-use crate::admin_api::stores::handle_admin_store_delete;
+use crate::admin_api::stores::crud::handle_admin_store_delete;
 use crate::storage::documents::load_policy_document;
 use crate::test_support::{
     SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state, response_body_json,
