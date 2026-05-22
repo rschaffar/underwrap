@@ -18,8 +18,6 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
 
-use underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID;
-
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
 use crate::http::responses::{error_response, json_response, parse_json_body};
@@ -108,18 +106,13 @@ pub(crate) async fn handle_admin_policy_put(
         Err(resp) => return resp,
     };
     match admin_store(state, &body.store) {
-        Ok(store) => {
-            let write_result = serde_json::to_vec(&body.document)
-                .map_err(anyhow::Error::from)
-                .and_then(|bytes| store.write(POLICY_DOCUMENT_SECRET_ID, bytes.as_slice()));
-            match write_result {
-                Ok(()) => json_response(
-                    StatusCode::OK,
-                    &underwrap_protocol::service::AdminOkResponse { ok: true },
-                ),
-                Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-            }
-        }
+        Ok(store) => match save_policy_document(store.as_ref(), &body.document) {
+            Ok(()) => json_response(
+                StatusCode::OK,
+                &underwrap_protocol::service::AdminOkResponse { ok: true },
+            ),
+            Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
+        },
         Err(resp) => resp,
     }
 }
