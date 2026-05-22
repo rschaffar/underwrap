@@ -266,6 +266,7 @@ pub(crate) fn write_admin_store_audit(
     principal: &crate::users::Principal,
     store_name: &str,
     action: &str,
+    operation: Option<&str>,
     result: &str,
 ) {
     let resource = format!("store:{store_name}");
@@ -275,7 +276,7 @@ pub(crate) fn write_admin_store_audit(
         None,
         Some(resource.as_str()),
         None,
-        None,
+        operation,
         result,
     );
 }

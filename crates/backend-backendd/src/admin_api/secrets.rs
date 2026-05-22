@@ -27,6 +27,7 @@ use crate::storage::secret_entries::{
     validate_and_compose_secret_id, write_resource_entry,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_admin_secret_audit(
     operator: &str,
     store: &str,
@@ -34,16 +35,26 @@ pub(crate) fn write_admin_secret_audit(
     slot: ResourceSlot,
     key: &str,
     action: &str,
+    operation: Option<&str>,
     result: &str,
 ) {
     let resource = format!("secret:{store}/{resource_id}/{}/{key}", slot.name());
-    log_admin_event(action, operator, None, Some(&resource), None, None, result);
+    log_admin_event(
+        action,
+        operator,
+        None,
+        Some(&resource),
+        None,
+        operation,
+        result,
+    );
 }
 
 /// Audit a secret rename. Carries both keys because the operation
 /// changes the canonical identifier itself; the formatted resource
 /// uses the `from` key so the event lines up with the prior
-/// `secret.write` that created it.
+/// `secret.write` that created it. The new key travels in the
+/// `operation` field as `rename->{to_key}`.
 pub(crate) fn write_admin_secret_rename_audit(
     operator: &str,
     store: &str,
@@ -166,6 +177,7 @@ pub(crate) async fn handle_admin_secret_delete(
                 body.slot,
                 &body.key,
                 "secret.delete",
+                None,
                 "success",
             );
             json_response(
@@ -181,6 +193,7 @@ pub(crate) async fn handle_admin_secret_delete(
                 body.slot,
                 &body.key,
                 "secret.delete",
+                None,
                 "failure",
             );
             error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())
@@ -241,6 +254,7 @@ pub(crate) fn handle_admin_secret_write(
                 body.slot,
                 &body.key,
                 "secret.write",
+                None,
                 "success",
             );
             json_response(
@@ -256,6 +270,7 @@ pub(crate) fn handle_admin_secret_write(
                 body.slot,
                 &body.key,
                 "secret.write",
+                None,
                 "failure",
             );
             error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string())

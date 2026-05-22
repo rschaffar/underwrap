@@ -30,10 +30,19 @@ pub(crate) fn write_admin_resource_audit(
     operator: &str,
     resource_id: &str,
     action: &str,
+    operation: Option<&str>,
     result: &str,
 ) {
     let resource = format!("resource:{resource_id}");
-    log_admin_event(action, operator, None, Some(&resource), None, None, result);
+    log_admin_event(
+        action,
+        operator,
+        None,
+        Some(&resource),
+        None,
+        operation,
+        result,
+    );
 }
 
 pub(crate) async fn handle_admin_resources_list_endpoint(
@@ -243,7 +252,7 @@ pub(crate) fn handle_admin_resource_blob_put(
             &format!("saving resource blob: {e:#}"),
         );
     }
-    write_admin_resource_audit(operator, &body.id, "resource.blob.put", "success");
+    write_admin_resource_audit(operator, &body.id, "resource.blob.put", None, "success");
     json_response(
         StatusCode::OK,
         &underwrap_protocol::service::AdminResourceBlobPutResponse { ok: true },
@@ -307,6 +316,7 @@ pub(crate) fn handle_admin_resource_create(
         &principal.username,
         &record.id,
         "resource.create",
+        None,
         "success",
     );
     json_response(
@@ -404,7 +414,13 @@ pub(crate) fn handle_admin_resource_delete(
     sample_permissions.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
 
     if secret_count > 0 || pair_count > 0 || permission_count > 0 {
-        write_admin_resource_audit(&principal.username, &body.id, "resource.delete", "blocked");
+        write_admin_resource_audit(
+            &principal.username,
+            &body.id,
+            "resource.delete",
+            None,
+            "blocked",
+        );
         return json_response(
             StatusCode::OK,
             &AdminResourceDeleteResponse {
@@ -429,7 +445,13 @@ pub(crate) fn handle_admin_resource_delete(
             &format!("persisting resources document: {e:#}"),
         );
     }
-    write_admin_resource_audit(&principal.username, &body.id, "resource.delete", "success");
+    write_admin_resource_audit(
+        &principal.username,
+        &body.id,
+        "resource.delete",
+        None,
+        "success",
+    );
     json_response(
         StatusCode::OK,
         &AdminResourceDeleteResponse {
@@ -491,7 +513,13 @@ pub(crate) fn handle_admin_resource_rename(
             &format!("persisting resources document: {e:#}"),
         );
     }
-    write_admin_resource_audit(&principal.username, &body.id, "resource.rename", "success");
+    write_admin_resource_audit(
+        &principal.username,
+        &body.id,
+        "resource.rename",
+        None,
+        "success",
+    );
     json_response(
         StatusCode::OK,
         &underwrap_protocol::service::AdminResourceRenameResponse { resource: updated },

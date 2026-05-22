@@ -282,7 +282,8 @@ pub(crate) async fn handle_admin_password_change(
             principal,
             &principal.username,
             "user.password.change",
-            "wrong_current_password",
+            Some("wrong-current-password"),
+            "failure",
         );
         return error_response(
             StatusCode::UNAUTHORIZED,
@@ -320,6 +321,7 @@ pub(crate) async fn handle_admin_password_change(
                 principal,
                 &principal.username,
                 "user.password.change",
+                None,
                 "success",
             );
             json_response(StatusCode::OK, &AdminOkUserResponse { ok: true })

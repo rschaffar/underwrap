@@ -233,7 +233,7 @@ pub(crate) fn handle_admin_store_create(
             );
         }
     }
-    write_admin_store_audit(state, principal, &store_id, "store.create", "success");
+    write_admin_store_audit(state, principal, &store_id, "store.create", None, "success");
     let usage = AdminStoreUsageSummary {
         mapped_client_instance_count: 0,
         has_secrets: false,
@@ -316,7 +316,7 @@ pub(crate) fn handle_admin_store_update(
             );
         }
     }
-    write_admin_store_audit(state, principal, name, "store.update", "success");
+    write_admin_store_audit(state, principal, name, "store.update", None, "success");
     let loaded = LoadedStoreRecord { record: updated };
     let (handle, locked) = {
         let reg = state.stores.read().unwrap();
@@ -440,12 +440,12 @@ pub(crate) fn handle_admin_store_delete(
     } else {
         None
     };
-    let result = if non_empty {
-        "force-deleted"
+    let operation = if non_empty {
+        Some("force-deleted")
     } else {
-        "success"
+        None
     };
-    write_admin_store_audit(state, principal, name, "store.delete", result);
+    write_admin_store_audit(state, principal, name, "store.delete", operation, "success");
     json_response(
         StatusCode::OK,
         &AdminStoreDeleteResponse {

@@ -45,6 +45,7 @@ pub(crate) fn write_admin_user_audit(
     actor: &crate::users::Principal,
     target_username: &str,
     action: &str,
+    operation: Option<&str>,
     result: &str,
 ) {
     let resource = format!("user:{target_username}");
@@ -54,7 +55,7 @@ pub(crate) fn write_admin_user_audit(
         None,
         Some(resource.as_str()),
         None,
-        None,
+        operation,
         result,
     );
 }
@@ -171,13 +172,32 @@ pub(crate) fn handle_admin_user_create(
     });
     match result {
         Ok(saved) => {
-            write_admin_user_audit(state, principal, &target_username, "user.create", "success");
+            write_admin_user_audit(
+                state,
+                principal,
+                &target_username,
+                "user.create",
+                None,
+                "success",
+            );
             json_response(StatusCode::OK, &user_detail(&saved))
         }
         Err(e) => {
             let msg = e.to_string();
-            write_admin_user_audit(state, principal, &target_username, "user.create", "failure");
-            if msg.contains("already exists") {
+            let reason = if msg.contains("already exists") {
+                Some("already-exists")
+            } else {
+                None
+            };
+            write_admin_user_audit(
+                state,
+                principal,
+                &target_username,
+                "user.create",
+                reason,
+                "failure",
+            );
+            if reason == Some("already-exists") {
                 error_response(StatusCode::CONFLICT, "username_already_exists", &msg)
             } else {
                 error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg)
@@ -224,19 +244,36 @@ pub(crate) fn handle_admin_user_update(
                 principal,
                 &updated.username,
                 "user.update",
+                None,
                 "success",
             );
             json_response(StatusCode::OK, &user_detail(&updated))
         }
         Err(e) => {
             let msg = e.to_string();
-            write_admin_user_audit(state, principal, &id_owned, "user.update", "failure");
-            if msg.contains("not_found") || msg.contains("not found") {
-                error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
+            let reason = if msg.contains("not_found") || msg.contains("not found") {
+                Some("not-found")
             } else if msg.contains("already exists") {
-                error_response(StatusCode::CONFLICT, "username_already_exists", &msg)
+                Some("already-exists")
             } else {
-                error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg)
+                None
+            };
+            write_admin_user_audit(
+                state,
+                principal,
+                &id_owned,
+                "user.update",
+                reason,
+                "failure",
+            );
+            match reason {
+                Some("not-found") => {
+                    error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
+                }
+                Some("already-exists") => {
+                    error_response(StatusCode::CONFLICT, "username_already_exists", &msg)
+                }
+                _ => error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg),
             }
         }
     }
@@ -292,20 +329,27 @@ pub(crate) async fn handle_admin_user_reset_password(
                 principal,
                 &target_username,
                 "user.password.reset",
+                None,
                 "success",
             );
             json_response(StatusCode::OK, &AdminOkUserResponse { ok: true })
         }
         Err(e) => {
             let msg = e.to_string();
+            let reason = if msg.contains("not_found") {
+                Some("not-found")
+            } else {
+                None
+            };
             write_admin_user_audit(
                 state,
                 principal,
                 &id_owned,
                 "user.password.reset",
+                reason,
                 "failure",
             );
-            if msg.contains("not_found") {
+            if reason == Some("not-found") {
                 error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
             } else {
                 error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg)
@@ -337,23 +381,38 @@ pub(crate) fn handle_admin_user_delete(
                 principal,
                 &removed.username,
                 "user.delete",
+                None,
                 "success",
             );
             json_response(StatusCode::OK, &AdminOkUserResponse { ok: true })
         }
         Err(e) => {
             let msg = e.to_string();
-            write_admin_user_audit(state, principal, &id_owned, "user.delete", "failure");
-            if msg.contains("not_found") {
-                error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
+            let reason = if msg.contains("not_found") {
+                Some("not-found")
             } else if msg.contains("last_user_protected") {
-                error_response(
+                Some("last-user-protected")
+            } else {
+                None
+            };
+            write_admin_user_audit(
+                state,
+                principal,
+                &id_owned,
+                "user.delete",
+                reason,
+                "failure",
+            );
+            match reason {
+                Some("not-found") => {
+                    error_response(StatusCode::NOT_FOUND, "not_found", "unknown user")
+                }
+                Some("last-user-protected") => error_response(
                     StatusCode::CONFLICT,
                     "last_user_protected",
                     "cannot delete the last remaining user",
-                )
-            } else {
-                error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg)
+                ),
+                _ => error_response(StatusCode::BAD_REQUEST, "invalid_user", &msg),
             }
         }
     }

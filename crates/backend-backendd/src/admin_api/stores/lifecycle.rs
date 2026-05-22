@@ -98,7 +98,14 @@ pub(super) async fn handle_admin_store_rotate_key(
     let stage_name = format!(".rotating-{}-{}", name, crate::ids::random_hex_8());
     let stage_dir = parent.join(&stage_name);
     if let Err(e) = create_data_dir_secure(&stage_dir) {
-        write_admin_store_audit(state, principal, name, "store.rotate-key", "stage-failed");
+        write_admin_store_audit(
+            state,
+            principal,
+            name,
+            "store.rotate-key",
+            Some("stage-failed"),
+            "failure",
+        );
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "rotate_stage_failed",
@@ -113,7 +120,14 @@ pub(super) async fn handle_admin_store_rotate_key(
             Ok(b) => b,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&stage_dir);
-                write_admin_store_audit(state, principal, name, "store.rotate-key", "stage-failed");
+                write_admin_store_audit(
+                    state,
+                    principal,
+                    name,
+                    "store.rotate-key",
+                    Some("stage-failed"),
+                    "failure",
+                );
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "rotate_stage_failed",
@@ -140,7 +154,14 @@ pub(super) async fn handle_admin_store_rotate_key(
     let backup_dir = parent.join(format!("{stage_name}.replaced"));
     if let Err(e) = std::fs::rename(&dir, &backup_dir) {
         let _ = std::fs::remove_dir_all(&stage_dir);
-        write_admin_store_audit(state, principal, name, "store.rotate-key", "swap-failed");
+        write_admin_store_audit(
+            state,
+            principal,
+            name,
+            "store.rotate-key",
+            Some("swap-failed"),
+            "failure",
+        );
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "rotate_swap_failed",
@@ -156,7 +177,14 @@ pub(super) async fn handle_admin_store_rotate_key(
         // pointing at usable ciphertext.
         let _ = std::fs::rename(&backup_dir, &dir);
         let _ = std::fs::remove_dir_all(&stage_dir);
-        write_admin_store_audit(state, principal, name, "store.rotate-key", "swap-failed");
+        write_admin_store_audit(
+            state,
+            principal,
+            name,
+            "store.rotate-key",
+            Some("swap-failed"),
+            "failure",
+        );
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "rotate_swap_failed",
@@ -185,7 +213,8 @@ pub(super) async fn handle_admin_store_rotate_key(
                     principal,
                     name,
                     "store.rotate-key",
-                    "reopen-failed",
+                    Some("reopen-failed"),
+                    "failure",
                 );
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -203,7 +232,8 @@ pub(super) async fn handle_admin_store_rotate_key(
                     principal,
                     name,
                     "store.rotate-key",
-                    "reopen-failed",
+                    Some("reopen-failed"),
+                    "failure",
                 );
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -241,7 +271,7 @@ pub(super) async fn handle_admin_store_rotate_key(
         }
     }
 
-    write_admin_store_audit(state, principal, name, "store.rotate-key", "success");
+    write_admin_store_audit(state, principal, name, "store.rotate-key", None, "success");
     json_response(
         StatusCode::OK,
         &AdminStoreRotateKeyResponse {
@@ -279,7 +309,8 @@ fn reencrypt_into(
                 principal,
                 store_name,
                 "store.rotate-key",
-                "list-failed",
+                Some("list-failed"),
+                "failure",
             );
             return Err(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -302,7 +333,8 @@ fn reencrypt_into(
             principal,
             store_name,
             "store.rotate-key",
-            "canary-write-failed",
+            Some("canary-write-failed"),
+            "failure",
         );
         return Err(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -324,7 +356,8 @@ fn reencrypt_into(
                     principal,
                     store_name,
                     "store.rotate-key",
-                    "read-failed",
+                    Some("read-failed"),
+                    "failure",
                 );
                 return Err(error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -340,7 +373,8 @@ fn reencrypt_into(
                 principal,
                 store_name,
                 "store.rotate-key",
-                "write-failed",
+                Some("write-failed"),
+                "failure",
             );
             return Err(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -418,7 +452,14 @@ pub(crate) fn handle_admin_store_unlock(
     let key_bytes = match underwrap_store::parse_hex_key(&body.key_hex) {
         Ok(k) => k,
         Err(e) => {
-            write_admin_store_audit(state, principal, name, "store.unlock", "invalid-key-hex");
+            write_admin_store_audit(
+                state,
+                principal,
+                name,
+                "store.unlock",
+                Some("invalid-key-hex"),
+                "failure",
+            );
             return error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_key_hex",
@@ -429,7 +470,14 @@ pub(crate) fn handle_admin_store_unlock(
     let backend = match underwrap_store::EncryptedBackend::open_with_key(&dir, key_bytes) {
         Ok(b) => b,
         Err(e) => {
-            write_admin_store_audit(state, principal, name, "store.unlock", "open-failed");
+            write_admin_store_audit(
+                state,
+                principal,
+                name,
+                "store.unlock",
+                Some("open-failed"),
+                "failure",
+            );
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "open_store_failed",
@@ -440,7 +488,14 @@ pub(crate) fn handle_admin_store_unlock(
     match backend.read(underwrap_store::ENCRYPTED_CANARY_ID) {
         Ok(Some(plain)) if plain.as_ref() == underwrap_store::ENCRYPTED_CANARY_PLAINTEXT => {}
         Ok(Some(_)) => {
-            write_admin_store_audit(state, principal, name, "store.unlock", "canary-mismatch");
+            write_admin_store_audit(
+                state,
+                principal,
+                name,
+                "store.unlock",
+                Some("canary-mismatch"),
+                "failure",
+            );
             return error_response(
                 StatusCode::FORBIDDEN,
                 "key_mismatch",
@@ -448,7 +503,14 @@ pub(crate) fn handle_admin_store_unlock(
             );
         }
         Ok(None) => {
-            write_admin_store_audit(state, principal, name, "store.unlock", "canary-missing");
+            write_admin_store_audit(
+                state,
+                principal,
+                name,
+                "store.unlock",
+                Some("canary-missing"),
+                "failure",
+            );
             return error_response(
                 StatusCode::FORBIDDEN,
                 "key_mismatch",
@@ -456,7 +518,14 @@ pub(crate) fn handle_admin_store_unlock(
             );
         }
         Err(_) => {
-            write_admin_store_audit(state, principal, name, "store.unlock", "key-mismatch");
+            write_admin_store_audit(
+                state,
+                principal,
+                name,
+                "store.unlock",
+                Some("key-mismatch"),
+                "failure",
+            );
             return error_response(
                 StatusCode::FORBIDDEN,
                 "key_mismatch",
@@ -468,7 +537,7 @@ pub(crate) fn handle_admin_store_unlock(
         let mut reg = state.stores.write().unwrap();
         reg.unlock(name, Arc::new(backend));
     }
-    write_admin_store_audit(state, principal, name, "store.unlock", "success");
+    write_admin_store_audit(state, principal, name, "store.unlock", None, "success");
     json_response(StatusCode::OK, &serde_json::json!({ "ok": true }))
 }
 
@@ -500,7 +569,7 @@ pub(super) fn handle_admin_store_lock(
     reg.lock(name);
     drop(reg);
     let result = if was_locked { "noop" } else { "success" };
-    write_admin_store_audit(state, principal, name, "store.lock", result);
+    write_admin_store_audit(state, principal, name, "store.lock", None, result);
     json_response(
         StatusCode::OK,
         &serde_json::json!({ "ok": true, "was_locked": was_locked }),

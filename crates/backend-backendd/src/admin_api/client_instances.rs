@@ -28,10 +28,19 @@ pub(crate) fn write_admin_client_instance_audit(
     operator: &str,
     id: &str,
     action: &str,
+    operation: Option<&str>,
     result: &str,
 ) {
     let resource = format!("client-instance:{id}");
-    log_admin_event(action, operator, None, Some(&resource), None, None, result);
+    log_admin_event(
+        action,
+        operator,
+        None,
+        Some(&resource),
+        None,
+        operation,
+        result,
+    );
 }
 
 fn client_instance_status_to_wire(
@@ -270,6 +279,7 @@ pub(crate) fn handle_admin_client_instance_create(
         &principal.username,
         &id,
         "client-instance.create",
+        None,
         "success",
     );
     let current_store_name = {
@@ -416,7 +426,13 @@ pub(crate) fn handle_admin_client_instance_update(
             "failed to strip wrapper permissions for remapped client instance",
         );
     }
-    write_admin_client_instance_audit(&principal.username, id, "client-instance.update", "success");
+    write_admin_client_instance_audit(
+        &principal.username,
+        id,
+        "client-instance.update",
+        None,
+        "success",
+    );
     let current_store_name = {
         let stores = state.stores.read().unwrap();
         match stores.records.get(&updated.current_store_id) {
@@ -481,7 +497,13 @@ pub(crate) fn handle_admin_client_instance_delete(
             "failed to strip wrapper permissions for deleted client instance",
         );
     }
-    write_admin_client_instance_audit(&principal.username, id, "client-instance.delete", "success");
+    write_admin_client_instance_audit(
+        &principal.username,
+        id,
+        "client-instance.delete",
+        None,
+        "success",
+    );
     json_response(
         StatusCode::OK,
         &underwrap_protocol::service::AdminOkResponse { ok: true },

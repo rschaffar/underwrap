@@ -56,6 +56,7 @@ pub(crate) fn write_admin_permission_audit(
     store_name: &str,
     permission: &underwrap_protocol::policy::WrapperPermission,
     action: &str,
+    operation: Option<&str>,
     result: &str,
 ) {
     let resource = format!(
@@ -68,7 +69,7 @@ pub(crate) fn write_admin_permission_audit(
         Some(permission.wrapper.as_str()),
         Some(resource.as_str()),
         None,
-        None,
+        operation,
         result,
     );
 }
@@ -230,6 +231,7 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
             &body.store,
             &body.permission,
             "wrapper_permission.upsert",
+            None,
             "failure",
         );
         return error_response(
@@ -244,6 +246,7 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
         &body.store,
         &body.permission,
         "wrapper_permission.upsert",
+        None,
         "success",
     );
     json_response(
@@ -302,6 +305,7 @@ pub(crate) fn handle_admin_wrapper_permission_delete(
         &body.store,
         &removed_permission,
         "wrapper_permission.delete",
+        None,
         "success",
     );
     json_response(

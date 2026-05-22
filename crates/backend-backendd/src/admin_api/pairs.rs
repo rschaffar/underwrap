@@ -22,6 +22,7 @@ pub(crate) fn write_admin_pair_audit(
     wrapper: &str,
     resource_id: &str,
     action: &str,
+    operation: Option<&str>,
     result: &str,
 ) {
     let resource = format!("pair:{wrapper}/{resource_id}");
@@ -31,7 +32,7 @@ pub(crate) fn write_admin_pair_audit(
         Some(wrapper),
         Some(&resource),
         None,
-        None,
+        operation,
         result,
     );
 }
@@ -183,6 +184,7 @@ pub(crate) fn handle_admin_pair_create(
         wrapper,
         resource_id,
         "pair.create",
+        None,
         "success",
     );
     json_response(
@@ -247,6 +249,7 @@ pub(crate) fn handle_admin_pair_delete(
             &body.wrapper,
             &body.resource_id,
             "pair.delete",
+            None,
             "blocked",
         );
         return json_response(
@@ -274,6 +277,7 @@ pub(crate) fn handle_admin_pair_delete(
         &body.wrapper,
         &body.resource_id,
         "pair.delete",
+        None,
         "success",
     );
     json_response(
