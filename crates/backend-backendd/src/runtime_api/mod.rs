@@ -23,7 +23,7 @@ use http_body_util::Full;
 use hyper::{Response, StatusCode};
 use tracing::warn;
 
-use crate::http::responses::{error_response, parse_body, store_locked_response};
+use crate::http::responses::{Body, error_response, store_locked_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::RegistryLookupError;
 
@@ -95,15 +95,10 @@ fn resolve_runtime_request(
 async fn axum_wrappers_register(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(peer_certs): axum::Extension<PeerCertificates>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::RuntimeWrapperRegisterRequest>,
 ) -> Response<Full<Bytes>> {
     let (principal, store) = match resolve_runtime_request(&state, &peer_certs) {
         Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let parsed: underwrap_protocol::service::RuntimeWrapperRegisterRequest = match parse_body(&body)
-    {
-        Ok(p) => p,
         Err(resp) => return resp,
     };
     wrappers::handle_runtime_wrapper_register(&state, store.as_ref(), &principal, &parsed)
@@ -112,33 +107,23 @@ async fn axum_wrappers_register(
 async fn axum_invocation_open(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(peer_certs): axum::Extension<PeerCertificates>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::RuntimeWrapperInvocationOpenRequest>,
 ) -> Response<Full<Bytes>> {
     let (principal, store) = match resolve_runtime_request(&state, &peer_certs) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let parsed: underwrap_protocol::service::RuntimeWrapperInvocationOpenRequest =
-        match parse_body(&body) {
-            Ok(p) => p,
-            Err(resp) => return resp,
-        };
     invocations::handle_runtime_wrapper_invocation_open(store.as_ref(), &principal, &parsed)
 }
 
 async fn axum_invocation_finalize(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(peer_certs): axum::Extension<PeerCertificates>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::RuntimeWrapperInvocationFinalizeRequest>,
 ) -> Response<Full<Bytes>> {
     let (principal, store) = match resolve_runtime_request(&state, &peer_certs) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let parsed: underwrap_protocol::service::RuntimeWrapperInvocationFinalizeRequest =
-        match parse_body(&body) {
-            Ok(p) => p,
-            Err(resp) => return resp,
-        };
     invocations::handle_runtime_wrapper_invocation_finalize(store.as_ref(), &principal, &parsed)
 }

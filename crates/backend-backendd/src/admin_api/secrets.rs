@@ -24,7 +24,7 @@ use underwrap_store::{
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
-use crate::http::responses::{error_response, json_response, parse_body};
+use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::secret_entries::{
     delete_resource_entry, list_secret_entries, read_resource_entry,
@@ -375,59 +375,39 @@ pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
 
 async fn axum_read(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminSecretReadRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminSecretReadRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_secret_read(&state, &parsed)
 }
 
 async fn axum_write(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminSecretWriteRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminSecretWriteRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_secret_write(&state, &principal.username, &parsed)
 }
 
 async fn axum_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminSecretListRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminSecretListRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_secret_list(&state, &parsed)
 }
 
 async fn axum_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminSecretDeleteRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminSecretDeleteRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_secret_delete(&state, &principal, &parsed)
 }
 
 async fn axum_rename(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminSecretRenameRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminSecretRenameRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_secret_rename(&state, &principal.username, &parsed)
 }
 

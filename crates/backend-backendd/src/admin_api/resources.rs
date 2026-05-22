@@ -20,7 +20,7 @@ use underwrap_store::{load_resource_blob, save_resource_blob};
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
-use crate::http::responses::{error_response, json_response, parse_body};
+use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_api::wrappers::generate_resource_id;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
@@ -453,71 +453,47 @@ pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
 
 async fn axum_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminResourcesListRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminResourcesListRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_resources_list(&state, &parsed)
 }
 
 async fn axum_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminResourceCreateRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminResourceCreateRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_resource_create(&state, &principal, &parsed)
 }
 
 async fn axum_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminResourceDeleteRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminResourceDeleteRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_resource_delete(&state, &principal, &parsed)
 }
 
 async fn axum_rename(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminResourceRenameRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminResourceRenameRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_resource_rename(&state, &principal, &parsed)
 }
 
 async fn axum_blob_get(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminResourceBlobGetRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminResourceBlobGetRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_resource_blob_get(&state, &parsed)
 }
 
 async fn axum_blob_put(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminResourceBlobPutRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminResourceBlobPutRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_resource_blob_put(&state, &principal.username, &parsed)
 }
 

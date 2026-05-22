@@ -25,7 +25,7 @@ use underwrap_protocol::service::{
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::policy::drop_client_instance_permissions;
-use crate::http::responses::{error_response, json_response, parse_body};
+use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::users::Principal;
 
@@ -509,12 +509,8 @@ async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full
 async fn axum_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<AdminClientInstanceCreateRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: AdminClientInstanceCreateRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_client_instance_create(&state, &principal, &parsed)
 }
 
@@ -529,12 +525,8 @@ async fn axum_update(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
-    body: Bytes,
+    Body(parsed): Body<AdminClientInstanceUpdateRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: AdminClientInstanceUpdateRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_client_instance_update(&state, &principal, &id, &parsed)
 }
 

@@ -18,7 +18,7 @@ use hyper::{Response, StatusCode};
 use tracing::{info, warn};
 
 use crate::admin_api::csrf::AdminAuth;
-use crate::http::responses::{error_response, json_response, parse_body};
+use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::users::Principal;
 
@@ -354,12 +354,8 @@ pub(crate) fn protected_router() -> Router<Arc<AdminRuntimeState>> {
 
 async fn axum_login(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<LoginRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: LoginRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_login(&state, &parsed)
 }
 
@@ -380,12 +376,8 @@ async fn axum_logout(
 async fn axum_password_change(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminPasswordChangeRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminPasswordChangeRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_password_change(&state, &principal, &parsed)
 }
 

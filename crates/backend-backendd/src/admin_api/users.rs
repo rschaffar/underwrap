@@ -23,7 +23,7 @@ use underwrap_protocol::service::{
 };
 
 use crate::admin_api::audit::log_admin_event;
-use crate::http::responses::{error_response, json_response, parse_body};
+use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::users::{Principal, UserMutationError};
 
@@ -382,12 +382,8 @@ async fn axum_users_list(State(state): State<Arc<AdminRuntimeState>>) -> Respons
 async fn axum_user_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<AdminUserCreateRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: AdminUserCreateRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_user_create(&state, &principal, &parsed)
 }
 
@@ -402,12 +398,8 @@ async fn axum_user_update(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
-    body: Bytes,
+    Body(parsed): Body<AdminUserUpdateRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: AdminUserUpdateRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_user_update(&state, &principal, &id, &parsed)
 }
 
@@ -423,12 +415,8 @@ async fn axum_user_reset_password(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
-    body: Bytes,
+    Body(parsed): Body<AdminUserResetPasswordRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: AdminUserResetPasswordRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_user_reset_password(&state, &principal, &id, &parsed)
 }
 

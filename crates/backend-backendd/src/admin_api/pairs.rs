@@ -12,7 +12,7 @@ use hyper::{Response, StatusCode};
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
-use crate::http::responses::{error_response, json_response, parse_body};
+use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
     ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document,
@@ -260,36 +260,24 @@ pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
 
 async fn axum_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminPairsListRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminPairsListRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_pairs_list(&state, &parsed)
 }
 
 async fn axum_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminPairCreateRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminPairCreateRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_pair_create(&state, &principal, &parsed)
 }
 
 async fn axum_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminPairDeleteRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminPairDeleteRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_pair_delete(&state, &principal, &parsed)
 }
 

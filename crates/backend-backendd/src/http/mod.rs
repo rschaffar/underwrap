@@ -4,7 +4,8 @@
 //!
 //! - [`responses`] — small helpers that every handler uses to emit
 //!   `Response<Full<Bytes>>` values (`json_response`,
-//!   `error_response`, `store_locked_response`, `parse_body`).
+//!   `error_response`, `store_locked_response`) plus the [`Body<T>`]
+//!   JSON request extractor.
 //! - [`origin`] — `Origin` / `Referer` allowlisting on state-changing
 //!   requests + the matching configuration-validation helper, plus
 //!   the Axum origin middleware layer.

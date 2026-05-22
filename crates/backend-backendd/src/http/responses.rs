@@ -3,26 +3,56 @@
 //! free of `Response::builder()` boilerplate and makes the JSON
 //! envelope (`ServiceErrorResponse`, `application/json`
 //! Content-Type) consistent across the surface.
+//!
+//! Also exports [`Body`], the JSON-request extractor every POST handler
+//! uses. Axum's built-in `Json<T>` extractor rejects with its own
+//! error shape; ours preserves the canonical
+//! `{ "code": "invalid_request", "message": ... }` envelope.
 
+use axum::body::to_bytes;
+use axum::extract::{FromRequest, Request};
+use axum::response::IntoResponse;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
 
-/// Parse `Bytes` (collected by Axum's request body extractor) into the
-/// caller's request type, returning the canonical `invalid_request`
-/// 400 on failure. Axum's built-in `Json` extractor would produce a
-/// different error envelope, so we keep ours.
-#[allow(clippy::result_large_err)]
-pub(crate) fn parse_body<T: serde::de::DeserializeOwned>(
-    bytes: &[u8],
-) -> std::result::Result<T, Response<Full<Bytes>>> {
-    serde_json::from_slice(bytes).map_err(|e| {
-        error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            &format!("invalid JSON request body: {e}"),
-        )
-    })
+/// Maximum admin/runtime request body size. The largest payloads we
+/// expect are policy documents and resource blobs in the low hundreds
+/// of KB; 2 MiB leaves plenty of headroom while still bounding memory.
+const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// JSON request extractor. Reads the body up to
+/// [`MAX_REQUEST_BODY_BYTES`], parses it as `T`, and rejects with the
+/// canonical `invalid_request` 400 on either failure.
+pub(crate) struct Body<T>(pub T);
+
+impl<S, T> FromRequest<S> for Body<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = to_bytes(req.into_body(), MAX_REQUEST_BODY_BYTES)
+            .await
+            .map_err(|e| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    &format!("failed to read request body: {e}"),
+                )
+                .into_response()
+            })?;
+        serde_json::from_slice(&bytes).map(Body).map_err(|e| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("invalid JSON request body: {e}"),
+            )
+            .into_response()
+        })
+    }
 }
 
 pub(crate) fn json_response<T: serde::Serialize>(

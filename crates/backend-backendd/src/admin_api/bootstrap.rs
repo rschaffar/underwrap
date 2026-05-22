@@ -20,7 +20,7 @@ use hyper::{Response, StatusCode};
 use tracing::{info, warn};
 
 use crate::admin_api::audit::log_admin_event;
-use crate::http::responses::{error_response, json_response, parse_body};
+use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 
 #[derive(serde::Deserialize, ts_rs::TS)]
@@ -220,12 +220,8 @@ async fn axum_bootstrap_status(
 
 async fn axum_bootstrap(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<BootstrapRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: BootstrapRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_bootstrap(&state, &parsed)
 }
 

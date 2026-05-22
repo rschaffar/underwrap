@@ -32,7 +32,7 @@ use underwrap_protocol::service::{
 use underwrap_store::StorageBackend;
 
 use crate::admin_api::audit::log_admin_event;
-use crate::http::responses::{error_response, parse_body, store_locked_response};
+use crate::http::responses::{Body, error_response, store_locked_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{LoadedStoreRecord, RegistryLookupError};
 use crate::users::Principal;
@@ -313,12 +313,8 @@ async fn axum_list(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full
 async fn axum_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<AdminStoreCreateRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: AdminStoreCreateRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_store_create(&state, &principal, &parsed)
 }
 
@@ -333,12 +329,8 @@ async fn axum_update(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
-    body: Bytes,
+    Body(parsed): Body<AdminStoreUpdateRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: AdminStoreUpdateRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_store_update(&state, &principal, &name, &parsed)
 }
 
@@ -373,12 +365,8 @@ async fn axum_unlock(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
-    body: Bytes,
+    Body(parsed): Body<AdminStoreUnlockRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: AdminStoreUnlockRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_store_unlock(&state, &principal, &name, &parsed)
 }
 

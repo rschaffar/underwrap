@@ -24,7 +24,7 @@ use hyper::{Response, StatusCode};
 
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
-use crate::http::responses::{error_response, json_response, parse_body};
+use crate::http::responses::{Body, error_response, json_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{load_policy_document, save_policy_document};
 use crate::users::Principal;
@@ -276,60 +276,37 @@ pub(crate) fn router() -> Router<Arc<AdminRuntimeState>> {
 
 async fn axum_policy_get(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminPolicyGetRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminPolicyGetRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_policy_get(&state, &parsed)
 }
 
 async fn axum_policy_put(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminPolicyPutRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminPolicyPutRequest = match parse_body(&body) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
     handle_admin_policy_put(&state, &parsed)
 }
 
 async fn axum_permissions_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminWrapperPermissionsListRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminWrapperPermissionsListRequest =
-        match parse_body(&body) {
-            Ok(p) => p,
-            Err(resp) => return resp,
-        };
     handle_admin_wrapper_permissions_list(&state, &parsed)
 }
 
 async fn axum_permission_upsert(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminWrapperPermissionUpsertRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminWrapperPermissionUpsertRequest =
-        match parse_body(&body) {
-            Ok(p) => p,
-            Err(resp) => return resp,
-        };
     handle_admin_wrapper_permission_upsert(&state, &principal, &parsed)
 }
 
 async fn axum_permission_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    body: Bytes,
+    Body(parsed): Body<underwrap_protocol::service::AdminWrapperPermissionDeleteRequest>,
 ) -> Response<Full<Bytes>> {
-    let parsed: underwrap_protocol::service::AdminWrapperPermissionDeleteRequest =
-        match parse_body(&body) {
-            Ok(p) => p,
-            Err(resp) => return resp,
-        };
     handle_admin_wrapper_permission_delete(&state, &principal, &parsed)
 }
