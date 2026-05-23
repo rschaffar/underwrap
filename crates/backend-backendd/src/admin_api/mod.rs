@@ -36,6 +36,7 @@ pub mod auth;
 pub mod bootstrap;
 pub(crate) mod client_instances;
 pub(crate) mod csrf;
+pub(crate) mod error;
 pub(crate) mod overview;
 pub(crate) mod pairs;
 pub(crate) mod policy;
@@ -43,6 +44,8 @@ pub(crate) mod resources;
 pub(crate) mod secrets;
 pub(crate) mod stores;
 pub(crate) mod users;
+
+pub(crate) use error::AdminError;
 
 use std::sync::Arc;
 

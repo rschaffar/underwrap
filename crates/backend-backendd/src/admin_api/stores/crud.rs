@@ -1,21 +1,35 @@
 //! Store admin CRUD: `list`, `detail`, `create`, `update`, `delete`.
 
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
 use std::sync::Arc;
 
+use axum::Json;
+use axum::extract::{Path as AxumPath, Query, State};
+use serde::Deserialize;
 use underwrap_protocol::config::StoreRecord;
 use underwrap_protocol::service::{
     AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
-    AdminStoreDeleteResponse, AdminStoreUpdateRequest, AdminStoreUsageSummary,
-    AdminStoresListResponse,
+    AdminStoreDeleteResponse, AdminStoreDetailResponse, AdminStoreUpdateRequest,
+    AdminStoreUsageSummary, AdminStoresListResponse, ServiceErrorResponse,
 };
 use underwrap_store::StorageBackend;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
-use crate::http::responses::{error_response, json_response};
+use crate::admin_api::AdminError;
+use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{LoadedStoreRecord, StoreState, save_store_records};
+use crate::users::Principal;
+
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(handle_admin_stores_list, handle_admin_store_create))
+        .routes(routes!(
+            handle_admin_store_detail,
+            handle_admin_store_update,
+            handle_admin_store_delete
+        ))
+}
 
 use super::{
     admin_store_actions, admin_store_detail, admin_store_list_item, admin_store_usage,
@@ -23,7 +37,18 @@ use super::{
     master_key_hex, resolve_store_dir, write_admin_store_audit,
 };
 
-pub(super) fn handle_admin_stores_list(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    get,
+    path = "/v1/admin/stores",
+    tag = "stores",
+    security(("session_cookie" = [])),
+    responses(
+        (status = 200, description = "Every store in the registry plus per-store usage projections.", body = AdminStoresListResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_stores_list(
+    State(state): State<Arc<AdminRuntimeState>>,
+) -> Result<Json<AdminStoresListResponse>, AdminError> {
     #[allow(clippy::type_complexity)]
     let visible: Vec<(String, LoadedStoreRecord, Option<Arc<dyn StorageBackend>>)> = {
         let reg = state.stores.read().unwrap();
@@ -37,67 +62,87 @@ pub(super) fn handle_admin_stores_list(state: &AdminRuntimeState) -> Response<Fu
     };
     let mut items = Vec::with_capacity(visible.len());
     for (id, loaded, handle) in visible {
-        let (usage, locked) = match handle {
-            Some(b) => match admin_store_usage(state, &id, b.as_ref()) {
-                Ok(usage) => (usage, false),
-                Err(resp) => return resp,
-            },
-            None => (admin_store_usage_for_locked(state, &id), true),
+        let (usage, locked) = match handle.as_deref() {
+            Some(b) => (admin_store_usage(&state, &id, b)?, false),
+            None => (admin_store_usage_for_locked(&state, &id), true),
         };
         let actions = admin_store_actions(&loaded, &usage, locked);
         items.push(admin_store_list_item(&loaded, locked, usage, actions));
     }
     items.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
-    json_response(StatusCode::OK, &AdminStoresListResponse { items })
+    Ok(Json(AdminStoresListResponse { items }))
 }
 
-pub(super) fn handle_admin_store_detail(
-    state: &AdminRuntimeState,
-    name: &str,
-) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    get,
+    path = "/v1/admin/stores/{name}",
+    tag = "stores",
+    security(("session_cookie" = [])),
+    params(("name" = String, Path, description = "Store id (display name).")),
+    responses(
+        (status = 200, description = "Store detail with backend kind, action state, usage summary.", body = AdminStoreDetailResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_store_detail(
+    State(state): State<Arc<AdminRuntimeState>>,
+    AxumPath(name): AxumPath<String>,
+) -> Result<Json<AdminStoreDetailResponse>, AdminError> {
     let (loaded, handle, locked) = {
         let reg = state.stores.read().unwrap();
-        let Some(loaded) = reg.records.get(name) else {
-            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
-        };
-        match reg.state.get(name) {
+        let loaded = reg
+            .records
+            .get(&name)
+            .ok_or_else(AdminError::store_not_found)?;
+        match reg.state.get(&name) {
             Some(StoreState::Unlocked(b)) => (loaded.clone(), Some(Arc::clone(b)), false),
             Some(StoreState::Locked) => (loaded.clone(), None, true),
             None => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                return Err(AdminError::internal_with_code(
                     "internal",
                     "store metadata present but registry state missing",
-                );
+                ));
             }
         }
     };
-    let usage = match handle.as_ref() {
-        Some(b) => match admin_store_usage(state, name, b.as_ref()) {
-            Ok(usage) => usage,
-            Err(resp) => return resp,
-        },
-        None => admin_store_usage_for_locked(state, name),
+    let usage = match handle.as_deref() {
+        Some(b) => admin_store_usage(&state, &name, b)?,
+        None => admin_store_usage_for_locked(&state, &name),
     };
     let actions = admin_store_actions(&loaded, &usage, locked);
-    json_response(
-        StatusCode::OK,
-        &admin_store_detail(&state.stores_file, &loaded, locked, usage, actions),
-    )
+    Ok(Json(admin_store_detail(
+        &state.stores_file,
+        &loaded,
+        locked,
+        usage,
+        actions,
+    )))
 }
 
-pub(crate) fn handle_admin_store_create(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    body: &AdminStoreCreateRequest,
-) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    post,
+    path = "/v1/admin/stores",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminStoreCreateRequest,
+    responses(
+        (status = 200, description = "Store created and added to the registry.", body = AdminStoreCreateResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 409, description = "Store name already exists.", body = ServiceErrorResponse),
+        (status = 500, description = "Backend could not persist the registry.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_store_create(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Body(body): Body<AdminStoreCreateRequest>,
+) -> Result<Json<AdminStoreCreateResponse>, AdminError> {
     let visible_name = body.name.trim();
     if visible_name.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "invalid_store_name",
             "store name must not be empty",
-        );
+        ));
     }
     let visible_name = visible_name.to_string();
 
@@ -105,10 +150,8 @@ pub(crate) fn handle_admin_store_create(
         state.stores.read().unwrap().records.contains_key(candidate)
     });
 
-    let validated_dir = match resolve_store_dir(state, &store_id) {
-        Ok(p) => p,
-        Err((code, msg)) => return error_response(StatusCode::BAD_REQUEST, code, &msg),
-    };
+    let validated_dir = resolve_store_dir(&state, &store_id)
+        .map_err(|(code, msg)| AdminError::bad_request(code, msg))?;
 
     {
         let reg = state.stores.read().unwrap();
@@ -117,11 +160,10 @@ pub(crate) fn handle_admin_store_create(
             .values()
             .any(|existing| existing.record.name.eq_ignore_ascii_case(&visible_name))
         {
-            return error_response(
-                StatusCode::CONFLICT,
+            return Err(AdminError::conflict(
                 "store_name_already_exists",
-                &format!("store name '{}' already exists", visible_name),
-            );
+                format!("store name '{visible_name}' already exists"),
+            ));
         }
     }
 
@@ -134,56 +176,50 @@ pub(crate) fn handle_admin_store_create(
             let storage = underwrap_protocol::config::StorageConfig::Plain {
                 dir: validated_dir.clone(),
             };
-            if let Err(e) = create_data_dir_secure(&validated_dir) {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+            create_data_dir_secure(&validated_dir).map_err(|e| {
+                AdminError::internal_with_code(
                     "create_data_dir_failed",
-                    &format!("creating data dir {}: {e:#}", validated_dir.display()),
-                );
-            }
-            let backend: Arc<dyn StorageBackend> = match underwrap_store::open(&storage) {
-                Ok(b) => Arc::from(b),
-                Err(e) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "open_store_failed",
-                        &format!("opening store backend after create: {e:#}"),
-                    );
-                }
-            };
+                    format!("creating data dir {}: {e:#}", validated_dir.display()),
+                )
+            })?;
+            let backend: Arc<dyn StorageBackend> = underwrap_store::open(&storage)
+                .map(Arc::from)
+                .map_err(|e| {
+                AdminError::internal_with_code(
+                    "open_store_failed",
+                    format!("opening store backend after create: {e:#}"),
+                )
+            })?;
             (storage, backend, None)
         }
         AdminStoreBackendKind::Encrypted => {
-            if let Err(e) = create_data_dir_secure(&validated_dir) {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+            create_data_dir_secure(&validated_dir).map_err(|e| {
+                AdminError::internal_with_code(
                     "create_data_dir_failed",
-                    &format!("creating data dir {}: {e:#}", validated_dir.display()),
-                );
-            }
+                    format!("creating data dir {}: {e:#}", validated_dir.display()),
+                )
+            })?;
             let key_bytes = generate_master_key_bytes();
             let key_hex = master_key_hex(&key_bytes);
             let backend =
-                match underwrap_store::EncryptedBackend::open_with_key(&validated_dir, key_bytes) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        return error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
+                underwrap_store::EncryptedBackend::open_with_key(&validated_dir, key_bytes)
+                    .map_err(|e| {
+                        AdminError::internal_with_code(
                             "open_store_failed",
-                            &format!("opening encrypted store backend after create: {e:#}"),
-                        );
-                    }
-                };
-            if let Err(e) = backend.write(
-                underwrap_store::ENCRYPTED_CANARY_ID,
-                underwrap_store::ENCRYPTED_CANARY_PLAINTEXT,
-            ) {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "canary_write_failed",
-                    &format!("writing unlock canary for new encrypted store: {e:#}"),
-                );
-            }
+                            format!("opening encrypted store backend after create: {e:#}"),
+                        )
+                    })?;
+            backend
+                .write(
+                    underwrap_store::ENCRYPTED_CANARY_ID,
+                    underwrap_store::ENCRYPTED_CANARY_PLAINTEXT,
+                )
+                .map_err(|e| {
+                    AdminError::internal_with_code(
+                        "canary_write_failed",
+                        format!("writing unlock canary for new encrypted store: {e:#}"),
+                    )
+                })?;
             let backend: Arc<dyn StorageBackend> = Arc::new(backend);
             let storage = underwrap_protocol::config::StorageConfig::Encrypted {
                 dir: validated_dir.clone(),
@@ -209,58 +245,66 @@ pub(crate) fn handle_admin_store_create(
         if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
             reg.state.remove(&store_id);
             reg.records.remove(&store_id);
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
-                &format!("{e:#}"),
-            );
+                format!("{e:#}"),
+            ));
         }
     }
-    write_admin_store_audit(principal, &store_id, "store.create", None, "success");
+    write_admin_store_audit(&principal, &store_id, "store.create", None, "success");
     let usage = AdminStoreUsageSummary {
         mapped_client_instance_count: 0,
         has_secrets: false,
     };
     let actions = admin_store_actions(&loaded, &usage, false);
-    json_response(
-        StatusCode::OK,
-        &AdminStoreCreateResponse {
-            store: admin_store_detail(&state.stores_file, &loaded, false, usage, actions),
-            key_hex: generated_key_hex,
-        },
-    )
+    Ok(Json(AdminStoreCreateResponse {
+        store: admin_store_detail(&state.stores_file, &loaded, false, usage, actions),
+        key_hex: generated_key_hex,
+    }))
 }
 
-pub(crate) fn handle_admin_store_update(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    name: &str,
-    body: &AdminStoreUpdateRequest,
-) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    put,
+    path = "/v1/admin/stores/{name}",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("name" = String, Path, description = "Store id.")),
+    request_body = AdminStoreUpdateRequest,
+    responses(
+        (status = 200, description = "Store updated.", body = AdminStoreDetailResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_store_update(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+    Body(body): Body<AdminStoreUpdateRequest>,
+) -> Result<Json<AdminStoreDetailResponse>, AdminError> {
     let updated = {
         let reg = state.stores.read().unwrap();
-        let Some(loaded) = reg.records.get(name) else {
-            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
-        };
+        let loaded = reg
+            .records
+            .get(&name)
+            .ok_or_else(AdminError::store_not_found)?;
         let mut record = loaded.record.clone();
         if let Some(new_name) = &body.name {
             let new_name = new_name.trim();
             if new_name.is_empty() {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
+                return Err(AdminError::bad_request(
                     "invalid_store_name",
                     "store name must not be empty",
-                );
+                ));
             }
             let new_name = new_name.to_string();
             if reg.records.iter().any(|(other_id, other)| {
-                other_id != name && other.record.name.eq_ignore_ascii_case(&new_name)
+                other_id != &name && other.record.name.eq_ignore_ascii_case(&new_name)
             }) {
-                return error_response(
-                    StatusCode::CONFLICT,
+                return Err(AdminError::conflict(
                     "store_name_already_exists",
-                    &format!("store name '{}' already exists", new_name),
-                );
+                    format!("store name '{new_name}' already exists"),
+                ));
             }
             record.name = new_name;
         }
@@ -275,68 +319,92 @@ pub(crate) fn handle_admin_store_update(
     };
     {
         let mut reg = state.stores.write().unwrap();
-        if let Some(loaded) = reg.records.get_mut(name) {
+        if let Some(loaded) = reg.records.get_mut(&name) {
             loaded.record = updated.clone();
         }
         if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
-                &format!("{e:#}"),
-            );
+                format!("{e:#}"),
+            ));
         }
     }
-    write_admin_store_audit(principal, name, "store.update", None, "success");
+    write_admin_store_audit(&principal, &name, "store.update", None, "success");
     let loaded = LoadedStoreRecord { record: updated };
     let (handle, locked) = {
         let reg = state.stores.read().unwrap();
-        match reg.state.get(name) {
+        match reg.state.get(&name) {
             Some(StoreState::Unlocked(b)) => (Some(Arc::clone(b)), false),
             Some(StoreState::Locked) => (None, true),
             None => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                return Err(AdminError::internal_with_code(
                     "internal",
                     "store metadata present but registry state missing",
-                );
+                ));
             }
         }
     };
-    let usage = match handle.as_ref() {
-        Some(b) => match admin_store_usage(state, name, b.as_ref()) {
-            Ok(usage) => usage,
-            Err(resp) => return resp,
-        },
-        None => admin_store_usage_for_locked(state, name),
+    let usage = match handle.as_deref() {
+        Some(b) => admin_store_usage(&state, &name, b)?,
+        None => admin_store_usage_for_locked(&state, &name),
     };
     let actions = admin_store_actions(&loaded, &usage, locked);
-    json_response(
-        StatusCode::OK,
-        &admin_store_detail(&state.stores_file, &loaded, locked, usage, actions),
-    )
+    Ok(Json(admin_store_detail(
+        &state.stores_file,
+        &loaded,
+        locked,
+        usage,
+        actions,
+    )))
 }
 
-pub(crate) fn handle_admin_store_delete(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    name: &str,
-    force: bool,
-) -> Response<Full<Bytes>> {
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct DeleteQuery {
+    #[serde(default)]
+    pub(crate) force: Option<String>,
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/stores/{name}",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(
+        ("name" = String, Path, description = "Store id."),
+        ("force" = Option<String>, Query, description = "Pass `true` / `1` / empty to bypass the empty-store guard."),
+    ),
+    responses(
+        (status = 200, description = "Store removed.", body = AdminStoreDeleteResponse),
+        (status = 400, description = "Store is non-empty and `force` was not set.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_store_delete(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+    Query(query): Query<DeleteQuery>,
+) -> Result<Json<AdminStoreDeleteResponse>, AdminError> {
+    let force = query
+        .force
+        .as_deref()
+        .is_some_and(|v| matches!(v, "true" | "1" | ""));
+
     let (store_handle, dir_for_hint, locked) = {
         let reg = state.stores.read().unwrap();
-        let Some(loaded) = reg.records.get(name) else {
-            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
-        };
-        let dir = loaded.record.storage.dir().clone();
-        match reg.state.get(name) {
+        let loaded = reg
+            .records
+            .get(&name)
+            .ok_or_else(AdminError::store_not_found)?;
+        let dir = loaded.record.storage.dir().to_path_buf();
+        match reg.state.get(&name) {
             Some(StoreState::Unlocked(b)) => (Some(Arc::clone(b)), dir, false),
             Some(StoreState::Locked) => (None, dir, true),
             None => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                return Err(AdminError::internal_with_code(
                     "internal",
                     "store metadata present but registry state missing",
-                );
+                ));
             }
         }
     };
@@ -347,26 +415,23 @@ pub(crate) fn handle_admin_store_delete(
         .values()
         .any(|instance| instance.current_store_id == name)
     {
-        return error_response(
-            StatusCode::CONFLICT,
+        return Err(AdminError::conflict(
             "store_in_use",
             "store is still mapped to one or more client instances",
-        );
+        ));
     }
 
-    let non_empty = match store_handle.as_ref() {
-        Some(h) => match h.list("") {
-            Ok(ids) => ids
-                .iter()
-                .any(|id| id != underwrap_store::ENCRYPTED_CANARY_ID),
-            Err(e) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+    let non_empty = match store_handle.as_deref() {
+        Some(h) => h
+            .list("")
+            .map_err(|e| {
+                AdminError::internal_with_code(
                     "list_store_failed",
-                    &format!("checking store contents before delete: {e:#}"),
-                );
-            }
-        },
+                    format!("checking store contents before delete: {e:#}"),
+                )
+            })?
+            .iter()
+            .any(|id| id != underwrap_store::ENCRYPTED_CANARY_ID),
         // Locked encrypted store: we cannot inspect contents. Refuse
         // unless the caller passed `force=true`, since deleting a
         // store without confirming it's empty risks orphaning data
@@ -374,29 +439,29 @@ pub(crate) fn handle_admin_store_delete(
         None => true,
     };
     if non_empty && !force {
-        let code = if locked {
-            "store_locked_use_force"
+        let (code, message) = if locked {
+            (
+                "store_locked_use_force",
+                "store is locked; contents cannot be inspected. re-issue with `?force=true` to delete the record anyway",
+            )
         } else {
-            "store_not_empty"
+            (
+                "store_not_empty",
+                "store contains secrets; re-issue with `?force=true` to delete the record anyway",
+            )
         };
-        let message = if locked {
-            "store is locked; contents cannot be inspected. re-issue with `?force=true` to delete the record anyway"
-        } else {
-            "store contains secrets; re-issue with `?force=true` to delete the record anyway"
-        };
-        return error_response(StatusCode::CONFLICT, code, message);
+        return Err(AdminError::conflict(code, message));
     }
 
     {
         let mut reg = state.stores.write().unwrap();
-        reg.state.remove(name);
-        reg.records.remove(name);
+        reg.state.remove(&name);
+        reg.records.remove(&name);
         if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
-                &format!("{e:#}"),
-            );
+                format!("{e:#}"),
+            ));
         }
     }
     let cleanup_hint = if non_empty {
@@ -415,14 +480,11 @@ pub(crate) fn handle_admin_store_delete(
     } else {
         None
     };
-    write_admin_store_audit(principal, name, "store.delete", operation, "success");
-    json_response(
-        StatusCode::OK,
-        &AdminStoreDeleteResponse {
-            ok: true,
-            cleanup_hint,
-        },
-    )
+    write_admin_store_audit(&principal, &name, "store.delete", operation, "success");
+    Ok(Json(AdminStoreDeleteResponse {
+        ok: true,
+        cleanup_hint,
+    }))
 }
 
 #[cfg(test)]

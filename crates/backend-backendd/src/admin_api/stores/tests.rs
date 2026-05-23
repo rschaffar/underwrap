@@ -1,13 +1,15 @@
-use super::*;
-use crate::test_support::{MemTestStore, crud_state, expect_404, test_admin_state};
 use std::collections::HashMap;
 use std::sync::Arc;
+
 use underwrap_store::StorageBackend;
+
+use super::*;
+use crate::test_support::{MemTestStore, crud_state, expect_404, test_admin_state};
 
 #[test]
 fn admin_store_resolves_existing_store() {
     let store: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
-    let state = test_admin_state(HashMap::from([("work".to_string(), store.clone())]));
+    let state = test_admin_state(HashMap::from([("work".to_string(), store)]));
     assert!(admin_store(&state, "work").is_ok());
 }
 

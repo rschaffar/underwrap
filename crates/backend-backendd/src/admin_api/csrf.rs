@@ -30,13 +30,13 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum_csrf::{CsrfConfig, CsrfToken};
 use axum_login::AuthSession;
+use hyper::Method;
 use hyper::header::HeaderValue;
-use hyper::{Method, StatusCode};
 use tower_sessions::cookie::SameSite;
 use tracing::{info, warn};
 
+use crate::admin_api::AdminError;
 use crate::auth::AuthBackend;
-use crate::http::responses::error_response;
 use crate::runtime_state::AdminRuntimeState;
 use crate::users::{Principal, UserRecord};
 
@@ -84,12 +84,7 @@ pub(crate) async fn require_login_layer(
         next.run(request).await
     } else {
         warn!("rejected admin request: not authenticated");
-        error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "authentication required",
-        )
-        .into_response()
+        AdminError::unauthorized("unauthorized", "authentication required").into_response()
     }
 }
 
@@ -104,12 +99,8 @@ pub(crate) async fn verify_csrf_layer(request: Request, next: Next) -> AxumRespo
     }
     let Some(token) = request.extensions().get::<CsrfToken>().cloned() else {
         warn!("rejected admin request: CSRF layer missing");
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "CSRF layer not initialised",
-        )
-        .into_response();
+        return AdminError::internal_with_code("internal", "CSRF layer not initialised")
+            .into_response();
     };
     let header_value = request
         .headers()
@@ -119,8 +110,7 @@ pub(crate) async fn verify_csrf_layer(request: Request, next: Next) -> AxumRespo
         .filter(|s| !s.is_empty());
     let Some(header_value) = header_value else {
         warn!("rejected admin request: missing X-CSRF-Token");
-        return error_response(
-            StatusCode::FORBIDDEN,
+        return AdminError::forbidden(
             "csrf_required",
             "missing or empty X-CSRF-Token on state-changing request",
         )
@@ -128,12 +118,8 @@ pub(crate) async fn verify_csrf_layer(request: Request, next: Next) -> AxumRespo
     };
     if token.verify(header_value).is_err() {
         warn!("rejected admin request: X-CSRF-Token did not verify");
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "csrf_mismatch",
-            "X-CSRF-Token does not match session",
-        )
-        .into_response();
+        return AdminError::forbidden("csrf_mismatch", "X-CSRF-Token does not match session")
+            .into_response();
     }
     next.run(request).await
 }
@@ -174,16 +160,11 @@ pub(crate) async fn resolve_principal_layer(
     let Some(user) = auth_session.user.clone() else {
         // `require_login_layer` runs ahead of us, so this is a bug:
         // the chain didn't gate authentication. Fail closed.
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "authentication required",
-        )
-        .into_response();
+        return AdminError::unauthorized("unauthorized", "authentication required").into_response();
     };
     let principal = match resolve_live_principal(&state, &user) {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(e) => return e.into_response(),
     };
     info!(
         user = %principal.username,
@@ -200,35 +181,26 @@ pub(crate) async fn resolve_principal_layer(
 /// A missing record (operator deleted between requests) maps to a 401
 /// — the session's stored auth hash will mismatch on the next
 /// request anyway, but rejecting here keeps the response consistent.
-#[allow(clippy::result_large_err)]
 fn resolve_live_principal(
     state: &AdminRuntimeState,
     user: &UserRecord,
-) -> std::result::Result<Principal, AxumResponse> {
-    let collection = match crate::users::load(&state.users_file) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(err = %e, "could not load user collection");
-            return Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "user collection unavailable",
-            )
-            .into_response());
-        }
-    };
-    match collection.find_by_id(&user.id) {
-        Some(live) => Ok(Principal {
+) -> std::result::Result<Principal, AdminError> {
+    let collection = crate::users::load(&state.users_file).map_err(|e| {
+        warn!(err = %e, "could not load user collection");
+        AdminError::internal_with_code("internal", "user collection unavailable")
+    })?;
+    collection
+        .find_by_id(&user.id)
+        .map(|live| Principal {
             id: live.id.clone(),
             username: live.username.clone(),
-        }),
-        None => Err(error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "session refers to a user that no longer exists",
-        )
-        .into_response()),
-    }
+        })
+        .ok_or_else(|| {
+            AdminError::unauthorized(
+                "unauthorized",
+                "session refers to a user that no longer exists",
+            )
+        })
 }
 
 #[cfg(test)]

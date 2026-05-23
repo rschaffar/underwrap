@@ -5,27 +5,27 @@
 //! operator who can't unlock them isn't bombarded with `store_locked`
 //! from a tile they can't act on directly.
 
-use anyhow::Result;
-use axum::extract::State;
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
 use std::sync::Arc;
+
+use axum::Json;
+use axum::extract::State;
 use underwrap_protocol::service::{AdminUiOverviewResponse, ServiceErrorResponse};
 use underwrap_store::StorageBackend;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use crate::http::responses::{error_response, json_response};
+use crate::admin_api::AdminError;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{load_policy_document, load_resources_document};
 
-pub(crate) fn admin_ui_overview_for_store(
+fn admin_ui_overview_for_store(
     store_name: &str,
     store: &dyn StorageBackend,
-) -> Result<underwrap_protocol::service::AdminUiOverviewStore> {
-    let resources = load_resources_document(store)?;
-    let policy = load_policy_document(store)?;
+) -> Result<underwrap_protocol::service::AdminUiOverviewStore, AdminError> {
+    let resources = load_resources_document(store)
+        .map_err(|e| AdminError::internal("loading resources document", e))?;
+    let policy = load_policy_document(store)
+        .map_err(|e| AdminError::internal("loading policy document", e))?;
 
     let resource_count = resources.resources.len();
 
@@ -62,7 +62,23 @@ pub(crate) fn admin_ui_overview_for_store(
     })
 }
 
-pub(crate) fn handle_admin_ui_overview(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new().routes(routes!(handle_admin_ui_overview))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/admin/ui/overview",
+    tag = "overview",
+    security(("session_cookie" = [])),
+    responses(
+        (status = 200, description = "Per-store resource + permission-mode summary for the SPA dashboard. Locked encrypted stores are silently skipped.", body = AdminUiOverviewResponse),
+        (status = 400, description = "Backend could not read a store's resource/policy document.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_ui_overview(
+    State(state): State<Arc<AdminRuntimeState>>,
+) -> Result<Json<AdminUiOverviewResponse>, AdminError> {
     // Snapshot the unlocked backends so we can release the
     // read lock before doing I/O against each store. Locked
     // encrypted stores are silently skipped — the SPA's
@@ -77,36 +93,10 @@ pub(crate) fn handle_admin_ui_overview(state: &AdminRuntimeState) -> Response<Fu
             .filter_map(|(name, state)| state.backend().map(|b| (name.clone(), Arc::clone(b))))
             .collect()
     };
-    match snapshot
+    let mut stores = snapshot
         .iter()
         .map(|(name, store)| admin_ui_overview_for_store(name, store.as_ref()))
-        .collect::<Result<Vec<_>>>()
-    {
-        Ok(mut stores) => {
-            stores.sort_by(|a, b| a.store.cmp(&b.store));
-            json_response(
-                StatusCode::OK,
-                &underwrap_protocol::service::AdminUiOverviewResponse { stores },
-            )
-        }
-        Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-    }
-}
-
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
-    OpenApiRouter::new().routes(routes!(axum_overview))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/admin/ui/overview",
-    tag = "overview",
-    security(("session_cookie" = [])),
-    responses(
-        (status = 200, description = "Per-store resource + permission-mode summary for the SPA dashboard. Locked encrypted stores are silently skipped.", body = AdminUiOverviewResponse),
-        (status = 400, description = "Backend could not read a store's resource/policy document.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_overview(State(state): State<Arc<AdminRuntimeState>>) -> Response<Full<Bytes>> {
-    handle_admin_ui_overview(&state)
+        .collect::<Result<Vec<_>, AdminError>>()?;
+    stores.sort_by(|a, b| a.store.cmp(&b.store));
+    Ok(Json(AdminUiOverviewResponse { stores }))
 }

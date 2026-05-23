@@ -12,12 +12,9 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
-use axum::response::IntoResponse;
 use axum_login::AuthSession;
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
 use tracing::{info, warn};
 use underwrap_protocol::service::{
     AdminOkUserResponse, AdminPasswordChangeRequest, ServiceErrorResponse,
@@ -25,8 +22,9 @@ use underwrap_protocol::service::{
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
+use crate::admin_api::AdminError;
 use crate::auth::{AuthBackend, AuthError, Credentials};
-use crate::http::responses::{Body, error_response, json_response};
+use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::users::{Principal, UserRecord};
 
@@ -52,10 +50,37 @@ pub struct WhoamiResponse {
     pub username: Option<String>,
 }
 
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct EmptyObject {}
+
+pub(crate) fn public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(handle_admin_login))
+        .routes(routes!(handle_admin_whoami))
+}
+
+pub(crate) fn protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(handle_admin_password_change))
+        .routes(routes!(handle_admin_logout))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Login succeeded; session cookie set.", body = LoginResponse),
+        (status = 401, description = "Invalid username or password.", body = ServiceErrorResponse),
+        (status = 429, description = "Rate-limited; too many login attempts.", body = ServiceErrorResponse),
+        (status = 500, description = "Backend could not read user collection.", body = ServiceErrorResponse),
+    ),
+)]
 pub(crate) async fn handle_admin_login(
     mut auth_session: AdminAuthSession,
-    body: LoginRequest,
-) -> Response<Full<Bytes>> {
+    Body(body): Body<LoginRequest>,
+) -> Result<Json<LoginResponse>, AdminError> {
     let username = body.username.clone();
     let creds = Credentials {
         username: body.username,
@@ -65,57 +90,56 @@ pub(crate) async fn handle_admin_login(
         Ok(Some(u)) => u,
         Ok(None) => {
             info!(username = %username, "login failed");
-            return error_response(
-                StatusCode::UNAUTHORIZED,
+            return Err(AdminError::unauthorized(
                 "invalid_credentials",
                 "invalid username or password",
-            );
+            ));
         }
         Err(axum_login::Error::Backend(AuthError::RateLimited)) => {
             warn!(username = %username, "login rate-limited");
-            return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
+            return Err(AdminError::too_many_requests(
                 "rate_limited",
                 "too many login attempts; please wait and try again",
-            );
+            ));
         }
         Err(axum_login::Error::Backend(AuthError::UserCollection(err))) => {
             warn!(err = %err, "login: failed to read user collection");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "internal",
                 "user collection unavailable",
-            );
+            ));
         }
         Err(axum_login::Error::Session(err)) => {
             warn!(err = ?err, "login: session backend failure");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "internal",
                 "session backend unavailable",
-            );
+            ));
         }
     };
     if let Err(e) = auth_session.login(&user).await {
         warn!(err = ?e, "login: AuthSession::login failed");
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AdminError::internal_with_code(
             "internal",
             "failed to issue session",
-        );
+        ));
     }
     info!(username = %user.username, "login succeeded");
-    json_response(
-        StatusCode::OK,
-        &LoginResponse {
-            username: user.username,
-        },
-    )
+    Ok(Json(LoginResponse {
+        username: user.username,
+    }))
 }
 
-pub(crate) async fn handle_admin_logout(
-    mut auth_session: AdminAuthSession,
-) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    post,
+    path = "/v1/admin/auth/logout",
+    tag = "auth",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    responses(
+        (status = 204, description = "Session destroyed and cookie cleared."),
+    ),
+)]
+pub(crate) async fn handle_admin_logout(mut auth_session: AdminAuthSession) -> Json<EmptyObject> {
     let username = auth_session.user.as_ref().map(|u| u.username.clone());
     if let Err(e) = auth_session.logout().await {
         warn!(err = ?e, "logout: AuthSession::logout failed");
@@ -126,10 +150,18 @@ pub(crate) async fn handle_admin_logout(
     if let Some(name) = username {
         info!(username = %name, "logout: session flushed");
     }
-    json_response(StatusCode::OK, &serde_json::json!({}))
+    Json(EmptyObject {})
 }
 
-pub(crate) async fn handle_admin_whoami(auth_session: AdminAuthSession) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    get,
+    path = "/v1/admin/auth/whoami",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Returns the current operator, or `authenticated: false` if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.", body = WhoamiResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_whoami(auth_session: AdminAuthSession) -> Json<WhoamiResponse> {
     // whoami is intentionally tolerant of missing auth (returns
     // `authenticated: false`) so the SPA can use it to drive the
     // login / bootstrap redirect dance without producing 401s in the
@@ -138,61 +170,58 @@ pub(crate) async fn handle_admin_whoami(auth_session: AdminAuthSession) -> Respo
     // it was issued, so `auth_session.user.is_some()` is the
     // authoritative answer here.
     match auth_session.user {
-        Some(u) => json_response(
-            StatusCode::OK,
-            &WhoamiResponse {
-                authenticated: true,
-                username: Some(u.username),
-            },
-        ),
-        None => json_response(
-            StatusCode::OK,
-            &WhoamiResponse {
-                authenticated: false,
-                username: None,
-            },
-        ),
+        Some(u) => Json(WhoamiResponse {
+            authenticated: true,
+            username: Some(u.username),
+        }),
+        None => Json(WhoamiResponse {
+            authenticated: false,
+            username: None,
+        }),
     }
 }
 
 /// `POST /v1/admin/auth/password` — self-service password change for
 /// the currently authenticated user. Requires the current password as
 /// proof-of-possession.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/auth/password",
+    tag = "auth",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminPasswordChangeRequest,
+    responses(
+        (status = 200, description = "Password changed; new session issued.", body = AdminOkUserResponse),
+        (status = 400, description = "Validation failed (e.g. new password too short).", body = ServiceErrorResponse),
+        (status = 401, description = "Current password is incorrect.", body = ServiceErrorResponse),
+        (status = 500, description = "Backend could not persist the change.", body = ServiceErrorResponse),
+    ),
+)]
 pub(crate) async fn handle_admin_password_change(
     mut auth_session: AdminAuthSession,
-    state: Arc<AdminRuntimeState>,
-    principal: Principal,
-    body: underwrap_protocol::service::AdminPasswordChangeRequest,
-) -> Response<Full<Bytes>> {
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Body(body): Body<AdminPasswordChangeRequest>,
+) -> Result<Json<AdminOkUserResponse>, AdminError> {
     use crate::admin_api::users::{mutate_collection, write_admin_user_audit};
-    use underwrap_protocol::service::AdminOkUserResponse;
 
     if body.new_password.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "invalid_password",
             "new password must not be empty",
-        );
+        ));
     }
-    let collection = match crate::users::load(&state.users_file) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(err = %e, "auth.password: collection unreadable");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "user collection unavailable",
-            );
-        }
-    };
+    let collection = crate::users::load(&state.users_file).map_err(|e| {
+        warn!(err = %e, "auth.password: collection unreadable");
+        AdminError::internal_with_code("internal", "user collection unavailable")
+    })?;
     let current_hash = match collection.find_by_id(&principal.id) {
         Some(u) => u.password_hash.clone(),
         None => {
-            return error_response(
-                StatusCode::UNAUTHORIZED,
+            return Err(AdminError::unauthorized(
                 "unauthorized",
                 "session refers to a user that no longer exists",
-            );
+            ));
         }
     };
     if !crate::auth::verify_password(&current_hash, &body.current_password) {
@@ -203,23 +232,15 @@ pub(crate) async fn handle_admin_password_change(
             Some("wrong-current-password"),
             "failure",
         );
-        return error_response(
-            StatusCode::UNAUTHORIZED,
+        return Err(AdminError::unauthorized(
             "invalid_credentials",
             "current password does not match",
-        );
+        ));
     }
-    let new_hash = match crate::auth::hash_password(&body.new_password) {
-        Ok(h) => h,
-        Err(e) => {
-            warn!(err = %e, "auth.password: argon2 hash failed");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "could not hash password",
-            );
-        }
-    };
+    let new_hash = crate::auth::hash_password(&body.new_password).map_err(|e| {
+        warn!(err = %e, "auth.password: argon2 hash failed");
+        AdminError::internal_with_code("internal", "could not hash password")
+    })?;
     let id_owned = principal.id.clone();
     let new_hash_for_closure = new_hash.clone();
     let now = crate::users::now_epoch_secs();
@@ -260,99 +281,16 @@ pub(crate) async fn handle_admin_password_change(
                 // Not fatal: response still succeeds, but the
                 // operator will need to log in again.
             }
-            json_response(StatusCode::OK, &AdminOkUserResponse { ok: true })
+            Ok(Json(AdminOkUserResponse { ok: true }))
         }
         Err(e) => {
             warn!(err = %e, "auth.password: save failed");
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            Err(AdminError::internal_with_code(
                 "internal",
                 "could not save new password",
-            )
+            ))
         }
     }
-}
-
-pub(crate) fn public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
-    OpenApiRouter::new()
-        .routes(routes!(axum_login_route))
-        .routes(routes!(axum_whoami))
-}
-
-pub(crate) fn protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
-    OpenApiRouter::new()
-        .routes(routes!(axum_password_change))
-        .routes(routes!(axum_logout))
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/auth/login",
-    tag = "auth",
-    request_body = LoginRequest,
-    responses(
-        (status = 200, description = "Login succeeded; session cookie set.", body = LoginResponse),
-        (status = 401, description = "Invalid username or password.", body = ServiceErrorResponse),
-        (status = 429, description = "Rate-limited; too many login attempts.", body = ServiceErrorResponse),
-        (status = 500, description = "Backend could not read user collection.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_login_route(
-    auth_session: AdminAuthSession,
-    Body(parsed): Body<LoginRequest>,
-) -> axum::response::Response {
-    handle_admin_login(auth_session, parsed)
-        .await
-        .into_response()
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/admin/auth/whoami",
-    tag = "auth",
-    responses(
-        (status = 200, description = "Returns the current operator, or `authenticated: false` if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.", body = WhoamiResponse),
-    ),
-)]
-async fn axum_whoami(auth_session: AdminAuthSession) -> axum::response::Response {
-    handle_admin_whoami(auth_session).await.into_response()
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/auth/logout",
-    tag = "auth",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    responses(
-        (status = 204, description = "Session destroyed and cookie cleared."),
-    ),
-)]
-async fn axum_logout(auth_session: AdminAuthSession) -> axum::response::Response {
-    handle_admin_logout(auth_session).await.into_response()
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/auth/password",
-    tag = "auth",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminPasswordChangeRequest,
-    responses(
-        (status = 200, description = "Password changed; new session issued.", body = AdminOkUserResponse),
-        (status = 400, description = "Validation failed (e.g. new password too short).", body = ServiceErrorResponse),
-        (status = 401, description = "Current password is incorrect.", body = ServiceErrorResponse),
-        (status = 500, description = "Backend could not persist the change.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_password_change(
-    auth_session: AdminAuthSession,
-    State(state): State<Arc<AdminRuntimeState>>,
-    axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<AdminPasswordChangeRequest>,
-) -> axum::response::Response {
-    handle_admin_password_change(auth_session, state, principal, parsed)
-        .await
-        .into_response()
 }
 
 #[cfg(test)]

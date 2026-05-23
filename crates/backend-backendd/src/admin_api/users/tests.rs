@@ -1,24 +1,30 @@
+use std::sync::Arc;
+
+use axum::Extension;
+use axum::extract::{Path, State};
+use hyper::StatusCode;
+
 use super::*;
+use crate::http::responses::Body;
 use crate::test_support::{
-    admin_principal, admin_principal_with_id, crud_state, response_body_json, seed_admin_into,
+    admin_principal, admin_principal_with_id, crud_state, run_handler, seed_admin_into,
 };
 
 #[test]
 fn user_create_persists_record_and_omits_password_hash_from_response() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     seed_admin_into(&state, "alice");
     let p = admin_principal();
-    let resp = handle_admin_user_create(
-        &state,
-        &p,
-        &underwrap_protocol::service::AdminUserCreateRequest {
+    let (status, body) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(p),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: "hunter2-bob".into(),
-        },
-    );
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = response_body_json(resp);
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK);
     let body_str = serde_json::to_string(&body).unwrap();
     assert!(
         !body_str.contains("$argon2"),
@@ -49,55 +55,57 @@ fn user_create_persists_record_and_omits_password_hash_from_response() {
 #[test]
 fn user_create_refuses_duplicate_username_case_insensitively() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     seed_admin_into(&state, "alice");
     let p = admin_principal();
-    let req = || underwrap_protocol::service::AdminUserCreateRequest {
-        username: "Alice".into(), // collides after normalisation
-        password: "any-pass".into(),
-    };
-    let resp = handle_admin_user_create(&state, &p, &req());
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body = response_body_json(resp);
+    let (status, body) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(p),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
+            username: "Alice".into(), // collides after normalisation
+            password: "any-pass".into(),
+        }),
+    ));
+    assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "username_already_exists");
 }
 
 #[test]
 fn user_create_refuses_empty_password() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     seed_admin_into(&state, "alice");
-    let resp = handle_admin_user_create(
-        &state,
-        &admin_principal(),
-        &underwrap_protocol::service::AdminUserCreateRequest {
+    let (status, body) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(admin_principal()),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: String::new(),
-        },
-    );
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response_body_json(resp)["code"], "invalid_password");
+        }),
+    ));
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid_password");
 }
 
 #[test]
 fn users_list_omits_password_hash_for_every_record() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     seed_admin_into(&state, "alice");
     let p = admin_principal();
     for u in ["bob", "carol"] {
-        handle_admin_user_create(
-            &state,
-            &p,
-            &underwrap_protocol::service::AdminUserCreateRequest {
+        let (status, _) = run_handler(handle_admin_user_create(
+            State(state.clone()),
+            Extension(p.clone()),
+            Body(underwrap_protocol::service::AdminUserCreateRequest {
                 username: u.into(),
                 password: format!("{u}-pass"),
-            },
-        );
+            }),
+        ));
+        assert_eq!(status, StatusCode::OK);
     }
-    let resp = handle_admin_users_list(&state);
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = response_body_json(resp);
+    let (status, body) = run_handler(handle_admin_users_list(State(state.clone())));
+    assert_eq!(status, StatusCode::OK);
     let body_str = serde_json::to_string(&body).unwrap();
     assert!(!body_str.contains("$argon2"));
     assert!(!body_str.contains("password_hash"));
@@ -108,43 +116,43 @@ fn users_list_omits_password_hash_for_every_record() {
 #[test]
 fn user_update_renames_user() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     seed_admin_into(&state, "alice");
     let p = admin_principal();
-    let create_resp = handle_admin_user_create(
-        &state,
-        &p,
-        &underwrap_protocol::service::AdminUserCreateRequest {
+    let (create_status, create_body) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(p.clone()),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: "x".into(),
-        },
-    );
-    let bob_id = response_body_json(create_resp)["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let resp = handle_admin_user_update(
-        &state,
-        &p,
-        &bob_id,
-        &underwrap_protocol::service::AdminUserUpdateRequest {
+        }),
+    ));
+    assert_eq!(create_status, StatusCode::OK);
+    let bob_id = create_body["id"].as_str().unwrap().to_string();
+    let (status, body) = run_handler(handle_admin_user_update(
+        State(state.clone()),
+        Extension(p),
+        Path(bob_id),
+        Body(underwrap_protocol::service::AdminUserUpdateRequest {
             username: Some("robert".into()),
-        },
-    );
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = response_body_json(resp);
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["username"], "robert");
 }
 
 #[test]
 fn user_delete_refuses_last_user() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let alice_id = seed_admin_into(&state, "alice");
     let p = admin_principal_with_id(&alice_id);
-    let resp = handle_admin_user_delete(&state, &p, &alice_id);
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body = response_body_json(resp);
+    let (status, body) = run_handler(handle_admin_user_delete(
+        State(state.clone()),
+        Extension(p),
+        Path(alice_id.clone()),
+    ));
+    assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "last_user_protected");
     // Record still in the collection.
     let collection = crate::users::load(&state.users_file).unwrap();
@@ -154,23 +162,25 @@ fn user_delete_refuses_last_user() {
 #[test]
 fn user_delete_succeeds_when_another_user_exists() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let alice_id = seed_admin_into(&state, "alice");
     let p = admin_principal_with_id(&alice_id);
-    let create = handle_admin_user_create(
-        &state,
-        &p,
-        &underwrap_protocol::service::AdminUserCreateRequest {
+    let (create_status, create_body) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(p.clone()),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "second".into(),
             password: "x".into(),
-        },
-    );
-    let second_id = response_body_json(create)["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let resp = handle_admin_user_delete(&state, &p, &second_id);
-    assert_eq!(resp.status(), StatusCode::OK);
+        }),
+    ));
+    assert_eq!(create_status, StatusCode::OK);
+    let second_id = create_body["id"].as_str().unwrap().to_string();
+    let (status, _) = run_handler(handle_admin_user_delete(
+        State(state.clone()),
+        Extension(p),
+        Path(second_id),
+    ));
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[test]
@@ -183,21 +193,19 @@ fn user_reset_password_changes_hash() {
     // session-side check is covered by the `auth/tests.rs` test
     // `session_auth_hash_changes_when_password_rotates`.
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     seed_admin_into(&state, "alice");
     let p = admin_principal();
-    let create = handle_admin_user_create(
-        &state,
-        &p,
-        &underwrap_protocol::service::AdminUserCreateRequest {
+    let (create_status, create_body) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(p),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: "old-pass".into(),
-        },
-    );
-    let bob_id = response_body_json(create)["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+        }),
+    ));
+    assert_eq!(create_status, StatusCode::OK);
+    let bob_id = create_body["id"].as_str().unwrap().to_string();
 
     let hash_before = crate::users::load(&state.users_file)
         .unwrap()
@@ -233,16 +241,17 @@ fn debug_redacts_password_hash_in_collection_logging() {
     // but the easiest check is to format the loaded collection
     // after every mutation and grep.
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     seed_admin_into(&state, "alice");
-    handle_admin_user_create(
-        &state,
-        &admin_principal(),
-        &underwrap_protocol::service::AdminUserCreateRequest {
+    let (status, _) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(admin_principal()),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
             password: "x".into(),
-        },
-    );
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK);
     let collection = crate::users::load(&state.users_file).unwrap();
     let formatted = format!("{collection:?}");
     assert!(

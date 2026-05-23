@@ -9,9 +9,6 @@
 //! flip stays atomic.
 
 use anyhow::Result;
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
 
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource::parse_secret_id;
@@ -20,7 +17,7 @@ use underwrap_store::{
     save_resource_blob,
 };
 
-use crate::http::responses::error_response;
+use crate::admin_api::AdminError;
 
 /// Read a single per-key entry by translating through the resource
 /// blob layout. Falls back to raw `store.read` for non-slotted ids
@@ -132,32 +129,25 @@ pub(crate) fn resource_blob_entries(
 /// Validate the structured `(resource_id, slot, key)` tuple and
 /// compose the in-blob entry id. Centralizes the per-slot key-shape
 /// rules so every admin secret endpoint enforces them identically.
-#[allow(clippy::result_large_err)]
 pub(crate) fn validate_and_compose_secret_id(
     resource_id: &str,
     slot: underwrap_protocol::resource::ResourceSlot,
     key: &str,
-) -> std::result::Result<String, Response<Full<Bytes>>> {
+) -> std::result::Result<String, AdminError> {
     if resource_id.trim().is_empty() {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "invalid_request",
             "resource_id must not be empty",
         ));
     }
     if resource_id.starts_with("__underwrap") {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "invalid_request",
             "resource ids starting with '__underwrap' are reserved",
         ));
     }
     if let Err(msg) = underwrap_protocol::resource::validate_secret_key(slot, key) {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            &msg,
-        ));
+        return Err(AdminError::bad_request("invalid_request", msg));
     }
     Ok(underwrap_protocol::resource::compose_secret_id(
         resource_id,

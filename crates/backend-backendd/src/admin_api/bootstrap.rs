@@ -11,19 +11,17 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
-use axum::response::IntoResponse;
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
 use tracing::{info, warn};
 use underwrap_protocol::service::ServiceErrorResponse;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
+use crate::admin_api::AdminError;
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::auth::AdminAuthSession;
-use crate::http::responses::{Body, error_response, json_response};
+use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
@@ -42,48 +40,70 @@ pub struct BootstrapResponse {
     pub username: String,
 }
 
-/// Handle `GET /v1/admin/auth/bootstrap/status`. Public endpoint:
-/// returns `{ bootstrap_required: true }` only when the operator
-/// collection is empty AND the bootstrap-completed sentinel is unset.
-/// Anything else (operators exist, sentinel set, store error) yields
-/// `false` — the SPA's response is to show the login page.
-pub(crate) fn handle_admin_bootstrap_status(state: &AdminRuntimeState) -> Response<Full<Bytes>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(handle_admin_bootstrap_status))
+        .routes(routes!(handle_admin_bootstrap))
+}
+
+/// `GET /v1/admin/auth/bootstrap/status`. Public endpoint: returns
+/// `{ bootstrap_required: true }` only when the operator collection is
+/// empty AND the bootstrap-completed sentinel is unset. Anything else
+/// (operators exist, sentinel set, store error) yields `false` — the
+/// SPA's response is to show the login page.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/auth/bootstrap/status",
+    tag = "bootstrap",
+    responses(
+        (status = 200, description = "True only when the operator collection is empty and the bootstrap-completed sentinel is unset.", body = BootstrapStatusResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_bootstrap_status(
+    State(state): State<Arc<AdminRuntimeState>>,
+) -> Json<BootstrapStatusResponse> {
     let sentinel_set = crate::users::bootstrap_completed(&state.users_file).unwrap_or(true);
     let collection_empty = crate::users::load(&state.users_file)
         .map(|c| c.is_empty())
         .unwrap_or(false);
-    json_response(
-        StatusCode::OK,
-        &BootstrapStatusResponse {
-            bootstrap_required: !sentinel_set && collection_empty,
-        },
-    )
+    Json(BootstrapStatusResponse {
+        bootstrap_required: !sentinel_set && collection_empty,
+    })
 }
 
-/// Handle `POST /v1/admin/auth/bootstrap`. Public endpoint: creates
-/// the very first admin operator, marks the persistent sentinel, and
-/// issues a session in one round trip. After this succeeds, the
-/// endpoint refuses further calls even if every operator is later
-/// deleted.
+/// `POST /v1/admin/auth/bootstrap`. Public endpoint: creates the very
+/// first admin operator, marks the persistent sentinel, and issues a
+/// session in one round trip. After this succeeds, the endpoint
+/// refuses further calls even if every operator is later deleted.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/auth/bootstrap",
+    tag = "bootstrap",
+    request_body = BootstrapRequest,
+    responses(
+        (status = 200, description = "First operator created; session issued in the same response.", body = BootstrapResponse),
+        (status = 400, description = "Validation failed (e.g. password too short).", body = ServiceErrorResponse),
+        (status = 409, description = "Bootstrap already completed; further attempts are refused.", body = ServiceErrorResponse),
+        (status = 500, description = "Backend could not write the operator collection.", body = ServiceErrorResponse),
+    ),
+)]
 pub(crate) async fn handle_admin_bootstrap(
     mut auth_session: AdminAuthSession,
-    state: &AdminRuntimeState,
-    body: &BootstrapRequest,
-) -> Response<Full<Bytes>> {
+    State(state): State<Arc<AdminRuntimeState>>,
+    Body(body): Body<BootstrapRequest>,
+) -> Result<Json<BootstrapResponse>, AdminError> {
     let username_norm = crate::users::normalise_username(&body.username);
     if username_norm.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "invalid_credentials",
             "username is required",
-        );
+        ));
     }
     if body.password.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "invalid_credentials",
             "password is required",
-        );
+        ));
     }
 
     // Serialise concurrent bootstrap attempts: two callers must not
@@ -100,55 +120,38 @@ pub(crate) async fn handle_admin_bootstrap(
                 Some("bootstrap-already-completed"),
                 "failure",
             );
-            return error_response(
-                StatusCode::CONFLICT,
+            return Err(AdminError::conflict(
                 "bootstrap_already_completed",
                 "bootstrap has already been completed for this backend",
-            );
+            ));
         }
         Ok(false) => {}
         Err(e) => {
             warn!(err = %e, "bootstrap: reading sentinel failed");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "internal",
                 "bootstrap sentinel unreadable",
-            );
+            ));
         }
     }
 
-    let collection = match crate::users::load(&state.users_file) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(err = %e, "bootstrap: loading user collection failed");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "user collection unavailable",
-            );
-        }
-    };
+    let collection = crate::users::load(&state.users_file).map_err(|e| {
+        warn!(err = %e, "bootstrap: loading user collection failed");
+        AdminError::internal_with_code("internal", "user collection unavailable")
+    })?;
     if !collection.is_empty() {
         audit_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
-        return error_response(
-            StatusCode::CONFLICT,
+        return Err(AdminError::conflict(
             "users_already_exist",
             "a user already exists; bootstrap requires an empty user collection",
-        );
+        ));
     }
 
     let now = crate::users::now_epoch_secs();
-    let password_hash = match crate::auth::hash_password(&body.password) {
-        Ok(h) => h,
-        Err(e) => {
-            warn!(err = %e, "bootstrap: argon2 hash failed");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "could not hash password",
-            );
-        }
-    };
+    let password_hash = crate::auth::hash_password(&body.password).map_err(|e| {
+        warn!(err = %e, "bootstrap: argon2 hash failed");
+        AdminError::internal_with_code("internal", "could not hash password")
+    })?;
     let record = crate::users::UserRecord {
         id: crate::users::new_user_id(),
         username: username_norm.clone(),
@@ -159,19 +162,17 @@ pub(crate) async fn handle_admin_bootstrap(
     let mut new_collection = crate::users::UserCollection::default();
     if let Err(e) = new_collection.add(record.clone()) {
         warn!(err = %e, "bootstrap: building collection failed");
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "invalid_credentials",
-            &e.to_string(),
-        );
+            e.to_string(),
+        ));
     }
     if let Err(e) = crate::users::save(&state.users_file, &new_collection) {
         warn!(err = %e, "bootstrap: writing user collection failed");
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AdminError::internal_with_code(
             "internal",
             "could not persist user",
-        );
+        ));
     }
     if let Err(e) = crate::users::mark_bootstrap_completed(
         &state.users_file,
@@ -181,11 +182,10 @@ pub(crate) async fn handle_admin_bootstrap(
         },
     ) {
         warn!(err = %e, "bootstrap: writing sentinel failed");
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AdminError::internal_with_code(
             "internal",
             "could not persist bootstrap sentinel",
-        );
+        ));
     }
     audit_bootstrap_attempt(&record.username, None, "success");
     drop(bootstrap_guard);
@@ -195,61 +195,15 @@ pub(crate) async fn handle_admin_bootstrap(
     // first time the SPA learns a session id.
     if let Err(e) = auth_session.login(&record).await {
         warn!(err = ?e, "bootstrap: AuthSession::login failed");
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AdminError::internal_with_code(
             "internal",
             "failed to issue session",
-        );
+        ));
     }
     info!(username = %record.username, "bootstrap: first user created");
-    json_response(
-        StatusCode::OK,
-        &BootstrapResponse {
-            username: record.username.clone(),
-        },
-    )
-}
-
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
-    OpenApiRouter::new()
-        .routes(routes!(axum_bootstrap_status))
-        .routes(routes!(axum_bootstrap))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/admin/auth/bootstrap/status",
-    tag = "bootstrap",
-    responses(
-        (status = 200, description = "True only when the operator collection is empty and the bootstrap-completed sentinel is unset.", body = BootstrapStatusResponse),
-    ),
-)]
-async fn axum_bootstrap_status(
-    State(state): State<Arc<AdminRuntimeState>>,
-) -> Response<Full<Bytes>> {
-    handle_admin_bootstrap_status(&state)
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/auth/bootstrap",
-    tag = "bootstrap",
-    request_body = BootstrapRequest,
-    responses(
-        (status = 200, description = "First operator created; session issued in the same response.", body = BootstrapResponse),
-        (status = 400, description = "Validation failed (e.g. password too short).", body = ServiceErrorResponse),
-        (status = 409, description = "Bootstrap already completed; further attempts are refused.", body = ServiceErrorResponse),
-        (status = 500, description = "Backend could not write the operator collection.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_bootstrap(
-    auth_session: AdminAuthSession,
-    State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<BootstrapRequest>,
-) -> axum::response::Response {
-    handle_admin_bootstrap(auth_session, &state, &parsed)
-        .await
-        .into_response()
+    Ok(Json(BootstrapResponse {
+        username: record.username.clone(),
+    }))
 }
 
 /// Log one bootstrap attempt outcome. Best effort: never fails the caller.

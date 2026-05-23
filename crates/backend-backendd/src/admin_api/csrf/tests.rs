@@ -49,6 +49,7 @@ fn resolve_live_principal_picks_up_renamed_username() {
 #[test]
 fn resolve_live_principal_returns_401_for_deleted_user() {
     use crate::test_support::seeded_admin_state;
+    use hyper::StatusCode;
     let state = seeded_admin_state("alice", "hunter2");
     crate::users::save(&state.users_file, &crate::users::UserCollection::default()).unwrap();
     let phantom = crate::users::UserRecord {

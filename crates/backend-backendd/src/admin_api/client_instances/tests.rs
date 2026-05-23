@@ -1,22 +1,46 @@
-use super::*;
-use crate::admin_api::policy::handle_admin_wrapper_permission_upsert;
-use crate::admin_api::stores::crud::handle_admin_store_delete;
-use crate::storage::documents::load_policy_document;
-use crate::test_support::{
-    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state, response_body_json,
-};
+use std::sync::Arc;
+
+use axum::Extension;
+use axum::extract::{Path, Query, State};
+use hyper::StatusCode;
 use underwrap_protocol::service::{
     AdminClientInstanceCreateRequest, AdminClientInstanceStatus, AdminClientInstanceUpdateRequest,
     AdminStoreBackendKind, AdminStoreCreateRequest,
 };
 
+use super::*;
+use crate::admin_api::policy::handle_admin_wrapper_permission_upsert;
+use crate::admin_api::stores::crud::{DeleteQuery, handle_admin_store_delete};
+use crate::http::responses::Body;
+use crate::storage::documents::load_policy_document;
+use crate::test_support::{
+    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state, run_handler,
+};
+
+fn delete_store(
+    state: Arc<crate::runtime_state::AdminRuntimeState>,
+    p: &crate::users::Principal,
+    name: &str,
+    force: bool,
+) -> (StatusCode, serde_json::Value) {
+    let q = DeleteQuery {
+        force: force.then(|| "true".to_string()),
+    };
+    run_handler(handle_admin_store_delete(
+        State(state),
+        Extension(p.clone()),
+        Path(name.to_string()),
+        Query(q),
+    ))
+}
+
 #[test]
 fn client_instance_crud_and_store_mapping_round_trip() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let work_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -25,7 +49,7 @@ fn client_instance_crud_and_store_mapping_round_trip() {
         },
     );
     let other_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "other".into(),
@@ -34,20 +58,19 @@ fn client_instance_crud_and_store_mapping_round_trip() {
         },
     );
 
-    let create = handle_admin_client_instance_create(
-        &state,
-        &p,
-        &AdminClientInstanceCreateRequest {
+    let (status, created) = run_handler(handle_admin_client_instance_create(
+        State(state.clone()),
+        Extension(p.clone()),
+        Body(AdminClientInstanceCreateRequest {
             display_name: "laptop-work".into(),
             current_store_id: work_id.clone(),
             status: AdminClientInstanceStatus::Active,
             cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
             issued_at: Some(111),
             auto_create_wrapper_assets: None,
-        },
-    );
-    assert_eq!(create.status(), StatusCode::OK);
-    let created = response_body_json(create);
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK);
     let client_id = created["id"].as_str().unwrap().to_string();
     assert_eq!(created["current_store_id"], work_id);
     assert_eq!(created["current_store_name"], "work");
@@ -57,31 +80,31 @@ fn client_instance_crud_and_store_mapping_round_trip() {
     assert_eq!(created["actions"]["can_enable"], false);
     assert_eq!(created["actions"]["can_delete"], true);
 
-    let list = handle_admin_client_instances_list(&state);
-    let list_body = response_body_json(list);
+    let (list_status, list_body) =
+        run_handler(handle_admin_client_instances_list(State(state.clone())));
+    assert_eq!(list_status, StatusCode::OK);
     assert_eq!(list_body["items"].as_array().unwrap().len(), 1);
     assert_eq!(list_body["items"][0]["id"], client_id);
     assert_eq!(list_body["items"][0]["current_store_name"], "work");
     assert_eq!(list_body["items"][0]["actions"]["can_disable"], true);
 
-    let delete_in_use = handle_admin_store_delete(&state, &p, &work_id, true);
-    assert_eq!(delete_in_use.status(), StatusCode::CONFLICT);
-    assert_eq!(response_body_json(delete_in_use)["code"], "store_in_use");
+    let (in_use_status, in_use_body) = delete_store(state.clone(), &p, &work_id, true);
+    assert_eq!(in_use_status, StatusCode::CONFLICT);
+    assert_eq!(in_use_body["code"], "store_in_use");
 
-    let update = handle_admin_client_instance_update(
-        &state,
-        &p,
-        &client_id,
-        &AdminClientInstanceUpdateRequest {
+    let (update_status, updated) = run_handler(handle_admin_client_instance_update(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(client_id.clone()),
+        Body(AdminClientInstanceUpdateRequest {
             display_name: Some("laptop-renamed".into()),
             current_store_id: Some(other_id.clone()),
             status: Some(AdminClientInstanceStatus::Disabled),
             cert_pem: None,
             auto_create_wrapper_assets: None,
-        },
-    );
-    assert_eq!(update.status(), StatusCode::OK);
-    let updated = response_body_json(update);
+        }),
+    ));
+    assert_eq!(update_status, StatusCode::OK);
     assert_eq!(updated["display_name"], "laptop-renamed");
     assert_eq!(updated["current_store_id"], other_id);
     assert_eq!(updated["current_store_name"], "other");
@@ -89,17 +112,20 @@ fn client_instance_crud_and_store_mapping_round_trip() {
     assert_eq!(updated["actions"]["can_disable"], false);
     assert_eq!(updated["actions"]["can_enable"], true);
 
-    let list_after_disable = response_body_json(handle_admin_client_instances_list(&state));
+    let (_, list_after_disable) =
+        run_handler(handle_admin_client_instances_list(State(state.clone())));
     assert_eq!(list_after_disable["items"].as_array().unwrap().len(), 1);
     assert_eq!(list_after_disable["items"][0]["id"], client_id);
     assert_eq!(list_after_disable["items"][0]["status"], "disabled");
 
-    let delete_old_store = handle_admin_store_delete(&state, &p, &work_id, false);
-    assert_eq!(delete_old_store.status(), StatusCode::OK);
+    let (delete_old_status, _) = delete_store(state.clone(), &p, &work_id, false);
+    assert_eq!(delete_old_status, StatusCode::OK);
 
-    let delete_client = handle_admin_client_instance_delete(&state, &p, &client_id);
-    assert_eq!(delete_client.status(), StatusCode::OK);
-    assert_eq!(response_body_json(delete_client)["ok"], true);
+    let (delete_client_status, delete_client_body) = run_handler(
+        handle_admin_client_instance_delete(State(state.clone()), Extension(p), Path(client_id)),
+    );
+    assert_eq!(delete_client_status, StatusCode::OK);
+    assert_eq!(delete_client_body["ok"], true);
 }
 
 #[test]
@@ -108,10 +134,10 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
     use underwrap_protocol::service::AdminWrapperPermissionUpsertRequest;
 
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -154,10 +180,10 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
     // The admin API addresses stores by id (the SPA's `storeName`
     // state is misleadingly named — it carries the store id).
     for instance in [&doomed_id, &survivor_id] {
-        let upsert = handle_admin_wrapper_permission_upsert(
-            &state,
-            &p,
-            &AdminWrapperPermissionUpsertRequest {
+        let (status, _) = run_handler(handle_admin_wrapper_permission_upsert(
+            State(state.clone()),
+            Extension(p.clone()),
+            Body(AdminWrapperPermissionUpsertRequest {
                 store: store_id.clone(),
                 permission: WrapperPermission {
                     client_instance: instance.clone(),
@@ -167,9 +193,9 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
                     writable: false,
                     reason: None,
                 },
-            },
-        );
-        assert_eq!(upsert.status(), StatusCode::OK);
+            }),
+        ));
+        assert_eq!(status, StatusCode::OK);
     }
 
     let before = load_policy_document(
@@ -183,8 +209,12 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
     .unwrap();
     assert_eq!(before.permissions.len(), 2);
 
-    let delete = handle_admin_client_instance_delete(&state, &p, &doomed_id);
-    assert_eq!(delete.status(), StatusCode::OK);
+    let (delete_status, _) = run_handler(handle_admin_client_instance_delete(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(doomed_id),
+    ));
+    assert_eq!(delete_status, StatusCode::OK);
 
     // The doomed instance's permission is gone; the survivor's
     // remains so we know we cascaded by id, not by store-wide nuke.
@@ -215,10 +245,10 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
     // already holds the new mapping.
     use underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID;
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let old_store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "old".into(),
@@ -227,7 +257,7 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
         },
     );
     let new_store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "new".into(),
@@ -267,19 +297,19 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
             .unwrap();
     }
 
-    let update = handle_admin_client_instance_update(
-        &state,
-        &p,
-        &instance_id,
-        &AdminClientInstanceUpdateRequest {
+    let (status, _) = run_handler(handle_admin_client_instance_update(
+        State(state.clone()),
+        Extension(p),
+        Path(instance_id.clone()),
+        Body(AdminClientInstanceUpdateRequest {
             display_name: None,
             current_store_id: Some(new_store_id.clone()),
             status: None,
             cert_pem: None,
             auto_create_wrapper_assets: None,
-        },
-    );
-    assert_eq!(update.status(), StatusCode::OK);
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(
         state
             .client_instances
@@ -295,10 +325,10 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
 #[test]
 fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -309,38 +339,36 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
 
     // Default: when the create request omits the flag the stored
     // value is false and the detail/list response reports it.
-    let create = handle_admin_client_instance_create(
-        &state,
-        &p,
-        &AdminClientInstanceCreateRequest {
+    let (status, created) = run_handler(handle_admin_client_instance_create(
+        State(state.clone()),
+        Extension(p.clone()),
+        Body(AdminClientInstanceCreateRequest {
             display_name: "default-flag".into(),
             current_store_id: store_id.clone(),
             status: AdminClientInstanceStatus::Active,
             cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
             issued_at: None,
             auto_create_wrapper_assets: None,
-        },
-    );
-    assert_eq!(create.status(), StatusCode::OK);
-    let created = response_body_json(create);
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(created["auto_create_wrapper_assets"], false);
     let id = created["id"].as_str().unwrap().to_string();
 
     // Update toggles it on.
-    let toggled = handle_admin_client_instance_update(
-        &state,
-        &p,
-        &id,
-        &AdminClientInstanceUpdateRequest {
+    let (toggled_status, toggled_body) = run_handler(handle_admin_client_instance_update(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(id.clone()),
+        Body(AdminClientInstanceUpdateRequest {
             display_name: None,
             current_store_id: None,
             status: None,
             cert_pem: None,
             auto_create_wrapper_assets: Some(true),
-        },
-    );
-    assert_eq!(toggled.status(), StatusCode::OK);
-    let toggled_body = response_body_json(toggled);
+        }),
+    ));
+    assert_eq!(toggled_status, StatusCode::OK);
     assert_eq!(toggled_body["auto_create_wrapper_assets"], true);
 
     // Persisted across a fresh load.
@@ -349,34 +377,34 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     assert!(reloaded.get(&id).unwrap().auto_create_wrapper_assets);
 
     // Update without the flag leaves it alone.
-    let kept = handle_admin_client_instance_update(
-        &state,
-        &p,
-        &id,
-        &AdminClientInstanceUpdateRequest {
+    let (kept_status, kept_body) = run_handler(handle_admin_client_instance_update(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(id.clone()),
+        Body(AdminClientInstanceUpdateRequest {
             display_name: Some("renamed".into()),
             current_store_id: None,
             status: None,
             cert_pem: None,
             auto_create_wrapper_assets: None,
-        },
-    );
-    assert_eq!(kept.status(), StatusCode::OK);
-    assert_eq!(response_body_json(kept)["auto_create_wrapper_assets"], true);
+        }),
+    ));
+    assert_eq!(kept_status, StatusCode::OK);
+    assert_eq!(kept_body["auto_create_wrapper_assets"], true);
 
     // And it can be toggled back off explicitly.
-    let off = handle_admin_client_instance_update(
-        &state,
-        &p,
-        &id,
-        &AdminClientInstanceUpdateRequest {
+    let (off_status, off_body) = run_handler(handle_admin_client_instance_update(
+        State(state.clone()),
+        Extension(p),
+        Path(id),
+        Body(AdminClientInstanceUpdateRequest {
             display_name: None,
             current_store_id: None,
             status: None,
             cert_pem: None,
             auto_create_wrapper_assets: Some(false),
-        },
-    );
-    assert_eq!(off.status(), StatusCode::OK);
-    assert_eq!(response_body_json(off)["auto_create_wrapper_assets"], false);
+        }),
+    ));
+    assert_eq!(off_status, StatusCode::OK);
+    assert_eq!(off_body["auto_create_wrapper_assets"], false);
 }

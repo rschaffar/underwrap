@@ -1,18 +1,30 @@
 //! Encrypted-store lifecycle: `unlock`, `lock`, `rotate-key`.
 
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
 use std::path::Path;
 use std::sync::Arc;
+
+use axum::Json;
+use axum::extract::{Path as AxumPath, State};
 use tracing::warn;
-
-use underwrap_protocol::service::AdminStoreRotateKeyResponse;
+use underwrap_protocol::service::{
+    AdminOkResponse, AdminStoreRotateKeyResponse, AdminStoreUnlockRequest, ServiceErrorResponse,
+};
 use underwrap_store::StorageBackend;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
-use crate::http::responses::{error_response, json_response, store_locked_response};
+use crate::admin_api::AdminError;
+use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{StoreState, save_store_records};
+use crate::users::Principal;
+
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(handle_admin_store_rotate_key))
+        .routes(routes!(handle_admin_store_unlock))
+        .routes(routes!(handle_admin_store_lock))
+}
 
 use super::{
     create_data_dir_secure, generate_master_key_bytes, master_key_hex, write_admin_store_audit,
@@ -36,43 +48,53 @@ fn rotation_lock(state: &AdminRuntimeState, store_id: &str) -> Arc<tokio::sync::
 /// the registry, and return the new key **exactly once**. Plain stores
 /// reject the operation; locked encrypted stores must be unlocked
 /// first.
-pub(super) async fn handle_admin_store_rotate_key(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    name: &str,
-) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    post,
+    path = "/v1/admin/stores/{name}/rotate-key",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("name" = String, Path, description = "Store id.")),
+    responses(
+        (status = 200, description = "Key rotated; old material persisted alongside the new one.", body = AdminStoreRotateKeyResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 500, description = "Rotation failed mid-flight.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_store_rotate_key(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+) -> Result<Json<AdminStoreRotateKeyResponse>, AdminError> {
     let (mut updated_record, dir, current_backend) = {
         let reg = state.stores.read().unwrap();
-        let Some(loaded) = reg.records.get(name) else {
-            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
-        };
+        let loaded = reg
+            .records
+            .get(&name)
+            .ok_or_else(AdminError::store_not_found)?;
         let record = loaded.record.clone();
         let dir = match &record.storage {
             underwrap_protocol::config::StorageConfig::Plain { .. } => {
-                return error_response(
-                    StatusCode::CONFLICT,
+                return Err(AdminError::conflict(
                     "not_encrypted",
                     "store is not encrypted; rotate-key only applies to encrypted backends",
-                );
+                ));
             }
-            underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.clone(),
+            underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.to_path_buf(),
         };
-        match reg.state.get(name) {
+        match reg.state.get(&name) {
             Some(StoreState::Unlocked(b)) => (record, dir, Arc::clone(b)),
-            Some(StoreState::Locked) => {
-                return store_locked_response(name);
-            }
+            Some(StoreState::Locked) => return Err(AdminError::store_locked(&name)),
             None => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                return Err(AdminError::internal_with_code(
                     "internal",
                     "store metadata present but registry state missing",
-                );
+                ));
             }
         }
     };
 
-    let rotate_lock = rotation_lock(state, name);
+    let rotate_lock = rotation_lock(&state, &name);
     let _rotate_guard = rotate_lock.lock().await;
 
     let new_key_bytes = generate_master_key_bytes();
@@ -82,34 +104,32 @@ pub(super) async fn handle_admin_store_rotate_key(
     // swap into place once every resource has migrated. The temp dir
     // is colocated with the data dir so `rename` is atomic on the
     // same filesystem.
-    let parent = match dir.parent() {
-        Some(p) => p.to_path_buf(),
-        None => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+    let parent = dir
+        .parent()
+        .ok_or_else(|| {
+            AdminError::internal_with_code(
                 "internal",
                 "encrypted store directory has no parent — cannot stage rotation",
-            );
-        }
-    };
+            )
+        })?
+        .to_path_buf();
     let stage_name = format!(".rotating-{}-{}", name, crate::ids::random_hex_8());
     let stage_dir = parent.join(&stage_name);
     if let Err(e) = create_data_dir_secure(&stage_dir) {
         write_admin_store_audit(
-            principal,
-            name,
+            &principal,
+            &name,
             "store.rotate-key",
             Some("stage-failed"),
             "failure",
         );
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AdminError::internal_with_code(
             "rotate_stage_failed",
-            &format!(
+            format!(
                 "creating rotation staging dir {}: {e:#}",
                 stage_dir.display()
             ),
-        );
+        ));
     }
     let new_backend =
         match underwrap_store::EncryptedBackend::open_with_key(&stage_dir, new_key_bytes) {
@@ -117,29 +137,26 @@ pub(super) async fn handle_admin_store_rotate_key(
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&stage_dir);
                 write_admin_store_audit(
-                    principal,
-                    name,
+                    &principal,
+                    &name,
                     "store.rotate-key",
                     Some("stage-failed"),
                     "failure",
                 );
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                return Err(AdminError::internal_with_code(
                     "rotate_stage_failed",
-                    &format!("opening rotation staging backend: {e:#}"),
-                );
+                    format!("opening rotation staging backend: {e:#}"),
+                ));
             }
         };
 
-    if let Err(resp) = reencrypt_into(
-        current_backend.as_ref(),
+    reencrypt_into(
+        &*current_backend,
         &new_backend,
         &stage_dir,
-        principal,
-        name,
-    ) {
-        return resp;
-    }
+        &principal,
+        &name,
+    )?;
 
     // Move the live data dir aside and swap the staged dir in. Both
     // renames are individually atomic; we attempt to undo the first
@@ -149,21 +166,20 @@ pub(super) async fn handle_admin_store_rotate_key(
     if let Err(e) = std::fs::rename(&dir, &backup_dir) {
         let _ = std::fs::remove_dir_all(&stage_dir);
         write_admin_store_audit(
-            principal,
-            name,
+            &principal,
+            &name,
             "store.rotate-key",
             Some("swap-failed"),
             "failure",
         );
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AdminError::internal_with_code(
             "rotate_swap_failed",
-            &format!(
+            format!(
                 "moving live data dir aside ({} → {}): {e:#}",
                 dir.display(),
                 backup_dir.display(),
             ),
-        );
+        ));
     }
     if let Err(e) = std::fs::rename(&stage_dir, &dir) {
         // Try to roll the first rename back so the live dir keeps
@@ -171,21 +187,20 @@ pub(super) async fn handle_admin_store_rotate_key(
         let _ = std::fs::rename(&backup_dir, &dir);
         let _ = std::fs::remove_dir_all(&stage_dir);
         write_admin_store_audit(
-            principal,
-            name,
+            &principal,
+            &name,
             "store.rotate-key",
             Some("swap-failed"),
             "failure",
         );
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AdminError::internal_with_code(
             "rotate_swap_failed",
-            &format!(
+            format!(
                 "promoting staged data dir ({} → {}): {e:#}",
                 stage_dir.display(),
                 dir.display(),
             ),
-        );
+        ));
     }
 
     // Open a fresh backend at the post-swap path so the registry
@@ -201,17 +216,16 @@ pub(super) async fn handle_admin_store_rotate_key(
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&backup_dir);
                 write_admin_store_audit(
-                    principal,
-                    name,
+                    &principal,
+                    &name,
                     "store.rotate-key",
                     Some("reopen-failed"),
                     "failure",
                 );
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &format!("parsing fresh rotation key back from hex: {e:#}"),
-                );
+                return Err(AdminError::internal(
+                    "parsing fresh rotation key back from hex",
+                    e,
+                ));
             }
         };
         match underwrap_store::EncryptedBackend::open_with_key(&dir, bytes) {
@@ -219,17 +233,16 @@ pub(super) async fn handle_admin_store_rotate_key(
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&backup_dir);
                 write_admin_store_audit(
-                    principal,
-                    name,
+                    &principal,
+                    &name,
                     "store.rotate-key",
                     Some("reopen-failed"),
                     "failure",
                 );
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                return Err(AdminError::internal_with_code(
                     "open_store_failed",
-                    &format!("opening rotated backend at {}: {e:#}", dir.display()),
-                );
+                    format!("opening rotated backend at {}: {e:#}", dir.display()),
+                ));
             }
         }
     };
@@ -248,47 +261,41 @@ pub(super) async fn handle_admin_store_rotate_key(
     {
         let mut reg = state.stores.write().unwrap();
         reg.state
-            .insert(name.to_string(), StoreState::Unlocked(rotated_backend));
-        if let Some(loaded) = reg.records.get_mut(name) {
+            .insert(name.clone(), StoreState::Unlocked(rotated_backend));
+        if let Some(loaded) = reg.records.get_mut(&name) {
             loaded.record = updated_record.clone();
         }
         if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
-                &format!("{e:#}"),
-            );
+                format!("{e:#}"),
+            ));
         }
     }
 
-    write_admin_store_audit(principal, name, "store.rotate-key", None, "success");
-    json_response(
-        StatusCode::OK,
-        &AdminStoreRotateKeyResponse {
-            key_hex,
-            warning:
-                "every resource in this store has been re-encrypted under the new master key. \
-                 the new key is shown only here — record it now in a password manager or other \
-                 trusted store. you will need it to unlock this store after the next backend \
-                 restart."
-                    .to_string(),
-        },
-    )
+    write_admin_store_audit(&principal, &name, "store.rotate-key", None, "success");
+    Ok(Json(AdminStoreRotateKeyResponse {
+        key_hex,
+        warning: "every resource in this store has been re-encrypted under the new master key. \
+             the new key is shown only here — record it now in a password manager or other \
+             trusted store. you will need it to unlock this store after the next backend \
+             restart."
+            .to_string(),
+    }))
 }
 
 /// Copy every resource (and the canary) from `from` to `to`,
 /// transparently decrypting under the old key and re-encrypting under
 /// the new one. On any failure the staged data directory is removed
-/// and a structured error response is returned for the rotate handler
+/// and a structured `AdminError` is returned for the rotate handler
 /// to surface to the operator.
-#[allow(clippy::result_large_err)]
 fn reencrypt_into(
     from: &dyn StorageBackend,
     to: &dyn StorageBackend,
     stage_dir: &Path,
-    principal: &crate::users::Principal,
+    principal: &Principal,
     store_name: &str,
-) -> std::result::Result<(), Response<Full<Bytes>>> {
+) -> Result<(), AdminError> {
     let ids = match from.list("") {
         Ok(ids) => ids,
         Err(e) => {
@@ -300,10 +307,9 @@ fn reencrypt_into(
                 Some("list-failed"),
                 "failure",
             );
-            return Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "rotate_list_failed",
-                &format!("listing existing resources for rotation: {e:#}"),
+                format!("listing existing resources for rotation: {e:#}"),
             ));
         }
     };
@@ -323,10 +329,9 @@ fn reencrypt_into(
             Some("canary-write-failed"),
             "failure",
         );
-        return Err(error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AdminError::internal_with_code(
             "rotate_canary_failed",
-            &format!("writing canary in staged data dir: {e:#}"),
+            format!("writing canary in staged data dir: {e:#}"),
         ));
     }
     for id in ids {
@@ -345,10 +350,9 @@ fn reencrypt_into(
                     Some("read-failed"),
                     "failure",
                 );
-                return Err(error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                return Err(AdminError::internal_with_code(
                     "rotate_read_failed",
-                    &format!("reading '{id}' for rotation: {e:#}"),
+                    format!("reading '{id}' for rotation: {e:#}"),
                 ));
             }
         };
@@ -361,10 +365,9 @@ fn reencrypt_into(
                 Some("write-failed"),
                 "failure",
             );
-            return Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "rotate_write_failed",
-                &format!("writing '{id}' to staged data dir: {e:#}"),
+                format!("writing '{id}' to staged data dir: {e:#}"),
             ));
         }
     }
@@ -378,130 +381,136 @@ fn reencrypt_into(
 /// the registry. Wrong keys never transition the registry to
 /// `Unlocked`; the registry stays `Locked` and the response surfaces a
 /// structured `key_mismatch` code.
-pub(crate) fn handle_admin_store_unlock(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    name: &str,
-    body: &underwrap_protocol::service::AdminStoreUnlockRequest,
-) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    post,
+    path = "/v1/admin/stores/{name}/unlock",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("name" = String, Path, description = "Store id.")),
+    request_body = AdminStoreUnlockRequest,
+    responses(
+        (status = 200, description = "Store unlocked.", body = AdminOkResponse),
+        (status = 400, description = "Wrong key / passphrase.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_store_unlock(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+    Body(body): Body<AdminStoreUnlockRequest>,
+) -> Result<Json<AdminOkResponse>, AdminError> {
     let dir = {
         let reg = state.stores.read().unwrap();
-        let Some(loaded) = reg.records.get(name) else {
-            return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
-        };
+        let loaded = reg
+            .records
+            .get(&name)
+            .ok_or_else(AdminError::store_not_found)?;
         match &loaded.record.storage {
             underwrap_protocol::config::StorageConfig::Plain { .. } => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
+                return Err(AdminError::bad_request(
                     "store_not_encrypted",
                     "plain stores are never locked",
-                );
+                ));
             }
-            underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.clone(),
+            underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.to_path_buf(),
         }
     };
-    match state.stores.read().unwrap().state.get(name) {
+    match state.stores.read().unwrap().state.get(&name) {
         Some(StoreState::Unlocked(_)) => {
-            return error_response(
-                StatusCode::CONFLICT,
+            return Err(AdminError::conflict(
                 "already_unlocked",
                 "store is already unlocked",
-            );
+            ));
         }
         Some(StoreState::Locked) => {}
         None => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "internal",
                 "store metadata present but registry state missing",
-            );
+            ));
         }
     }
     let key_bytes = match underwrap_store::parse_hex_key(&body.key_hex) {
         Ok(k) => k,
         Err(e) => {
             write_admin_store_audit(
-                principal,
-                name,
+                &principal,
+                &name,
                 "store.unlock",
                 Some("invalid-key-hex"),
                 "failure",
             );
-            return error_response(
-                StatusCode::BAD_REQUEST,
+            return Err(AdminError::bad_request(
                 "invalid_key_hex",
-                &format!("master key is not 64 hex characters: {e}"),
-            );
+                format!("master key is not 64 hex characters: {e}"),
+            ));
         }
     };
     let backend = match underwrap_store::EncryptedBackend::open_with_key(&dir, key_bytes) {
         Ok(b) => b,
         Err(e) => {
             write_admin_store_audit(
-                principal,
-                name,
+                &principal,
+                &name,
                 "store.unlock",
                 Some("open-failed"),
                 "failure",
             );
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "open_store_failed",
-                &format!("opening encrypted store at {}: {e:#}", dir.display()),
-            );
+                format!("opening encrypted store at {}: {e:#}", dir.display()),
+            ));
         }
     };
     match backend.read(underwrap_store::ENCRYPTED_CANARY_ID) {
         Ok(Some(plain)) if plain.as_ref() == underwrap_store::ENCRYPTED_CANARY_PLAINTEXT => {}
         Ok(Some(_)) => {
             write_admin_store_audit(
-                principal,
-                name,
+                &principal,
+                &name,
                 "store.unlock",
                 Some("canary-mismatch"),
                 "failure",
             );
-            return error_response(
-                StatusCode::FORBIDDEN,
+            return Err(AdminError::forbidden(
                 "key_mismatch",
                 "submitted key decrypts the canary but to unexpected content; refusing to unlock",
-            );
+            ));
         }
         Ok(None) => {
             write_admin_store_audit(
-                principal,
-                name,
+                &principal,
+                &name,
                 "store.unlock",
                 Some("canary-missing"),
                 "failure",
             );
-            return error_response(
-                StatusCode::FORBIDDEN,
+            return Err(AdminError::forbidden(
                 "key_mismatch",
                 "store has no unlock canary; refusing to unlock under an unverifiable key",
-            );
+            ));
         }
         Err(_) => {
             write_admin_store_audit(
-                principal,
-                name,
+                &principal,
+                &name,
                 "store.unlock",
                 Some("key-mismatch"),
                 "failure",
             );
-            return error_response(
-                StatusCode::FORBIDDEN,
+            return Err(AdminError::forbidden(
                 "key_mismatch",
                 "submitted key did not decrypt the unlock canary",
-            );
+            ));
         }
     }
     {
         let mut reg = state.stores.write().unwrap();
-        reg.unlock(name, Arc::new(backend));
+        reg.unlock(&name, Arc::new(backend));
     }
-    write_admin_store_audit(principal, name, "store.unlock", None, "success");
-    json_response(StatusCode::OK, &serde_json::json!({ "ok": true }))
+    write_admin_store_audit(&principal, &name, "store.unlock", None, "success");
+    Ok(Json(AdminOkResponse { ok: true }))
 }
 
 /// `POST /v1/admin/stores/{id}/lock` — drop the in-memory backend for
@@ -509,34 +518,54 @@ pub(crate) fn handle_admin_store_unlock(
 /// held `MasterKey` zeroes on drop. Plain stores reject the
 /// operation; already-locked stores succeed as a no-op so the admin
 /// SPA can call this without racing the current state.
-pub(super) fn handle_admin_store_lock(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    name: &str,
-) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    post,
+    path = "/v1/admin/stores/{name}/lock",
+    tag = "stores",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("name" = String, Path, description = "Store id.")),
+    responses(
+        (status = 200, description = "Store locked; in-memory key material wiped.", body = StoreLockResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_store_lock(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+) -> Result<Json<StoreLockResponse>, AdminError> {
     let mut reg = state.stores.write().unwrap();
-    let Some(loaded) = reg.records.get(name) else {
-        return error_response(StatusCode::NOT_FOUND, "not_found", "unknown store");
-    };
+    let loaded = reg
+        .records
+        .get(&name)
+        .ok_or_else(AdminError::store_not_found)?;
     if matches!(
         loaded.record.storage,
         underwrap_protocol::config::StorageConfig::Plain { .. }
     ) {
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "store_not_encrypted",
             "plain stores are never locked",
-        );
+        ));
     }
-    let was_locked = matches!(reg.state.get(name), Some(StoreState::Locked));
-    reg.lock(name);
+    let was_locked = matches!(reg.state.get(&name), Some(StoreState::Locked));
+    reg.lock(&name);
     drop(reg);
     let result = if was_locked { "noop" } else { "success" };
-    write_admin_store_audit(principal, name, "store.lock", None, result);
-    json_response(
-        StatusCode::OK,
-        &serde_json::json!({ "ok": true, "was_locked": was_locked }),
-    )
+    write_admin_store_audit(&principal, &name, "store.lock", None, result);
+    Ok(Json(StoreLockResponse {
+        ok: true,
+        was_locked,
+    }))
+}
+
+/// Response of `POST /v1/admin/stores/{name}/lock`. Carries the
+/// idempotence flag so the SPA can distinguish "we just locked the
+/// store" from "store was already locked when we got here".
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct StoreLockResponse {
+    pub ok: bool,
+    pub was_locked: bool,
 }
 
 #[cfg(test)]

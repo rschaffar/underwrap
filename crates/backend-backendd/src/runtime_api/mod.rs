@@ -23,12 +23,14 @@ use http_body_util::Full;
 use hyper::{Response, StatusCode};
 use tracing::warn;
 
-use crate::http::responses::{Body, error_response, store_locked_response};
+use crate::http::responses::Body;
+use crate::runtime_api::responses::{error_response, store_locked_response};
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::RegistryLookupError;
 
 pub(crate) mod invocations;
 pub(crate) mod principal;
+pub(crate) mod responses;
 pub(crate) mod wrappers;
 
 use principal::resolve_runtime_client;

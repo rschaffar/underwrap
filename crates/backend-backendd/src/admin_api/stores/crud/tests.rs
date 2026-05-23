@@ -1,37 +1,83 @@
-use super::*;
-use crate::test_support::{
-    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state, response_body_json,
-};
+use std::sync::Arc;
+
+use axum::Extension;
+use axum::extract::{Path, Query, State};
 use hyper::StatusCode;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::service::{
     AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreUpdateRequest,
 };
 
+use super::*;
+use crate::http::responses::Body;
+use crate::test_support::{
+    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state, run_handler,
+};
+
+fn create_store(
+    state: Arc<crate::runtime_state::AdminRuntimeState>,
+    p: &crate::users::Principal,
+    body: &AdminStoreCreateRequest,
+) -> (StatusCode, serde_json::Value) {
+    run_handler(handle_admin_store_create(
+        State(state),
+        Extension(p.clone()),
+        Body(body.clone()),
+    ))
+}
+
+fn store_detail(
+    state: Arc<crate::runtime_state::AdminRuntimeState>,
+    store_id: &str,
+) -> (StatusCode, serde_json::Value) {
+    run_handler(handle_admin_store_detail(
+        State(state),
+        Path(store_id.to_string()),
+    ))
+}
+
+fn store_delete(
+    state: Arc<crate::runtime_state::AdminRuntimeState>,
+    p: &crate::users::Principal,
+    store_id: &str,
+    force: bool,
+) -> (StatusCode, serde_json::Value) {
+    let q = DeleteQuery {
+        force: force.then(|| "true".to_string()),
+    };
+    run_handler(handle_admin_store_delete(
+        State(state),
+        Extension(p.clone()),
+        Path(store_id.to_string()),
+        Query(q),
+    ))
+}
+
 #[test]
 fn list_returns_empty_when_nothing_configured() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
-    let resp = handle_admin_stores_list(&state);
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = response_body_json(resp);
+    let state = Arc::new(crud_state(tmp.path()));
+    let (status, body) = run_handler(handle_admin_stores_list(State(state)));
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["items"].as_array().unwrap().len(), 0);
 }
 
 #[test]
 fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let create = AdminStoreCreateRequest {
-        name: "work".to_string(),
-        backend: AdminStoreBackendKind::Plain,
-        description: Some("the work store".into()),
-    };
-    let resp = handle_admin_store_create(&state, &p, &create);
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, body) = create_store(
+        state.clone(),
+        &p,
+        &AdminStoreCreateRequest {
+            name: "work".into(),
+            backend: AdminStoreBackendKind::Plain,
+            description: Some("the work store".into()),
+        },
+    );
+    assert_eq!(status, StatusCode::OK);
 
-    let body = response_body_json(resp);
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
     let expected_dir = tmp.path().join("data").join(&store_id);
     assert_eq!(body["store"]["name"], "work");
@@ -46,8 +92,7 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     let registry_json = std::fs::read_to_string(&state.stores_file).unwrap();
     assert!(registry_json.contains(&store_id));
     // The runtime registry sees it.
-    let resp = handle_admin_stores_list(&state);
-    let body = response_body_json(resp);
+    let (_, body) = run_handler(handle_admin_stores_list(State(state.clone())));
     let items = body["items"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], store_id);
@@ -59,45 +104,42 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     assert_eq!(items[0]["actions"]["can_delete_now"], true);
     assert_eq!(items[0]["actions"]["can_force_delete"], false);
     // Detail.
-    let resp = handle_admin_store_detail(&state, &store_id);
-    let body = response_body_json(resp);
-    assert_eq!(body["__status"], 200);
+    let (status, body) = store_detail(state.clone(), &store_id);
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["dir"], expected_dir.to_string_lossy().to_string());
     assert_eq!(body["usage"]["mapped_client_instance_count"], 0);
     assert_eq!(body["usage"]["has_secrets"], false);
     assert_eq!(body["actions"]["can_edit_metadata"], true);
     assert_eq!(body["actions"]["can_delete_now"], true);
     // Update description.
-    let resp = handle_admin_store_update(
-        &state,
-        &p,
-        &store_id,
-        &AdminStoreUpdateRequest {
+    let (status, _) = run_handler(handle_admin_store_update(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+        Body(AdminStoreUpdateRequest {
             name: None,
             description: Some("renamed".into()),
-        },
-    );
-    assert_eq!(resp.status(), StatusCode::OK);
-    let resp = handle_admin_store_detail(&state, &store_id);
-    assert_eq!(response_body_json(resp)["description"], "renamed");
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = store_detail(state.clone(), &store_id);
+    assert_eq!(body["description"], "renamed");
     // Clearing description with an empty string nulls it out.
-    let resp = handle_admin_store_update(
-        &state,
-        &p,
-        &store_id,
-        &AdminStoreUpdateRequest {
+    let (status, _) = run_handler(handle_admin_store_update(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+        Body(AdminStoreUpdateRequest {
             name: None,
             description: Some(String::new()),
-        },
-    );
-    assert_eq!(resp.status(), StatusCode::OK);
-    let resp = handle_admin_store_detail(&state, &store_id);
-    let body = response_body_json(resp);
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = store_detail(state.clone(), &store_id);
     assert!(!body.as_object().unwrap().contains_key("description"));
     // Delete (empty store).
-    let resp = handle_admin_store_delete(&state, &p, &store_id, false);
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = response_body_json(resp);
+    let (status, body) = store_delete(state.clone(), &p, &store_id, false);
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], true);
     assert!(!body.as_object().unwrap().contains_key("cleanup_hint"));
     assert!(
@@ -111,10 +153,11 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
 #[test]
 fn create_refuses_when_stores_data_root_unconfigured() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut state = crud_state(tmp.path());
-    state.stores_data_root = None;
-    let resp = handle_admin_store_create(
-        &state,
+    let mut owned = crud_state(tmp.path());
+    owned.stores_data_root = None;
+    let state = Arc::new(owned);
+    let (status, body) = create_store(
+        state,
         &admin_principal(),
         &AdminStoreCreateRequest {
             name: "stray".into(),
@@ -122,35 +165,34 @@ fn create_refuses_when_stores_data_root_unconfigured() {
             description: None,
         },
     );
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = response_body_json(resp);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["code"], "data_root_not_configured");
 }
 
 #[test]
 fn create_refuses_duplicate_name() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let req = AdminStoreCreateRequest {
-        name: "work".to_string(),
+        name: "work".into(),
         backend: AdminStoreBackendKind::Plain,
         description: None,
     };
-    let _first = handle_admin_store_create(&state, &p, &req);
-    let resp = handle_admin_store_create(&state, &p, &req);
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body = response_body_json(resp);
+    let (first_status, _) = create_store(state.clone(), &p, &req);
+    assert_eq!(first_status, StatusCode::OK);
+    let (status, body) = create_store(state, &p, &req);
+    assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "store_name_already_exists");
 }
 
 #[test]
 fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -167,13 +209,12 @@ fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
             .unwrap();
     }
     // Without force → 409 + code store_not_empty.
-    let resp = handle_admin_store_delete(&state, &p, &store_id, false);
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    assert_eq!(response_body_json(resp)["code"], "store_not_empty");
+    let (status, body) = store_delete(state.clone(), &p, &store_id, false);
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "store_not_empty");
     // With force → 200 + cleanup_hint pointing at the data dir.
-    let resp = handle_admin_store_delete(&state, &p, &store_id, true);
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = response_body_json(resp);
+    let (status, body) = store_delete(state.clone(), &p, &store_id, true);
+    assert_eq!(status, StatusCode::OK);
     let hint = body["cleanup_hint"]
         .as_str()
         .expect("force-delete must include a cleanup_hint when non-empty");
@@ -183,10 +224,10 @@ fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
 #[test]
 fn create_plain_store_returns_no_key_hex() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let resp = handle_admin_store_create(
-        &state,
+    let (status, body) = create_store(
+        state,
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -194,8 +235,7 @@ fn create_plain_store_returns_no_key_hex() {
             description: None,
         },
     );
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = response_body_json(resp);
+    assert_eq!(status, StatusCode::OK);
     assert!(
         !body.as_object().unwrap().contains_key("key_hex"),
         "plain stores must not carry a key_hex; got {body:?}",
@@ -207,10 +247,10 @@ fn create_plain_store_returns_no_key_hex() {
 #[test]
 fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let resp = handle_admin_store_create(
-        &state,
+    let (status, body) = create_store(
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "vault".into(),
@@ -218,12 +258,12 @@ fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
             description: None,
         },
     );
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = response_body_json(resp);
+    assert_eq!(status, StatusCode::OK);
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
     let key_hex = body["key_hex"]
         .as_str()
-        .expect("encrypted create must include key_hex");
+        .expect("encrypted create must include key_hex")
+        .to_string();
     assert_eq!(key_hex.len(), 64, "key_hex must be 32 bytes hex-encoded");
     assert!(
         key_hex.chars().all(|c| c.is_ascii_hexdigit()),
@@ -264,23 +304,23 @@ fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
 
     // The detail response carries the data dir and `locked=false`
     // but never echoes the key value.
-    let resp = handle_admin_store_detail(&state, &store_id);
-    let body = response_body_json(resp);
+    let (_, body) = store_detail(state, &store_id);
     assert_eq!(body["backend"], "encrypted");
     assert_eq!(body["locked"], false);
     let body_str = serde_json::to_string(&body).unwrap();
     assert!(
-        !body_str.contains(key_hex),
+        !body_str.contains(&key_hex),
         "key material leaked into detail response: {body_str}",
     );
 }
+
 #[test]
 fn canary_is_hidden_from_admin_has_secrets_view() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let resp = handle_admin_store_create(
-        &state,
+    let (_, body) = create_store(
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "vault".into(),
@@ -288,23 +328,20 @@ fn canary_is_hidden_from_admin_has_secrets_view() {
             description: None,
         },
     );
-    let store_id = response_body_json(resp)["store"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let store_id = body["store"]["id"].as_str().unwrap().to_string();
     // Fresh encrypted store has only the canary; admin view must
     // not flag it as having secrets.
-    let detail = response_body_json(handle_admin_store_detail(&state, &store_id));
+    let (_, detail) = store_detail(state, &store_id);
     assert_eq!(detail["usage"]["has_secrets"], false);
 }
 
 #[test]
 fn store_management_view_reflects_usage_for_authenticated_user() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let admin = admin_principal();
     let plain_id = create_store_for_test(
-        &state,
+        state.clone(),
         &admin,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -313,7 +350,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
         },
     );
     let encrypted_id = create_store_for_test(
-        &state,
+        state.clone(),
         &admin,
         &AdminStoreCreateRequest {
             name: "vault".into(),
@@ -347,7 +384,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
         },
     );
 
-    let list = response_body_json(handle_admin_stores_list(&state));
+    let (_, list) = run_handler(handle_admin_stores_list(State(state.clone())));
     let items = list["items"].as_array().unwrap();
     let plain = items.iter().find(|item| item["id"] == plain_id).unwrap();
     assert_eq!(plain["usage"]["mapped_client_instance_count"], 1);
@@ -368,7 +405,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
     assert_eq!(encrypted["actions"]["can_delete_now"], false);
     assert_eq!(encrypted["actions"]["can_force_delete"], true);
 
-    let detail = response_body_json(handle_admin_store_detail(&state, &plain_id));
+    let (_, detail) = store_detail(state, &plain_id);
     assert_eq!(detail["usage"]["mapped_client_instance_count"], 1);
     assert_eq!(detail["usage"]["has_secrets"], true);
     assert_eq!(detail["actions"]["can_edit_metadata"], true);

@@ -10,10 +10,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -24,9 +22,10 @@ use underwrap_protocol::service::{
     ServiceErrorResponse,
 };
 
+use crate::admin_api::AdminError;
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::policy::drop_client_instance_permissions;
-use crate::http::responses::{Body, error_response, json_response};
+use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::users::Principal;
 
@@ -131,18 +130,56 @@ fn admin_client_instance_detail(
     }
 }
 
-pub(crate) fn handle_admin_client_instances_list(
-    state: &AdminRuntimeState,
-) -> Response<Full<Bytes>> {
-    let store_names = current_store_names(state);
+/// Look up the display name of `store_id` in the live registry.
+fn resolve_store_name(state: &AdminRuntimeState, store_id: &str) -> Result<String, AdminError> {
+    state
+        .stores
+        .read()
+        .unwrap()
+        .records
+        .get(store_id)
+        .map(|loaded| loaded.record.name.clone())
+        .ok_or_else(|| {
+            AdminError::internal_with_code(
+                "unknown_store",
+                "client instance references an unknown store",
+            )
+        })
+}
+
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(
+            handle_admin_client_instances_list,
+            handle_admin_client_instance_create
+        ))
+        .routes(routes!(
+            handle_admin_client_instance_detail,
+            handle_admin_client_instance_update,
+            handle_admin_client_instance_delete
+        ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/admin/client-instances",
+    tag = "client_instances",
+    security(("session_cookie" = [])),
+    responses(
+        (status = 200, description = "All client instances with action state and store mapping.", body = AdminClientInstancesListResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_client_instances_list(
+    State(state): State<Arc<AdminRuntimeState>>,
+) -> Result<Json<AdminClientInstancesListResponse>, AdminError> {
+    let store_names = current_store_names(&state);
     let mut items = Vec::new();
     for record in state.client_instances.read().unwrap().values() {
         let Some(current_store_name) = store_names.get(&record.current_store_id).cloned() else {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(AdminError::internal_with_code(
                 "unknown_store",
                 "client instance references an unknown store",
-            );
+            ));
         };
         let actions = admin_client_instance_actions(record);
         items.push(admin_client_instance_list_item(
@@ -152,70 +189,81 @@ pub(crate) fn handle_admin_client_instances_list(
         ));
     }
     items.sort_by(|a, b| a.display_name.cmp(&b.display_name).then(a.id.cmp(&b.id)));
-    json_response(StatusCode::OK, &AdminClientInstancesListResponse { items })
+    Ok(Json(AdminClientInstancesListResponse { items }))
 }
 
-pub(crate) fn handle_admin_client_instance_detail(
-    state: &AdminRuntimeState,
-    id: &str,
-) -> Response<Full<Bytes>> {
-    let store_names = current_store_names(state);
-    match state.client_instances.read().unwrap().get(id) {
-        Some(record) => {
-            let Some(current_store_name) = store_names.get(&record.current_store_id).cloned()
-            else {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "unknown_store",
-                    "client instance references an unknown store",
-                );
-            };
-            let actions = admin_client_instance_actions(record);
-            json_response(
-                StatusCode::OK,
-                &admin_client_instance_detail(record, current_store_name, actions),
-            )
-        }
-        None => error_response(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "unknown client instance",
-        ),
-    }
+#[utoipa::path(
+    get,
+    path = "/v1/admin/client-instances/{id}",
+    tag = "client_instances",
+    security(("session_cookie" = [])),
+    params(("id" = String, Path, description = "Client instance id.")),
+    responses(
+        (status = 200, description = "Client instance detail.", body = AdminClientInstanceDetailResponse),
+        (status = 404, description = "Instance not found.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_client_instance_detail(
+    State(state): State<Arc<AdminRuntimeState>>,
+    Path(id): Path<String>,
+) -> Result<Json<AdminClientInstanceDetailResponse>, AdminError> {
+    let store_names = current_store_names(&state);
+    let instances = state.client_instances.read().unwrap();
+    let record = instances
+        .get(&id)
+        .ok_or_else(|| AdminError::not_found("unknown client instance"))?;
+    let Some(current_store_name) = store_names.get(&record.current_store_id).cloned() else {
+        return Err(AdminError::internal_with_code(
+            "unknown_store",
+            "client instance references an unknown store",
+        ));
+    };
+    let actions = admin_client_instance_actions(record);
+    Ok(Json(admin_client_instance_detail(
+        record,
+        current_store_name,
+        actions,
+    )))
 }
 
-pub(crate) fn handle_admin_client_instance_create(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    body: &AdminClientInstanceCreateRequest,
-) -> Response<Full<Bytes>> {
+#[utoipa::path(
+    post,
+    path = "/v1/admin/client-instances",
+    tag = "client_instances",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminClientInstanceCreateRequest,
+    responses(
+        (status = 200, description = "Client instance registered.", body = AdminClientInstanceDetailResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 409, description = "Instance id already exists.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_client_instance_create(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Body(body): Body<AdminClientInstanceCreateRequest>,
+) -> Result<Json<AdminClientInstanceDetailResponse>, AdminError> {
     let display_name = body.display_name.trim();
     if display_name.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "invalid_display_name",
             "display name must not be empty",
-        );
+        ));
     }
     let display_name = display_name.to_string();
-    let current_credential = match crate::runtime_clients::current_credential_from_pem(
-        body.cert_pem.clone(),
-        body.issued_at,
-    ) {
-        Ok(current) => current,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_client_certificate",
-                &format!("parsing client certificate: {e:#}"),
-            );
-        }
-    };
+    let current_credential =
+        crate::runtime_clients::current_credential_from_pem(body.cert_pem.clone(), body.issued_at)
+            .map_err(|e| {
+                AdminError::bad_request(
+                    "invalid_client_certificate",
+                    format!("parsing client certificate: {e:#}"),
+                )
+            })?;
     let cert_fingerprint = current_credential.cert_fingerprint.clone();
     {
         let stores = state.stores.read().unwrap();
         if !stores.records.contains_key(&body.current_store_id) {
-            return error_response(StatusCode::BAD_REQUEST, "unknown_store", "unknown store");
+            return Err(AdminError::bad_request("unknown_store", "unknown store"));
         }
     }
     let id = crate::ids::fresh_id("inst", |candidate| {
@@ -230,24 +278,19 @@ pub(crate) fn handle_admin_client_instance_create(
         .values()
         .any(|existing| existing.display_name.eq_ignore_ascii_case(&display_name))
     {
-        return error_response(
-            StatusCode::CONFLICT,
+        return Err(AdminError::conflict(
             "display_name_already_exists",
-            &format!(
-                "client instance display name '{}' already exists",
-                display_name
-            ),
-        );
+            format!("client instance display name '{display_name}' already exists"),
+        ));
     }
     if instances
         .values()
         .any(|existing| existing.current_credential.cert_fingerprint == cert_fingerprint)
     {
-        return error_response(
-            StatusCode::CONFLICT,
+        return Err(AdminError::conflict(
             "credential_already_exists",
             "client credential fingerprint already exists",
-        );
+        ));
     }
     let record = crate::runtime_clients::ClientInstanceRecord {
         id: id.clone(),
@@ -263,12 +306,12 @@ pub(crate) fn handle_admin_client_instance_create(
         crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
     {
         instances.remove(&id);
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AdminError::internal_with_code(
             "write_client_instances_failed",
-            &format!("{e:#}"),
-        );
+            format!("{e:#}"),
+        ));
     }
+    drop(instances);
     write_admin_client_instance_audit(
         &principal.username,
         &id,
@@ -276,285 +319,13 @@ pub(crate) fn handle_admin_client_instance_create(
         None,
         "success",
     );
-    let current_store_name = {
-        let stores = state.stores.read().unwrap();
-        match stores.records.get(&record.current_store_id) {
-            Some(store) => store.record.name.clone(),
-            None => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "unknown_store",
-                    "client instance references an unknown store",
-                );
-            }
-        }
-    };
+    let current_store_name = resolve_store_name(&state, &record.current_store_id)?;
     let actions = admin_client_instance_actions(&record);
-    json_response(
-        StatusCode::OK,
-        &admin_client_instance_detail(&record, current_store_name, actions),
-    )
-}
-
-pub(crate) fn handle_admin_client_instance_update(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    id: &str,
-    body: &AdminClientInstanceUpdateRequest,
-) -> Response<Full<Bytes>> {
-    let mut instances = state.client_instances.write().unwrap();
-    let Some(existing) = instances.get(id).cloned() else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "unknown client instance",
-        );
-    };
-    let old_store_id = existing.current_store_id.clone();
-    let mut updated = existing;
-    if let Some(display_name) = &body.display_name {
-        let display_name = display_name.trim();
-        if display_name.is_empty() {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_display_name",
-                "display name must not be empty",
-            );
-        }
-        let display_name = display_name.to_string();
-        if instances.iter().any(|(other_id, other)| {
-            other_id != id && other.display_name.eq_ignore_ascii_case(&display_name)
-        }) {
-            return error_response(
-                StatusCode::CONFLICT,
-                "display_name_already_exists",
-                &format!(
-                    "client instance display name '{}' already exists",
-                    display_name
-                ),
-            );
-        }
-        updated.display_name = display_name;
-    }
-    if let Some(current_store_id) = &body.current_store_id {
-        if !state
-            .stores
-            .read()
-            .unwrap()
-            .records
-            .contains_key(current_store_id)
-        {
-            return error_response(StatusCode::BAD_REQUEST, "unknown_store", "unknown store");
-        }
-        updated.current_store_id = current_store_id.clone();
-    }
-    if let Some(status) = body.status {
-        updated.status = client_instance_status_from_wire(status);
-    }
-    if let Some(cert_pem) = &body.cert_pem {
-        let now = crate::users::now_epoch_secs();
-        let new_credential = match crate::runtime_clients::current_credential_from_pem(
-            cert_pem.clone(),
-            Some(now),
-        ) {
-            Ok(current) => current,
-            Err(e) => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_client_certificate",
-                    &format!("parsing client certificate: {e:#}"),
-                );
-            }
-        };
-        if instances.iter().any(|(other_id, other)| {
-            other_id != id
-                && other.current_credential.cert_fingerprint == new_credential.cert_fingerprint
-        }) {
-            return error_response(
-                StatusCode::CONFLICT,
-                "credential_already_exists",
-                "client credential fingerprint already exists",
-            );
-        }
-        updated.current_credential = new_credential;
-    }
-    if let Some(flag) = body.auto_create_wrapper_assets {
-        updated.auto_create_wrapper_assets = flag;
-    }
-    instances.insert(id.to_string(), updated.clone());
-    if let Err(e) =
-        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
-    {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "write_client_instances_failed",
-            &format!("{e:#}"),
-        );
-    }
-    drop(instances);
-    if old_store_id != updated.current_store_id
-        && let Err(e) = drop_client_instance_permissions(state, &old_store_id, id)
-    {
-        // Best-effort: log and continue. The remap already persisted
-        // to disk, so failing the response with 500 would leave the
-        // caller thinking the update did not take while the registry
-        // already holds the new mapping. Mirrors the delete path's
-        // treatment of the same cascade.
-        tracing::warn!(
-            client_instance = %id,
-            store = %old_store_id,
-            err = %format!("{e:#}"),
-            "failed to strip wrapper permissions for remapped client instance",
-        );
-    }
-    write_admin_client_instance_audit(
-        &principal.username,
-        id,
-        "client-instance.update",
-        None,
-        "success",
-    );
-    let current_store_name = {
-        let stores = state.stores.read().unwrap();
-        match stores.records.get(&updated.current_store_id) {
-            Some(store) => store.record.name.clone(),
-            None => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "unknown_store",
-                    "client instance references an unknown store",
-                );
-            }
-        }
-    };
-    let actions = admin_client_instance_actions(&updated);
-    json_response(
-        StatusCode::OK,
-        &admin_client_instance_detail(&updated, current_store_name, actions),
-    )
-}
-
-pub(crate) fn handle_admin_client_instance_delete(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    id: &str,
-) -> Response<Full<Bytes>> {
-    let mut instances = state.client_instances.write().unwrap();
-    let Some(removed) = instances.remove(id) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "unknown client instance",
-        );
-    };
-    if let Err(e) =
-        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
-    {
-        // Roll the in-memory state back so the next request sees the same
-        // view as the on-disk file.
-        instances.insert(id.to_string(), removed);
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "write_client_instances_failed",
-            &format!("{e:#}"),
-        );
-    }
-    drop(instances);
-    // Cascade: strip every wrapper permission keyed on this client
-    // instance id from the policy document of the store the instance
-    // was last bound to. Without this, the rows linger forever as
-    // "stale" entries that the SPA renders as nameless columns in the
-    // wrapper-permissions table and that grant the same authorization
-    // back if the same client instance id is ever reused.
-    if let Err(e) = drop_client_instance_permissions(state, &removed.current_store_id, id) {
-        // Best-effort: log and continue. The instance is already gone from
-        // the registry, so leaving orphaned policy rows is preferable to
-        // failing the delete (and leaving the operator with no way to
-        // remove the client instance at all).
-        tracing::warn!(
-            client_instance = %id,
-            store = %removed.current_store_id,
-            err = %format!("{e:#}"),
-            "failed to strip wrapper permissions for deleted client instance",
-        );
-    }
-    write_admin_client_instance_audit(
-        &principal.username,
-        id,
-        "client-instance.delete",
-        None,
-        "success",
-    );
-    json_response(
-        StatusCode::OK,
-        &underwrap_protocol::service::AdminOkResponse { ok: true },
-    )
-}
-
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
-    OpenApiRouter::new()
-        .routes(routes!(
-            axum_client_instances_list,
-            axum_client_instances_create
-        ))
-        .routes(routes!(
-            axum_client_instances_detail,
-            axum_client_instances_update,
-            axum_client_instances_delete
-        ))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/admin/client-instances",
-    tag = "client_instances",
-    security(("session_cookie" = [])),
-    responses(
-        (status = 200, description = "All client instances with action state and store mapping.", body = AdminClientInstancesListResponse),
-    ),
-)]
-async fn axum_client_instances_list(
-    State(state): State<Arc<AdminRuntimeState>>,
-) -> Response<Full<Bytes>> {
-    handle_admin_client_instances_list(&state)
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/client-instances",
-    tag = "client_instances",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminClientInstanceCreateRequest,
-    responses(
-        (status = 200, description = "Client instance registered.", body = AdminClientInstanceDetailResponse),
-        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 409, description = "Instance id already exists.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_client_instances_create(
-    State(state): State<Arc<AdminRuntimeState>>,
-    axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<AdminClientInstanceCreateRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_client_instance_create(&state, &principal, &parsed)
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/admin/client-instances/{id}",
-    tag = "client_instances",
-    security(("session_cookie" = [])),
-    params(("id" = String, Path, description = "Client instance id.")),
-    responses(
-        (status = 200, description = "Client instance detail.", body = AdminClientInstanceDetailResponse),
-        (status = 404, description = "Instance not found.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_client_instances_detail(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Path(id): Path<String>,
-) -> Response<Full<Bytes>> {
-    handle_admin_client_instance_detail(&state, &id)
+    Ok(Json(admin_client_instance_detail(
+        &record,
+        current_store_name,
+        actions,
+    )))
 }
 
 #[utoipa::path(
@@ -570,13 +341,116 @@ async fn axum_client_instances_detail(
         (status = 404, description = "Instance / target store not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_client_instances_update(
+pub(crate) async fn handle_admin_client_instance_update(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
-    Body(parsed): Body<AdminClientInstanceUpdateRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_client_instance_update(&state, &principal, &id, &parsed)
+    Body(body): Body<AdminClientInstanceUpdateRequest>,
+) -> Result<Json<AdminClientInstanceDetailResponse>, AdminError> {
+    let mut instances = state.client_instances.write().unwrap();
+    let existing = instances
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| AdminError::not_found("unknown client instance"))?;
+    let old_store_id = existing.current_store_id.clone();
+    let mut updated = existing;
+    if let Some(display_name) = &body.display_name {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err(AdminError::bad_request(
+                "invalid_display_name",
+                "display name must not be empty",
+            ));
+        }
+        let display_name = display_name.to_string();
+        if instances.iter().any(|(other_id, other)| {
+            other_id != &id && other.display_name.eq_ignore_ascii_case(&display_name)
+        }) {
+            return Err(AdminError::conflict(
+                "display_name_already_exists",
+                format!("client instance display name '{display_name}' already exists"),
+            ));
+        }
+        updated.display_name = display_name;
+    }
+    if let Some(current_store_id) = &body.current_store_id {
+        if !state
+            .stores
+            .read()
+            .unwrap()
+            .records
+            .contains_key(current_store_id)
+        {
+            return Err(AdminError::bad_request("unknown_store", "unknown store"));
+        }
+        updated.current_store_id = current_store_id.clone();
+    }
+    if let Some(status) = body.status {
+        updated.status = client_instance_status_from_wire(status);
+    }
+    if let Some(cert_pem) = &body.cert_pem {
+        let now = crate::users::now_epoch_secs();
+        let new_credential =
+            crate::runtime_clients::current_credential_from_pem(cert_pem.clone(), Some(now))
+                .map_err(|e| {
+                    AdminError::bad_request(
+                        "invalid_client_certificate",
+                        format!("parsing client certificate: {e:#}"),
+                    )
+                })?;
+        if instances.iter().any(|(other_id, other)| {
+            other_id != &id
+                && other.current_credential.cert_fingerprint == new_credential.cert_fingerprint
+        }) {
+            return Err(AdminError::conflict(
+                "credential_already_exists",
+                "client credential fingerprint already exists",
+            ));
+        }
+        updated.current_credential = new_credential;
+    }
+    if let Some(flag) = body.auto_create_wrapper_assets {
+        updated.auto_create_wrapper_assets = flag;
+    }
+    instances.insert(id.clone(), updated.clone());
+    if let Err(e) =
+        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
+    {
+        return Err(AdminError::internal_with_code(
+            "write_client_instances_failed",
+            format!("{e:#}"),
+        ));
+    }
+    drop(instances);
+    if old_store_id != updated.current_store_id
+        && let Err(e) = drop_client_instance_permissions(&state, &old_store_id, &id)
+    {
+        // Best-effort: log and continue. The remap already persisted
+        // to disk, so failing the response with 500 would leave the
+        // caller thinking the update did not take while the registry
+        // already holds the new mapping. Mirrors the delete path's
+        // treatment of the same cascade.
+        tracing::warn!(
+            client_instance = %id,
+            store = %old_store_id,
+            err = %format!("{e:#}"),
+            "failed to strip wrapper permissions for remapped client instance",
+        );
+    }
+    write_admin_client_instance_audit(
+        &principal.username,
+        &id,
+        "client-instance.update",
+        None,
+        "success",
+    );
+    let current_store_name = resolve_store_name(&state, &updated.current_store_id)?;
+    let actions = admin_client_instance_actions(&updated);
+    Ok(Json(admin_client_instance_detail(
+        &updated,
+        current_store_name,
+        actions,
+    )))
 }
 
 #[utoipa::path(
@@ -590,12 +464,53 @@ async fn axum_client_instances_update(
         (status = 404, description = "Instance not found.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_client_instances_delete(
+pub(crate) async fn handle_admin_client_instance_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
-) -> Response<Full<Bytes>> {
-    handle_admin_client_instance_delete(&state, &principal, &id)
+) -> Result<Json<AdminOkResponse>, AdminError> {
+    let mut instances = state.client_instances.write().unwrap();
+    let removed = instances
+        .remove(&id)
+        .ok_or_else(|| AdminError::not_found("unknown client instance"))?;
+    if let Err(e) =
+        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
+    {
+        // Roll the in-memory state back so the next request sees the same
+        // view as the on-disk file.
+        instances.insert(id.clone(), removed);
+        return Err(AdminError::internal_with_code(
+            "write_client_instances_failed",
+            format!("{e:#}"),
+        ));
+    }
+    drop(instances);
+    // Cascade: strip every wrapper permission keyed on this client
+    // instance id from the policy document of the store the instance
+    // was last bound to. Without this, the rows linger forever as
+    // "stale" entries that the SPA renders as nameless columns in the
+    // wrapper-permissions table and that grant the same authorization
+    // back if the same client instance id is ever reused.
+    if let Err(e) = drop_client_instance_permissions(&state, &removed.current_store_id, &id) {
+        // Best-effort: log and continue. The instance is already gone from
+        // the registry, so leaving orphaned policy rows is preferable to
+        // failing the delete (and leaving the operator with no way to
+        // remove the client instance at all).
+        tracing::warn!(
+            client_instance = %id,
+            store = %removed.current_store_id,
+            err = %format!("{e:#}"),
+            "failed to strip wrapper permissions for deleted client instance",
+        );
+    }
+    write_admin_client_instance_audit(
+        &principal.username,
+        &id,
+        "client-instance.delete",
+        None,
+        "success",
+    );
+    Ok(Json(AdminOkResponse { ok: true }))
 }
 
 #[cfg(test)]

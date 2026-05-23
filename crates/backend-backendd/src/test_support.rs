@@ -1,18 +1,18 @@
 //! Shared test helpers used by sibling `<module>/tests.rs` files
 //! across the crate. Compiled only under `#[cfg(test)]`.
 //!
-//! Each helper here was lifted verbatim from the old monolithic
-//! `mod tests` block in `server.rs`. They reach into production
-//! modules directly (no `crate::server::*` indirection) so they can
-//! be called from any per-module tests file with one
-//! `use crate::test_support::*;` import.
+//! Helpers reach into production modules directly (no
+//! `crate::server::*` indirection) so they can be called from any
+//! per-module tests file with one `use crate::test_support::*;`
+//! import.
 
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use axum::response::IntoResponse;
+use bytes::Bytes;
+use hyper::StatusCode;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::policy::PolicyDocument;
 use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest};
@@ -283,12 +283,13 @@ pub(crate) fn service_state_with_runtime_client(
     s
 }
 
-pub(crate) fn expect_404(
-    result: std::result::Result<Arc<dyn StorageBackend>, Response<Full<Bytes>>>,
-) {
+pub(crate) fn expect_404<T, E: IntoResponse>(result: std::result::Result<T, E>) {
     match result {
         Ok(_) => panic!("expected 404 not_found, got Ok"),
-        Err(resp) => assert_eq!(resp.status(), StatusCode::NOT_FOUND),
+        Err(err) => {
+            let resp = err.into_response();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
     }
 }
 
@@ -298,34 +299,64 @@ pub(crate) fn fresh_bootstrap_state() -> AdminRuntimeState {
     s
 }
 
-pub(crate) async fn read_json(resp: Response<Full<Bytes>>) -> serde_json::Value {
-    let body = http_body_util::BodyExt::collect(resp.into_body())
-        .await
-        .unwrap()
-        .to_bytes();
-    serde_json::from_slice(&body).unwrap()
+/// Run a future to completion from a synchronous test, using the
+/// current tokio runtime if any (e.g. `#[tokio::test]`) or spinning up
+/// a tiny one-shot runtime otherwise. Mirrors the pattern used by
+/// [`CollectBytesSync`] below.
+pub(crate) fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(fut))
+    } else {
+        tokio::runtime::Runtime::new().unwrap().block_on(fut)
+    }
 }
 
-/// Drive the bootstrap-flow inner logic (everything after the JSON
-/// body has been parsed). We can't synthesise a `Request<Incoming>`
-/// in unit tests, so factor the core into a helper exercised by
-/// tests against the real handler.
+/// Drive an admin handler future to completion and collapse it to a
+/// `(status, body_json)` pair. The handler return type only needs to
+/// be `IntoResponse`, so `Result<Json<T>, AdminError>` and bare
+/// `Json<T>` both work without extra ceremony at the call site.
+pub(crate) fn run_handler<F>(fut: F) -> (StatusCode, serde_json::Value)
+where
+    F: std::future::Future,
+    F::Output: IntoResponse,
+{
+    let response = block_on(fut).into_response();
+    let (parts, body) = response.into_parts();
+    let bytes = block_on(async move {
+        axum::body::to_bytes(body, 8 * 1024 * 1024)
+            .await
+            .expect("collect response body")
+    });
+    let value: serde_json::Value = if bytes.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            panic!(
+                "response body was not JSON ({} bytes): {e}; raw = {:?}",
+                bytes.len(),
+                String::from_utf8_lossy(&bytes)
+            )
+        })
+    };
+    (parts.status, value)
+}
+
+/// Mirror of the production `handle_admin_bootstrap` validation +
+/// state mutations, minus the body-parse and AuthSession-issue steps.
+/// Used by tests that only care about the DB-side state transition
+/// and don't want to spin up an `AdminAuthSession`.
 pub(crate) fn run_bootstrap(
     state: &AdminRuntimeState,
     username: &str,
     password: &str,
-) -> Response<Full<Bytes>> {
+) -> (StatusCode, serde_json::Value) {
+    use crate::admin_api::AdminError;
     use crate::admin_api::bootstrap::audit_bootstrap_attempt;
-    use crate::http::responses::error_response;
-    // Mirror the validation in `handle_admin_bootstrap` minus the
-    // request-body parsing, which `parse_json_body` already covers.
+
     let username_norm = crate::users::normalise_username(username);
     if username_norm.is_empty() || password.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_credentials",
-            "missing field",
-        );
+        let err = AdminError::bad_request("invalid_credentials", "missing field");
+        return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
     let _guard = state.bootstrap_lock.lock().unwrap();
     if crate::users::bootstrap_completed(&state.users_file).unwrap_or(true) {
@@ -334,20 +365,14 @@ pub(crate) fn run_bootstrap(
             Some("bootstrap-already-completed"),
             "failure",
         );
-        return error_response(
-            StatusCode::CONFLICT,
-            "bootstrap_already_completed",
-            "already done",
-        );
+        let err = AdminError::conflict("bootstrap_already_completed", "already done");
+        return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
     let collection = crate::users::load(&state.users_file).unwrap();
     if !collection.is_empty() {
         audit_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
-        return error_response(
-            StatusCode::CONFLICT,
-            "users_already_exist",
-            "already populated",
-        );
+        let err = AdminError::conflict("users_already_exist", "already populated");
+        return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
     let now = crate::users::now_epoch_secs();
     let hash = crate::auth::hash_password(password).unwrap();
@@ -370,17 +395,10 @@ pub(crate) fn run_bootstrap(
     )
     .unwrap();
     audit_bootstrap_attempt(&record.username, None, "success");
-    // Production bootstrap also calls `AuthSession::login(&record)` to
-    // emit the session + CSRF cookies. That path is exercised by the
-    // integration tests; in unit tests we just need to confirm the
-    // DB-side state transition, so emit a plain 200 response with no
-    // cookies.
-    crate::http::responses::json_response(
-        StatusCode::OK,
-        &crate::admin_api::bootstrap::BootstrapResponse {
-            username: record.username.clone(),
-        },
-    )
+    let body = crate::admin_api::bootstrap::BootstrapResponse {
+        username: record.username.clone(),
+    };
+    run_handler(async { Ok::<_, crate::admin_api::AdminError>(axum::Json(body)) })
 }
 
 pub(crate) fn admin_principal() -> crate::users::Principal {
@@ -406,24 +424,36 @@ pub(crate) fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
     s
 }
 
+/// Create a store via the admin handler and return its assigned id.
+///
+/// The handler runs through its full Axum extractor surface here so we
+/// hit the real code path, but the helper hides the extractor wrapping
+/// from per-module tests that just want "give me a store id".
 pub(crate) fn create_store_for_test(
-    state: &AdminRuntimeState,
+    state: Arc<AdminRuntimeState>,
     principal: &crate::users::Principal,
     body: &AdminStoreCreateRequest,
 ) -> String {
-    let resp = handle_admin_store_create(state, principal, body);
-    assert_eq!(resp.status(), StatusCode::OK);
-    response_body_json(resp)["store"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    let (status, value) = run_handler(handle_admin_store_create(
+        axum::extract::State(state),
+        axum::Extension(principal.clone()),
+        crate::http::responses::Body(body.clone()),
+    ));
+    assert_eq!(status, StatusCode::OK, "store create failed: {value}");
+    value["store"]["id"].as_str().unwrap().to_string()
 }
 
-pub(crate) fn response_body_json(resp: Response<Full<Bytes>>) -> serde_json::Value {
+/// Sync helper used by `runtime_api/*` tests that still return raw
+/// `Response<Full<Bytes>>`. Drains the body and decodes it as JSON,
+/// smuggling the HTTP status under `__status` so the test can assert
+/// both shape and code in one place. Admin-side tests use
+/// [`run_handler`] instead.
+pub(crate) fn response_body_json(
+    resp: hyper::Response<http_body_util::Full<Bytes>>,
+) -> serde_json::Value {
     let (parts, body) = resp.into_parts();
     let bytes = body.collect_bytes_simple();
     let v: serde_json::Value = serde_json::from_slice(&bytes).expect("response body is JSON");
-    // Smuggle the status into the JSON value so the test can assert both.
     let mut obj = v.as_object().cloned().unwrap_or_default();
     obj.insert(
         "__status".into(),
@@ -432,11 +462,11 @@ pub(crate) fn response_body_json(resp: Response<Full<Bytes>>) -> serde_json::Val
     serde_json::Value::Object(obj)
 }
 
-// Local trait extension so we can grab the body bytes synchronously.
+/// Local trait extension so we can grab the body bytes synchronously.
 pub(crate) trait CollectBytesSync {
     fn collect_bytes_simple(self) -> Vec<u8>;
 }
-impl CollectBytesSync for Full<Bytes> {
+impl CollectBytesSync for http_body_util::Full<Bytes> {
     fn collect_bytes_simple(self) -> Vec<u8> {
         use http_body_util::BodyExt;
         // If we're already on a tokio runtime (e.g. inside a
@@ -455,11 +485,13 @@ impl CollectBytesSync for Full<Bytes> {
     }
 }
 
-pub(crate) fn entity_test_state_with_store(tmp: &std::path::Path) -> (AdminRuntimeState, String) {
-    let state = crud_state(tmp);
+pub(crate) fn entity_test_state_with_store(
+    tmp: &std::path::Path,
+) -> (Arc<AdminRuntimeState>, String) {
+    let state = Arc::new(crud_state(tmp));
     let p = admin_principal();
     let id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -474,21 +506,21 @@ pub(crate) fn entity_test_state_with_store(tmp: &std::path::Path) -> (AdminRunti
 /// id the backend assigned. Tests use this when they need to issue
 /// subsequent id-addressed calls against the same resource.
 pub(crate) fn create_resource_id_for_test(
-    state: &AdminRuntimeState,
+    state: Arc<AdminRuntimeState>,
     principal: &crate::users::Principal,
     store_id: &str,
     name: &str,
 ) -> String {
-    let resp = crate::admin_api::resources::handle_admin_resource_create(
-        state,
-        principal,
-        &underwrap_protocol::service::AdminResourceCreateRequest {
+    let (status, value) = run_handler(crate::admin_api::resources::handle_admin_resource_create(
+        axum::extract::State(state),
+        axum::Extension(principal.clone()),
+        crate::http::responses::Body(underwrap_protocol::service::AdminResourceCreateRequest {
             store: store_id.to_string(),
             name: name.to_string(),
-        },
-    );
-    assert_eq!(resp.status(), StatusCode::OK);
-    response_body_json(resp)["resource"]["id"]
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK, "resource create failed: {value}");
+    value["resource"]["id"]
         .as_str()
         .expect("create response includes resource.id")
         .to_string()
@@ -527,7 +559,7 @@ pub(crate) fn admin_principal_with_id(id: &str) -> crate::users::Principal {
 /// individual tests to issue the new runtime endpoints.
 pub(crate) struct RuntimeApiFixture {
     pub(crate) _tmp: tempfile::TempDir,
-    pub(crate) state: AdminRuntimeState,
+    pub(crate) state: Arc<AdminRuntimeState>,
     pub(crate) store_id: String,
     pub(crate) instance_id: String,
     pub(crate) resource_id: String,
@@ -557,10 +589,10 @@ pub(crate) fn make_runtime_api_fixture() -> RuntimeApiFixture {
     use underwrap_protocol::resource_blob::ResourceBlob;
 
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),

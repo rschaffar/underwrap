@@ -2,10 +2,11 @@
 //!
 //! Submodules:
 //!
-//! - [`responses`] — small helpers that every handler uses to emit
-//!   `Response<Full<Bytes>>` values (`json_response`,
-//!   `error_response`, `store_locked_response`) plus the [`Body<T>`]
-//!   JSON request extractor.
+//! - [`responses`] — the [`Body<T>`] JSON request extractor shared by
+//!   admin and runtime handlers. Both surfaces emit the same
+//!   `ServiceErrorResponse` envelope on body-parse failures (admin via
+//!   [`crate::admin_api::AdminError`]; runtime via its own
+//!   [`crate::runtime_api::responses`] helpers).
 //! - [`origin`] — `Origin` / `Referer` allowlisting on state-changing
 //!   requests + the matching configuration-validation helper, plus
 //!   the Axum origin middleware layer.
@@ -22,7 +23,6 @@ use axum::Router;
 use axum::extract::Request;
 use axum::http::Method;
 use axum::response::{IntoResponse, Response as AxumResponse};
-use hyper::StatusCode;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ServerBuilder;
 use hyper_util::service::TowerToHyperService;
@@ -31,8 +31,8 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tracing::error;
 
+use crate::admin_api::AdminError;
 use crate::admin_api::admin_router;
-use crate::http::responses::error_response;
 use crate::runtime_api::{PeerCertificates, runtime_router};
 use crate::runtime_state::AdminRuntimeState;
 use crate::web::serve_spa;
@@ -87,16 +87,11 @@ async fn spa_or_not_found(req: Request) -> AxumResponse {
     if matches!(*req.method(), Method::GET | Method::HEAD) {
         return serve_spa(req).await;
     }
-    error_response(StatusCode::NOT_FOUND, "not_found", "unknown endpoint").into_response()
+    AdminError::not_found("unknown endpoint").into_response()
 }
 
 async fn admin_disabled_fallback() -> AxumResponse {
-    error_response(
-        StatusCode::NOT_FOUND,
-        "not_found",
-        "admin interface is disabled",
-    )
-    .into_response()
+    AdminError::not_found("admin interface is disabled").into_response()
 }
 
 async fn serve_connection(

@@ -15,10 +15,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use axum::Json;
 use axum::extract::State;
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
 use underwrap_protocol::service::{
     AdminOkResponse, AdminPolicyGetRequest, AdminPolicyGetResponse, AdminPolicyPutRequest,
     AdminWrapperPermissionDeleteRequest, AdminWrapperPermissionUpsertRequest,
@@ -27,9 +25,10 @@ use underwrap_protocol::service::{
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
+use crate::admin_api::AdminError;
 use crate::admin_api::audit::log_admin_event;
 use crate::admin_api::stores::admin_store;
-use crate::http::responses::{Body, error_response, json_response};
+use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{load_policy_document, save_policy_document};
 use crate::users::Principal;
@@ -61,7 +60,7 @@ pub(crate) fn drop_client_instance_permissions(
 }
 
 pub(crate) fn write_admin_permission_audit(
-    actor: &crate::users::Principal,
+    actor: &Principal,
     store_name: &str,
     permission: &underwrap_protocol::policy::WrapperPermission,
     action: &str,
@@ -83,82 +82,110 @@ pub(crate) fn write_admin_permission_audit(
     );
 }
 
-pub(crate) fn handle_admin_policy_get(
-    state: &AdminRuntimeState,
-    body: &underwrap_protocol::service::AdminPolicyGetRequest,
-) -> Response<Full<Bytes>> {
-    match admin_store(state, &body.store) {
-        Ok(store) => match load_policy_document(store.as_ref()) {
-            Ok(doc) => json_response(
-                StatusCode::OK,
-                &underwrap_protocol::service::AdminPolicyGetResponse { document: doc },
-            ),
-            Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-        },
-        Err(resp) => resp,
-    }
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .routes(routes!(handle_admin_policy_get))
+        .routes(routes!(handle_admin_policy_put))
+        .routes(routes!(handle_admin_wrapper_permissions_list))
+        .routes(routes!(handle_admin_wrapper_permission_upsert))
+        .routes(routes!(handle_admin_wrapper_permission_delete))
 }
 
-pub(crate) fn handle_admin_policy_put(
-    state: &AdminRuntimeState,
-    body: &underwrap_protocol::service::AdminPolicyPutRequest,
-) -> Response<Full<Bytes>> {
-    match admin_store(state, &body.store) {
-        Ok(store) => match save_policy_document(store.as_ref(), &body.document) {
-            Ok(()) => json_response(
-                StatusCode::OK,
-                &underwrap_protocol::service::AdminOkResponse { ok: true },
-            ),
-            Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-        },
-        Err(resp) => resp,
-    }
+#[utoipa::path(
+    post,
+    path = "/v1/admin/policy/get",
+    tag = "policy",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminPolicyGetRequest,
+    responses(
+        (status = 200, description = "Policy document for the store.", body = AdminPolicyGetResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_policy_get(
+    State(state): State<Arc<AdminRuntimeState>>,
+    Body(body): Body<AdminPolicyGetRequest>,
+) -> Result<Json<AdminPolicyGetResponse>, AdminError> {
+    let store = admin_store(&state, &body.store)?;
+    let document = load_policy_document(store.as_ref()).map_err(AdminError::admin)?;
+    Ok(Json(AdminPolicyGetResponse { document }))
 }
 
-pub(crate) fn handle_admin_wrapper_permissions_list(
-    state: &AdminRuntimeState,
-    body: &underwrap_protocol::service::AdminWrapperPermissionsListRequest,
-) -> Response<Full<Bytes>> {
-    let store = match admin_store(state, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    match load_policy_document(store.as_ref()) {
-        Ok(doc) => json_response(
-            StatusCode::OK,
-            &underwrap_protocol::service::AdminWrapperPermissionsListResponse {
-                permissions: doc.permissions,
-            },
-        ),
-        Err(e) => error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string()),
-    }
+#[utoipa::path(
+    post,
+    path = "/v1/admin/policy/put",
+    tag = "policy",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminPolicyPutRequest,
+    responses(
+        (status = 200, description = "Policy document replaced.", body = AdminOkResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_policy_put(
+    State(state): State<Arc<AdminRuntimeState>>,
+    Body(body): Body<AdminPolicyPutRequest>,
+) -> Result<Json<AdminOkResponse>, AdminError> {
+    let store = admin_store(&state, &body.store)?;
+    save_policy_document(store.as_ref(), &body.document).map_err(AdminError::admin)?;
+    Ok(Json(AdminOkResponse { ok: true }))
 }
 
-pub(crate) fn handle_admin_wrapper_permission_upsert(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    body: &underwrap_protocol::service::AdminWrapperPermissionUpsertRequest,
-) -> Response<Full<Bytes>> {
-    let store = match admin_store(state, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let mut doc = match load_policy_document(store.as_ref()) {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
-        }
-    };
+#[utoipa::path(
+    post,
+    path = "/v1/admin/wrapper-permissions/list",
+    tag = "policy",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminWrapperPermissionsListRequest,
+    responses(
+        (status = 200, description = "List of wrapper permissions for the store.", body = AdminWrapperPermissionsListResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_wrapper_permissions_list(
+    State(state): State<Arc<AdminRuntimeState>>,
+    Body(body): Body<AdminWrapperPermissionsListRequest>,
+) -> Result<Json<AdminWrapperPermissionsListResponse>, AdminError> {
+    let store = admin_store(&state, &body.store)?;
+    let doc = load_policy_document(store.as_ref()).map_err(AdminError::admin)?;
+    Ok(Json(AdminWrapperPermissionsListResponse {
+        permissions: doc.permissions,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/wrapper-permissions/upsert",
+    tag = "policy",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    request_body = AdminWrapperPermissionUpsertRequest,
+    responses(
+        (status = 200, description = "Permission upserted.", body = AdminOkResponse),
+        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 404, description = "Store / wrapper / resource not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_wrapper_permission_upsert(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Body(body): Body<AdminWrapperPermissionUpsertRequest>,
+) -> Result<Json<AdminOkResponse>, AdminError> {
+    let store = admin_store(&state, &body.store)?;
     if body.permission.client_instance.is_empty()
         || body.permission.wrapper.is_empty()
         || body.permission.resource_id.is_empty()
     {
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(AdminError::bad_request(
             "invalid_permission",
             "client_instance, wrapper, and resource_id must all be non-empty",
-        );
+        ));
     }
+    let mut doc = load_policy_document(store.as_ref()).map_err(AdminError::admin)?;
     if let Some(slot) = doc.permissions.iter_mut().find(|p| {
         p.client_instance == body.permission.client_instance
             && p.wrapper == body.permission.wrapper
@@ -176,177 +203,24 @@ pub(crate) fn handle_admin_wrapper_permission_upsert(
     });
     if let Err(e) = save_policy_document(store.as_ref(), &doc) {
         write_admin_permission_audit(
-            principal,
+            &principal,
             &body.store,
             &body.permission,
             "wrapper_permission.upsert",
             None,
             "failure",
         );
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("persisting policy document: {e:#}"),
-        );
+        return Err(AdminError::internal("persisting policy document", e));
     }
     write_admin_permission_audit(
-        principal,
+        &principal,
         &body.store,
         &body.permission,
         "wrapper_permission.upsert",
         None,
         "success",
     );
-    json_response(
-        StatusCode::OK,
-        &underwrap_protocol::service::AdminOkResponse { ok: true },
-    )
-}
-
-pub(crate) fn handle_admin_wrapper_permission_delete(
-    state: &AdminRuntimeState,
-    principal: &crate::users::Principal,
-    body: &underwrap_protocol::service::AdminWrapperPermissionDeleteRequest,
-) -> Response<Full<Bytes>> {
-    let store = match admin_store(state, &body.store) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let mut doc = match load_policy_document(store.as_ref()) {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(StatusCode::BAD_REQUEST, "admin_error", &e.to_string());
-        }
-    };
-    let before = doc.permissions.len();
-    doc.permissions.retain(|p| {
-        !(p.client_instance == body.client_instance
-            && p.wrapper == body.wrapper
-            && p.resource_id == body.resource_id)
-    });
-    let removed = before != doc.permissions.len();
-    if !removed {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "no matching wrapper permission",
-        );
-    }
-    if let Err(e) = save_policy_document(store.as_ref(), &doc) {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("persisting policy document: {e:#}"),
-        );
-    }
-    let removed_permission = underwrap_protocol::policy::WrapperPermission {
-        client_instance: body.client_instance.clone(),
-        wrapper: body.wrapper.clone(),
-        resource_id: body.resource_id.clone(),
-        mode: underwrap_protocol::policy::WrapperApprovalMode::Locked,
-        writable: false,
-        reason: None,
-    };
-    write_admin_permission_audit(
-        principal,
-        &body.store,
-        &removed_permission,
-        "wrapper_permission.delete",
-        None,
-        "success",
-    );
-    json_response(
-        StatusCode::OK,
-        &underwrap_protocol::service::AdminOkResponse { ok: true },
-    )
-}
-
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
-    OpenApiRouter::new()
-        .routes(routes!(axum_policy_get))
-        .routes(routes!(axum_policy_put))
-        .routes(routes!(axum_permissions_list))
-        .routes(routes!(axum_permission_upsert))
-        .routes(routes!(axum_permission_delete))
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/policy/get",
-    tag = "policy",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminPolicyGetRequest,
-    responses(
-        (status = 200, description = "Policy document for the store.", body = AdminPolicyGetResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_policy_get(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<AdminPolicyGetRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_policy_get(&state, &parsed)
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/policy/put",
-    tag = "policy",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminPolicyPutRequest,
-    responses(
-        (status = 200, description = "Policy document replaced.", body = AdminOkResponse),
-        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_policy_put(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<AdminPolicyPutRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_policy_put(&state, &parsed)
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/wrapper-permissions/list",
-    tag = "policy",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminWrapperPermissionsListRequest,
-    responses(
-        (status = 200, description = "List of wrapper permissions for the store.", body = AdminWrapperPermissionsListResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_permissions_list(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Body(parsed): Body<AdminWrapperPermissionsListRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_wrapper_permissions_list(&state, &parsed)
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/wrapper-permissions/upsert",
-    tag = "policy",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminWrapperPermissionUpsertRequest,
-    responses(
-        (status = 200, description = "Permission upserted.", body = AdminOkResponse),
-        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 404, description = "Store / wrapper / resource not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-async fn axum_permission_upsert(
-    State(state): State<Arc<AdminRuntimeState>>,
-    axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<AdminWrapperPermissionUpsertRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_wrapper_permission_upsert(&state, &principal, &parsed)
+    Ok(Json(AdminOkResponse { ok: true }))
 }
 
 #[utoipa::path(
@@ -361,10 +235,40 @@ async fn axum_permission_upsert(
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
-async fn axum_permission_delete(
+pub(crate) async fn handle_admin_wrapper_permission_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(parsed): Body<AdminWrapperPermissionDeleteRequest>,
-) -> Response<Full<Bytes>> {
-    handle_admin_wrapper_permission_delete(&state, &principal, &parsed)
+    Body(body): Body<AdminWrapperPermissionDeleteRequest>,
+) -> Result<Json<AdminOkResponse>, AdminError> {
+    let store = admin_store(&state, &body.store)?;
+    let mut doc = load_policy_document(store.as_ref()).map_err(AdminError::admin)?;
+    let before = doc.permissions.len();
+    doc.permissions.retain(|p| {
+        !(p.client_instance == body.client_instance
+            && p.wrapper == body.wrapper
+            && p.resource_id == body.resource_id)
+    });
+    let removed = before != doc.permissions.len();
+    if !removed {
+        return Err(AdminError::not_found("no matching wrapper permission"));
+    }
+    save_policy_document(store.as_ref(), &doc)
+        .map_err(|e| AdminError::internal("persisting policy document", e))?;
+    let removed_permission = underwrap_protocol::policy::WrapperPermission {
+        client_instance: body.client_instance.clone(),
+        wrapper: body.wrapper.clone(),
+        resource_id: body.resource_id.clone(),
+        mode: underwrap_protocol::policy::WrapperApprovalMode::Locked,
+        writable: false,
+        reason: None,
+    };
+    write_admin_permission_audit(
+        &principal,
+        &body.store,
+        &removed_permission,
+        "wrapper_permission.delete",
+        None,
+        "success",
+    );
+    Ok(Json(AdminOkResponse { ok: true }))
 }

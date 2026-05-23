@@ -1,19 +1,22 @@
-use super::*;
-use crate::test_support::{fresh_bootstrap_state, read_json, run_bootstrap};
 use std::sync::Arc;
 
-#[tokio::test]
+use axum::extract::State;
+use hyper::StatusCode;
+
+use super::*;
+use crate::test_support::{fresh_bootstrap_state, run_bootstrap, run_handler};
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_status_required_on_fresh_store() {
-    let state = fresh_bootstrap_state();
-    let resp = handle_admin_bootstrap_status(&state);
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = read_json(resp).await;
+    let state = Arc::new(fresh_bootstrap_state());
+    let (status, body) = run_handler(handle_admin_bootstrap_status(State(state)));
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["bootstrap_required"], true);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_status_false_when_sentinel_set() {
-    let state = fresh_bootstrap_state();
+    let state = Arc::new(fresh_bootstrap_state());
     crate::users::mark_bootstrap_completed(
         &state.users_file,
         &crate::users::BootstrapSentinel {
@@ -22,13 +25,14 @@ async fn bootstrap_status_false_when_sentinel_set() {
         },
     )
     .unwrap();
-    let body = read_json(handle_admin_bootstrap_status(&state)).await;
+    let (status, body) = run_handler(handle_admin_bootstrap_status(State(state)));
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["bootstrap_required"], false);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_status_false_when_operators_exist_even_without_sentinel() {
-    let state = fresh_bootstrap_state();
+    let state = Arc::new(fresh_bootstrap_state());
     let mut collection = crate::users::UserCollection::default();
     collection
         .add(crate::users::UserRecord {
@@ -40,15 +44,15 @@ async fn bootstrap_status_false_when_operators_exist_even_without_sentinel() {
         })
         .unwrap();
     crate::users::save(&state.users_file, &collection).unwrap();
-    let body = read_json(handle_admin_bootstrap_status(&state)).await;
+    let (_, body) = run_handler(handle_admin_bootstrap_status(State(state)));
     assert_eq!(body["bootstrap_required"], false);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_succeeds_on_empty_store_and_sets_sentinel() {
     let state = fresh_bootstrap_state();
-    let resp = run_bootstrap(&state, "alice", "hunter2");
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, _) = run_bootstrap(&state, "alice", "hunter2");
+    assert_eq!(status, StatusCode::OK);
     // Sentinel is set.
     assert!(crate::users::bootstrap_completed(&state.users_file).unwrap());
     // First user record is created.
@@ -62,17 +66,16 @@ async fn bootstrap_succeeds_on_empty_store_and_sets_sentinel() {
     // side-effects.
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_second_call_returns_bootstrap_already_completed() {
     let state = fresh_bootstrap_state();
     let _ = run_bootstrap(&state, "alice", "hunter2");
-    let resp = run_bootstrap(&state, "eve", "haxx0r");
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body = read_json(resp).await;
+    let (status, body) = run_bootstrap(&state, "eve", "haxx0r");
+    assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "bootstrap_already_completed");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_refuses_when_users_exist_without_sentinel() {
     // This is the "CLI recovery happened first" case: a user
     // exists, but the sentinel was never set. The online flow
@@ -90,22 +93,21 @@ async fn bootstrap_refuses_when_users_exist_without_sentinel() {
         .unwrap();
     crate::users::save(&state.users_file, &collection).unwrap();
 
-    let resp = run_bootstrap(&state, "newbie", "x");
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body = read_json(resp).await;
+    let (status, body) = run_bootstrap(&state, "newbie", "x");
+    assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "users_already_exist");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_concurrent_calls_only_one_succeeds() {
     let state = Arc::new(fresh_bootstrap_state());
     let s1 = state.clone();
     let s2 = state.clone();
     let h1 = tokio::task::spawn_blocking(move || run_bootstrap(&s1, "alice", "p1"));
     let h2 = tokio::task::spawn_blocking(move || run_bootstrap(&s2, "bob", "p2"));
-    let r1 = h1.await.unwrap();
-    let r2 = h2.await.unwrap();
-    let statuses = [r1.status(), r2.status()];
+    let (st1, _) = h1.await.unwrap();
+    let (st2, _) = h2.await.unwrap();
+    let statuses = [st1, st2];
     let ok_count = statuses.iter().filter(|s| **s == StatusCode::OK).count();
     let conflict_count = statuses
         .iter()

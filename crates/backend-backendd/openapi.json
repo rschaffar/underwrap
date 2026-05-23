@@ -14,7 +14,8 @@
         "tags": [
           "bootstrap"
         ],
-        "operationId": "axum_bootstrap",
+        "summary": "`POST /v1/admin/auth/bootstrap`. Public endpoint: creates the very\nfirst admin operator, marks the persistent sentinel, and issues a\nsession in one round trip. After this succeeds, the endpoint\nrefuses further calls even if every operator is later deleted.",
+        "operationId": "handle_admin_bootstrap",
         "requestBody": {
           "content": {
             "application/json": {
@@ -74,7 +75,8 @@
         "tags": [
           "bootstrap"
         ],
-        "operationId": "axum_bootstrap_status",
+        "summary": "`GET /v1/admin/auth/bootstrap/status`. Public endpoint: returns\n`{ bootstrap_required: true }` only when the operator collection is\nempty AND the bootstrap-completed sentinel is unset. Anything else\n(operators exist, sentinel set, store error) yields `false` — the\nSPA's response is to show the login page.",
+        "operationId": "handle_admin_bootstrap_status",
         "responses": {
           "200": {
             "description": "True only when the operator collection is empty and the bootstrap-completed sentinel is unset.",
@@ -94,7 +96,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "axum_login_route",
+        "operationId": "handle_admin_login",
         "requestBody": {
           "content": {
             "application/json": {
@@ -154,7 +156,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "axum_logout",
+        "operationId": "handle_admin_logout",
         "responses": {
           "204": {
             "description": "Session destroyed and cookie cleared."
@@ -175,7 +177,8 @@
         "tags": [
           "auth"
         ],
-        "operationId": "axum_password_change",
+        "summary": "`POST /v1/admin/auth/password` — self-service password change for\nthe currently authenticated user. Requires the current password as\nproof-of-possession.",
+        "operationId": "handle_admin_password_change",
         "requestBody": {
           "content": {
             "application/json": {
@@ -243,7 +246,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "axum_whoami",
+        "operationId": "handle_admin_whoami",
         "responses": {
           "200": {
             "description": "Returns the current operator, or `authenticated: false` if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.",
@@ -263,7 +266,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_client_instances_list",
+        "operationId": "handle_admin_client_instances_list",
         "responses": {
           "200": {
             "description": "All client instances with action state and store mapping.",
@@ -286,7 +289,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_client_instances_create",
+        "operationId": "handle_admin_client_instance_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -344,7 +347,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_client_instances_detail",
+        "operationId": "handle_admin_client_instance_detail",
         "parameters": [
           {
             "name": "id",
@@ -388,7 +391,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_client_instances_update",
+        "operationId": "handle_admin_client_instance_update",
         "parameters": [
           {
             "name": "id",
@@ -455,7 +458,7 @@
         "tags": [
           "client_instances"
         ],
-        "operationId": "axum_client_instances_delete",
+        "operationId": "handle_admin_client_instance_delete",
         "parameters": [
           {
             "name": "id",
@@ -504,7 +507,7 @@
         "tags": [
           "pairs"
         ],
-        "operationId": "axum_pairs_create",
+        "operationId": "handle_admin_pair_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -582,7 +585,7 @@
         "tags": [
           "pairs"
         ],
-        "operationId": "axum_pairs_delete",
+        "operationId": "handle_admin_pair_delete",
         "requestBody": {
           "content": {
             "application/json": {
@@ -650,7 +653,7 @@
         "tags": [
           "pairs"
         ],
-        "operationId": "axum_pairs_list",
+        "operationId": "handle_admin_pairs_list",
         "requestBody": {
           "content": {
             "application/json": {
@@ -708,7 +711,7 @@
         "tags": [
           "policy"
         ],
-        "operationId": "axum_policy_get",
+        "operationId": "handle_admin_policy_get",
         "requestBody": {
           "content": {
             "application/json": {
@@ -766,7 +769,7 @@
         "tags": [
           "policy"
         ],
-        "operationId": "axum_policy_put",
+        "operationId": "handle_admin_policy_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -834,7 +837,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_resources_blob_get",
+        "operationId": "handle_admin_resource_blob_get",
         "requestBody": {
           "content": {
             "application/json": {
@@ -892,7 +895,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_resources_blob_put",
+        "operationId": "handle_admin_resource_blob_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -960,7 +963,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_resources_create",
+        "operationId": "handle_admin_resource_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1038,7 +1041,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_resources_delete",
+        "operationId": "handle_admin_resource_delete",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1106,7 +1109,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_resources_list",
+        "operationId": "handle_admin_resources_list",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1164,7 +1167,7 @@
         "tags": [
           "resources"
         ],
-        "operationId": "axum_resources_rename",
+        "operationId": "handle_admin_resource_rename",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1242,7 +1245,7 @@
         "tags": [
           "secrets"
         ],
-        "operationId": "axum_secrets_delete",
+        "operationId": "handle_admin_secret_delete",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1300,7 +1303,7 @@
         "tags": [
           "secrets"
         ],
-        "operationId": "axum_secrets_list",
+        "operationId": "handle_admin_secret_list",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1358,7 +1361,7 @@
         "tags": [
           "secrets"
         ],
-        "operationId": "axum_read",
+        "operationId": "handle_admin_secret_read",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1416,7 +1419,8 @@
         "tags": [
           "secrets"
         ],
-        "operationId": "axum_secrets_rename",
+        "summary": "Atomically rename a per-slot entry inside a resource blob.\nOne load-modify-save of the resource blob: the previous key is\nremoved and the new key is inserted in the same in-memory pass,\nso disk never holds both entries (or neither) — `atomic_write`\nin the storage layer guarantees the file flip is a single rename.\nOptionally overwrites material in the same step.",
+        "operationId": "handle_admin_secret_rename",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1484,7 +1488,7 @@
         "tags": [
           "secrets"
         ],
-        "operationId": "axum_write",
+        "operationId": "handle_admin_secret_write",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1552,7 +1556,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_stores_list",
+        "operationId": "handle_admin_stores_list",
         "responses": {
           "200": {
             "description": "Every store in the registry plus per-store usage projections.",
@@ -1575,7 +1579,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_stores_create",
+        "operationId": "handle_admin_store_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1643,7 +1647,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_stores_detail",
+        "operationId": "handle_admin_store_detail",
         "parameters": [
           {
             "name": "name",
@@ -1687,7 +1691,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_stores_update",
+        "operationId": "handle_admin_store_update",
         "parameters": [
           {
             "name": "name",
@@ -1754,7 +1758,7 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_stores_delete",
+        "operationId": "handle_admin_store_delete",
         "parameters": [
           {
             "name": "name",
@@ -1822,7 +1826,8 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_stores_lock",
+        "summary": "`POST /v1/admin/stores/{id}/lock` — drop the in-memory backend for\n`name`, transitioning the registry to [`StoreState::Locked`]. The\nheld `MasterKey` zeroes on drop. Plain stores reject the\noperation; already-locked stores succeed as a no-op so the admin\nSPA can call this without racing the current state.",
+        "operationId": "handle_admin_store_lock",
         "parameters": [
           {
             "name": "name",
@@ -1840,7 +1845,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminStoreDetailResponse"
+                  "$ref": "#/components/schemas/StoreLockResponse"
                 }
               }
             }
@@ -1871,7 +1876,8 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_stores_rotate_key",
+        "summary": "`POST /v1/admin/stores/{id}/rotate-key` — mint a fresh 32-byte\nmaster key in memory, re-encrypt every resource in the store under\nit, atomically swap the data directory, install the new backend in\nthe registry, and return the new key **exactly once**. Plain stores\nreject the operation; locked encrypted stores must be unlocked\nfirst.",
+        "operationId": "handle_admin_store_rotate_key",
         "parameters": [
           {
             "name": "name",
@@ -1940,7 +1946,8 @@
         "tags": [
           "stores"
         ],
-        "operationId": "axum_stores_unlock",
+        "summary": "`POST /v1/admin/stores/{id}/unlock` — accept a 64-character hex\nmaster key from the operator, build a fresh `EncryptedBackend`\nagainst the store's data directory, verify the key by decrypting\nthe unlock canary written at creation, and install the backend in\nthe registry. Wrong keys never transition the registry to\n`Unlocked`; the registry stays `Locked` and the response surfaces a\nstructured `key_mismatch` code.",
+        "operationId": "handle_admin_store_unlock",
         "parameters": [
           {
             "name": "name",
@@ -1968,7 +1975,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminStoreDetailResponse"
+                  "$ref": "#/components/schemas/AdminOkResponse"
                 }
               }
             }
@@ -2009,7 +2016,7 @@
         "tags": [
           "overview"
         ],
-        "operationId": "axum_overview",
+        "operationId": "handle_admin_ui_overview",
         "responses": {
           "200": {
             "description": "Per-store resource + permission-mode summary for the SPA dashboard. Locked encrypted stores are silently skipped.",
@@ -2044,7 +2051,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "axum_users_list",
+        "operationId": "handle_admin_users_list",
         "responses": {
           "200": {
             "description": "List of every operator in the collection.",
@@ -2077,7 +2084,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "axum_user_create",
+        "operationId": "handle_admin_user_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -2094,7 +2101,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                  "$ref": "#/components/schemas/AdminUserDetailResponse"
                 }
               }
             }
@@ -2135,7 +2142,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "axum_user_detail",
+        "operationId": "handle_admin_user_detail",
         "parameters": [
           {
             "name": "id",
@@ -2179,7 +2186,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "axum_user_update",
+        "operationId": "handle_admin_user_update",
         "parameters": [
           {
             "name": "id",
@@ -2207,7 +2214,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                  "$ref": "#/components/schemas/AdminUserDetailResponse"
                 }
               }
             }
@@ -2256,7 +2263,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "axum_user_delete",
+        "operationId": "handle_admin_user_delete",
         "parameters": [
           {
             "name": "id",
@@ -2315,7 +2322,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "axum_user_reset_password",
+        "operationId": "handle_admin_user_reset_password",
         "parameters": [
           {
             "name": "id",
@@ -2384,7 +2391,7 @@
         "tags": [
           "policy"
         ],
-        "operationId": "axum_permission_delete",
+        "operationId": "handle_admin_wrapper_permission_delete",
         "requestBody": {
           "content": {
             "application/json": {
@@ -2442,7 +2449,7 @@
         "tags": [
           "policy"
         ],
-        "operationId": "axum_permissions_list",
+        "operationId": "handle_admin_wrapper_permissions_list",
         "requestBody": {
           "content": {
             "application/json": {
@@ -2500,7 +2507,7 @@
         "tags": [
           "policy"
         ],
-        "operationId": "axum_permission_upsert",
+        "operationId": "handle_admin_wrapper_permission_upsert",
         "requestBody": {
           "content": {
             "application/json": {
@@ -4119,6 +4126,22 @@
           },
           "wrapper": {
             "type": "string"
+          }
+        }
+      },
+      "StoreLockResponse": {
+        "type": "object",
+        "description": "Response of `POST /v1/admin/stores/{name}/lock`. Carries the\nidempotence flag so the SPA can distinguish \"we just locked the\nstore\" from \"store was already locked when we got here\".",
+        "required": [
+          "ok",
+          "was_locked"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "was_locked": {
+            "type": "boolean"
           }
         }
       },

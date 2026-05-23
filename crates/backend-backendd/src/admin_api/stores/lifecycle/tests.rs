@@ -1,25 +1,40 @@
-use super::*;
-use crate::admin_api::stores::crud::{handle_admin_store_create, handle_admin_store_detail};
-use crate::test_support::{admin_principal, create_store_for_test, crud_state, response_body_json};
+use std::sync::Arc;
+
+use axum::Extension;
+use axum::extract::{Path, State};
 use hyper::StatusCode;
 use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest};
+
+use super::*;
+use crate::admin_api::stores::crud::{handle_admin_store_create, handle_admin_store_detail};
+use crate::http::responses::Body;
+use crate::test_support::{admin_principal, create_store_for_test, crud_state, run_handler};
+
+fn create_store(
+    state: Arc<crate::runtime_state::AdminRuntimeState>,
+    p: &crate::users::Principal,
+    backend: AdminStoreBackendKind,
+    name: &str,
+) -> serde_json::Value {
+    let (status, body) = run_handler(handle_admin_store_create(
+        State(state),
+        Extension(p.clone()),
+        Body(AdminStoreCreateRequest {
+            name: name.into(),
+            backend,
+            description: None,
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK, "store create failed: {body}");
+    body
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let resp = handle_admin_store_create(
-        &state,
-        &p,
-        &AdminStoreCreateRequest {
-            name: "vault".into(),
-            backend: AdminStoreBackendKind::Encrypted,
-            description: None,
-        },
-    );
-    assert_eq!(resp.status(), StatusCode::OK);
-    let create_body = response_body_json(resp);
+    let create_body = create_store(state.clone(), &p, AdminStoreBackendKind::Encrypted, "vault");
     let store_id = create_body["store"]["id"].as_str().unwrap().to_string();
     let original_key = create_body["key_hex"].as_str().unwrap().to_string();
 
@@ -29,9 +44,12 @@ async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
         backend.write("greeting", b"hello").unwrap();
     }
 
-    let resp = handle_admin_store_rotate_key(&state, &p, &store_id).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = response_body_json(resp);
+    let (status, body) = run_handler(handle_admin_store_rotate_key(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(status, StatusCode::OK);
     let new_key = body["key_hex"].as_str().unwrap().to_string();
     assert_ne!(new_key, original_key, "rotation must produce a fresh key");
     assert_eq!(new_key.len(), 64);
@@ -64,8 +82,10 @@ async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
     }
 
     // Detail GET still does not leak the key value.
-    let resp = handle_admin_store_detail(&state, &store_id);
-    let body = response_body_json(resp);
+    let (_, body) = run_handler(handle_admin_store_detail(
+        State(state.clone()),
+        Path(store_id.clone()),
+    ));
     let body_str = serde_json::to_string(&body).unwrap();
     assert!(!body_str.contains(&new_key));
     assert!(!body_str.contains(&original_key));
@@ -74,10 +94,10 @@ async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn rotate_key_refuses_plain_store() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -85,18 +105,22 @@ async fn rotate_key_refuses_plain_store() {
             description: None,
         },
     );
-    let resp = handle_admin_store_rotate_key(&state, &p, &store_id).await;
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    assert_eq!(response_body_json(resp)["code"], "not_encrypted");
+    let (status, body) = run_handler(handle_admin_store_rotate_key(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id),
+    ));
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "not_encrypted");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rotate_key_refuses_locked_store() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "vault".into(),
@@ -105,20 +129,28 @@ async fn rotate_key_refuses_locked_store() {
         },
     );
     // Lock the store and confirm rotation refuses.
-    let resp = handle_admin_store_lock(&state, &p, &store_id);
-    assert_eq!(resp.status(), StatusCode::OK);
-    let resp = handle_admin_store_rotate_key(&state, &p, &store_id).await;
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response_body_json(resp)["code"], "store_locked");
+    let (lock_status, _) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(lock_status, StatusCode::OK);
+    let (status, body) = run_handler(handle_admin_store_rotate_key(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id),
+    ));
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["code"], "store_locked");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rotate_key_succeeds_on_unlocked_encrypted_store() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "vault".into(),
@@ -126,115 +158,100 @@ async fn rotate_key_succeeds_on_unlocked_encrypted_store() {
             description: None,
         },
     );
-    let resp = handle_admin_store_rotate_key(&state, &p, &store_id).await;
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, _) = run_handler(handle_admin_store_rotate_key(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id),
+    ));
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[test]
 fn unlock_round_trip_succeeds_with_correct_hex() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let resp = handle_admin_store_create(
-        &state,
-        &p,
-        &AdminStoreCreateRequest {
-            name: "vault".into(),
-            backend: AdminStoreBackendKind::Encrypted,
-            description: None,
-        },
-    );
-    let body = response_body_json(resp);
+    let body = create_store(state.clone(), &p, AdminStoreBackendKind::Encrypted, "vault");
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
     let key_hex = body["key_hex"].as_str().unwrap().to_string();
 
     // Simulate a restart by locking the store.
-    let resp = handle_admin_store_lock(&state, &p, &store_id);
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (lock_status, _) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(lock_status, StatusCode::OK);
     assert!(state.stores.read().unwrap().is_locked(&store_id));
 
-    let resp = handle_admin_store_unlock(
-        &state,
-        &p,
-        &store_id,
-        &underwrap_protocol::service::AdminStoreUnlockRequest { key_hex },
-    );
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, _) = run_handler(handle_admin_store_unlock(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id.clone()),
+        Body(underwrap_protocol::service::AdminStoreUnlockRequest { key_hex }),
+    ));
+    assert_eq!(status, StatusCode::OK);
     assert!(!state.stores.read().unwrap().is_locked(&store_id));
 }
 
 #[test]
 fn unlock_rejects_wrong_hex_and_keeps_store_locked() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let resp = handle_admin_store_create(
-        &state,
-        &p,
-        &AdminStoreCreateRequest {
-            name: "vault".into(),
-            backend: AdminStoreBackendKind::Encrypted,
-            description: None,
-        },
-    );
-    let store_id = response_body_json(resp)["store"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let resp = handle_admin_store_lock(&state, &p, &store_id);
-    assert_eq!(resp.status(), StatusCode::OK);
+    let body = create_store(state.clone(), &p, AdminStoreBackendKind::Encrypted, "vault");
+    let store_id = body["store"]["id"].as_str().unwrap().to_string();
+    let (lock_status, _) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(lock_status, StatusCode::OK);
 
     let bogus_hex = "0".repeat(64);
-    let resp = handle_admin_store_unlock(
-        &state,
-        &p,
-        &store_id,
-        &underwrap_protocol::service::AdminStoreUnlockRequest { key_hex: bogus_hex },
-    );
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert_eq!(response_body_json(resp)["code"], "key_mismatch");
+    let (status, resp_body) = run_handler(handle_admin_store_unlock(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id.clone()),
+        Body(underwrap_protocol::service::AdminStoreUnlockRequest { key_hex: bogus_hex }),
+    ));
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(resp_body["code"], "key_mismatch");
     assert!(state.stores.read().unwrap().is_locked(&store_id));
 }
 
 #[test]
 fn unlock_rejects_invalid_hex_format() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let resp = handle_admin_store_create(
-        &state,
-        &p,
-        &AdminStoreCreateRequest {
-            name: "vault".into(),
-            backend: AdminStoreBackendKind::Encrypted,
-            description: None,
-        },
-    );
-    let store_id = response_body_json(resp)["store"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let resp = handle_admin_store_lock(&state, &p, &store_id);
-    assert_eq!(resp.status(), StatusCode::OK);
-    let resp = handle_admin_store_unlock(
-        &state,
-        &p,
-        &store_id,
-        &underwrap_protocol::service::AdminStoreUnlockRequest {
+    let body = create_store(state.clone(), &p, AdminStoreBackendKind::Encrypted, "vault");
+    let store_id = body["store"]["id"].as_str().unwrap().to_string();
+    let (lock_status, _) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(lock_status, StatusCode::OK);
+    let (status, resp_body) = run_handler(handle_admin_store_unlock(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id),
+        Body(underwrap_protocol::service::AdminStoreUnlockRequest {
             key_hex: "not hex".into(),
-        },
-    );
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response_body_json(resp)["code"], "invalid_key_hex");
+        }),
+    ));
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(resp_body["code"], "invalid_key_hex");
 }
 
 #[test]
 fn unlock_refuses_plain_store() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -242,81 +259,69 @@ fn unlock_refuses_plain_store() {
             description: None,
         },
     );
-    let resp = handle_admin_store_unlock(
-        &state,
-        &p,
-        &store_id,
-        &underwrap_protocol::service::AdminStoreUnlockRequest {
+    let (status, body) = run_handler(handle_admin_store_unlock(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id),
+        Body(underwrap_protocol::service::AdminStoreUnlockRequest {
             key_hex: "0".repeat(64),
-        },
-    );
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response_body_json(resp)["code"], "store_not_encrypted");
+        }),
+    ));
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "store_not_encrypted");
 }
 
 #[test]
 fn unlock_refuses_already_unlocked_store() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let resp = handle_admin_store_create(
-        &state,
-        &p,
-        &AdminStoreCreateRequest {
-            name: "vault".into(),
-            backend: AdminStoreBackendKind::Encrypted,
-            description: None,
-        },
-    );
-    let body = response_body_json(resp);
+    let body = create_store(state.clone(), &p, AdminStoreBackendKind::Encrypted, "vault");
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
     let key_hex = body["key_hex"].as_str().unwrap().to_string();
-    let resp = handle_admin_store_unlock(
-        &state,
-        &p,
-        &store_id,
-        &underwrap_protocol::service::AdminStoreUnlockRequest { key_hex },
-    );
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    assert_eq!(response_body_json(resp)["code"], "already_unlocked");
+    let (status, resp_body) = run_handler(handle_admin_store_unlock(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id),
+        Body(underwrap_protocol::service::AdminStoreUnlockRequest { key_hex }),
+    ));
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(resp_body["code"], "already_unlocked");
 }
 
 #[test]
 fn lock_transitions_unlocked_encrypted_store() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
-    let resp = handle_admin_store_create(
-        &state,
-        &p,
-        &AdminStoreCreateRequest {
-            name: "vault".into(),
-            backend: AdminStoreBackendKind::Encrypted,
-            description: None,
-        },
-    );
-    let store_id = response_body_json(resp)["store"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let body = create_store(state.clone(), &p, AdminStoreBackendKind::Encrypted, "vault");
+    let store_id = body["store"]["id"].as_str().unwrap().to_string();
     assert!(!state.stores.read().unwrap().is_locked(&store_id));
-    let resp = handle_admin_store_lock(&state, &p, &store_id);
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(response_body_json(resp)["was_locked"], false);
+    let (status, body) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["was_locked"], false);
     assert!(state.stores.read().unwrap().is_locked(&store_id));
     // Second call is a no-op success.
-    let resp = handle_admin_store_lock(&state, &p, &store_id);
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(response_body_json(resp)["was_locked"], true);
+    let (status, body) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id),
+    ));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["was_locked"], true);
 }
 
 #[test]
 fn lock_refuses_plain_store() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let state = crud_state(tmp.path());
+    let state = Arc::new(crud_state(tmp.path()));
     let p = admin_principal();
     let store_id = create_store_for_test(
-        &state,
+        state.clone(),
         &p,
         &AdminStoreCreateRequest {
             name: "work".into(),
@@ -324,7 +329,11 @@ fn lock_refuses_plain_store() {
             description: None,
         },
     );
-    let resp = handle_admin_store_lock(&state, &p, &store_id);
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response_body_json(resp)["code"], "store_not_encrypted");
+    let (status, body) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(p),
+        Path(store_id),
+    ));
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "store_not_encrypted");
 }

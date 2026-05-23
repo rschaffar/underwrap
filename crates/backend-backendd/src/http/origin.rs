@@ -13,11 +13,11 @@ use anyhow::Result;
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
-use hyper::{Method, StatusCode};
+use hyper::Method;
 use tracing::warn;
 
+use crate::admin_api::AdminError;
 use crate::config::AdminConfig;
-use crate::http::responses::error_response;
 use crate::runtime_state::AdminRuntimeState;
 
 /// Validate the browser-facing admin configuration.
@@ -100,7 +100,7 @@ pub(crate) async fn origin_layer(
         state.allowed_origins.as_deref(),
     ) {
         warn!(reason = reason, "rejected admin request (origin check)");
-        return error_response(StatusCode::FORBIDDEN, "bad_origin", reason).into_response();
+        return AdminError::forbidden("bad_origin", reason).into_response();
     }
     next.run(request).await
 }

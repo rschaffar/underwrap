@@ -14,7 +14,7 @@ use tracing::warn;
 use underwrap_protocol::policy::{PolicyDocument, WrapperPermission};
 use underwrap_store::{StorageBackend, load_resource_blob, save_resource_blob};
 
-use crate::http::responses::{error_response, json_response};
+use crate::runtime_api::responses::{error_response, json_response};
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
 };
