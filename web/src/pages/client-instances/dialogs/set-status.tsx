@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
@@ -10,18 +10,18 @@ export function SetStatusDialog({
   instance,
   nextStatus,
   onClose,
-  onSuccess,
 }: {
   instance: AdminClientInstanceListItem;
   nextStatus: "active" | "disabled";
   onClose: () => void;
-  onSuccess: () => Promise<void>;
 }) {
+  const qc = useQueryClient();
   const mut = useMutation({
     mutationFn: (status: "active" | "disabled") =>
       putClientInstanceUpdate(instance.id, { status }),
     onSuccess: async () => {
-      await onSuccess();
+      await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
+      onClose();
     },
   });
 

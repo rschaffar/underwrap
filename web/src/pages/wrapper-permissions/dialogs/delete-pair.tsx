@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Alert } from "@/components/ui/alert";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -45,15 +45,14 @@ export function DeletePairDialog({
   displayNameById,
   resourceName,
   onClose,
-  onDeleted,
 }: {
   storeName: string;
   pair: WrapperResourcePairRecord;
   displayNameById: Map<string, string>;
   resourceName: string;
   onClose: () => void;
-  onDeleted: () => void;
 }) {
+  const qc = useQueryClient();
   const mut = useMutation({
     mutationFn: () => deletePair(storeName, pair.wrapper, pair.resource_id),
   });
@@ -61,7 +60,10 @@ export function DeletePairDialog({
   async function onConfirm() {
     const result = await mut.mutateAsync();
     if (result.ok) {
-      onDeleted();
+      await qc.invalidateQueries({
+        queryKey: ["admin", "wrapper-permissions-view", storeName],
+      });
+      onClose();
     }
     // result.ok === false means the backend refused; render the
     // blockers inline (handled below from `mut.data`).

@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -43,12 +43,11 @@ type Values = z.infer<typeof schema>;
 export function CreateClientInstanceDialog({
   stores,
   onClose,
-  onSuccess,
 }: {
   stores: AdminStoresListResponse["items"];
   onClose: () => void;
-  onSuccess: () => Promise<void>;
 }) {
+  const qc = useQueryClient();
   const form = useForm<Values>({
     resolver: zodResolver(schema),
     defaultValues: {
@@ -64,7 +63,8 @@ export function CreateClientInstanceDialog({
     mutationFn: (body: AdminClientInstanceCreateRequest) =>
       postClientInstanceCreate(body),
     onSuccess: async () => {
-      await onSuccess();
+      await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
+      onClose();
     },
   });
 

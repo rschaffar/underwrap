@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -53,14 +53,13 @@ export function CreatePairDialog({
   existingResources,
   existingPairs,
   onClose,
-  onCreated,
 }: {
   storeName: string;
   existingResources: ResourceRecord[];
   existingPairs: WrapperResourcePairRecord[];
   onClose: () => void;
-  onCreated: () => void;
 }) {
+  const qc = useQueryClient();
   const hasExisting = existingResources.length > 0;
   const form = useForm<Values>({
     resolver: zodResolver(schema),
@@ -113,7 +112,10 @@ export function CreatePairDialog({
         wrapper: w,
         resource_id: chosenResourceId,
       });
-      onCreated();
+      await qc.invalidateQueries({
+        queryKey: ["admin", "wrapper-permissions-view", storeName],
+      });
+      onClose();
     } catch (e) {
       form.setError("root", { message: describeApiError(e) });
     }

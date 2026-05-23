@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Plus, FileText } from "lucide-react";
 
 import { Alert } from "@/components/ui/alert";
@@ -31,8 +31,6 @@ import { EditCellDialog } from "./dialogs/edit-cell";
 
 export function WrapperPermissionsPage() {
   useDocumentTitle("underwrap — wrapper permissions");
-
-  const qc = useQueryClient();
 
   const stores = useQuery<AdminStoresListResponse>({
     queryKey: ["admin", "stores"],
@@ -93,13 +91,6 @@ export function WrapperPermissionsPage() {
   const [creatingPair, setCreatingPair] = useState(false);
   const [deletingPair, setDeletingPair] =
     useState<WrapperResourcePairRecord | null>(null);
-
-  function invalidateAggregateView() {
-    if (!storeName) return;
-    qc.invalidateQueries({
-      queryKey: ["admin", "wrapper-permissions-view", storeName],
-    });
-  }
 
   if (!storeName) {
     return (
@@ -222,10 +213,6 @@ export function WrapperPermissionsPage() {
           existingResources={resources}
           existingPairs={pairRecords}
           onClose={() => setCreatingPair(false)}
-          onCreated={() => {
-            invalidateAggregateView();
-            setCreatingPair(false);
-          }}
         />
       ) : null}
 
@@ -238,10 +225,6 @@ export function WrapperPermissionsPage() {
             resourceNameById.get(deletingPair.resource_id) ?? deletingPair.resource_id
           }
           onClose={() => setDeletingPair(null)}
-          onDeleted={() => {
-            invalidateAggregateView();
-            setDeletingPair(null);
-          }}
         />
       ) : null}
 

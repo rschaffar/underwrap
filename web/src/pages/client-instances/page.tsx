@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -32,7 +32,6 @@ function statusMatches(
 }
 
 export function ClientInstancesPage() {
-  const qc = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<ClientStatusFilter>("all");
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] =
@@ -178,10 +177,6 @@ export function ClientInstancesPage() {
         <CreateClientInstanceDialog
           stores={storesQuery.data.items}
           onClose={() => setCreating(false)}
-          onSuccess={async () => {
-            await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
-            setCreating(false);
-          }}
         />
       ) : null}
 
@@ -190,10 +185,6 @@ export function ClientInstancesPage() {
           instance={editing}
           stores={storesQuery.data.items}
           onClose={() => setEditing(null)}
-          onSuccess={async () => {
-            await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
-            setEditing(null);
-          }}
         />
       ) : null}
 
@@ -202,10 +193,6 @@ export function ClientInstancesPage() {
           instance={settingStatus.instance}
           nextStatus={settingStatus.nextStatus}
           onClose={() => setSettingStatus(null)}
-          onSuccess={async () => {
-            await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
-            setSettingStatus(null);
-          }}
         />
       ) : null}
 
@@ -213,10 +200,6 @@ export function ClientInstancesPage() {
         <DeleteClientInstanceDialog
           instance={deleting}
           onClose={() => setDeleting(null)}
-          onSuccess={async () => {
-            await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
-            setDeleting(null);
-          }}
         />
       ) : null}
     </div>

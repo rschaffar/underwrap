@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
@@ -9,16 +9,16 @@ import {
 export function DeleteClientInstanceDialog({
   instance,
   onClose,
-  onSuccess,
 }: {
   instance: AdminClientInstanceListItem;
   onClose: () => void;
-  onSuccess: () => Promise<void>;
 }) {
+  const qc = useQueryClient();
   const mut = useMutation({
     mutationFn: () => deleteClientInstance(instance.id),
     onSuccess: async () => {
-      await onSuccess();
+      await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
+      onClose();
     },
   });
 

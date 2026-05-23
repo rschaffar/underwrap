@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -43,13 +43,12 @@ export function EditClientInstanceDialog({
   instance,
   stores,
   onClose,
-  onSuccess,
 }: {
   instance: AdminClientInstanceListItem;
   stores: AdminStoresListResponse["items"];
   onClose: () => void;
-  onSuccess: () => Promise<void>;
 }) {
+  const qc = useQueryClient();
   const defaults: Values = {
     display_name: instance.display_name,
     current_store_id: instance.current_store_id,
@@ -70,7 +69,8 @@ export function EditClientInstanceDialog({
       auto_create_wrapper_assets?: boolean;
     }) => putClientInstanceUpdate(instance.id, body),
     onSuccess: async () => {
-      await onSuccess();
+      await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
+      onClose();
     },
   });
 
