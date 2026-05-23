@@ -3,12 +3,33 @@
 
 use anyhow::{Context, Result};
 use base64::Engine;
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use tokio::net::UnixStream;
 use tokio::sync::Notify;
+
+/// Characters to percent-encode when interpolating a value into a URL
+/// path segment. We escape every reserved/delimiter character that
+/// would otherwise split the segment.
+const PATH_SEGMENT: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'/')
+    .add(b'?')
+    .add(b'<')
+    .add(b'>')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}');
+
+fn pe(s: &str) -> String {
+    utf8_percent_encode(s, PATH_SEGMENT).to_string()
+}
 
 use underwrap_protocol::config::*;
 use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
@@ -346,15 +367,20 @@ impl TestDaemon {
         store: &str,
         permission: &WrapperPermission,
     ) -> Result<()> {
+        let path = format!(
+            "/v1/admin/stores/{}/wrapper-permissions/{}/{}/{}",
+            pe(store),
+            pe(&permission.client_instance),
+            pe(&permission.wrapper),
+            pe(&permission.resource_id),
+        );
         let response = self
-            .admin_request(
-                reqwest::Method::POST,
-                "/v1/admin/wrapper-permissions/upsert",
-            )
+            .admin_request(reqwest::Method::PUT, &path)
             .json(
                 &underwrap_protocol::service::AdminWrapperPermissionUpsertRequest {
-                    store: store.to_string(),
-                    permission: permission.clone(),
+                    mode: permission.mode.clone(),
+                    writable: permission.writable,
+                    reason: permission.reason.clone(),
                 },
             )
             .send()
@@ -468,13 +494,15 @@ impl TestDaemon {
         resource_id: &str,
         material: &str,
     ) -> Result<()> {
+        let path = format!(
+            "/v1/admin/stores/{}/secrets/{}/env/{}",
+            pe(store),
+            pe(resource_id),
+            pe(FIXTURE_ENV_KEY),
+        );
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/secret/write")
+            .admin_request(reqwest::Method::PUT, &path)
             .json(&underwrap_protocol::service::AdminSecretWriteRequest {
-                store: store.to_string(),
-                resource_id: resource_id.to_string(),
-                slot: underwrap_protocol::resource::ResourceSlot::Env,
-                key: FIXTURE_ENV_KEY.into(),
                 material_b64: base64::engine::general_purpose::STANDARD.encode(material.as_bytes()),
             })
             .send()
@@ -615,10 +643,10 @@ impl TestDaemon {
         store: &str,
     ) -> Result<underwrap_protocol::service::AdminResourcesListResponse> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/resources/list")
-            .json(&underwrap_protocol::service::AdminResourcesListRequest {
-                store: store.to_string(),
-            })
+            .admin_request(
+                reqwest::Method::GET,
+                &format!("/v1/admin/stores/{}/resources", pe(store)),
+            )
             .send()
             .await?;
         anyhow::ensure!(
@@ -635,9 +663,11 @@ impl TestDaemon {
         name: &str,
     ) -> Result<underwrap_protocol::service::AdminResourceCreateResponse> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/resources/create")
+            .admin_request(
+                reqwest::Method::POST,
+                &format!("/v1/admin/stores/{}/resources", pe(store)),
+            )
             .json(&underwrap_protocol::service::AdminResourceCreateRequest {
-                store: store.to_string(),
                 name: name.to_string(),
             })
             .send()
@@ -657,11 +687,10 @@ impl TestDaemon {
         id: &str,
     ) -> Result<underwrap_protocol::service::AdminResourceDeleteResponse> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/resources/delete")
-            .json(&underwrap_protocol::service::AdminResourceDeleteRequest {
-                store: store.to_string(),
-                id: id.to_string(),
-            })
+            .admin_request(
+                reqwest::Method::DELETE,
+                &format!("/v1/admin/stores/{}/resources/{}", pe(store), pe(id)),
+            )
             .send()
             .await?;
         anyhow::ensure!(
@@ -709,12 +738,15 @@ impl TestDaemon {
         resource_id: &str,
     ) -> Result<underwrap_protocol::service::AdminPairDeleteResponse> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/pairs/delete")
-            .json(&underwrap_protocol::service::AdminPairDeleteRequest {
-                store: store.to_string(),
-                wrapper: wrapper.to_string(),
-                resource_id: resource_id.to_string(),
-            })
+            .admin_request(
+                reqwest::Method::DELETE,
+                &format!(
+                    "/v1/admin/stores/{}/pairs/{}/{}",
+                    pe(store),
+                    pe(wrapper),
+                    pe(resource_id),
+                ),
+            )
             .send()
             .await?;
         anyhow::ensure!(
@@ -733,9 +765,11 @@ impl TestDaemon {
         resource_id: &str,
     ) -> Result<underwrap_protocol::service::AdminPairCreateResponse> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/pairs/create")
+            .admin_request(
+                reqwest::Method::POST,
+                &format!("/v1/admin/stores/{}/pairs", pe(store)),
+            )
             .json(&underwrap_protocol::service::AdminPairCreateRequest {
-                store: store.to_string(),
                 wrapper: wrapper.to_string(),
                 resource_id: resource_id.to_string(),
             })
@@ -755,10 +789,10 @@ impl TestDaemon {
         store: &str,
     ) -> Result<underwrap_protocol::service::AdminPairsListResponse> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/pairs/list")
-            .json(&underwrap_protocol::service::AdminPairsListRequest {
-                store: store.to_string(),
-            })
+            .admin_request(
+                reqwest::Method::GET,
+                &format!("/v1/admin/stores/{}/pairs", pe(store)),
+            )
             .send()
             .await?;
         anyhow::ensure!(
@@ -810,11 +844,9 @@ impl TestDaemon {
 
     async fn list_permissions(&self, store: &str) -> Result<Vec<WrapperPermission>> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/wrapper-permissions/list")
-            .json(
-                &underwrap_protocol::service::AdminWrapperPermissionsListRequest {
-                    store: store.to_string(),
-                },
+            .admin_request(
+                reqwest::Method::GET,
+                &format!("/v1/admin/stores/{}/wrapper-permissions", pe(store)),
             )
             .send()
             .await?;
@@ -837,16 +869,14 @@ impl TestDaemon {
     ) -> Result<()> {
         let response = self
             .admin_request(
-                reqwest::Method::POST,
-                "/v1/admin/wrapper-permissions/delete",
-            )
-            .json(
-                &underwrap_protocol::service::AdminWrapperPermissionDeleteRequest {
-                    store: store.to_string(),
-                    client_instance: client_instance.to_string(),
-                    wrapper: wrapper.to_string(),
-                    resource_id: resource_id.to_string(),
-                },
+                reqwest::Method::DELETE,
+                &format!(
+                    "/v1/admin/stores/{}/wrapper-permissions/{}/{}/{}",
+                    pe(store),
+                    pe(client_instance),
+                    pe(wrapper),
+                    pe(resource_id),
+                ),
             )
             .send()
             .await?;
@@ -864,25 +894,7 @@ impl TestDaemon {
         permission: &WrapperPermission,
     ) -> Result<()> {
         self.ensure_pair(&permission.wrapper, &permission.resource_id)?;
-        let response = self
-            .admin_request(
-                reqwest::Method::POST,
-                "/v1/admin/wrapper-permissions/upsert",
-            )
-            .json(
-                &underwrap_protocol::service::AdminWrapperPermissionUpsertRequest {
-                    store: store.to_string(),
-                    permission: permission.clone(),
-                },
-            )
-            .send()
-            .await?;
-        anyhow::ensure!(
-            response.status().is_success(),
-            "admin API returned {}",
-            response.status()
-        );
-        Ok(())
+        self.admin_upsert_permission(store, permission).await
     }
 
     pub async fn delete_permission(
@@ -892,27 +904,8 @@ impl TestDaemon {
         wrapper: &str,
         resource_id: &str,
     ) -> Result<()> {
-        let response = self
-            .admin_request(
-                reqwest::Method::POST,
-                "/v1/admin/wrapper-permissions/delete",
-            )
-            .json(
-                &underwrap_protocol::service::AdminWrapperPermissionDeleteRequest {
-                    store: store.to_string(),
-                    client_instance: client_instance.to_string(),
-                    wrapper: wrapper.to_string(),
-                    resource_id: resource_id.to_string(),
-                },
-            )
-            .send()
-            .await?;
-        anyhow::ensure!(
-            response.status().is_success(),
-            "admin API returned {}",
-            response.status()
-        );
-        Ok(())
+        self.admin_delete_permission(store, client_instance, wrapper, resource_id)
+            .await
     }
 
     /// Convenience: build an `Unlocked` wrapper permission for the

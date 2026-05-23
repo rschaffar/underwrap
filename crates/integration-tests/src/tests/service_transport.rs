@@ -138,13 +138,10 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
     // Remove the secret. The harness writes secrets under
     // `<resource_id>/env/TEST_TOKEN` (see `store_secret`).
     let resp = daemon
-        .admin_request(reqwest::Method::POST, "/v1/admin/secret/delete")
-        .json(&underwrap_protocol::service::AdminSecretDeleteRequest {
-            store: "test".into(),
-            resource_id: resource_id.clone(),
-            slot: underwrap_protocol::resource::ResourceSlot::Env,
-            key: "TEST_TOKEN".into(),
-        })
+        .admin_request(
+            reqwest::Method::DELETE,
+            &format!("/v1/admin/stores/test/secrets/{resource_id}/env/TEST_TOKEN"),
+        )
         .send()
         .await
         .unwrap();
@@ -241,11 +238,10 @@ async fn admin_secret_delete_removes_single_libsecret_entry() {
     // Sanity: both items' .secret entries are visible through the
     // admin list before the delete.
     let listed = daemon
-        .admin_request(reqwest::Method::POST, "/v1/admin/secret/list")
-        .json(&underwrap_protocol::service::AdminSecretListRequest {
-            store: "test".into(),
-            resource_id: Some(resource_id.clone()),
-        })
+        .admin_request(
+            reqwest::Method::GET,
+            &format!("/v1/admin/stores/test/secrets?resource_id={resource_id}"),
+        )
         .send()
         .await
         .unwrap()
@@ -273,17 +269,17 @@ async fn admin_secret_delete_removes_single_libsecret_entry() {
     );
 
     // Delete just the dropped item's `.secret` entry.
-    let resp = daemon
-        .admin_request(reqwest::Method::POST, "/v1/admin/secret/delete")
-        .json(&underwrap_protocol::service::AdminSecretDeleteRequest {
-            store: "test".into(),
-            resource_id: resource_id.clone(),
-            slot: underwrap_protocol::resource::ResourceSlot::Libsecret,
-            key: "default/drop.secret".into(),
-        })
-        .send()
-        .await
-        .unwrap();
+    let resp =
+        daemon
+            .admin_request(
+                reqwest::Method::DELETE,
+                &format!(
+                    "/v1/admin/stores/test/secrets/{resource_id}/libsecret/default%2Fdrop.secret",
+                ),
+            )
+            .send()
+            .await
+            .unwrap();
     assert!(
         resp.status().is_success(),
         "libsecret secret-delete must succeed: {}",
@@ -326,11 +322,10 @@ async fn admin_secret_delete_removes_single_libsecret_entry() {
     // Listing again reflects the change: only `keep.secret` (and
     // friends) remain on the libsecret slot.
     let listed_after = daemon
-        .admin_request(reqwest::Method::POST, "/v1/admin/secret/list")
-        .json(&underwrap_protocol::service::AdminSecretListRequest {
-            store: "test".into(),
-            resource_id: Some(resource_id.clone()),
-        })
+        .admin_request(
+            reqwest::Method::GET,
+            &format!("/v1/admin/stores/test/secrets?resource_id={resource_id}"),
+        )
         .send()
         .await
         .unwrap()

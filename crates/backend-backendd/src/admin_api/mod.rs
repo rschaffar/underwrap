@@ -42,6 +42,7 @@ pub(crate) mod resources;
 pub(crate) mod secrets;
 pub(crate) mod stores;
 pub(crate) mod users;
+pub(crate) mod views;
 
 pub(crate) use error::AdminError;
 
@@ -77,9 +78,9 @@ pub(crate) const SESSION_COOKIE_NAME: &str = "__Host-uw-session";
 /// with the runtime router and provides state once via
 /// `.with_state(...)`.
 ///
-/// The OpenAPI document is the same one the
-/// `openapi_export.rs` drift test asserts on; it is also what the
-/// front-end client generator (ticket 1750) consumes.
+/// The OpenAPI document is the same one the `openapi_export.rs` drift
+/// test asserts on; it is also what the front-end client generator
+/// consumes.
 pub(crate) fn admin_router_and_openapi(
     state: Arc<AdminRuntimeState>,
 ) -> (Router<Arc<AdminRuntimeState>>, OpenApi) {
@@ -101,13 +102,9 @@ pub(crate) fn admin_router_and_openapi(
 
     // ---- OpenApiRouter composition ------------------------------------
     //
-    // Each subdomain returns an `OpenApiRouter<S>`; subdomains that
-    // have already been migrated to `#[utoipa::path]` annotations are
-    // merged directly so their paths land in the spec. Unmigrated
-    // subdomains still return plain `axum::Router<S>` and are wrapped
-    // via `OpenApiRouter::from(...)` — their handlers contribute
-    // routes but no OpenAPI paths, which is exactly the incremental
-    // shape we want during the 1740 rollout.
+    // Every subdomain contributes utoipa-annotated routes; the
+    // OpenAPI document is built from them and committed to
+    // `openapi.json`.
 
     // `.layer` wraps the current router with the supplied middleware,
     // so layers read inside-out — the *first* `.layer(...)` call is
@@ -159,6 +156,7 @@ fn build_protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
         .merge(resources::openapi_router())
         .merge(pairs::openapi_router())
         .merge(policy::openapi_router())
+        .merge(views::openapi_router())
 }
 
 /// OpenAPI-only export. Constructs the same router tree as the live

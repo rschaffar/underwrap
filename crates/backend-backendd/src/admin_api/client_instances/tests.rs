@@ -74,11 +74,8 @@ fn client_instance_crud_and_store_mapping_round_trip() {
     let client_id = created["id"].as_str().unwrap().to_string();
     assert_eq!(created["current_store_id"], work_id);
     assert_eq!(created["current_store_name"], "work");
-    assert_eq!(created["actions"]["can_edit_display_name"], true);
-    assert_eq!(created["actions"]["can_remap_store"], true);
     assert_eq!(created["actions"]["can_disable"], true);
     assert_eq!(created["actions"]["can_enable"], false);
-    assert_eq!(created["actions"]["can_delete"], true);
 
     let (list_status, list_body) =
         run_handler(handle_admin_client_instances_list(State(state.clone())));
@@ -130,7 +127,7 @@ fn client_instance_crud_and_store_mapping_round_trip() {
 
 #[test]
 fn client_instance_delete_cascades_to_wrapper_permissions() {
-    use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
+    use underwrap_protocol::policy::WrapperApprovalMode;
     use underwrap_protocol::service::AdminWrapperPermissionUpsertRequest;
 
     let tmp = tempfile::TempDir::new().unwrap();
@@ -183,16 +180,16 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
         let (status, _) = run_handler(handle_admin_wrapper_permission_upsert(
             State(state.clone()),
             Extension(p.clone()),
+            axum::extract::Path((
+                store_id.clone(),
+                instance.clone(),
+                "gh".into(),
+                "github/token".into(),
+            )),
             Body(AdminWrapperPermissionUpsertRequest {
-                store: store_id.clone(),
-                permission: WrapperPermission {
-                    client_instance: instance.clone(),
-                    wrapper: "gh".into(),
-                    resource_id: "github/token".into(),
-                    mode: WrapperApprovalMode::Unlocked,
-                    writable: false,
-                    reason: None,
-                },
+                mode: WrapperApprovalMode::Unlocked,
+                writable: false,
+                reason: None,
             }),
         ));
         assert_eq!(status, StatusCode::OK);

@@ -6,15 +6,15 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import {
-  type AdminSecretListResponse,
+  type AdminSecretsView,
   type AdminStoresListResponse,
+  fetchSecretsView,
   fetchStores,
-  postSecretList,
   type ResourceRecord,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 import { useStoreSelector } from "@/hooks/use-store-selector";
-import { useStoreLookups } from "@/hooks/use-store-lookups";
+import { useClientInstanceDirectory } from "@/hooks/use-store-lookups";
 
 import {
   type SecretAddress,
@@ -41,13 +41,20 @@ export function SecretsPage() {
   });
   const { storeName, setStoreName } = useStoreSelector(stores.data?.items);
 
-  const list = useQuery<AdminSecretListResponse>({
-    queryKey: ["admin", "secrets", storeName],
-    queryFn: () => postSecretList({ store: storeName! }),
+  const list = useQuery<AdminSecretsView>({
+    queryKey: ["admin", "secrets-view", storeName],
+    queryFn: () => fetchSecretsView(storeName!),
     enabled: !!storeName,
   });
-  const { resources, displayNameById, resourceNameById } =
-    useStoreLookups(storeName);
+  const { displayNameById } = useClientInstanceDirectory();
+  const resources = list.data?.resources ?? [];
+  const resourceNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of resources) {
+      map.set(r.id, r.name);
+    }
+    return map;
+  }, [resources]);
 
   // Resource id → record lookup for the provenance display. Different
   // shape from `resourceNameById` (which only carries the name), so

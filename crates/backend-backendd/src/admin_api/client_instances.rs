@@ -54,11 +54,8 @@ fn admin_client_instance_actions(
     record: &crate::runtime_clients::ClientInstanceRecord,
 ) -> AdminClientInstanceActionState {
     AdminClientInstanceActionState {
-        can_edit_display_name: true,
-        can_remap_store: true,
         can_disable: record.status == crate::runtime_clients::ClientInstanceStatus::Active,
         can_enable: record.status == crate::runtime_clients::ClientInstanceStatus::Disabled,
-        can_delete: true,
     }
 }
 

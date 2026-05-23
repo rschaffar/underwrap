@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { postResourceDelete } from "@/api/client";
+import { deleteResource } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
 export function DeleteResourceDialog({
@@ -28,18 +28,23 @@ export function DeleteResourceDialog({
   const qc = useQueryClient();
   const [submitError, setSubmitError] = useState<string | null>(null);
   const mut = useMutation({
-    mutationFn: () =>
-      postResourceDelete({ store: storeName, id: resourceId }),
+    mutationFn: () => deleteResource(storeName, resourceId),
   });
   async function onDelete() {
     setSubmitError(null);
     try {
       const result = await mut.mutateAsync();
       if (result.ok) {
+        // The secrets and wrapper-permissions pages both surface
+        // resources via their aggregate views, so invalidating both
+        // view keys keeps either page consistent on next visit.
         await Promise.all([
-          qc.invalidateQueries({ queryKey: ["admin", "resources", storeName] }),
-          qc.invalidateQueries({ queryKey: ["admin", "secrets", storeName] }),
-          qc.invalidateQueries({ queryKey: ["admin", "pairs", storeName] }),
+          qc.invalidateQueries({
+            queryKey: ["admin", "secrets-view", storeName],
+          }),
+          qc.invalidateQueries({
+            queryKey: ["admin", "wrapper-permissions-view", storeName],
+          }),
         ]);
         onClose();
       }

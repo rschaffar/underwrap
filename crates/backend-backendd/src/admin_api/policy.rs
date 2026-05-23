@@ -1,12 +1,5 @@
-//! Policy document + wrapper-permission admin CRUD.
-//!
-//! Two URL families share this module because they manipulate the same
-//! backing document (`POLICY_DOCUMENT_SECRET_ID`):
-//!
-//! - `/v1/admin/policy/{get, put}` — read/write the whole policy
-//!   document.
-//! - `/v1/admin/wrapper-permissions/{list, upsert, delete}` — granular
-//!   read-modify-write on the `permissions` vec.
+//! Wrapper-permission admin CRUD under
+//! `/v1/admin/stores/{id}/wrapper-permissions`.
 //!
 //! Plus `drop_client_instance_permissions`, which the client-instance
 //! admin module calls when an instance is reassigned to a different
@@ -16,10 +9,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
+use underwrap_protocol::policy::WrapperPermission;
 use underwrap_protocol::service::{
-    AdminOkResponse, AdminWrapperPermissionDeleteRequest, AdminWrapperPermissionUpsertRequest,
-    AdminWrapperPermissionsListRequest, AdminWrapperPermissionsListResponse, ServiceErrorResponse,
+    AdminOkResponse, AdminWrapperPermissionUpsertRequest, AdminWrapperPermissionsListResponse,
+    ServiceErrorResponse,
 };
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -61,16 +55,18 @@ pub(crate) fn drop_client_instance_permissions(
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_wrapper_permissions_list))
-        .routes(routes!(handle_admin_wrapper_permission_upsert))
-        .routes(routes!(handle_admin_wrapper_permission_delete))
+        .routes(routes!(
+            handle_admin_wrapper_permission_upsert,
+            handle_admin_wrapper_permission_delete
+        ))
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/wrapper-permissions/list",
+    get,
+    path = "/v1/admin/stores/{id}/wrapper-permissions",
     tag = "policy",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminWrapperPermissionsListRequest,
+    security(("session_cookie" = [])),
+    params(("id" = String, Path, description = "Store id.")),
     responses(
         (status = 200, description = "List of wrapper permissions for the store.", body = AdminWrapperPermissionsListResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
@@ -79,20 +75,27 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 )]
 pub(crate) async fn handle_admin_wrapper_permissions_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(body): Body<AdminWrapperPermissionsListRequest>,
+    Path(store_id): Path<String>,
 ) -> Result<Json<AdminWrapperPermissionsListResponse>, AdminError> {
-    let store = admin_store(&state, &body.store)?;
-    let doc = load_policy_document(store.as_ref()).map_err(AdminError::admin)?;
+    let store = admin_store(&state, &store_id)?;
+    let doc = load_policy_document(store.as_ref())
+        .map_err(|e| AdminError::internal("loading policy document", e))?;
     Ok(Json(AdminWrapperPermissionsListResponse {
         permissions: doc.permissions,
     }))
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/wrapper-permissions/upsert",
+    put,
+    path = "/v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}",
     tag = "policy",
     security(("session_cookie" = []), ("csrf_header" = [])),
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("client_instance" = String, Path, description = "Client instance id."),
+        ("wrapper" = String, Path, description = "Wrapper name."),
+        ("rid" = String, Path, description = "Resource id."),
+    ),
     request_body = AdminWrapperPermissionUpsertRequest,
     responses(
         (status = 200, description = "Permission upserted.", body = AdminOkResponse),
@@ -104,27 +107,32 @@ pub(crate) async fn handle_admin_wrapper_permissions_list(
 pub(crate) async fn handle_admin_wrapper_permission_upsert(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
+    Path((store_id, client_instance, wrapper, resource_id)): Path<(String, String, String, String)>,
     Body(body): Body<AdminWrapperPermissionUpsertRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
-    let store = admin_store(&state, &body.store)?;
-    if body.permission.client_instance.is_empty()
-        || body.permission.wrapper.is_empty()
-        || body.permission.resource_id.is_empty()
-    {
+    if client_instance.is_empty() || wrapper.is_empty() || resource_id.is_empty() {
         return Err(AdminError::bad_request(
             "invalid_permission",
             "client_instance, wrapper, and resource_id must all be non-empty",
         ));
     }
-    let mut doc = load_policy_document(store.as_ref()).map_err(AdminError::admin)?;
+    let permission = WrapperPermission {
+        client_instance: client_instance.clone(),
+        wrapper: wrapper.clone(),
+        resource_id: resource_id.clone(),
+        mode: body.mode,
+        writable: body.writable,
+        reason: body.reason,
+    };
+    let store = admin_store(&state, &store_id)?;
+    let mut doc = load_policy_document(store.as_ref())
+        .map_err(|e| AdminError::internal("loading policy document", e))?;
     if let Some(slot) = doc.permissions.iter_mut().find(|p| {
-        p.client_instance == body.permission.client_instance
-            && p.wrapper == body.permission.wrapper
-            && p.resource_id == body.permission.resource_id
+        p.client_instance == client_instance && p.wrapper == wrapper && p.resource_id == resource_id
     }) {
-        *slot = body.permission.clone();
+        *slot = permission.clone();
     } else {
-        doc.permissions.push(body.permission.clone());
+        doc.permissions.push(permission.clone());
     }
     doc.permissions.sort_by(|a, b| {
         a.client_instance
@@ -137,8 +145,8 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
             "wrapper_permission.upsert",
             &principal,
             AuditEntity::Permission {
-                store: &body.store,
-                permission: &body.permission,
+                store: &store_id,
+                permission: &permission,
             },
             None,
             "failure",
@@ -149,8 +157,8 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
         "wrapper_permission.upsert",
         &principal,
         AuditEntity::Permission {
-            store: &body.store,
-            permission: &body.permission,
+            store: &store_id,
+            permission: &permission,
         },
         None,
         "success",
@@ -159,11 +167,16 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/wrapper-permissions/delete",
+    delete,
+    path = "/v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}",
     tag = "policy",
     security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminWrapperPermissionDeleteRequest,
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("client_instance" = String, Path, description = "Client instance id."),
+        ("wrapper" = String, Path, description = "Wrapper name."),
+        ("rid" = String, Path, description = "Resource id."),
+    ),
     responses(
         (status = 200, description = "Permission removed.", body = AdminOkResponse),
         (status = 404, description = "Store / permission not found.", body = ServiceErrorResponse),
@@ -173,15 +186,16 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
 pub(crate) async fn handle_admin_wrapper_permission_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(body): Body<AdminWrapperPermissionDeleteRequest>,
+    Path((store_id, client_instance, wrapper, resource_id)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
-    let store = admin_store(&state, &body.store)?;
-    let mut doc = load_policy_document(store.as_ref()).map_err(AdminError::admin)?;
+    let store = admin_store(&state, &store_id)?;
+    let mut doc = load_policy_document(store.as_ref())
+        .map_err(|e| AdminError::internal("loading policy document", e))?;
     let before = doc.permissions.len();
     doc.permissions.retain(|p| {
-        !(p.client_instance == body.client_instance
-            && p.wrapper == body.wrapper
-            && p.resource_id == body.resource_id)
+        !(p.client_instance == client_instance
+            && p.wrapper == wrapper
+            && p.resource_id == resource_id)
     });
     let removed = before != doc.permissions.len();
     if !removed {
@@ -189,10 +203,10 @@ pub(crate) async fn handle_admin_wrapper_permission_delete(
     }
     save_policy_document(store.as_ref(), &doc)
         .map_err(|e| AdminError::internal("persisting policy document", e))?;
-    let removed_permission = underwrap_protocol::policy::WrapperPermission {
-        client_instance: body.client_instance.clone(),
-        wrapper: body.wrapper.clone(),
-        resource_id: body.resource_id.clone(),
+    let removed_permission = WrapperPermission {
+        client_instance: client_instance.clone(),
+        wrapper: wrapper.clone(),
+        resource_id: resource_id.clone(),
         mode: underwrap_protocol::policy::WrapperApprovalMode::Locked,
         writable: false,
         reason: None,
@@ -201,7 +215,7 @@ pub(crate) async fn handle_admin_wrapper_permission_delete(
         "wrapper_permission.delete",
         &principal,
         AuditEntity::Permission {
-            store: &body.store,
+            store: &store_id,
             permission: &removed_permission,
         },
         None,

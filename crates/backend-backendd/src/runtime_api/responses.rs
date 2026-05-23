@@ -1,12 +1,10 @@
 //! Response constructors for the runtime mTLS endpoints.
 //!
-//! Runtime handlers still return raw `Response<Full<Bytes>>` (the
-//! admin handlers were migrated to `Result<Json<T>, AdminError>` in
-//! ticket 1800; the runtime surface is intentionally out of scope for
-//! that cutover). The helpers below produce the same
-//! `ServiceErrorResponse` envelope the admin side emits via
-//! [`crate::admin_api::AdminError`], so the wire shape stays uniform
-//! across both APIs.
+//! Runtime handlers return raw `Response<Full<Bytes>>` rather than
+//! going through axum's `Json<T>` extractor; the helpers below
+//! produce the same `ServiceErrorResponse` envelope the admin side
+//! emits via [`crate::admin_api::AdminError`], so the wire shape
+//! stays uniform across both APIs.
 
 use bytes::Bytes;
 use http_body_util::Full;

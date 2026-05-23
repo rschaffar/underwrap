@@ -59,6 +59,22 @@ impl ResourceSlot {
             Self::Libsecret => LIBSECRET_SLOT,
         }
     }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            ENV_SLOT => Some(Self::Env),
+            FILES_SLOT => Some(Self::Files),
+            LIBSECRET_SLOT => Some(Self::Libsecret),
+            _ => None,
+        }
+    }
+}
+
+impl std::str::FromStr for ResourceSlot {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
 }
 
 /// Compose the in-blob entry key for `(resource_id, slot, key)`. This

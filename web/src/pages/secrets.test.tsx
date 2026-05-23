@@ -14,16 +14,14 @@ vi.mock("@/api/client", async () => {
     ...actual,
     fetchStores: vi.fn(),
     fetchClientInstances: vi.fn(),
-    postSecretList: vi.fn(),
-    postResourcesList: vi.fn(),
+    fetchSecretsView: vi.fn(),
   };
 });
 
 import {
   fetchClientInstances,
+  fetchSecretsView,
   fetchStores,
-  postResourcesList,
-  postSecretList,
 } from "@/api/client";
 
 function renderWithQuery(ui: React.ReactNode) {
@@ -44,7 +42,6 @@ describe("SecretsPage", () => {
         locked: false,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
-          can_edit_metadata: true,
           can_rotate_key: false,
           can_unlock: false,
           can_lock: false,
@@ -58,21 +55,24 @@ describe("SecretsPage", () => {
   beforeEach(() => {
     vi.mocked(fetchStores).mockReset();
     vi.mocked(fetchClientInstances).mockReset();
-    vi.mocked(postSecretList).mockReset();
-    vi.mocked(postResourcesList).mockReset();
-    vi.mocked(postResourcesList).mockResolvedValue({ resources: [] });
+    vi.mocked(fetchSecretsView).mockReset();
+    vi.mocked(fetchSecretsView).mockResolvedValue({
+      entries: [],
+      resources: [],
+    });
     vi.mocked(fetchClientInstances).mockResolvedValue({ items: [] });
   });
 
   it("groups structured secret entries by resource", async () => {
     vi.mocked(fetchStores).mockResolvedValue(storesList);
-    vi.mocked(postSecretList).mockResolvedValue({
+    vi.mocked(fetchSecretsView).mockResolvedValue({
       entries: [
         { resource_id: "github/token", slot: "env", key: "GH_TOKEN" },
         { resource_id: "github/token", slot: "env", key: "GH_USERNAME" },
         { resource_id: "github/gh", slot: "libsecret", key: "credential" },
         { resource_id: "aws/access-key", slot: "env", key: "AWS_KEY" },
       ],
+      resources: [],
     });
     renderWithQuery(<SecretsPage />);
 
@@ -102,8 +102,8 @@ describe("SecretsPage", () => {
     // soon as a resource record exists, so they can write the first
     // entries before the wrapper's first read.
     vi.mocked(fetchStores).mockResolvedValue(storesList);
-    vi.mocked(postSecretList).mockResolvedValue({ entries: [] });
-    vi.mocked(postResourcesList).mockResolvedValue({
+    vi.mocked(fetchSecretsView).mockResolvedValue({
+      entries: [],
       resources: [
         {
           id: "res_gh",
@@ -128,8 +128,8 @@ describe("SecretsPage", () => {
 
   it("shows client-instance display name in resource provenance", async () => {
     vi.mocked(fetchStores).mockResolvedValue(storesList);
-    vi.mocked(postSecretList).mockResolvedValue({ entries: [] });
-    vi.mocked(postResourcesList).mockResolvedValue({
+    vi.mocked(fetchSecretsView).mockResolvedValue({
+      entries: [],
       resources: [
         {
           id: "res_auto",
@@ -150,11 +150,8 @@ describe("SecretsPage", () => {
           current_credential_fingerprint: "fp",
           auto_create_wrapper_assets: true,
           actions: {
-            can_edit_display_name: true,
-            can_remap_store: true,
             can_disable: true,
             can_enable: false,
-            can_delete: true,
           },
         },
       ],

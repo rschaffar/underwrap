@@ -1,5 +1,5 @@
 use axum::Extension;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use hyper::StatusCode;
 
 use super::*;
@@ -19,8 +19,8 @@ fn admin_pair_create_requires_existing_resource_and_refuses_duplicates() {
     let (status, body) = run_handler(handle_admin_pair_create(
         State(state.clone()),
         Extension(p.clone()),
+        Path(store_id.clone()),
         Body(underwrap_protocol::service::AdminPairCreateRequest {
-            store: store_id.clone(),
             wrapper: "gh".into(),
             resource_id: "res_missing".into(),
         }),
@@ -32,8 +32,8 @@ fn admin_pair_create_requires_existing_resource_and_refuses_duplicates() {
     let (create_status, _) = run_handler(handle_admin_pair_create(
         State(state.clone()),
         Extension(p.clone()),
+        Path(store_id.clone()),
         Body(underwrap_protocol::service::AdminPairCreateRequest {
-            store: store_id.clone(),
             wrapper: "gh".into(),
             resource_id: resource_id.clone(),
         }),
@@ -43,8 +43,8 @@ fn admin_pair_create_requires_existing_resource_and_refuses_duplicates() {
     let (dup_status, dup_body) = run_handler(handle_admin_pair_create(
         State(state.clone()),
         Extension(p),
+        Path(store_id),
         Body(underwrap_protocol::service::AdminPairCreateRequest {
-            store: store_id.clone(),
             wrapper: "gh".into(),
             resource_id,
         }),
@@ -64,8 +64,8 @@ fn admin_pair_delete_refuses_when_permissions_reference_the_pair() {
     let (create_status, _) = run_handler(handle_admin_pair_create(
         State(state.clone()),
         Extension(p.clone()),
+        Path(store_id.clone()),
         Body(underwrap_protocol::service::AdminPairCreateRequest {
-            store: store_id.clone(),
             wrapper: "gh".into(),
             resource_id: resource_id.clone(),
         }),
@@ -92,11 +92,7 @@ fn admin_pair_delete_refuses_when_permissions_reference_the_pair() {
     let (status, body) = run_handler(handle_admin_pair_delete(
         State(state.clone()),
         Extension(p),
-        Body(underwrap_protocol::service::AdminPairDeleteRequest {
-            store: store_id.clone(),
-            wrapper: "gh".into(),
-            resource_id,
-        }),
+        Path((store_id, "gh".into(), resource_id)),
     ));
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], false);

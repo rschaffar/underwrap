@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { postSecretDelete } from "@/api/client";
+import { deleteSecret } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
 import type { SecretAddress } from "../model";
@@ -29,15 +29,10 @@ export function DeleteSecretDialog({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const mut = useMutation({
     mutationFn: () =>
-      postSecretDelete({
-        store: storeName,
-        resource_id: address.resource_id,
-        slot: address.slot,
-        key: address.key,
-      }),
+      deleteSecret(storeName, address.resource_id, address.slot, address.key),
     onSuccess: async () => {
       await qc.invalidateQueries({
-        queryKey: ["admin", "secrets", storeName],
+        queryKey: ["admin", "secrets-view", storeName],
       });
       onClose();
     },

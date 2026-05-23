@@ -41,7 +41,6 @@ describe("ClientInstancesPage", () => {
         locked: false,
         usage: { mapped_client_instance_count: 1, has_secrets: true },
         actions: {
-          can_edit_metadata: true,
           can_rotate_key: false,
           can_unlock: false,
           can_lock: false,
@@ -57,7 +56,6 @@ describe("ClientInstancesPage", () => {
         locked: false,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
-          can_edit_metadata: true,
           can_rotate_key: false,
           can_unlock: false,
           can_lock: false,
@@ -80,11 +78,8 @@ describe("ClientInstancesPage", () => {
         current_credential_fingerprint: "fp-work",
         auto_create_wrapper_assets: false,
         actions: {
-          can_edit_display_name: true,
-          can_remap_store: true,
           can_disable: true,
           can_enable: false,
-          can_delete: true,
         },
       },
       {
@@ -97,11 +92,8 @@ describe("ClientInstancesPage", () => {
         current_credential_fingerprint: "fp-old",
         auto_create_wrapper_assets: false,
         actions: {
-          can_edit_display_name: true,
-          can_remap_store: true,
           can_disable: false,
           can_enable: true,
-          can_delete: true,
         },
       },
     ],
@@ -124,11 +116,8 @@ describe("ClientInstancesPage", () => {
       current_credential_fingerprint: "fp-new",
       auto_create_wrapper_assets: false,
       actions: {
-        can_edit_display_name: true,
-        can_remap_store: true,
         can_disable: true,
         can_enable: false,
-        can_delete: true,
       },
     });
     vi.mocked(putClientInstanceUpdate).mockImplementation(async (id, body) => ({
@@ -143,11 +132,8 @@ describe("ClientInstancesPage", () => {
       current_credential_fingerprint: id === "client_work" ? "fp-work" : "fp-old",
       auto_create_wrapper_assets: false,
       actions: {
-        can_edit_display_name: true,
-        can_remap_store: true,
         can_disable: body.status !== "disabled",
         can_enable: body.status === "disabled" || id === "client_disabled",
-        can_delete: true,
       },
     }));
   });

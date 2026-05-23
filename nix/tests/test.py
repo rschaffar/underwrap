@@ -4,6 +4,14 @@ import base64
 import json
 import shlex
 import time
+import urllib.parse
+
+
+def _seg(value):
+    """Percent-encode a single URL path segment. Slashes inside the
+    value (e.g. resource names like `github/token`) become `%2F` so
+    they don't collide with the path delimiter."""
+    return urllib.parse.quote(value, safe="")
 
 # Helper for running commands as testuser.
 def su(cmd):
@@ -148,7 +156,7 @@ def admin_api(url, path, payload=None, method="POST"):
 
 
 def admin_write_secret(url, store, wrapper, secret_id, value):
-    """Admin-side secret write. `secret_id` is the legacy
+    """Admin-side secret write. `secret_id` is the
     `<resource_name>/<slot>/<key>` path used in test fixtures; we
     split it from the right (slot + key are single segments) and
     translate the resource name to its backend id. `wrapper` is kept
@@ -156,16 +164,12 @@ def admin_write_secret(url, store, wrapper, secret_id, value):
     new wire shape."""
     del wrapper  # kept for call-site readability only
     resource_name, slot, key = secret_id.rsplit("/", 2)
+    rid = _resource_id_for(url, resource_name)
     return admin_api(
         url,
-        "/v1/admin/secret/write",
-        {
-            "store": store,
-            "resource_id": _resource_id_for(url, resource_name),
-            "slot": slot,
-            "key": key,
-            "material_b64": base64.b64encode(value.encode()).decode(),
-        },
+        f"/v1/admin/stores/{store}/secrets/{_seg(rid)}/{_seg(slot)}/{_seg(key)}",
+        {"material_b64": base64.b64encode(value.encode()).decode()},
+        method="PUT",
     )
 
 
@@ -199,32 +203,24 @@ def admin_upsert_grant(url, store, client_instance, wrapper, resource, mode, *, 
       {"kind": "unlocked"}
       {"kind": "unlocked-until", "until_epoch": 1234}
     """
-    permission = {
-        "client_instance": client_instance,
-        "wrapper": wrapper,
-        "resource_id": _resource_id_for(url, resource),
-        "mode": mode,
-        "writable": writable,
-    }
+    rid = _resource_id_for(url, resource)
+    body = {"mode": mode, "writable": writable}
     if reason is not None:
-        permission["reason"] = reason
+        body["reason"] = reason
     return admin_api(
         url,
-        "/v1/admin/wrapper-permissions/upsert",
-        {"store": store, "permission": permission},
+        f"/v1/admin/stores/{store}/wrapper-permissions/{_seg(client_instance)}/{_seg(wrapper)}/{_seg(rid)}",
+        body,
+        method="PUT",
     )
 
 
 def admin_delete_grant(url, store, client_instance, wrapper, resource):
+    rid = _resource_id_for(url, resource)
     return admin_api(
         url,
-        "/v1/admin/wrapper-permissions/delete",
-        {
-            "store": store,
-            "client_instance": client_instance,
-            "wrapper": wrapper,
-            "resource_id": _resource_id_for(url, resource),
-        },
+        f"/v1/admin/stores/{store}/wrapper-permissions/{_seg(client_instance)}/{_seg(wrapper)}/{_seg(rid)}",
+        method="DELETE",
     )
 
 
@@ -233,7 +229,7 @@ def admin_get_blob(url, store, resource):
     backend's on-disk store and return them base64-encoded.
 
     The admin API no longer exposes a `blob/get` endpoint — the SPA
-    edits secrets per-key via `/v1/admin/secret/*` — so we go through
+    edits secrets per-key — so we go through
     the storage backend's on-disk layout: a `PlainBackend` stores each
     resource blob at `<dir>/resources/<resource_id>`. Picking the
     right `<dir>` per (url, store) keeps the byte-equal comparison
@@ -267,8 +263,8 @@ def _storage_dir_for(url, store):
 def admin_list_pairs(url, store):
     return admin_api(
         url,
-        "/v1/admin/pairs/list",
-        {"store": store},
+        f"/v1/admin/stores/{store}/pairs",
+        method="GET",
     )["pairs"]
 
 
@@ -441,16 +437,16 @@ def boot_and_service_checks():
     machine.sleep(2)
 
     local_resources = admin_api(
-        ADMIN_LOCAL, "/v1/admin/resources/list", {"store": "local"}
+        ADMIN_LOCAL, "/v1/admin/stores/local/resources", method="GET"
     )["resources"]
     local_pairs = admin_api(
-        ADMIN_LOCAL, "/v1/admin/pairs/list", {"store": "local"}
+        ADMIN_LOCAL, "/v1/admin/stores/local/pairs", method="GET"
     )["pairs"]
     remote_resources = admin_api(
-        ADMIN_REMOTE, "/v1/admin/resources/list", {"store": "remote"}
+        ADMIN_REMOTE, "/v1/admin/stores/remote/resources", method="GET"
     )["resources"]
     remote_pairs = admin_api(
-        ADMIN_REMOTE, "/v1/admin/pairs/list", {"store": "remote"}
+        ADMIN_REMOTE, "/v1/admin/stores/remote/pairs", method="GET"
     )["pairs"]
 
     # Populate the name → id maps that the wrapper-permission helpers
@@ -532,9 +528,9 @@ def local_store_and_basic_ops():
     # LOCAL INSTANCE: store secrets + basic operations
     # ============================================================
 
-    # Admin writes through `/v1/admin/secret/write` are unconditional
-    # in the new grant model; the global `writes_enabled` toggle is
-    # gone and per-grant `writable` controls only wrapper-side writes.
+    # Admin writes through the per-secret PUT endpoint are
+    # unconditional; the global `writes_enabled` toggle is gone and
+    # per-grant `writable` controls only wrapper-side writes.
 
     # Every wrapper invocation needs a grant for
     # `(client_instance, wrapper, resource)`. Pre-seed Unlocked grants
@@ -1603,29 +1599,18 @@ def encrypted_store_in_memory_keys():
     # resources / pairs / grants.
     resource_id = "vault/greeting"
     slot_payload = base64.b64encode(b"hello-locked").decode()
+    secret_path = (
+        f"/v1/admin/stores/{store_id}/secrets/{_seg(resource_id)}/env/GREETING"
+    )
     admin_api(
         ADMIN_LOCAL,
-        "/v1/admin/secret/write",
-        {
-            "store": store_id,
-            "resource_id": resource_id,
-            "slot": "env",
-            "key": "GREETING",
-            "material_b64": slot_payload,
-        },
+        secret_path,
+        {"material_b64": slot_payload},
+        method="PUT",
     )
 
     def read_secret():
-        return admin_api(
-            ADMIN_LOCAL,
-            "/v1/admin/secret/read",
-            {
-                "store": store_id,
-                "resource_id": resource_id,
-                "slot": "env",
-                "key": "GREETING",
-            },
-        )
+        return admin_api(ADMIN_LOCAL, secret_path, method="GET")
 
     assert read_secret()["material_b64"] == slot_payload, (
         "unencrypted round-trip failed"
@@ -1657,14 +1642,10 @@ def encrypted_store_in_memory_keys():
 
     locked_read = admin_api_expect_status(
         ADMIN_LOCAL,
-        "/v1/admin/secret/read",
-        {
-            "store": store_id,
-            "resource_id": resource_id,
-            "slot": "env",
-            "key": "GREETING",
-        },
+        secret_path,
+        None,
         status=503,
+        method="GET",
     )
     assert locked_read["code"] == "store_locked", locked_read
 
@@ -1734,14 +1715,10 @@ def encrypted_store_in_memory_keys():
     )
     locked_after_lock = admin_api_expect_status(
         ADMIN_LOCAL,
-        "/v1/admin/secret/read",
-        {
-            "store": store_id,
-            "resource_id": resource_id,
-            "slot": "env",
-            "key": "GREETING",
-        },
+        secret_path,
+        None,
         status=503,
+        method="GET",
     )
     assert locked_after_lock["code"] == "store_locked"
 
@@ -1755,13 +1732,13 @@ def encrypted_store_in_memory_keys():
     machine.log("PASS: encrypted store keeps master keys in memory only")
 
 
-def admin_api_expect_status(url, path, payload, *, status):
+def admin_api_expect_status(url, path, payload, *, status, method="POST"):
     """Like `admin_api` but expects a specific non-2xx status and
     returns the decoded JSON error body. Used by the
     encrypted-store-locked tests where the interesting case is the
     `code` field on a 4xx / 5xx response.
     """
-    is_state_changing = True
+    is_state_changing = method not in ("GET", "HEAD", "OPTIONS")
     cookie_jar = _COOKIE_JAR.get(url)
     csrf = _CSRF_TOKEN.get(url)
     cmd = [
@@ -1770,7 +1747,7 @@ def admin_api_expect_status(url, path, payload, *, status):
         "-w", "%{http_code}",
         "--cacert", CA_CERT,
         "-b", cookie_jar,
-        "-X", "POST",
+        "-X", method,
         "-H", f"Origin: {url}",
     ]
     if is_state_changing:
@@ -1989,29 +1966,25 @@ def runtime_api_invariants():
     # PerCallApproval variant is gone — admin wrapper-permissions/
     # upsert rejects any payload that tries to carry it.
     # ----------------------------------------------------------
+    rid = _resource_id_for(ADMIN_LOCAL, "test/token")
     err = admin_api_expect_status(
         ADMIN_LOCAL,
-        "/v1/admin/wrapper-permissions/upsert",
+        f"/v1/admin/stores/local/wrapper-permissions/{_seg(LOCAL_CLIENT_INSTANCE)}/test-echo/{_seg(rid)}",
         {
-            "store": "local",
-            "permission": {
-                "client_instance": LOCAL_CLIENT_INSTANCE,
-                "wrapper": "test-echo",
-                "resource_id": _resource_id_for(ADMIN_LOCAL, "test/token"),
-                "mode": {"kind": "per-call-approval"},
-                "writable": False,
-            },
+            "mode": {"kind": "per-call-approval"},
+            "writable": False,
         },
         status=400,
+        method="PUT",
     )
     err_blob = json.dumps(err).lower()
     assert (
         "unknown variant" in err_blob
         or "per-call-approval" in err_blob
         or "kind" in err_blob
-    ), f"unexpected wrapper-permissions/upsert error shape: {err}"
+    ), f"unexpected wrapper-permissions upsert error shape: {err}"
     machine.log(
-        "PASS: admin wrapper-permissions/upsert rejects per-call-approval payloads"
+        "PASS: admin wrapper-permissions upsert rejects per-call-approval payloads"
     )
 
     # ----------------------------------------------------------

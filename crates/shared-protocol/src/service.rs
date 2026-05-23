@@ -91,8 +91,6 @@ pub struct AdminStoreUsageSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreActionState {
-    /// Whether this principal may edit the store metadata.
-    pub can_edit_metadata: bool,
     /// Whether this principal may rotate the store's master key.
     /// Rotation requires the store to be encrypted **and** currently
     /// unlocked.
@@ -203,18 +201,12 @@ pub enum AdminClientInstanceStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminClientInstanceActionState {
-    /// Whether this principal may edit the display-name metadata.
-    pub can_edit_display_name: bool,
-    /// Whether this principal may remap the instance to another store.
-    pub can_remap_store: bool,
     /// Whether this principal may transition the instance into the
     /// disabled state.
     pub can_disable: bool,
     /// Whether this principal may transition the instance back to the
     /// active state.
     pub can_enable: bool,
-    /// Whether this principal may delete the instance record.
-    pub can_delete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
@@ -276,20 +268,11 @@ pub struct AdminClientInstanceUpdateRequest {
 // ===== Secret CRUD =====
 //
 // Per-slot entries inside a resource blob are addressed by the
-// structured tuple `(store, resource, slot, key)`. The on-disk format
-// is unchanged — handlers compose the legacy in-blob entry key via
-// `resource::compose_secret_id` internally. The wire form no longer
-// carries a flattened `secret_id` string, which removes the
-// "first-match `/<slot>/` wins" parsing ambiguity from the admin
-// surface and lets us validate keys per slot.
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminSecretReadRequest {
-    pub store: String,
-    pub resource_id: String,
-    pub slot: ResourceSlot,
-    pub key: String,
-}
+// structured tuple `(store, resource, slot, key)`. Store id, resource
+// id, slot, and key all travel in the URL path; bodies carry only the
+// value-bearing fields (material, rename target). The on-disk format
+// is unchanged — handlers compose the in-blob entry key via
+// `resource::compose_secret_id` internally.
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminSecretReadResponse {
@@ -298,20 +281,7 @@ pub struct AdminSecretReadResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminSecretWriteRequest {
-    pub store: String,
-    pub resource_id: String,
-    pub slot: ResourceSlot,
-    pub key: String,
     pub material_b64: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminSecretListRequest {
-    pub store: String,
-    /// Restrict listing to a single resource. `None` returns entries
-    /// for every resource in the store.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource_id: Option<String>,
 }
 
 /// One per-slot entry as listed by the admin surface.
@@ -327,28 +297,17 @@ pub struct AdminSecretListResponse {
     pub entries: Vec<AdminSecretEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminSecretDeleteRequest {
-    pub store: String,
-    pub resource_id: String,
-    pub slot: ResourceSlot,
-    pub key: String,
-}
-
-/// Move an entry within a resource blob from `from_key` to `to_key`,
+/// Move an entry within a resource blob from the URL-addressed
+/// `(resource_id, slot, from_key)` to `to_key` under the same slot,
 /// optionally overwriting its material. The whole operation is one
 /// atomic load-modify-save of the resource blob — there is no
 /// intermediate "both entries exist" window.
 ///
-/// `material_b64 = None` means "keep the existing material under
-/// `from_key`"; `Some(_)` overwrites in the same step. Rename refuses
-/// when `to_key` already exists (callers must delete it explicitly).
+/// `material_b64 = None` means "keep the existing material"; `Some(_)`
+/// overwrites in the same step. Rename refuses when `to_key` already
+/// exists (callers must delete it explicitly).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminSecretRenameRequest {
-    pub store: String,
-    pub resource_id: String,
-    pub slot: ResourceSlot,
-    pub from_key: String,
     pub to_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material_b64: Option<String>,
@@ -362,32 +321,25 @@ pub struct AdminSecretDeleteResponse {
 // ===== Wrapper permission CRUD =====
 //
 // One `WrapperPermission` per `(client_instance, wrapper, resource)`
-// tuple. The mode controls *if* the permission is usable; the
-// `writable` flag on the permission decides wrapper-side writes for
-// the `files`/`libsecret` slots.
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminWrapperPermissionsListRequest {
-    pub store: String,
-}
+// tuple. The tuple lives in the URL path; the body only carries the
+// permission's mutable fields. The mode controls *if* the permission
+// is usable; the `writable` flag decides wrapper-side writes for the
+// `files`/`libsecret` slots.
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminWrapperPermissionsListResponse {
     pub permissions: Vec<WrapperPermission>,
 }
 
+/// Body of `PUT /v1/admin/stores/{id}/wrapper-permissions/...`. The
+/// `(client_instance, wrapper, resource_id)` tuple comes from the URL
+/// path; the body holds the mutable parts of a `WrapperPermission`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminWrapperPermissionUpsertRequest {
-    pub store: String,
-    pub permission: WrapperPermission,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminWrapperPermissionDeleteRequest {
-    pub store: String,
-    pub client_instance: String,
-    pub wrapper: String,
-    pub resource_id: String,
+    pub mode: crate::policy::WrapperApprovalMode,
+    pub writable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
@@ -412,18 +364,12 @@ pub struct AdminWrapperPermissionKey {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminResourcesListRequest {
-    pub store: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminResourcesListResponse {
     pub resources: Vec<ResourceRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminResourceCreateRequest {
-    pub store: String,
     pub name: String,
 }
 
@@ -432,18 +378,10 @@ pub struct AdminResourceCreateResponse {
     pub resource: ResourceRecord,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminResourceDeleteRequest {
-    pub store: String,
-    pub id: String,
-}
-
-/// Rename an existing resource by id. The id stays stable; the name
-/// changes. Returns the updated record.
+/// Body of `PUT /v1/admin/stores/{id}/resources/{rid}` — rename an
+/// existing resource by id. The id stays stable; the name changes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminResourceRenameRequest {
-    pub store: String,
-    pub id: String,
     pub new_name: String,
 }
 
@@ -476,18 +414,12 @@ pub struct AdminResourceDeleteResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminPairsListRequest {
-    pub store: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminPairsListResponse {
     pub pairs: Vec<WrapperResourcePairRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminPairCreateRequest {
-    pub store: String,
     pub wrapper: String,
     pub resource_id: String,
 }
@@ -495,13 +427,6 @@ pub struct AdminPairCreateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminPairCreateResponse {
     pub pair: WrapperResourcePairRecord,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminPairDeleteRequest {
-    pub store: String,
-    pub wrapper: String,
-    pub resource_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema, Default)]
@@ -526,6 +451,25 @@ pub struct AdminPairDeleteResponse {
 pub struct ServiceWrapperResourcePair {
     pub wrapper: String,
     pub resource: String,
+}
+
+// ===== Aggregate views =====
+//
+// One-shot reads that fold the three documents a busy SPA page needs
+// into a single round trip. Pure server-side joins of documents
+// already in the store; no new authorisation surface.
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminWrapperPermissionsView {
+    pub permissions: Vec<WrapperPermission>,
+    pub pairs: Vec<WrapperResourcePairRecord>,
+    pub resources: Vec<ResourceRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminSecretsView {
+    pub entries: Vec<AdminSecretEntry>,
+    pub resources: Vec<ResourceRecord>,
 }
 
 // ===== Runtime API (resource-vocabulary; replaces the legacy

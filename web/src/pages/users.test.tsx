@@ -75,7 +75,6 @@ describe("UsersPage", () => {
       withQuery(
         <UsersPage
           principal={{
-            authenticated: true,
             username: "alice",
           }}
         />,
@@ -118,7 +117,6 @@ describe("UsersPage", () => {
       withQuery(
         <UsersPage
           principal={{
-            authenticated: true,
             username: "alice",
           }}
         />,
@@ -148,7 +146,6 @@ describe("UsersPage", () => {
       withQuery(
         <UsersPage
           principal={{
-            authenticated: true,
             username: "alice",
           }}
         />,

@@ -1,15 +1,6 @@
 import { Button } from "@/components/ui/button";
 import type { AdminStoresListResponse } from "@/api/client";
 
-function storeEditDisabledTitle(
-  item: AdminStoresListResponse["items"][number],
-): string | undefined {
-  if (!item.actions.can_edit_metadata) {
-    return "Store metadata cannot currently be edited.";
-  }
-  return undefined;
-}
-
 function storeDeleteTitle(
   item: AdminStoresListResponse["items"][number],
 ): string | undefined {
@@ -59,7 +50,6 @@ export function StoresTable({
         </thead>
         <tbody>
           {items.map((item) => {
-            const canEdit = item.actions.can_edit_metadata;
             const canDelete =
               item.actions.can_delete_now || item.actions.can_force_delete;
             const canUnlock = item.actions.can_unlock;
@@ -141,8 +131,6 @@ export function StoresTable({
                     <Button
                       variant="ghost"
                       size="sm"
-                      disabled={!canEdit}
-                      title={storeEditDisabledTitle(item)}
                       onClick={() => onEdit(item)}
                     >
                       Edit

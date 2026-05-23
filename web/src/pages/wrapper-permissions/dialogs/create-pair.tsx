@@ -49,12 +49,11 @@ export function CreatePairDialog({
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const createResource = useMutation({
-    mutationFn: (name: string) => postResourceCreate({ store: storeName, name }),
+    mutationFn: (name: string) => postResourceCreate(storeName, { name }),
   });
   const createPair = useMutation({
     mutationFn: (vars: { wrapper: string; resource_id: string }) =>
-      postPairCreate({
-        store: storeName,
+      postPairCreate(storeName, {
         wrapper: vars.wrapper,
         resource_id: vars.resource_id,
       }),

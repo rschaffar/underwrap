@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  postPairDelete,
+  deletePair,
   type WrapperResourcePairRecord,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -34,12 +34,7 @@ export function DeletePairDialog({
 }) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const mut = useMutation({
-    mutationFn: () =>
-      postPairDelete({
-        store: storeName,
-        wrapper: pair.wrapper,
-        resource_id: pair.resource_id,
-      }),
+    mutationFn: () => deletePair(storeName, pair.wrapper, pair.resource_id),
   });
 
   async function onDelete() {

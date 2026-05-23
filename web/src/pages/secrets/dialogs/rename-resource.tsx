@@ -23,7 +23,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { postResourceRename } from "@/api/client";
+import { putResourceRename } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
 const renameResourceSchema = z.object({
@@ -66,13 +66,14 @@ export function RenameResourceDialog({
   );
   const mut = useMutation({
     mutationFn: (new_name: string) =>
-      postResourceRename({ store: storeName, id: resourceId, new_name }),
+      putResourceRename(storeName, resourceId, { new_name }),
     onSuccess: async () => {
       await Promise.all([
-        qc.invalidateQueries({ queryKey: ["admin", "resources", storeName] }),
-        qc.invalidateQueries({ queryKey: ["admin", "pairs", storeName] }),
         qc.invalidateQueries({
-          queryKey: ["admin", "wrapper-permissions", storeName],
+          queryKey: ["admin", "secrets-view", storeName],
+        }),
+        qc.invalidateQueries({
+          queryKey: ["admin", "wrapper-permissions-view", storeName],
         }),
       ]);
       onClose();

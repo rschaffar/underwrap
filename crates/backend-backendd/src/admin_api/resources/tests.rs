@@ -1,5 +1,5 @@
 use axum::Extension;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use hyper::StatusCode;
 
 use super::*;
@@ -20,8 +20,8 @@ fn admin_resource_create_then_list_round_trip_with_operator_provenance() {
     let (status, body) = run_handler(handle_admin_resource_create(
         State(state.clone()),
         Extension(p.clone()),
+        Path(store_id.clone()),
         Body(underwrap_protocol::service::AdminResourceCreateRequest {
-            store: store_id.clone(),
             name: "github/token".into(),
         }),
     ));
@@ -32,9 +32,7 @@ fn admin_resource_create_then_list_round_trip_with_operator_provenance() {
 
     let (list_status, list_body) = run_handler(handle_admin_resources_list(
         State(state.clone()),
-        Body(underwrap_protocol::service::AdminResourcesListRequest {
-            store: store_id.clone(),
-        }),
+        Path(store_id.clone()),
     ));
     assert_eq!(list_status, StatusCode::OK);
     let resources = list_body["resources"].as_array().unwrap();
@@ -48,18 +46,19 @@ fn admin_resource_create_refuses_duplicate_name() {
     let (state, store_id) = entity_test_state_with_store(tmp.path());
     let p = admin_principal();
     let make = || underwrap_protocol::service::AdminResourceCreateRequest {
-        store: store_id.clone(),
         name: "github/token".into(),
     };
     let (first_status, _) = run_handler(handle_admin_resource_create(
         State(state.clone()),
         Extension(p.clone()),
+        Path(store_id.clone()),
         Body(make()),
     ));
     assert_eq!(first_status, StatusCode::OK);
     let (dup_status, dup_body) = run_handler(handle_admin_resource_create(
         State(state.clone()),
         Extension(p),
+        Path(store_id),
         Body(make()),
     ));
     assert_eq!(dup_status, StatusCode::CONFLICT);
@@ -75,10 +74,7 @@ fn admin_resource_delete_succeeds_when_no_dependents() {
     let (status, body) = run_handler(handle_admin_resource_delete(
         State(state.clone()),
         Extension(p),
-        Body(underwrap_protocol::service::AdminResourceDeleteRequest {
-            store: store_id.clone(),
-            id: resource_id,
-        }),
+        Path((store_id.clone(), resource_id)),
     ));
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], true);
@@ -86,7 +82,7 @@ fn admin_resource_delete_succeeds_when_no_dependents() {
 
     let (list_status, list_body) = run_handler(handle_admin_resources_list(
         State(state.clone()),
-        Body(underwrap_protocol::service::AdminResourcesListRequest { store: store_id }),
+        Path(store_id),
     ));
     assert_eq!(list_status, StatusCode::OK);
     assert_eq!(list_body["resources"].as_array().unwrap().len(), 0);
@@ -102,9 +98,8 @@ fn admin_resource_rename_flips_name_and_keeps_id() {
     let (status, body) = run_handler(handle_admin_resource_rename(
         State(state.clone()),
         Extension(p),
+        Path((store_id.clone(), resource_id.clone())),
         Body(underwrap_protocol::service::AdminResourceRenameRequest {
-            store: store_id.clone(),
-            id: resource_id.clone(),
             new_name: "github/main".into(),
         }),
     ));
@@ -115,7 +110,7 @@ fn admin_resource_rename_flips_name_and_keeps_id() {
     // List confirms the rename.
     let (_, list_body) = run_handler(handle_admin_resources_list(
         State(state.clone()),
-        Body(underwrap_protocol::service::AdminResourcesListRequest { store: store_id }),
+        Path(store_id),
     ));
     let resources = list_body["resources"].clone();
     assert_eq!(resources[0]["id"], resource_id);
@@ -133,9 +128,8 @@ fn admin_resource_rename_refuses_when_target_name_taken() {
     let (status, body) = run_handler(handle_admin_resource_rename(
         State(state.clone()),
         Extension(p),
+        Path((store_id, a)),
         Body(underwrap_protocol::service::AdminResourceRenameRequest {
-            store: store_id.clone(),
-            id: a,
             new_name: "b".into(),
         }),
     ));
@@ -156,8 +150,8 @@ fn admin_resource_delete_refuses_with_structured_blockers() {
     let (pair_status, _) = run_handler(handle_admin_pair_create(
         State(state.clone()),
         Extension(p.clone()),
+        Path(store_id.clone()),
         Body(underwrap_protocol::service::AdminPairCreateRequest {
-            store: store_id.clone(),
             wrapper: "gh".into(),
             resource_id: resource_id.clone(),
         }),
@@ -198,10 +192,7 @@ fn admin_resource_delete_refuses_with_structured_blockers() {
     let (status, body) = run_handler(handle_admin_resource_delete(
         State(state.clone()),
         Extension(p),
-        Body(underwrap_protocol::service::AdminResourceDeleteRequest {
-            store: store_id.clone(),
-            id: resource_id.clone(),
-        }),
+        Path((store_id.clone(), resource_id.clone())),
     ));
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], false);
@@ -218,7 +209,7 @@ fn admin_resource_delete_refuses_with_structured_blockers() {
     // Resource is still present.
     let (_, list_body) = run_handler(handle_admin_resources_list(
         State(state.clone()),
-        Body(underwrap_protocol::service::AdminResourcesListRequest { store: store_id }),
+        Path(store_id),
     ));
     let resources = list_body["resources"].as_array().unwrap();
     assert_eq!(resources.len(), 1);

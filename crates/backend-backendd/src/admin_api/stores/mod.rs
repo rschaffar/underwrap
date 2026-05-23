@@ -29,9 +29,11 @@ use crate::store_registry::{LoadedStoreRecord, RegistryLookupError};
 pub(crate) mod crud;
 pub(crate) mod lifecycle;
 
-/// Resolve a store reference for an authenticated request. Any
-/// authenticated user can address any store; the helper returns the
-/// live backend or the canonical not-found / locked [`AdminError`].
+/// Resolve a store reference for an authenticated admin session.
+/// Admin sessions are unconditionally trusted to address any store;
+/// per-store wrapper grants gate *wrapper* access, not admin access.
+/// Returns the live backend or the canonical not-found / locked
+/// [`AdminError`].
 pub(crate) fn admin_store(
     state: &AdminRuntimeState,
     store: &str,
@@ -109,7 +111,6 @@ pub(super) fn admin_store_actions(
         usage.mapped_client_instance_count == 0 && !usage.has_secrets && !locked;
     let can_force_delete = usage.mapped_client_instance_count == 0 && (usage.has_secrets || locked);
     AdminStoreActionState {
-        can_edit_metadata: true,
         can_rotate_key: is_encrypted && !locked,
         can_unlock: is_encrypted && locked,
         can_lock: is_encrypted && !locked,

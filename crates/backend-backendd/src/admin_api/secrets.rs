@@ -1,23 +1,25 @@
-//! Per-key admin secret CRUD: `/v1/admin/secret/{read, write, list,
-//! delete, rename}`.
+//! Per-key admin secret CRUD under
+//! `/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}`.
 //!
-//! Translates structured `(resource_id, slot, key)` tuples through the
-//! resource-blob layout for per-key reads/writes; the `rename` handler
-//! is the only multi-step one and is intentionally a single
-//! load-modify-save against the blob so the file flip stays atomic.
+//! Translates the URL-addressed `(store, resource_id, slot, key)`
+//! tuple through the resource-blob layout for per-key reads/writes;
+//! the `rename` handler is the only multi-step one and is
+//! intentionally a single load-modify-save against the blob so the
+//! file flip stays atomic.
 
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use base64::Engine;
+use serde::Deserialize;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use underwrap_protocol::message::SecretBytes;
+use underwrap_protocol::resource::ResourceSlot;
 use underwrap_protocol::service::{
-    AdminOkResponse, AdminSecretDeleteRequest, AdminSecretDeleteResponse, AdminSecretListRequest,
-    AdminSecretListResponse, AdminSecretReadRequest, AdminSecretReadResponse,
+    AdminOkResponse, AdminSecretDeleteResponse, AdminSecretListResponse, AdminSecretReadResponse,
     AdminSecretRenameRequest, AdminSecretWriteRequest, ServiceErrorResponse,
 };
 use underwrap_store::{
@@ -35,34 +37,87 @@ use crate::storage::secret_entries::{
 };
 use crate::users::Principal;
 
+/// Parse a slot segment from the URL path or surface a 400 error.
+fn parse_slot(slot: &str) -> Result<ResourceSlot, AdminError> {
+    ResourceSlot::parse(slot).ok_or_else(|| {
+        AdminError::bad_request(
+            "invalid_request",
+            format!("unknown slot '{slot}'; expected one of env, files, libsecret"),
+        )
+    })
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct SecretListQuery {
+    /// Restrict listing to a single resource. Omit to return entries
+    /// for every resource in the store.
+    #[serde(default)]
+    pub(crate) resource_id: Option<String>,
+}
+
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
-        .routes(routes!(handle_admin_secret_read))
-        .routes(routes!(handle_admin_secret_write))
-        .routes(routes!(handle_admin_secret_list))
-        .routes(routes!(handle_admin_secret_delete))
+        .routes(routes!(handle_admin_secrets_list))
+        .routes(routes!(
+            handle_admin_secret_read,
+            handle_admin_secret_write,
+            handle_admin_secret_delete
+        ))
         .routes(routes!(handle_admin_secret_rename))
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/secret/read",
+    get,
+    path = "/v1/admin/stores/{id}/secrets",
     tag = "secrets",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminSecretReadRequest,
+    security(("session_cookie" = [])),
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("resource_id" = Option<String>, Query, description = "Restrict listing to a single resource."),
+    ),
     responses(
-        (status = 200, description = "Secret value for the (`resource_id`, `slot`, `key`) tuple, base64-encoded.", body = AdminSecretReadResponse),
+        (status = 200, description = "Per-slot entries in the store (optionally filtered by resource id).", body = AdminSecretListResponse),
+        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_secrets_list(
+    State(state): State<Arc<AdminRuntimeState>>,
+    Path(store_id): Path<String>,
+    Query(query): Query<SecretListQuery>,
+) -> Result<Json<AdminSecretListResponse>, AdminError> {
+    let store = admin_store(&state, &store_id)?;
+    let entries = list_secret_entries(store.as_ref(), query.resource_id.as_deref())
+        .map_err(|e| AdminError::internal("listing secret entries", e))?;
+    Ok(Json(AdminSecretListResponse { entries }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}",
+    tag = "secrets",
+    security(("session_cookie" = [])),
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("rid" = String, Path, description = "Resource id."),
+        ("slot" = String, Path, description = "Slot name: env, files, libsecret."),
+        ("key" = String, Path, description = "Per-slot entry key."),
+    ),
+    responses(
+        (status = 200, description = "Secret value, base64-encoded.", body = AdminSecretReadResponse),
         (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_secret_read(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(body): Body<AdminSecretReadRequest>,
+    Path((store_id, resource_id, slot, key)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminSecretReadResponse>, AdminError> {
-    let secret_id = validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key)?;
-    let store = admin_store(&state, &body.store)?;
-    let material = read_resource_entry(store.as_ref(), &secret_id).map_err(AdminError::admin)?;
+    let slot = parse_slot(&slot)?;
+    let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
+    let store = admin_store(&state, &store_id)?;
+    let material = read_resource_entry(store.as_ref(), &secret_id)
+        .map_err(|e| AdminError::internal("reading resource entry", e))?;
     Ok(Json(AdminSecretReadResponse {
         material_b64: material.map(|material| {
             let bytes: &[u8] = material.as_ref();
@@ -72,76 +127,16 @@ pub(crate) async fn handle_admin_secret_read(
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/secret/list",
+    put,
+    path = "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}",
     tag = "secrets",
     security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminSecretListRequest,
-    responses(
-        (status = 200, description = "Keys present in the requested resource slot.", body = AdminSecretListResponse),
-        (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("rid" = String, Path, description = "Resource id."),
+        ("slot" = String, Path, description = "Slot name: env, files, libsecret."),
+        ("key" = String, Path, description = "Per-slot entry key."),
     ),
-)]
-pub(crate) async fn handle_admin_secret_list(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Body(body): Body<AdminSecretListRequest>,
-) -> Result<Json<AdminSecretListResponse>, AdminError> {
-    let store = admin_store(&state, &body.store)?;
-    let entries = list_secret_entries(store.as_ref(), body.resource_id.as_deref())
-        .map_err(AdminError::admin)?;
-    Ok(Json(AdminSecretListResponse { entries }))
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/secret/delete",
-    tag = "secrets",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminSecretDeleteRequest,
-    responses(
-        (status = 200, description = "Secret removed.", body = AdminSecretDeleteResponse),
-        (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_admin_secret_delete(
-    State(state): State<Arc<AdminRuntimeState>>,
-    axum::Extension(principal): axum::Extension<Principal>,
-    Body(body): Body<AdminSecretDeleteRequest>,
-) -> Result<Json<AdminSecretDeleteResponse>, AdminError> {
-    // Admin deletes are always allowed once per-store access
-    // has been checked; per-resource write flags only gate
-    // wrapper-side writes.
-    let secret_id = validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key)?;
-    let store = admin_store(&state, &body.store)?;
-    let outcome = delete_resource_entry(store.as_ref(), &secret_id);
-    let result = if outcome.is_ok() {
-        "success"
-    } else {
-        "failure"
-    };
-    log_admin_event(
-        "secret.delete",
-        &principal,
-        AuditEntity::Secret {
-            store: &body.store,
-            resource_id: &body.resource_id,
-            slot: body.slot,
-            key: &body.key,
-        },
-        None,
-        result,
-    );
-    let existed = outcome.map_err(AdminError::admin)?;
-    Ok(Json(AdminSecretDeleteResponse { existed }))
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/secret/write",
-    tag = "secrets",
-    security(("session_cookie" = []), ("csrf_header" = [])),
     request_body = AdminSecretWriteRequest,
     responses(
         (status = 200, description = "Secret written.", body = AdminOkResponse),
@@ -153,15 +148,17 @@ pub(crate) async fn handle_admin_secret_delete(
 pub(crate) async fn handle_admin_secret_write(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
+    Path((store_id, resource_id, slot, key)): Path<(String, String, String, String)>,
     Body(body): Body<AdminSecretWriteRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
-    let secret_id = validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key)?;
+    let slot = parse_slot(&slot)?;
+    let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
     let material = base64::engine::general_purpose::STANDARD
         .decode(&body.material_b64)
         .map_err(|e| {
             AdminError::bad_request("invalid_request", format!("invalid base64 payload: {e}"))
         })?;
-    let store = admin_store(&state, &body.store)?;
+    let store = admin_store(&state, &store_id)?;
 
     // Admin writes are always allowed. Per-resource write permissions
     // on the policy document gate wrapper-side writes only — admin
@@ -176,16 +173,66 @@ pub(crate) async fn handle_admin_secret_write(
         "secret.write",
         &principal,
         AuditEntity::Secret {
-            store: &body.store,
-            resource_id: &body.resource_id,
-            slot: body.slot,
-            key: &body.key,
+            store: &store_id,
+            resource_id: &resource_id,
+            slot,
+            key: &key,
         },
         None,
         result,
     );
-    outcome.map_err(AdminError::admin)?;
+    outcome.map_err(|e| AdminError::internal("writing secret entry", e))?;
     Ok(Json(AdminOkResponse { ok: true }))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}",
+    tag = "secrets",
+    security(("session_cookie" = []), ("csrf_header" = [])),
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("rid" = String, Path, description = "Resource id."),
+        ("slot" = String, Path, description = "Slot name: env, files, libsecret."),
+        ("key" = String, Path, description = "Per-slot entry key."),
+    ),
+    responses(
+        (status = 200, description = "Secret removed.", body = AdminSecretDeleteResponse),
+        (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
+        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+    ),
+)]
+pub(crate) async fn handle_admin_secret_delete(
+    State(state): State<Arc<AdminRuntimeState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
+    Path((store_id, resource_id, slot, key)): Path<(String, String, String, String)>,
+) -> Result<Json<AdminSecretDeleteResponse>, AdminError> {
+    let slot = parse_slot(&slot)?;
+    // Admin deletes are always allowed once per-store access
+    // has been checked; per-resource write flags only gate
+    // wrapper-side writes.
+    let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
+    let store = admin_store(&state, &store_id)?;
+    let outcome = delete_resource_entry(store.as_ref(), &secret_id);
+    let result = if outcome.is_ok() {
+        "success"
+    } else {
+        "failure"
+    };
+    log_admin_event(
+        "secret.delete",
+        &principal,
+        AuditEntity::Secret {
+            store: &store_id,
+            resource_id: &resource_id,
+            slot,
+            key: &key,
+        },
+        None,
+        result,
+    );
+    let existed = outcome.map_err(|e| AdminError::internal("deleting secret entry", e))?;
+    Ok(Json(AdminSecretDeleteResponse { existed }))
 }
 
 /// Atomically rename a per-slot entry inside a resource blob.
@@ -196,9 +243,15 @@ pub(crate) async fn handle_admin_secret_write(
 /// Optionally overwrites material in the same step.
 #[utoipa::path(
     post,
-    path = "/v1/admin/secret/rename",
+    path = "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename",
     tag = "secrets",
     security(("session_cookie" = []), ("csrf_header" = [])),
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("rid" = String, Path, description = "Resource id."),
+        ("slot" = String, Path, description = "Slot name."),
+        ("key" = String, Path, description = "Source key (`from_key`)."),
+    ),
     request_body = AdminSecretRenameRequest,
     responses(
         (status = 200, description = "Secret renamed.", body = AdminOkResponse),
@@ -210,18 +263,20 @@ pub(crate) async fn handle_admin_secret_write(
 pub(crate) async fn handle_admin_secret_rename(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
+    Path((store_id, resource_id, slot, from_key)): Path<(String, String, String, String)>,
     Body(body): Body<AdminSecretRenameRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
-    let result = rename_inner(&state, &body).await;
+    let slot = parse_slot(&slot)?;
+    let result = rename_inner(&state, &store_id, &resource_id, slot, &from_key, &body).await;
     let operation = format!("rename->{}", body.to_key);
     log_admin_event(
         "secret.rename",
         &principal,
         AuditEntity::Secret {
-            store: &body.store,
-            resource_id: &body.resource_id,
-            slot: body.slot,
-            key: &body.from_key,
+            store: &store_id,
+            resource_id: &resource_id,
+            slot,
+            key: &from_key,
         },
         Some(&operation),
         if result.is_ok() { "success" } else { "failure" },
@@ -231,14 +286,19 @@ pub(crate) async fn handle_admin_secret_rename(
 
 async fn rename_inner(
     state: &AdminRuntimeState,
+    store_id: &str,
+    resource_id: &str,
+    slot: ResourceSlot,
+    from_key: &str,
     body: &AdminSecretRenameRequest,
 ) -> Result<AdminOkResponse, AdminError> {
-    let from_id = validate_and_compose_secret_id(&body.resource_id, body.slot, &body.from_key)?;
-    let to_id = validate_and_compose_secret_id(&body.resource_id, body.slot, &body.to_key)?;
-    let store = admin_store(state, &body.store)?;
-    let blob = load_resource_blob(store.as_ref(), &body.resource_id).map_err(AdminError::admin)?;
-    let mut entries =
-        expand_blob_to_entries(&body.resource_id, &blob).map_err(AdminError::admin)?;
+    let from_id = validate_and_compose_secret_id(resource_id, slot, from_key)?;
+    let to_id = validate_and_compose_secret_id(resource_id, slot, &body.to_key)?;
+    let store = admin_store(state, store_id)?;
+    let blob = load_resource_blob(store.as_ref(), resource_id)
+        .map_err(|e| AdminError::internal("loading resource blob", e))?;
+    let mut entries = expand_blob_to_entries(resource_id, &blob)
+        .map_err(|e| AdminError::internal("expanding resource blob", e))?;
 
     // The from-entry must exist; the to-entry must not (unless this
     // is a same-key rename, which collapses to a pure material write).
@@ -274,9 +334,9 @@ async fn rename_inner(
     }
     entries.insert(to_id.clone(), new_material);
 
-    let new_blob =
-        blob_from_resource_entries(&body.resource_id, &entries).map_err(AdminError::admin)?;
-    save_resource_blob(store.as_ref(), &body.resource_id, &new_blob)
+    let new_blob = blob_from_resource_entries(resource_id, &entries)
+        .map_err(|e| AdminError::internal("building resource blob", e))?;
+    save_resource_blob(store.as_ref(), resource_id, &new_blob)
         .map_err(|e| AdminError::internal("saving resource blob", e))?;
     Ok(AdminOkResponse { ok: true })
 }

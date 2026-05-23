@@ -35,7 +35,6 @@ describe("StoresPage", () => {
         locked: false,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
-          can_edit_metadata: true,
           can_rotate_key: true,
           can_unlock: false,
           can_lock: true,
@@ -52,7 +51,6 @@ describe("StoresPage", () => {
         locked: false,
         usage: { mapped_client_instance_count: 0, has_secrets: true },
         actions: {
-          can_edit_metadata: true,
           can_rotate_key: false,
           can_unlock: false,
           can_lock: false,
@@ -69,7 +67,6 @@ describe("StoresPage", () => {
         locked: true,
         usage: { mapped_client_instance_count: 2, has_secrets: true },
         actions: {
-          can_edit_metadata: true,
           can_rotate_key: false,
           can_unlock: true,
           can_lock: false,

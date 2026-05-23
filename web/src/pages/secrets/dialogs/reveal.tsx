@@ -14,7 +14,7 @@ import {
 import { Label } from "@/components/ui/label";
 import {
   type AdminSecretReadResponse,
-  postSecretRead,
+  fetchSecret,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
@@ -42,12 +42,7 @@ export function RevealSecretDialog({
       address.key,
     ],
     queryFn: () =>
-      postSecretRead({
-        store: storeName,
-        resource_id: address.resource_id,
-        slot: address.slot,
-        key: address.key,
-      }),
+      fetchSecret(storeName, address.resource_id, address.slot, address.key),
     // Only fire after the operator confirms they want to view it.
     enabled: confirmed,
     // Don't cache the secret material in the React Query store any

@@ -49,10 +49,10 @@ fn rotation_lock(state: &AdminRuntimeState, store_id: &str) -> Arc<tokio::sync::
 /// first.
 #[utoipa::path(
     post,
-    path = "/v1/admin/stores/{name}/rotate-key",
+    path = "/v1/admin/stores/{id}/rotate-key",
     tag = "stores",
     security(("session_cookie" = []), ("csrf_header" = [])),
-    params(("name" = String, Path, description = "Store id.")),
+    params(("id" = String, Path, description = "Store id.")),
     responses(
         (status = 200, description = "Key rotated; old material persisted alongside the new one.", body = AdminStoreRotateKeyResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
@@ -388,10 +388,10 @@ fn reencrypt_into(
 /// structured `key_mismatch` code.
 #[utoipa::path(
     post,
-    path = "/v1/admin/stores/{name}/unlock",
+    path = "/v1/admin/stores/{id}/unlock",
     tag = "stores",
     security(("session_cookie" = []), ("csrf_header" = [])),
-    params(("name" = String, Path, description = "Store id.")),
+    params(("id" = String, Path, description = "Store id.")),
     request_body = AdminStoreUnlockRequest,
     responses(
         (status = 200, description = "Store unlocked.", body = AdminOkResponse),
@@ -531,10 +531,10 @@ pub(crate) async fn handle_admin_store_unlock(
 /// SPA can call this without racing the current state.
 #[utoipa::path(
     post,
-    path = "/v1/admin/stores/{name}/lock",
+    path = "/v1/admin/stores/{id}/lock",
     tag = "stores",
     security(("session_cookie" = []), ("csrf_header" = [])),
-    params(("name" = String, Path, description = "Store id.")),
+    params(("id" = String, Path, description = "Store id.")),
     responses(
         (status = 200, description = "Store locked; in-memory key material wiped.", body = StoreLockResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
@@ -576,7 +576,7 @@ pub(crate) async fn handle_admin_store_lock(
     }))
 }
 
-/// Response of `POST /v1/admin/stores/{name}/lock`. Carries the
+/// Response of `POST /v1/admin/stores/{id}/lock`. Carries the
 /// idempotence flag so the SPA can distinguish "we just locked the
 /// store" from "store was already locked when we got here".
 #[derive(serde::Serialize, utoipa::ToSchema)]

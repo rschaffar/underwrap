@@ -7,18 +7,16 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { PolicyViewerDialog } from "@/components/policy-viewer-dialog";
 import {
-  type AdminPairsListResponse,
   type AdminStoresListResponse,
-  type AdminWrapperPermissionsListResponse,
+  type AdminWrapperPermissionsView,
   fetchStores,
-  postPairsList,
-  postWrapperPermissionsList,
+  fetchWrapperPermissionsView,
   type WrapperPermission,
   type WrapperResourcePairRecord,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 import { useStoreSelector } from "@/hooks/use-store-selector";
-import { useStoreLookups } from "@/hooks/use-store-lookups";
+import { useClientInstanceDirectory } from "@/hooks/use-store-lookups";
 
 import {
   clientInstancesForStore,
@@ -44,26 +42,29 @@ export function WrapperPermissionsPage() {
   });
   const { storeName, setStoreName } = useStoreSelector(stores.data?.items);
 
-  const permissions = useQuery<AdminWrapperPermissionsListResponse>({
-    queryKey: ["admin", "wrapper-permissions", storeName],
-    queryFn: () => postWrapperPermissionsList({ store: storeName! }),
+  // Aggregate view: one round-trip pulls permissions, pairs, and the
+  // resources catalog for this store. Client-instance directory is a
+  // global lookup, so it stays as a separate query.
+  const view = useQuery<AdminWrapperPermissionsView>({
+    queryKey: ["admin", "wrapper-permissions-view", storeName],
+    queryFn: () => fetchWrapperPermissionsView(storeName!),
     enabled: !!storeName,
   });
-  const pairs = useQuery<AdminPairsListResponse>({
-    queryKey: ["admin", "pairs", storeName],
-    queryFn: () => postPairsList({ store: storeName! }),
-    enabled: !!storeName,
-  });
-  const {
-    resources,
-    clientInstances: clientInstanceItems,
-    displayNameById,
-    resourceNameById,
-  } = useStoreLookups(storeName);
+  const { clientInstances: clientInstanceItems, displayNameById } =
+    useClientInstanceDirectory();
+
+  const resources = view.data?.resources ?? [];
+  const resourceNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of resources) {
+      map.set(r.id, r.name);
+    }
+    return map;
+  }, [resources]);
 
   const pairRecords = useMemo(
-    () => sortPairs(pairs.data?.pairs ?? []),
-    [pairs.data],
+    () => sortPairs(view.data?.pairs ?? []),
+    [view.data],
   );
   const clientInstances = useMemo(
     () =>
@@ -71,20 +72,20 @@ export function WrapperPermissionsPage() {
         ? clientInstancesForStore(
             storeName,
             clientInstanceItems,
-            permissions.data?.permissions ?? [],
+            view.data?.permissions ?? [],
           )
-        : deriveClientInstances(permissions.data?.permissions ?? []),
-    [storeName, clientInstanceItems, permissions.data],
+        : deriveClientInstances(view.data?.permissions ?? []),
+    [storeName, clientInstanceItems, view.data],
   );
 
   /** Map `(client_instance, wrapper, resource)` → permission. */
   const permissionIndex = useMemo(() => {
     const map = new Map<string, WrapperPermission>();
-    for (const p of permissions.data?.permissions ?? []) {
+    for (const p of view.data?.permissions ?? []) {
       map.set(`${p.client_instance}|${p.wrapper}|${p.resource_id}`, p);
     }
     return map;
-  }, [permissions.data]);
+  }, [view.data]);
 
   const [editing, setEditing] = useState<{
     clientInstance: string;
@@ -99,8 +100,9 @@ export function WrapperPermissionsPage() {
 
   function invalidatePairsAndPermissions() {
     if (!storeName) return;
-    qc.invalidateQueries({ queryKey: ["admin", "pairs", storeName] });
-    qc.invalidateQueries({ queryKey: ["admin", "wrapper-permissions", storeName] });
+    qc.invalidateQueries({
+      queryKey: ["admin", "wrapper-permissions-view", storeName],
+    });
   }
 
   if (!storeName) {
@@ -171,13 +173,13 @@ export function WrapperPermissionsPage() {
         </div>
       </header>
 
-      {permissions.isLoading || pairs.isLoading ? (
+      {view.isLoading ? (
         <p className="text-sm text-(--color-muted)">
           Loading wrapper permissions…
         </p>
-      ) : permissions.error || pairs.error ? (
+      ) : view.error ? (
         <p role="alert" className="text-sm text-rose-300">
-          {describeApiError(permissions.error ?? pairs.error)}
+          {describeApiError(view.error)}
         </p>
       ) : pairRecords.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
@@ -228,7 +230,8 @@ export function WrapperPermissionsPage() {
           onClose={() => setCreatingPair(false)}
           onCreated={() => {
             invalidatePairsAndPermissions();
-            qc.invalidateQueries({ queryKey: ["admin", "resources", storeName] });
+            // The aggregate view fetches resources too, so its
+            // invalidation is enough.
             setCreatingPair(false);
           }}
         />

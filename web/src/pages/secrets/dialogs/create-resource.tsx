@@ -60,11 +60,16 @@ export function CreateResourceDialog({
   const known = useMemo(() => new Set(existingResources), [existingResources]);
   const mut = useMutation({
     mutationFn: (name: string) =>
-      postResourceCreate({ store: storeName, name }),
+      postResourceCreate(storeName, { name }),
     onSuccess: async () => {
-      await qc.invalidateQueries({
-        queryKey: ["admin", "resources", storeName],
-      });
+      await Promise.all([
+        qc.invalidateQueries({
+          queryKey: ["admin", "secrets-view", storeName],
+        }),
+        qc.invalidateQueries({
+          queryKey: ["admin", "wrapper-permissions-view", storeName],
+        }),
+      ]);
       onClose();
     },
     onError: (err) => {

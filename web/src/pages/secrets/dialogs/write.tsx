@@ -24,7 +24,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { postSecretRename, postSecretWrite } from "@/api/client";
+import { postSecretRename, putSecret } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
 import type { SecretAddress } from "../model";
@@ -68,27 +68,26 @@ export function WriteSecretDialog({
 
   const writeMut = useMutation({
     mutationFn: (v: { key: string; material: string }) =>
-      postSecretWrite({
-        store: storeName,
-        resource_id: address.resource_id,
-        slot: address.slot,
-        key: v.key,
+      putSecret(storeName, address.resource_id, address.slot, v.key, {
         material_b64: btoa(v.material),
       }),
   });
-  // The atomic /v1/admin/secret/rename does load-blob → swap-entry →
-  // save in one handler, so a key change can never leave the operator
-  // with two rows visible. Used only on the edit-with-key-change path.
+  // The atomic rename endpoint does load-blob → swap-entry → save in
+  // one handler, so a key change can never leave the operator with two
+  // rows visible. Used only on the edit-with-key-change path.
   const renameMut = useMutation({
     mutationFn: (v: { from_key: string; to_key: string; material?: string }) =>
-      postSecretRename({
-        store: storeName,
-        resource_id: address.resource_id,
-        slot: address.slot,
-        from_key: v.from_key,
-        to_key: v.to_key,
-        material_b64: v.material === undefined ? undefined : btoa(v.material),
-      }),
+      postSecretRename(
+        storeName,
+        address.resource_id,
+        address.slot,
+        v.from_key,
+        {
+          to_key: v.to_key,
+          material_b64:
+            v.material === undefined ? undefined : btoa(v.material),
+        },
+      ),
   });
 
   async function onSubmit(v: WriteValues) {
@@ -106,7 +105,9 @@ export function WriteSecretDialog({
       } else {
         await writeMut.mutateAsync(v);
       }
-      await qc.invalidateQueries({ queryKey: ["admin", "secrets", storeName] });
+      await qc.invalidateQueries({
+        queryKey: ["admin", "secrets-view", storeName],
+      });
       onClose();
     } catch (e) {
       setSubmitError(describeApiError(e));

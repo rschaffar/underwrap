@@ -97,7 +97,6 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     assert_eq!(body["store"]["description"], "the work store");
     assert_eq!(body["store"]["usage"]["mapped_client_instance_count"], 0);
     assert_eq!(body["store"]["usage"]["has_secrets"], false);
-    assert_eq!(body["store"]["actions"]["can_edit_metadata"], true);
     assert_eq!(body["store"]["actions"]["can_rotate_key"], false);
     assert_eq!(body["store"]["actions"]["can_delete_now"], true);
     assert_eq!(body["store"]["actions"]["can_force_delete"], false);
@@ -121,7 +120,6 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     assert!(expected_dir.exists(), "expected store dir to be on disk");
     assert_eq!(body["usage"]["mapped_client_instance_count"], 0);
     assert_eq!(body["usage"]["has_secrets"], false);
-    assert_eq!(body["actions"]["can_edit_metadata"], true);
     assert_eq!(body["actions"]["can_delete_now"], true);
     // Update description.
     let (status, _) = run_handler(handle_admin_store_update(
@@ -401,7 +399,6 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
     let plain = items.iter().find(|item| item["id"] == plain_id).unwrap();
     assert_eq!(plain["usage"]["mapped_client_instance_count"], 1);
     assert_eq!(plain["usage"]["has_secrets"], true);
-    assert_eq!(plain["actions"]["can_edit_metadata"], true);
     assert_eq!(plain["actions"]["can_rotate_key"], false);
     assert_eq!(plain["actions"]["can_delete_now"], false);
     assert_eq!(plain["actions"]["can_force_delete"], false);
@@ -412,7 +409,6 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
         .unwrap();
     assert_eq!(encrypted["usage"]["mapped_client_instance_count"], 0);
     assert_eq!(encrypted["usage"]["has_secrets"], true);
-    assert_eq!(encrypted["actions"]["can_edit_metadata"], true);
     assert_eq!(encrypted["actions"]["can_rotate_key"], true);
     assert_eq!(encrypted["actions"]["can_delete_now"], false);
     assert_eq!(encrypted["actions"]["can_force_delete"], true);
@@ -420,7 +416,6 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
     let (_, detail) = store_detail(state, &plain_id);
     assert_eq!(detail["usage"]["mapped_client_instance_count"], 1);
     assert_eq!(detail["usage"]["has_secrets"], true);
-    assert_eq!(detail["actions"]["can_edit_metadata"], true);
     assert_eq!(detail["actions"]["can_rotate_key"], false);
     assert_eq!(detail["actions"]["can_delete_now"], false);
     assert_eq!(detail["actions"]["can_force_delete"], false);

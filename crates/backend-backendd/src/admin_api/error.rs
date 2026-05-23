@@ -4,19 +4,16 @@
 //! turns the error into the canonical `ServiceErrorResponse` JSON
 //! envelope (`{ code, message }`) with the right HTTP status. The
 //! constructor helpers carry the named failure shapes that the admin
-//! surface emits over and over (store not found, store locked, internal
-//! anyhow wrap with a static context).
+//! surface emits over and over (store not found, store locked,
+//! internal anyhow wrap with a static context).
 //!
 //! Conversions from `anyhow::Error` are deliberately *not* implemented:
 //! handlers always pick the context string explicitly via
-//! `AdminError::internal("loading resources document", err)`, which
-//! mirrors the discipline the old hand-rolled `error_response(...,
-//! &format!("loading X document: {e:#}"))` sites enforced.
+//! `AdminError::internal("loading resources document", err)`.
 //!
-//! The wire shape (`ServiceErrorResponse`, status codes, `code`
-//! strings) must stay byte-identical to what the legacy
-//! `error_response` / `store_locked_response` helpers produced — the
-//! OpenAPI drift test in `tests/openapi_export.rs` enforces this.
+//! The OpenAPI drift test in `tests/openapi_export.rs` is the
+//! authoritative guard on the wire shape (status codes, `code`
+//! strings, envelope layout).
 
 use std::fmt;
 
@@ -88,9 +85,7 @@ impl AdminError {
     }
 
     /// `500 internal` with a static context string prefixed to the
-    /// error formatted via `{:#}`. Mirrors the legacy
-    /// `error_response(500, "internal", &format!("loading X: {e:#}"))`
-    /// shape so the wire message stays identical.
+    /// error formatted via `{:#}`.
     pub(crate) fn internal(context: &'static str, error: impl fmt::Display) -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -104,15 +99,6 @@ impl AdminError {
     /// surfaces a more specific 500 code than the generic `internal`.
     pub(crate) fn internal_with_code(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, message)
-    }
-
-    /// `400 admin_error` envelope — the legacy catch-all for `anyhow`
-    /// errors that surface to admin clients as a bad request without
-    /// finer classification. Kept as a named constructor so the wire
-    /// `code` is identical to what the old `error_response(400,
-    /// "admin_error", &e.to_string())` sites produced.
-    pub(crate) fn admin(error: impl fmt::Display) -> Self {
-        Self::bad_request("admin_error", error.to_string())
     }
 
     #[cfg(test)]

@@ -52,9 +52,9 @@ pub struct LoginResponse {
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct WhoamiResponse {
-    pub authenticated: bool,
-    /// Omitted when the request has no session so the wire shape stays
-    /// `{ authenticated: false }` for the unauthenticated case.
+    /// Present when a session is attached; absent when the request is
+    /// unauthenticated. The SPA treats `username !== undefined` as
+    /// the authenticated check.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
 }
@@ -168,27 +168,19 @@ pub(crate) async fn handle_admin_logout(mut auth_session: AdminAuthSession) -> J
     path = "/v1/admin/auth/whoami",
     tag = "auth",
     responses(
-        (status = 200, description = "Returns the current operator, or `authenticated: false` if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.", body = WhoamiResponse),
+        (status = 200, description = "Returns the current operator, or an empty object if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.", body = WhoamiResponse),
     ),
 )]
 pub(crate) async fn handle_admin_whoami(auth_session: AdminAuthSession) -> Json<WhoamiResponse> {
-    // whoami is intentionally tolerant of missing auth (returns
-    // `authenticated: false`) so the SPA can use it to drive the
-    // login / bootstrap redirect dance without producing 401s in the
-    // browser devtools. `axum_login` already invalidated the session
-    // if the operator was deleted or had its password rotated since
-    // it was issued, so `auth_session.user.is_some()` is the
-    // authoritative answer here.
-    match auth_session.user {
-        Some(u) => Json(WhoamiResponse {
-            authenticated: true,
-            username: Some(u.username),
-        }),
-        None => Json(WhoamiResponse {
-            authenticated: false,
-            username: None,
-        }),
-    }
+    // whoami is intentionally tolerant of missing auth so the SPA
+    // can drive the login / bootstrap redirect dance without
+    // producing 401s in the browser devtools. `axum_login` already
+    // invalidated the session if the operator was deleted or had its
+    // password rotated since it was issued, so `auth_session.user`
+    // is the authoritative answer here.
+    Json(WhoamiResponse {
+        username: auth_session.user.map(|u| u.username),
+    })
 }
 
 /// `POST /v1/admin/auth/password` — self-service password change for

@@ -1,5 +1,4 @@
-//! Resource admin CRUD: `/v1/admin/resources/{list, create, delete,
-//! rename}`.
+//! Resource admin CRUD under `/v1/admin/stores/{id}/resources`.
 //!
 //! Resources are first-class entities with provenance, stored in the
 //! resources document. Delete refuses with structured blockers if
@@ -9,11 +8,11 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use underwrap_protocol::service::{
-    AdminResourceCreateRequest, AdminResourceCreateResponse, AdminResourceDeleteRequest,
-    AdminResourceDeleteResponse, AdminResourceRenameRequest, AdminResourceRenameResponse,
-    AdminResourcesListRequest, AdminResourcesListResponse, ServiceErrorResponse,
+    AdminResourceCreateRequest, AdminResourceCreateResponse, AdminResourceDeleteResponse,
+    AdminResourceRenameRequest, AdminResourceRenameResponse, AdminResourcesListResponse,
+    ServiceErrorResponse,
 };
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -32,18 +31,22 @@ use crate::users::Principal;
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
-        .routes(routes!(handle_admin_resources_list))
-        .routes(routes!(handle_admin_resource_create))
-        .routes(routes!(handle_admin_resource_delete))
-        .routes(routes!(handle_admin_resource_rename))
+        .routes(routes!(
+            handle_admin_resources_list,
+            handle_admin_resource_create
+        ))
+        .routes(routes!(
+            handle_admin_resource_rename,
+            handle_admin_resource_delete
+        ))
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/resources/list",
+    get,
+    path = "/v1/admin/stores/{id}/resources",
     tag = "resources",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminResourcesListRequest,
+    security(("session_cookie" = [])),
+    params(("id" = String, Path, description = "Store id.")),
     responses(
         (status = 200, description = "Resources in the store.", body = AdminResourcesListResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
@@ -52,9 +55,9 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 )]
 pub(crate) async fn handle_admin_resources_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(body): Body<AdminResourcesListRequest>,
+    Path(store_id): Path<String>,
 ) -> Result<Json<AdminResourcesListResponse>, AdminError> {
-    let store = admin_store(&state, &body.store)?;
+    let store = admin_store(&state, &store_id)?;
     let mut doc = load_resources_document(store.as_ref())
         .map_err(|e| AdminError::internal("loading resources document", e))?;
     doc.resources.sort_by(|a, b| a.name.cmp(&b.name));
@@ -65,9 +68,10 @@ pub(crate) async fn handle_admin_resources_list(
 
 #[utoipa::path(
     post,
-    path = "/v1/admin/resources/create",
+    path = "/v1/admin/stores/{id}/resources",
     tag = "resources",
     security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("id" = String, Path, description = "Store id.")),
     request_body = AdminResourceCreateRequest,
     responses(
         (status = 200, description = "Resource created.", body = AdminResourceCreateResponse),
@@ -80,6 +84,7 @@ pub(crate) async fn handle_admin_resources_list(
 pub(crate) async fn handle_admin_resource_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
+    Path(store_id): Path<String>,
     Body(body): Body<AdminResourceCreateRequest>,
 ) -> Result<Json<AdminResourceCreateResponse>, AdminError> {
     use underwrap_protocol::entities::{EntityCreator, ResourceRecord};
@@ -91,7 +96,7 @@ pub(crate) async fn handle_admin_resource_create(
             "resource name must be non-empty",
         ));
     }
-    let store = admin_store(&state, &body.store)?;
+    let store = admin_store(&state, &store_id)?;
     let mut doc = load_resources_document(store.as_ref())
         .map_err(|e| AdminError::internal("loading resources document", e))?;
     if doc.find_by_name(name).is_some() {
@@ -126,14 +131,16 @@ pub(crate) async fn handle_admin_resource_create(
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/resources/delete",
+    delete,
+    path = "/v1/admin/stores/{id}/resources/{rid}",
     tag = "resources",
     security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminResourceDeleteRequest,
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("rid" = String, Path, description = "Resource id."),
+    ),
     responses(
-        (status = 200, description = "Resource deleted.", body = AdminResourceDeleteResponse),
-        (status = 400, description = "Resource still referenced by pairs / permissions / secrets — see the `blockers` field.", body = AdminResourceDeleteResponse),
+        (status = 200, description = "Resource deleted, or `ok: false` with structured blockers.", body = AdminResourceDeleteResponse),
         (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
@@ -141,30 +148,28 @@ pub(crate) async fn handle_admin_resource_create(
 pub(crate) async fn handle_admin_resource_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(body): Body<AdminResourceDeleteRequest>,
+    Path((store_id, resource_id)): Path<(String, String)>,
 ) -> Result<Json<AdminResourceDeleteResponse>, AdminError> {
     use underwrap_protocol::service::{
         AdminResourceDeleteBlockers, AdminWrapperPermissionKey, ServiceWrapperResourcePair,
     };
 
-    let store = admin_store(&state, &body.store)?;
+    let store = admin_store(&state, &store_id)?;
     let mut doc = load_resources_document(store.as_ref())
         .map_err(|e| AdminError::internal("loading resources document", e))?;
-    let Some(target) = doc.find_by_id(&body.id) else {
+    let Some(target) = doc.find_by_id(&resource_id) else {
         return Err(AdminError::not_found("unknown resource"));
     };
     let target_name = target.name.clone();
 
-    let (secret_count, sample_secret_ids) = resource_secret_dependents(store.as_ref(), &body.id)
-        .map_err(|e| AdminError::internal("scanning resource dependents", e))?;
+    let (secret_count, sample_secret_ids) =
+        resource_secret_dependents(store.as_ref(), &resource_id)
+            .map_err(|e| AdminError::internal("scanning resource dependents", e))?;
 
     let pairs = load_pairs_document(store.as_ref())
         .map_err(|e| AdminError::internal("loading pairs document", e))?;
-    // The wire shape for blocker pairs still carries the *name* in
-    // `resource` so the operator gets a readable label; resolve via the
-    // resources document.
     let dependent_pairs: Vec<ServiceWrapperResourcePair> = pairs
-        .pairs_for_resource(&body.id)
+        .pairs_for_resource(&resource_id)
         .map(|p| ServiceWrapperResourcePair {
             wrapper: p.wrapper.clone(),
             resource: target_name.clone(),
@@ -179,7 +184,7 @@ pub(crate) async fn handle_admin_resource_delete(
     let dependent_permissions: Vec<AdminWrapperPermissionKey> = policy
         .permissions
         .iter()
-        .filter(|p| p.resource_id == body.id)
+        .filter(|p| p.resource_id == resource_id)
         .map(|p| AdminWrapperPermissionKey {
             client_instance: p.client_instance.clone(),
             wrapper: p.wrapper.clone(),
@@ -195,7 +200,7 @@ pub(crate) async fn handle_admin_resource_delete(
             "resource.delete",
             &principal,
             AuditEntity::Resource {
-                resource_id: &body.id,
+                resource_id: &resource_id,
             },
             None,
             "blocked",
@@ -213,14 +218,14 @@ pub(crate) async fn handle_admin_resource_delete(
         }));
     }
 
-    doc.remove(&body.id);
+    doc.remove(&resource_id);
     save_resources_document(store.as_ref(), &doc)
         .map_err(|e| AdminError::internal("persisting resources document", e))?;
     log_admin_event(
         "resource.delete",
         &principal,
         AuditEntity::Resource {
-            resource_id: &body.id,
+            resource_id: &resource_id,
         },
         None,
         "success",
@@ -232,10 +237,14 @@ pub(crate) async fn handle_admin_resource_delete(
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/resources/rename",
+    put,
+    path = "/v1/admin/stores/{id}/resources/{rid}",
     tag = "resources",
     security(("session_cookie" = []), ("csrf_header" = [])),
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("rid" = String, Path, description = "Resource id."),
+    ),
     request_body = AdminResourceRenameRequest,
     responses(
         (status = 200, description = "Resource renamed.", body = AdminResourceRenameResponse),
@@ -248,6 +257,7 @@ pub(crate) async fn handle_admin_resource_delete(
 pub(crate) async fn handle_admin_resource_rename(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
+    Path((store_id, resource_id)): Path<(String, String)>,
     Body(body): Body<AdminResourceRenameRequest>,
 ) -> Result<Json<AdminResourceRenameResponse>, AdminError> {
     use underwrap_protocol::entities::InsertError;
@@ -259,10 +269,10 @@ pub(crate) async fn handle_admin_resource_rename(
             "new_name must be non-empty",
         ));
     }
-    let store = admin_store(&state, &body.store)?;
+    let store = admin_store(&state, &store_id)?;
     let mut doc = load_resources_document(store.as_ref())
         .map_err(|e| AdminError::internal("loading resources document", e))?;
-    match doc.rename(&body.id, new_name) {
+    match doc.rename(&resource_id, new_name) {
         Ok(true) => {}
         Ok(false) => return Err(AdminError::not_found("unknown resource")),
         Err(InsertError::Duplicate) => {
@@ -273,7 +283,7 @@ pub(crate) async fn handle_admin_resource_rename(
         }
     }
     let updated = doc
-        .find_by_id(&body.id)
+        .find_by_id(&resource_id)
         .expect("rename above returned Ok(true)")
         .clone();
     save_resources_document(store.as_ref(), &doc)
@@ -282,7 +292,7 @@ pub(crate) async fn handle_admin_resource_rename(
         "resource.rename",
         &principal,
         AuditEntity::Resource {
-            resource_id: &body.id,
+            resource_id: &resource_id,
         },
         None,
         "success",

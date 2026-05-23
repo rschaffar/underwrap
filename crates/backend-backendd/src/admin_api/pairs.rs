@@ -1,13 +1,13 @@
-//! Wrapper / resource pair admin CRUD:
-//! `/v1/admin/pairs/{list, create, delete}`.
+//! Wrapper / resource pair admin CRUD under
+//! `/v1/admin/stores/{id}/pairs`.
 
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use underwrap_protocol::service::{
-    AdminPairCreateRequest, AdminPairCreateResponse, AdminPairDeleteRequest,
-    AdminPairDeleteResponse, AdminPairsListRequest, AdminPairsListResponse, ServiceErrorResponse,
+    AdminPairCreateRequest, AdminPairCreateResponse, AdminPairDeleteResponse,
+    AdminPairsListResponse, ServiceErrorResponse,
 };
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -25,17 +25,16 @@ use crate::users::Principal;
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
-        .routes(routes!(handle_admin_pairs_list))
-        .routes(routes!(handle_admin_pair_create))
+        .routes(routes!(handle_admin_pairs_list, handle_admin_pair_create))
         .routes(routes!(handle_admin_pair_delete))
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/pairs/list",
+    get,
+    path = "/v1/admin/stores/{id}/pairs",
     tag = "pairs",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminPairsListRequest,
+    security(("session_cookie" = [])),
+    params(("id" = String, Path, description = "Store id.")),
     responses(
         (status = 200, description = "Wrapper / resource pairs in the store.", body = AdminPairsListResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
@@ -44,9 +43,9 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 )]
 pub(crate) async fn handle_admin_pairs_list(
     State(state): State<Arc<AdminRuntimeState>>,
-    Body(body): Body<AdminPairsListRequest>,
+    Path(store_id): Path<String>,
 ) -> Result<Json<AdminPairsListResponse>, AdminError> {
-    let store = admin_store(&state, &body.store)?;
+    let store = admin_store(&state, &store_id)?;
     let mut doc = load_pairs_document(store.as_ref())
         .map_err(|e| AdminError::internal("loading pairs document", e))?;
     doc.pairs.sort_by(|a, b| {
@@ -59,9 +58,10 @@ pub(crate) async fn handle_admin_pairs_list(
 
 #[utoipa::path(
     post,
-    path = "/v1/admin/pairs/create",
+    path = "/v1/admin/stores/{id}/pairs",
     tag = "pairs",
     security(("session_cookie" = []), ("csrf_header" = [])),
+    params(("id" = String, Path, description = "Store id.")),
     request_body = AdminPairCreateRequest,
     responses(
         (status = 200, description = "Pair created.", body = AdminPairCreateResponse),
@@ -74,6 +74,7 @@ pub(crate) async fn handle_admin_pairs_list(
 pub(crate) async fn handle_admin_pair_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
+    Path(store_id): Path<String>,
     Body(body): Body<AdminPairCreateRequest>,
 ) -> Result<Json<AdminPairCreateResponse>, AdminError> {
     use underwrap_protocol::entities::{EntityCreator, WrapperResourcePairRecord};
@@ -86,7 +87,7 @@ pub(crate) async fn handle_admin_pair_create(
             "wrapper and resource_id must both be non-empty",
         ));
     }
-    let store = admin_store(&state, &body.store)?;
+    let store = admin_store(&state, &store_id)?;
     let resources = load_resources_document(store.as_ref())
         .map_err(|e| AdminError::internal("loading resources document", e))?;
     if resources.find_by_id(resource_id).is_none() {
@@ -132,14 +133,17 @@ pub(crate) async fn handle_admin_pair_create(
 }
 
 #[utoipa::path(
-    post,
-    path = "/v1/admin/pairs/delete",
+    delete,
+    path = "/v1/admin/stores/{id}/pairs/{wrapper}/{rid}",
     tag = "pairs",
     security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminPairDeleteRequest,
+    params(
+        ("id" = String, Path, description = "Store id."),
+        ("wrapper" = String, Path, description = "Wrapper name."),
+        ("rid" = String, Path, description = "Resource id."),
+    ),
     responses(
-        (status = 200, description = "Pair removed.", body = AdminPairDeleteResponse),
-        (status = 400, description = "Pair still referenced by wrapper permissions — see the `blocked_by` field.", body = AdminPairDeleteResponse),
+        (status = 200, description = "Pair removed, or `ok: false` with structured blockers.", body = AdminPairDeleteResponse),
         (status = 404, description = "Store / pair not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
@@ -147,14 +151,14 @@ pub(crate) async fn handle_admin_pair_create(
 pub(crate) async fn handle_admin_pair_delete(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
-    Body(body): Body<AdminPairDeleteRequest>,
+    Path((store_id, wrapper, resource_id)): Path<(String, String, String)>,
 ) -> Result<Json<AdminPairDeleteResponse>, AdminError> {
     use underwrap_protocol::service::{AdminPairDeleteBlockers, AdminWrapperPermissionKey};
 
-    let store = admin_store(&state, &body.store)?;
+    let store = admin_store(&state, &store_id)?;
     let mut doc = load_pairs_document(store.as_ref())
         .map_err(|e| AdminError::internal("loading pairs document", e))?;
-    if doc.find(&body.wrapper, &body.resource_id).is_none() {
+    if doc.find(&wrapper, &resource_id).is_none() {
         return Err(AdminError::not_found("unknown pair"));
     }
 
@@ -163,7 +167,7 @@ pub(crate) async fn handle_admin_pair_delete(
     let dependent_permissions: Vec<AdminWrapperPermissionKey> = policy
         .permissions
         .iter()
-        .filter(|p| p.wrapper == body.wrapper && p.resource_id == body.resource_id)
+        .filter(|p| p.wrapper == wrapper && p.resource_id == resource_id)
         .map(|p| AdminWrapperPermissionKey {
             client_instance: p.client_instance.clone(),
             wrapper: p.wrapper.clone(),
@@ -179,8 +183,8 @@ pub(crate) async fn handle_admin_pair_delete(
             "pair.delete",
             &principal,
             AuditEntity::Pair {
-                wrapper: &body.wrapper,
-                resource_id: &body.resource_id,
+                wrapper: &wrapper,
+                resource_id: &resource_id,
             },
             None,
             "blocked",
@@ -194,15 +198,15 @@ pub(crate) async fn handle_admin_pair_delete(
         }));
     }
 
-    doc.remove(&body.wrapper, &body.resource_id);
+    doc.remove(&wrapper, &resource_id);
     save_pairs_document(store.as_ref(), &doc)
         .map_err(|e| AdminError::internal("persisting pairs document", e))?;
     log_admin_event(
         "pair.delete",
         &principal,
         AuditEntity::Pair {
-            wrapper: &body.wrapper,
-            resource_id: &body.resource_id,
+            wrapper: &wrapper,
+            resource_id: &resource_id,
         },
         None,
         "success",

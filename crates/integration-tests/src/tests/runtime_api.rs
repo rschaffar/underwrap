@@ -738,20 +738,17 @@ async fn admin_policy_upsert_rejects_legacy_per_call_approval_mode_payload() {
     // Build the raw JSON ourselves — we can't construct the variant
     // through the Rust type system because it no longer exists.
     let body = serde_json::json!({
-        "store": "test",
-        "permission": {
-            "client_instance": daemon.client_instance(),
-            "wrapper": "gh-authorized",
-            "resource_id": "github/token",
-            "mode": { "kind": "per-call-approval" },
-            "writable": false,
-            "reason": null,
-        }
+        "mode": { "kind": "per-call-approval" },
+        "writable": false,
+        "reason": null,
     });
     let resp = daemon
         .admin_request(
-            reqwest::Method::POST,
-            "/v1/admin/wrapper-permissions/upsert",
+            reqwest::Method::PUT,
+            &format!(
+                "/v1/admin/stores/test/wrapper-permissions/{}/gh-authorized/github%2Ftoken",
+                daemon.client_instance(),
+            ),
         )
         .json(&body)
         .send()

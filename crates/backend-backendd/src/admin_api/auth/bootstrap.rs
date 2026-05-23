@@ -20,6 +20,7 @@ use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::log_bootstrap_attempt;
+
 use crate::admin_api::auth::AdminAuthSession;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
@@ -115,7 +116,7 @@ pub(crate) async fn handle_admin_bootstrap(
 
     match crate::users::bootstrap_completed(&state.users_file) {
         Ok(true) => {
-            audit_bootstrap_attempt(
+            log_bootstrap_attempt(
                 &username_norm,
                 Some("bootstrap-already-completed"),
                 "failure",
@@ -140,7 +141,7 @@ pub(crate) async fn handle_admin_bootstrap(
         AdminError::internal_with_code("internal", "user collection unavailable")
     })?;
     if !collection.is_empty() {
-        audit_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
+        log_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
         return Err(AdminError::conflict(
             "users_already_exist",
             "a user already exists; bootstrap requires an empty user collection",
@@ -187,7 +188,7 @@ pub(crate) async fn handle_admin_bootstrap(
             "could not persist bootstrap sentinel",
         ));
     }
-    audit_bootstrap_attempt(&record.username, None, "success");
+    log_bootstrap_attempt(&record.username, None, "success");
     drop(bootstrap_guard);
 
     // Issue a session for the brand-new admin: `AuthSession::login`
@@ -204,11 +205,6 @@ pub(crate) async fn handle_admin_bootstrap(
     Ok(Json(BootstrapResponse {
         username: record.username.clone(),
     }))
-}
-
-/// Log one bootstrap attempt outcome. Best effort: never fails the caller.
-pub(crate) fn audit_bootstrap_attempt(username: &str, operation: Option<&str>, result: &str) {
-    log_bootstrap_attempt(username, operation, result);
 }
 
 #[cfg(test)]

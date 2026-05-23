@@ -224,10 +224,10 @@ pub(crate) async fn handle_admin_store_create(
 
 #[utoipa::path(
     put,
-    path = "/v1/admin/stores/{name}",
+    path = "/v1/admin/stores/{id}",
     tag = "stores",
     security(("session_cookie" = []), ("csrf_header" = [])),
-    params(("name" = String, Path, description = "Store id.")),
+    params(("id" = String, Path, description = "Store id.")),
     request_body = AdminStoreUpdateRequest,
     responses(
         (status = 200, description = "Store updated.", body = AdminStoreListItem),
@@ -325,11 +325,11 @@ pub(crate) struct DeleteQuery {
 
 #[utoipa::path(
     delete,
-    path = "/v1/admin/stores/{name}",
+    path = "/v1/admin/stores/{id}",
     tag = "stores",
     security(("session_cookie" = []), ("csrf_header" = [])),
     params(
-        ("name" = String, Path, description = "Store id."),
+        ("id" = String, Path, description = "Store id."),
         ("force" = Option<String>, Query, description = "Pass `true` / `1` / empty to bypass the empty-store guard."),
     ),
     responses(

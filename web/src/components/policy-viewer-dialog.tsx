@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  postWrapperPermissionsList,
+  fetchWrapperPermissions,
   type AdminWrapperPermissionsListResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -40,7 +40,7 @@ export function PolicyViewerDialog({
 }: PolicyViewerDialogProps) {
   const policy = useQuery<AdminWrapperPermissionsListResponse>({
     queryKey: ["admin", "policy", storeName],
-    queryFn: () => postWrapperPermissionsList({ store: storeName }),
+    queryFn: () => fetchWrapperPermissions(storeName),
     enabled: open,
     // The viewer is read-only and operators reopen it to confirm
     // recent edits. Cache freshness matters more than save round

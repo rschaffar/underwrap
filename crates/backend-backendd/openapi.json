@@ -249,7 +249,7 @@
         "operationId": "handle_admin_whoami",
         "responses": {
           "200": {
-            "description": "Returns the current operator, or `authenticated: false` if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.",
+            "description": "Returns the current operator, or an empty object if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.",
             "content": {
               "application/json": {
                 "schema": {
@@ -458,803 +458,6 @@
         ]
       }
     },
-    "/v1/admin/pairs/create": {
-      "post": {
-        "tags": [
-          "pairs"
-        ],
-        "operationId": "handle_admin_pair_create",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminPairCreateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Pair created.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminPairCreateResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / wrapper / resource not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Pair already exists.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/pairs/delete": {
-      "post": {
-        "tags": [
-          "pairs"
-        ],
-        "operationId": "handle_admin_pair_delete",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminPairDeleteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Pair removed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminPairDeleteResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Pair still referenced by wrapper permissions — see the `blocked_by` field.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminPairDeleteResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / pair not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/pairs/list": {
-      "post": {
-        "tags": [
-          "pairs"
-        ],
-        "operationId": "handle_admin_pairs_list",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminPairsListRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Wrapper / resource pairs in the store.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminPairsListResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/resources/create": {
-      "post": {
-        "tags": [
-          "resources"
-        ],
-        "operationId": "handle_admin_resource_create",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminResourceCreateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Resource created.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminResourceCreateResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource name already exists.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/resources/delete": {
-      "post": {
-        "tags": [
-          "resources"
-        ],
-        "operationId": "handle_admin_resource_delete",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminResourceDeleteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Resource deleted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminResourceDeleteResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Resource still referenced by pairs / permissions / secrets — see the `blockers` field.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminResourceDeleteResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / resource not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/resources/list": {
-      "post": {
-        "tags": [
-          "resources"
-        ],
-        "operationId": "handle_admin_resources_list",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminResourcesListRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Resources in the store.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminResourcesListResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/resources/rename": {
-      "post": {
-        "tags": [
-          "resources"
-        ],
-        "operationId": "handle_admin_resource_rename",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminResourceRenameRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Resource renamed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminResourceRenameResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / resource not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Target name already exists.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/secret/delete": {
-      "post": {
-        "tags": [
-          "secrets"
-        ],
-        "operationId": "handle_admin_secret_delete",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminSecretDeleteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Secret removed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminSecretDeleteResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / resource / key not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/secret/list": {
-      "post": {
-        "tags": [
-          "secrets"
-        ],
-        "operationId": "handle_admin_secret_list",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminSecretListRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Keys present in the requested resource slot.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminSecretListResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / resource not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/secret/read": {
-      "post": {
-        "tags": [
-          "secrets"
-        ],
-        "operationId": "handle_admin_secret_read",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminSecretReadRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Secret value for the (`resource_id`, `slot`, `key`) tuple, base64-encoded.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminSecretReadResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / resource / key not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/secret/rename": {
-      "post": {
-        "tags": [
-          "secrets"
-        ],
-        "summary": "Atomically rename a per-slot entry inside a resource blob.\nOne load-modify-save of the resource blob: the previous key is\nremoved and the new key is inserted in the same in-memory pass,\nso disk never holds both entries (or neither) — `atomic_write`\nin the storage layer guarantees the file flip is a single rename.\nOptionally overwrites material in the same step.",
-        "operationId": "handle_admin_secret_rename",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminSecretRenameRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Secret renamed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminOkResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / resource / key not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Target key already exists.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/secret/write": {
-      "post": {
-        "tags": [
-          "secrets"
-        ],
-        "operationId": "handle_admin_secret_write",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminSecretWriteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Secret written.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminOkResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / resource not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
     "/v1/admin/stores": {
       "get": {
         "tags": [
@@ -1346,7 +549,7 @@
         ]
       }
     },
-    "/v1/admin/stores/{name}": {
+    "/v1/admin/stores/{id}": {
       "put": {
         "tags": [
           "stores"
@@ -1354,7 +557,7 @@
         "operationId": "handle_admin_store_update",
         "parameters": [
           {
-            "name": "name",
+            "name": "id",
             "in": "path",
             "description": "Store id.",
             "required": true,
@@ -1421,7 +624,7 @@
         "operationId": "handle_admin_store_delete",
         "parameters": [
           {
-            "name": "name",
+            "name": "id",
             "in": "path",
             "description": "Store id.",
             "required": true,
@@ -1481,7 +684,7 @@
         ]
       }
     },
-    "/v1/admin/stores/{name}/lock": {
+    "/v1/admin/stores/{id}/lock": {
       "post": {
         "tags": [
           "stores"
@@ -1490,7 +693,7 @@
         "operationId": "handle_admin_store_lock",
         "parameters": [
           {
-            "name": "name",
+            "name": "id",
             "in": "path",
             "description": "Store id.",
             "required": true,
@@ -1531,7 +734,534 @@
         ]
       }
     },
-    "/v1/admin/stores/{name}/rotate-key": {
+    "/v1/admin/stores/{id}/pairs": {
+      "get": {
+        "tags": [
+          "pairs"
+        ],
+        "operationId": "handle_admin_pairs_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Wrapper / resource pairs in the store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPairsListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "pairs"
+        ],
+        "operationId": "handle_admin_pair_create",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPairCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pair created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPairCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / wrapper / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Pair already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/pairs/{wrapper}/{rid}": {
+      "delete": {
+        "tags": [
+          "pairs"
+        ],
+        "operationId": "handle_admin_pair_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wrapper",
+            "in": "path",
+            "description": "Wrapper name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pair removed, or `ok: false` with structured blockers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPairDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / pair not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/resources": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "handle_admin_resources_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resources in the store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResourcesListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "handle_admin_resource_create",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminResourceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Resource created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResourceCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/resources/{rid}": {
+      "put": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "handle_admin_resource_rename",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminResourceRenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Resource renamed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResourceRenameResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Target name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "handle_admin_resource_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resource deleted, or `ok: false` with structured blockers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResourceDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/rotate-key": {
       "post": {
         "tags": [
           "stores"
@@ -1540,7 +1270,7 @@
         "operationId": "handle_admin_store_rotate_key",
         "parameters": [
           {
-            "name": "name",
+            "name": "id",
             "in": "path",
             "description": "Store id.",
             "required": true,
@@ -1601,7 +1331,506 @@
         ]
       }
     },
-    "/v1/admin/stores/{name}/unlock": {
+    "/v1/admin/stores/{id}/secrets": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secrets_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_id",
+            "in": "query",
+            "description": "Restrict listing to a single resource.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-slot entries in the store (optionally filtered by resource id).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSecretListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/secrets-view": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secrets_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret entries and resources for the store, in one round trip.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSecretsView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secret_read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "Slot name: env, files, libsecret.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Per-slot entry key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret value, base64-encoded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSecretReadResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource / key not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secret_write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "Slot name: env, files, libsecret.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Per-slot entry key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSecretWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Secret written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secret_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "Slot name: env, files, libsecret.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Per-slot entry key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSecretDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource / key not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename": {
+      "post": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Atomically rename a per-slot entry inside a resource blob.\nOne load-modify-save of the resource blob: the previous key is\nremoved and the new key is inserted in the same in-memory pass,\nso disk never holds both entries (or neither) — `atomic_write`\nin the storage layer guarantees the file flip is a single rename.\nOptionally overwrites material in the same step.",
+        "operationId": "handle_admin_secret_rename",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "Slot name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Source key (`from_key`).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSecretRenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Secret renamed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource / key not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Target key already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/unlock": {
       "post": {
         "tags": [
           "stores"
@@ -1610,7 +1839,7 @@
         "operationId": "handle_admin_store_unlock",
         "parameters": [
           {
-            "name": "name",
+            "name": "id",
             "in": "path",
             "description": "Store id.",
             "required": true,
@@ -1652,6 +1881,308 @@
           },
           "404": {
             "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/wrapper-permissions": {
+      "get": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "handle_admin_wrapper_permissions_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of wrapper permissions for the store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminWrapperPermissionsListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/wrapper-permissions-view": {
+      "get": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "handle_admin_wrapper_permissions_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Permissions, pairs, and resources for the store, in one round trip.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminWrapperPermissionsView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}": {
+      "put": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "handle_admin_wrapper_permission_upsert",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client_instance",
+            "in": "path",
+            "description": "Client instance id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wrapper",
+            "in": "path",
+            "description": "Wrapper name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminWrapperPermissionUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Permission upserted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / wrapper / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "handle_admin_wrapper_permission_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client_instance",
+            "in": "path",
+            "description": "Client instance id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wrapper",
+            "in": "path",
+            "description": "Wrapper name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Permission removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / permission not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1966,190 +2497,6 @@
           }
         ]
       }
-    },
-    "/v1/admin/wrapper-permissions/delete": {
-      "post": {
-        "tags": [
-          "policy"
-        ],
-        "operationId": "handle_admin_wrapper_permission_delete",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminWrapperPermissionDeleteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Permission removed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminOkResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / permission not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/wrapper-permissions/list": {
-      "post": {
-        "tags": [
-          "policy"
-        ],
-        "operationId": "handle_admin_wrapper_permissions_list",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminWrapperPermissionsListRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "List of wrapper permissions for the store.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminWrapperPermissionsListResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/wrapper-permissions/upsert": {
-      "post": {
-        "tags": [
-          "policy"
-        ],
-        "operationId": "handle_admin_wrapper_permission_upsert",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminWrapperPermissionUpsertRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Permission upserted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminOkResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / wrapper / resource not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
     }
   },
   "components": {
@@ -2157,32 +2504,17 @@
       "AdminClientInstanceActionState": {
         "type": "object",
         "required": [
-          "can_edit_display_name",
-          "can_remap_store",
           "can_disable",
-          "can_enable",
-          "can_delete"
+          "can_enable"
         ],
         "properties": {
-          "can_delete": {
-            "type": "boolean",
-            "description": "Whether this principal may delete the instance record."
-          },
           "can_disable": {
             "type": "boolean",
             "description": "Whether this principal may transition the instance into the\ndisabled state."
           },
-          "can_edit_display_name": {
-            "type": "boolean",
-            "description": "Whether this principal may edit the display-name metadata."
-          },
           "can_enable": {
             "type": "boolean",
             "description": "Whether this principal may transition the instance back to the\nactive state."
-          },
-          "can_remap_store": {
-            "type": "boolean",
-            "description": "Whether this principal may remap the instance to another store."
           }
         }
       },
@@ -2358,15 +2690,11 @@
       "AdminPairCreateRequest": {
         "type": "object",
         "required": [
-          "store",
           "wrapper",
           "resource_id"
         ],
         "properties": {
           "resource_id": {
-            "type": "string"
-          },
-          "store": {
             "type": "string"
           },
           "wrapper": {
@@ -2404,25 +2732,6 @@
           }
         }
       },
-      "AdminPairDeleteRequest": {
-        "type": "object",
-        "required": [
-          "store",
-          "wrapper",
-          "resource_id"
-        ],
-        "properties": {
-          "resource_id": {
-            "type": "string"
-          },
-          "store": {
-            "type": "string"
-          },
-          "wrapper": {
-            "type": "string"
-          }
-        }
-      },
       "AdminPairDeleteResponse": {
         "type": "object",
         "required": [
@@ -2441,17 +2750,6 @@
           },
           "ok": {
             "type": "boolean"
-          }
-        }
-      },
-      "AdminPairsListRequest": {
-        "type": "object",
-        "required": [
-          "store"
-        ],
-        "properties": {
-          "store": {
-            "type": "string"
           }
         }
       },
@@ -2488,14 +2786,10 @@
       "AdminResourceCreateRequest": {
         "type": "object",
         "required": [
-          "store",
           "name"
         ],
         "properties": {
           "name": {
-            "type": "string"
-          },
-          "store": {
             "type": "string"
           }
         }
@@ -2555,21 +2849,6 @@
           }
         }
       },
-      "AdminResourceDeleteRequest": {
-        "type": "object",
-        "required": [
-          "store",
-          "id"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "store": {
-            "type": "string"
-          }
-        }
-      },
       "AdminResourceDeleteResponse": {
         "type": "object",
         "required": [
@@ -2593,20 +2872,12 @@
       },
       "AdminResourceRenameRequest": {
         "type": "object",
-        "description": "Rename an existing resource by id. The id stays stable; the name\nchanges. Returns the updated record.",
+        "description": "Body of `PUT /v1/admin/stores/{id}/resources/{rid}` — rename an\nexisting resource by id. The id stays stable; the name changes.",
         "required": [
-          "store",
-          "id",
           "new_name"
         ],
         "properties": {
-          "id": {
-            "type": "string"
-          },
           "new_name": {
-            "type": "string"
-          },
-          "store": {
             "type": "string"
           }
         }
@@ -2622,17 +2893,6 @@
           }
         }
       },
-      "AdminResourcesListRequest": {
-        "type": "object",
-        "required": [
-          "store"
-        ],
-        "properties": {
-          "store": {
-            "type": "string"
-          }
-        }
-      },
       "AdminResourcesListResponse": {
         "type": "object",
         "required": [
@@ -2644,29 +2904,6 @@
             "items": {
               "$ref": "#/components/schemas/ResourceRecord"
             }
-          }
-        }
-      },
-      "AdminSecretDeleteRequest": {
-        "type": "object",
-        "required": [
-          "store",
-          "resource_id",
-          "slot",
-          "key"
-        ],
-        "properties": {
-          "key": {
-            "type": "string"
-          },
-          "resource_id": {
-            "type": "string"
-          },
-          "slot": {
-            "$ref": "#/components/schemas/ResourceSlot"
-          },
-          "store": {
-            "type": "string"
           }
         }
       },
@@ -2701,24 +2938,6 @@
           }
         }
       },
-      "AdminSecretListRequest": {
-        "type": "object",
-        "required": [
-          "store"
-        ],
-        "properties": {
-          "resource_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Restrict listing to a single resource. `None` returns entries\nfor every resource in the store."
-          },
-          "store": {
-            "type": "string"
-          }
-        }
-      },
       "AdminSecretListResponse": {
         "type": "object",
         "required": [
@@ -2730,29 +2949,6 @@
             "items": {
               "$ref": "#/components/schemas/AdminSecretEntry"
             }
-          }
-        }
-      },
-      "AdminSecretReadRequest": {
-        "type": "object",
-        "required": [
-          "store",
-          "resource_id",
-          "slot",
-          "key"
-        ],
-        "properties": {
-          "key": {
-            "type": "string"
-          },
-          "resource_id": {
-            "type": "string"
-          },
-          "slot": {
-            "$ref": "#/components/schemas/ResourceSlot"
-          },
-          "store": {
-            "type": "string"
           }
         }
       },
@@ -2769,32 +2965,16 @@
       },
       "AdminSecretRenameRequest": {
         "type": "object",
-        "description": "Move an entry within a resource blob from `from_key` to `to_key`,\noptionally overwriting its material. The whole operation is one\natomic load-modify-save of the resource blob — there is no\nintermediate \"both entries exist\" window.\n\n`material_b64 = None` means \"keep the existing material under\n`from_key`\"; `Some(_)` overwrites in the same step. Rename refuses\nwhen `to_key` already exists (callers must delete it explicitly).",
+        "description": "Move an entry within a resource blob from the URL-addressed\n`(resource_id, slot, from_key)` to `to_key` under the same slot,\noptionally overwriting its material. The whole operation is one\natomic load-modify-save of the resource blob — there is no\nintermediate \"both entries exist\" window.\n\n`material_b64 = None` means \"keep the existing material\"; `Some(_)`\noverwrites in the same step. Rename refuses when `to_key` already\nexists (callers must delete it explicitly).",
         "required": [
-          "store",
-          "resource_id",
-          "slot",
-          "from_key",
           "to_key"
         ],
         "properties": {
-          "from_key": {
-            "type": "string"
-          },
           "material_b64": {
             "type": [
               "string",
               "null"
             ]
-          },
-          "resource_id": {
-            "type": "string"
-          },
-          "slot": {
-            "$ref": "#/components/schemas/ResourceSlot"
-          },
-          "store": {
-            "type": "string"
           },
           "to_key": {
             "type": "string"
@@ -2804,34 +2984,38 @@
       "AdminSecretWriteRequest": {
         "type": "object",
         "required": [
-          "store",
-          "resource_id",
-          "slot",
-          "key",
           "material_b64"
         ],
         "properties": {
-          "key": {
-            "type": "string"
-          },
           "material_b64": {
             "type": "string"
+          }
+        }
+      },
+      "AdminSecretsView": {
+        "type": "object",
+        "required": [
+          "entries",
+          "resources"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminSecretEntry"
+            }
           },
-          "resource_id": {
-            "type": "string"
-          },
-          "slot": {
-            "$ref": "#/components/schemas/ResourceSlot"
-          },
-          "store": {
-            "type": "string"
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceRecord"
+            }
           }
         }
       },
       "AdminStoreActionState": {
         "type": "object",
         "required": [
-          "can_edit_metadata",
           "can_rotate_key",
           "can_unlock",
           "can_lock",
@@ -2842,10 +3026,6 @@
           "can_delete_now": {
             "type": "boolean",
             "description": "Whether a plain DELETE is currently allowed."
-          },
-          "can_edit_metadata": {
-            "type": "boolean",
-            "description": "Whether this principal may edit the store metadata."
           },
           "can_force_delete": {
             "type": "boolean",
@@ -3139,29 +3319,6 @@
           }
         }
       },
-      "AdminWrapperPermissionDeleteRequest": {
-        "type": "object",
-        "required": [
-          "store",
-          "client_instance",
-          "wrapper",
-          "resource_id"
-        ],
-        "properties": {
-          "client_instance": {
-            "type": "string"
-          },
-          "resource_id": {
-            "type": "string"
-          },
-          "store": {
-            "type": "string"
-          },
-          "wrapper": {
-            "type": "string"
-          }
-        }
-      },
       "AdminWrapperPermissionKey": {
         "type": "object",
         "description": "The composite key for a wrapper permission. Used in delete-refusal\nresponses so the SPA can render a \"you must clear these wrapper\npermissions first\" list.",
@@ -3184,27 +3341,23 @@
       },
       "AdminWrapperPermissionUpsertRequest": {
         "type": "object",
+        "description": "Body of `PUT /v1/admin/stores/{id}/wrapper-permissions/...`. The\n`(client_instance, wrapper, resource_id)` tuple comes from the URL\npath; the body holds the mutable parts of a `WrapperPermission`.",
         "required": [
-          "store",
-          "permission"
+          "mode",
+          "writable"
         ],
         "properties": {
-          "permission": {
-            "$ref": "#/components/schemas/WrapperPermission"
+          "mode": {
+            "$ref": "#/components/schemas/WrapperApprovalMode"
           },
-          "store": {
-            "type": "string"
-          }
-        }
-      },
-      "AdminWrapperPermissionsListRequest": {
-        "type": "object",
-        "required": [
-          "store"
-        ],
-        "properties": {
-          "store": {
-            "type": "string"
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "writable": {
+            "type": "boolean"
           }
         }
       },
@@ -3218,6 +3371,34 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/WrapperPermission"
+            }
+          }
+        }
+      },
+      "AdminWrapperPermissionsView": {
+        "type": "object",
+        "required": [
+          "permissions",
+          "pairs",
+          "resources"
+        ],
+        "properties": {
+          "pairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WrapperResourcePairRecord"
+            }
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WrapperPermission"
+            }
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceRecord"
             }
           }
         }
@@ -3403,7 +3584,7 @@
       },
       "StoreLockResponse": {
         "type": "object",
-        "description": "Response of `POST /v1/admin/stores/{name}/lock`. Carries the\nidempotence flag so the SPA can distinguish \"we just locked the\nstore\" from \"store was already locked when we got here\".",
+        "description": "Response of `POST /v1/admin/stores/{id}/lock`. Carries the\nidempotence flag so the SPA can distinguish \"we just locked the\nstore\" from \"store was already locked when we got here\".",
         "required": [
           "ok",
           "was_locked"
@@ -3419,19 +3600,13 @@
       },
       "WhoamiResponse": {
         "type": "object",
-        "required": [
-          "authenticated"
-        ],
         "properties": {
-          "authenticated": {
-            "type": "boolean"
-          },
           "username": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Omitted when the request has no session so the wire shape stays\n`{ authenticated: false }` for the unauthenticated case."
+            "description": "Present when a session is attached; absent when the request is\nunauthenticated. The SPA treats `username !== undefined` as\nthe authenticated check."
           }
         }
       },

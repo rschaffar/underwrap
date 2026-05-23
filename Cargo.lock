@@ -1431,6 +1431,7 @@ dependencies = [
  "frontend-underwrapd",
  "hex",
  "libc",
+ "percent-encoding",
  "rand 0.8.5",
  "rcgen",
  "reqwest",

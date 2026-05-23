@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { PolicyViewerDialog } from "./policy-viewer-dialog";
 
-// `postWrapperPermissionsList` is the only API call this dialog
+// `fetchWrapperPermissions` is the only API call this dialog
 // makes (the prior `postPolicyGet` endpoint was retired; the viewer
 // builds a `PolicyDocument`-shaped blob from the permissions list).
 vi.mock("@/api/client", async () => {
@@ -12,11 +12,11 @@ vi.mock("@/api/client", async () => {
     await vi.importActual<typeof import("@/api/client")>("@/api/client");
   return {
     ...actual,
-    postWrapperPermissionsList: vi.fn(),
+    fetchWrapperPermissions: vi.fn(),
   };
 });
 
-import { postWrapperPermissionsList } from "@/api/client";
+import { fetchWrapperPermissions } from "@/api/client";
 
 function renderWithQuery(ui: React.ReactNode) {
   const qc = new QueryClient({
@@ -27,11 +27,11 @@ function renderWithQuery(ui: React.ReactNode) {
 
 describe("PolicyViewerDialog", () => {
   beforeEach(() => {
-    vi.mocked(postWrapperPermissionsList).mockReset();
+    vi.mocked(fetchWrapperPermissions).mockReset();
   });
 
   it("renders the formatted JSON, the writable-permissions badge, and a copy button for a non-trivial policy", async () => {
-    vi.mocked(postWrapperPermissionsList).mockResolvedValue({
+    vi.mocked(fetchWrapperPermissions).mockResolvedValue({
       permissions: [
         {
           client_instance: "dev-laptop",
@@ -87,7 +87,7 @@ describe("PolicyViewerDialog", () => {
   });
 
   it("shows 0 writable when the policy is empty", async () => {
-    vi.mocked(postWrapperPermissionsList).mockResolvedValue({
+    vi.mocked(fetchWrapperPermissions).mockResolvedValue({
       permissions: [],
     });
     renderWithQuery(
@@ -100,7 +100,7 @@ describe("PolicyViewerDialog", () => {
 
   it("surfaces an API error in an alert without rendering the JSON", async () => {
     const { ApiError } = await import("@/api/client");
-    vi.mocked(postWrapperPermissionsList).mockRejectedValue(
+    vi.mocked(fetchWrapperPermissions).mockRejectedValue(
       new ApiError(500, "internal_error", "the backend exploded"),
     );
     renderWithQuery(
@@ -113,7 +113,7 @@ describe("PolicyViewerDialog", () => {
   });
 
   it("copies the formatted JSON to the clipboard when the copy button is clicked", async () => {
-    vi.mocked(postWrapperPermissionsList).mockResolvedValue({
+    vi.mocked(fetchWrapperPermissions).mockResolvedValue({
       permissions: [
         {
           client_instance: "dev-laptop",

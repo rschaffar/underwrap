@@ -56,7 +56,7 @@ const rootRoute = new RootRoute({
     }
     try {
       const principal = await fetchWhoami();
-      if (principal.authenticated) {
+      if (principal.username !== undefined) {
         return { principal };
       }
     } catch (err) {

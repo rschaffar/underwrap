@@ -85,7 +85,8 @@ fn user_mutation_response(err: &UserMutationError) -> (Option<&'static str>, Adm
 /// Convert an `anyhow::Error` raised by a `mutate_collection` closure
 /// into the right `AdminError` + audit reason. Anything that wasn't a
 /// `UserMutationError` falls through to a 400 `invalid_user` envelope
-/// — matching the legacy behaviour for unexpected validation errors.
+/// — unexpected validation errors are surfaced as bad requests so the
+/// operator gets the underlying message instead of a generic 500.
 fn classify_mutation_error(err: anyhow::Error) -> (Option<&'static str>, AdminError) {
     match err.downcast_ref::<UserMutationError>() {
         Some(mut_err) => user_mutation_response(mut_err),
@@ -93,6 +94,48 @@ fn classify_mutation_error(err: anyhow::Error) -> (Option<&'static str>, AdminEr
             None,
             AdminError::bad_request("invalid_user", err.to_string()),
         ),
+    }
+}
+
+/// Audit shim for the user-CRUD handlers. On `Ok(_)`, log a success
+/// event keyed by the username derived from the value; on `Err(_)`,
+/// classify the error into an `AdminError` + audit reason and log a
+/// failure event keyed by `failure_username` (typically the request's
+/// path-id or the create body's normalised name, since the value we
+/// could have inspected is gone with the error).
+fn audit_user_mutation<T>(
+    action: &str,
+    principal: &Principal,
+    failure_username: &str,
+    result: Result<T>,
+    success_username: impl FnOnce(&T) -> &str,
+) -> Result<T, AdminError> {
+    match result {
+        Ok(value) => {
+            log_admin_event(
+                action,
+                principal,
+                AuditEntity::User {
+                    username: success_username(&value),
+                },
+                None,
+                "success",
+            );
+            Ok(value)
+        }
+        Err(e) => {
+            let (reason, response) = classify_mutation_error(e);
+            log_admin_event(
+                action,
+                principal,
+                AuditEntity::User {
+                    username: failure_username,
+                },
+                reason,
+                "failure",
+            );
+            Err(response)
+        }
     }
 }
 
@@ -172,33 +215,10 @@ pub(crate) async fn handle_admin_user_create(
         c.add(record.clone())?;
         Ok(record)
     });
-    match result {
-        Ok(saved) => {
-            log_admin_event(
-                "user.create",
-                &principal,
-                AuditEntity::User {
-                    username: &target_username,
-                },
-                None,
-                "success",
-            );
-            Ok(Json(user_list_item(&saved)))
-        }
-        Err(e) => {
-            let (reason, response) = classify_mutation_error(e);
-            log_admin_event(
-                "user.create",
-                &principal,
-                AuditEntity::User {
-                    username: &target_username,
-                },
-                reason,
-                "failure",
-            );
-            Err(response)
-        }
-    }
+    let saved = audit_user_mutation("user.create", &principal, &target_username, result, |r| {
+        &r.username
+    })?;
+    Ok(Json(user_list_item(&saved)))
 }
 
 #[utoipa::path(
@@ -229,31 +249,8 @@ pub(crate) async fn handle_admin_user_update(
         })?;
         Ok(updated.clone())
     });
-    match result {
-        Ok(updated) => {
-            log_admin_event(
-                "user.update",
-                &principal,
-                AuditEntity::User {
-                    username: &updated.username,
-                },
-                None,
-                "success",
-            );
-            Ok(Json(user_list_item(&updated)))
-        }
-        Err(e) => {
-            let (reason, response) = classify_mutation_error(e);
-            log_admin_event(
-                "user.update",
-                &principal,
-                AuditEntity::User { username: &id },
-                reason,
-                "failure",
-            );
-            Err(response)
-        }
-    }
+    let updated = audit_user_mutation("user.update", &principal, &id, result, |u| &u.username)?;
+    Ok(Json(user_list_item(&updated)))
 }
 
 #[utoipa::path(
@@ -293,38 +290,17 @@ pub(crate) async fn handle_admin_user_reset_password(
         })?;
         Ok(updated.username.clone())
     });
-    match result {
-        Ok(target_username) => {
-            // The target operator's existing sessions are invalidated
-            // automatically: `axum_login` records the password-hash
-            // bytes in each session and re-checks them on every
-            // request via `session_auth_hash()`. Once we write the
-            // new hash here, the next request that arrives carrying
-            // any pre-rotation session for this user fails the
-            // hash check and the session is flushed server-side.
-            log_admin_event(
-                "user.password.reset",
-                &principal,
-                AuditEntity::User {
-                    username: &target_username,
-                },
-                None,
-                "success",
-            );
-            Ok(Json(AdminOkUserResponse { ok: true }))
-        }
-        Err(e) => {
-            let (reason, response) = classify_mutation_error(e);
-            log_admin_event(
-                "user.password.reset",
-                &principal,
-                AuditEntity::User { username: &id },
-                reason,
-                "failure",
-            );
-            Err(response)
-        }
-    }
+    // The target operator's existing sessions are invalidated
+    // automatically: `axum_login` records the password-hash bytes in
+    // each session and re-checks them on every request via
+    // `session_auth_hash()`. Once we write the new hash here, the next
+    // request that arrives carrying any pre-rotation session for this
+    // user fails the hash check and the session is flushed
+    // server-side.
+    audit_user_mutation("user.password.reset", &principal, &id, result, |s| {
+        s.as_str()
+    })?;
+    Ok(Json(AdminOkUserResponse { ok: true }))
 }
 
 #[utoipa::path(
@@ -345,35 +321,12 @@ pub(crate) async fn handle_admin_user_delete(
     Path(id): Path<String>,
 ) -> Result<Json<AdminOkUserResponse>, AdminError> {
     let result = mutate_collection(&state, |c| Ok(c.remove(&id)?));
-    match result {
-        Ok(removed) => {
-            // Per-user session revocation is automatic: once the
-            // record is gone, `AuthBackend::get_user` returns None on
-            // any subsequent request, `auth_session.user` is None,
-            // and the `require_login_layer` rejects with 401.
-            log_admin_event(
-                "user.delete",
-                &principal,
-                AuditEntity::User {
-                    username: &removed.username,
-                },
-                None,
-                "success",
-            );
-            Ok(Json(AdminOkUserResponse { ok: true }))
-        }
-        Err(e) => {
-            let (reason, response) = classify_mutation_error(e);
-            log_admin_event(
-                "user.delete",
-                &principal,
-                AuditEntity::User { username: &id },
-                reason,
-                "failure",
-            );
-            Err(response)
-        }
-    }
+    // Per-user session revocation is automatic: once the record is
+    // gone, `AuthBackend::get_user` returns None on any subsequent
+    // request, `auth_session.user` is None, and the
+    // `require_login_layer` rejects with 401.
+    audit_user_mutation("user.delete", &principal, &id, result, |r| &r.username)?;
+    Ok(Json(AdminOkUserResponse { ok: true }))
 }
 
 #[cfg(test)]

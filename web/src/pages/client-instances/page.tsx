@@ -119,7 +119,6 @@ export function ClientInstancesPage() {
               {items.map((item) => {
                 const canDisable = item.actions.can_disable;
                 const canEnable = item.actions.can_enable;
-                const canDelete = item.actions.can_delete;
                 return (
                   <tr
                     key={item.id}
@@ -163,7 +162,6 @@ export function ClientInstancesPage() {
                         <Button
                           variant="destructive"
                           size="sm"
-                          disabled={!canDelete}
                           onClick={() => setDeleting(item)}
                         >
                           Delete

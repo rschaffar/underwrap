@@ -351,7 +351,7 @@ pub(crate) fn run_bootstrap(
     password: &str,
 ) -> (StatusCode, serde_json::Value) {
     use crate::admin_api::AdminError;
-    use crate::admin_api::auth::bootstrap::audit_bootstrap_attempt;
+    use crate::admin_api::audit::log_bootstrap_attempt;
 
     let username_norm = crate::users::normalise_username(username);
     if username_norm.is_empty() || password.is_empty() {
@@ -360,7 +360,7 @@ pub(crate) fn run_bootstrap(
     }
     let _guard = state.bootstrap_lock.lock().unwrap();
     if crate::users::bootstrap_completed(&state.users_file).unwrap_or(true) {
-        audit_bootstrap_attempt(
+        log_bootstrap_attempt(
             &username_norm,
             Some("bootstrap-already-completed"),
             "failure",
@@ -370,7 +370,7 @@ pub(crate) fn run_bootstrap(
     }
     let collection = crate::users::load(&state.users_file).unwrap();
     if !collection.is_empty() {
-        audit_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
+        log_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
         let err = AdminError::conflict("users_already_exist", "already populated");
         return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
@@ -394,7 +394,7 @@ pub(crate) fn run_bootstrap(
         },
     )
     .unwrap();
-    audit_bootstrap_attempt(&record.username, None, "success");
+    log_bootstrap_attempt(&record.username, None, "success");
     let body = crate::admin_api::auth::bootstrap::BootstrapResponse {
         username: record.username.clone(),
     };
@@ -514,8 +514,8 @@ pub(crate) fn create_resource_id_for_test(
     let (status, value) = run_handler(crate::admin_api::resources::handle_admin_resource_create(
         axum::extract::State(state),
         axum::Extension(principal.clone()),
+        axum::extract::Path(store_id.to_string()),
         crate::http::responses::Body(underwrap_protocol::service::AdminResourceCreateRequest {
-            store: store_id.to_string(),
             name: name.to_string(),
         }),
     ));

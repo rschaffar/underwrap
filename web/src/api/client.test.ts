@@ -4,10 +4,10 @@ import {
   ApiError,
   _resetCsrfTokenForTesting,
   client,
+  fetchSecret,
   fetchWhoami,
   postLogin,
   postLogout,
-  postSecretRead,
 } from "./client";
 
 function mockResponse(
@@ -47,7 +47,7 @@ describe("typed admin client", () => {
   it("sends credentials on every request", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockResponse(200, { authenticated: false }));
+      .mockResolvedValue(mockResponse(200, {}));
     await fetchWhoami();
     expect(spy).toHaveBeenCalledTimes(1);
     // openapi-fetch passes the request object as a Request instance.
@@ -59,7 +59,7 @@ describe("typed admin client", () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
-        mockResponseWithCsrf(200, { authenticated: false }, "auth-token"),
+        mockResponseWithCsrf(200, {}, "auth-token"),
       )
       .mockResolvedValueOnce(mockResponse(200, { username: "alice" }));
     await fetchWhoami();
@@ -72,7 +72,7 @@ describe("typed admin client", () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
-        mockResponseWithCsrf(200, { authenticated: false }, "tok"),
+        mockResponseWithCsrf(200, {}, "tok"),
       );
     await fetchWhoami();
     const req = spy.mock.calls[0]![0] as Request;
@@ -93,12 +93,7 @@ describe("typed admin client", () => {
       mockResponse(401, { code: "session_revoked", message: "go away" }),
     );
     await expect(
-      postSecretRead({
-        store: "default",
-        resource_id: "res_x",
-        slot: "env",
-        key: "K",
-      }),
+      fetchSecret("default", "res_x", "env", "K"),
     ).rejects.toMatchObject({
       name: "ApiError",
       status: 401,
@@ -132,12 +127,7 @@ describe("typed admin client", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse(200, { material_b64: "do-not-leak" }),
     );
-    const result = await postSecretRead({
-      store: "default",
-      resource_id: "res_x",
-      slot: "env",
-      key: "sensitive-key",
-    });
+    const result = await fetchSecret("default", "res_x", "env", "sensitive-key");
     expect(result?.material_b64).toBe("do-not-leak");
     for (const spy of [log, warn, error]) {
       for (const call of spy.mock.calls) {

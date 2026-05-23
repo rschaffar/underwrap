@@ -14,8 +14,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  postWrapperPermissionDelete,
-  postWrapperPermissionUpsert,
+  deleteWrapperPermission,
+  putWrapperPermission,
   type WrapperApprovalMode,
   type WrapperPermission,
 } from "@/api/client";
@@ -59,33 +59,32 @@ export function EditCellDialog({
 
   const upsert = useMutation({
     mutationFn: (mode: WrapperApprovalMode) =>
-      postWrapperPermissionUpsert({
-        store: storeName,
-        permission: {
-          client_instance: clientInstance,
-          wrapper,
-          resource_id: resourceId,
+      putWrapperPermission(
+        storeName,
+        clientInstance,
+        wrapper,
+        resourceId,
+        {
           mode,
           writable,
           reason: reason.trim() === "" ? undefined : reason.trim(),
         },
-      }),
+      ),
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["admin", "wrapper-permissions", storeName] });
+      await qc.invalidateQueries({
+        queryKey: ["admin", "wrapper-permissions-view", storeName],
+      });
       onClose();
     },
     onError: (err) => setSubmitError(describeApiError(err)),
   });
   const remove = useMutation({
     mutationFn: () =>
-      postWrapperPermissionDelete({
-        store: storeName,
-        client_instance: clientInstance,
-        wrapper,
-        resource_id: resourceId,
-      }),
+      deleteWrapperPermission(storeName, clientInstance, wrapper, resourceId),
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["admin", "wrapper-permissions", storeName] });
+      await qc.invalidateQueries({
+        queryKey: ["admin", "wrapper-permissions-view", storeName],
+      });
       onClose();
     },
     onError: (err) => setSubmitError(describeApiError(err)),

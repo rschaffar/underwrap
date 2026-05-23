@@ -101,75 +101,49 @@ export async function unwrap<T>(
   );
 }
 
-// ----- Named schema types for callsite ergonomics -----
+// ----- Named schema types -----
 //
-// Re-exported under their schema names so callsites can write
-// `import type { LoginRequest } from "@/api/client"` the same way they
-// used to. The shapes come from openapi-typescript's `components`
-// table, which mirrors the Rust DTOs 1:1 via utoipa::ToSchema.
+// Aliases for the openapi-typescript `components["schemas"]` entries.
+// The `export` ones are read from outside `web/src/api/`; the
+// non-exported ones are referenced inside this file as parameter
+// annotations on the per-endpoint helpers. Anything that's never
+// referenced has been deleted — re-add only when a real callsite
+// surfaces.
 type S = components["schemas"];
 export type AdminClientInstanceCreateRequest = S["AdminClientInstanceCreateRequest"];
 export type AdminClientInstanceListItem = S["AdminClientInstanceListItem"];
-export type AdminClientInstanceUpdateRequest = S["AdminClientInstanceUpdateRequest"];
-export type AdminClientInstanceStatus = S["AdminClientInstanceStatus"];
+type AdminClientInstanceUpdateRequest = S["AdminClientInstanceUpdateRequest"];
 export type AdminClientInstancesListResponse = S["AdminClientInstancesListResponse"];
-export type AdminOkResponse = S["AdminOkResponse"];
-export type AdminOkUserResponse = S["AdminOkUserResponse"];
-export type AdminPairCreateRequest = S["AdminPairCreateRequest"];
-export type AdminPairCreateResponse = S["AdminPairCreateResponse"];
-export type AdminPairDeleteRequest = S["AdminPairDeleteRequest"];
-export type AdminPairDeleteResponse = S["AdminPairDeleteResponse"];
-export type AdminPairsListRequest = S["AdminPairsListRequest"];
+type AdminPairCreateRequest = S["AdminPairCreateRequest"];
 export type AdminPairsListResponse = S["AdminPairsListResponse"];
-export type AdminPasswordChangeRequest = S["AdminPasswordChangeRequest"];
-export type AdminResourceCreateRequest = S["AdminResourceCreateRequest"];
-export type AdminResourceCreateResponse = S["AdminResourceCreateResponse"];
-export type AdminResourceDeleteBlockers = S["AdminResourceDeleteBlockers"];
-export type AdminResourceDeleteRequest = S["AdminResourceDeleteRequest"];
-export type AdminResourceDeleteResponse = S["AdminResourceDeleteResponse"];
-export type AdminResourceRenameRequest = S["AdminResourceRenameRequest"];
-export type AdminResourceRenameResponse = S["AdminResourceRenameResponse"];
-export type AdminResourcesListRequest = S["AdminResourcesListRequest"];
+type AdminPasswordChangeRequest = S["AdminPasswordChangeRequest"];
+type AdminResourceCreateRequest = S["AdminResourceCreateRequest"];
+type AdminResourceRenameRequest = S["AdminResourceRenameRequest"];
 export type AdminResourcesListResponse = S["AdminResourcesListResponse"];
-export type AdminSecretDeleteRequest = S["AdminSecretDeleteRequest"];
-export type AdminSecretDeleteResponse = S["AdminSecretDeleteResponse"];
 export type AdminSecretEntry = S["AdminSecretEntry"];
-export type AdminSecretListRequest = S["AdminSecretListRequest"];
 export type AdminSecretListResponse = S["AdminSecretListResponse"];
-export type AdminSecretReadRequest = S["AdminSecretReadRequest"];
 export type AdminSecretReadResponse = S["AdminSecretReadResponse"];
-export type AdminSecretRenameRequest = S["AdminSecretRenameRequest"];
-export type AdminSecretWriteRequest = S["AdminSecretWriteRequest"];
-export type AdminStoreActionState = S["AdminStoreActionState"];
-export type AdminStoreBackendKind = S["AdminStoreBackendKind"];
+type AdminSecretRenameRequest = S["AdminSecretRenameRequest"];
+type AdminSecretWriteRequest = S["AdminSecretWriteRequest"];
+export type AdminSecretsView = S["AdminSecretsView"];
 export type AdminStoreCreateRequest = S["AdminStoreCreateRequest"];
-export type AdminStoreCreateResponse = S["AdminStoreCreateResponse"];
-export type AdminStoreDeleteResponse = S["AdminStoreDeleteResponse"];
 export type AdminStoreListItem = S["AdminStoreListItem"];
-export type AdminStoreRotateKeyResponse = S["AdminStoreRotateKeyResponse"];
-export type AdminStoreUnlockRequest = S["AdminStoreUnlockRequest"];
-export type AdminStoreUpdateRequest = S["AdminStoreUpdateRequest"];
-export type AdminStoreUsageSummary = S["AdminStoreUsageSummary"];
+type AdminStoreUnlockRequest = S["AdminStoreUnlockRequest"];
+type AdminStoreUpdateRequest = S["AdminStoreUpdateRequest"];
 export type AdminStoresListResponse = S["AdminStoresListResponse"];
 export type AdminUserCreateRequest = S["AdminUserCreateRequest"];
 export type AdminUserListItem = S["AdminUserListItem"];
-export type AdminUserResetPasswordRequest = S["AdminUserResetPasswordRequest"];
-export type AdminUserUpdateRequest = S["AdminUserUpdateRequest"];
+type AdminUserResetPasswordRequest = S["AdminUserResetPasswordRequest"];
+type AdminUserUpdateRequest = S["AdminUserUpdateRequest"];
 export type AdminUsersListResponse = S["AdminUsersListResponse"];
-export type AdminWrapperPermissionDeleteRequest = S["AdminWrapperPermissionDeleteRequest"];
-export type AdminWrapperPermissionKey = S["AdminWrapperPermissionKey"];
-export type AdminWrapperPermissionUpsertRequest = S["AdminWrapperPermissionUpsertRequest"];
-export type AdminWrapperPermissionsListRequest = S["AdminWrapperPermissionsListRequest"];
+type AdminWrapperPermissionUpsertRequest = S["AdminWrapperPermissionUpsertRequest"];
 export type AdminWrapperPermissionsListResponse = S["AdminWrapperPermissionsListResponse"];
-export type BootstrapRequest = S["BootstrapRequest"];
-export type BootstrapResponse = S["BootstrapResponse"];
-export type BootstrapStatusResponse = S["BootstrapStatusResponse"];
+export type AdminWrapperPermissionsView = S["AdminWrapperPermissionsView"];
+type BootstrapRequest = S["BootstrapRequest"];
 export type EntityCreator = S["EntityCreator"];
-export type LoginRequest = S["LoginRequest"];
-export type LoginResponse = S["LoginResponse"];
+type LoginRequest = S["LoginRequest"];
 export type ResourceRecord = S["ResourceRecord"];
 export type ResourceSlot = S["ResourceSlot"];
-export type ServiceWrapperResourcePair = S["ServiceWrapperResourcePair"];
 export type WhoamiResponse = S["WhoamiResponse"];
 export type WrapperApprovalMode = S["WrapperApprovalMode"];
 export type WrapperPermission = S["WrapperPermission"];
@@ -213,8 +187,8 @@ export function postStoreCreate(body: AdminStoreCreateRequest) {
 
 export function postStoreRotateKey(storeId: string) {
   return unwrap(
-    client.POST("/v1/admin/stores/{name}/rotate-key", {
-      params: { path: { name: storeId } },
+    client.POST("/v1/admin/stores/{id}/rotate-key", {
+      params: { path: { id: storeId } },
     }),
   );
 }
@@ -224,8 +198,8 @@ export function postStoreUnlock(
   body: AdminStoreUnlockRequest,
 ) {
   return unwrap(
-    client.POST("/v1/admin/stores/{name}/unlock", {
-      params: { path: { name: storeId } },
+    client.POST("/v1/admin/stores/{id}/unlock", {
+      params: { path: { id: storeId } },
       body,
     }),
   );
@@ -233,8 +207,8 @@ export function postStoreUnlock(
 
 export function postStoreLock(storeId: string) {
   return unwrap(
-    client.POST("/v1/admin/stores/{name}/lock", {
-      params: { path: { name: storeId } },
+    client.POST("/v1/admin/stores/{id}/lock", {
+      params: { path: { id: storeId } },
     }),
   );
 }
@@ -244,8 +218,8 @@ export function putStoreUpdate(
   body: AdminStoreUpdateRequest,
 ) {
   return unwrap(
-    client.PUT("/v1/admin/stores/{name}", {
-      params: { path: { name: storeId } },
+    client.PUT("/v1/admin/stores/{id}", {
+      params: { path: { id: storeId } },
       body,
     }),
   );
@@ -253,9 +227,9 @@ export function putStoreUpdate(
 
 export function deleteStore(storeId: string, opts: { force?: boolean } = {}) {
   return unwrap(
-    client.DELETE("/v1/admin/stores/{name}", {
+    client.DELETE("/v1/admin/stores/{id}", {
       params: {
-        path: { name: storeId },
+        path: { id: storeId },
         query: opts.force ? { force: "true" } : undefined,
       },
     }),
@@ -328,80 +302,222 @@ export function deleteUser(id: string) {
   );
 }
 
-// ----- Wrapper permissions / policy -----
+// ----- Per-store: resources, pairs, wrapper-permissions, secrets -----
+//
+// All four families share the `/v1/admin/stores/{id}/<thing>` shape.
+// Identity-bearing fields (resource id, wrapper, secret slot+key) live
+// in URL path segments; bodies carry only value-bearing fields.
 
-export function postWrapperPermissionsList(
-  body: AdminWrapperPermissionsListRequest,
-) {
+export function fetchResources(storeId: string) {
   return unwrap(
-    client.POST("/v1/admin/wrapper-permissions/list", { body }),
+    client.GET("/v1/admin/stores/{id}/resources", {
+      params: { path: { id: storeId } },
+    }),
   );
 }
 
-export function postWrapperPermissionUpsert(
+export function postResourceCreate(
+  storeId: string,
+  body: AdminResourceCreateRequest,
+) {
+  return unwrap(
+    client.POST("/v1/admin/stores/{id}/resources", {
+      params: { path: { id: storeId } },
+      body,
+    }),
+  );
+}
+
+export function deleteResource(storeId: string, resourceId: string) {
+  return unwrap(
+    client.DELETE("/v1/admin/stores/{id}/resources/{rid}", {
+      params: { path: { id: storeId, rid: resourceId } },
+    }),
+  );
+}
+
+export function putResourceRename(
+  storeId: string,
+  resourceId: string,
+  body: AdminResourceRenameRequest,
+) {
+  return unwrap(
+    client.PUT("/v1/admin/stores/{id}/resources/{rid}", {
+      params: { path: { id: storeId, rid: resourceId } },
+      body,
+    }),
+  );
+}
+
+export function fetchPairs(storeId: string) {
+  return unwrap(
+    client.GET("/v1/admin/stores/{id}/pairs", {
+      params: { path: { id: storeId } },
+    }),
+  );
+}
+
+export function postPairCreate(storeId: string, body: AdminPairCreateRequest) {
+  return unwrap(
+    client.POST("/v1/admin/stores/{id}/pairs", {
+      params: { path: { id: storeId } },
+      body,
+    }),
+  );
+}
+
+export function deletePair(
+  storeId: string,
+  wrapper: string,
+  resourceId: string,
+) {
+  return unwrap(
+    client.DELETE("/v1/admin/stores/{id}/pairs/{wrapper}/{rid}", {
+      params: { path: { id: storeId, wrapper, rid: resourceId } },
+    }),
+  );
+}
+
+export function fetchWrapperPermissions(storeId: string) {
+  return unwrap(
+    client.GET("/v1/admin/stores/{id}/wrapper-permissions", {
+      params: { path: { id: storeId } },
+    }),
+  );
+}
+
+export function putWrapperPermission(
+  storeId: string,
+  clientInstance: string,
+  wrapper: string,
+  resourceId: string,
   body: AdminWrapperPermissionUpsertRequest,
 ) {
   return unwrap(
-    client.POST("/v1/admin/wrapper-permissions/upsert", { body }),
+    client.PUT(
+      "/v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}",
+      {
+        params: {
+          path: {
+            id: storeId,
+            client_instance: clientInstance,
+            wrapper,
+            rid: resourceId,
+          },
+        },
+        body,
+      },
+    ),
   );
 }
 
-export function postWrapperPermissionDelete(
-  body: AdminWrapperPermissionDeleteRequest,
+export function deleteWrapperPermission(
+  storeId: string,
+  clientInstance: string,
+  wrapper: string,
+  resourceId: string,
 ) {
   return unwrap(
-    client.POST("/v1/admin/wrapper-permissions/delete", { body }),
+    client.DELETE(
+      "/v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}",
+      {
+        params: {
+          path: {
+            id: storeId,
+            client_instance: clientInstance,
+            wrapper,
+            rid: resourceId,
+          },
+        },
+      },
+    ),
   );
 }
 
-// ----- Secrets CRUD -----
-
-export function postSecretList(body: AdminSecretListRequest) {
-  return unwrap(client.POST("/v1/admin/secret/list", { body }));
+export function fetchSecrets(storeId: string, resourceId?: string) {
+  return unwrap(
+    client.GET("/v1/admin/stores/{id}/secrets", {
+      params: {
+        path: { id: storeId },
+        query: resourceId ? { resource_id: resourceId } : undefined,
+      },
+    }),
+  );
 }
 
-export function postSecretRead(body: AdminSecretReadRequest) {
-  return unwrap(client.POST("/v1/admin/secret/read", { body }));
+export function fetchSecret(
+  storeId: string,
+  resourceId: string,
+  slot: ResourceSlot,
+  key: string,
+) {
+  return unwrap(
+    client.GET("/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}", {
+      params: { path: { id: storeId, rid: resourceId, slot, key } },
+    }),
+  );
 }
 
-export function postSecretWrite(body: AdminSecretWriteRequest) {
-  return unwrap(client.POST("/v1/admin/secret/write", { body }));
+export function putSecret(
+  storeId: string,
+  resourceId: string,
+  slot: ResourceSlot,
+  key: string,
+  body: AdminSecretWriteRequest,
+) {
+  return unwrap(
+    client.PUT("/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}", {
+      params: { path: { id: storeId, rid: resourceId, slot, key } },
+      body,
+    }),
+  );
 }
 
-export function postSecretDelete(body: AdminSecretDeleteRequest) {
-  return unwrap(client.POST("/v1/admin/secret/delete", { body }));
+export function deleteSecret(
+  storeId: string,
+  resourceId: string,
+  slot: ResourceSlot,
+  key: string,
+) {
+  return unwrap(
+    client.DELETE("/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}", {
+      params: { path: { id: storeId, rid: resourceId, slot, key } },
+    }),
+  );
 }
 
-export function postSecretRename(body: AdminSecretRenameRequest) {
-  return unwrap(client.POST("/v1/admin/secret/rename", { body }));
+export function postSecretRename(
+  storeId: string,
+  resourceId: string,
+  slot: ResourceSlot,
+  fromKey: string,
+  body: AdminSecretRenameRequest,
+) {
+  return unwrap(
+    client.POST(
+      "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename",
+      {
+        params: { path: { id: storeId, rid: resourceId, slot, key: fromKey } },
+        body,
+      },
+    ),
+  );
 }
 
-// ----- Resources and wrapper/resource pairs -----
+// ----- Aggregate views -----
 
-export function postResourcesList(body: AdminResourcesListRequest) {
-  return unwrap(client.POST("/v1/admin/resources/list", { body }));
+export function fetchWrapperPermissionsView(storeId: string) {
+  return unwrap(
+    client.GET("/v1/admin/stores/{id}/wrapper-permissions-view", {
+      params: { path: { id: storeId } },
+    }),
+  );
 }
 
-export function postResourceCreate(body: AdminResourceCreateRequest) {
-  return unwrap(client.POST("/v1/admin/resources/create", { body }));
-}
-
-export function postResourceDelete(body: AdminResourceDeleteRequest) {
-  return unwrap(client.POST("/v1/admin/resources/delete", { body }));
-}
-
-export function postResourceRename(body: AdminResourceRenameRequest) {
-  return unwrap(client.POST("/v1/admin/resources/rename", { body }));
-}
-
-export function postPairsList(body: AdminPairsListRequest) {
-  return unwrap(client.POST("/v1/admin/pairs/list", { body }));
-}
-
-export function postPairCreate(body: AdminPairCreateRequest) {
-  return unwrap(client.POST("/v1/admin/pairs/create", { body }));
-}
-
-export function postPairDelete(body: AdminPairDeleteRequest) {
-  return unwrap(client.POST("/v1/admin/pairs/delete", { body }));
+export function fetchSecretsView(storeId: string) {
+  return unwrap(
+    client.GET("/v1/admin/stores/{id}/secrets-view", {
+      params: { path: { id: storeId } },
+    }),
+  );
 }

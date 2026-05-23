@@ -1,5 +1,5 @@
 use axum::Extension;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use base64::Engine;
 use hyper::StatusCode;
 
@@ -28,11 +28,13 @@ fn admin_secret_rename_moves_entry_atomically() {
     let (status, _) = run_handler(handle_admin_secret_write(
         State(state.clone()),
         Extension(principal()),
+        Path((
+            store_id.clone(),
+            resource_id.clone(),
+            "files".into(),
+            "config.yaml".into(),
+        )),
         Body(underwrap_protocol::service::AdminSecretWriteRequest {
-            store: store_id.clone(),
-            resource_id: resource_id.clone(),
-            slot: underwrap_protocol::resource::ResourceSlot::Files,
-            key: "config.yaml".into(),
             material_b64: base64::engine::general_purpose::STANDARD.encode("v1"),
         }),
     ));
@@ -42,11 +44,13 @@ fn admin_secret_rename_moves_entry_atomically() {
     let (rename_status, _) = run_handler(handle_admin_secret_rename(
         State(state.clone()),
         Extension(principal()),
+        Path((
+            store_id.clone(),
+            resource_id.clone(),
+            "files".into(),
+            "config.yaml".into(),
+        )),
         Body(underwrap_protocol::service::AdminSecretRenameRequest {
-            store: store_id.clone(),
-            resource_id: resource_id.clone(),
-            slot: underwrap_protocol::resource::ResourceSlot::Files,
-            from_key: "config.yaml".into(),
             to_key: "config.json".into(),
             material_b64: None,
         }),
@@ -72,11 +76,13 @@ fn admin_secret_rename_refuses_when_target_exists() {
         let (status, _) = run_handler(handle_admin_secret_write(
             State(state.clone()),
             Extension(principal()),
+            Path((
+                store_id.clone(),
+                resource_id.clone(),
+                "files".into(),
+                k.into(),
+            )),
             Body(underwrap_protocol::service::AdminSecretWriteRequest {
-                store: store_id.clone(),
-                resource_id: resource_id.clone(),
-                slot: underwrap_protocol::resource::ResourceSlot::Files,
-                key: k.into(),
                 material_b64: base64::engine::general_purpose::STANDARD.encode(k),
             }),
         ));
@@ -85,11 +91,8 @@ fn admin_secret_rename_refuses_when_target_exists() {
     let (status, body) = run_handler(handle_admin_secret_rename(
         State(state.clone()),
         Extension(principal()),
+        Path((store_id, resource_id, "files".into(), "a".into())),
         Body(underwrap_protocol::service::AdminSecretRenameRequest {
-            store: store_id.clone(),
-            resource_id,
-            slot: underwrap_protocol::resource::ResourceSlot::Files,
-            from_key: "a".into(),
             to_key: "b".into(),
             material_b64: None,
         }),
