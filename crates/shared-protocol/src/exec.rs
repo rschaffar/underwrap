@@ -54,6 +54,9 @@ pub struct ExecBundle {
     pub env: HashMap<String, SecretBytes>,
     pub env_passthrough: Vec<String>,
     pub env_set: HashMap<String, String>,
+    /// Base directory from which ns derives the final target
+    /// `XDG_RUNTIME_DIR` as `<xdg_runtime_dir_base>/<uid>`.
+    pub xdg_runtime_dir_base: String,
     /// The wrapper-resource binding for this run's single resource,
     /// carrying the fd for the bulk-blob IPC channel
     /// (`Checkout` / `Checkin` / `UsageSignal`).
@@ -65,6 +68,7 @@ impl WireEncode for ExecBundle {
         self.env.encode(out)?;
         self.env_passthrough.encode(out)?;
         self.env_set.encode(out)?;
+        self.xdg_runtime_dir_base.encode(out)?;
         self.resource.encode(out)
     }
 }
@@ -75,6 +79,7 @@ impl WireDecode for ExecBundle {
             env: HashMap::<String, SecretBytes>::decode(reader)?,
             env_passthrough: Vec::<String>::decode(reader)?,
             env_set: HashMap::<String, String>::decode(reader)?,
+            xdg_runtime_dir_base: String::decode(reader)?,
             resource: ExecResourceBinding::decode(reader)?,
         })
     }

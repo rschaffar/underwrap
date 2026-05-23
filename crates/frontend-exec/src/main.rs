@@ -21,6 +21,7 @@ use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::exec::{ExecBundle, ExecResourceBinding};
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
+use underwrap_protocol::target_env::{CONFIGURABLE_FORCED_TARGET_ENV_NAMES, is_forced_target_env_name};
 
 /// Fixed config directory used when running with elevated privileges.
 const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
@@ -31,6 +32,8 @@ const DEFAULT_NS_BINARY: &str = "/run/wrappers/bin/underwrap-ns";
 /// Fd used to pass the wrapper-resource channel into underwrap-ns.
 /// The exec bundle pipe takes fd 3; the channel is mapped to fd 20.
 const RESOURCE_CHANNEL_FD: i32 = 20;
+
+const DEFAULT_XDG_RUNTIME_DIR_BASE: &str = "/run/user";
 
 struct ReceivedResourceBinding {
     resource_id: String,
@@ -218,6 +221,7 @@ fn exec_via_ns(
             env: env_bindings,
             env_passthrough: config.env_passthrough.clone(),
             env_set: config.env_set.clone(),
+            xdg_runtime_dir_base: config.xdg_runtime_dir_base.clone(),
             resource: exec_resource,
         };
         write_frame_sync(&mut pipe, &payload).context("writing exec bundle to pipe")?;
@@ -304,6 +308,7 @@ fn resolve_gid_name(gid: u32) -> Result<String> {
         .to_string())
 }
 
+#[derive(Debug)]
 struct WrapperExecConfig {
     target: String,
     wrapper_socket: String,
@@ -316,6 +321,9 @@ struct WrapperExecConfig {
     env_passthrough: Vec<String>,
     /// Fixed env vars to set on the target (from trusted config).
     env_set: std::collections::HashMap<String, String>,
+    /// Instance-level base directory from which ns derives the final
+    /// `XDG_RUNTIME_DIR` as `<xdg_runtime_dir_base>/<uid>`.
+    xdg_runtime_dir_base: String,
 }
 
 fn config_dir() -> String {
@@ -325,12 +333,49 @@ fn config_dir() -> String {
     TRUSTED_CONFIG_DIR.to_string()
 }
 
-fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
-    let dir = config_dir();
-    let path = format!("{dir}/{config_name}.yaml");
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading wrapper config {path}"))?;
+fn default_xdg_runtime_dir_base() -> String {
+    DEFAULT_XDG_RUNTIME_DIR_BASE.to_string()
+}
 
+fn validate_wrapper_config(config: &WrapperExecConfig) -> Result<()> {
+    if !std::path::Path::new(&config.target).is_absolute() {
+        bail!(
+            "wrapper target must be an absolute path, got: {:?}",
+            config.target
+        );
+    }
+    if !std::path::Path::new(&config.xdg_runtime_dir_base).is_absolute() {
+        bail!(
+            "xdg_runtime_dir_base must be an absolute path, got: {:?}",
+            config.xdg_runtime_dir_base
+        );
+    }
+    for name in &config.env_passthrough {
+        if is_forced_target_env_name(name) {
+            if name == "XDG_RUNTIME_DIR" {
+                bail!(
+                    "env_passthrough must not include XDG_RUNTIME_DIR; use xdg_runtime_dir_base instead"
+                );
+            }
+            bail!(
+                "env_passthrough must not include {name}; use env_set for trusted HOME/XDG overrides"
+            );
+        }
+    }
+    if config.env_set.contains_key("XDG_RUNTIME_DIR") {
+        bail!("env_set must not include XDG_RUNTIME_DIR; use xdg_runtime_dir_base instead");
+    }
+    for name in CONFIGURABLE_FORCED_TARGET_ENV_NAMES {
+        if let Some(value) = config.env_set.get(*name)
+            && !std::path::Path::new(value).is_absolute()
+        {
+            bail!("env_set {name} must be an absolute path, got: {value:?}");
+        }
+    }
+    Ok(())
+}
+
+fn parse_wrapper_config_text(text: &str) -> Result<WrapperExecConfig> {
     #[derive(serde::Deserialize)]
     struct WrapperFile {
         target: String,
@@ -352,17 +397,12 @@ fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
         env_passthrough: Vec<String>,
         #[serde(default)]
         env_set: std::collections::HashMap<String, String>,
+        #[serde(default = "default_xdg_runtime_dir_base")]
+        xdg_runtime_dir_base: String,
     }
 
-    let wf: WrapperFile = serde_yaml::from_str(&text)?;
-    if !wf.target.starts_with('/') {
-        bail!(
-            "wrapper target must be an absolute path, got: {:?}",
-            wf.target
-        );
-    }
-
-    Ok(WrapperExecConfig {
+    let wf: WrapperFile = serde_yaml::from_str(text)?;
+    let config = WrapperExecConfig {
         target: wf.target,
         wrapper_socket: wf.wrapper_socket,
         ns_binary: wf.ns_binary,
@@ -370,7 +410,18 @@ fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
         secretsd_binary: wf.secretsd_binary,
         env_passthrough: wf.env_passthrough,
         env_set: wf.env_set,
-    })
+        xdg_runtime_dir_base: wf.xdg_runtime_dir_base,
+    };
+    validate_wrapper_config(&config)?;
+    Ok(config)
+}
+
+fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
+    let dir = config_dir();
+    let path = format!("{dir}/{config_name}.yaml");
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading wrapper config {path}"))?;
+    parse_wrapper_config_text(&text)
 }
 
 /// Request credentials from the daemon. Returns env bindings plus the

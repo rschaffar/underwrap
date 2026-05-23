@@ -305,6 +305,7 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-dir-write-then-sleep": "test/dir-a",
     "test-dir-touch": "test/dir-a",
     "test-dir-env-probe": "test/dir-a",
+    "test-dir-env-override-probe": "test/dir-a",
 }
 
 # Each wrapper now projects exactly one resource, so no secondary
@@ -1173,6 +1174,7 @@ def local_directory_credentials():
         "test-dir-write-then-sleep",
         "test-dir-touch",
         "test-dir-env-probe",
+        "test-dir-env-override-probe",
     ]:
         grant_local_unlocked(wrapper)
 
@@ -1409,13 +1411,21 @@ def local_atomic_writeback():
         f"scenario 4: journal missing grant_readonly reason: {journal_after!r}"
     )
 
-    # Env clear: the target must not see UNDERWRAP_SUPPRESS_READONLY_WARNING
-    # (or any other UNDERWRAP_*) propagated from the wrapper invocation
-    # environment.
+    # Env clear + forced HOME/XDG: the target must not see
+    # UNDERWRAP_SUPPRESS_READONLY_WARNING (or any other UNDERWRAP_*)
+    # propagated from the wrapper invocation environment, and caller-
+    # supplied HOME/XDG values must be replaced with the trusted
+    # underwrap defaults.
     grant_local_unlocked("test-dir-env-probe")
     target_env = machine.succeed(
         "su testuser -s /bin/sh -c '"
         "UNDERWRAP_SUPPRESS_READONLY_WARNING=1 "
+        "HOME=/tmp/evil-home "
+        "XDG_RUNTIME_DIR=/tmp/evil-run "
+        "XDG_CONFIG_HOME=/tmp/evil-config "
+        "XDG_DATA_HOME=/tmp/evil-data "
+        "XDG_CACHE_HOME=/tmp/evil-cache "
+        "XDG_STATE_HOME=/tmp/evil-state "
         "/run/wrappers/bin/local-test-dir-env-probe'"
     )
     leaked = [
@@ -1424,8 +1434,29 @@ def local_atomic_writeback():
     assert leaked == [], (
         f"scenario 4: UNDERWRAP_* vars leaked into target environment: {leaked}"
     )
+    assert "HOME=/home/testuser" in target_env, target_env
+    assert "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/1099" in target_env, target_env
+    assert "XDG_CONFIG_HOME=/home/testuser/.config" in target_env, target_env
+    assert "XDG_DATA_HOME=/home/testuser/.local/share" in target_env, target_env
+    assert "XDG_CACHE_HOME=/home/testuser/.cache" in target_env, target_env
+    assert "XDG_STATE_HOME=/home/testuser/.local/state" in target_env, target_env
+
+    grant_local_unlocked("test-dir-env-override-probe")
+    override_env = machine.succeed(
+        "su testuser -s /bin/sh -c '"
+        "HOME=/tmp/evil-home "
+        "XDG_RUNTIME_DIR=/tmp/evil-run "
+        "XDG_CONFIG_HOME=/tmp/evil-config "
+        "/run/wrappers/bin/local-test-dir-env-override-probe'"
+    )
+    assert "HOME=/tmp/underwrap-home-override" in override_env, override_env
+    assert "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/1099" in override_env, override_env
+    assert "XDG_CONFIG_HOME=/tmp/underwrap-config-override" in override_env, override_env
+    assert "XDG_DATA_HOME=/tmp/underwrap-home-override/.local/share" in override_env, override_env
+    assert "XDG_CACHE_HOME=/tmp/underwrap-home-override/.cache" in override_env, override_env
+    assert "XDG_STATE_HOME=/tmp/underwrap-home-override/.local/state" in override_env, override_env
     machine.log(
-        "PASS: scenario 4 — suppression silences stderr, journal still records, target sees no UNDERWRAP_*"
+        "PASS: scenario 4 — suppression stays private, caller HOME/XDG spoofing is ignored, and envSet overrides apply cleanly"
     )
 
     # ----------------------------------------------------------
@@ -1790,8 +1821,9 @@ def remote_service_lifecycle():
     admin_write_secret(ADMIN_REMOTE, "remote", "remote-echo", "remote/token/env/REMOTE_TOKEN", "secret_via_service")
 
     # With backend service up: succeed.
-    output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
+    output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/tunnel-remote-echo"))
     assert "REMOTE_TOKEN=secret_via_service" in output, f"expected REMOTE_TOKEN: {output}"
+    assert "XDG_RUNTIME_DIR=/run/user/1099" in output, f"expected forced default XDG_RUNTIME_DIR: {output}"
     machine.log("PASS: remote secret via backend service")
 
     # No secret on local frontend store disk.
@@ -1808,8 +1840,9 @@ def remote_service_lifecycle():
     machine.succeed("systemctl start underwrap-backendd.service")
     machine.wait_for_unit("underwrap-backendd.service")
     time.sleep(1)
-    output = machine.succeed(su("/run/wrappers/bin/tunnel-remote-echo"))
+    output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/tunnel-remote-echo"))
     assert "REMOTE_TOKEN=secret_via_service" in output
+    assert "XDG_RUNTIME_DIR=/run/user/1099" in output
     machine.log("PASS: wrapper works after backend service restart")
 
 

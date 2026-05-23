@@ -324,6 +324,7 @@ in {
       # Local instance: frontend talks to a local backend socket.
       local = {
         allowedUsers = [ "testuser" ];
+        xdgRuntimeDirBase = "/run/underwrap-test-runtime";
         backend = {
           url = "https://127.0.0.1:18443";
           caFile = testCaPem;
@@ -418,6 +419,16 @@ in {
             target = "${dirEnvProbeScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+          };
+          # Used by the HOME/XDG forcing scenario.
+          test-dir-env-override-probe = {
+            target = "${dirEnvProbeScript}";
+            resource = "test/dir-a";
+            files.paths = [ ".config/underwrap-dir-a" ];
+            envSet = {
+              HOME = "/tmp/underwrap-home-override";
+              XDG_CONFIG_HOME = "/tmp/underwrap-config-override";
+            };
           };
         };
       };

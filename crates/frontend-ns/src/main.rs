@@ -42,6 +42,11 @@ pub(crate) const DIRECTORY_STAGING_ROOT: &str = "/tmp/.underwrap-ns-directories"
 const LIBSECRET_BUS_DIR: &str = "/tmp/.underwrap-ns-bus";
 const LIBSECRET_STATE_FILENAME: &str = "libsecret-state.jcs";
 
+struct TargetIdentity {
+    uid: libc::uid_t,
+    home: PathBuf,
+}
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("underwrap-ns: {e}");
@@ -58,15 +63,15 @@ fn run() -> Result<(), String> {
     let libsecret_resource_present = exec_bundle.resource.libsecret;
     let libsecret_enabled = libsecret_requested && libsecret_resource_present;
     let has_files = !exec_bundle.resource.files_target_paths.is_empty();
-    let target_home =
-        resolve_target_home().map_err(|e| format!("resolving target home directory: {e}"))?;
+    let target_identity =
+        resolve_target_identity().map_err(|e| format!("resolving target identity: {e}"))?;
 
     make_process_non_dumpable()?;
     prepare_namespace(libsecret_enabled, has_files)?;
 
     let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
 
-    let directory_mounts = prepare_files_mounts(&resource_channel, &target_home)?;
+    let directory_mounts = prepare_files_mounts(&resource_channel, &target_identity.home)?;
 
     let libsecret_state_path = if libsecret_enabled {
         Some(PathBuf::from(format!(
@@ -82,6 +87,7 @@ fn run() -> Result<(), String> {
             target,
             target_args,
             &exec_bundle,
+            &target_identity,
             &resource_channel,
             libsecret_enabled,
             libsecret_state_path.as_deref(),
@@ -181,6 +187,7 @@ fn run_child(
     target: String,
     target_args: Vec<String>,
     exec_bundle: &ExecBundle,
+    target_identity: &TargetIdentity,
     resource_channel: &ResourceChannel,
     libsecret_enabled: bool,
     libsecret_state_path: Option<&Path>,
@@ -199,7 +206,12 @@ fn run_child(
     cmd.env_clear();
 
     let host_env: std::collections::HashMap<String, String> = std::env::vars().collect();
-    let target_env = build_target_env(&host_env, exec_bundle)?;
+    let target_env = build_target_env(
+        &host_env,
+        exec_bundle,
+        &target_identity.home,
+        target_identity.uid,
+    )?;
     for (key, value) in target_env {
         cmd.env(key, value);
     }
@@ -414,7 +426,7 @@ fn propagate_exit_status(status: libc::c_int) -> Result<(), String> {
     std::process::exit(1);
 }
 
-fn resolve_target_home() -> Result<PathBuf, std::io::Error> {
+fn resolve_target_identity() -> Result<TargetIdentity, std::io::Error> {
     let uid = unsafe { libc::getuid() };
     let pwd = unsafe { libc::getpwuid(uid) };
     if pwd.is_null() {
@@ -426,7 +438,10 @@ fn resolve_target_home() -> Result<PathBuf, std::io::Error> {
     let home = unsafe { std::ffi::CStr::from_ptr((*pwd).pw_dir) }
         .to_str()
         .map_err(std::io::Error::other)?;
-    Ok(PathBuf::from(home))
+    Ok(TargetIdentity {
+        uid,
+        home: PathBuf::from(home),
+    })
 }
 
 /// Read the execution bundle from the pipe on fd 3.

@@ -34,6 +34,7 @@ fn exec_bundle_roundtrip_minimal() {
         env: HashMap::new(),
         env_passthrough: Vec::new(),
         env_set: HashMap::new(),
+        xdg_runtime_dir_base: "/run/user".to_string(),
         resource: ExecResourceBinding {
             resource_id: "res_x_y".to_string(),
             resource_name: "x/y".to_string(),
@@ -64,6 +65,7 @@ fn exec_bundle_roundtrip_populated() {
             ("PATH".to_string(), "/run/current-system/sw/bin".to_string()),
             ("UNDERWRAP_LIBSECRET".to_string(), "1".to_string()),
         ]),
+        xdg_runtime_dir_base: "/run/underwrap-runtime".to_string(),
         resource: sample_binding(),
     };
 
@@ -78,6 +80,7 @@ fn exec_bundle_decode_rejects_trailing_bytes() {
         env: HashMap::from([("GH_TOKEN".to_string(), b"ghp_test".as_slice().into())]),
         env_passthrough: vec!["SSH_AUTH_SOCK".to_string()],
         env_set: HashMap::new(),
+        xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
     };
 

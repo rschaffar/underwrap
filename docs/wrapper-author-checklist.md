@@ -97,6 +97,14 @@ Ask for each one:
 - could it select helper binaries, config files, sockets, or plugins?
 - would a fixed trusted `envSet` value be cleaner?
 
+Also note:
+
+- `HOME`, `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+  `XDG_CACHE_HOME`, and `XDG_STATE_HOME` are not passthrough knobs in
+  underwrap's hardened model
+- use `envSet` only for intentional `HOME` / base `XDG_*` overrides, and keep those override values absolute
+- use the instance-level `xdgRuntimeDirBase` knob for `XDG_RUNTIME_DIR`
+
 If you cannot explain why a passthrough is safe enough, do not add it.
 
 ## 6. Are all free-form arguments validated?

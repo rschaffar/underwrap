@@ -3,6 +3,9 @@
 let
   cfg = config.services.underwrap;
 
+  isAbsolutePathString = path:
+    path != null && path != "" && lib.hasPrefix "/" path;
+
   isCleanRelativePath = path:
     path != null
     && path != ""
@@ -50,6 +53,7 @@ let
         ns_binary = nsBinaryPath;
         env_passthrough = wrapper.envPassthrough;
         env_set = envSet;
+        xdg_runtime_dir_base = inst.xdgRuntimeDirBase;
       } // lib.optionalAttrs wrapper.libsecret {
         libsecret = true;
         dbus_daemon_binary = "${pkgs.dbus}/bin/dbus-daemon";
@@ -317,8 +321,10 @@ let
         description = ''
           Additional environment variables to pass through from the user's
           environment to the target process. These are added to the default
-          safe whitelist (HOME, USER, TERM, LANG, etc.). PATH is intentionally
-          not inherited; set envSet.PATH explicitly if needed.
+          safe whitelist for non-home, non-XDG-dir variables (USER, TERM,
+          LANG, etc.). HOME, XDG_RUNTIME_DIR, and the base XDG directory
+          variables are forced by underwrap and must not appear here. PATH is
+          intentionally not inherited; set envSet.PATH explicitly if needed.
         '';
         example = [ "EDITOR" ];
       };
@@ -327,7 +333,10 @@ let
         default = {};
         description = ''
           Fixed environment variables to set on the target process.
-          These override any inherited values.
+          These override any inherited values. HOME and the base XDG directory
+          variables may be set here intentionally; XDG_RUNTIME_DIR may not and
+          is instead derived from the instance's xdgRuntimeDirBase plus the
+          target uid.
         '';
         example = { NO_COLOR = "1"; };
       };
@@ -384,6 +393,19 @@ let
         default = {};
         description = "Frontend backend client configuration for this instance.";
       };
+      xdgRuntimeDirBase = lib.mkOption {
+        type = lib.types.str;
+        default = "/run/user";
+        description = ''
+          Base directory from which underwrap derives the target's
+          XDG_RUNTIME_DIR as <literal>''${xdgRuntimeDirBase}/&lt;uid&gt;</literal>.
+          Must be an absolute path. Use this instance-level knob instead of
+          envPassthrough or envSet when a wrapper needs a non-default runtime
+          directory root. underwrap exports the derived path but does not create
+          custom runtime-directory trees for you; if you override the default,
+          ensure the base exists and is usable by the target uid.
+        '';
+      };
       wrappers = lib.mkOption {
         type = lib.types.attrsOf wrapperSubmodule;
         default = {};
@@ -399,6 +421,15 @@ let
   linkerLikeEnvPrefix = name:
     name == "LD_PRELOAD" || name == "LD_LIBRARY_PATH" || name == "LD_AUDIT"
     || lib.hasPrefix "LD_" name;
+
+  forcedTargetEnvNames = [
+    "HOME"
+    "XDG_RUNTIME_DIR"
+    "XDG_CONFIG_HOME"
+    "XDG_DATA_HOME"
+    "XDG_CACHE_HOME"
+    "XDG_STATE_HOME"
+  ];
 
   swapDevicesAreHardened =
     lib.all (dev:
@@ -447,7 +478,11 @@ in {
   config = lib.mkIf cfg.enable {
     assertions =
       (lib.flatten (lib.mapAttrsToList (instName: inst:
-        (lib.mapAttrsToList (wrapperName: wrapper:
+        [{
+          assertion = isAbsolutePathString inst.xdgRuntimeDirBase;
+          message = "services.underwrap.instances.${instName}.xdgRuntimeDirBase: must be an absolute path";
+        }]
+        ++ (lib.mapAttrsToList (wrapperName: wrapper:
           let
             paths = wrapperDirectoryPaths wrapper;
             pairs = lib.concatMap (left:
@@ -468,9 +503,35 @@ in {
           message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envPassthrough: LD_* environment variables must not be passed through — they would let the caller redirect dynamic linking in the target process and defeat the NO_NEW_PRIVS + env_clear() hardening";
         }) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: wrapper: {
+          assertion = !(lib.any (name: lib.elem name forcedTargetEnvNames) wrapper.envPassthrough);
+          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envPassthrough: HOME, XDG_RUNTIME_DIR, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, and XDG_STATE_HOME are forced by underwrap. Use envSet for HOME/base XDG overrides, and use xdgRuntimeDirBase for XDG_RUNTIME_DIR";
+        }) inst.wrappers)
+        ++ (lib.mapAttrsToList (wrapperName: wrapper: {
           assertion = !(lib.any linkerLikeEnvPrefix (builtins.attrNames wrapper.envSet));
           message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: LD_* environment variables must not be set on the target — they defeat the dynamic-linker hardening";
         }) inst.wrappers)
+        ++ (lib.mapAttrsToList (wrapperName: wrapper: {
+          assertion = !(wrapper.envSet ? XDG_RUNTIME_DIR);
+          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: XDG_RUNTIME_DIR must not be set here; use services.underwrap.instances.${instName}.xdgRuntimeDirBase instead";
+        }) inst.wrappers)
+        ++ (lib.mapAttrsToList (wrapperName: wrapper:
+          let
+            pathLikeEnvSetNames = [
+              "HOME"
+              "XDG_CONFIG_HOME"
+              "XDG_DATA_HOME"
+              "XDG_CACHE_HOME"
+              "XDG_STATE_HOME"
+            ];
+            invalid = lib.filter (name:
+              (builtins.hasAttr name wrapper.envSet)
+              && !isAbsolutePathString wrapper.envSet.${name}
+            ) pathLikeEnvSetNames;
+          in {
+            assertion = invalid == [];
+            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, and XDG_STATE_HOME must be absolute paths when set";
+          }
+        ) inst.wrappers)
       ) cfg.instances))
       ++ (lib.mapAttrsToList (user: entries:
         let

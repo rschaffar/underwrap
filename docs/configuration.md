@@ -45,10 +45,36 @@ reconstructs only an allowlisted environment. This blocks caller-driven:
 - `LD_PRELOAD`
 - `LD_LIBRARY_PATH`
 - shell helper injection
+- home/config/runtime-dir steering through `HOME`, `XDG_RUNTIME_DIR`, or
+  `XDG_*`
 - incidental secret leakage from the caller environment
 
 The target process should only receive the variables explicitly declared
 in wrapper configuration.
+
+Under the default policy:
+
+- `HOME` is forced to the trusted passwd home
+- `XDG_RUNTIME_DIR` is forced to `<xdgRuntimeDirBase>/<uid>`
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
+  `XDG_STATE_HOME` are derived from the effective `HOME`
+- `envSet` may intentionally override `HOME` and the base `XDG_*` dirs,
+  but those values must be absolute paths
+- `envPassthrough` may not name any of those variables
+- `envSet.XDG_RUNTIME_DIR` is rejected; use the instance-level
+  `xdgRuntimeDirBase` knob instead
+
+One intentional distinction remains: files-slot mount targets are still
+anchored to the passwd home resolved by `underwrap-ns`, not to an
+`envSet.HOME` override. If you set `HOME` away from the passwd home for a
+wrapper that also uses `files.paths`, you are choosing that divergence
+explicitly.
+
+Likewise, `xdgRuntimeDirBase` controls only the exported
+`XDG_RUNTIME_DIR` value. With the default `/run/user`, the host session
+usually provides the directory tree already. If you choose a custom base,
+ensure that the resulting `<base>/<uid>` path exists and is usable by the
+target user.
 
 ## Example wrapper configuration
 

@@ -530,10 +530,23 @@ pruning.
 #### 3. Caller-controlled environment is cleared
 
 The target is launched with `env_clear()` and only the keys allowed by
-the wrapper config are reintroduced. The NixOS module additionally
-asserts at build time that no wrapper's `envPassthrough` or `envSet`
-contains an `LD_*` variable, so an operator cannot accidentally
-re-introduce dynamic-linker redirection.
+the wrapper config are reintroduced. underwrap also forces the most
+security-sensitive location variables instead of inheriting them from
+the caller:
+
+- `HOME` comes from the trusted passwd entry (or an explicit trusted
+  `envSet.HOME` override)
+- `XDG_RUNTIME_DIR` comes from `<xdgRuntimeDirBase>/<uid>`
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
+  `XDG_STATE_HOME` are derived from the effective `HOME` unless
+  explicitly overridden via `envSet`
+
+The NixOS module additionally asserts at build time that no wrapper's
+`envPassthrough` or `envSet` contains an `LD_*` variable, that
+`envPassthrough` cannot name the forced `HOME` / `XDG_*` variables,
+and that `envSet` cannot set `XDG_RUNTIME_DIR`. This prevents an
+operator from accidentally re-introducing dynamic-linker redirection or
+caller-controlled config/runtime-dir steering.
 
 ### What the PID namespace contributes
 
@@ -635,11 +648,14 @@ It enables or complicates things like:
 ### The model
 
 - a safe default whitelist is retained
+- `HOME`, `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+  `XDG_CACHE_HOME`, and `XDG_STATE_HOME` are **not** inherited from
+  the caller; underwrap forces them to trusted values
 - `PATH` is intentionally **not** inherited from the caller
 - if a wrapper needs `PATH`, it must be set explicitly from trusted configuration
 - helper-selection variables such as `EDITOR`, `VISUAL`, `PAGER`, and `BROWSER` should also be treated as risky and preferably set from trusted configuration rather than caller passthrough
 - extra passthrough variables may be allowed per wrapper
-- fixed variables may be set per wrapper from trusted configuration
+- fixed variables may be set per wrapper from trusted configuration; for the forced home/XDG set, use `envSet` only for `HOME` and the base `XDG_*` dirs (with absolute paths), and use the instance-level `xdgRuntimeDirBase` knob for `XDG_RUNTIME_DIR`
 
 This is one of the least glamorous but most important parts of the design. A lot of real-world abuse happens through ambient environment control.
 
