@@ -52,8 +52,12 @@ pub(crate) struct AdminRuntimeState {
     /// When present, every state-changing request must carry an `Origin`
     /// (or `Referer`) matching one of these entries.
     pub(crate) allowed_origins: Option<Vec<String>>,
-    /// Path of the backend-managed operator-state file.
-    pub(crate) users_file: PathBuf,
+    /// Directory holding one JSON file per admin operator
+    /// (`<users_dir>/<id>.json`).
+    pub(crate) users_dir: PathBuf,
+    /// Path of the persistent bootstrap-completed sentinel file. Its
+    /// presence means the online bootstrap flow has already run.
+    pub(crate) bootstrap_file: PathBuf,
     /// `axum-login` backend resolving credentials and user ids against
     /// the operator collection. Cloning shares the per-username
     /// login-rate-limiter state, so callers should clone this and not

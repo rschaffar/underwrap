@@ -18,7 +18,7 @@ pub fn parse_backend_config(config_text: &str) -> Result<BackendConfig> {
 /// bootstrap-completed sentinel — recovery is intentionally not a
 /// substitute for the online bootstrap (which is what locks the
 /// endpoint going forward).
-pub fn recover_user(path: &Path, username: &str, password: &str) -> Result<()> {
+pub fn recover_user(users_dir: &Path, username: &str, password: &str) -> Result<()> {
     if password.is_empty() {
         anyhow::bail!("recover-user: password must not be empty");
     }
@@ -26,7 +26,7 @@ pub fn recover_user(path: &Path, username: &str, password: &str) -> Result<()> {
     if normalised.is_empty() {
         anyhow::bail!("recover-user: username must not be empty");
     }
-    let mut collection = users::load(path)?;
+    let collection = users::load(users_dir)?;
     if collection.find_by_username(&normalised).is_some() {
         anyhow::bail!(
             "recover-user: user '{}' already exists; refusing to overwrite",
@@ -35,14 +35,19 @@ pub fn recover_user(path: &Path, username: &str, password: &str) -> Result<()> {
     }
     let hash = crate::auth::hash_password(password)?;
     let now = users::now_epoch_secs();
-    collection.add(users::UserRecord {
+    let record = users::UserRecord {
         id: users::new_user_id(),
         username: normalised,
         password_hash: hash,
         created_at: now,
         password_changed_at: now,
-    })?;
-    users::save(path, &collection)?;
+    };
+    // Re-use `UserCollection::add` for its uniqueness + hash invariants;
+    // we throw the collection away because the file we actually need to
+    // write is just this one new record.
+    let mut probe = collection;
+    probe.add(record.clone())?;
+    users::save_user(users_dir, &record)?;
     Ok(())
 }
 

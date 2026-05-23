@@ -15,7 +15,7 @@ use crate::test_support::seeded_admin_state;
 #[test]
 fn seeded_user_password_round_trips() {
     let state = seeded_admin_state("alice", "hunter2");
-    let collection = crate::users::load(&state.users_file).unwrap();
+    let collection = crate::users::load(&state.users_dir).unwrap();
     let op = collection.find_by_username("alice").unwrap();
     assert!(crate::auth::verify_password(&op.password_hash, "hunter2"));
     assert!(!crate::auth::verify_password(&op.password_hash, "wrong"));
@@ -24,7 +24,7 @@ fn seeded_user_password_round_trips() {
 #[test]
 fn unknown_user_dummy_hash_never_matches() {
     let state = seeded_admin_state("alice", "hunter2");
-    let collection = crate::users::load(&state.users_file).unwrap();
+    let collection = crate::users::load(&state.users_dir).unwrap();
     assert!(collection.find_by_username("eve").is_none());
     assert!(!crate::auth::verify_password(
         DUMMY_PASSWORD_HASH,

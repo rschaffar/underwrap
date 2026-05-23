@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
 }
 
 fn run_admin(cmd: AdminCommand, config: BackendConfig) -> Result<()> {
-    let users_file = config.users_file();
+    let users_dir = config.users_dir();
     match cmd {
         AdminCommand::RecoverUser { username } => {
             let mut password = String::new();
@@ -108,8 +108,8 @@ fn run_admin(cmd: AdminCommand, config: BackendConfig) -> Result<()> {
                 .read_line(&mut password)
                 .context("reading password from stdin")?;
             let password = password.trim_end_matches(['\r', '\n']).to_string();
-            recover_user(&users_file, &username, &password)?;
-            info!(path = %users_file.display(), username = %username, "recover-user: user added");
+            recover_user(&users_dir, &username, &password)?;
+            info!(dir = %users_dir.display(), username = %username, "recover-user: user added");
             Ok(())
         }
     }

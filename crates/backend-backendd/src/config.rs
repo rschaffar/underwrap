@@ -56,11 +56,18 @@ pub struct BackendConfig {
     /// `/var/lib/underwrap-backend/clients`.
     #[serde(default)]
     pub clients_dir: Option<PathBuf>,
-    /// Path of the backend-managed user-state file. Missing files are
-    /// treated as an empty user collection with bootstrap incomplete.
-    /// Defaults to [`crate::users::DEFAULT_USERS_FILE`].
+    /// Directory holding the per-user JSON files that make up the
+    /// admin operator collection (`<users_dir>/<id>.json`). Missing
+    /// directories are treated as an empty collection. Defaults to
+    /// [`crate::users::DEFAULT_USERS_DIR`].
     #[serde(default)]
-    pub users_file: Option<PathBuf>,
+    pub users_dir: Option<PathBuf>,
+    /// Path of the persistent bootstrap-completed sentinel. The file's
+    /// presence is the "bootstrap has run" signal; its absence means
+    /// the bootstrap page must be served. Defaults to
+    /// [`crate::users::DEFAULT_BOOTSTRAP_FILE`].
+    #[serde(default)]
+    pub bootstrap_file: Option<PathBuf>,
     #[serde(default)]
     pub https: Option<HttpsConfig>,
     #[serde(default)]
@@ -82,10 +89,17 @@ impl BackendConfig {
             .unwrap_or_else(|| PathBuf::from("/var/lib/underwrap-backend/clients"))
     }
 
-    /// Resolve [`Self::users_file`] or the project default.
-    pub fn users_file(&self) -> PathBuf {
-        self.users_file
+    /// Resolve [`Self::users_dir`] or the project default.
+    pub fn users_dir(&self) -> PathBuf {
+        self.users_dir
             .clone()
-            .unwrap_or_else(|| PathBuf::from(crate::users::DEFAULT_USERS_FILE))
+            .unwrap_or_else(|| PathBuf::from(crate::users::DEFAULT_USERS_DIR))
+    }
+
+    /// Resolve [`Self::bootstrap_file`] or the project default.
+    pub fn bootstrap_file(&self) -> PathBuf {
+        self.bootstrap_file
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(crate::users::DEFAULT_BOOTSTRAP_FILE))
     }
 }

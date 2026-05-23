@@ -26,14 +26,15 @@ fn build_csrf_config_round_trips() {
 fn resolve_live_principal_picks_up_renamed_username() {
     use crate::test_support::seeded_admin_state;
     let state = seeded_admin_state("alice", "hunter2");
-    let mut collection = crate::users::load(&state.users_file).unwrap();
+    let mut collection = crate::users::load(&state.users_dir).unwrap();
     let id = collection.users[0].id.clone();
-    collection
+    let updated = collection
         .update(&id, |u| {
             u.username = "renamed".into();
         })
-        .unwrap();
-    crate::users::save(&state.users_file, &collection).unwrap();
+        .unwrap()
+        .clone();
+    crate::users::save_user(&state.users_dir, &updated).unwrap();
     let stale_record = crate::users::UserRecord {
         id: id.clone(),
         username: "alice".into(),
@@ -51,7 +52,12 @@ fn resolve_live_principal_returns_401_for_deleted_user() {
     use crate::test_support::seeded_admin_state;
     use hyper::StatusCode;
     let state = seeded_admin_state("alice", "hunter2");
-    crate::users::save(&state.users_file, &crate::users::UserCollection::default()).unwrap();
+    // Wipe the seeded user so `resolve_live_principal` cannot find any
+    // record by id.
+    let seeded = crate::users::load(&state.users_dir).unwrap();
+    for u in &seeded.users {
+        crate::users::delete_user(&state.users_dir, &u.id).unwrap();
+    }
     let phantom = crate::users::UserRecord {
         id: "ghost".into(),
         username: "alice".into(),

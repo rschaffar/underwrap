@@ -1,8 +1,11 @@
 //! User records: the people who can log in to the admin UI.
 //!
-//! Records live in a backend-managed JSON file at
-//! [`DEFAULT_USERS_FILE`] by default. The same document also holds the
-//! persistent bootstrap-completed sentinel.
+//! On-disk layout is one file per user at `<users_dir>/<id>.json`. The
+//! id is the file stem, so it is not serialized into the JSON body —
+//! the loader backfills it from the filename. A separate
+//! `<bootstrap_file>` (typically a sibling of `users_dir`) holds the
+//! persistent bootstrap-completed sentinel; its mere presence signals
+//! that the online bootstrap flow has completed.
 //!
 //! Authorisation is intentionally flat: any authenticated user can
 //! perform any admin action. The "last user" guard prevents the
@@ -13,7 +16,8 @@
 //! [`UserRecord`] `Debug` impl redacts them and tests assert that
 //! tracing-captured CRUD output never contains the hash material.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -40,8 +44,12 @@ pub enum UserMutationError {
     BadHash,
 }
 
-/// Default location of the backend-managed user-state file.
-pub const DEFAULT_USERS_FILE: &str = "/var/lib/underwrap-backend/users.json";
+/// Default location of the backend-managed users directory.
+pub const DEFAULT_USERS_DIR: &str = "/var/lib/underwrap-backend/users";
+
+/// Default location of the persistent bootstrap-completed sentinel
+/// file. A sibling of [`DEFAULT_USERS_DIR`].
+pub const DEFAULT_BOOTSTRAP_FILE: &str = "/var/lib/underwrap-backend/bootstrap.json";
 
 /// One user account.
 ///
@@ -50,6 +58,11 @@ pub const DEFAULT_USERS_FILE: &str = "/var/lib/underwrap-backend/users.json";
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserRecord {
     /// Stable identifier. Random 16-byte hex string, generated server-side.
+    ///
+    /// On disk this is the file stem (`<id>.json`), so it is not
+    /// serialized into the JSON body — the loader backfills it from
+    /// the filename and [`save_user`] writes the body without it.
+    #[serde(default, skip)]
     pub id: String,
     /// Lowercase, trimmed. Unique across the collection.
     pub username: String,
@@ -183,20 +196,12 @@ impl UserCollection {
 }
 
 /// Persistent marker that the online bootstrap flow has completed.
-/// Stored alongside the user collection in the user-state file.
+/// Stored on disk in a dedicated sentinel file; the mere presence of
+/// that file is the signal that bootstrap has run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BootstrapSentinel {
     pub completed_at: u64,
     pub by_username: String,
-}
-
-/// Persisted shape on disk.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-struct UserStateDocument {
-    #[serde(default)]
-    users: Vec<UserRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    bootstrap_completed: Option<BootstrapSentinel>,
 }
 
 /// Normalise a username: trimmed, lowercase. Usernames are compared
@@ -223,77 +228,197 @@ pub fn now_epoch_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Load the user collection from the backend-managed user-state file.
-/// Returns the default (empty) collection when no file exists yet; the
-/// caller treats that as "bootstrap required".
-pub fn load(path: &Path) -> Result<UserCollection> {
-    let doc = load_state_document(path)?;
-    Ok(UserCollection { users: doc.users })
+/// Path of the JSON file holding the record for user id `user_id`.
+fn record_path(dir: &Path, user_id: &str) -> PathBuf {
+    dir.join(format!("{user_id}.json"))
 }
 
-/// Persist the user collection while preserving the bootstrap
-/// sentinel already present in the user-state file.
-pub fn save(path: &Path, collection: &UserCollection) -> Result<()> {
-    let mut doc = load_state_document(path)?;
-    doc.users = collection.users.clone();
-    save_state_document(path, &doc)
+/// Parse a single `<id>.json` file. The id is taken from the file
+/// stem and backfilled into the returned record; the body itself
+/// does not carry it.
+fn load_one(path: &Path) -> Result<UserRecord> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading user record {}", path.display()))?;
+    let mut record: UserRecord = serde_json::from_str(&text)
+        .with_context(|| format!("parsing user record {}", path.display()))?;
+    let id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "user record path '{}' has no valid file stem",
+                path.display()
+            )
+        })?
+        .to_string();
+    anyhow::ensure!(
+        is_valid_user_id(&id),
+        "invalid user id '{}' derived from file {}",
+        id,
+        path.display()
+    );
+    record.id = id;
+    Ok(record)
 }
 
-/// True iff the bootstrap-completed sentinel is present.
-pub fn bootstrap_completed(path: &Path) -> Result<bool> {
-    Ok(load_state_document(path)?.bootstrap_completed.is_some())
-}
-
-/// Read the sentinel record, if present.
-pub fn load_bootstrap_sentinel(path: &Path) -> Result<Option<BootstrapSentinel>> {
-    Ok(load_state_document(path)?.bootstrap_completed)
-}
-
-/// Persist the bootstrap-completed sentinel while preserving the user
-/// collection already present in the user-state file.
-pub fn mark_bootstrap_completed(path: &Path, sentinel: &BootstrapSentinel) -> Result<()> {
-    let mut doc = load_state_document(path)?;
-    doc.bootstrap_completed = Some(sentinel.clone());
-    save_state_document(path, &doc)
-}
-
-fn load_state_document(path: &Path) -> Result<UserStateDocument> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
+/// Load every user record found under `dir`. A missing directory is
+/// treated as an empty collection; that is the state the bootstrap
+/// flow expects to find on a fresh backend. Subdirectories and
+/// non-`.json` siblings (e.g. `<id>.json.bak`) are ignored so
+/// operator backups don't break the load. Hard-errors on duplicate
+/// usernames across files — the in-memory collection enforces that
+/// invariant, so two files claiming the same name indicates manual
+/// tampering that should not start the daemon.
+pub fn load(dir: &Path) -> Result<UserCollection> {
+    let read = match std::fs::read_dir(dir) {
+        Ok(read) => read,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(UserStateDocument::default());
+            return Ok(UserCollection::default());
         }
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        Err(e) => {
+            return Err(e).with_context(|| format!("reading users directory {}", dir.display()));
+        }
     };
-    let doc: UserStateDocument = serde_json::from_str(&text)
-        .with_context(|| format!("parsing user-state file {}", path.display()))?;
-    Ok(doc)
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in read {
+        let entry =
+            entry.with_context(|| format!("iterating users directory {}", dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("statting {}", entry.path().display()))?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        paths.push(path);
+    }
+    paths.sort();
+
+    let mut users = Vec::new();
+    let mut usernames = BTreeSet::new();
+    for path in paths {
+        let record = load_one(&path)?;
+        anyhow::ensure!(
+            !record.username.trim().is_empty(),
+            "user '{}' has an empty username in {}",
+            record.id,
+            path.display()
+        );
+        anyhow::ensure!(
+            record.password_hash.starts_with("$argon2"),
+            "user '{}' has a non-argon2 password hash in {}",
+            record.id,
+            path.display()
+        );
+        anyhow::ensure!(
+            usernames.insert(record.username.clone()),
+            "duplicate username '{}' across files in {}",
+            record.username,
+            dir.display(),
+        );
+        users.push(record);
+    }
+    Ok(UserCollection { users })
 }
 
-fn save_state_document(path: &Path, doc: &UserStateDocument) -> Result<()> {
-    let json = serde_json::to_vec_pretty(doc).context("serialising user-state file")?;
-    let dir = path.parent().ok_or_else(|| {
-        anyhow::anyhow!(
-            "user-state file path '{}' has no parent directory",
-            path.display()
-        )
-    })?;
+/// Persist one user record to `<dir>/<id>.json` via the usual
+/// tempfile + atomic rename. The on-disk body does not carry the id
+/// — it is implied by the filename.
+pub fn save_user(dir: &Path, record: &UserRecord) -> Result<()> {
+    anyhow::ensure!(
+        is_valid_user_id(&record.id),
+        "invalid user id '{}'",
+        record.id,
+    );
     std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating user-state dir {}", dir.display()))?;
+        .with_context(|| format!("creating users directory {}", dir.display()))?;
+    let json = serde_json::to_vec_pretty(record).context("serialising user record")?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("creating temp user-state file under {}", dir.display()))?;
+        .with_context(|| format!("creating temp user record under {}", dir.display()))?;
     use std::io::Write;
-    tmp.write_all(&json)
-        .with_context(|| format!("writing temp user-state file under {}", dir.display()))?;
-    tmp.flush()
-        .with_context(|| format!("flushing temp user-state file under {}", dir.display()))?;
-    tmp.persist(path).map_err(|e| {
+    tmp.write_all(&json).context("writing temp user record")?;
+    tmp.as_file().sync_all().context("fsync temp user record")?;
+    let target = record_path(dir, &record.id);
+    tmp.persist(&target).map_err(|e| {
         anyhow::anyhow!(
-            "atomically persisting user-state file to {}: {e}",
-            path.display()
+            "atomically persisting user record to {}: {e}",
+            target.display(),
         )
     })?;
     Ok(())
+}
+
+/// Remove `<dir>/<id>.json`. Missing files are tolerated so the
+/// admin delete path remains idempotent under retry.
+pub fn delete_user(dir: &Path, user_id: &str) -> Result<()> {
+    let path = record_path(dir, user_id);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("removing user record {}", path.display())),
+    }
+}
+
+/// True iff the bootstrap-completed sentinel file is present.
+pub fn bootstrap_completed(bootstrap_file: &Path) -> Result<bool> {
+    match std::fs::metadata(bootstrap_file) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("statting {}", bootstrap_file.display())),
+    }
+}
+
+/// Read the sentinel record, if present.
+pub fn load_bootstrap_sentinel(bootstrap_file: &Path) -> Result<Option<BootstrapSentinel>> {
+    let text = match std::fs::read_to_string(bootstrap_file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(e).with_context(|| format!("reading {}", bootstrap_file.display()));
+        }
+    };
+    let sentinel: BootstrapSentinel = serde_json::from_str(&text)
+        .with_context(|| format!("parsing bootstrap sentinel {}", bootstrap_file.display()))?;
+    Ok(Some(sentinel))
+}
+
+/// Persist the bootstrap-completed sentinel to its dedicated file.
+/// Atomic via tempfile + rename so a crash partway through never
+/// leaves a half-written sentinel that would lock further bootstrap
+/// attempts behind unreadable JSON.
+pub fn mark_bootstrap_completed(bootstrap_file: &Path, sentinel: &BootstrapSentinel) -> Result<()> {
+    let json = serde_json::to_vec_pretty(sentinel).context("serialising bootstrap sentinel")?;
+    let dir = bootstrap_file.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "bootstrap sentinel path '{}' has no parent directory",
+            bootstrap_file.display()
+        )
+    })?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating bootstrap sentinel parent dir {}", dir.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("creating temp bootstrap sentinel under {}", dir.display()))?;
+    use std::io::Write;
+    tmp.write_all(&json)
+        .context("writing temp bootstrap sentinel")?;
+    tmp.as_file()
+        .sync_all()
+        .context("fsync temp bootstrap sentinel")?;
+    tmp.persist(bootstrap_file).map_err(|e| {
+        anyhow::anyhow!(
+            "atomically persisting bootstrap sentinel to {}: {e}",
+            bootstrap_file.display(),
+        )
+    })?;
+    Ok(())
+}
+
+fn is_valid_user_id(id: &str) -> bool {
+    crate::ids::is_valid_simple_id(id)
 }
 
 #[cfg(test)]

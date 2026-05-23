@@ -22,7 +22,8 @@ use crate::tls::build_https_acceptor;
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores_file = config.stores_file();
     let clients_dir = config.clients_dir();
-    let users_file = config.users_file();
+    let users_dir = config.users_dir();
+    let bootstrap_file = config.bootstrap_file();
     let definitions = load_store_records(&stores_file)?;
     let state_map = open_initial_stores(&definitions)?;
     let store_registry = Arc::new(std::sync::RwLock::new(StoreRegistry {
@@ -54,8 +55,9 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: admin_config.is_some(),
             allowed_origins: admin_config.and_then(|cfg| cfg.allowed_origins.clone()),
-            users_file: users_file.clone(),
-            auth_backend: crate::auth::AuthBackend::new(users_file.clone()),
+            users_dir: users_dir.clone(),
+            bootstrap_file: bootstrap_file.clone(),
+            auth_backend: crate::auth::AuthBackend::new(users_dir.clone()),
             session_store: tower_sessions::MemoryStore::default(),
             csrf_config: crate::admin_api::csrf::build_csrf_config(true),
             session_lifetime_secs: admin_config

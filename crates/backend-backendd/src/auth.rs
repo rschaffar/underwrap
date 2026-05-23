@@ -90,14 +90,14 @@ pub enum AuthError {
 /// state across all clones.
 #[derive(Clone)]
 pub struct AuthBackend {
-    users_file: PathBuf,
+    users_dir: PathBuf,
     rate_limiter: Arc<RateLimiter>,
 }
 
 impl AuthBackend {
-    pub fn new(users_file: PathBuf) -> Self {
+    pub fn new(users_dir: PathBuf) -> Self {
         Self {
-            users_file,
+            users_dir,
             rate_limiter: Arc::new(RateLimiter::new()),
         }
     }
@@ -129,7 +129,7 @@ impl AuthnBackend for AuthBackend {
             return Err(AuthError::RateLimited);
         }
         let collection =
-            users::load(&self.users_file).map_err(|e| AuthError::UserCollection(e.to_string()))?;
+            users::load(&self.users_dir).map_err(|e| AuthError::UserCollection(e.to_string()))?;
         let lookup = collection.find_by_username(&username_norm);
         // Always run Argon2id verify, even on unknown user, so the
         // response timing does not reveal user existence.
@@ -151,7 +151,7 @@ impl AuthnBackend for AuthBackend {
         user_id: &UserId<Self>,
     ) -> std::result::Result<Option<UserRecord>, AuthError> {
         let collection =
-            users::load(&self.users_file).map_err(|e| AuthError::UserCollection(e.to_string()))?;
+            users::load(&self.users_dir).map_err(|e| AuthError::UserCollection(e.to_string()))?;
         Ok(collection.find_by_id(user_id).cloned())
     }
 }

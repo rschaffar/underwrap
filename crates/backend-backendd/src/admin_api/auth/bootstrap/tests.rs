@@ -18,7 +18,7 @@ async fn bootstrap_status_required_on_fresh_store() {
 async fn bootstrap_status_false_when_sentinel_set() {
     let state = Arc::new(fresh_bootstrap_state());
     crate::users::mark_bootstrap_completed(
-        &state.users_file,
+        &state.bootstrap_file,
         &crate::users::BootstrapSentinel {
             completed_at: 1000,
             by_username: "alice".into(),
@@ -33,17 +33,16 @@ async fn bootstrap_status_false_when_sentinel_set() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_status_false_when_operators_exist_even_without_sentinel() {
     let state = Arc::new(fresh_bootstrap_state());
+    let record = crate::users::UserRecord {
+        id: crate::users::new_user_id(),
+        username: "alice".into(),
+        password_hash: crate::auth::hash_password("p").unwrap(),
+        created_at: 1000,
+        password_changed_at: 1000,
+    };
     let mut collection = crate::users::UserCollection::default();
-    collection
-        .add(crate::users::UserRecord {
-            id: crate::users::new_user_id(),
-            username: "alice".into(),
-            password_hash: crate::auth::hash_password("p").unwrap(),
-            created_at: 1000,
-            password_changed_at: 1000,
-        })
-        .unwrap();
-    crate::users::save(&state.users_file, &collection).unwrap();
+    collection.add(record.clone()).unwrap();
+    crate::users::save_user(&state.users_dir, &record).unwrap();
     let (_, body) = run_handler(handle_admin_bootstrap_status(State(state)));
     assert_eq!(body["bootstrap_required"], false);
 }
@@ -54,9 +53,9 @@ async fn bootstrap_succeeds_on_empty_store_and_sets_sentinel() {
     let (status, _) = run_bootstrap(&state, "alice", "hunter2-long");
     assert_eq!(status, StatusCode::OK);
     // Sentinel is set.
-    assert!(crate::users::bootstrap_completed(&state.users_file).unwrap());
+    assert!(crate::users::bootstrap_completed(&state.bootstrap_file).unwrap());
     // First user record is created.
-    let collection = crate::users::load(&state.users_file).unwrap();
+    let collection = crate::users::load(&state.users_dir).unwrap();
     let u = collection.find_by_username("alice").unwrap();
     assert!(crate::auth::verify_password(
         &u.password_hash,
@@ -84,17 +83,16 @@ async fn bootstrap_refuses_when_users_exist_without_sentinel() {
     // exists, but the sentinel was never set. The online flow
     // must still refuse with users_already_exist.
     let state = fresh_bootstrap_state();
+    let record = crate::users::UserRecord {
+        id: crate::users::new_user_id(),
+        username: "rescuer".into(),
+        password_hash: crate::auth::hash_password("rescue").unwrap(),
+        created_at: 1000,
+        password_changed_at: 1000,
+    };
     let mut collection = crate::users::UserCollection::default();
-    collection
-        .add(crate::users::UserRecord {
-            id: crate::users::new_user_id(),
-            username: "rescuer".into(),
-            password_hash: crate::auth::hash_password("rescue").unwrap(),
-            created_at: 1000,
-            password_changed_at: 1000,
-        })
-        .unwrap();
-    crate::users::save(&state.users_file, &collection).unwrap();
+    collection.add(record.clone()).unwrap();
+    crate::users::save_user(&state.users_dir, &record).unwrap();
 
     let (status, body) = run_bootstrap(&state, "newbie", "x");
     assert_eq!(status, StatusCode::CONFLICT);
@@ -119,8 +117,8 @@ async fn bootstrap_concurrent_calls_only_one_succeeds() {
     assert_eq!(ok_count, 1, "exactly one bootstrap must win: {statuses:?}");
     assert_eq!(conflict_count, 1, "the loser must see 409: {statuses:?}");
     // Sentinel is set and collection has exactly one operator.
-    assert!(crate::users::bootstrap_completed(&state.users_file).unwrap());
-    let collection = crate::users::load(&state.users_file).unwrap();
+    assert!(crate::users::bootstrap_completed(&state.bootstrap_file).unwrap());
+    let collection = crate::users::load(&state.users_dir).unwrap();
     assert_eq!(collection.len(), 1);
 }
 

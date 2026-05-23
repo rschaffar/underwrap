@@ -96,28 +96,27 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn seed_user_file(dir: &std::path::Path, username: &str, password: &str) -> (PathBuf, String) {
-    let path = dir.join("users.json");
+    let users_dir = dir.join("users");
     let hash = hash_password(password).unwrap();
     let id = crate::users::new_user_id();
+    let record = crate::users::UserRecord {
+        id: id.clone(),
+        username: username.into(),
+        password_hash: hash,
+        created_at: 1000,
+        password_changed_at: 1000,
+    };
     let mut collection = crate::users::UserCollection::default();
-    collection
-        .add(crate::users::UserRecord {
-            id: id.clone(),
-            username: username.into(),
-            password_hash: hash,
-            created_at: 1000,
-            password_changed_at: 1000,
-        })
-        .unwrap();
-    crate::users::save(&path, &collection).unwrap();
-    (path, id)
+    collection.add(record.clone()).unwrap();
+    crate::users::save_user(&users_dir, &record).unwrap();
+    (users_dir, id)
 }
 
 #[tokio::test]
 async fn auth_backend_authenticates_a_real_user() {
     let dir = TempDir::new().unwrap();
-    let (users_file, id) = seed_user_file(dir.path(), "alice", "hunter2");
-    let backend = AuthBackend::new(users_file);
+    let (users_dir, id) = seed_user_file(dir.path(), "alice", "hunter2");
+    let backend = AuthBackend::new(users_dir);
     let creds = Credentials {
         username: "alice".into(),
         password: "hunter2".into(),
@@ -130,8 +129,8 @@ async fn auth_backend_authenticates_a_real_user() {
 #[tokio::test]
 async fn auth_backend_rejects_wrong_password() {
     let dir = TempDir::new().unwrap();
-    let (users_file, _) = seed_user_file(dir.path(), "alice", "hunter2");
-    let backend = AuthBackend::new(users_file);
+    let (users_dir, _) = seed_user_file(dir.path(), "alice", "hunter2");
+    let backend = AuthBackend::new(users_dir);
     let creds = Credentials {
         username: "alice".into(),
         password: "wrong".into(),
@@ -149,8 +148,8 @@ async fn auth_backend_unknown_user_still_runs_verify() {
     // erroring on a missing user) which is what the dummy-hash branch
     // produces.
     let dir = TempDir::new().unwrap();
-    let (users_file, _) = seed_user_file(dir.path(), "alice", "hunter2");
-    let backend = AuthBackend::new(users_file);
+    let (users_dir, _) = seed_user_file(dir.path(), "alice", "hunter2");
+    let backend = AuthBackend::new(users_dir);
     let creds = Credentials {
         username: "ghost".into(),
         password: "anything".into(),
@@ -162,8 +161,8 @@ async fn auth_backend_unknown_user_still_runs_verify() {
 #[tokio::test]
 async fn auth_backend_rate_limits_repeated_failures() {
     let dir = TempDir::new().unwrap();
-    let (users_file, _) = seed_user_file(dir.path(), "alice", "hunter2");
-    let backend = AuthBackend::new(users_file);
+    let (users_dir, _) = seed_user_file(dir.path(), "alice", "hunter2");
+    let backend = AuthBackend::new(users_dir);
     for _ in 0..LOGIN_RATE_LIMIT_ATTEMPTS {
         let _ = backend
             .authenticate(Credentials {
@@ -186,8 +185,8 @@ async fn auth_backend_rate_limits_repeated_failures() {
 #[tokio::test]
 async fn auth_backend_get_user_returns_record_by_id() {
     let dir = TempDir::new().unwrap();
-    let (users_file, id) = seed_user_file(dir.path(), "alice", "hunter2");
-    let backend = AuthBackend::new(users_file);
+    let (users_dir, id) = seed_user_file(dir.path(), "alice", "hunter2");
+    let backend = AuthBackend::new(users_dir);
     let user = backend.get_user(&id).await.unwrap();
     assert!(user.is_some());
     assert_eq!(user.unwrap().username, "alice");
@@ -196,8 +195,8 @@ async fn auth_backend_get_user_returns_record_by_id() {
 #[tokio::test]
 async fn auth_backend_get_user_returns_none_for_deleted() {
     let dir = TempDir::new().unwrap();
-    let (users_file, _) = seed_user_file(dir.path(), "alice", "hunter2");
-    let backend = AuthBackend::new(users_file);
+    let (users_dir, _) = seed_user_file(dir.path(), "alice", "hunter2");
+    let backend = AuthBackend::new(users_dir);
     let user = backend.get_user(&"no-such-id".to_string()).await.unwrap();
     assert!(user.is_none());
 }
@@ -213,8 +212,8 @@ async fn auth_backend_get_user_returns_none_for_deleted() {
 async fn session_auth_hash_changes_when_password_rotates() {
     use axum_login::AuthUser;
     let dir = TempDir::new().unwrap();
-    let (users_file, id) = seed_user_file(dir.path(), "alice", "hunter2");
-    let backend = AuthBackend::new(users_file.clone());
+    let (users_dir, id) = seed_user_file(dir.path(), "alice", "hunter2");
+    let backend = AuthBackend::new(users_dir.clone());
     let before = backend
         .get_user(&id)
         .await
@@ -223,13 +222,14 @@ async fn session_auth_hash_changes_when_password_rotates() {
         .session_auth_hash()
         .to_vec();
 
-    let mut collection = crate::users::load(&users_file).unwrap();
-    collection
+    let mut collection = crate::users::load(&users_dir).unwrap();
+    let updated = collection
         .update(&id, |u| {
             u.password_hash = hash_password("rotated").unwrap();
         })
-        .unwrap();
-    crate::users::save(&users_file, &collection).unwrap();
+        .unwrap()
+        .clone();
+    crate::users::save_user(&users_dir, &updated).unwrap();
 
     let after = backend
         .get_user(&id)

@@ -150,20 +150,27 @@ impl StorageBackend for TestStore {
 
 // ===== Misc helpers =====
 
-pub(crate) fn test_users_file() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "underwrap-server-test-operators-{}.json",
+/// Builds a fresh `(users_dir, bootstrap_file)` pair under the process
+/// temp dir for tests that need somewhere to persist user records.
+/// The directory itself is created lazily by `save_user` when the
+/// first record is written.
+pub(crate) fn test_users_paths() -> (PathBuf, PathBuf) {
+    let base = std::env::temp_dir().join(format!(
+        "underwrap-server-test-operators-{}",
         crate::users::new_user_id()
-    ))
+    ));
+    let users_dir = base.join("users");
+    let bootstrap_file = base.join("bootstrap.json");
+    (users_dir, bootstrap_file)
 }
 
 /// Canonical "blank" AdminRuntimeState: empty registry, no client
 /// instances, admin enabled, embedded SPA, fresh in-memory session
-/// store, a fresh temporary users file. Every named builder below
-/// starts here and mutates the one or two fields it actually cares
-/// about.
+/// store, a fresh temporary users directory + bootstrap file. Every
+/// named builder below starts here and mutates the one or two fields
+/// it actually cares about.
 pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
-    let users_file = test_users_file();
+    let (users_dir, bootstrap_file) = test_users_paths();
     AdminRuntimeState {
         stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
         client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
@@ -173,8 +180,9 @@ pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
         rotation_locks: std::sync::Mutex::new(HashMap::new()),
         admin_enabled: true,
         allowed_origins: None,
-        users_file: users_file.clone(),
-        auth_backend: crate::auth::AuthBackend::new(users_file),
+        users_dir: users_dir.clone(),
+        bootstrap_file,
+        auth_backend: crate::auth::AuthBackend::new(users_dir),
         session_store: tower_sessions::MemoryStore::default(),
         csrf_config: crate::admin_api::csrf::build_csrf_config(false),
         session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
@@ -214,24 +222,25 @@ pub(crate) fn headers_with(pairs: &[(&str, &str)]) -> hyper::HeaderMap {
 pub(crate) fn seeded_admin_state(username: &str, password: &str) -> AdminRuntimeState {
     let mut s = default_admin_runtime_state();
     s.session_lifetime_secs = 3600;
-    let mut collection = crate::users::UserCollection::default();
     let hash = crate::auth::hash_password(password).unwrap();
-    collection
-        .add(crate::users::UserRecord {
-            id: crate::users::new_user_id(),
-            username: username.to_string(),
-            password_hash: hash,
-            created_at: 1000,
-            password_changed_at: 1000,
-        })
-        .unwrap();
-    crate::users::save(&s.users_file, &collection).unwrap();
+    let record = crate::users::UserRecord {
+        id: crate::users::new_user_id(),
+        username: username.to_string(),
+        password_hash: hash,
+        created_at: 1000,
+        password_changed_at: 1000,
+    };
+    // Run through the collection invariants once for parity with the
+    // production paths, then write the single record to disk.
+    let mut collection = crate::users::UserCollection::default();
+    collection.add(record.clone()).unwrap();
+    crate::users::save_user(&s.users_dir, &record).unwrap();
     // Rebuild the `AuthBackend` so it points at the now-written users
-    // file. The backend reads the file from disk on every
+    // directory. The backend reads the dir from disk on every
     // `authenticate` / `get_user` call, but the path is captured at
     // construction time, so re-pointing it here makes login tests
     // resolve against the freshly-seeded record.
-    s.auth_backend = crate::auth::AuthBackend::new(s.users_file.clone());
+    s.auth_backend = crate::auth::AuthBackend::new(s.users_dir.clone());
     s
 }
 
@@ -358,7 +367,7 @@ pub(crate) fn run_bootstrap(
         return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
     let _guard = state.bootstrap_lock.lock().unwrap();
-    if crate::users::bootstrap_completed(&state.users_file).unwrap_or(true) {
+    if crate::users::bootstrap_completed(&state.bootstrap_file).unwrap_or(true) {
         log_bootstrap_attempt(
             &username_norm,
             Some("bootstrap-already-completed"),
@@ -367,7 +376,7 @@ pub(crate) fn run_bootstrap(
         let err = AdminError::conflict("bootstrap_already_completed", "already done");
         return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
-    let collection = crate::users::load(&state.users_file).unwrap();
+    let collection = crate::users::load(&state.users_dir).unwrap();
     if !collection.is_empty() {
         log_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
         let err = AdminError::conflict("users_already_exist", "already populated");
@@ -389,9 +398,9 @@ pub(crate) fn run_bootstrap(
     };
     let mut new_collection = crate::users::UserCollection::default();
     new_collection.add(record.clone()).unwrap();
-    crate::users::save(&state.users_file, &new_collection).unwrap();
+    crate::users::save_user(&state.users_dir, &record).unwrap();
     crate::users::mark_bootstrap_completed(
-        &state.users_file,
+        &state.bootstrap_file,
         &crate::users::BootstrapSentinel {
             completed_at: now,
             by_username: record.username.clone(),
@@ -424,7 +433,12 @@ pub(crate) fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
     s.stores_file = tmp.join("stores.json");
     s.clients_dir = tmp.join("clients");
     s.stores_data_root = Some(data_root);
-    s.users_file = tmp.join("users.json");
+    s.users_dir = tmp.join("users");
+    s.bootstrap_file = tmp.join("bootstrap.json");
+    // Point the AuthBackend at the new tempdir-relative users dir;
+    // `default_admin_runtime_state` initialised it against the
+    // process-wide test temp dir we have now overridden.
+    s.auth_backend = crate::auth::AuthBackend::new(s.users_dir.clone());
     s
 }
 
@@ -533,19 +547,19 @@ pub(crate) fn create_resource_id_for_test(
 pub(crate) fn seed_admin_into(state: &AdminRuntimeState, username: &str) -> String {
     // Returns the operator id of the seeded admin so tests can
     // build a principal that refers to a real record.
-    let mut c = crate::users::UserCollection::default();
     let hash = crate::auth::hash_password("seed-pass").unwrap();
     let now = crate::users::now_epoch_secs();
     let id = crate::users::new_user_id();
-    c.add(crate::users::UserRecord {
+    let record = crate::users::UserRecord {
         id: id.clone(),
         username: username.into(),
         password_hash: hash,
         created_at: now,
         password_changed_at: now,
-    })
-    .unwrap();
-    crate::users::save(&state.users_file, &c).unwrap();
+    };
+    let mut c = crate::users::UserCollection::default();
+    c.add(record.clone()).unwrap();
+    crate::users::save_user(&state.users_dir, &record).unwrap();
     id
 }
 

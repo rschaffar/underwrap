@@ -63,8 +63,8 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 pub(crate) async fn handle_admin_bootstrap_status(
     State(state): State<Arc<AdminRuntimeState>>,
 ) -> Json<BootstrapStatusResponse> {
-    let sentinel_set = crate::users::bootstrap_completed(&state.users_file).unwrap_or(true);
-    let collection_empty = crate::users::load(&state.users_file)
+    let sentinel_set = crate::users::bootstrap_completed(&state.bootstrap_file).unwrap_or(true);
+    let collection_empty = crate::users::load(&state.users_dir)
         .map(|c| c.is_empty())
         .unwrap_or(false);
     Json(BootstrapStatusResponse {
@@ -108,7 +108,7 @@ pub(crate) async fn handle_admin_bootstrap(
     // future stays `Send`.
     let bootstrap_guard = state.bootstrap_lock.lock().unwrap();
 
-    match crate::users::bootstrap_completed(&state.users_file) {
+    match crate::users::bootstrap_completed(&state.bootstrap_file) {
         Ok(true) => {
             log_bootstrap_attempt(
                 &username_norm,
@@ -130,7 +130,7 @@ pub(crate) async fn handle_admin_bootstrap(
         }
     }
 
-    let collection = crate::users::load(&state.users_file).map_err(|e| {
+    let collection = crate::users::load(&state.users_dir).map_err(|e| {
         warn!(err = %e, "bootstrap: loading user collection failed");
         AdminError::internal_with_code("internal", "user collection unavailable")
     })?;
@@ -166,6 +166,8 @@ pub(crate) async fn handle_admin_bootstrap(
         created_at: now,
         password_changed_at: now,
     };
+    // Run the record through `UserCollection::add` to re-use its
+    // uniqueness + hash invariant checks before we touch disk.
     let mut new_collection = crate::users::UserCollection::default();
     if let Err(e) = new_collection.add(record.clone()) {
         warn!(err = %e, "bootstrap: building collection failed");
@@ -174,15 +176,15 @@ pub(crate) async fn handle_admin_bootstrap(
             e.to_string(),
         ));
     }
-    if let Err(e) = crate::users::save(&state.users_file, &new_collection) {
-        warn!(err = %e, "bootstrap: writing user collection failed");
+    if let Err(e) = crate::users::save_user(&state.users_dir, &record) {
+        warn!(err = %e, "bootstrap: writing user record failed");
         return Err(AdminError::internal_with_code(
             "internal",
             "could not persist user",
         ));
     }
     if let Err(e) = crate::users::mark_bootstrap_completed(
-        &state.users_file,
+        &state.bootstrap_file,
         &crate::users::BootstrapSentinel {
             completed_at: now,
             by_username: record.username.clone(),

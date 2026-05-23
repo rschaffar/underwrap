@@ -58,7 +58,8 @@ underwrap-backendd`, no NixOS wrapper machinery required) and write
 ```yaml
 stores_file: /var/lib/underwrap-backend/stores.json
 clients_dir: /var/lib/underwrap-backend/clients
-users_file: /var/lib/underwrap-backend/users.json
+users_dir: /var/lib/underwrap-backend/users
+bootstrap_file: /var/lib/underwrap-backend/bootstrap.json
 
 https:
   listen: 0.0.0.0:18443

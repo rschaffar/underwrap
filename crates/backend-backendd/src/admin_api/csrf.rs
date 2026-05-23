@@ -185,7 +185,7 @@ fn resolve_live_principal(
     state: &AdminRuntimeState,
     user: &UserRecord,
 ) -> std::result::Result<Principal, AdminError> {
-    let collection = crate::users::load(&state.users_file).map_err(|e| {
+    let collection = crate::users::load(&state.users_dir).map_err(|e| {
         warn!(err = %e, "could not load user collection");
         AdminError::internal_with_code("internal", "user collection unavailable")
     })?;

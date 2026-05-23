@@ -37,9 +37,9 @@ pub(crate) fn user_list_item(record: &crate::users::UserRecord) -> AdminUserList
 
 /// Read-modify-write on the user collection, serialised across
 /// concurrent admin requests via `user_collection_lock`. The closure
-/// may mutate the collection in-place; on `Ok(_)` we persist and
-/// return whatever the closure returned. On `Err(_)` the collection is
-/// *not* persisted.
+/// may mutate the collection in-place; on `Ok(_)` we diff the before
+/// and after collections and emit one per-record save or delete for
+/// each changed user. On `Err(_)` nothing is persisted.
 ///
 /// The closure returns `anyhow::Result<T>` so user-level mutation
 /// errors flow through via `From<UserMutationError> for anyhow::Error`
@@ -49,10 +49,27 @@ pub(crate) fn mutate_collection<T, F>(state: &AdminRuntimeState, f: F) -> Result
 where
     F: FnOnce(&mut crate::users::UserCollection) -> Result<T>,
 {
+    use std::collections::HashMap;
     let _guard = state.user_collection_lock.lock().unwrap();
-    let mut collection = crate::users::load(&state.users_file)?;
-    let out = f(&mut collection)?;
-    crate::users::save(&state.users_file, &collection)?;
+    let before = crate::users::load(&state.users_dir)?;
+    let mut after = before.clone();
+    let out = f(&mut after)?;
+
+    let before_by_id: HashMap<&str, &crate::users::UserRecord> =
+        before.users.iter().map(|u| (u.id.as_str(), u)).collect();
+    let after_by_id: HashMap<&str, &crate::users::UserRecord> =
+        after.users.iter().map(|u| (u.id.as_str(), u)).collect();
+
+    for old in &before.users {
+        if !after_by_id.contains_key(old.id.as_str()) {
+            crate::users::delete_user(&state.users_dir, &old.id)?;
+        }
+    }
+    for new in &after.users {
+        if before_by_id.get(new.id.as_str()).copied() != Some(new) {
+            crate::users::save_user(&state.users_dir, new)?;
+        }
+    }
     Ok(out)
 }
 
@@ -159,7 +176,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 pub(crate) async fn handle_admin_users_list(
     State(state): State<Arc<AdminRuntimeState>>,
 ) -> Result<Json<AdminUsersListResponse>, AdminError> {
-    let collection = crate::users::load(&state.users_file).map_err(|e| {
+    let collection = crate::users::load(&state.users_dir).map_err(|e| {
         warn!(err = %e, "users.list: collection unreadable");
         AdminError::internal_with_code("internal", "user collection unavailable")
     })?;

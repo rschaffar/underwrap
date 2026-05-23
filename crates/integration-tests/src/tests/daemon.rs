@@ -67,7 +67,8 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
     let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
         stores_file: Some(base.join("stores.json")),
         clients_dir: Some(base.join("clients")),
-        users_file: Some(base.join("users.json")),
+        users_dir: Some(base.join("users")),
+        bootstrap_file: Some(base.join("bootstrap.json")),
         https: Some(underwrap_backendd::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),
             tls: underwrap_backendd::HttpsTlsConfig {
@@ -231,7 +232,8 @@ async fn underwrapd_binary_start_and_read() {
     let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
         stores_file: Some(stores_file),
         clients_dir: Some(clients_dir),
-        users_file: Some(base.join("users.json")),
+        users_dir: Some(base.join("users")),
+        bootstrap_file: Some(base.join("bootstrap.json")),
         https: Some(underwrap_backendd::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),
             tls: underwrap_backendd::HttpsTlsConfig {

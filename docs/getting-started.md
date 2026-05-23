@@ -56,7 +56,8 @@ Write `/etc/underwrap-backend/config.yaml`:
 ```yaml
 stores_file: /var/lib/underwrap-backend/stores.json
 clients_dir: /var/lib/underwrap-backend/clients
-users_file: /var/lib/underwrap-backend/users.json
+users_dir: /var/lib/underwrap-backend/users
+bootstrap_file: /var/lib/underwrap-backend/bootstrap.json
 
 https:
   listen: 127.0.0.1:18443

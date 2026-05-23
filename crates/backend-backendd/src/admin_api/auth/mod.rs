@@ -218,7 +218,7 @@ pub(crate) async fn handle_admin_password_change(
             },
         ));
     }
-    let collection = crate::users::load(&state.users_file).map_err(|e| {
+    let collection = crate::users::load(&state.users_dir).map_err(|e| {
         warn!(err = %e, "auth.password: collection unreadable");
         AdminError::internal_with_code("internal", "user collection unavailable")
     })?;
