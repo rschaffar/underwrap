@@ -70,12 +70,17 @@ impl StorageConfig {
     }
 }
 
-/// One backend-managed store record in the central store registry.
-/// `id` is the stable internal identifier used by APIs/runtime
-/// wiring; `name` is the editable operator-facing label.
+/// One backend-managed store record. Persisted as one
+/// `<stores_dir>/<id>.json` file per store; the id is the file stem
+/// (not the JSON body) and `name` is the editable operator-facing
+/// label. The loader backfills `id` from the filename.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoreRecord {
     /// Stable internal identifier for this store.
+    ///
+    /// Not serialised: on disk the id is implied by the filename so
+    /// it cannot drift between the two.
+    #[serde(default, skip)]
     pub id: String,
     /// Editable human-visible store name.
     pub name: String,
@@ -88,13 +93,6 @@ pub struct StoreRecord {
     /// The storage backend itself.
     #[serde(flatten)]
     pub storage: StorageConfig,
-}
-
-/// Backend-managed store registry persisted by `underwrap-backendd`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StoreRegistryDocument {
-    #[serde(default)]
-    pub stores: Vec<StoreRecord>,
 }
 
 fn default_storage_dir() -> PathBuf {

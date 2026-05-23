@@ -29,8 +29,9 @@ pub(crate) struct AdminRuntimeState {
     /// without a daemon restart.
     pub(crate) client_instances:
         Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
-    /// Path of the backend-managed store-registry file.
-    pub(crate) stores_file: PathBuf,
+    /// Directory holding one JSON file per backend-managed store
+    /// (`<stores_dir>/<id>.json`).
+    pub(crate) stores_dir: PathBuf,
     /// Directory holding one JSON file per runtime client-instance
     /// record (`<clients_dir>/<id>.json`).
     pub(crate) clients_dir: PathBuf,

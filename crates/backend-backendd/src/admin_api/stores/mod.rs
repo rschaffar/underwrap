@@ -8,10 +8,10 @@
 //! halves can each `use super::*;`.
 //!
 //! All five CRUD handlers operate on the runtime `state.stores`
-//! registry plus the backend-managed store-registry file at
-//! `state.stores_file`. Atomicity comes from `tempfile::NamedTempFile`
-//! `persist()` on the registry write side and a brief held `write()`
-//! lock on the in-memory registry update.
+//! registry plus the per-store JSON files under `state.stores_dir`.
+//! Atomicity comes from `tempfile::NamedTempFile` `persist()` on the
+//! per-record write side and a brief held `write()` lock on the
+//! in-memory registry update.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

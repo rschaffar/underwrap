@@ -16,7 +16,7 @@ use utoipa_axum::routes;
 use crate::admin_api::AdminError;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
-use crate::store_registry::{StoreState, save_store_records};
+use crate::store_registry::{StoreState, save_store_record};
 use crate::users::Principal;
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
@@ -264,7 +264,7 @@ pub(crate) async fn handle_admin_store_rotate_key(
         if let Some(loaded) = reg.records.get_mut(&name) {
             loaded.record = updated_record.clone();
         }
-        if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
+        if let Err(e) = save_store_record(&state.stores_dir, &updated_record) {
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
                 format!("{e:#}"),

@@ -25,7 +25,7 @@ pub use crate::admin_api::auth::bootstrap::{
 };
 pub use crate::admin_api::auth::{LoginRequest, LoginResponse, WhoamiResponse};
 pub use crate::config::{
-    AdminConfig, BackendConfig, DEFAULT_STORES_FILE, HttpsConfig, HttpsTlsConfig,
+    AdminConfig, BackendConfig, DEFAULT_STORES_DIR, HttpsConfig, HttpsTlsConfig,
 };
 pub use crate::store_registry::{
     LoadedStoreRecord, RegistryLookupError, StoreRegistry, StoreState, is_valid_store_id,

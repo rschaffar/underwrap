@@ -174,7 +174,7 @@ pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
     AdminRuntimeState {
         stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
         client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
-        stores_file: PathBuf::new(),
+        stores_dir: PathBuf::new(),
         clients_dir: PathBuf::new(),
         stores_data_root: None,
         rotation_locks: std::sync::Mutex::new(HashMap::new()),
@@ -430,7 +430,7 @@ pub(crate) fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
     let data_root = tmp.join("data");
     std::fs::create_dir_all(&data_root).unwrap();
     let mut s = default_admin_runtime_state();
-    s.stores_file = tmp.join("stores.json");
+    s.stores_dir = tmp.join("stores");
     s.clients_dir = tmp.join("clients");
     s.stores_data_root = Some(data_root);
     s.users_dir = tmp.join("users");

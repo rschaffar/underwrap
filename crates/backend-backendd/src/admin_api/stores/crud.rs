@@ -18,7 +18,9 @@ use utoipa_axum::routes;
 use crate::admin_api::AdminError;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
-use crate::store_registry::{LoadedStoreRecord, StoreState, save_store_records};
+use crate::store_registry::{
+    LoadedStoreRecord, StoreState, delete_store_record, save_store_record,
+};
 use crate::users::Principal;
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
@@ -195,7 +197,7 @@ pub(crate) async fn handle_admin_store_create(
         reg.state
             .insert(store_id.clone(), StoreState::Unlocked(opened));
         reg.records.insert(store_id.clone(), loaded.clone());
-        if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
+        if let Err(e) = save_store_record(&state.stores_dir, &loaded.record) {
             reg.state.remove(&store_id);
             reg.records.remove(&store_id);
             return Err(AdminError::internal_with_code(
@@ -281,7 +283,7 @@ pub(crate) async fn handle_admin_store_update(
         if let Some(loaded) = reg.records.get_mut(&name) {
             loaded.record = updated.clone();
         }
-        if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
+        if let Err(e) = save_store_record(&state.stores_dir, &updated) {
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
                 format!("{e:#}"),
@@ -416,7 +418,7 @@ pub(crate) async fn handle_admin_store_delete(
         let mut reg = state.stores.write().unwrap();
         reg.state.remove(&name);
         reg.records.remove(&name);
-        if let Err(e) = save_store_records(&state.stores_file, &reg.records) {
+        if let Err(e) = delete_store_record(&state.stores_dir, &name) {
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
                 format!("{e:#}"),

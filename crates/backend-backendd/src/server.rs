@@ -20,11 +20,11 @@ use crate::store_registry::{StoreRegistry, load_store_records, open_initial_stor
 use crate::tls::build_https_acceptor;
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
-    let stores_file = config.stores_file();
+    let stores_dir = config.stores_dir();
     let clients_dir = config.clients_dir();
     let users_dir = config.users_dir();
     let bootstrap_file = config.bootstrap_file();
-    let definitions = load_store_records(&stores_file)?;
+    let definitions = load_store_records(&stores_dir)?;
     let state_map = open_initial_stores(&definitions)?;
     let store_registry = Arc::new(std::sync::RwLock::new(StoreRegistry {
         state: state_map,
@@ -49,7 +49,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
         let state = Arc::new(AdminRuntimeState {
             stores: Arc::clone(&store_registry),
             client_instances: Arc::clone(&client_instances),
-            stores_file: stores_file.clone(),
+            stores_dir: stores_dir.clone(),
             clients_dir: clients_dir.clone(),
             stores_data_root: admin_config.and_then(|cfg| cfg.stores_data_root.clone()),
             rotation_locks: std::sync::Mutex::new(HashMap::new()),

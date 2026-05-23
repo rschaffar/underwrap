@@ -65,7 +65,7 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
     std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
-        stores_file: Some(base.join("stores.json")),
+        stores_dir: Some(base.join("stores")),
         clients_dir: Some(base.join("clients")),
         users_dir: Some(base.join("users")),
         bootstrap_file: Some(base.join("bootstrap.json")),
@@ -150,7 +150,7 @@ async fn underwrapd_binary_start_and_read() {
     std::fs::write(&client_cert, crate::harness::TEST_CLIENT_LOCAL_PEM).unwrap();
     std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
 
-    let stores_file = base.join("stores.json");
+    let stores_dir = base.join("stores");
     let clients_dir = base.join("clients");
     let test_store = underwrap_protocol::config::StoreRecord {
         id: "test".to_string(),
@@ -161,14 +161,7 @@ async fn underwrapd_binary_start_and_read() {
             dir: base.join("secrets"),
         },
     };
-    std::fs::write(
-        &stores_file,
-        serde_json::to_vec_pretty(&underwrap_protocol::config::StoreRegistryDocument {
-            stores: vec![test_store],
-        })
-        .unwrap(),
-    )
-    .unwrap();
+    underwrap_backendd::store_registry::save_store_record(&stores_dir, &test_store).unwrap();
     let client_cert_pem = std::fs::read_to_string(&client_cert).unwrap();
     let client_instance = underwrap_backendd::runtime_clients::ClientInstanceRecord {
         id: "inst_underwrap_local".to_string(),
@@ -230,7 +223,7 @@ async fn underwrapd_binary_start_and_read() {
     )
     .unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
-        stores_file: Some(stores_file),
+        stores_dir: Some(stores_dir),
         clients_dir: Some(clients_dir),
         users_dir: Some(base.join("users")),
         bootstrap_file: Some(base.join("bootstrap.json")),

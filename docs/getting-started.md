@@ -54,7 +54,7 @@ from the backend the operator configured.
 Write `/etc/underwrap-backend/config.yaml`:
 
 ```yaml
-stores_file: /var/lib/underwrap-backend/stores.json
+stores_dir: /var/lib/underwrap-backend/stores
 clients_dir: /var/lib/underwrap-backend/clients
 users_dir: /var/lib/underwrap-backend/users
 bootstrap_file: /var/lib/underwrap-backend/bootstrap.json

@@ -129,7 +129,7 @@ impl TestDaemon {
         let pki = test_pki_paths(base, client_name)?;
         let ready_pki = test_pki_paths(base, principal_client_name(accepted_principal)?)?;
 
-        let stores_file = base.join("stores.json");
+        let stores_dir = base.join("stores");
         let clients_dir = base.join("clients");
         let stores_data_root = base.join("stores-data-root");
         std::fs::create_dir_all(&stores_data_root)?;
@@ -142,12 +142,7 @@ impl TestDaemon {
                 dir: storage_dir.clone(),
             },
         };
-        std::fs::write(
-            &stores_file,
-            serde_json::to_vec_pretty(&underwrap_protocol::config::StoreRegistryDocument {
-                stores: vec![test_store],
-            })?,
-        )?;
+        underwrap_backendd::store_registry::save_store_record(&stores_dir, &test_store)?;
         let ready_cert_pem = std::fs::read_to_string(&ready_pki.client_cert)?;
         let runtime_client = underwrap_backendd::runtime_clients::ClientInstanceRecord {
             id: format!("inst_{accepted_principal}"),
@@ -162,7 +157,7 @@ impl TestDaemon {
         };
         underwrap_backendd::runtime_clients::save_client_instance(&clients_dir, &runtime_client)?;
         let backend_config = underwrap_backendd::BackendConfig {
-            stores_file: Some(stores_file),
+            stores_dir: Some(stores_dir),
             clients_dir: Some(clients_dir),
             users_dir: Some(base.join("users")),
             bootstrap_file: Some(base.join("bootstrap.json")),

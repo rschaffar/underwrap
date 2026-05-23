@@ -140,24 +140,19 @@ export async function startBackend(
   mkdirSync(storeDir);
 
   // Pre-seed a single "default" store in the backend's stores
-  // registry. The registry is a single JSON document keyed on a
-  // stable internal id; we write it before the daemon starts so the
-  // first page render sees a store and doesn't redirect through the
-  // "no stores visible" empty state.
-  const storesFile = join(tmpDir, "stores.json");
+  // registry. The registry is a directory of `<id>.json` files keyed
+  // on a stable internal id; we write the one file before the daemon
+  // starts so the first page render sees a store and doesn't
+  // redirect through the "no stores visible" empty state.
+  const storesDir = join(tmpDir, "stores");
+  mkdirSync(storesDir);
   writeFileSync(
-    storesFile,
+    join(storesDir, "default.json"),
     JSON.stringify({
-      version: 1,
-      stores: [
-        {
-          id: "default",
-          name: "default",
-          description: "",
-          backend: "plain",
-          dir: storeDir,
-        },
-      ],
+      name: "default",
+      description: "",
+      backend: "plain",
+      dir: storeDir,
     }),
   );
 
@@ -174,7 +169,7 @@ export async function startBackend(
   mkdirSync(keysDir);
 
   const configYaml = [
-    `stores_file: ${JSON.stringify(storesFile)}`,
+    `stores_dir: ${JSON.stringify(storesDir)}`,
     `clients_dir: ${JSON.stringify(join(tmpDir, "clients"))}`,
     `users_dir: ${JSON.stringify(join(tmpDir, "users"))}`,
     `bootstrap_file: ${JSON.stringify(join(tmpDir, "bootstrap.json"))}`,

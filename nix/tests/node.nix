@@ -26,29 +26,20 @@ let
   localClientFingerprint = certFingerprint "client-local" testLocalClientPem;
   tunnelClientFingerprint = certFingerprint "client-tunnel" testTunnelClientPem;
 
-  # The backend now reads its store registry from a single JSON
-  # document at a fixed path; we seed one document per daemon.
-  remoteStoresJson = pkgs.writeText "underwrap-backend-remote-stores.json" (builtins.toJSON {
-    stores = [
-      {
-        id = "remote";
-        name = "remote";
-        backend = "plain";
-        dir = "/var/lib/underwrap-backend/secrets";
-        description = "remote-mode test store";
-      }
-    ];
+  # The backend's store registry is a directory of `<id>.json` files;
+  # the id lives in the filename, not the body. Pre-stage one file
+  # per daemon's lone test store.
+  remoteStoreJson = pkgs.writeText "remote.json" (builtins.toJSON {
+    name = "remote";
+    backend = "plain";
+    dir = "/var/lib/underwrap-backend/secrets";
+    description = "remote-mode test store";
   });
-  localStoresJson = pkgs.writeText "underwrap-backend-local-stores.json" (builtins.toJSON {
-    stores = [
-      {
-        id = "local";
-        name = "local";
-        backend = "plain";
-        dir = "/var/lib/underwrap-backend-local/secrets";
-        description = "local-mode test store";
-      }
-    ];
+  localStoreJson = pkgs.writeText "local.json" (builtins.toJSON {
+    name = "local";
+    backend = "plain";
+    dir = "/var/lib/underwrap-backend-local/secrets";
+    description = "local-mode test store";
   });
 
   # The backend's runtime client-instance registry is a directory of
@@ -195,7 +186,7 @@ in {
       Group = "underwrap-backend";
       ExecStart = let
         cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
-          stores_file = "/var/lib/underwrap-backend/stores.json";
+          stores_dir = "/var/lib/underwrap-backend/stores";
           clients_dir = "/var/lib/underwrap-backend/clients";
           users_dir = "/var/lib/underwrap-backend/users";
           bootstrap_file = "/var/lib/underwrap-backend/bootstrap.json";
@@ -253,14 +244,16 @@ in {
     "C /var/lib/underwrap-tunnel/client-tunnel.pem 0400 underwrap-tunnel underwrap-tunnel - ${testTunnelClientPem}"
     "C /var/lib/underwrap-tunnel/client-tunnel.key 0400 underwrap-tunnel underwrap-tunnel - ${testTunnelClientKey}"
     # Pre-stage the backend-managed store + client-instance registries.
-    # The backend opens these at boot and uses them as the authoritative
+    # Both are directories of `<id>.json` files now; the id is the
+    # filename. The backend opens these at boot as the authoritative
     # source for which stores exist and which mTLS client certs map to
-    # which store. The client registry is a directory of `<id>.json`
-    # files; the id is the filename.
-    "C /var/lib/underwrap-backend/stores.json 0600 underwrap-backend underwrap-backend - ${remoteStoresJson}"
+    # which store.
+    "d /var/lib/underwrap-backend/stores 0700 underwrap-backend underwrap-backend -"
+    "C /var/lib/underwrap-backend/stores/remote.json 0600 underwrap-backend underwrap-backend - ${remoteStoreJson}"
     "d /var/lib/underwrap-backend/clients 0700 underwrap-backend underwrap-backend -"
     "C /var/lib/underwrap-backend/clients/inst_underwrap-tunnel.json 0600 underwrap-backend underwrap-backend - ${remoteTunnelClientJson}"
-    "C /var/lib/underwrap-backend-local/stores.json 0600 underwrap-local underwrap-local - ${localStoresJson}"
+    "d /var/lib/underwrap-backend-local/stores 0700 underwrap-local underwrap-local -"
+    "C /var/lib/underwrap-backend-local/stores/local.json 0600 underwrap-local underwrap-local - ${localStoreJson}"
     "d /var/lib/underwrap-backend-local/clients 0700 underwrap-local underwrap-local -"
     "C /var/lib/underwrap-backend-local/clients/inst_underwrap-local.json 0600 underwrap-local underwrap-local - ${localClientJson}"
   ];
@@ -281,7 +274,7 @@ in {
       Group = "underwrap-local";
       ExecStart = let
         cfg = pkgs.writeText "underwrap-local-backend.yaml" (builtins.toJSON {
-          stores_file = "/var/lib/underwrap-backend-local/stores.json";
+          stores_dir = "/var/lib/underwrap-backend-local/stores";
           clients_dir = "/var/lib/underwrap-backend-local/clients";
           users_dir = "/var/lib/underwrap-backend-local/users";
           bootstrap_file = "/var/lib/underwrap-backend-local/bootstrap.json";

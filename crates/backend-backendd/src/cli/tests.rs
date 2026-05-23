@@ -6,7 +6,7 @@ fn parse_backend_config_parses_minimal_yaml() {
     // Empty YAML works because the backend-managed store registry
     // path and https+admin blocks are optional.
     let config = parse_backend_config("{}\n").unwrap();
-    assert!(config.stores_file.is_none());
+    assert!(config.stores_dir.is_none());
     assert!(config.clients_dir.is_none());
     assert!(config.users_dir.is_none());
     assert!(config.bootstrap_file.is_none());
@@ -18,7 +18,7 @@ fn parse_backend_config_parses_minimal_yaml() {
 fn parse_backend_config_accepts_dir_overrides() {
     let config = parse_backend_config(
         r#"
-stores_file: /var/u/stores.json
+stores_dir: /var/u/stores
 clients_dir: /var/u/clients
 users_dir: /var/u/users
 bootstrap_file: /var/u/bootstrap.json
@@ -26,8 +26,8 @@ bootstrap_file: /var/u/bootstrap.json
     )
     .unwrap();
     assert_eq!(
-        config.stores_file(),
-        std::path::PathBuf::from("/var/u/stores.json"),
+        config.stores_dir(),
+        std::path::PathBuf::from("/var/u/stores"),
     );
     assert_eq!(
         config.clients_dir(),

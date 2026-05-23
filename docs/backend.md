@@ -58,14 +58,14 @@ only the secret material that the authorized read flow exposes.
 ## Backend configuration
 
 `underwrap-backendd` takes a single YAML config. Store definitions
-live in the backend-managed store registry (`stores_file`), *not*
+live in the backend-managed store registry (`stores_dir`), *not*
 inline in this config. All paths are absolute.
 
 ```yaml
 # Optional — defaults kick in when omitted. Missing registry files are
 # treated as empty, so the backend can boot before the first store,
 # user, or runtime client exists.
-stores_file: /var/lib/underwrap-backend/stores.json
+stores_dir: /var/lib/underwrap-backend/stores
 clients_dir: /var/lib/underwrap-backend/clients
 users_dir: /var/lib/underwrap-backend/users
 bootstrap_file: /var/lib/underwrap-backend/bootstrap.json
@@ -91,10 +91,12 @@ the key via `POST /v1/admin/stores/{id}/unlock`.
 
 ### Store registry
 
-Stores are persisted in the backend-managed `stores.json` registry.
-Each entry is a `StoreRecord` with a stable internal `id`, an
-operator-facing `name`, optional `description`, optional `created_at`,
-and the storage backend itself.
+Stores are persisted as one JSON file per record under
+`stores_dir` (default `/var/lib/underwrap-backend/stores`). The id
+is the file stem (so `stores/work.json` is the `work` store) and is
+not duplicated inside the body. Each file is a `StoreRecord` carrying
+the operator-facing `name`, optional `description`, optional
+`created_at`, and the storage backend itself.
 
 Example dynamic store record:
 

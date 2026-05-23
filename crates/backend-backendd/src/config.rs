@@ -39,16 +39,17 @@ pub struct AdminConfig {
     pub stores_data_root: Option<PathBuf>,
 }
 
-/// Default location of the backend-managed store-registry file.
-pub const DEFAULT_STORES_FILE: &str = "/var/lib/underwrap-backend/stores.json";
+/// Default location of the backend-managed stores directory.
+pub const DEFAULT_STORES_DIR: &str = "/var/lib/underwrap-backend/stores";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
-    /// Path of the backend-managed store-registry file. Missing files
+    /// Directory holding the per-store JSON files that make up the
+    /// store registry (`<stores_dir>/<id>.json`). Missing directories
     /// are treated as an empty registry. Defaults to
-    /// [`DEFAULT_STORES_FILE`].
+    /// [`DEFAULT_STORES_DIR`].
     #[serde(default)]
-    pub stores_file: Option<PathBuf>,
+    pub stores_dir: Option<PathBuf>,
     /// Directory holding the per-instance JSON files that make up the
     /// runtime client-instance registry. Each file is named
     /// `<client_instance_id>.json`. Missing directories are treated as
@@ -75,11 +76,11 @@ pub struct BackendConfig {
 }
 
 impl BackendConfig {
-    /// Resolve [`Self::stores_file`] or the project default.
-    pub fn stores_file(&self) -> PathBuf {
-        self.stores_file
+    /// Resolve [`Self::stores_dir`] or the project default.
+    pub fn stores_dir(&self) -> PathBuf {
+        self.stores_dir
             .clone()
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_STORES_FILE))
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_STORES_DIR))
     }
 
     /// Resolve [`Self::clients_dir`] or the project default.

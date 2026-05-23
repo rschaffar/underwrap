@@ -100,8 +100,10 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     assert_eq!(body["store"]["actions"]["can_rotate_key"], false);
     assert_eq!(body["store"]["actions"]["can_delete_now"], true);
     assert_eq!(body["store"]["actions"]["can_force_delete"], false);
-    let registry_json = std::fs::read_to_string(&state.stores_file).unwrap();
-    assert!(registry_json.contains(&store_id));
+    // The per-store record landed on disk under the configured stores
+    // directory.
+    let record_path = state.stores_dir.join(format!("{store_id}.json"));
+    assert!(record_path.exists(), "store record file must be created");
     // The runtime registry sees it.
     let (_, body) = run_handler(handle_admin_stores_list(State(state.clone())));
     let items = body["items"].as_array().unwrap();
@@ -153,10 +155,8 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     assert_eq!(body["ok"], true);
     assert!(!body.as_object().unwrap().contains_key("cleanup_hint"));
     assert!(
-        !state.stores_file.exists()
-            || !std::fs::read_to_string(&state.stores_file)
-                .unwrap_or_default()
-                .contains(&store_id)
+        !state.stores_dir.join(format!("{store_id}.json")).exists(),
+        "store record file must be removed by delete"
     );
 }
 
