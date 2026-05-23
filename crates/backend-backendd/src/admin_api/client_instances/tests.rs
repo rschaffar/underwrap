@@ -66,7 +66,6 @@ fn client_instance_crud_and_store_mapping_round_trip() {
             current_store_id: work_id.clone(),
             status: AdminClientInstanceStatus::Active,
             cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
-            issued_at: Some(111),
             auto_create_wrapper_assets: None,
         }),
     ));
@@ -153,25 +152,21 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
     {
         let mut instances = state.client_instances.write().unwrap();
         for (id, fp) in [(&doomed_id, "fp-doomed"), (&survivor_id, "fp-survivor")] {
-            instances.insert(
-                id.clone(),
-                crate::runtime_clients::ClientInstanceRecord {
-                    id: id.clone(),
-                    display_name: format!("{id}-laptop"),
-                    current_store_id: store_id.clone(),
-                    status: crate::runtime_clients::ClientInstanceStatus::Active,
-                    last_seen_at: None,
-                    current_credential: crate::runtime_clients::CurrentCredentialRecord {
-                        cert_fingerprint: fp.into(),
-                        cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
-                        issued_at: Some(1),
-                    },
-                    auto_create_wrapper_assets: false,
+            let record = crate::runtime_clients::ClientInstanceRecord {
+                id: id.clone(),
+                display_name: format!("{id}-laptop"),
+                current_store_id: store_id.clone(),
+                status: crate::runtime_clients::ClientInstanceStatus::Active,
+                last_seen_at: None,
+                current_credential: crate::runtime_clients::CurrentCredentialRecord {
+                    cert_fingerprint: fp.into(),
+                    cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
                 },
-            );
+                auto_create_wrapper_assets: false,
+            };
+            crate::runtime_clients::save_client_instance(&state.clients_dir, &record).unwrap();
+            instances.insert(id.clone(), record);
         }
-        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
-            .unwrap();
     }
 
     // The admin API addresses stores by id (the SPA's `storeName`
@@ -264,25 +259,24 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
     );
     let instance_id = "to-remap".to_string();
     {
-        let mut instances = state.client_instances.write().unwrap();
-        instances.insert(
-            instance_id.clone(),
-            crate::runtime_clients::ClientInstanceRecord {
-                id: instance_id.clone(),
-                display_name: "laptop".into(),
-                current_store_id: old_store_id.clone(),
-                status: crate::runtime_clients::ClientInstanceStatus::Active,
-                last_seen_at: None,
-                current_credential: crate::runtime_clients::CurrentCredentialRecord {
-                    cert_fingerprint: "fp-remap".into(),
-                    cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
-                    issued_at: Some(1),
-                },
-                auto_create_wrapper_assets: false,
+        let record = crate::runtime_clients::ClientInstanceRecord {
+            id: instance_id.clone(),
+            display_name: "laptop".into(),
+            current_store_id: old_store_id.clone(),
+            status: crate::runtime_clients::ClientInstanceStatus::Active,
+            last_seen_at: None,
+            current_credential: crate::runtime_clients::CurrentCredentialRecord {
+                cert_fingerprint: "fp-remap".into(),
+                cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
             },
-        );
-        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
-            .unwrap();
+            auto_create_wrapper_assets: false,
+        };
+        crate::runtime_clients::save_client_instance(&state.clients_dir, &record).unwrap();
+        state
+            .client_instances
+            .write()
+            .unwrap()
+            .insert(instance_id.clone(), record);
     }
 
     // Corrupt the old store's policy document so the cascade's
@@ -344,7 +338,6 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
             current_store_id: store_id.clone(),
             status: AdminClientInstanceStatus::Active,
             cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
-            issued_at: None,
             auto_create_wrapper_assets: None,
         }),
     ));
@@ -369,7 +362,7 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     assert_eq!(toggled_body["auto_create_wrapper_assets"], true);
 
     // Persisted across a fresh load.
-    let reloaded = crate::runtime_clients::load_client_instances(&state.client_instances_file)
+    let reloaded = crate::runtime_clients::load_client_instances(&state.clients_dir)
         .expect("reload client instances");
     assert!(reloaded.get(&id).unwrap().auto_create_wrapper_assets);
 

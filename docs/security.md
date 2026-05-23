@@ -800,7 +800,8 @@ The CSR-signing model from earlier iterations has been removed: the
 backend no longer holds a private CA key, no `issuer_cert_file` /
 `issuer_key_file` / `client_ca_file` configuration is required, and the
 attack surface around CSR scrubbing is gone. Identity comes from
-fingerprint membership in `client-instances.json`, full stop.
+fingerprint membership in the per-instance `clients/<id>.json`
+registry, full stop.
 
 ---
 

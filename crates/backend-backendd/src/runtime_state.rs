@@ -31,8 +31,9 @@ pub(crate) struct AdminRuntimeState {
         Arc<std::sync::RwLock<HashMap<String, crate::runtime_clients::ClientInstanceRecord>>>,
     /// Path of the backend-managed store-registry file.
     pub(crate) stores_file: PathBuf,
-    /// Path of the backend-managed runtime client-instance registry file.
-    pub(crate) client_instances_file: PathBuf,
+    /// Directory holding one JSON file per runtime client-instance
+    /// record (`<clients_dir>/<id>.json`).
+    pub(crate) clients_dir: PathBuf,
     /// Directory under which the admin "create store" API places the
     /// data directory of each new dynamic store. The on-disk layout is
     /// `<stores_data_root>/<store_id>/`; the admin chooses only the

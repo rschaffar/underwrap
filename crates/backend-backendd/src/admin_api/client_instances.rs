@@ -174,14 +174,15 @@ pub(crate) async fn handle_admin_client_instance_create(
         ));
     }
     let display_name = display_name.to_string();
-    let current_credential =
-        crate::runtime_clients::current_credential_from_pem(body.cert_pem.clone(), body.issued_at)
-            .map_err(|e| {
-                AdminError::bad_request(
-                    "invalid_client_certificate",
-                    format!("parsing client certificate: {e:#}"),
-                )
-            })?;
+    let current_credential = crate::runtime_clients::current_credential_from_pem(
+        body.cert_pem.clone(),
+    )
+    .map_err(|e| {
+        AdminError::bad_request(
+            "invalid_client_certificate",
+            format!("parsing client certificate: {e:#}"),
+        )
+    })?;
     let cert_fingerprint = current_credential.cert_fingerprint.clone();
     {
         let stores = state.stores.read().unwrap();
@@ -225,9 +226,7 @@ pub(crate) async fn handle_admin_client_instance_create(
         auto_create_wrapper_assets: body.auto_create_wrapper_assets.unwrap_or(false),
     };
     instances.insert(id.clone(), record.clone());
-    if let Err(e) =
-        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
-    {
+    if let Err(e) = crate::runtime_clients::save_client_instance(&state.clients_dir, &record) {
         instances.remove(&id);
         return Err(AdminError::internal_with_code(
             "write_client_instances_failed",
@@ -312,15 +311,13 @@ pub(crate) async fn handle_admin_client_instance_update(
         updated.status = client_instance_status_from_wire(status);
     }
     if let Some(cert_pem) = &body.cert_pem {
-        let now = crate::users::now_epoch_secs();
-        let new_credential =
-            crate::runtime_clients::current_credential_from_pem(cert_pem.clone(), Some(now))
-                .map_err(|e| {
-                    AdminError::bad_request(
-                        "invalid_client_certificate",
-                        format!("parsing client certificate: {e:#}"),
-                    )
-                })?;
+        let new_credential = crate::runtime_clients::current_credential_from_pem(cert_pem.clone())
+            .map_err(|e| {
+                AdminError::bad_request(
+                    "invalid_client_certificate",
+                    format!("parsing client certificate: {e:#}"),
+                )
+            })?;
         if instances.iter().any(|(other_id, other)| {
             other_id != &id
                 && other.current_credential.cert_fingerprint == new_credential.cert_fingerprint
@@ -336,9 +333,7 @@ pub(crate) async fn handle_admin_client_instance_update(
         updated.auto_create_wrapper_assets = flag;
     }
     instances.insert(id.clone(), updated.clone());
-    if let Err(e) =
-        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
-    {
+    if let Err(e) = crate::runtime_clients::save_client_instance(&state.clients_dir, &updated) {
         return Err(AdminError::internal_with_code(
             "write_client_instances_failed",
             format!("{e:#}"),
@@ -396,9 +391,7 @@ pub(crate) async fn handle_admin_client_instance_delete(
     let removed = instances
         .remove(&id)
         .ok_or_else(|| AdminError::not_found("unknown client instance"))?;
-    if let Err(e) =
-        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
-    {
+    if let Err(e) = crate::runtime_clients::delete_client_instance(&state.clients_dir, &id) {
         // Roll the in-memory state back so the next request sees the same
         // view as the on-disk file.
         instances.insert(id.clone(), removed);

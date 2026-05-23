@@ -168,7 +168,7 @@ pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
         stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
         client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
         stores_file: PathBuf::new(),
-        client_instances_file: PathBuf::new(),
+        clients_dir: PathBuf::new(),
         stores_data_root: None,
         rotation_locks: std::sync::Mutex::new(HashMap::new()),
         admin_enabled: true,
@@ -269,7 +269,6 @@ pub(crate) fn service_state_with_runtime_client(
             current_credential: crate::runtime_clients::CurrentCredentialRecord {
                 cert_fingerprint: crate::runtime_clients::cert_fingerprint_from_der(cert_der),
                 cert_pem: "pem".to_string(),
-                issued_at: None,
             },
             auto_create_wrapper_assets: false,
         },
@@ -423,7 +422,7 @@ pub(crate) fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
     std::fs::create_dir_all(&data_root).unwrap();
     let mut s = default_admin_runtime_state();
     s.stores_file = tmp.join("stores.json");
-    s.client_instances_file = tmp.join("client-instances.json");
+    s.clients_dir = tmp.join("clients");
     s.stores_data_root = Some(data_root);
     s.users_file = tmp.join("users.json");
     s
@@ -620,13 +619,13 @@ pub(crate) fn make_runtime_api_fixture() -> RuntimeApiFixture {
                 current_credential: crate::runtime_clients::CurrentCredentialRecord {
                     cert_fingerprint: "fp-runtime".into(),
                     cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
-                    issued_at: Some(1),
                 },
                 auto_create_wrapper_assets: false,
             },
         );
-        crate::runtime_clients::save_client_instances(&state.client_instances_file, &instances)
-            .unwrap();
+        for record in instances.values() {
+            crate::runtime_clients::save_client_instance(&state.clients_dir, record).unwrap();
+        }
     }
 
     let store = state.stores.read().unwrap().expect_unlocked(&store_id);

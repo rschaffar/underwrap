@@ -49,11 +49,13 @@ pub struct BackendConfig {
     /// [`DEFAULT_STORES_FILE`].
     #[serde(default)]
     pub stores_file: Option<PathBuf>,
-    /// Path of the backend-managed runtime client-instance registry.
-    /// Missing files are treated as an empty registry. Defaults to
-    /// `/var/lib/underwrap-backend/client-instances.json`.
+    /// Directory holding the per-instance JSON files that make up the
+    /// runtime client-instance registry. Each file is named
+    /// `<client_instance_id>.json`. Missing directories are treated as
+    /// an empty registry. Defaults to
+    /// `/var/lib/underwrap-backend/clients`.
     #[serde(default)]
-    pub client_instances_file: Option<PathBuf>,
+    pub clients_dir: Option<PathBuf>,
     /// Path of the backend-managed user-state file. Missing files are
     /// treated as an empty user collection with bootstrap incomplete.
     /// Defaults to [`crate::users::DEFAULT_USERS_FILE`].
@@ -73,11 +75,11 @@ impl BackendConfig {
             .unwrap_or_else(|| PathBuf::from(DEFAULT_STORES_FILE))
     }
 
-    /// Resolve [`Self::client_instances_file`] or the project default.
-    pub fn client_instances_file(&self) -> PathBuf {
-        self.client_instances_file
+    /// Resolve [`Self::clients_dir`] or the project default.
+    pub fn clients_dir(&self) -> PathBuf {
+        self.clients_dir
             .clone()
-            .unwrap_or_else(|| PathBuf::from("/var/lib/underwrap-backend/client-instances.json"))
+            .unwrap_or_else(|| PathBuf::from("/var/lib/underwrap-backend/clients"))
     }
 
     /// Resolve [`Self::users_file`] or the project default.

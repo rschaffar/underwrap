@@ -21,7 +21,7 @@ use crate::tls::build_https_acceptor;
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     let stores_file = config.stores_file();
-    let client_instances_file = config.client_instances_file();
+    let clients_dir = config.clients_dir();
     let users_file = config.users_file();
     let definitions = load_store_records(&stores_file)?;
     let state_map = open_initial_stores(&definitions)?;
@@ -30,7 +30,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
         records: definitions.clone(),
     }));
     let client_instances = Arc::new(std::sync::RwLock::new(
-        crate::runtime_clients::load_client_instances(&client_instances_file)?,
+        crate::runtime_clients::load_client_instances(&clients_dir)?,
     ));
 
     let mut tasks = JoinSet::new();
@@ -49,7 +49,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             stores: Arc::clone(&store_registry),
             client_instances: Arc::clone(&client_instances),
             stores_file: stores_file.clone(),
-            client_instances_file: client_instances_file.clone(),
+            clients_dir: clients_dir.clone(),
             stores_data_root: admin_config.and_then(|cfg| cfg.stores_data_root.clone()),
             rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: admin_config.is_some(),

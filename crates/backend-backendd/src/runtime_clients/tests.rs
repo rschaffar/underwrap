@@ -22,71 +22,106 @@ fn sample(id: &str) -> ClientInstanceRecord {
         current_store_id: "store_work".into(),
         status: ClientInstanceStatus::Active,
         last_seen_at: Some(123),
-        current_credential: current_credential_from_pem(sample_cert_pem(id), Some(100)).unwrap(),
+        current_credential: current_credential_from_pem(sample_cert_pem(id)).unwrap(),
         auto_create_wrapper_assets: false,
     }
 }
 
 #[test]
-fn missing_registry_file_is_tolerated() {
+fn missing_clients_dir_is_tolerated() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let loaded = load_client_instances(&tmp.path().join("client-instances.json")).unwrap();
+    let loaded = load_client_instances(&tmp.path().join("clients")).unwrap();
     assert!(loaded.is_empty());
 }
 
 #[test]
 fn save_and_load_round_trip() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let path = tmp.path().join("client-instances.json");
-    let mut map = HashMap::new();
-    map.insert("inst_work".into(), sample("inst_work"));
-    save_client_instances(&path, &map).unwrap();
-    let loaded = load_client_instances(&path).unwrap();
-    assert_eq!(loaded, map);
+    let dir = tmp.path().join("clients");
+    let record = sample("inst_work");
+    save_client_instance(&dir, &record).unwrap();
+    let loaded = load_client_instances(&dir).unwrap();
+    let mut expected = HashMap::new();
+    expected.insert("inst_work".into(), record);
+    assert_eq!(loaded, expected);
 }
 
 #[test]
-fn duplicate_id_is_rejected() {
+fn id_lives_in_filename_not_body() {
+    // The on-disk JSON must not carry the id — the file stem is the
+    // sole source of truth. Operators are free to rename a record by
+    // renaming its file; rewriting the body would not move the id.
     let tmp = tempfile::TempDir::new().unwrap();
-    let path = tmp.path().join("client-instances.json");
-    let a = sample("inst_a");
-    let mut b = sample("inst_b");
-    b.id = a.id.clone();
-    let doc = ClientInstancesDocument {
-        instances: vec![a, b],
-    };
-    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
-    let err = load_client_instances(&path).expect_err("duplicate ids must fail");
-    assert!(format!("{err:#}").contains("duplicate runtime client instance id"));
+    let dir = tmp.path().join("clients");
+    let record = sample("inst_work");
+    save_client_instance(&dir, &record).unwrap();
+    let text = std::fs::read_to_string(dir.join("inst_work.json")).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let obj = parsed.as_object().unwrap();
+    assert!(
+        !obj.contains_key("id"),
+        "on-disk client instance JSON must not contain an 'id' key: {obj:?}",
+    );
+    // And it must not contain the dropped `issued_at` either.
+    let cred = obj["current_credential"].as_object().unwrap();
+    assert!(
+        !cred.contains_key("issued_at"),
+        "on-disk current_credential must not contain 'issued_at': {cred:?}",
+    );
 }
 
 #[test]
-fn duplicate_fingerprint_is_rejected() {
+fn delete_removes_file_and_is_idempotent() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let path = tmp.path().join("client-instances.json");
+    let dir = tmp.path().join("clients");
+    let record = sample("inst_gone");
+    save_client_instance(&dir, &record).unwrap();
+    assert!(dir.join("inst_gone.json").exists());
+    delete_client_instance(&dir, "inst_gone").unwrap();
+    assert!(!dir.join("inst_gone.json").exists());
+    // Second delete is a no-op (idempotent under retry).
+    delete_client_instance(&dir, "inst_gone").unwrap();
+}
+
+#[test]
+fn duplicate_fingerprint_across_files_is_rejected() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("clients");
     let a = sample("inst_a");
     let mut b = sample("inst_b");
     b.current_credential.cert_fingerprint = a.current_credential.cert_fingerprint.clone();
     b.current_credential.cert_pem = a.current_credential.cert_pem.clone();
-    let doc = ClientInstancesDocument {
-        instances: vec![a, b],
-    };
-    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
-    let err = load_client_instances(&path).expect_err("duplicate fingerprints must fail");
+    save_client_instance(&dir, &a).unwrap();
+    save_client_instance(&dir, &b).unwrap();
+    let err = load_client_instances(&dir).expect_err("duplicate fingerprints must fail");
     assert!(format!("{err:#}").contains("duplicate runtime client credential fingerprint"));
+}
+
+#[test]
+fn duplicate_display_name_across_files_is_rejected() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("clients");
+    let a = sample("inst_a");
+    let mut b = sample("inst_b");
+    b.display_name = a.display_name.clone();
+    save_client_instance(&dir, &a).unwrap();
+    save_client_instance(&dir, &b).unwrap();
+    let err = load_client_instances(&dir).expect_err("duplicate display names must fail");
+    assert!(format!("{err:#}").contains("duplicate runtime client display name"));
 }
 
 #[test]
 fn mismatched_current_credential_fingerprint_is_rejected() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let path = tmp.path().join("client-instances.json");
+    let dir = tmp.path().join("clients");
+    std::fs::create_dir_all(&dir).unwrap();
     let mut rec = sample("inst_a");
     rec.current_credential.cert_fingerprint = "wrong".into();
-    let doc = ClientInstancesDocument {
-        instances: vec![rec],
-    };
-    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
-    let err = load_client_instances(&path).expect_err("mismatched fingerprints must fail");
+    // Serialise by hand to skip the `save_client_instance` invariant
+    // check on the PEM; we want the loader to be the one to catch it.
+    let json = serde_json::to_vec_pretty(&rec).unwrap();
+    std::fs::write(dir.join("inst_a.json"), &json).unwrap();
+    let err = load_client_instances(&dir).expect_err("mismatched fingerprints must fail");
     assert!(format!("{err:#}").contains("fingerprint/PEM mismatch"));
 }
 
@@ -104,13 +139,42 @@ fn multiple_certificates_in_current_credential_are_rejected() {
 #[test]
 fn empty_required_fields_are_rejected() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let path = tmp.path().join("client-instances.json");
+    let dir = tmp.path().join("clients");
+    std::fs::create_dir_all(&dir).unwrap();
     let mut rec = sample("inst_a");
     rec.display_name.clear();
-    let doc = ClientInstancesDocument {
-        instances: vec![rec],
-    };
-    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
-    let err = load_client_instances(&path).expect_err("empty required fields must fail");
+    let json = serde_json::to_vec_pretty(&rec).unwrap();
+    std::fs::write(dir.join("inst_a.json"), &json).unwrap();
+    let err = load_client_instances(&dir).expect_err("empty required fields must fail");
     assert!(format!("{err:#}").contains("empty display name"));
+}
+
+#[test]
+fn invalid_filename_stem_is_rejected() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("clients");
+    std::fs::create_dir_all(&dir).unwrap();
+    let rec = sample("placeholder");
+    // The stem here contains a slash-equivalent character that is not
+    // valid for an id; the loader must refuse it rather than silently
+    // accept a malformed key.
+    let json = serde_json::to_vec_pretty(&rec).unwrap();
+    std::fs::write(dir.join("not a valid id.json"), &json).unwrap();
+    let err = load_client_instances(&dir).expect_err("invalid filename stems must fail");
+    assert!(format!("{err:#}").contains("invalid runtime client instance id"));
+}
+
+#[test]
+fn non_json_files_are_ignored() {
+    // Operators may keep `<id>.json.bak` backups in the directory;
+    // those must not turn into loaded records.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("clients");
+    let record = sample("inst_work");
+    save_client_instance(&dir, &record).unwrap();
+    std::fs::write(dir.join("inst_work.json.bak"), b"junk").unwrap();
+    std::fs::write(dir.join("README"), b"notes").unwrap();
+    let loaded = load_client_instances(&dir).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert!(loaded.contains_key("inst_work"));
 }

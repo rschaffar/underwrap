@@ -388,7 +388,6 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
             current_credential: crate::runtime_clients::CurrentCredentialRecord {
                 cert_fingerprint: "fp-1".into(),
                 cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
-                issued_at: Some(1),
             },
             auto_create_wrapper_assets: false,
         },

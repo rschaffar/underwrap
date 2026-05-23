@@ -130,7 +130,7 @@ impl TestDaemon {
         let ready_pki = test_pki_paths(base, principal_client_name(accepted_principal)?)?;
 
         let stores_file = base.join("stores.json");
-        let instances_file = base.join("client-instances.json");
+        let clients_dir = base.join("clients");
         let stores_data_root = base.join("stores-data-root");
         std::fs::create_dir_all(&stores_data_root)?;
         let test_store = underwrap_protocol::config::StoreRecord {
@@ -157,21 +157,13 @@ impl TestDaemon {
             last_seen_at: None,
             current_credential: underwrap_backendd::runtime_clients::current_credential_from_pem(
                 ready_cert_pem,
-                None,
             )?,
             auto_create_wrapper_assets,
         };
-        std::fs::write(
-            &instances_file,
-            serde_json::to_vec_pretty(
-                &underwrap_backendd::runtime_clients::ClientInstancesDocument {
-                    instances: vec![runtime_client],
-                },
-            )?,
-        )?;
+        underwrap_backendd::runtime_clients::save_client_instance(&clients_dir, &runtime_client)?;
         let backend_config = underwrap_backendd::BackendConfig {
             stores_file: Some(stores_file),
-            client_instances_file: Some(instances_file),
+            clients_dir: Some(clients_dir),
             users_file: Some(base.join("users.json")),
             https: Some(underwrap_backendd::HttpsConfig {
                 listen: format!("127.0.0.1:{https_port}"),

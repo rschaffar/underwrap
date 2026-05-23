@@ -2543,14 +2543,6 @@
           "display_name": {
             "type": "string"
           },
-          "issued_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          },
           "status": {
             "$ref": "#/components/schemas/AdminClientInstanceStatus"
           }

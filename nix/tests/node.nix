@@ -51,43 +51,31 @@ let
     ];
   });
 
-  # The backend likewise reads its runtime client-instance registry
-  # from one JSON document. The cert fingerprint embedded here is what
+  # The backend's runtime client-instance registry is a directory of
+  # `<id>.json` files. The cert fingerprint embedded here is what
   # `validate_runtime_client_mappings` will match incoming mTLS
-  # connections against.
-  remoteClientInstancesJson = pkgs.writeText "underwrap-backend-remote-client-instances.json" (builtins.toJSON {
-    instances = [
-      {
-        id = "inst_underwrap-tunnel";
-        display_name = "underwrap-tunnel";
-        current_store_id = "remote";
-        status = "active";
-        last_seen_at = null;
-        current_credential = {
-          cert_fingerprint = tunnelClientFingerprint;
-          cert_pem = builtins.readFile ../../testdata/pki/client-tunnel.pem;
-          issued_at = null;
-        };
-        auto_create_wrapper_assets = false;
-      }
-    ];
+  # connections against. The id lives in the filename, not the body.
+  remoteTunnelClientJson = pkgs.writeText "inst_underwrap-tunnel.json" (builtins.toJSON {
+    display_name = "underwrap-tunnel";
+    current_store_id = "remote";
+    status = "active";
+    last_seen_at = null;
+    current_credential = {
+      cert_fingerprint = tunnelClientFingerprint;
+      cert_pem = builtins.readFile ../../testdata/pki/client-tunnel.pem;
+    };
+    auto_create_wrapper_assets = false;
   });
-  localClientInstancesJson = pkgs.writeText "underwrap-backend-local-client-instances.json" (builtins.toJSON {
-    instances = [
-      {
-        id = "inst_underwrap-local";
-        display_name = "underwrap-local";
-        current_store_id = "local";
-        status = "active";
-        last_seen_at = null;
-        current_credential = {
-          cert_fingerprint = localClientFingerprint;
-          cert_pem = builtins.readFile ../../testdata/pki/client-local.pem;
-          issued_at = null;
-        };
-        auto_create_wrapper_assets = false;
-      }
-    ];
+  localClientJson = pkgs.writeText "inst_underwrap-local.json" (builtins.toJSON {
+    display_name = "underwrap-local";
+    current_store_id = "local";
+    status = "active";
+    last_seen_at = null;
+    current_credential = {
+      cert_fingerprint = localClientFingerprint;
+      cert_pem = builtins.readFile ../../testdata/pki/client-local.pem;
+    };
+    auto_create_wrapper_assets = false;
   });
   crashScript = pkgs.writeShellScript "crash-target" ''
     kill -SEGV $$
@@ -208,7 +196,7 @@ in {
       ExecStart = let
         cfg = pkgs.writeText "backend.yaml" (builtins.toJSON {
           stores_file = "/var/lib/underwrap-backend/stores.json";
-          client_instances_file = "/var/lib/underwrap-backend/client-instances.json";
+          clients_dir = "/var/lib/underwrap-backend/clients";
           users_file = "/var/lib/underwrap-backend/users.json";
           https = {
             listen = "127.0.0.1:18444";
@@ -264,13 +252,16 @@ in {
     "C /var/lib/underwrap-tunnel/client-tunnel.pem 0400 underwrap-tunnel underwrap-tunnel - ${testTunnelClientPem}"
     "C /var/lib/underwrap-tunnel/client-tunnel.key 0400 underwrap-tunnel underwrap-tunnel - ${testTunnelClientKey}"
     # Pre-stage the backend-managed store + client-instance registries.
-    # The backend opens these files at boot and uses them as the
-    # authoritative source for which stores exist and which mTLS
-    # client certs map to which store.
+    # The backend opens these at boot and uses them as the authoritative
+    # source for which stores exist and which mTLS client certs map to
+    # which store. The client registry is a directory of `<id>.json`
+    # files; the id is the filename.
     "C /var/lib/underwrap-backend/stores.json 0600 underwrap-backend underwrap-backend - ${remoteStoresJson}"
-    "C /var/lib/underwrap-backend/client-instances.json 0600 underwrap-backend underwrap-backend - ${remoteClientInstancesJson}"
+    "d /var/lib/underwrap-backend/clients 0700 underwrap-backend underwrap-backend -"
+    "C /var/lib/underwrap-backend/clients/inst_underwrap-tunnel.json 0600 underwrap-backend underwrap-backend - ${remoteTunnelClientJson}"
     "C /var/lib/underwrap-backend-local/stores.json 0600 underwrap-local underwrap-local - ${localStoresJson}"
-    "C /var/lib/underwrap-backend-local/client-instances.json 0600 underwrap-local underwrap-local - ${localClientInstancesJson}"
+    "d /var/lib/underwrap-backend-local/clients 0700 underwrap-local underwrap-local -"
+    "C /var/lib/underwrap-backend-local/clients/inst_underwrap-local.json 0600 underwrap-local underwrap-local - ${localClientJson}"
   ];
 
   # SSH server for the tunnel.
@@ -290,7 +281,7 @@ in {
       ExecStart = let
         cfg = pkgs.writeText "underwrap-local-backend.yaml" (builtins.toJSON {
           stores_file = "/var/lib/underwrap-backend-local/stores.json";
-          client_instances_file = "/var/lib/underwrap-backend-local/client-instances.json";
+          clients_dir = "/var/lib/underwrap-backend-local/clients";
           users_file = "/var/lib/underwrap-backend-local/users.json";
           https = {
             listen = "127.0.0.1:18443";

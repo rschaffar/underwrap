@@ -238,8 +238,6 @@ pub struct AdminClientInstanceCreateRequest {
     pub current_store_id: String,
     pub status: AdminClientInstanceStatus,
     pub cert_pem: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issued_at: Option<u64>,
     /// Initial value for `auto_create_wrapper_assets`. Defaults to
     /// `false` when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]

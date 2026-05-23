@@ -66,7 +66,7 @@ inline in this config. All paths are absolute.
 # treated as empty, so the backend can boot before the first store,
 # user, or runtime client exists.
 stores_file: /var/lib/underwrap-backend/stores.json
-client_instances_file: /var/lib/underwrap-backend/client-instances.json
+clients_dir: /var/lib/underwrap-backend/clients
 users_file: /var/lib/underwrap-backend/users.json
 
 https:

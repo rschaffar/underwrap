@@ -66,7 +66,7 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
         stores_file: Some(base.join("stores.json")),
-        client_instances_file: Some(base.join("client-instances.json")),
+        clients_dir: Some(base.join("clients")),
         users_file: Some(base.join("users.json")),
         https: Some(underwrap_backendd::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),
@@ -150,7 +150,7 @@ async fn underwrapd_binary_start_and_read() {
     std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
 
     let stores_file = base.join("stores.json");
-    let client_instances_file = base.join("client-instances.json");
+    let clients_dir = base.join("clients");
     let test_store = underwrap_protocol::config::StoreRecord {
         id: "test".to_string(),
         name: "test".to_string(),
@@ -177,21 +177,12 @@ async fn underwrapd_binary_start_and_read() {
         last_seen_at: None,
         current_credential: underwrap_backendd::runtime_clients::current_credential_from_pem(
             client_cert_pem,
-            None,
         )
         .unwrap(),
         auto_create_wrapper_assets: false,
     };
-    std::fs::write(
-        &client_instances_file,
-        serde_json::to_vec_pretty(
-            &underwrap_backendd::runtime_clients::ClientInstancesDocument {
-                instances: vec![client_instance],
-            },
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    underwrap_backendd::runtime_clients::save_client_instance(&clients_dir, &client_instance)
+        .unwrap();
 
     // Seed the resource + pair documents directly in the store. The
     // new resource-vocabulary backend resolves the wrapper's resource
@@ -239,7 +230,7 @@ async fn underwrapd_binary_start_and_read() {
     .unwrap();
     let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
         stores_file: Some(stores_file),
-        client_instances_file: Some(client_instances_file),
+        clients_dir: Some(clients_dir),
         users_file: Some(base.join("users.json")),
         https: Some(underwrap_backendd::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),

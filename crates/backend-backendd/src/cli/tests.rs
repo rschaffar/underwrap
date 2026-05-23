@@ -7,7 +7,7 @@ fn parse_backend_config_parses_minimal_yaml() {
     // path and https+admin blocks are optional.
     let config = parse_backend_config("{}\n").unwrap();
     assert!(config.stores_file.is_none());
-    assert!(config.client_instances_file.is_none());
+    assert!(config.clients_dir.is_none());
     assert!(config.https.is_none());
     assert!(config.admin.is_none());
 }
@@ -17,7 +17,7 @@ fn parse_backend_config_accepts_dir_overrides() {
     let config = parse_backend_config(
         r#"
 stores_file: /var/u/stores.json
-client_instances_file: /var/u/client-instances.json
+clients_dir: /var/u/clients
 users_file: /var/u/users.json
 "#,
     )
@@ -27,8 +27,8 @@ users_file: /var/u/users.json
         std::path::PathBuf::from("/var/u/stores.json"),
     );
     assert_eq!(
-        config.client_instances_file(),
-        std::path::PathBuf::from("/var/u/client-instances.json"),
+        config.clients_dir(),
+        std::path::PathBuf::from("/var/u/clients"),
     );
     assert_eq!(
         config.users_file(),
