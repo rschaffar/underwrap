@@ -15,7 +15,6 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use underwrap_protocol::message::SecretBytes;
-use underwrap_protocol::resource::ResourceSlot;
 use underwrap_protocol::service::{
     AdminOkResponse, AdminSecretDeleteRequest, AdminSecretDeleteResponse, AdminSecretListRequest,
     AdminSecretListResponse, AdminSecretReadRequest, AdminSecretReadResponse,
@@ -26,7 +25,7 @@ use underwrap_store::{
 };
 
 use crate::admin_api::AdminError;
-use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::admin_api::stores::admin_store;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
@@ -35,56 +34,6 @@ use crate::storage::secret_entries::{
     validate_and_compose_secret_id, write_resource_entry,
 };
 use crate::users::Principal;
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn write_admin_secret_audit(
-    operator: &str,
-    store: &str,
-    resource_id: &str,
-    slot: ResourceSlot,
-    key: &str,
-    action: &str,
-    operation: Option<&str>,
-    result: &str,
-) {
-    let resource = format!("secret:{store}/{resource_id}/{}/{key}", slot.name());
-    log_admin_event(
-        action,
-        operator,
-        None,
-        Some(&resource),
-        None,
-        operation,
-        result,
-    );
-}
-
-/// Audit a secret rename. Carries both keys because the operation
-/// changes the canonical identifier itself; the formatted resource
-/// uses the `from` key so the event lines up with the prior
-/// `secret.write` that created it. The new key travels in the
-/// `operation` field as `rename->{to_key}`.
-pub(crate) fn write_admin_secret_rename_audit(
-    operator: &str,
-    store: &str,
-    resource_id: &str,
-    slot: ResourceSlot,
-    from_key: &str,
-    to_key: &str,
-    result: &str,
-) {
-    let resource = format!("secret:{store}/{resource_id}/{}/{from_key}", slot.name());
-    let operation = format!("rename->{to_key}");
-    log_admin_event(
-        "secret.rename",
-        operator,
-        None,
-        Some(&resource),
-        None,
-        Some(&operation),
-        result,
-    );
-}
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
@@ -172,13 +121,15 @@ pub(crate) async fn handle_admin_secret_delete(
     } else {
         "failure"
     };
-    write_admin_secret_audit(
-        &principal.username,
-        &body.store,
-        &body.resource_id,
-        body.slot,
-        &body.key,
+    log_admin_event(
         "secret.delete",
+        &principal,
+        AuditEntity::Secret {
+            store: &body.store,
+            resource_id: &body.resource_id,
+            slot: body.slot,
+            key: &body.key,
+        },
         None,
         result,
     );
@@ -221,13 +172,15 @@ pub(crate) async fn handle_admin_secret_write(
     } else {
         "failure"
     };
-    write_admin_secret_audit(
-        &principal.username,
-        &body.store,
-        &body.resource_id,
-        body.slot,
-        &body.key,
+    log_admin_event(
         "secret.write",
+        &principal,
+        AuditEntity::Secret {
+            store: &body.store,
+            resource_id: &body.resource_id,
+            slot: body.slot,
+            key: &body.key,
+        },
         None,
         result,
     );
@@ -259,31 +212,20 @@ pub(crate) async fn handle_admin_secret_rename(
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminSecretRenameRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
-    let operator = &principal.username;
-    let audit_failure = || {
-        write_admin_secret_rename_audit(
-            operator,
-            &body.store,
-            &body.resource_id,
-            body.slot,
-            &body.from_key,
-            &body.to_key,
-            "failure",
-        );
-    };
     let result = rename_inner(&state, &body).await;
-    match &result {
-        Ok(_) => write_admin_secret_rename_audit(
-            operator,
-            &body.store,
-            &body.resource_id,
-            body.slot,
-            &body.from_key,
-            &body.to_key,
-            "success",
-        ),
-        Err(_) => audit_failure(),
-    }
+    let operation = format!("rename->{}", body.to_key);
+    log_admin_event(
+        "secret.rename",
+        &principal,
+        AuditEntity::Secret {
+            store: &body.store,
+            resource_id: &body.resource_id,
+            slot: body.slot,
+            key: &body.from_key,
+        },
+        Some(&operation),
+        if result.is_ok() { "success" } else { "failure" },
+    );
     result.map(Json)
 }
 

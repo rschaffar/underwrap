@@ -1,4 +1,5 @@
-//! Admin login surface: `/v1/admin/auth/{login, logout, whoami, password}`.
+//! Admin login surface: `/v1/admin/auth/{login, logout, whoami,
+//! password, bootstrap, bootstrap/status}`.
 //!
 //! Sessions are issued via [`tower_sessions`] / [`axum_login`]: on a
 //! successful password check the handler calls
@@ -9,6 +10,14 @@
 //! the cookie. Whoami is tolerant of missing auth so the SPA can use
 //! it to drive the login / bootstrap redirect dance without producing
 //! 401s.
+//!
+//! The [`bootstrap`] submodule covers the once-only "first operator"
+//! setup that runs against an empty operator collection. Its routes
+//! share this module's `/v1/admin/auth/*` prefix and are merged into
+//! [`public_router`] below — there is no separate top-level
+//! `bootstrap` module.
+
+pub mod bootstrap;
 
 use std::sync::Arc;
 
@@ -57,6 +66,7 @@ pub(crate) fn public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_login))
         .routes(routes!(handle_admin_whoami))
+        .merge(bootstrap::openapi_router())
 }
 
 pub(crate) fn protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
@@ -203,7 +213,8 @@ pub(crate) async fn handle_admin_password_change(
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminPasswordChangeRequest>,
 ) -> Result<Json<AdminOkUserResponse>, AdminError> {
-    use crate::admin_api::users::{mutate_collection, write_admin_user_audit};
+    use crate::admin_api::audit::{AuditEntity, log_admin_event};
+    use crate::admin_api::users::mutate_collection;
 
     if body.new_password.is_empty() {
         return Err(AdminError::bad_request(
@@ -225,10 +236,12 @@ pub(crate) async fn handle_admin_password_change(
         }
     };
     if !crate::auth::verify_password(&current_hash, &body.current_password) {
-        write_admin_user_audit(
-            &principal,
-            &principal.username,
+        log_admin_event(
             "user.password.change",
+            &principal,
+            AuditEntity::User {
+                username: &principal.username,
+            },
             Some("wrong-current-password"),
             "failure",
         );
@@ -253,10 +266,12 @@ pub(crate) async fn handle_admin_password_change(
     });
     match result {
         Ok(()) => {
-            write_admin_user_audit(
-                &principal,
-                &principal.username,
+            log_admin_event(
                 "user.password.change",
+                &principal,
+                AuditEntity::User {
+                    username: &principal.username,
+                },
                 None,
                 "success",
             );

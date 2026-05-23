@@ -25,14 +25,14 @@
 //!   subdomain.
 //! - [`csrf`] — CSRF config builder and the cross-cutting auth/CSRF
 //!   middleware functions described above.
-//! - [`auth`] / [`bootstrap`] — login, whoami, logout, password change,
-//!   first-operator bootstrap.
+//! - [`auth`] — login, whoami, logout, password change. The first-
+//!   operator setup endpoints live as a submodule under
+//!   [`auth::bootstrap`].
 //! - [`users`], [`stores`], [`client_instances`], [`secrets`],
 //!   [`policy`], [`resources`], [`pairs`] — admin CRUD per subdomain.
 
 pub(crate) mod audit;
 pub mod auth;
-pub mod bootstrap;
 pub(crate) mod client_instances;
 pub(crate) mod csrf;
 pub(crate) mod error;
@@ -140,11 +140,10 @@ pub(crate) fn admin_router_and_openapi(
 }
 
 /// Public sub-router (login, whoami, bootstrap). Shared between the
-/// live HTTPS listener and the OpenAPI export drift test.
+/// live HTTPS listener and the OpenAPI export drift test. Bootstrap
+/// is merged inside [`auth::public_router`].
 fn build_public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
-    OpenApiRouter::new()
-        .merge(auth::public_router())
-        .merge(bootstrap::openapi_router())
+    OpenApiRouter::new().merge(auth::public_router())
 }
 
 /// Protected sub-router, without any tower layers applied. Used both

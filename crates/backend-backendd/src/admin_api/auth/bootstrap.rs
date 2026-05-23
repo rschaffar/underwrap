@@ -19,7 +19,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
-use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::audit::log_bootstrap_attempt;
 use crate::admin_api::auth::AdminAuthSession;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
@@ -208,15 +208,7 @@ pub(crate) async fn handle_admin_bootstrap(
 
 /// Log one bootstrap attempt outcome. Best effort: never fails the caller.
 pub(crate) fn audit_bootstrap_attempt(username: &str, operation: Option<&str>, result: &str) {
-    log_admin_event(
-        "bootstrap.attempt",
-        username,
-        None,
-        None,
-        None,
-        operation,
-        result,
-    );
+    log_bootstrap_attempt(username, operation, result);
 }
 
 #[cfg(test)]

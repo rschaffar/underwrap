@@ -24,7 +24,6 @@ use underwrap_protocol::service::{
 use underwrap_store::StorageBackend;
 
 use crate::admin_api::AdminError;
-use crate::admin_api::audit::log_admin_event;
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{LoadedStoreRecord, RegistryLookupError};
 
@@ -239,25 +238,6 @@ pub(super) fn create_data_dir_secure(dir: &Path) -> Result<()> {
         return Ok(());
     }
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))
-}
-
-pub(crate) fn write_admin_store_audit(
-    principal: &crate::users::Principal,
-    store_name: &str,
-    action: &str,
-    operation: Option<&str>,
-    result: &str,
-) {
-    let resource = format!("store:{store_name}");
-    log_admin_event(
-        action,
-        &principal.username,
-        None,
-        Some(resource.as_str()),
-        None,
-        operation,
-        result,
-    );
 }
 
 pub(crate) fn openapi_router() -> utoipa_axum::router::OpenApiRouter<Arc<AdminRuntimeState>> {

@@ -33,8 +33,9 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 use super::{
     admin_store_actions, admin_store_detail, admin_store_list_item, admin_store_usage,
     admin_store_usage_for_locked, create_data_dir_secure, generate_master_key_bytes,
-    master_key_hex, resolve_store_dir, write_admin_store_audit,
+    master_key_hex, resolve_store_dir,
 };
+use crate::admin_api::audit::{AuditEntity, log_admin_event};
 
 #[utoipa::path(
     get,
@@ -204,7 +205,13 @@ pub(crate) async fn handle_admin_store_create(
             ));
         }
     }
-    write_admin_store_audit(&principal, &store_id, "store.create", None, "success");
+    log_admin_event(
+        "store.create",
+        &principal,
+        AuditEntity::Store { store: &store_id },
+        None,
+        "success",
+    );
     let usage = AdminStoreUsageSummary {
         mapped_client_instance_count: 0,
         has_secrets: false,
@@ -282,7 +289,13 @@ pub(crate) async fn handle_admin_store_update(
             ));
         }
     }
-    write_admin_store_audit(&principal, &name, "store.update", None, "success");
+    log_admin_event(
+        "store.update",
+        &principal,
+        AuditEntity::Store { store: &name },
+        None,
+        "success",
+    );
     let loaded = LoadedStoreRecord { record: updated };
     let (handle, locked) = {
         let reg = state.stores.read().unwrap();
@@ -433,7 +446,13 @@ pub(crate) async fn handle_admin_store_delete(
     } else {
         None
     };
-    write_admin_store_audit(&principal, &name, "store.delete", operation, "success");
+    log_admin_event(
+        "store.delete",
+        &principal,
+        AuditEntity::Store { store: &name },
+        operation,
+        "success",
+    );
     Ok(Json(AdminStoreDeleteResponse {
         ok: true,
         cleanup_hint,

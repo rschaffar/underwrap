@@ -26,7 +26,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
-use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::admin_api::stores::admin_store;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
@@ -57,29 +57,6 @@ pub(crate) fn drop_client_instance_permissions(
         return Ok(());
     }
     save_policy_document(store.as_ref(), &doc)
-}
-
-pub(crate) fn write_admin_permission_audit(
-    actor: &Principal,
-    store_name: &str,
-    permission: &underwrap_protocol::policy::WrapperPermission,
-    action: &str,
-    operation: Option<&str>,
-    result: &str,
-) {
-    let resource = format!(
-        "wrapper_permission:{store_name}/{}/{}/{}",
-        permission.client_instance, permission.wrapper, permission.resource_id
-    );
-    log_admin_event(
-        action,
-        &actor.username,
-        Some(permission.wrapper.as_str()),
-        Some(resource.as_str()),
-        None,
-        operation,
-        result,
-    );
 }
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
@@ -179,21 +156,25 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
             .then(a.resource_id.cmp(&b.resource_id))
     });
     if let Err(e) = save_policy_document(store.as_ref(), &doc) {
-        write_admin_permission_audit(
-            &principal,
-            &body.store,
-            &body.permission,
+        log_admin_event(
             "wrapper_permission.upsert",
+            &principal,
+            AuditEntity::Permission {
+                store: &body.store,
+                permission: &body.permission,
+            },
             None,
             "failure",
         );
         return Err(AdminError::internal("persisting policy document", e));
     }
-    write_admin_permission_audit(
-        &principal,
-        &body.store,
-        &body.permission,
+    log_admin_event(
         "wrapper_permission.upsert",
+        &principal,
+        AuditEntity::Permission {
+            store: &body.store,
+            permission: &body.permission,
+        },
         None,
         "success",
     );
@@ -239,11 +220,13 @@ pub(crate) async fn handle_admin_wrapper_permission_delete(
         writable: false,
         reason: None,
     };
-    write_admin_permission_audit(
-        &principal,
-        &body.store,
-        &removed_permission,
+    log_admin_event(
         "wrapper_permission.delete",
+        &principal,
+        AuditEntity::Permission {
+            store: &body.store,
+            permission: &removed_permission,
+        },
         None,
         "success",
     );

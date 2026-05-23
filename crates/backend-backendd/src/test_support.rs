@@ -351,7 +351,7 @@ pub(crate) fn run_bootstrap(
     password: &str,
 ) -> (StatusCode, serde_json::Value) {
     use crate::admin_api::AdminError;
-    use crate::admin_api::bootstrap::audit_bootstrap_attempt;
+    use crate::admin_api::auth::bootstrap::audit_bootstrap_attempt;
 
     let username_norm = crate::users::normalise_username(username);
     if username_norm.is_empty() || password.is_empty() {
@@ -395,7 +395,7 @@ pub(crate) fn run_bootstrap(
     )
     .unwrap();
     audit_bootstrap_attempt(&record.username, None, "success");
-    let body = crate::admin_api::bootstrap::BootstrapResponse {
+    let body = crate::admin_api::auth::bootstrap::BootstrapResponse {
         username: record.username.clone(),
     };
     run_handler(async { Ok::<_, crate::admin_api::AdminError>(axum::Json(body)) })

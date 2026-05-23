@@ -26,9 +26,8 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
         .routes(routes!(handle_admin_store_lock))
 }
 
-use super::{
-    create_data_dir_secure, generate_master_key_bytes, master_key_hex, write_admin_store_audit,
-};
+use super::{create_data_dir_secure, generate_master_key_bytes, master_key_hex};
+use crate::admin_api::audit::{AuditEntity, log_admin_event};
 
 /// Get or lazily create the rotation `Mutex` for `store_id`. Held for
 /// the duration of a rotation so concurrent writes wait until the new
@@ -116,10 +115,10 @@ pub(crate) async fn handle_admin_store_rotate_key(
     let stage_name = format!(".rotating-{}-{}", name, crate::ids::random_hex_8());
     let stage_dir = parent.join(&stage_name);
     if let Err(e) = create_data_dir_secure(&stage_dir) {
-        write_admin_store_audit(
-            &principal,
-            &name,
+        log_admin_event(
             "store.rotate-key",
+            &principal,
+            AuditEntity::Store { store: &name },
             Some("stage-failed"),
             "failure",
         );
@@ -136,10 +135,10 @@ pub(crate) async fn handle_admin_store_rotate_key(
             Ok(b) => b,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&stage_dir);
-                write_admin_store_audit(
-                    &principal,
-                    &name,
+                log_admin_event(
                     "store.rotate-key",
+                    &principal,
+                    AuditEntity::Store { store: &name },
                     Some("stage-failed"),
                     "failure",
                 );
@@ -165,10 +164,10 @@ pub(crate) async fn handle_admin_store_rotate_key(
     let backup_dir = parent.join(format!("{stage_name}.replaced"));
     if let Err(e) = std::fs::rename(&dir, &backup_dir) {
         let _ = std::fs::remove_dir_all(&stage_dir);
-        write_admin_store_audit(
-            &principal,
-            &name,
+        log_admin_event(
             "store.rotate-key",
+            &principal,
+            AuditEntity::Store { store: &name },
             Some("swap-failed"),
             "failure",
         );
@@ -186,10 +185,10 @@ pub(crate) async fn handle_admin_store_rotate_key(
         // pointing at usable ciphertext.
         let _ = std::fs::rename(&backup_dir, &dir);
         let _ = std::fs::remove_dir_all(&stage_dir);
-        write_admin_store_audit(
-            &principal,
-            &name,
+        log_admin_event(
             "store.rotate-key",
+            &principal,
+            AuditEntity::Store { store: &name },
             Some("swap-failed"),
             "failure",
         );
@@ -215,10 +214,10 @@ pub(crate) async fn handle_admin_store_rotate_key(
             Ok(b) => b,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&backup_dir);
-                write_admin_store_audit(
-                    &principal,
-                    &name,
+                log_admin_event(
                     "store.rotate-key",
+                    &principal,
+                    AuditEntity::Store { store: &name },
                     Some("reopen-failed"),
                     "failure",
                 );
@@ -232,10 +231,10 @@ pub(crate) async fn handle_admin_store_rotate_key(
             Ok(b) => Arc::new(b),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&backup_dir);
-                write_admin_store_audit(
-                    &principal,
-                    &name,
+                log_admin_event(
                     "store.rotate-key",
+                    &principal,
+                    AuditEntity::Store { store: &name },
                     Some("reopen-failed"),
                     "failure",
                 );
@@ -273,7 +272,13 @@ pub(crate) async fn handle_admin_store_rotate_key(
         }
     }
 
-    write_admin_store_audit(&principal, &name, "store.rotate-key", None, "success");
+    log_admin_event(
+        "store.rotate-key",
+        &principal,
+        AuditEntity::Store { store: &name },
+        None,
+        "success",
+    );
     Ok(Json(AdminStoreRotateKeyResponse {
         key_hex,
         warning: "every resource in this store has been re-encrypted under the new master key. \
@@ -300,10 +305,10 @@ fn reencrypt_into(
         Ok(ids) => ids,
         Err(e) => {
             let _ = std::fs::remove_dir_all(stage_dir);
-            write_admin_store_audit(
-                principal,
-                store_name,
+            log_admin_event(
                 "store.rotate-key",
+                principal,
+                AuditEntity::Store { store: store_name },
                 Some("list-failed"),
                 "failure",
             );
@@ -322,10 +327,10 @@ fn reencrypt_into(
         underwrap_store::ENCRYPTED_CANARY_PLAINTEXT,
     ) {
         let _ = std::fs::remove_dir_all(stage_dir);
-        write_admin_store_audit(
-            principal,
-            store_name,
+        log_admin_event(
             "store.rotate-key",
+            principal,
+            AuditEntity::Store { store: store_name },
             Some("canary-write-failed"),
             "failure",
         );
@@ -343,10 +348,10 @@ fn reencrypt_into(
             Ok(None) => continue, // raced — gone
             Err(e) => {
                 let _ = std::fs::remove_dir_all(stage_dir);
-                write_admin_store_audit(
-                    principal,
-                    store_name,
+                log_admin_event(
                     "store.rotate-key",
+                    principal,
+                    AuditEntity::Store { store: store_name },
                     Some("read-failed"),
                     "failure",
                 );
@@ -358,10 +363,10 @@ fn reencrypt_into(
         };
         if let Err(e) = to.write(&id, material.as_ref()) {
             let _ = std::fs::remove_dir_all(stage_dir);
-            write_admin_store_audit(
-                principal,
-                store_name,
+            log_admin_event(
                 "store.rotate-key",
+                principal,
+                AuditEntity::Store { store: store_name },
                 Some("write-failed"),
                 "failure",
             );
@@ -434,10 +439,10 @@ pub(crate) async fn handle_admin_store_unlock(
     let key_bytes = match underwrap_store::parse_hex_key(&body.key_hex) {
         Ok(k) => k,
         Err(e) => {
-            write_admin_store_audit(
-                &principal,
-                &name,
+            log_admin_event(
                 "store.unlock",
+                &principal,
+                AuditEntity::Store { store: &name },
                 Some("invalid-key-hex"),
                 "failure",
             );
@@ -450,10 +455,10 @@ pub(crate) async fn handle_admin_store_unlock(
     let backend = match underwrap_store::EncryptedBackend::open_with_key(&dir, key_bytes) {
         Ok(b) => b,
         Err(e) => {
-            write_admin_store_audit(
-                &principal,
-                &name,
+            log_admin_event(
                 "store.unlock",
+                &principal,
+                AuditEntity::Store { store: &name },
                 Some("open-failed"),
                 "failure",
             );
@@ -466,10 +471,10 @@ pub(crate) async fn handle_admin_store_unlock(
     match backend.read(underwrap_store::ENCRYPTED_CANARY_ID) {
         Ok(Some(plain)) if plain.as_ref() == underwrap_store::ENCRYPTED_CANARY_PLAINTEXT => {}
         Ok(Some(_)) => {
-            write_admin_store_audit(
-                &principal,
-                &name,
+            log_admin_event(
                 "store.unlock",
+                &principal,
+                AuditEntity::Store { store: &name },
                 Some("canary-mismatch"),
                 "failure",
             );
@@ -479,10 +484,10 @@ pub(crate) async fn handle_admin_store_unlock(
             ));
         }
         Ok(None) => {
-            write_admin_store_audit(
-                &principal,
-                &name,
+            log_admin_event(
                 "store.unlock",
+                &principal,
+                AuditEntity::Store { store: &name },
                 Some("canary-missing"),
                 "failure",
             );
@@ -492,10 +497,10 @@ pub(crate) async fn handle_admin_store_unlock(
             ));
         }
         Err(_) => {
-            write_admin_store_audit(
-                &principal,
-                &name,
+            log_admin_event(
                 "store.unlock",
+                &principal,
+                AuditEntity::Store { store: &name },
                 Some("key-mismatch"),
                 "failure",
             );
@@ -509,7 +514,13 @@ pub(crate) async fn handle_admin_store_unlock(
         let mut reg = state.stores.write().unwrap();
         reg.unlock(&name, Arc::new(backend));
     }
-    write_admin_store_audit(&principal, &name, "store.unlock", None, "success");
+    log_admin_event(
+        "store.unlock",
+        &principal,
+        AuditEntity::Store { store: &name },
+        None,
+        "success",
+    );
     Ok(Json(AdminOkResponse { ok: true }))
 }
 
@@ -552,7 +563,13 @@ pub(crate) async fn handle_admin_store_lock(
     reg.lock(&name);
     drop(reg);
     let result = if was_locked { "noop" } else { "success" };
-    write_admin_store_audit(&principal, &name, "store.lock", None, result);
+    log_admin_event(
+        "store.lock",
+        &principal,
+        AuditEntity::Store { store: &name },
+        None,
+        result,
+    );
     Ok(Json(StoreLockResponse {
         ok: true,
         was_locked,

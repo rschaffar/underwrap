@@ -23,30 +23,11 @@ use underwrap_protocol::service::{
 };
 
 use crate::admin_api::AdminError;
-use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::admin_api::policy::drop_client_instance_permissions;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::users::Principal;
-
-pub(crate) fn write_admin_client_instance_audit(
-    operator: &str,
-    id: &str,
-    action: &str,
-    operation: Option<&str>,
-    result: &str,
-) {
-    let resource = format!("client-instance:{id}");
-    log_admin_event(
-        action,
-        operator,
-        None,
-        Some(&resource),
-        None,
-        operation,
-        result,
-    );
-}
 
 fn client_instance_status_to_wire(
     status: crate::runtime_clients::ClientInstanceStatus,
@@ -277,10 +258,10 @@ pub(crate) async fn handle_admin_client_instance_create(
         ));
     }
     drop(instances);
-    write_admin_client_instance_audit(
-        &principal.username,
-        &id,
+    log_admin_event(
         "client-instance.create",
+        &principal,
+        AuditEntity::ClientInstance { id: &id },
         None,
         "success",
     );
@@ -402,10 +383,10 @@ pub(crate) async fn handle_admin_client_instance_update(
             "failed to strip wrapper permissions for remapped client instance",
         );
     }
-    write_admin_client_instance_audit(
-        &principal.username,
-        &id,
+    log_admin_event(
         "client-instance.update",
+        &principal,
+        AuditEntity::ClientInstance { id: &id },
         None,
         "success",
     );
@@ -468,10 +449,10 @@ pub(crate) async fn handle_admin_client_instance_delete(
             "failed to strip wrapper permissions for deleted client instance",
         );
     }
-    write_admin_client_instance_audit(
-        &principal.username,
-        &id,
+    log_admin_event(
         "client-instance.delete",
+        &principal,
+        AuditEntity::ClientInstance { id: &id },
         None,
         "success",
     );

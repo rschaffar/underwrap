@@ -13,7 +13,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
-use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::admin_api::stores::admin_store;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
@@ -22,26 +22,6 @@ use crate::storage::documents::{
     load_resources_document, save_pairs_document,
 };
 use crate::users::Principal;
-
-pub(crate) fn write_admin_pair_audit(
-    operator: &str,
-    wrapper: &str,
-    resource_id: &str,
-    action: &str,
-    operation: Option<&str>,
-    result: &str,
-) {
-    let resource = format!("pair:{wrapper}/{resource_id}");
-    log_admin_event(
-        action,
-        operator,
-        Some(wrapper),
-        Some(&resource),
-        None,
-        operation,
-        result,
-    );
-}
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
@@ -138,11 +118,13 @@ pub(crate) async fn handle_admin_pair_create(
         .expect("find returned None just above");
     save_pairs_document(store.as_ref(), &pairs)
         .map_err(|e| AdminError::internal("persisting pairs document", e))?;
-    write_admin_pair_audit(
-        &principal.username,
-        wrapper,
-        resource_id,
+    log_admin_event(
         "pair.create",
+        &principal,
+        AuditEntity::Pair {
+            wrapper,
+            resource_id,
+        },
         None,
         "success",
     );
@@ -193,11 +175,13 @@ pub(crate) async fn handle_admin_pair_delete(
     sample_permissions.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
 
     if permission_count > 0 {
-        write_admin_pair_audit(
-            &principal.username,
-            &body.wrapper,
-            &body.resource_id,
+        log_admin_event(
             "pair.delete",
+            &principal,
+            AuditEntity::Pair {
+                wrapper: &body.wrapper,
+                resource_id: &body.resource_id,
+            },
             None,
             "blocked",
         );
@@ -213,11 +197,13 @@ pub(crate) async fn handle_admin_pair_delete(
     doc.remove(&body.wrapper, &body.resource_id);
     save_pairs_document(store.as_ref(), &doc)
         .map_err(|e| AdminError::internal("persisting pairs document", e))?;
-    write_admin_pair_audit(
-        &principal.username,
-        &body.wrapper,
-        &body.resource_id,
+    log_admin_event(
         "pair.delete",
+        &principal,
+        AuditEntity::Pair {
+            wrapper: &body.wrapper,
+            resource_id: &body.resource_id,
+        },
         None,
         "success",
     );

@@ -22,7 +22,7 @@ use underwrap_protocol::service::{
 };
 
 use crate::admin_api::AdminError;
-use crate::admin_api::audit::log_admin_event;
+use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::users::{Principal, UserMutationError};
@@ -43,25 +43,6 @@ pub(crate) fn user_detail(record: &crate::users::UserRecord) -> AdminUserDetailR
         created_at: record.created_at,
         password_changed_at: record.password_changed_at,
     }
-}
-
-pub(crate) fn write_admin_user_audit(
-    actor: &Principal,
-    target_username: &str,
-    action: &str,
-    operation: Option<&str>,
-    result: &str,
-) {
-    let resource = format!("user:{target_username}");
-    log_admin_event(
-        action,
-        &actor.username,
-        None,
-        Some(resource.as_str()),
-        None,
-        operation,
-        result,
-    );
 }
 
 /// Read-modify-write on the user collection, serialised across
@@ -203,15 +184,25 @@ pub(crate) async fn handle_admin_user_create(
     });
     match result {
         Ok(saved) => {
-            write_admin_user_audit(&principal, &target_username, "user.create", None, "success");
+            log_admin_event(
+                "user.create",
+                &principal,
+                AuditEntity::User {
+                    username: &target_username,
+                },
+                None,
+                "success",
+            );
             Ok(Json(user_detail(&saved)))
         }
         Err(e) => {
             let (reason, response) = classify_mutation_error(e);
-            write_admin_user_audit(
-                &principal,
-                &target_username,
+            log_admin_event(
                 "user.create",
+                &principal,
+                AuditEntity::User {
+                    username: &target_username,
+                },
                 reason,
                 "failure",
             );
@@ -250,10 +241,12 @@ pub(crate) async fn handle_admin_user_update(
     });
     match result {
         Ok(updated) => {
-            write_admin_user_audit(
-                &principal,
-                &updated.username,
+            log_admin_event(
                 "user.update",
+                &principal,
+                AuditEntity::User {
+                    username: &updated.username,
+                },
                 None,
                 "success",
             );
@@ -261,7 +254,13 @@ pub(crate) async fn handle_admin_user_update(
         }
         Err(e) => {
             let (reason, response) = classify_mutation_error(e);
-            write_admin_user_audit(&principal, &id, "user.update", reason, "failure");
+            log_admin_event(
+                "user.update",
+                &principal,
+                AuditEntity::User { username: &id },
+                reason,
+                "failure",
+            );
             Err(response)
         }
     }
@@ -313,10 +312,12 @@ pub(crate) async fn handle_admin_user_reset_password(
             // new hash here, the next request that arrives carrying
             // any pre-rotation session for this user fails the
             // hash check and the session is flushed server-side.
-            write_admin_user_audit(
-                &principal,
-                &target_username,
+            log_admin_event(
                 "user.password.reset",
+                &principal,
+                AuditEntity::User {
+                    username: &target_username,
+                },
                 None,
                 "success",
             );
@@ -324,7 +325,13 @@ pub(crate) async fn handle_admin_user_reset_password(
         }
         Err(e) => {
             let (reason, response) = classify_mutation_error(e);
-            write_admin_user_audit(&principal, &id, "user.password.reset", reason, "failure");
+            log_admin_event(
+                "user.password.reset",
+                &principal,
+                AuditEntity::User { username: &id },
+                reason,
+                "failure",
+            );
             Err(response)
         }
     }
@@ -354,10 +361,12 @@ pub(crate) async fn handle_admin_user_delete(
             // record is gone, `AuthBackend::get_user` returns None on
             // any subsequent request, `auth_session.user` is None,
             // and the `require_login_layer` rejects with 401.
-            write_admin_user_audit(
-                &principal,
-                &removed.username,
+            log_admin_event(
                 "user.delete",
+                &principal,
+                AuditEntity::User {
+                    username: &removed.username,
+                },
                 None,
                 "success",
             );
@@ -365,7 +374,13 @@ pub(crate) async fn handle_admin_user_delete(
         }
         Err(e) => {
             let (reason, response) = classify_mutation_error(e);
-            write_admin_user_audit(&principal, &id, "user.delete", reason, "failure");
+            log_admin_event(
+                "user.delete",
+                &principal,
+                AuditEntity::User { username: &id },
+                reason,
+                "failure",
+            );
             Err(response)
         }
     }
