@@ -30,13 +30,7 @@ import {
 import { describeApiError } from "@/lib/error-message";
 
 const editSchema = z.object({
-  username: z
-    .string()
-    .min(1, "Username is required.")
-    .regex(
-      /^[a-z0-9][a-z0-9_-]*$/,
-      "Use lowercase letters, digits, '-' or '_'; must start with a letter or digit.",
-    ),
+  username: z.string().trim().min(1, "Username is required."),
 });
 type EditValues = z.infer<typeof editSchema>;
 

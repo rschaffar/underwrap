@@ -27,19 +27,7 @@ import { postResourceCreate } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
 const resourceSchema = z.object({
-  resource: z
-    .string()
-    .min(1, "Resource name is required.")
-    .refine((s) => !s.startsWith("__underwrap/"), {
-      message: "Reserved names starting with __underwrap/ cannot be used.",
-    })
-    .refine((s) => !s.startsWith("/") && !s.endsWith("/"), {
-      message: "Resource name must not start or end with a slash.",
-    })
-    .refine((s) => !/\/(env|files|libsecret)\//.test(`${s}/`), {
-      message:
-        "Resource name must not contain an env/files/libsecret slot segment.",
-    }),
+  resource: z.string().trim().min(1, "Resource name is required."),
 });
 type ResourceValues = z.infer<typeof resourceSchema>;
 
@@ -120,9 +108,7 @@ export function CreateResourceDialog({
                     />
                   </FormControl>
                   <FormDescription>
-                    Slash-delimited path, without an{" "}
-                    <code>env</code>/<code>files</code>/<code>libsecret</code>{" "}
-                    slot suffix.
+                    A human-readable label. The on-disk id is generated.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

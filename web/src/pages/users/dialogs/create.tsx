@@ -32,13 +32,7 @@ import { describeApiError } from "@/lib/error-message";
 
 const createSchema = z
   .object({
-    username: z
-      .string()
-      .min(1, "Username is required.")
-      .regex(
-        /^[a-z0-9][a-z0-9_-]*$/,
-        "Use lowercase letters, digits, '-' or '_'; must start with a letter or digit.",
-      ),
+    username: z.string().trim().min(1, "Username is required."),
     password: z.string().min(8, "Use at least 8 characters."),
     confirm: z.string(),
   })

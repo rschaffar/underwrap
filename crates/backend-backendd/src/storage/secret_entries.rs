@@ -127,8 +127,9 @@ pub(crate) fn resource_blob_entries(
 }
 
 /// Validate the structured `(resource_id, slot, key)` tuple and
-/// compose the in-blob entry id. Centralizes the per-slot key-shape
-/// rules so every admin secret endpoint enforces them identically.
+/// compose the in-blob entry id. The only operator-supplied input
+/// validated here is the per-slot key shape; the resource id is
+/// server-generated.
 pub(crate) fn validate_and_compose_secret_id(
     resource_id: &str,
     slot: underwrap_protocol::resource::ResourceSlot,
@@ -138,12 +139,6 @@ pub(crate) fn validate_and_compose_secret_id(
         return Err(AdminError::bad_request(
             "invalid_request",
             "resource_id must not be empty",
-        ));
-    }
-    if resource_id.starts_with("__underwrap") {
-        return Err(AdminError::bad_request(
-            "invalid_request",
-            "resource ids starting with '__underwrap' are reserved",
         ));
     }
     if let Err(msg) = underwrap_protocol::resource::validate_secret_key(slot, key) {

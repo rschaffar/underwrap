@@ -27,13 +27,7 @@ import { putResourceRename } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
 const renameResourceSchema = z.object({
-  new_name: z
-    .string()
-    .trim()
-    .min(1, "New name is required.")
-    .refine((s) => !s.startsWith("__underwrap"), {
-      message: "Names starting with '__underwrap' are reserved.",
-    }),
+  new_name: z.string().trim().min(1, "New name is required."),
 });
 type RenameResourceValues = z.infer<typeof renameResourceSchema>;
 
