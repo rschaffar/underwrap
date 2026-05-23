@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 
@@ -12,6 +12,7 @@ import {
   fetchStores,
   type ResourceRecord,
 } from "@/api/client";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 import { useStoreSelector } from "@/hooks/use-store-selector";
 import { useClientInstanceDirectory } from "@/hooks/use-store-lookups";
@@ -31,9 +32,7 @@ import { RenameResourceDialog } from "./dialogs/rename-resource";
 import { DeleteResourceDialog } from "./dialogs/delete-resource";
 
 export function SecretsPage() {
-  useEffect(() => {
-    document.title = "underwrap — secrets";
-  }, []);
+  useDocumentTitle("underwrap — secrets");
 
   const stores = useQuery<AdminStoresListResponse>({
     queryKey: ["admin", "stores"],
@@ -162,9 +161,7 @@ export function SecretsPage() {
       {list.isLoading ? (
         <p className="text-sm text-(--color-muted)">Loading…</p>
       ) : list.error ? (
-        <p role="alert" className="text-sm text-rose-300">
-          {describeApiError(list.error)}
-        </p>
+        <Alert>{describeApiError(list.error)}</Alert>
       ) : allResources.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
           No resources are known to this store yet. Use{" "}

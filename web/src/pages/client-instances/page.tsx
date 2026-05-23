@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
@@ -11,6 +12,7 @@ import {
   fetchClientInstances,
   fetchStores,
 } from "@/api/client";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 import { formatEpochAbsolute } from "@/lib/epoch";
 
@@ -42,9 +44,7 @@ export function ClientInstancesPage() {
   const [deleting, setDeleting] =
     useState<AdminClientInstanceListItem | null>(null);
 
-  useEffect(() => {
-    document.title = "underwrap — client instances";
-  }, []);
+  useDocumentTitle("underwrap — client instances");
 
   const instancesQuery = useQuery<AdminClientInstancesListResponse>({
     queryKey: ["admin", "client-instances"],
@@ -98,9 +98,7 @@ export function ClientInstancesPage() {
       {instancesQuery.isLoading ? (
         <p className="text-sm text-(--color-muted)">Loading…</p>
       ) : instancesQuery.error ? (
-        <p role="alert" className="text-sm text-rose-300">
-          {describeApiError(instancesQuery.error)}
-        </p>
+        <Alert>{describeApiError(instancesQuery.error)}</Alert>
       ) : items.length === 0 ? (
         <p className="text-sm text-(--color-muted)">No client instances match the current filter.</p>
       ) : (

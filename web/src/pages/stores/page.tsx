@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   type AdminStoreListItem,
   type AdminStoresListResponse,
   fetchStores,
 } from "@/api/client";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 
 import { StoresTable } from "./table";
@@ -17,9 +19,7 @@ import { UnlockStoreDialog } from "./dialogs/unlock";
 import { LockStoreDialog } from "./dialogs/lock";
 
 export function StoresPage() {
-  useEffect(() => {
-    document.title = "underwrap — stores";
-  }, []);
+  useDocumentTitle("underwrap — stores");
 
   const { data, error, isLoading } = useQuery<AdminStoresListResponse>({
     queryKey: ["admin", "stores"],
@@ -54,9 +54,7 @@ export function StoresPage() {
       {isLoading ? (
         <p className="text-sm text-(--color-muted)">Loading…</p>
       ) : error ? (
-        <p role="alert" className="text-sm text-rose-300">
-          {describeApiError(error)}
-        </p>
+        <Alert>{describeApiError(error)}</Alert>
       ) : (
         <StoresTable
           items={data?.items ?? []}

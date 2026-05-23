@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -19,6 +19,7 @@ import {
   postPasswordChange,
   type WhoamiResponse,
 } from "@/api/client";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 
 interface ProfilePageProps {
@@ -39,9 +40,7 @@ const schema = z
 type Values = z.infer<typeof schema>;
 
 export function ProfilePage({ principal }: ProfilePageProps) {
-  useEffect(() => {
-    document.title = "underwrap — profile";
-  }, []);
+  useDocumentTitle("underwrap — profile");
 
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);

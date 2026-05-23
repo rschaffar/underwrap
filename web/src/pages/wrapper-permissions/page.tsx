@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, FileText } from "lucide-react";
 
@@ -14,6 +14,7 @@ import {
   type WrapperPermission,
   type WrapperResourcePairRecord,
 } from "@/api/client";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 import { useStoreSelector } from "@/hooks/use-store-selector";
 import { useClientInstanceDirectory } from "@/hooks/use-store-lookups";
@@ -30,9 +31,7 @@ import { DeletePairDialog } from "./dialogs/delete-pair";
 import { EditCellDialog } from "./dialogs/edit-cell";
 
 export function WrapperPermissionsPage() {
-  useEffect(() => {
-    document.title = "underwrap — wrapper permissions";
-  }, []);
+  useDocumentTitle("underwrap — wrapper permissions");
 
   const qc = useQueryClient();
 
@@ -178,9 +177,7 @@ export function WrapperPermissionsPage() {
           Loading wrapper permissions…
         </p>
       ) : view.error ? (
-        <p role="alert" className="text-sm text-rose-300">
-          {describeApiError(view.error)}
-        </p>
+        <Alert>{describeApiError(view.error)}</Alert>
       ) : pairRecords.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
           No wrapper/resource pairs are registered for this store yet.

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   type AdminUserListItem,
@@ -8,6 +9,7 @@ import {
   fetchUsers,
   type WhoamiResponse,
 } from "@/api/client";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 
 import { UsersTable } from "./table";
@@ -23,9 +25,7 @@ interface UsersPageProps {
 }
 
 export function UsersPage({ principal }: UsersPageProps) {
-  useEffect(() => {
-    document.title = "underwrap — users";
-  }, []);
+  useDocumentTitle("underwrap — users");
 
   const meUsername = principal?.username ?? null;
 
@@ -61,9 +61,7 @@ export function UsersPage({ principal }: UsersPageProps) {
       {isLoading ? (
         <p className="text-sm text-(--color-muted)">Loading…</p>
       ) : error ? (
-        <p role="alert" className="text-sm text-rose-300">
-          {describeApiError(error)}
-        </p>
+        <Alert>{describeApiError(error)}</Alert>
       ) : (
         <UsersTable
           users={users}

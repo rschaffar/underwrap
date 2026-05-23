@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { ApiError, postLogin } from "@/api/client";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 
 const schema = z.object({
@@ -30,9 +31,7 @@ interface LoginPageProps {
 export function LoginPage({ onSuccess }: LoginPageProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  useEffect(() => {
-    document.title = "underwrap — sign in";
-  }, []);
+  useDocumentTitle("underwrap — sign in");
 
   const form = useForm<LoginValues>({
     resolver: zodResolver(schema),

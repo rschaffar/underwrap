@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { postBootstrap } from "@/api/client";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 
 const MIN_PASSWORD_LEN = 12;
@@ -41,9 +42,7 @@ interface BootstrapPageProps {
 export function BootstrapPage({ onSuccess }: BootstrapPageProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  useEffect(() => {
-    document.title = "underwrap — first-time setup";
-  }, []);
+  useDocumentTitle("underwrap — first-time setup");
 
   const form = useForm<BootstrapValues>({
     resolver: zodResolver(schema),
