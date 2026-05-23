@@ -1,5 +1,7 @@
-import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -11,8 +13,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Form,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import {
   type AdminClientInstanceListItem,
@@ -20,6 +30,14 @@ import {
   putClientInstanceUpdate,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
+
+const schema = z.object({
+  display_name: z.string().trim().min(1, "Display name is required."),
+  current_store_id: z.string().min(1, "Pick a target store."),
+  cert_pem: z.string(),
+  auto_create_wrapper_assets: z.boolean(),
+});
+type Values = z.infer<typeof schema>;
 
 export function EditClientInstanceDialog({
   instance,
@@ -32,13 +50,17 @@ export function EditClientInstanceDialog({
   onClose: () => void;
   onSuccess: () => Promise<void>;
 }) {
-  const [displayName, setDisplayName] = useState(instance.display_name);
-  const [storeId, setStoreId] = useState(instance.current_store_id);
-  const [certPem, setCertPem] = useState("");
-  const [autoCreate, setAutoCreate] = useState(
-    instance.auto_create_wrapper_assets,
-  );
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const defaults: Values = {
+    display_name: instance.display_name,
+    current_store_id: instance.current_store_id,
+    cert_pem: "",
+    auto_create_wrapper_assets:
+      instance.auto_create_wrapper_assets ?? false,
+  };
+  const form = useForm<Values>({
+    resolver: zodResolver(schema),
+    defaultValues: defaults,
+  });
 
   const mut = useMutation({
     mutationFn: (body: {
@@ -48,23 +70,42 @@ export function EditClientInstanceDialog({
       auto_create_wrapper_assets?: boolean;
     }) => putClientInstanceUpdate(instance.id, body),
     onSuccess: async () => {
-      setSubmitError(null);
       await onSuccess();
     },
-    onError: (err) => setSubmitError(describeApiError(err)),
   });
 
-  const trimmedDisplayName = displayName.trim();
-  const trimmedCert = certPem.trim();
-  const displayNameChanged =
-    trimmedDisplayName !== "" && trimmedDisplayName !== instance.display_name;
-  const storeChanged = storeId !== instance.current_store_id;
-  const certChanged = trimmedCert !== "";
-  const autoCreateChanged = autoCreate !== instance.auto_create_wrapper_assets;
-  const canSubmit =
-    trimmedDisplayName !== "" &&
-    (displayNameChanged || storeChanged || certChanged || autoCreateChanged) &&
-    !mut.isPending;
+  async function onSubmit(values: Values) {
+    form.clearErrors("root");
+    const trimmedDisplayName = values.display_name.trim();
+    const trimmedCert = values.cert_pem.trim();
+    const displayNameChanged = trimmedDisplayName !== instance.display_name;
+    const storeChanged = values.current_store_id !== instance.current_store_id;
+    const certChanged = trimmedCert !== "";
+    const autoCreateChanged =
+      values.auto_create_wrapper_assets !==
+      (instance.auto_create_wrapper_assets ?? false);
+    if (
+      !displayNameChanged &&
+      !storeChanged &&
+      !certChanged &&
+      !autoCreateChanged
+    ) {
+      form.setError("root", { message: "Nothing to change." });
+      return;
+    }
+    try {
+      await mut.mutateAsync({
+        ...(displayNameChanged ? { display_name: trimmedDisplayName } : {}),
+        ...(storeChanged ? { current_store_id: values.current_store_id } : {}),
+        ...(certChanged ? { cert_pem: trimmedCert } : {}),
+        ...(autoCreateChanged
+          ? { auto_create_wrapper_assets: values.auto_create_wrapper_assets }
+          : {}),
+      });
+    } catch (e) {
+      form.setError("root", { message: describeApiError(e) });
+    }
+  }
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -76,92 +117,117 @@ export function EditClientInstanceDialog({
             certificate. Changes take effect on the next runtime request.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <div className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-3 py-2 text-xs text-(--color-muted)">
-            Current fingerprint:{" "}
-            <code>{instance.current_credential_fingerprint}</code>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="edit-display-name">Display name</Label>
-            <Input
-              id="edit-display-name"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="laptop-work"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="edit-store">Target store</Label>
-            <Select
-              id="edit-store"
-              value={storeId}
-              onChange={(e) => setStoreId(e.target.value)}
-            >
-              {stores.map((store) => (
-                <option key={store.id} value={store.id}>
-                  {store.name}
-                  {store.id === instance.current_store_id ? " (current)" : ""}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="edit-cert-pem">New certificate PEM (optional)</Label>
-            <textarea
-              id="edit-cert-pem"
-              value={certPem}
-              onChange={(e) => setCertPem(e.target.value)}
-              rows={8}
-              spellCheck={false}
-              placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"}
-              className="flex w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
-            />
-            <p className="text-xs text-(--color-muted)">
-              Generate a new credential on the client host with{" "}
-              <code>underwrap-keygen</code> and paste the cert PEM to rotate.
-              Leave blank to keep the existing cert.
-            </p>
-          </div>
-          <label className="flex items-start gap-2 text-xs text-(--color-muted)">
-            <input
-              type="checkbox"
-              data-testid="edit-auto-create"
-              checked={autoCreate}
-              onChange={(e) => setAutoCreate(e.target.checked)}
-              className="mt-0.5"
-            />
-            <span>
-              <strong className="text-(--color-fg)">
-                Auto-create wrapper assets on register
-              </strong>
-              <br />
-              When on, this instance's wrappers may add new resources
-              and wrapper/resource pairs on startup.
-            </span>
-          </label>
-          {submitError ? <Alert>{submitError}</Alert> : null}
-        </div>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            disabled={!canSubmit}
-            onClick={() =>
-              mut.mutate({
-                ...(displayNameChanged ? { display_name: trimmedDisplayName } : {}),
-                ...(storeChanged ? { current_store_id: storeId } : {}),
-                ...(certChanged ? { cert_pem: trimmedCert } : {}),
-                ...(autoCreateChanged
-                  ? { auto_create_wrapper_assets: autoCreate }
-                  : {}),
-              })
-            }
+        <Form {...form}>
+          <form
+            onSubmit={form.handleSubmit(onSubmit)}
+            className="space-y-3"
+            noValidate
           >
-            {mut.isPending ? "Saving…" : "Save"}
-          </Button>
-        </DialogFooter>
+            <div className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-3 py-2 text-xs text-(--color-muted)">
+              Current fingerprint:{" "}
+              <code>{instance.current_credential_fingerprint}</code>
+            </div>
+            <FormField
+              control={form.control}
+              name="display_name"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Display name</FormLabel>
+                  <FormControl>
+                    <Input placeholder="laptop-work" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="current_store_id"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Target store</FormLabel>
+                  <FormControl>
+                    <Select {...field}>
+                      {stores.map((store) => (
+                        <option key={store.id} value={store.id}>
+                          {store.name}
+                          {store.id === instance.current_store_id
+                            ? " (current)"
+                            : ""}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="cert_pem"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>New certificate PEM (optional)</FormLabel>
+                  <FormControl>
+                    <textarea
+                      rows={8}
+                      spellCheck={false}
+                      placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"}
+                      className="flex w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Generate a new credential on the client host with{" "}
+                    <code>underwrap-keygen</code> and paste the cert PEM to
+                    rotate. Leave blank to keep the existing cert.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="auto_create_wrapper_assets"
+              render={({ field }) => (
+                <FormItem>
+                  <label className="flex items-start gap-2 text-xs text-(--color-muted)">
+                    <FormControl>
+                      <input
+                        type="checkbox"
+                        data-testid="edit-auto-create"
+                        checked={field.value}
+                        onChange={(e) => field.onChange(e.target.checked)}
+                        className="mt-0.5"
+                      />
+                    </FormControl>
+                    <span>
+                      <strong className="text-(--color-fg)">
+                        Auto-create wrapper assets on register
+                      </strong>
+                      <br />
+                      <FormDescription>
+                        When on, this instance's wrappers may add new resources
+                        and wrapper/resource pairs on startup.
+                      </FormDescription>
+                    </span>
+                  </label>
+                </FormItem>
+              )}
+            />
+            {form.formState.errors.root ? (
+              <Alert>{form.formState.errors.root.message}</Alert>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={mut.isPending}>
+                {mut.isPending ? "Saving…" : "Save"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   );
