@@ -39,7 +39,7 @@ export function PolicyViewerDialog({
   onClose,
 }: PolicyViewerDialogProps) {
   const policy = useQuery<AdminWrapperPermissionsListResponse>({
-    queryKey: ["admin", "policy", storeName],
+    queryKey: ["admin", "wrapper-permissions", storeName],
     queryFn: () => fetchWrapperPermissions(storeName),
     enabled: open,
     // The viewer is read-only and operators reopen it to confirm

@@ -94,7 +94,7 @@ export function WrapperPermissionsPage() {
   const [deletingPair, setDeletingPair] =
     useState<WrapperResourcePairRecord | null>(null);
 
-  function invalidatePairsAndPermissions() {
+  function invalidateAggregateView() {
     if (!storeName) return;
     qc.invalidateQueries({
       queryKey: ["admin", "wrapper-permissions-view", storeName],
@@ -223,9 +223,7 @@ export function WrapperPermissionsPage() {
           existingPairs={pairRecords}
           onClose={() => setCreatingPair(false)}
           onCreated={() => {
-            invalidatePairsAndPermissions();
-            // The aggregate view fetches resources too, so its
-            // invalidation is enough.
+            invalidateAggregateView();
             setCreatingPair(false);
           }}
         />
@@ -241,7 +239,7 @@ export function WrapperPermissionsPage() {
           }
           onClose={() => setDeletingPair(null)}
           onDeleted={() => {
-            invalidatePairsAndPermissions();
+            invalidateAggregateView();
             setDeletingPair(null);
           }}
         />

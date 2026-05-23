@@ -103,12 +103,9 @@ export async function unwrap<T>(
 
 // ----- Named schema types -----
 //
-// Aliases for the openapi-typescript `components["schemas"]` entries.
-// The `export` ones are read from outside `web/src/api/`; the
-// non-exported ones are referenced inside this file as parameter
-// annotations on the per-endpoint helpers. Anything that's never
-// referenced has been deleted — re-add only when a real callsite
-// surfaces.
+// Aliases for the OpenAPI schemas this client references by hand.
+// Generated entries that aren't named here still live in
+// `schema.ts` and can be reached via `components["schemas"]`.
 type S = components["schemas"];
 export type AdminClientInstanceCreateRequest = S["AdminClientInstanceCreateRequest"];
 export type AdminClientInstanceListItem = S["AdminClientInstanceListItem"];

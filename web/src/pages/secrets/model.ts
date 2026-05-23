@@ -33,8 +33,8 @@ export function resourceCount(g: SecretResourceGroup): number {
 /**
  * Group structured `AdminSecretEntry` rows from the admin API into
  * per-resource buckets, with each slot sorted by key. The backend
- * already guarantees the shape (legacy path-encoded ids never reach
- * the wire), so there is no "unrecognized" bucket here.
+ * already guarantees the shape, so there is no "unrecognized" bucket
+ * here.
  */
 export function groupSecretEntries(
   entries: AdminSecretEntry[],
