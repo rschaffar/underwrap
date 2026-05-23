@@ -49,9 +49,9 @@ export function groupSecretEntries(
     g[entry.slot].push({ slot: entry.slot, key: entry.key });
   }
   for (const g of groups.values()) {
-    g.env.sort((a, b) => a.key.localeCompare(b.key));
-    g.files.sort((a, b) => a.key.localeCompare(b.key));
-    g.libsecret.sort((a, b) => a.key.localeCompare(b.key));
+    for (const slot of SECRET_SLOTS) {
+      g[slot].sort((a, b) => a.key.localeCompare(b.key));
+    }
   }
   return [...groups.values()].sort((a, b) =>
     a.resource_id.localeCompare(b.resource_id),

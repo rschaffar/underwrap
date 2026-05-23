@@ -3,6 +3,7 @@ import { ChevronRight, Eye, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ResourceRecord } from "@/api/client";
 import { describeCreator } from "@/lib/creator";
+import { normalizeEpoch } from "@/lib/epoch";
 
 import {
   SECRET_SLOTS,
@@ -44,10 +45,9 @@ export function ResourceBlock({
   const provenanceLabel = provenance
     ? describeCreator(provenance.created_by, displayNameById)
     : null;
+  const provenanceEpoch = normalizeEpoch(provenance?.created_at);
   const provenanceDate =
-    provenance && Number(provenance.created_at)
-      ? new Date(Number(provenance.created_at) * 1000)
-      : null;
+    provenanceEpoch === null ? null : new Date(provenanceEpoch * 1000);
   // Display the operator-facing name when the catalog knows about
   // this resource; orphan groups fall back to the id.
   const displayLabel = provenance?.name ?? group.resource_id;
