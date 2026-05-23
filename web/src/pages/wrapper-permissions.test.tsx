@@ -3,39 +3,17 @@ import { render } from "@testing-library/react";
 
 import { ModeBadge } from "./wrapper-permissions/table";
 import {
-  deriveClientInstances,
   groupPairsByResource,
-  modeKind,
   sortPairs,
   wrapperResourceKey,
 } from "./wrapper-permissions/derivations";
 import { formatEpochRelative } from "@/lib/epoch";
 import type {
-  WrapperPermission,
   WrapperApprovalMode,
   WrapperResourcePairRecord,
 } from "@/api/client";
 
 describe("derivation helpers", () => {
-  const permissions: WrapperPermission[] = [
-    {
-      client_instance: "dev-laptop",
-      wrapper: "gh-authorized",
-      resource_id: "github/token",
-      mode: { kind: "unlocked" },
-      writable: false,
-      reason: undefined,
-    },
-    {
-      client_instance: "ci-runner",
-      wrapper: "aws-prod",
-      resource_id: "aws/prod",
-      mode: { kind: "locked" },
-      writable: false,
-      reason: undefined,
-    },
-  ];
-
   const pairs: WrapperResourcePairRecord[] = [
     {
       wrapper: "jira-readonly",
@@ -59,11 +37,6 @@ describe("derivation helpers", () => {
       last_used_at: null,
     },
   ];
-
-  it("deriveClientInstances dedupes and sorts", () => {
-    const instances = deriveClientInstances(permissions);
-    expect(instances).toEqual(["ci-runner", "dev-laptop"]);
-  });
 
   it("sortPairs orders by (wrapper, resource)", () => {
     const ordered = sortPairs(pairs);
@@ -112,13 +85,6 @@ describe("derivation helpers", () => {
     expect(label).not.toBe("never");
   });
 
-  it("modeKind unwraps the tag for each variant", () => {
-    expect(modeKind({ kind: "locked" })).toBe("locked");
-    expect(modeKind({ kind: "unlocked" })).toBe("unlocked");
-    expect(
-      modeKind({ kind: "unlocked-until", until_epoch: 1 }),
-    ).toBe("unlocked-until");
-  });
 });
 
 describe("ModeBadge", () => {

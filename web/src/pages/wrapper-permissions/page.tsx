@@ -21,7 +21,6 @@ import { useClientInstanceDirectory } from "@/hooks/use-store-lookups";
 
 import {
   clientInstancesForStore,
-  deriveClientInstances,
   groupPairsByResource,
   sortPairs,
 } from "./derivations";
@@ -67,13 +66,11 @@ export function WrapperPermissionsPage() {
   );
   const clientInstances = useMemo(
     () =>
-      storeName
-        ? clientInstancesForStore(
-            storeName,
-            clientInstanceItems,
-            view.data?.permissions ?? [],
-          )
-        : deriveClientInstances(view.data?.permissions ?? []),
+      clientInstancesForStore(
+        storeName ?? "",
+        clientInstanceItems,
+        view.data?.permissions ?? [],
+      ),
     [storeName, clientInstanceItems, view.data],
   );
 

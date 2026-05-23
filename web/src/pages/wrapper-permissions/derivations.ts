@@ -5,12 +5,7 @@ import type {
 } from "@/api/client";
 
 /** Canonical kebab string for a permission mode. */
-export type ModeKind = "locked" | "unlocked" | "unlocked-until";
-
-/** `WrapperApprovalMode` is a tagged union over `kind`; this maps to it. */
-export function modeKind(mode: WrapperApprovalMode): ModeKind {
-  return mode.kind;
-}
+export type ModeKind = WrapperApprovalMode["kind"];
 
 /** A `(wrapper, resource_id)` pair — one row in the table. */
 export interface WrapperResource {
@@ -20,13 +15,6 @@ export interface WrapperResource {
 
 export function wrapperResourceKey(wr: WrapperResource): string {
   return `${wr.wrapper}|${wr.resource_id}`;
-}
-
-/** Collect every distinct runtime client instance mentioned in permissions. */
-export function deriveClientInstances(permissions: WrapperPermission[]): string[] {
-  const set = new Set<string>();
-  for (const p of permissions) set.add(p.client_instance);
-  return [...set].sort();
 }
 
 /**
