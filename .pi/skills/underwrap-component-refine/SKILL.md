@@ -126,9 +126,8 @@ actionable without re-reading. Do not edit code in this phase.
    with a one-line `#[cfg(test)] mod tests;`. Cross-module helpers go
    in `src/test_support.rs`, single-file helpers stay in that file's
    `tests.rs`. Flag, with location, every occurrence of:
-   - inline `mod tests { ... }` blocks of more than a few lines (the
-     "tiny exception" is judgement; treat anything over ~30 lines or
-     longer than its surrounding production code as a violation)
+   - inline `mod tests { ... }` blocks. The rule is unconditional —
+     every occurrence, regardless of length, is a violation.
    - `#[cfg(test)] pub(crate) use ...` re-exports at the crate root
      that exist purely so an inline test block can reach moved code
      (explicitly forbidden by `AGENTS.md`)
@@ -180,9 +179,8 @@ quick repo-wide grep for each of the following and fold every hit into
 the findings list (not just the ones inside the component scope):
 
 - **Inline `mod tests {}` blocks** — `rg -n '^#\[cfg\(test\)\][[:space:]]*\nmod tests \{' crates/`
-  or equivalent. Every match outside the "tiny exception" threshold
-  (see category 5) becomes a finding flagged
-  **`scope: project-wide`**.
+  or equivalent. Every match becomes a finding flagged
+  **`scope: project-wide`**. The rule has no exceptions.
 - **`#[cfg(test)] pub(crate) use` re-exports at crate roots** —
   `rg -n '#\[cfg\(test\)\][[:space:]]*\n[[:space:]]*pub\(crate\) use' crates/`.
   All hits are findings; the rule has no exceptions.
@@ -240,31 +238,25 @@ Scope: <one short paragraph from phase 1>
 ## Summary
 
 - N findings across M categories.
-- K must-fix, L nice-to-have, P out-of-scope/needs-discussion.
+- K must-fix, L nice-to-have.
 - Proposed ticket shape: <epic + tasks | flat tasks> (see "Ticket plan" below).
+- Every finding becomes a ticket. There is no deferral bucket.
 
 ## Findings
 
 ### F-001 — <short title>
 
 - **Category:** <one of the ten>
-- **Severity:** must-fix | nice-to-have | out-of-scope
+- **Severity:** must-fix | nice-to-have
 - **Scope:** in-component | project-wide
 - **Location(s):** path/to/file.rs:NN-NN (list all sites for
   project-wide findings)
 - **Observation:** <what is there now, quoting the relevant lines>
 - **Recommendation:** <concrete change>
-- **Behavior change?** no | yes — <why it's still safe / why it routes elsewhere>
+- **Behavior change?** no | yes — <why it's still safe>
 - **Related tickets:** <links to existing tickets, if any>
 
 [... F-002, F-003, ...]
-
-## Out-of-scope / routed elsewhere
-
-Findings that fall outside the refactor scope rule (see "Scope discipline"
-below). For each, name the destination: a separate non-refactor ticket,
-the security-review skill, a wire-format/NixOS-module decision needing
-user sign-off, etc.
 
 ## Ticket plan
 
@@ -319,30 +311,35 @@ ones (same convention as the existing epics).
 
 ## Scope discipline
 
-Refactor tickets emitted by this skill may include:
+Every finding becomes a ticket — no deferral, no "routed elsewhere"
+bucket. The `Behavior change?` field is a *label*, not a routing
+decision: it tells the executor which acceptance checks need to
+catch the diff (wire-format tests, the VM test, etc.), not whether
+to write the ticket.
 
-- pure refactors: moves, renames, file splits, dead-code removal, test
-  relocation, doc cleanups
+When a refactor genuinely needs to land in two steps (e.g. add the
+new shape, then delete the old one) split it into multiple sequential
+tickets in the same plan rather than punting the second half to the
+user. Sequencing inside the plan is fine; deferring is not.
+
+Tickets emitted by this skill include, without distinction:
+
+- pure refactors: moves, renames, file splits, dead-code removal,
+  test relocation, doc cleanups
 - API-hygiene tightening (`pub` → `pub(crate)`, removing leaky
   re-exports)
-- **small correctness wins inline**: better `anyhow` context, missing
-  `zeroize`, missed return-value checks, log-level fixes, missing
-  rustdoc on `pub` items
-
-Anything bigger is **flagged in findings but routed elsewhere**, never
-silently mixed into a refactor ticket:
-
-- Bug fixes with observable behaviour change → separate non-refactor
-  task ticket, owner: user.
-- Security mechanism review → routed to the `security-review` skill.
-- Wire-format, NixOS module structure, or config-schema changes →
-  flagged as "needs user sign-off", never auto-ticketed even though
-  `CLAUDE.md` permits them in greenfield.
-- Cross-component architectural rework → flagged as a candidate epic,
-  owner: user.
-
-The "Behavior change?" field on every finding makes this routing
-explicit.
+- correctness wins: better `anyhow` context, missing `zeroize`,
+  missed return-value checks, log-level fixes, missing rustdoc on
+  `pub` items
+- bug fixes with observable behaviour change
+- wire-format, NixOS module structure, or config-schema changes
+  (greenfield posture permits them)
+- security mechanism changes — emit the ticket *and* note in its
+  acceptance check that `cargo test -p integration-tests` plus the
+  VM test must stay green, and quote the relevant `CLAUDE.md` /
+  `docs/security.md` invariant the change must not violate
+- cross-component architectural rework — package it as its own epic
+  in the same plan
 
 ## Hard rules
 
@@ -352,9 +349,11 @@ explicit.
   `tickets/02_inprogress/`, or `tickets/03_done/`.** This skill only
   writes under `tickets/_review/`.
 - **Never propose a ticket that weakens a security boundary** described
-  in `CLAUDE.md` "Security-critical rules" or in `docs/security.md`. If
-  a refactor would touch one of those, route it to `security-review`
-  instead.
+  in `CLAUDE.md` "Security-critical rules" or in `docs/security.md`.
+  Tickets that *touch* one of those boundaries are still emitted, but
+  the ticket body must quote the relevant invariant and the acceptance
+  check must include `cargo test -p integration-tests` plus the VM
+  test so a regression is caught before merge.
 - **Never propose `--no-verify`, `--no-gpg-sign`, or any hook skip** in
   acceptance checks.
 - **One report per call.** If the user names two components, do them as
@@ -367,10 +366,11 @@ explicit.
 - Cite line numbers. A finding without a citation is not a finding.
 - Be terse in chat; the report is the artefact. The chat summary is a
   few sentences plus the counts.
-- If a finding requires a judgement call the user should make (e.g.
-  "rename `XyzClient` to `XyzRuntimeClient` everywhere"), mark it
-  **nice-to-have** with an explicit "decision needed" note rather than
-  **must-fix**.
+- If a finding involves a judgement call (e.g. "rename `XyzClient` to
+  `XyzRuntimeClient` everywhere"), pick the option you would
+  recommend, explain *why* in the ticket body, and emit the ticket.
+  Do not mark findings "decision needed" and punt — that is a
+  deferral, which this skill does not do.
 - If the component is too small to need a review (one file, <200
   lines), say so and stop. Don't manufacture findings.
 

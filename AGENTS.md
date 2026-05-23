@@ -233,10 +233,10 @@ Cross-module helpers (fixture builders, fake stores, request builders) go in
 imports what it needs via `use crate::test_support::*;`. Helpers used by
 exactly one tests.rs stay in that file.
 
-Exceptions where inline `mod tests { ... }` is fine: modules with one or two
-tiny tests where a separate file would be ceremony for five lines. Threshold
-is judgement — if tests are longer than the production code, split them out.
-Aim to keep any single `tests.rs` under ~600 lines.
+This pattern is **always** used. No "tiny exception" — even a one-test
+module goes in a sibling `tests.rs`. Production files never carry an
+inline `#[cfg(test)] mod tests { ... }` block. Aim to keep any single
+`tests.rs` under ~600 lines.
 
 Never add `#[cfg(test)] pub(crate) use ...` re-exports at the crate root just
 so an inline test block can reach moved code. If a test needs an item from
