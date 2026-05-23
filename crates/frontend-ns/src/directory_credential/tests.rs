@@ -14,32 +14,30 @@ fn validate_relative_path_rejects_bad_inputs() {
 #[test]
 fn collect_staging_files_round_trips_files_section() {
     let tempdir = tempfile::TempDir::new().unwrap();
-    let mount_a = tempdir.path().join("dir-0/mount-0");
-    let mount_b = tempdir.path().join("dir-0/mount-1");
-    std::fs::create_dir_all(&mount_a).unwrap();
-    std::fs::create_dir_all(mount_a.join("sub")).unwrap();
-    std::fs::create_dir_all(&mount_b).unwrap();
-    std::fs::write(mount_a.join("a.txt"), b"alpha").unwrap();
-    std::fs::write(mount_a.join("sub").join("b.bin"), b"\x00\x01\x02").unwrap();
-    std::fs::write(mount_b.join("c.txt"), b"charlie").unwrap();
+    let staging_a = tempdir.path().join("mount-0");
+    let staging_b = tempdir.path().join("mount-1");
+    std::fs::create_dir_all(&staging_a).unwrap();
+    std::fs::create_dir_all(staging_a.join("sub")).unwrap();
+    std::fs::create_dir_all(&staging_b).unwrap();
+    std::fs::write(staging_a.join("a.txt"), b"alpha").unwrap();
+    std::fs::write(staging_a.join("sub").join("b.bin"), b"\x00\x01\x02").unwrap();
+    std::fs::write(staging_b.join("c.txt"), b"charlie").unwrap();
 
-    let directory = MountedDirectory {
-        mounts: vec![
-            DirectoryMount {
-                target_mount_path: PathBuf::new(),
-                created_mount_dirs: Vec::new(),
-                staging_path: mount_a,
-                mount_relative_path: ".config/gh".to_string(),
-            },
-            DirectoryMount {
-                target_mount_path: PathBuf::new(),
-                created_mount_dirs: Vec::new(),
-                staging_path: mount_b,
-                mount_relative_path: ".config/git".to_string(),
-            },
-        ],
-    };
-    let files = collect_staging_files(&directory).unwrap();
+    let mounts = vec![
+        DirectoryMount {
+            mount_path: ".config/gh".to_string(),
+            mountpoint: PathBuf::new(),
+            staging_path: staging_a,
+            created_dirs: Vec::new(),
+        },
+        DirectoryMount {
+            mount_path: ".config/git".to_string(),
+            mountpoint: PathBuf::new(),
+            staging_path: staging_b,
+            created_dirs: Vec::new(),
+        },
+    ];
+    let files = collect_staging_files(&mounts).unwrap();
     assert_eq!(files.len(), 3);
     assert_eq!(files.get(".config/gh/a.txt").unwrap().as_slice(), b"alpha");
     assert_eq!(

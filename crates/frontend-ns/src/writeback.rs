@@ -23,7 +23,7 @@ use underwrap_protocol::message::{
 };
 use underwrap_protocol::resource_blob::{LibsecretSection, ResourceBlob};
 
-use crate::directory_credential::{MountedDirectory, collect_staging_files};
+use crate::directory_credential::{DirectoryMount, collect_staging_files};
 use crate::resource_channel::ResourceChannel;
 
 /// Per-resource end-of-run outcome, surfaced to the caller so it can
@@ -52,9 +52,10 @@ pub enum WritebackOutcome {
 /// Per-resource input from the run's tmpfs/state side.
 pub struct WritebackInput<'a> {
     pub channel: &'a ResourceChannel,
-    /// The mounted-directory record for this resource's files staging,
-    /// or `None` when the resource has no `files` slot.
-    pub directory: Option<&'a MountedDirectory>,
+    /// Files-slot bind-mounts to walk when composing the post-run
+    /// blob. Empty when the wrapper does not project files; in that
+    /// case the Checkout's `files` section is preserved verbatim.
+    pub directory_mounts: &'a [DirectoryMount],
     /// Path to the libsecret state file written by secretsd, or `None`
     /// when this resource is not the libsecret resource. The path is
     /// only consulted when present.
@@ -80,15 +81,15 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
             )
         })?;
 
-    let new_files = if let Some(directory) = input.directory {
-        collect_staging_files(directory).map_err(|e| {
+    let new_files = if input.directory_mounts.is_empty() {
+        original.files.clone()
+    } else {
+        collect_staging_files(input.directory_mounts).map_err(|e| {
             format!(
                 "walking staging directory for '{}': {e}",
                 channel.resource_id
             )
         })?
-    } else {
-        original.files.clone()
     };
 
     let new_libsecret = if let Some(path) = input.libsecret_state_path

@@ -23,22 +23,23 @@ use std::path::{Path, PathBuf};
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource_blob::ResourceBlob;
 
+/// One bind-mount: a host-side staging tmpfs dir made visible inside
+/// the target's home view at a configured relative path.
 pub struct DirectoryMount {
-    pub target_mount_path: PathBuf,
-    pub created_mount_dirs: Vec<PathBuf>,
-    /// Staging tmpfs subdirectory backing this mount. Its contents are
-    /// bind-mounted at `target_mount_path`.
+    /// Wrapper-configured relative path (e.g. `.config/gh`). Used as
+    /// the key prefix when reconstructing blob file keys at writeback.
+    pub mount_path: String,
+    /// Absolute mountpoint inside the namespace,
+    /// `<target_home>/<mount_path>`.
+    pub mountpoint: PathBuf,
+    /// Host-side staging tmpfs subdirectory bind-mounted at `mountpoint`.
+    /// Writeback walks this to compose the post-run `files` section.
     pub staging_path: PathBuf,
-    /// The wrapper-config-declared relative mount path
-    /// (e.g. `.config/gh`). Used to re-prefix file keys at writeback.
-    pub mount_relative_path: String,
-}
-
-pub struct MountedDirectory {
-    /// One entry per configured mount path, each with its own staging
-    /// directory. The NixOS module rejects overlapping mount paths, so
-    /// every blob file key matches at most one mount.
-    pub mounts: Vec<DirectoryMount>,
+    /// Directories created on the way to `mountpoint` (zero to N
+    /// entries, including `mountpoint` itself iff it had to be
+    /// created). Cleanup `rmdir`s these in reverse order — entries
+    /// that already existed are not in this list and stay put.
+    pub created_dirs: Vec<PathBuf>,
 }
 
 /// Give each configured mount path its own tmpfs staging subdirectory
@@ -52,13 +53,13 @@ pub struct MountedDirectory {
 /// mount path exactly: a file there would collide with a directory
 /// mountpoint, and silently dropping content the backend handed us
 /// would hide misconfiguration.
-pub fn prepare_directory_mount(
+pub fn prepare_directory_mounts(
     resource_id: &str,
     blob: &ResourceBlob,
     target_paths: &[String],
     target_home: &Path,
     staging_root: &Path,
-) -> Result<MountedDirectory, String> {
+) -> Result<Vec<DirectoryMount>, String> {
     if target_paths.is_empty() {
         return Err(format!(
             "resource '{resource_id}' has no target paths but a files-slot binding"
@@ -90,19 +91,18 @@ pub fn prepare_directory_mount(
     // Phase 3: bind-mount each staging dir at its target path and
     // emit the final `DirectoryMount` records.
     let mut mounts: Vec<DirectoryMount> = Vec::with_capacity(target_paths.len());
-    for (staging_path, mount_relative_path) in staging_paths.into_iter().zip(target_paths.iter()) {
-        let (target_mount_path, created_mount_dirs) =
-            ensure_mount_target(target_home, mount_relative_path)?;
-        bind_mount_dir(&staging_path, &target_mount_path)?;
+    for (staging_path, mount_path) in staging_paths.into_iter().zip(target_paths.iter()) {
+        let (mountpoint, created_dirs) = ensure_mount_target(target_home, mount_path)?;
+        bind_mount_dir(&staging_path, &mountpoint)?;
         mounts.push(DirectoryMount {
-            target_mount_path,
-            created_mount_dirs,
+            mount_path: mount_path.clone(),
+            mountpoint,
             staging_path,
-            mount_relative_path: mount_relative_path.clone(),
+            created_dirs,
         });
     }
 
-    Ok(MountedDirectory { mounts })
+    Ok(mounts)
 }
 
 fn create_dir_mode(path: &Path, mode: u32) -> Result<(), String> {
@@ -114,17 +114,17 @@ fn create_dir_mode(path: &Path, mode: u32) -> Result<(), String> {
 
 /// Walk every mount's staging tmpfs and produce a `files` section
 /// suitable for inclusion in the end-of-run Checkin blob. Each
-/// relative path is re-prefixed with the mount's target path so the
+/// relative path is re-prefixed with the mount's `mount_path` so the
 /// emitted keys match the shape the backend originally handed us.
 pub fn collect_staging_files(
-    directory: &MountedDirectory,
+    mounts: &[DirectoryMount],
 ) -> Result<BTreeMap<String, SecretBytes>, String> {
     let mut out = BTreeMap::new();
-    for mount in &directory.mounts {
+    for mount in mounts {
         collect_files_with_prefix(
             &mount.staging_path,
             &mount.staging_path,
-            &mount.mount_relative_path,
+            &mount.mount_path,
             &mut out,
         )?;
     }
@@ -173,14 +173,14 @@ fn strip_mount_prefix<'a>(key: &'a str, mount: &str) -> &'a str {
     &key[mount.len() + 1..]
 }
 
-pub fn cleanup_directory_mount(directory: &MountedDirectory) -> Result<(), String> {
+pub fn cleanup_directory_mounts(mounts: &[DirectoryMount]) -> Result<(), String> {
     let mut first_error = None;
-    for mount in directory.mounts.iter().rev() {
-        if let Err(e) = unmount_path(&mount.target_mount_path) {
+    for mount in mounts.iter().rev() {
+        if let Err(e) = unmount_path(&mount.mountpoint) {
             first_error.get_or_insert(e);
             continue;
         }
-        for dir in mount.created_mount_dirs.iter().rev() {
+        for dir in mount.created_dirs.iter().rev() {
             if let Err(e) = std::fs::remove_dir(dir)
                 && e.kind() != std::io::ErrorKind::NotFound
             {
