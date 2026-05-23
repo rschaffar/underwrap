@@ -26,14 +26,26 @@ fn create_store(
     ))
 }
 
+/// Tests previously asserted against the dedicated
+/// `handle_admin_store_detail` endpoint. That route was removed (the
+/// SPA only consumes the list), so we re-implement the same
+/// projection in tests by calling `handle_admin_stores_list` and
+/// finding the row by id. The list item shape is a subset of the
+/// old detail shape — it omits `dir` and `source_path` — so any test
+/// that needed those reads them from the registry file directly.
 fn store_detail(
     state: Arc<crate::runtime_state::AdminRuntimeState>,
     store_id: &str,
 ) -> (StatusCode, serde_json::Value) {
-    run_handler(handle_admin_store_detail(
-        State(state),
-        Path(store_id.to_string()),
-    ))
+    let (status, body) = run_handler(handle_admin_stores_list(State(state)));
+    let item = body["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["id"] == store_id)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    (status, item)
 }
 
 fn store_delete(
@@ -103,10 +115,10 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     assert_eq!(items[0]["usage"]["has_secrets"], false);
     assert_eq!(items[0]["actions"]["can_delete_now"], true);
     assert_eq!(items[0]["actions"]["can_force_delete"], false);
-    // Detail.
+    // Detail (projection of the list row + on-disk dir).
     let (status, body) = store_detail(state.clone(), &store_id);
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["dir"], expected_dir.to_string_lossy().to_string());
+    assert!(expected_dir.exists(), "expected store dir to be on disk");
     assert_eq!(body["usage"]["mapped_client_instance_count"], 0);
     assert_eq!(body["usage"]["has_secrets"], false);
     assert_eq!(body["actions"]["can_edit_metadata"], true);

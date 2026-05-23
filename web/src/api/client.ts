@@ -125,11 +125,6 @@ export type AdminPairsListResponse = S["AdminPairsListResponse"];
 export type AdminPasswordChangeRequest = S["AdminPasswordChangeRequest"];
 export type AdminPolicyGetRequest = S["AdminPolicyGetRequest"];
 export type AdminPolicyGetResponse = S["AdminPolicyGetResponse"];
-export type AdminPolicyPutRequest = S["AdminPolicyPutRequest"];
-export type AdminResourceBlobGetRequest = S["AdminResourceBlobGetRequest"];
-export type AdminResourceBlobGetResponse = S["AdminResourceBlobGetResponse"];
-export type AdminResourceBlobPutRequest = S["AdminResourceBlobPutRequest"];
-export type AdminResourceBlobPutResponse = S["AdminResourceBlobPutResponse"];
 export type AdminResourceCreateRequest = S["AdminResourceCreateRequest"];
 export type AdminResourceCreateResponse = S["AdminResourceCreateResponse"];
 export type AdminResourceDeleteBlockers = S["AdminResourceDeleteBlockers"];
@@ -160,9 +155,6 @@ export type AdminStoreUnlockRequest = S["AdminStoreUnlockRequest"];
 export type AdminStoreUpdateRequest = S["AdminStoreUpdateRequest"];
 export type AdminStoreUsageSummary = S["AdminStoreUsageSummary"];
 export type AdminStoresListResponse = S["AdminStoresListResponse"];
-export type AdminUiOverviewResponse = S["AdminUiOverviewResponse"];
-export type AdminUiOverviewStore = S["AdminUiOverviewStore"];
-export type AdminUiWrapperCounts = S["AdminUiWrapperCounts"];
 export type AdminUserCreateRequest = S["AdminUserCreateRequest"];
 export type AdminUserDetailResponse = S["AdminUserDetailResponse"];
 export type AdminUserListItem = S["AdminUserListItem"];
@@ -219,12 +211,6 @@ export function postPasswordChange(body: AdminPasswordChangeRequest) {
 
 export function fetchStores() {
   return unwrap(client.GET("/v1/admin/stores"));
-}
-
-export function fetchStore(storeId: string) {
-  return unwrap(
-    client.GET("/v1/admin/stores/{name}", { params: { path: { name: storeId } } }),
-  );
 }
 
 export function postStoreCreate(body: AdminStoreCreateRequest) {
@@ -288,12 +274,6 @@ export function fetchClientInstances() {
   return unwrap(client.GET("/v1/admin/client-instances"));
 }
 
-export function fetchClientInstance(id: string) {
-  return unwrap(
-    client.GET("/v1/admin/client-instances/{id}", { params: { path: { id } } }),
-  );
-}
-
 export function postClientInstanceCreate(
   body: AdminClientInstanceCreateRequest,
 ) {
@@ -324,10 +304,6 @@ export function deleteClientInstance(id: string) {
 
 export function fetchUsers() {
   return unwrap(client.GET("/v1/admin/users"));
-}
-
-export function fetchUser(id: string) {
-  return unwrap(client.GET("/v1/admin/users/{id}", { params: { path: { id } } }));
 }
 
 export function postUserCreate(body: AdminUserCreateRequest) {

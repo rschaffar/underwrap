@@ -229,16 +229,39 @@ def admin_delete_grant(url, store, client_instance, wrapper, resource):
 
 
 def admin_get_blob(url, store, resource):
-    """Fetch a resource blob's canonical bytes via the admin API.
+    """Read a resource blob's canonical bytes directly off the
+    backend's on-disk store and return them base64-encoded.
 
-    Returns the raw base64 string the API surfaces so the caller can
-    do byte-equal comparisons between runs without re-canonicalizing.
+    The admin API no longer exposes a `blob/get` endpoint — the SPA
+    edits secrets per-key via `/v1/admin/secret/*` — so we go through
+    the storage backend's on-disk layout: a `PlainBackend` stores each
+    resource blob at `<dir>/resources/<resource_id>`. Picking the
+    right `<dir>` per (url, store) keeps the byte-equal comparison
+    semantics callers rely on.
     """
-    return admin_api(
-        url,
-        "/v1/admin/resources/blob/get",
-        {"store": store, "id": _resource_id_for(url, resource)},
-    )["blob_b64"]
+    resource_id = _resource_id_for(url, resource)
+    storage_dir = _storage_dir_for(url, store)
+    blob_path = f"{storage_dir}/resources/{resource_id}"
+    return machine.succeed(
+        f"base64 -w0 {shlex.quote(blob_path)}"
+    ).strip()
+
+
+# `(url, store)` → on-disk PlainBackend root for the resources tree.
+# The paths match the systemd-tmpfiles entries in `nix/tests/node.nix`.
+_STORAGE_DIRS = {
+    (ADMIN_LOCAL, "local"): "/var/lib/underwrap-backend-local/secrets",
+}
+
+
+def _storage_dir_for(url, store):
+    try:
+        return _STORAGE_DIRS[(url, store)]
+    except KeyError as e:
+        raise AssertionError(
+            f"no storage_dir registered for (url={url!r}, store={store!r}); "
+            f"add it to _STORAGE_DIRS in test.py"
+        ) from e
 
 
 def admin_list_pairs(url, store):
@@ -1963,24 +1986,20 @@ def runtime_api_invariants():
     login_admin_session(ADMIN_LOCAL)
 
     # ----------------------------------------------------------
-    # PerCallApproval variant is gone — admin policy/put rejects
-    # any payload that tries to carry it.
+    # PerCallApproval variant is gone — admin wrapper-permissions/
+    # upsert rejects any payload that tries to carry it.
     # ----------------------------------------------------------
     err = admin_api_expect_status(
         ADMIN_LOCAL,
-        "/v1/admin/policy/put",
+        "/v1/admin/wrapper-permissions/upsert",
         {
             "store": "local",
-            "document": {
-                "permissions": [
-                    {
-                        "client_instance": LOCAL_CLIENT_INSTANCE,
-                        "wrapper": "test-echo",
-                        "resource_id": _resource_id_for(ADMIN_LOCAL, "test/token"),
-                        "mode": {"kind": "per-call-approval"},
-                        "writable": False,
-                    }
-                ]
+            "permission": {
+                "client_instance": LOCAL_CLIENT_INSTANCE,
+                "wrapper": "test-echo",
+                "resource_id": _resource_id_for(ADMIN_LOCAL, "test/token"),
+                "mode": {"kind": "per-call-approval"},
+                "writable": False,
             },
         },
         status=400,
@@ -1990,8 +2009,10 @@ def runtime_api_invariants():
         "unknown variant" in err_blob
         or "per-call-approval" in err_blob
         or "kind" in err_blob
-    ), f"unexpected admin policy/put error shape: {err}"
-    machine.log("PASS: admin policy/put rejects per-call-approval payloads")
+    ), f"unexpected wrapper-permissions/upsert error shape: {err}"
+    machine.log(
+        "PASS: admin wrapper-permissions/upsert rejects per-call-approval payloads"
+    )
 
     # ----------------------------------------------------------
     # The legacy per-key /v1/write route is gone — even an

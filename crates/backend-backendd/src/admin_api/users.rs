@@ -1,4 +1,4 @@
-//! Admin user CRUD: `/v1/admin/users/{list, detail, create, update,
+//! Admin user CRUD: `/v1/admin/users/{list, create, update,
 //! reset_password, delete}`.
 //!
 //! Every mutation goes through [`mutate_collection`] so the
@@ -128,11 +128,7 @@ fn classify_mutation_error(err: anyhow::Error) -> (Option<&'static str>, AdminEr
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_users_list, handle_admin_user_create))
-        .routes(routes!(
-            handle_admin_user_detail,
-            handle_admin_user_update,
-            handle_admin_user_delete
-        ))
+        .routes(routes!(handle_admin_user_update, handle_admin_user_delete))
         .routes(routes!(handle_admin_user_reset_password))
 }
 
@@ -156,31 +152,6 @@ pub(crate) async fn handle_admin_users_list(
     let mut users: Vec<AdminUserListItem> = collection.users.iter().map(user_list_item).collect();
     users.sort_by(|a, b| a.username.cmp(&b.username));
     Ok(Json(AdminUsersListResponse { users }))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/admin/users/{id}",
-    tag = "users",
-    security(("session_cookie" = [])),
-    params(("id" = String, Path, description = "Operator id.")),
-    responses(
-        (status = 200, description = "Operator record.", body = AdminUserDetailResponse),
-        (status = 404, description = "Operator not found.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_admin_user_detail(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Path(id): Path<String>,
-) -> Result<Json<AdminUserDetailResponse>, AdminError> {
-    let collection = crate::users::load(&state.users_file).map_err(|e| {
-        warn!(err = %e, "users.detail: collection unreadable");
-        AdminError::internal_with_code("internal", "user collection unavailable")
-    })?;
-    let record = collection
-        .find_by_id(&id)
-        .ok_or_else(|| AdminError::not_found("unknown user"))?;
-    Ok(Json(user_detail(record)))
 }
 
 #[utoipa::path(

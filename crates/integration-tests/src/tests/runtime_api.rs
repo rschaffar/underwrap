@@ -727,10 +727,11 @@ async fn open_uses_principal_from_cert_not_request_body() {
 }
 
 /// The `PerCallApproval` mode was removed from `WrapperApprovalMode`.
-/// Admin POSTs that try to put a policy doc carrying the legacy variant
-/// must fail at deserialization (the variant is unknown to serde now).
+/// Admin POSTs that try to upsert a permission carrying the legacy
+/// variant must fail at deserialization (the variant is unknown to
+/// serde now).
 #[tokio::test]
-async fn admin_policy_put_rejects_legacy_per_call_approval_mode_payload() {
+async fn admin_policy_upsert_rejects_legacy_per_call_approval_mode_payload() {
     let daemon = TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local")
         .await
         .unwrap();
@@ -738,21 +739,20 @@ async fn admin_policy_put_rejects_legacy_per_call_approval_mode_payload() {
     // through the Rust type system because it no longer exists.
     let body = serde_json::json!({
         "store": "test",
-        "document": {
-            "permissions": [
-                {
-                    "client_instance": daemon.client_instance(),
-                    "wrapper": "gh-authorized",
-                    "resource_id": "github/token",
-                    "mode": { "kind": "per-call-approval" },
-                    "writable": false,
-                    "reason": null,
-                }
-            ]
+        "permission": {
+            "client_instance": daemon.client_instance(),
+            "wrapper": "gh-authorized",
+            "resource_id": "github/token",
+            "mode": { "kind": "per-call-approval" },
+            "writable": false,
+            "reason": null,
         }
     });
     let resp = daemon
-        .admin_request(reqwest::Method::POST, "/v1/admin/policy/put")
+        .admin_request(
+            reqwest::Method::POST,
+            "/v1/admin/wrapper-permissions/upsert",
+        )
         .json(&body)
         .send()
         .await

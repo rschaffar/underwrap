@@ -40,7 +40,6 @@ pub fn admin_openapi_spec() -> utoipa::openapi::OpenApi {
     tags(
         (name = "auth",            description = "Login, logout, whoami, password change."),
         (name = "bootstrap",       description = "First-time operator setup."),
-        (name = "overview",        description = "Overview / dashboard data."),
         (name = "users",           description = "Operator collection CRUD."),
         (name = "stores",          description = "Store registry CRUD + lifecycle."),
         (name = "client_instances",description = "Runtime client-instance registry."),

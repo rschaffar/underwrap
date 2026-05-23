@@ -322,29 +322,6 @@ pub struct AdminClientInstanceUpdateRequest {
     pub auto_create_wrapper_assets: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminUiWrapperCounts {
-    pub locked: usize,
-    pub unlocked: usize,
-    pub unlocked_until: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminUiOverviewStore {
-    pub store: String,
-    pub resource_count: usize,
-    pub wrapper_counts: AdminUiWrapperCounts,
-    /// Number of wrapper permissions with `writable = true`. Surfaced
-    /// on the dashboard overview as a quick "how many wrapper writes
-    /// are open" signal.
-    pub writable_permission_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminUiOverviewResponse {
-    pub stores: Vec<AdminUiOverviewStore>,
-}
-
 // ===== Secret CRUD =====
 //
 // Per-slot entries inside a resource blob are addressed by the
@@ -441,12 +418,6 @@ pub struct AdminPolicyGetResponse {
     pub document: PolicyDocument,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminPolicyPutRequest {
-    pub store: String,
-    pub document: PolicyDocument,
-}
-
 // ===== Wrapper permission CRUD =====
 //
 // One `WrapperPermission` per `(client_instance, wrapper, resource)`
@@ -538,32 +509,6 @@ pub struct AdminResourceRenameRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminResourceRenameResponse {
     pub resource: ResourceRecord,
-}
-
-/// Request whole-blob get/put for a resource.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminResourceBlobGetRequest {
-    pub store: String,
-    pub id: String,
-}
-
-/// JCS-canonical JSON bytes of the resource blob, base64-encoded for
-/// HTTP transport.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminResourceBlobGetResponse {
-    pub blob_b64: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminResourceBlobPutRequest {
-    pub store: String,
-    pub id: String,
-    pub blob_b64: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminResourceBlobPutResponse {
-    pub ok: bool,
 }
 
 /// Counts plus a short sample of names per dependent kind. The sample

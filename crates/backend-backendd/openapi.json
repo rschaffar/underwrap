@@ -343,50 +343,6 @@
       }
     },
     "/v1/admin/client-instances/{id}": {
-      "get": {
-        "tags": [
-          "client_instances"
-        ],
-        "operationId": "handle_admin_client_instance_detail",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Client instance id.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Client instance detail.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminClientInstanceDetailResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Instance not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          }
-        ]
-      },
       "put": {
         "tags": [
           "client_instances"
@@ -735,200 +691,6 @@
           },
           "404": {
             "description": "Store not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/policy/put": {
-      "post": {
-        "tags": [
-          "policy"
-        ],
-        "operationId": "handle_admin_policy_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminPolicyPutRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Policy document replaced.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminOkResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/resources/blob/get": {
-      "post": {
-        "tags": [
-          "resources"
-        ],
-        "operationId": "handle_admin_resource_blob_get",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminResourceBlobGetRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Canonical JCS-encoded resource blob (base64-encoded in `blob_b64`).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminResourceBlobGetResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / resource not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/resources/blob/put": {
-      "post": {
-        "tags": [
-          "resources"
-        ],
-        "operationId": "handle_admin_resource_blob_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminResourceBlobPutRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Blob written; the env section is enforced immutable so changes there are rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminResourceBlobPutResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Blob failed canonicalisation or env-section-immutable check.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store / resource not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1643,50 +1405,6 @@
       }
     },
     "/v1/admin/stores/{name}": {
-      "get": {
-        "tags": [
-          "stores"
-        ],
-        "operationId": "handle_admin_store_detail",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "description": "Store id (display name).",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Store detail with backend kind, action state, usage summary.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminStoreDetailResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          }
-        ]
-      },
       "put": {
         "tags": [
           "stores"
@@ -2011,41 +1729,6 @@
         ]
       }
     },
-    "/v1/admin/ui/overview": {
-      "get": {
-        "tags": [
-          "overview"
-        ],
-        "operationId": "handle_admin_ui_overview",
-        "responses": {
-          "200": {
-            "description": "Per-store resource + permission-mode summary for the SPA dashboard. Locked encrypted stores are silently skipped.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminUiOverviewResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Backend could not read a store's resource/policy document.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          }
-        ]
-      }
-    },
     "/v1/admin/users": {
       "get": {
         "tags": [
@@ -2138,50 +1821,6 @@
       }
     },
     "/v1/admin/users/{id}": {
-      "get": {
-        "tags": [
-          "users"
-        ],
-        "operationId": "handle_admin_user_detail",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Operator id.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Operator record.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminUserDetailResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Operator not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          }
-        ]
-      },
       "put": {
         "tags": [
           "users"
@@ -2981,79 +2620,6 @@
           }
         }
       },
-      "AdminPolicyPutRequest": {
-        "type": "object",
-        "required": [
-          "store",
-          "document"
-        ],
-        "properties": {
-          "document": {
-            "$ref": "#/components/schemas/PolicyDocument"
-          },
-          "store": {
-            "type": "string"
-          }
-        }
-      },
-      "AdminResourceBlobGetRequest": {
-        "type": "object",
-        "description": "Request whole-blob get/put for a resource.",
-        "required": [
-          "store",
-          "id"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "store": {
-            "type": "string"
-          }
-        }
-      },
-      "AdminResourceBlobGetResponse": {
-        "type": "object",
-        "description": "JCS-canonical JSON bytes of the resource blob, base64-encoded for\nHTTP transport.",
-        "required": [
-          "blob_b64"
-        ],
-        "properties": {
-          "blob_b64": {
-            "type": "string"
-          }
-        }
-      },
-      "AdminResourceBlobPutRequest": {
-        "type": "object",
-        "required": [
-          "store",
-          "id",
-          "blob_b64"
-        ],
-        "properties": {
-          "blob_b64": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "store": {
-            "type": "string"
-          }
-        }
-      },
-      "AdminResourceBlobPutResponse": {
-        "type": "object",
-        "required": [
-          "ok"
-        ],
-        "properties": {
-          "ok": {
-            "type": "boolean"
-          }
-        }
-      },
       "AdminResourceCreateRequest": {
         "type": "object",
         "required": [
@@ -3684,68 +3250,6 @@
           }
         }
       },
-      "AdminUiOverviewResponse": {
-        "type": "object",
-        "required": [
-          "stores"
-        ],
-        "properties": {
-          "stores": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AdminUiOverviewStore"
-            }
-          }
-        }
-      },
-      "AdminUiOverviewStore": {
-        "type": "object",
-        "required": [
-          "store",
-          "resource_count",
-          "wrapper_counts",
-          "writable_permission_count"
-        ],
-        "properties": {
-          "resource_count": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "store": {
-            "type": "string"
-          },
-          "wrapper_counts": {
-            "$ref": "#/components/schemas/AdminUiWrapperCounts"
-          },
-          "writable_permission_count": {
-            "type": "integer",
-            "description": "Number of wrapper permissions with `writable = true`. Surfaced\non the dashboard overview as a quick \"how many wrapper writes\nare open\" signal.",
-            "minimum": 0
-          }
-        }
-      },
-      "AdminUiWrapperCounts": {
-        "type": "object",
-        "required": [
-          "locked",
-          "unlocked",
-          "unlocked_until"
-        ],
-        "properties": {
-          "locked": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "unlocked": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "unlocked_until": {
-            "type": "integer",
-            "minimum": 0
-          }
-        }
-      },
       "AdminUserCreateRequest": {
         "type": "object",
         "required": [
@@ -4309,10 +3813,6 @@
     {
       "name": "bootstrap",
       "description": "First-time operator setup."
-    },
-    {
-      "name": "overview",
-      "description": "Overview / dashboard data."
     },
     {
       "name": "users",

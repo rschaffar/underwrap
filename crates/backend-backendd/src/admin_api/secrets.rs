@@ -113,8 +113,7 @@ pub(crate) async fn handle_admin_secret_read(
 ) -> Result<Json<AdminSecretReadResponse>, AdminError> {
     let secret_id = validate_and_compose_secret_id(&body.resource_id, body.slot, &body.key)?;
     let store = admin_store(&state, &body.store)?;
-    let material =
-        read_resource_entry(store.as_ref(), &secret_id).map_err(AdminError::admin)?;
+    let material = read_resource_entry(store.as_ref(), &secret_id).map_err(AdminError::admin)?;
     Ok(Json(AdminSecretReadResponse {
         material_b64: material.map(|material| {
             let bytes: &[u8] = material.as_ref();
@@ -295,8 +294,7 @@ async fn rename_inner(
     let from_id = validate_and_compose_secret_id(&body.resource_id, body.slot, &body.from_key)?;
     let to_id = validate_and_compose_secret_id(&body.resource_id, body.slot, &body.to_key)?;
     let store = admin_store(state, &body.store)?;
-    let blob =
-        load_resource_blob(store.as_ref(), &body.resource_id).map_err(AdminError::admin)?;
+    let blob = load_resource_blob(store.as_ref(), &body.resource_id).map_err(AdminError::admin)?;
     let mut entries =
         expand_blob_to_entries(&body.resource_id, &blob).map_err(AdminError::admin)?;
 

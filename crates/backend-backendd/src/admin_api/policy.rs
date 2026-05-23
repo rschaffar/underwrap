@@ -18,7 +18,7 @@ use anyhow::Result;
 use axum::Json;
 use axum::extract::State;
 use underwrap_protocol::service::{
-    AdminOkResponse, AdminPolicyGetRequest, AdminPolicyGetResponse, AdminPolicyPutRequest,
+    AdminOkResponse, AdminPolicyGetRequest, AdminPolicyGetResponse,
     AdminWrapperPermissionDeleteRequest, AdminWrapperPermissionUpsertRequest,
     AdminWrapperPermissionsListRequest, AdminWrapperPermissionsListResponse, ServiceErrorResponse,
 };
@@ -85,7 +85,6 @@ pub(crate) fn write_admin_permission_audit(
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_policy_get))
-        .routes(routes!(handle_admin_policy_put))
         .routes(routes!(handle_admin_wrapper_permissions_list))
         .routes(routes!(handle_admin_wrapper_permission_upsert))
         .routes(routes!(handle_admin_wrapper_permission_delete))
@@ -110,28 +109,6 @@ pub(crate) async fn handle_admin_policy_get(
     let store = admin_store(&state, &body.store)?;
     let document = load_policy_document(store.as_ref()).map_err(AdminError::admin)?;
     Ok(Json(AdminPolicyGetResponse { document }))
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/policy/put",
-    tag = "policy",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminPolicyPutRequest,
-    responses(
-        (status = 200, description = "Policy document replaced.", body = AdminOkResponse),
-        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_admin_policy_put(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Body(body): Body<AdminPolicyPutRequest>,
-) -> Result<Json<AdminOkResponse>, AdminError> {
-    let store = admin_store(&state, &body.store)?;
-    save_policy_document(store.as_ref(), &body.document).map_err(AdminError::admin)?;
-    Ok(Json(AdminOkResponse { ok: true }))
 }
 
 #[utoipa::path(

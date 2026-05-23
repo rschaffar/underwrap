@@ -334,15 +334,29 @@ impl TestDaemon {
         resource_id: &str,
         wrapper: &str,
     ) -> Result<()> {
-        let doc = PolicyDocument {
-            permissions: vec![self.current_permission(wrapper, resource_id)],
-        };
+        let permission = self.current_permission(wrapper, resource_id);
+        self.admin_upsert_permission(store, &permission).await
+    }
+
+    /// Low-level wrapper-permissions/upsert call without the cross-store
+    /// pair seeding that [`upsert_permission`] does. Used by the
+    /// `put_policy*` helpers which seed pairs separately.
+    async fn admin_upsert_permission(
+        &self,
+        store: &str,
+        permission: &WrapperPermission,
+    ) -> Result<()> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/policy/put")
-            .json(&underwrap_protocol::service::AdminPolicyPutRequest {
-                store: store.to_string(),
-                document: doc,
-            })
+            .admin_request(
+                reqwest::Method::POST,
+                "/v1/admin/wrapper-permissions/upsert",
+            )
+            .json(
+                &underwrap_protocol::service::AdminWrapperPermissionUpsertRequest {
+                    store: store.to_string(),
+                    permission: permission.clone(),
+                },
+            )
             .send()
             .await?;
         anyhow::ensure!(
@@ -659,43 +673,33 @@ impl TestDaemon {
         Ok(response.json().await?)
     }
 
-    pub async fn get_resource_blob(
+    /// Load a resource's canonical blob directly from the on-disk
+    /// store. The admin API no longer exposes a blob-get endpoint
+    /// (the SPA edits per-key via `/v1/admin/secret/*`); tests that
+    /// need to inspect the raw blob go through the storage backend
+    /// instead, same pattern as [`Self::ensure_pair_in_store`].
+    pub fn get_resource_blob(
         &self,
         store: &str,
         id: &str,
-    ) -> Result<underwrap_protocol::service::AdminResourceBlobGetResponse> {
-        let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/resources/blob/get")
-            .json(&underwrap_protocol::service::AdminResourceBlobGetRequest {
-                store: store.to_string(),
-                id: id.to_string(),
-            })
-            .send()
-            .await?;
-        anyhow::ensure!(
-            response.status().is_success(),
-            "admin API returned {}: {}",
-            response.status(),
-            response.text().await.unwrap_or_default(),
-        );
-        Ok(response.json().await?)
+    ) -> Result<underwrap_protocol::resource_blob::ResourceBlob> {
+        let dir = self.store_dir_for(store);
+        let backend = underwrap_store::PlainBackend::open(&dir)?;
+        underwrap_store::load_resource_blob(&backend, id)
     }
 
-    pub async fn put_resource_blob(
+    /// Persist a resource blob directly to the on-disk store. See
+    /// [`Self::get_resource_blob`] for the rationale.
+    pub fn put_resource_blob(
         &self,
         store: &str,
         id: &str,
-        blob_b64: &str,
-    ) -> Result<reqwest::Response> {
-        Ok(self
-            .admin_request(reqwest::Method::POST, "/v1/admin/resources/blob/put")
-            .json(&underwrap_protocol::service::AdminResourceBlobPutRequest {
-                store: store.to_string(),
-                id: id.to_string(),
-                blob_b64: blob_b64.to_string(),
-            })
-            .send()
-            .await?)
+        blob: &underwrap_protocol::resource_blob::ResourceBlob,
+    ) -> Result<()> {
+        let dir = self.store_dir_for(store);
+        let backend = underwrap_store::PlainBackend::open(&dir)?;
+        underwrap_store::save_resource_blob(&backend, id, blob)?;
+        Ok(())
     }
 
     pub async fn delete_pair(
@@ -789,12 +793,73 @@ impl TestDaemon {
         for p in &doc.permissions {
             self.ensure_pair(&p.wrapper, &p.resource_id)?;
         }
+        // Wholesale replace semantics: drop any permission currently in
+        // the store that isn't in `doc`, then upsert every row in
+        // `doc`. Test harness only — the admin SPA edits permissions
+        // one at a time via the granular endpoints.
+        let existing = self.list_permissions(store).await?;
+        for permission in &existing {
+            let still_present = doc.permissions.iter().any(|p| {
+                p.client_instance == permission.client_instance
+                    && p.wrapper == permission.wrapper
+                    && p.resource_id == permission.resource_id
+            });
+            if !still_present {
+                self.admin_delete_permission(
+                    store,
+                    &permission.client_instance,
+                    &permission.wrapper,
+                    &permission.resource_id,
+                )
+                .await?;
+            }
+        }
+        for permission in &doc.permissions {
+            self.admin_upsert_permission(store, permission).await?;
+        }
+        Ok(())
+    }
+
+    async fn list_permissions(&self, store: &str) -> Result<Vec<WrapperPermission>> {
         let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/policy/put")
-            .json(&underwrap_protocol::service::AdminPolicyPutRequest {
-                store: store.to_string(),
-                document: doc.clone(),
-            })
+            .admin_request(reqwest::Method::POST, "/v1/admin/wrapper-permissions/list")
+            .json(
+                &underwrap_protocol::service::AdminWrapperPermissionsListRequest {
+                    store: store.to_string(),
+                },
+            )
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        let body: underwrap_protocol::service::AdminWrapperPermissionsListResponse =
+            response.json().await?;
+        Ok(body.permissions)
+    }
+
+    async fn admin_delete_permission(
+        &self,
+        store: &str,
+        client_instance: &str,
+        wrapper: &str,
+        resource_id: &str,
+    ) -> Result<()> {
+        let response = self
+            .admin_request(
+                reqwest::Method::POST,
+                "/v1/admin/wrapper-permissions/delete",
+            )
+            .json(
+                &underwrap_protocol::service::AdminWrapperPermissionDeleteRequest {
+                    store: store.to_string(),
+                    client_instance: client_instance.to_string(),
+                    wrapper: wrapper.to_string(),
+                    resource_id: resource_id.to_string(),
+                },
+            )
             .send()
             .await?;
         anyhow::ensure!(

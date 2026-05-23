@@ -1,4 +1,4 @@
-//! Store admin CRUD: `list`, `detail`, `create`, `update`, `delete`.
+//! Store admin CRUD: `list`, `create`, `update`, `delete`.
 
 use std::sync::Arc;
 
@@ -25,7 +25,6 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_stores_list, handle_admin_store_create))
         .routes(routes!(
-            handle_admin_store_detail,
             handle_admin_store_update,
             handle_admin_store_delete
         ))
@@ -71,52 +70,6 @@ pub(crate) async fn handle_admin_stores_list(
     }
     items.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
     Ok(Json(AdminStoresListResponse { items }))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/admin/stores/{name}",
-    tag = "stores",
-    security(("session_cookie" = [])),
-    params(("name" = String, Path, description = "Store id (display name).")),
-    responses(
-        (status = 200, description = "Store detail with backend kind, action state, usage summary.", body = AdminStoreDetailResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_admin_store_detail(
-    State(state): State<Arc<AdminRuntimeState>>,
-    AxumPath(name): AxumPath<String>,
-) -> Result<Json<AdminStoreDetailResponse>, AdminError> {
-    let (loaded, handle, locked) = {
-        let reg = state.stores.read().unwrap();
-        let loaded = reg
-            .records
-            .get(&name)
-            .ok_or_else(AdminError::store_not_found)?;
-        match reg.state.get(&name) {
-            Some(StoreState::Unlocked(b)) => (loaded.clone(), Some(Arc::clone(b)), false),
-            Some(StoreState::Locked) => (loaded.clone(), None, true),
-            None => {
-                return Err(AdminError::internal_with_code(
-                    "internal",
-                    "store metadata present but registry state missing",
-                ));
-            }
-        }
-    };
-    let usage = match handle.as_deref() {
-        Some(b) => admin_store_usage(&state, &name, b)?,
-        None => admin_store_usage_for_locked(&state, &name),
-    };
-    let actions = admin_store_actions(&loaded, &usage, locked);
-    Ok(Json(admin_store_detail(
-        &state.stores_file,
-        &loaded,
-        locked,
-        usage,
-        actions,
-    )))
 }
 
 #[utoipa::path(

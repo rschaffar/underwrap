@@ -223,4 +223,3 @@ fn admin_resource_delete_refuses_with_structured_blockers() {
     let resources = list_body["resources"].as_array().unwrap();
     assert_eq!(resources.len(), 1);
 }
-

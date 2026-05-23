@@ -1,5 +1,4 @@
 use super::*;
-use base64::Engine;
 use std::collections::BTreeMap;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::policy::PolicyDocument;
@@ -235,17 +234,9 @@ async fn admin_secret_delete_removes_single_libsecret_entry() {
         aliases,
         collections,
     };
-    let blob_b64 =
-        base64::engine::general_purpose::STANDARD.encode(blob.to_canonical_bytes().unwrap());
-    let put = daemon
-        .put_resource_blob("test", &resource_id, &blob_b64)
-        .await
+    daemon
+        .put_resource_blob("test", &resource_id, &blob)
         .unwrap();
-    assert!(
-        put.status().is_success(),
-        "seed PUT must succeed: {}",
-        put.status()
-    );
 
     // Sanity: both items' .secret entries are visible through the
     // admin list before the delete.
@@ -307,14 +298,7 @@ async fn admin_secret_delete_removes_single_libsecret_entry() {
     // The "drop" item is gone and the "keep" item survives. The
     // section's aliases and collection meta also survive because
     // they were emitted as separate blob entries.
-    let after = daemon
-        .get_resource_blob("test", &resource_id)
-        .await
-        .unwrap();
-    let after_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&after.blob_b64)
-        .unwrap();
-    let after_blob = ResourceBlob::from_canonical_bytes(&after_bytes).unwrap();
+    let after_blob = daemon.get_resource_blob("test", &resource_id).unwrap();
     let default_col = after_blob
         .libsecret
         .collections

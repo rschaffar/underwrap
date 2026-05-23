@@ -362,25 +362,25 @@ async fn underwrapd_binary_start_and_read() {
     // unlocked grant on wrapper `w` for the host the daemon was
     // configured with (`binary-test`).
     let policy_resp = client
-        .post(format!("{admin_url}/v1/admin/policy/put"))
+        .post(format!("{admin_url}/v1/admin/wrapper-permissions/upsert"))
         .header(
             reqwest::header::COOKIE,
             csrf_cookie_header(&admin_session_cookie, &admin_csrf_cookie),
         )
         .header("X-CSRF-Token", &admin_csrf_token)
-        .json(&underwrap_protocol::service::AdminPolicyPutRequest {
-            store: "test".to_string(),
-            document: underwrap_protocol::policy::PolicyDocument {
-                permissions: vec![underwrap_protocol::policy::WrapperPermission {
+        .json(
+            &underwrap_protocol::service::AdminWrapperPermissionUpsertRequest {
+                store: "test".to_string(),
+                permission: underwrap_protocol::policy::WrapperPermission {
                     client_instance: "inst_underwrap_local".to_string(),
                     wrapper: "w".to_string(),
                     resource_id: "s/t".to_string(),
                     mode: underwrap_protocol::policy::WrapperApprovalMode::Unlocked,
                     writable: false,
                     reason: None,
-                }],
+                },
             },
-        })
+        )
         .send()
         .await
         .unwrap();

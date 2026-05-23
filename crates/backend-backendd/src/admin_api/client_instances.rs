@@ -1,5 +1,5 @@
 //! Client-instance admin CRUD: `/v1/admin/client-instances/{list,
-//! detail, create, update, delete}`.
+//! create, update, delete}`.
 //!
 //! Client instances are the mTLS identities under which frontend
 //! daemons authenticate to the backend's runtime API. Each instance
@@ -154,7 +154,6 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
             handle_admin_client_instance_create
         ))
         .routes(routes!(
-            handle_admin_client_instance_detail,
             handle_admin_client_instance_update,
             handle_admin_client_instance_delete
         ))
@@ -190,40 +189,6 @@ pub(crate) async fn handle_admin_client_instances_list(
     }
     items.sort_by(|a, b| a.display_name.cmp(&b.display_name).then(a.id.cmp(&b.id)));
     Ok(Json(AdminClientInstancesListResponse { items }))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/admin/client-instances/{id}",
-    tag = "client_instances",
-    security(("session_cookie" = [])),
-    params(("id" = String, Path, description = "Client instance id.")),
-    responses(
-        (status = 200, description = "Client instance detail.", body = AdminClientInstanceDetailResponse),
-        (status = 404, description = "Instance not found.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_admin_client_instance_detail(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Path(id): Path<String>,
-) -> Result<Json<AdminClientInstanceDetailResponse>, AdminError> {
-    let store_names = current_store_names(&state);
-    let instances = state.client_instances.read().unwrap();
-    let record = instances
-        .get(&id)
-        .ok_or_else(|| AdminError::not_found("unknown client instance"))?;
-    let Some(current_store_name) = store_names.get(&record.current_store_id).cloned() else {
-        return Err(AdminError::internal_with_code(
-            "unknown_store",
-            "client instance references an unknown store",
-        ));
-    };
-    let actions = admin_client_instance_actions(record);
-    Ok(Json(admin_client_instance_detail(
-        record,
-        current_store_name,
-        actions,
-    )))
 }
 
 #[utoipa::path(

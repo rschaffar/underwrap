@@ -27,7 +27,6 @@ use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::Path;
 
-use base64::Engine;
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{
@@ -143,27 +142,14 @@ fn make_permission(
     }
 }
 
-async fn put_blob(daemon: &TestDaemon, resource: &str, blob: &ResourceBlob) -> Vec<u8> {
+fn put_blob(daemon: &TestDaemon, resource: &str, blob: &ResourceBlob) -> Vec<u8> {
     let bytes = blob.to_canonical_bytes().unwrap();
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    let resp = daemon
-        .put_resource_blob("test", resource, &b64)
-        .await
-        .unwrap();
-    assert!(
-        resp.status().is_success(),
-        "PUT blob failed: {}",
-        resp.status()
-    );
+    daemon.put_resource_blob("test", resource, blob).unwrap();
     bytes
 }
 
-async fn get_blob(daemon: &TestDaemon, resource: &str) -> ResourceBlob {
-    let resp = daemon.get_resource_blob("test", resource).await.unwrap();
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&resp.blob_b64)
-        .unwrap();
-    ResourceBlob::from_canonical_bytes(&bytes).unwrap()
+fn get_blob(daemon: &TestDaemon, resource: &str) -> ResourceBlob {
+    daemon.get_resource_blob("test", resource).unwrap()
 }
 
 fn blob_with_env(key: &str, value: &[u8]) -> ResourceBlob {
@@ -197,7 +183,7 @@ async fn clean_run_only_sends_usage_signal() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
 
     let initial = blob_with_env("GH_TOKEN", b"ghp_initial");
-    let initial_bytes = put_blob(&daemon, "github/token", &initial).await;
+    let initial_bytes = put_blob(&daemon, "github/token", &initial);
     daemon
         .put_policy(
             "test",
@@ -231,7 +217,7 @@ async fn clean_run_only_sends_usage_signal() {
     .unwrap();
 
     // Backend blob is byte-identical to the initial state.
-    let after = get_blob(&daemon, "github/token").await;
+    let after = get_blob(&daemon, "github/token");
     assert_eq!(after, initial);
 
     daemon.stop().await.unwrap();
@@ -242,7 +228,7 @@ async fn writable_grant_persists_checkin() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
 
     let initial = blob_with_files_entry(".config/gh/hosts.yml", b"github.com:\n  user: alice\n");
-    put_blob(&daemon, "github/token", &initial).await;
+    put_blob(&daemon, "github/token", &initial);
     daemon
         .put_policy(
             "test",
@@ -274,7 +260,7 @@ async fn writable_grant_persists_checkin() {
     .await;
     result.unwrap();
 
-    let after = get_blob(&daemon, "github/token").await;
+    let after = get_blob(&daemon, "github/token");
     assert_eq!(after, mutated);
 
     daemon.stop().await.unwrap();
@@ -285,7 +271,7 @@ async fn readonly_grant_rejects_checkin() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
 
     let initial = blob_with_env("GH_TOKEN", b"ghp_initial");
-    put_blob(&daemon, "github/token", &initial).await;
+    put_blob(&daemon, "github/token", &initial);
     daemon
         .put_policy(
             "test",
@@ -325,7 +311,7 @@ async fn readonly_grant_rejects_checkin() {
     .unwrap();
 
     // Backend blob unchanged.
-    let after = get_blob(&daemon, "github/token").await;
+    let after = get_blob(&daemon, "github/token");
     assert_eq!(after, initial);
 
     daemon.stop().await.unwrap();
@@ -336,7 +322,7 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
 
     let initial = blob_with_env("GH_TOKEN", b"ghp_initial");
-    put_blob(&daemon, "github/token", &initial).await;
+    put_blob(&daemon, "github/token", &initial);
     daemon
         .put_policy(
             "test",
@@ -404,7 +390,7 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
     }
 
     // Backend blob unchanged because the mid-run flip won.
-    let after = get_blob(&daemon, "github/token").await;
+    let after = get_blob(&daemon, "github/token");
     assert_eq!(after, initial);
 
     daemon.stop().await.unwrap();
@@ -415,7 +401,7 @@ async fn noncanonical_checkin_rejected() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
 
     let initial = blob_with_env("GH_TOKEN", b"ghp_initial");
-    put_blob(&daemon, "github/token", &initial).await;
+    put_blob(&daemon, "github/token", &initial);
     daemon
         .put_policy(
             "test",
@@ -457,7 +443,7 @@ async fn noncanonical_checkin_rejected() {
     .await
     .unwrap();
 
-    let after = get_blob(&daemon, "github/token").await;
+    let after = get_blob(&daemon, "github/token");
     assert_eq!(after, initial);
 
     daemon.stop().await.unwrap();

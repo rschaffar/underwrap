@@ -28,8 +28,7 @@
 //! - [`auth`] / [`bootstrap`] — login, whoami, logout, password change,
 //!   first-operator bootstrap.
 //! - [`users`], [`stores`], [`client_instances`], [`secrets`],
-//!   [`policy`], [`resources`], [`pairs`], [`overview`] — admin CRUD
-//!   per subdomain.
+//!   [`policy`], [`resources`], [`pairs`] — admin CRUD per subdomain.
 
 pub(crate) mod audit;
 pub mod auth;
@@ -37,7 +36,6 @@ pub mod bootstrap;
 pub(crate) mod client_instances;
 pub(crate) mod csrf;
 pub(crate) mod error;
-pub(crate) mod overview;
 pub(crate) mod pairs;
 pub(crate) mod policy;
 pub(crate) mod resources;
@@ -162,7 +160,6 @@ fn build_protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
         .merge(resources::openapi_router())
         .merge(pairs::openapi_router())
         .merge(policy::openapi_router())
-        .merge(overview::openapi_router())
 }
 
 /// OpenAPI-only export. Constructs the same router tree as the live

@@ -6,7 +6,7 @@ use hyper::StatusCode;
 use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest};
 
 use super::*;
-use crate::admin_api::stores::crud::{handle_admin_store_create, handle_admin_store_detail};
+use crate::admin_api::stores::crud::{handle_admin_store_create, handle_admin_stores_list};
 use crate::http::responses::Body;
 use crate::test_support::{admin_principal, create_store_for_test, crud_state, run_handler};
 
@@ -81,11 +81,8 @@ async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
         );
     }
 
-    // Detail GET still does not leak the key value.
-    let (_, body) = run_handler(handle_admin_store_detail(
-        State(state.clone()),
-        Path(store_id.clone()),
-    ));
+    // Store-list payload still does not leak the key value.
+    let (_, body) = run_handler(handle_admin_stores_list(State(state.clone())));
     let body_str = serde_json::to_string(&body).unwrap();
     assert!(!body_str.contains(&new_key));
     assert!(!body_str.contains(&original_key));

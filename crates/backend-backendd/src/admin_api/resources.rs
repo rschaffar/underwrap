@@ -1,27 +1,22 @@
 //! Resource admin CRUD: `/v1/admin/resources/{list, create, delete,
-//! rename, blob/get, blob/put}`.
+//! rename}`.
 //!
 //! Resources are first-class entities with provenance, stored in the
-//! resources document and projected to one canonical blob per
-//! resource. Delete refuses with structured blockers if secrets,
-//! pairs, or wrapper permissions still reference the resource.
+//! resources document. Delete refuses with structured blockers if
+//! secrets, pairs, or wrapper permissions still reference the
+//! resource.
 
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
-use base64::Engine;
 use underwrap_protocol::service::{
-    AdminResourceBlobGetRequest, AdminResourceBlobGetResponse, AdminResourceBlobPutRequest,
-    AdminResourceBlobPutResponse, AdminResourceCreateRequest, AdminResourceCreateResponse,
-    AdminResourceDeleteRequest, AdminResourceDeleteResponse, AdminResourceRenameRequest,
-    AdminResourceRenameResponse, AdminResourcesListRequest, AdminResourcesListResponse,
-    ServiceErrorResponse,
+    AdminResourceCreateRequest, AdminResourceCreateResponse, AdminResourceDeleteRequest,
+    AdminResourceDeleteResponse, AdminResourceRenameRequest, AdminResourceRenameResponse,
+    AdminResourcesListRequest, AdminResourcesListResponse, ServiceErrorResponse,
 };
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
-
-use underwrap_store::{load_resource_blob, save_resource_blob};
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::log_admin_event;
@@ -60,8 +55,6 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
         .routes(routes!(handle_admin_resource_create))
         .routes(routes!(handle_admin_resource_delete))
         .routes(routes!(handle_admin_resource_rename))
-        .routes(routes!(handle_admin_resource_blob_get))
-        .routes(routes!(handle_admin_resource_blob_put))
 }
 
 #[utoipa::path(
@@ -87,89 +80,6 @@ pub(crate) async fn handle_admin_resources_list(
     Ok(Json(AdminResourcesListResponse {
         resources: doc.resources,
     }))
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/resources/blob/get",
-    tag = "resources",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminResourceBlobGetRequest,
-    responses(
-        (status = 200, description = "Canonical JCS-encoded resource blob (base64-encoded in `blob_b64`).", body = AdminResourceBlobGetResponse),
-        (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_admin_resource_blob_get(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Body(body): Body<AdminResourceBlobGetRequest>,
-) -> Result<Json<AdminResourceBlobGetResponse>, AdminError> {
-    let store = admin_store(&state, &body.store)?;
-    let blob = load_resource_blob(store.as_ref(), &body.id)
-        .map_err(|e| AdminError::internal("loading resource blob", e))?;
-    let bytes = blob
-        .to_canonical_bytes()
-        .map_err(|e| AdminError::internal("canonicalizing resource blob", e))?;
-    Ok(Json(AdminResourceBlobGetResponse {
-        blob_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
-    }))
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/resources/blob/put",
-    tag = "resources",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminResourceBlobPutRequest,
-    responses(
-        (status = 200, description = "Blob written; the env section is enforced immutable so changes there are rejected.", body = AdminResourceBlobPutResponse),
-        (status = 400, description = "Blob failed canonicalisation or env-section-immutable check.", body = ServiceErrorResponse),
-        (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_admin_resource_blob_put(
-    State(state): State<Arc<AdminRuntimeState>>,
-    axum::Extension(principal): axum::Extension<Principal>,
-    Body(body): Body<AdminResourceBlobPutRequest>,
-) -> Result<Json<AdminResourceBlobPutResponse>, AdminError> {
-    use underwrap_protocol::resource_blob::ResourceBlob;
-
-    let store = admin_store(&state, &body.store)?;
-    let blob_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&body.blob_b64)
-        .map_err(|e| {
-            AdminError::bad_request(
-                "invalid_request",
-                format!("blob_b64 is not valid base64: {e}"),
-            )
-        })?;
-    let blob = ResourceBlob::from_canonical_bytes(&blob_bytes).map_err(|e| {
-        AdminError::bad_request("invalid_blob", format!("decoding resource blob: {e:#}"))
-    })?;
-    // Enforce that the caller sent already-canonical bytes. The
-    // wrapper-side does this naturally via serde_jcs; admin clients
-    // must as well.
-    let canonical = blob
-        .to_canonical_bytes()
-        .map_err(|e| AdminError::internal("canonicalizing resource blob", e))?;
-    if canonical != blob_bytes {
-        return Err(AdminError::bad_request(
-            "noncanonical_blob",
-            "blob_b64 is not JCS-canonical; re-encode via serde_jcs",
-        ));
-    }
-    save_resource_blob(store.as_ref(), &body.id, &blob)
-        .map_err(|e| AdminError::internal("saving resource blob", e))?;
-    write_admin_resource_audit(
-        &principal.username,
-        &body.id,
-        "resource.blob.put",
-        None,
-        "success",
-    );
-    Ok(Json(AdminResourceBlobPutResponse { ok: true }))
 }
 
 #[utoipa::path(
