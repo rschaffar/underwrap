@@ -257,11 +257,12 @@ fails until the file is committed.
 
 The SPA's API client (`web/src/api/client.ts`, built on
 `openapi-fetch`) consumes the same spec: `npm run generate:api`
-re-runs `openapi-typescript` against `openapi.json` to produce
-`web/src/api/schema.ts`. The `prebuild` and `pretest` npm hooks fire
-this automatically, so a stale spec breaks the SPA build at the
-earliest possible point. There is no separate ts-rs binding step —
-the OpenAPI schema is the single source of typed truth.
+re-runs `openapi-typescript` against `openapi.json` to produce the
+ignored local file `web/src/api/schema.ts`. The `predev`, `prebuild`,
+and `pretest` npm hooks fire this automatically, so a stale spec
+breaks the SPA build at the earliest possible point. There is no
+separate ts-rs binding step — the OpenAPI schema is the single source
+of typed truth.
 
 Two SecuritySchemes are referenced from individual operations:
 `session_cookie` (the opaque `__Host-uw-session` cookie issued by
