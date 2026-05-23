@@ -203,7 +203,7 @@ impl TestDaemon {
             session_cookie: admin_session_cookie,
             csrf_cookie: admin_csrf_cookie,
             csrf_token: admin_csrf_token,
-        } = bootstrap_admin(&admin_url, &pki.ca_cert, "tester", "hunter2").await?;
+        } = bootstrap_admin(&admin_url, &pki.ca_cert, "tester", "hunter2-long").await?;
         let admin_client = reqwest::Client::builder()
             .use_rustls_tls()
             .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(

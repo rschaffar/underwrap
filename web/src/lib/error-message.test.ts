@@ -7,6 +7,8 @@ describe("describeApiError", () => {
   it("maps each backend code to a human-readable hint", () => {
     const cases: Array<[string, RegExp]> = [
       ["invalid_credentials", /invalid username or password/i],
+      ["password_too_short", /at least 12 characters/i],
+      ["password_empty", /password is required/i],
       ["rate_limited", /too many attempts/i],
       ["bootstrap_already_completed", /already been completed/i],
       ["operators_already_exist", /operator already exists/i],

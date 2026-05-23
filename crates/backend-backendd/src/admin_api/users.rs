@@ -185,10 +185,14 @@ pub(crate) async fn handle_admin_user_create(
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminUserCreateRequest>,
 ) -> Result<Json<AdminUserListItem>, AdminError> {
-    if body.password.is_empty() {
+    if let Err(code) = crate::auth::validate_password(&body.password) {
         return Err(AdminError::bad_request(
-            "invalid_password",
-            "password must not be empty",
+            code,
+            match code {
+                "password_empty" => "password must not be empty",
+                "password_too_short" => "password too short",
+                _ => "password rejected",
+            },
         ));
     }
     let username_norm = crate::users::normalise_username(&body.username);
@@ -272,10 +276,14 @@ pub(crate) async fn handle_admin_user_reset_password(
     Path(id): Path<String>,
     Body(body): Body<AdminUserResetPasswordRequest>,
 ) -> Result<Json<AdminOkUserResponse>, AdminError> {
-    if body.password.is_empty() {
+    if let Err(code) = crate::auth::validate_password(&body.password) {
         return Err(AdminError::bad_request(
-            "invalid_password",
-            "password must not be empty",
+            code,
+            match code {
+                "password_empty" => "password must not be empty",
+                "password_too_short" => "password too short",
+                _ => "password rejected",
+            },
         ));
     }
     let new_hash = crate::auth::hash_password(&body.password).map_err(|e| {

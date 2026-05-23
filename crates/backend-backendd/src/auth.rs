@@ -170,6 +170,27 @@ pub fn verify_password(hash: &str, password: &str) -> bool {
         .is_ok()
 }
 
+/// Minimum length operator passwords must satisfy at the entry points
+/// that accept a raw password (bootstrap, password change, user create,
+/// user reset-password). Login does not consult this rule — verifying
+/// against a real hash leaks no length information either way, and
+/// rejecting by length there would expose the rule to an unauthenticated
+/// probe.
+pub const MIN_PASSWORD_LEN: usize = 12;
+
+/// Validate an operator-supplied password before hashing. Returns
+/// `Ok(())` on accept, or a stable code suitable for an `AdminError`
+/// envelope (`password_empty` / `password_too_short`).
+pub fn validate_password(password: &str) -> std::result::Result<(), &'static str> {
+    if password.is_empty() {
+        return Err("password_empty");
+    }
+    if password.chars().count() < MIN_PASSWORD_LEN {
+        return Err("password_too_short");
+    }
+    Ok(())
+}
+
 /// Hash a password with Argon2id and the OWASP-recommended params for
 /// the `argon2` crate's defaults.
 pub fn hash_password(password: &str) -> Result<String> {

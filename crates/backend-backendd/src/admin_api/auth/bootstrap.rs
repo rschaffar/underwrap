@@ -100,12 +100,6 @@ pub(crate) async fn handle_admin_bootstrap(
             "username is required",
         ));
     }
-    if body.password.is_empty() {
-        return Err(AdminError::bad_request(
-            "invalid_credentials",
-            "password is required",
-        ));
-    }
 
     // Serialise concurrent bootstrap attempts: two callers must not
     // both see "users empty + sentinel unset" before either has
@@ -145,6 +139,18 @@ pub(crate) async fn handle_admin_bootstrap(
         return Err(AdminError::conflict(
             "users_already_exist",
             "a user already exists; bootstrap requires an empty user collection",
+        ));
+    }
+
+    if let Err(code) = crate::auth::validate_password(&body.password) {
+        log_bootstrap_attempt(&username_norm, Some(code), "failure");
+        return Err(AdminError::bad_request(
+            code,
+            match code {
+                "password_empty" => "password is required",
+                "password_too_short" => "password too short",
+                _ => "password rejected",
+            },
         ));
     }
 

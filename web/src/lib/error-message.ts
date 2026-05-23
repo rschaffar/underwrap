@@ -11,6 +11,10 @@ export function describeApiError(err: unknown): string {
     switch (err.code) {
       case "invalid_credentials":
         return "Invalid username or password.";
+      case "password_too_short":
+        return "Password must be at least 12 characters.";
+      case "password_empty":
+        return "Password is required.";
       case "rate_limited":
         return "Too many attempts. Please wait a moment and try again.";
       case "bootstrap_already_completed":

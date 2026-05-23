@@ -30,7 +30,7 @@ interface ProfilePageProps {
 const schema = z
   .object({
     current_password: z.string().min(1, "Current password is required."),
-    new_password: z.string().min(8, "Use at least 8 characters."),
+    new_password: z.string().min(1, "New password is required."),
     confirm: z.string(),
   })
   .refine((v) => v.new_password === v.confirm, {

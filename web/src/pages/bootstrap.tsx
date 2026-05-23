@@ -19,14 +19,10 @@ import { postBootstrap } from "@/api/client";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 
-const MIN_PASSWORD_LEN = 12;
-
 const schema = z
   .object({
     username: z.string().min(1, "Username is required."),
-    password: z
-      .string()
-      .min(MIN_PASSWORD_LEN, `Password must be at least ${MIN_PASSWORD_LEN} characters.`),
+    password: z.string().min(1, "Password is required."),
     confirm: z.string().min(1, "Please re-enter the password."),
   })
   .refine((v) => v.password === v.confirm, {
@@ -118,7 +114,7 @@ export function BootstrapPage({ onSuccess }: BootstrapPageProps) {
                     />
                   </FormControl>
                   <FormDescription>
-                    At least {MIN_PASSWORD_LEN} characters.
+                    At least 12 characters.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

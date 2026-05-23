@@ -31,3 +31,30 @@ fn unknown_user_dummy_hash_never_matches() {
         "anything"
     ));
 }
+
+#[test]
+fn validate_password_rejects_empty() {
+    assert_eq!(crate::auth::validate_password(""), Err("password_empty"));
+}
+
+#[test]
+fn validate_password_rejects_under_minimum() {
+    let short = "a".repeat(crate::auth::MIN_PASSWORD_LEN - 1);
+    assert_eq!(
+        crate::auth::validate_password(&short),
+        Err("password_too_short"),
+    );
+}
+
+#[test]
+fn validate_password_accepts_minimum() {
+    let min = "a".repeat(crate::auth::MIN_PASSWORD_LEN);
+    assert!(crate::auth::validate_password(&min).is_ok());
+}
+
+#[test]
+fn validate_password_counts_chars_not_bytes() {
+    // 12 four-byte UTF-8 characters (48 bytes total) is at minimum length.
+    let twelve_chars = "\u{1F600}".repeat(crate::auth::MIN_PASSWORD_LEN);
+    assert!(crate::auth::validate_password(&twelve_chars).is_ok());
+}

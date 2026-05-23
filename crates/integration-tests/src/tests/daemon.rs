@@ -270,7 +270,7 @@ async fn underwrapd_binary_start_and_read() {
         session_cookie: admin_session_cookie,
         csrf_cookie: admin_csrf_cookie,
         csrf_token: admin_csrf_token,
-    } = bootstrap_admin(&admin_url, &ca_cert, "tester", "hunter2")
+    } = bootstrap_admin(&admin_url, &ca_cert, "tester", "hunter2-long")
         .await
         .unwrap();
     let client = reqwest::Client::builder()

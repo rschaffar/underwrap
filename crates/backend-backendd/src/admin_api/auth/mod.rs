@@ -208,10 +208,14 @@ pub(crate) async fn handle_admin_password_change(
     use crate::admin_api::audit::{AuditEntity, log_admin_event};
     use crate::admin_api::users::mutate_collection;
 
-    if body.new_password.is_empty() {
+    if let Err(code) = crate::auth::validate_password(&body.new_password) {
         return Err(AdminError::bad_request(
-            "invalid_password",
-            "new password must not be empty",
+            code,
+            match code {
+                "password_empty" => "new password must not be empty",
+                "password_too_short" => "new password too short",
+                _ => "password rejected",
+            },
         ));
     }
     let collection = crate::users::load(&state.users_file).map_err(|e| {

@@ -21,7 +21,7 @@ fn user_create_persists_record_and_omits_password_hash_from_response() {
         Extension(p),
         Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
-            password: "hunter2-bob".into(),
+            password: "hunter2-bob-long".into(),
         }),
     ));
     assert_eq!(status, StatusCode::OK);
@@ -63,7 +63,7 @@ fn user_create_refuses_duplicate_username_case_insensitively() {
         Extension(p),
         Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "Alice".into(), // collides after normalisation
-            password: "any-pass".into(),
+            password: "any-pass-long".into(),
         }),
     ));
     assert_eq!(status, StatusCode::CONFLICT);
@@ -84,7 +84,40 @@ fn user_create_refuses_empty_password() {
         }),
     ));
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["code"], "invalid_password");
+    assert_eq!(body["code"], "password_empty");
+}
+
+#[test]
+fn user_create_refuses_short_password() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    seed_admin_into(&state, "alice");
+    let (status, body) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(admin_principal()),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
+            username: "bob".into(),
+            password: "a".repeat(crate::auth::MIN_PASSWORD_LEN - 1),
+        }),
+    ));
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "password_too_short");
+}
+
+#[test]
+fn user_create_accepts_min_length_password() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    seed_admin_into(&state, "alice");
+    let (status, _body) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(admin_principal()),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
+            username: "bob".into(),
+            password: "a".repeat(crate::auth::MIN_PASSWORD_LEN),
+        }),
+    ));
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[test]
@@ -99,7 +132,7 @@ fn users_list_omits_password_hash_for_every_record() {
             Extension(p.clone()),
             Body(underwrap_protocol::service::AdminUserCreateRequest {
                 username: u.into(),
-                password: format!("{u}-pass"),
+                password: format!("{u}-pass-long"),
             }),
         ));
         assert_eq!(status, StatusCode::OK);
@@ -124,7 +157,7 @@ fn user_update_renames_user() {
         Extension(p.clone()),
         Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
-            password: "x".into(),
+            password: "xxxxxxxxxxxx".into(),
         }),
     ));
     assert_eq!(create_status, StatusCode::OK);
@@ -170,7 +203,7 @@ fn user_delete_succeeds_when_another_user_exists() {
         Extension(p.clone()),
         Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "second".into(),
-            password: "x".into(),
+            password: "xxxxxxxxxxxx".into(),
         }),
     ));
     assert_eq!(create_status, StatusCode::OK);
@@ -201,7 +234,7 @@ fn user_reset_password_changes_hash() {
         Extension(p),
         Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
-            password: "old-pass".into(),
+            password: "old-pass-long".into(),
         }),
     ));
     assert_eq!(create_status, StatusCode::OK);
@@ -248,7 +281,7 @@ fn debug_redacts_password_hash_in_collection_logging() {
         Extension(admin_principal()),
         Body(underwrap_protocol::service::AdminUserCreateRequest {
             username: "bob".into(),
-            password: "x".into(),
+            password: "xxxxxxxxxxxx".into(),
         }),
     ));
     assert_eq!(status, StatusCode::OK);

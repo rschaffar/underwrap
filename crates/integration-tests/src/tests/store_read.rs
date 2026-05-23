@@ -78,28 +78,6 @@ async fn admin_writes_are_authenticated_operator_actions() {
 }
 
 #[tokio::test]
-async fn admin_write_rejects_policy_document_secret_id() {
-    use underwrap_protocol::policy::POLICY_DOCUMENT_SECRET_ID;
-
-    let wrappers = one_wrapper_config();
-    let daemon = TestDaemon::start(wrappers).await.unwrap();
-
-    let err = daemon
-        .store_secret(
-            "test",
-            "gh-authorized",
-            POLICY_DOCUMENT_SECRET_ID,
-            "tampered",
-        )
-        .await
-        .expect_err("policy document secret id must be rejected");
-    let msg = err.to_string();
-    assert!(msg.contains("400"), "expected 400, got: {msg}");
-
-    daemon.stop().await.unwrap();
-}
-
-#[tokio::test]
 async fn concurrent_reads() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();

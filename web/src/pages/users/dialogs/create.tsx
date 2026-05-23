@@ -33,7 +33,7 @@ import { describeApiError } from "@/lib/error-message";
 const createSchema = z
   .object({
     username: z.string().trim().min(1, "Username is required."),
-    password: z.string().min(8, "Use at least 8 characters."),
+    password: z.string().min(1, "Password is required."),
     confirm: z.string(),
   })
   .refine((v) => v.password === v.confirm, {
@@ -119,7 +119,7 @@ export function CreateUserDialog({
                     <Input type="password" autoComplete="new-password" {...field} />
                   </FormControl>
                   <FormDescription>
-                    At least 8 characters. Longer is better.
+                    At least 12 characters.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

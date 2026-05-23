@@ -51,14 +51,17 @@ async fn bootstrap_status_false_when_operators_exist_even_without_sentinel() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_succeeds_on_empty_store_and_sets_sentinel() {
     let state = fresh_bootstrap_state();
-    let (status, _) = run_bootstrap(&state, "alice", "hunter2");
+    let (status, _) = run_bootstrap(&state, "alice", "hunter2-long");
     assert_eq!(status, StatusCode::OK);
     // Sentinel is set.
     assert!(crate::users::bootstrap_completed(&state.users_file).unwrap());
     // First user record is created.
     let collection = crate::users::load(&state.users_file).unwrap();
     let u = collection.find_by_username("alice").unwrap();
-    assert!(crate::auth::verify_password(&u.password_hash, "hunter2"));
+    assert!(crate::auth::verify_password(
+        &u.password_hash,
+        "hunter2-long"
+    ));
     // Session and CSRF cookies are emitted by the
     // `tower-sessions` / `axum-login` / `axum_csrf` layers, not by
     // the bootstrap handler itself. The integration tests cover the
@@ -69,7 +72,7 @@ async fn bootstrap_succeeds_on_empty_store_and_sets_sentinel() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_second_call_returns_bootstrap_already_completed() {
     let state = fresh_bootstrap_state();
-    let _ = run_bootstrap(&state, "alice", "hunter2");
+    let _ = run_bootstrap(&state, "alice", "hunter2-long");
     let (status, body) = run_bootstrap(&state, "eve", "haxx0r");
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "bootstrap_already_completed");
@@ -103,8 +106,8 @@ async fn bootstrap_concurrent_calls_only_one_succeeds() {
     let state = Arc::new(fresh_bootstrap_state());
     let s1 = state.clone();
     let s2 = state.clone();
-    let h1 = tokio::task::spawn_blocking(move || run_bootstrap(&s1, "alice", "p1"));
-    let h2 = tokio::task::spawn_blocking(move || run_bootstrap(&s2, "bob", "p2"));
+    let h1 = tokio::task::spawn_blocking(move || run_bootstrap(&s1, "alice", "password-one"));
+    let h2 = tokio::task::spawn_blocking(move || run_bootstrap(&s2, "bob", "password-two"));
     let (st1, _) = h1.await.unwrap();
     let (st2, _) = h2.await.unwrap();
     let statuses = [st1, st2];
@@ -119,4 +122,29 @@ async fn bootstrap_concurrent_calls_only_one_succeeds() {
     assert!(crate::users::bootstrap_completed(&state.users_file).unwrap());
     let collection = crate::users::load(&state.users_file).unwrap();
     assert_eq!(collection.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bootstrap_refuses_empty_password() {
+    let state = fresh_bootstrap_state();
+    let (status, body) = run_bootstrap(&state, "alice", "");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "password_empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bootstrap_refuses_short_password() {
+    let state = fresh_bootstrap_state();
+    let short = "a".repeat(crate::auth::MIN_PASSWORD_LEN - 1);
+    let (status, body) = run_bootstrap(&state, "alice", &short);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "password_too_short");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bootstrap_accepts_min_length_password() {
+    let state = fresh_bootstrap_state();
+    let min = "a".repeat(crate::auth::MIN_PASSWORD_LEN);
+    let (status, _) = run_bootstrap(&state, "alice", &min);
+    assert_eq!(status, StatusCode::OK);
 }

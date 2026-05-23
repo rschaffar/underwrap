@@ -29,7 +29,7 @@ ADMIN_LOCAL = "https://127.0.0.1:18443"
 ADMIN_REMOTE = "https://127.0.0.1:18444"
 CA_CERT = "/etc/underwrap-test-ca.pem"
 ADMIN_BOOTSTRAP_USER = "tester"
-ADMIN_BOOTSTRAP_PASSWORD = "hunter2"
+ADMIN_BOOTSTRAP_PASSWORD = "hunter2-long"
 
 # Per-admin session-cookie state, populated by `bootstrap_admin_session`
 # during boot. `_COOKIE_JAR[url]` is curl's cookie file on the VM

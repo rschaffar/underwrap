@@ -31,7 +31,7 @@ import { describeApiError } from "@/lib/error-message";
 
 const resetSchema = z
   .object({
-    password: z.string().min(8, "Use at least 8 characters."),
+    password: z.string().min(1, "Password is required."),
     confirm: z.string(),
   })
   .refine((v) => v.password === v.confirm, {

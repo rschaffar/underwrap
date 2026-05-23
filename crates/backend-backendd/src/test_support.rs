@@ -354,8 +354,8 @@ pub(crate) fn run_bootstrap(
     use crate::admin_api::audit::log_bootstrap_attempt;
 
     let username_norm = crate::users::normalise_username(username);
-    if username_norm.is_empty() || password.is_empty() {
-        let err = AdminError::bad_request("invalid_credentials", "missing field");
+    if username_norm.is_empty() {
+        let err = AdminError::bad_request("invalid_credentials", "missing username");
         return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
     let _guard = state.bootstrap_lock.lock().unwrap();
@@ -372,6 +372,11 @@ pub(crate) fn run_bootstrap(
     if !collection.is_empty() {
         log_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
         let err = AdminError::conflict("users_already_exist", "already populated");
+        return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
+    }
+    if let Err(code) = crate::auth::validate_password(password) {
+        log_bootstrap_attempt(&username_norm, Some(code), "failure");
+        let err = AdminError::bad_request(code, "password rejected");
         return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
     let now = crate::users::now_epoch_secs();

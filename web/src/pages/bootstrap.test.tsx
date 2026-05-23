@@ -16,25 +16,25 @@ afterEach(() => {
 });
 
 describe("BootstrapPage", () => {
-  it("enforces password length and confirmation match", async () => {
+  it("surfaces password_too_short from the backend", async () => {
     const user = userEvent.setup();
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockJsonResponse(400, {
+        code: "password_too_short",
+        message: "password too short",
+      }),
+    );
     render(<BootstrapPage onSuccess={vi.fn()} />);
 
     await user.type(screen.getByLabelText(/^username$/i), "root");
     await user.type(screen.getByLabelText(/^password$/i), "short");
-    await user.type(screen.getByLabelText(/confirm password/i), "mismatch");
+    await user.type(screen.getByLabelText(/confirm password/i), "short");
     await user.click(
       screen.getByRole("button", { name: /create first admin/i }),
     );
 
-    // Use the validation-message wording (not the always-on description),
-    // which starts with "Password must be at least…" — distinct from the
-    // description's "At least 12 characters." text.
-    expect(
-      await screen.findByText(/password must be at least 12 characters/i),
-    ).toBeInTheDocument();
-    expect(fetchSpy).not.toHaveBeenCalled();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/at least 12 characters/i);
   });
 
   it("surfaces password mismatch when length is OK", async () => {
