@@ -238,6 +238,24 @@ module goes in a sibling `tests.rs`. Production files never carry an
 inline `#[cfg(test)] mod tests { ... }` block. Aim to keep any single
 `tests.rs` under ~600 lines.
 
+**Crate-root exception (`main.rs` / `lib.rs`):** Rust resolves `mod tests;`
+in a regular file like `csrf.rs` to `csrf/tests.rs`, but in a crate root
+(`main.rs` / `lib.rs`) it resolves to `src/tests.rs` instead — which
+breaks the `<stem>/tests.rs` convention and collides when a crate has
+both a `main.rs` and a `lib.rs`. To keep the same layout, crate roots
+declare the submodule with an explicit `#[path]`:
+
+```rust
+// in src/main.rs
+#[cfg(test)]
+#[path = "main/tests.rs"]
+mod tests;
+```
+
+The tests then live at `src/main/tests.rs` (or `src/lib/tests.rs` for
+`lib.rs`), matching the same `<stem>/tests.rs` shape every other module
+uses.
+
 Never add `#[cfg(test)] pub(crate) use ...` re-exports at the crate root just
 so an inline test block can reach moved code. If a test needs an item from
 another module, import it directly from where it lives.
