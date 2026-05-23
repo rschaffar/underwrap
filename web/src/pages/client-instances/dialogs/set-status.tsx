@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  type AdminClientInstanceDetailResponse,
+  type AdminClientInstanceListItem,
   putClientInstanceUpdate,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -23,7 +23,7 @@ export function SetStatusDialog({
   onClose,
   onSuccess,
 }: {
-  instance: AdminClientInstanceDetailResponse;
+  instance: AdminClientInstanceListItem;
   nextStatus: "active" | "disabled";
   onClose: () => void;
   onSuccess: () => Promise<void>;

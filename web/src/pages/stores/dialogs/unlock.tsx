@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import {
-  type AdminStoreDetailResponse,
+  type AdminStoreListItem,
   postStoreUnlock,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -49,7 +49,7 @@ export function UnlockStoreDialog({
   store,
   onClose,
 }: {
-  store: AdminStoreDetailResponse;
+  store: AdminStoreListItem;
   onClose: () => void;
 }) {
   const qc = useQueryClient();

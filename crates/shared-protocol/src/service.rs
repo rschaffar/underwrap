@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::entities::{ResourceRecord, WrapperResourcePairRecord};
-use crate::policy::{PolicyDocument, WrapperPermission};
+use crate::policy::WrapperPermission;
 use crate::resource::ResourceSlot;
 
 // ===== Users admin API =====
@@ -26,14 +26,6 @@ pub struct AdminUserListItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminUsersListResponse {
     pub users: Vec<AdminUserListItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminUserDetailResponse {
-    pub id: String,
-    pub username: String,
-    pub created_at: u64,
-    pub password_changed_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
@@ -141,28 +133,6 @@ pub struct AdminStoresListResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminStoreDetailResponse {
-    /// Stable internal identifier used for routing and runtime mapping.
-    pub id: String,
-    /// Editable operator-facing display name.
-    pub name: String,
-    pub backend: AdminStoreBackendKind,
-    pub dir: String,
-    /// `true` if this is an encrypted store with no master key loaded.
-    /// Plain stores are never locked.
-    pub locked: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<u64>,
-    /// On-disk path of the backend-managed store registry file that
-    /// owns this record.
-    pub source_path: String,
-    pub usage: AdminStoreUsageSummary,
-    pub actions: AdminStoreActionState,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreCreateRequest {
     pub name: String,
     pub backend: AdminStoreBackendKind,
@@ -177,7 +147,7 @@ pub struct AdminStoreCreateRequest {
 /// `key_hex == None`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreCreateResponse {
-    pub store: AdminStoreDetailResponse,
+    pub store: AdminStoreListItem,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_hex: Option<String>,
 }
@@ -268,25 +238,6 @@ pub struct AdminClientInstanceListItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminClientInstancesListResponse {
     pub items: Vec<AdminClientInstanceListItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminClientInstanceDetailResponse {
-    pub id: String,
-    pub display_name: String,
-    pub current_store_id: String,
-    pub current_store_name: String,
-    pub status: AdminClientInstanceStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_seen_at: Option<u64>,
-    pub current_credential_fingerprint: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_credential_issued_at: Option<u64>,
-    /// Whether this instance is allowed to auto-create resource and
-    /// wrapper/resource-pair records on the runtime register endpoint.
-    #[serde(default)]
-    pub auto_create_wrapper_assets: bool,
-    pub actions: AdminClientInstanceActionState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
@@ -406,16 +357,6 @@ pub struct AdminSecretRenameRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminSecretDeleteResponse {
     pub existed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminPolicyGetRequest {
-    pub store: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminPolicyGetResponse {
-    pub document: PolicyDocument,
 }
 
 // ===== Wrapper permission CRUD =====

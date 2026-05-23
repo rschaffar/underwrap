@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import {
-  type AdminClientInstanceDetailResponse,
+  type AdminClientInstanceListItem,
   type AdminClientInstancesListResponse,
   type AdminStoresListResponse,
   fetchClientInstances,
@@ -22,15 +22,6 @@ import { DeleteClientInstanceDialog } from "./dialogs/delete";
 
 type ClientStatusFilter = "all" | "active" | "disabled";
 
-function toDetail(
-  item: AdminClientInstancesListResponse["items"][number],
-): AdminClientInstanceDetailResponse {
-  return {
-    ...item,
-    current_credential_issued_at: undefined,
-  };
-}
-
 function statusMatches(
   item: AdminClientInstancesListResponse["items"][number],
   filter: ClientStatusFilter,
@@ -43,13 +34,13 @@ export function ClientInstancesPage() {
   const [statusFilter, setStatusFilter] = useState<ClientStatusFilter>("all");
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] =
-    useState<AdminClientInstanceDetailResponse | null>(null);
+    useState<AdminClientInstanceListItem | null>(null);
   const [settingStatus, setSettingStatus] = useState<{
-    instance: AdminClientInstanceDetailResponse;
+    instance: AdminClientInstanceListItem;
     nextStatus: "active" | "disabled";
   } | null>(null);
   const [deleting, setDeleting] =
-    useState<AdminClientInstanceDetailResponse | null>(null);
+    useState<AdminClientInstanceListItem | null>(null);
 
   useEffect(() => {
     document.title = "underwrap — client instances";
@@ -152,7 +143,7 @@ export function ClientInstancesPage() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setEditing(toDetail(item))}
+                          onClick={() => setEditing(item)}
                         >
                           Edit
                         </Button>
@@ -162,7 +153,7 @@ export function ClientInstancesPage() {
                           disabled={!canDisable && !canEnable}
                           onClick={() =>
                             setSettingStatus({
-                              instance: toDetail(item),
+                              instance: item,
                               nextStatus: item.status === "active" ? "disabled" : "active",
                             })
                           }
@@ -173,7 +164,7 @@ export function ClientInstancesPage() {
                           variant="destructive"
                           size="sm"
                           disabled={!canDelete}
-                          onClick={() => setDeleting(toDetail(item))}
+                          onClick={() => setDeleting(item)}
                         >
                           Delete
                         </Button>

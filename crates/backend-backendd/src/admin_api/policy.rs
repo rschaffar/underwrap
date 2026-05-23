@@ -18,8 +18,7 @@ use anyhow::Result;
 use axum::Json;
 use axum::extract::State;
 use underwrap_protocol::service::{
-    AdminOkResponse, AdminPolicyGetRequest, AdminPolicyGetResponse,
-    AdminWrapperPermissionDeleteRequest, AdminWrapperPermissionUpsertRequest,
+    AdminOkResponse, AdminWrapperPermissionDeleteRequest, AdminWrapperPermissionUpsertRequest,
     AdminWrapperPermissionsListRequest, AdminWrapperPermissionsListResponse, ServiceErrorResponse,
 };
 use utoipa_axum::router::OpenApiRouter;
@@ -61,31 +60,9 @@ pub(crate) fn drop_client_instance_permissions(
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
-        .routes(routes!(handle_admin_policy_get))
         .routes(routes!(handle_admin_wrapper_permissions_list))
         .routes(routes!(handle_admin_wrapper_permission_upsert))
         .routes(routes!(handle_admin_wrapper_permission_delete))
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/admin/policy/get",
-    tag = "policy",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    request_body = AdminPolicyGetRequest,
-    responses(
-        (status = 200, description = "Policy document for the store.", body = AdminPolicyGetResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_admin_policy_get(
-    State(state): State<Arc<AdminRuntimeState>>,
-    Body(body): Body<AdminPolicyGetRequest>,
-) -> Result<Json<AdminPolicyGetResponse>, AdminError> {
-    let store = admin_store(&state, &body.store)?;
-    let document = load_policy_document(store.as_ref()).map_err(AdminError::admin)?;
-    Ok(Json(AdminPolicyGetResponse { document }))
 }
 
 #[utoipa::path(

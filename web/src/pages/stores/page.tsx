@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import {
-  type AdminStoreDetailResponse,
+  type AdminStoreListItem,
   type AdminStoresListResponse,
   fetchStores,
 } from "@/api/client";
@@ -16,23 +16,6 @@ import { DeleteStoreDialog } from "./dialogs/delete";
 import { UnlockStoreDialog } from "./dialogs/unlock";
 import { LockStoreDialog } from "./dialogs/lock";
 
-function toStoreDetail(
-  item: AdminStoresListResponse["items"][number],
-): AdminStoreDetailResponse {
-  return {
-    id: item.id,
-    name: item.name,
-    backend: item.backend,
-    locked: item.locked,
-    description: item.description,
-    created_at: item.created_at,
-    dir: "",
-    source_path: "",
-    usage: item.usage,
-    actions: item.actions,
-  };
-}
-
 export function StoresPage() {
   useEffect(() => {
     document.title = "underwrap — stores";
@@ -44,14 +27,14 @@ export function StoresPage() {
   });
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<AdminStoreDetailResponse | null>(null);
-  const [deleting, setDeleting] = useState<AdminStoreDetailResponse | null>(
+  const [editing, setEditing] = useState<AdminStoreListItem | null>(null);
+  const [deleting, setDeleting] = useState<AdminStoreListItem | null>(
     null,
   );
-  const [unlocking, setUnlocking] = useState<AdminStoreDetailResponse | null>(
+  const [unlocking, setUnlocking] = useState<AdminStoreListItem | null>(
     null,
   );
-  const [locking, setLocking] = useState<AdminStoreDetailResponse | null>(
+  const [locking, setLocking] = useState<AdminStoreListItem | null>(
     null,
   );
 
@@ -77,10 +60,10 @@ export function StoresPage() {
       ) : (
         <StoresTable
           items={data?.items ?? []}
-          onEdit={(item) => setEditing(toStoreDetail(item))}
-          onDelete={(item) => setDeleting(toStoreDetail(item))}
-          onUnlock={(item) => setUnlocking(toStoreDetail(item))}
-          onLock={(item) => setLocking(toStoreDetail(item))}
+          onEdit={(item) => setEditing(item)}
+          onDelete={(item) => setDeleting(item)}
+          onUnlock={(item) => setUnlocking(item)}
+          onLock={(item) => setLocking(item)}
         />
       )}
 

@@ -306,7 +306,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminClientInstanceDetailResponse"
+                  "$ref": "#/components/schemas/AdminClientInstanceListItem"
                 }
               }
             }
@@ -375,7 +375,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminClientInstanceDetailResponse"
+                  "$ref": "#/components/schemas/AdminClientInstanceListItem"
                 }
               }
             }
@@ -627,64 +627,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AdminPairsListResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Store not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/policy/get": {
-      "post": {
-        "tags": [
-          "policy"
-        ],
-        "operationId": "handle_admin_policy_get",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminPolicyGetRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Policy document for the store.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminPolicyGetResponse"
                 }
               }
             }
@@ -1437,7 +1379,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminStoreDetailResponse"
+                  "$ref": "#/components/schemas/AdminStoreListItem"
                 }
               }
             }
@@ -1784,7 +1726,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminUserDetailResponse"
+                  "$ref": "#/components/schemas/AdminUserListItem"
                 }
               }
             }
@@ -1853,7 +1795,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminUserDetailResponse"
+                  "$ref": "#/components/schemas/AdminUserListItem"
                 }
               }
             }
@@ -2282,61 +2224,6 @@
           }
         }
       },
-      "AdminClientInstanceDetailResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "display_name",
-          "current_store_id",
-          "current_store_name",
-          "status",
-          "current_credential_fingerprint",
-          "actions"
-        ],
-        "properties": {
-          "actions": {
-            "$ref": "#/components/schemas/AdminClientInstanceActionState"
-          },
-          "auto_create_wrapper_assets": {
-            "type": "boolean",
-            "description": "Whether this instance is allowed to auto-create resource and\nwrapper/resource-pair records on the runtime register endpoint."
-          },
-          "current_credential_fingerprint": {
-            "type": "string"
-          },
-          "current_credential_issued_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          },
-          "current_store_id": {
-            "type": "string"
-          },
-          "current_store_name": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "last_seen_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          },
-          "status": {
-            "$ref": "#/components/schemas/AdminClientInstanceStatus"
-          }
-        }
-      },
       "AdminClientInstanceListItem": {
         "type": "object",
         "required": [
@@ -2595,28 +2482,6 @@
           },
           "new_password": {
             "type": "string"
-          }
-        }
-      },
-      "AdminPolicyGetRequest": {
-        "type": "object",
-        "required": [
-          "store"
-        ],
-        "properties": {
-          "store": {
-            "type": "string"
-          }
-        }
-      },
-      "AdminPolicyGetResponse": {
-        "type": "object",
-        "required": [
-          "document"
-        ],
-        "properties": {
-          "document": {
-            "$ref": "#/components/schemas/PolicyDocument"
           }
         }
       },
@@ -3043,7 +2908,7 @@
             ]
           },
           "store": {
-            "$ref": "#/components/schemas/AdminStoreDetailResponse"
+            "$ref": "#/components/schemas/AdminStoreListItem"
           }
         }
       },
@@ -3062,63 +2927,6 @@
           },
           "ok": {
             "type": "boolean"
-          }
-        }
-      },
-      "AdminStoreDetailResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "backend",
-          "dir",
-          "locked",
-          "source_path",
-          "usage",
-          "actions"
-        ],
-        "properties": {
-          "actions": {
-            "$ref": "#/components/schemas/AdminStoreActionState"
-          },
-          "backend": {
-            "$ref": "#/components/schemas/AdminStoreBackendKind"
-          },
-          "created_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          },
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "dir": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string",
-            "description": "Stable internal identifier used for routing and runtime mapping."
-          },
-          "locked": {
-            "type": "boolean",
-            "description": "`true` if this is an encrypted store with no master key loaded.\nPlain stores are never locked."
-          },
-          "name": {
-            "type": "string",
-            "description": "Editable operator-facing display name."
-          },
-          "source_path": {
-            "type": "string",
-            "description": "On-disk path of the backend-managed store registry file that\nowns this record."
-          },
-          "usage": {
-            "$ref": "#/components/schemas/AdminStoreUsageSummary"
           }
         }
       },
@@ -3260,33 +3068,6 @@
           "password": {
             "type": "string",
             "description": "Plaintext on the wire (over TLS). Hashed server-side with\nArgon2id before any storage step. Never echoed back."
-          },
-          "username": {
-            "type": "string"
-          }
-        }
-      },
-      "AdminUserDetailResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "username",
-          "created_at",
-          "password_changed_at"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "id": {
-            "type": "string"
-          },
-          "password_changed_at": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
           },
           "username": {
             "type": "string"
@@ -3551,19 +3332,6 @@
         "properties": {
           "username": {
             "type": "string"
-          }
-        }
-      },
-      "PolicyDocument": {
-        "type": "object",
-        "description": "Store-backed policy document.",
-        "properties": {
-          "permissions": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WrapperPermission"
-            },
-            "description": "The flat list of wrapper permissions. One per\n`(client_instance, wrapper, resource)` tuple."
           }
         }
       },

@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  type AdminStoreDetailResponse,
+  type AdminStoreListItem,
   postStoreLock,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -26,7 +26,7 @@ export function LockStoreDialog({
   store,
   onClose,
 }: {
-  store: AdminStoreDetailResponse;
+  store: AdminStoreListItem;
   onClose: () => void;
 }) {
   const qc = useQueryClient();

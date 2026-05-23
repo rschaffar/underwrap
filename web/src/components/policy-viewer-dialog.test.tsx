@@ -4,18 +4,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { PolicyViewerDialog } from "./policy-viewer-dialog";
 
-// `postPolicyGet` is the only API call this dialog makes. Mock it
-// directly so the test stays hermetic.
+// `postWrapperPermissionsList` is the only API call this dialog
+// makes (the prior `postPolicyGet` endpoint was retired; the viewer
+// builds a `PolicyDocument`-shaped blob from the permissions list).
 vi.mock("@/api/client", async () => {
   const actual =
     await vi.importActual<typeof import("@/api/client")>("@/api/client");
   return {
     ...actual,
-    postPolicyGet: vi.fn(),
+    postWrapperPermissionsList: vi.fn(),
   };
 });
 
-import { postPolicyGet } from "@/api/client";
+import { postWrapperPermissionsList } from "@/api/client";
 
 function renderWithQuery(ui: React.ReactNode) {
   const qc = new QueryClient({
@@ -26,39 +27,37 @@ function renderWithQuery(ui: React.ReactNode) {
 
 describe("PolicyViewerDialog", () => {
   beforeEach(() => {
-    vi.mocked(postPolicyGet).mockReset();
+    vi.mocked(postWrapperPermissionsList).mockReset();
   });
 
   it("renders the formatted JSON, the writable-permissions badge, and a copy button for a non-trivial policy", async () => {
-    vi.mocked(postPolicyGet).mockResolvedValue({
-      document: {
-        permissions: [
-          {
-            client_instance: "dev-laptop",
-            wrapper: "gh-authorized",
-            resource_id: "github/token",
-            mode: { kind: "unlocked" },
-            writable: true,
-            reason: undefined,
-          },
-          {
-            client_instance: "ci-runner",
-            wrapper: "aws-prod",
-            resource_id: "aws/prod",
-            mode: { kind: "locked" },
-            writable: false,
-            reason: "off-hours",
-          },
-          {
-            client_instance: "ci-runner",
-            wrapper: "deploy",
-            resource_id: "deploy/release",
-            mode: { kind: "locked" },
-            writable: false,
-            reason: "release window closed",
-          },
-        ],
-      },
+    vi.mocked(postWrapperPermissionsList).mockResolvedValue({
+      permissions: [
+        {
+          client_instance: "dev-laptop",
+          wrapper: "gh-authorized",
+          resource_id: "github/token",
+          mode: { kind: "unlocked" },
+          writable: true,
+          reason: undefined,
+        },
+        {
+          client_instance: "ci-runner",
+          wrapper: "aws-prod",
+          resource_id: "aws/prod",
+          mode: { kind: "locked" },
+          writable: false,
+          reason: "off-hours",
+        },
+        {
+          client_instance: "ci-runner",
+          wrapper: "deploy",
+          resource_id: "deploy/release",
+          mode: { kind: "locked" },
+          writable: false,
+          reason: "release window closed",
+        },
+      ],
     });
 
     renderWithQuery(
@@ -88,8 +87,8 @@ describe("PolicyViewerDialog", () => {
   });
 
   it("shows 0 writable when the policy is empty", async () => {
-    vi.mocked(postPolicyGet).mockResolvedValue({
-      document: { permissions: [] },
+    vi.mocked(postWrapperPermissionsList).mockResolvedValue({
+      permissions: [],
     });
     renderWithQuery(
       <PolicyViewerDialog storeName="dev" open={true} onClose={() => {}} />,
@@ -101,7 +100,7 @@ describe("PolicyViewerDialog", () => {
 
   it("surfaces an API error in an alert without rendering the JSON", async () => {
     const { ApiError } = await import("@/api/client");
-    vi.mocked(postPolicyGet).mockRejectedValue(
+    vi.mocked(postWrapperPermissionsList).mockRejectedValue(
       new ApiError(500, "internal_error", "the backend exploded"),
     );
     renderWithQuery(
@@ -114,19 +113,17 @@ describe("PolicyViewerDialog", () => {
   });
 
   it("copies the formatted JSON to the clipboard when the copy button is clicked", async () => {
-    vi.mocked(postPolicyGet).mockResolvedValue({
-      document: {
-        permissions: [
-          {
-            client_instance: "dev-laptop",
-            wrapper: "gh-authorized",
-            resource_id: "github/token",
-            mode: { kind: "unlocked" },
-            writable: false,
-            reason: undefined,
-          },
-        ],
-      },
+    vi.mocked(postWrapperPermissionsList).mockResolvedValue({
+      permissions: [
+        {
+          client_instance: "dev-laptop",
+          wrapper: "gh-authorized",
+          resource_id: "github/token",
+          mode: { kind: "unlocked" },
+          writable: false,
+          reason: undefined,
+        },
+      ],
     });
     const writeText = vi.fn().mockResolvedValue(undefined);
     // jsdom doesn't expose a real Clipboard API; define a writable

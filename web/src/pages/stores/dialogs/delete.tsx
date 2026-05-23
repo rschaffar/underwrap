@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  type AdminStoreDetailResponse,
+  type AdminStoreListItem,
   deleteStore,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -21,7 +21,7 @@ export function DeleteStoreDialog({
   store,
   onClose,
 }: {
-  store: AdminStoreDetailResponse;
+  store: AdminStoreListItem;
   onClose: () => void;
 }) {
   const qc = useQueryClient();

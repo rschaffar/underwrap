@@ -16,9 +16,8 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use underwrap_protocol::service::{
-    AdminOkUserResponse, AdminUserCreateRequest, AdminUserDetailResponse, AdminUserListItem,
-    AdminUserResetPasswordRequest, AdminUserUpdateRequest, AdminUsersListResponse,
-    ServiceErrorResponse,
+    AdminOkUserResponse, AdminUserCreateRequest, AdminUserListItem, AdminUserResetPasswordRequest,
+    AdminUserUpdateRequest, AdminUsersListResponse, ServiceErrorResponse,
 };
 
 use crate::admin_api::AdminError;
@@ -29,15 +28,6 @@ use crate::users::{Principal, UserMutationError};
 
 pub(crate) fn user_list_item(record: &crate::users::UserRecord) -> AdminUserListItem {
     AdminUserListItem {
-        id: record.id.clone(),
-        username: record.username.clone(),
-        created_at: record.created_at,
-        password_changed_at: record.password_changed_at,
-    }
-}
-
-pub(crate) fn user_detail(record: &crate::users::UserRecord) -> AdminUserDetailResponse {
-    AdminUserDetailResponse {
         id: record.id.clone(),
         username: record.username.clone(),
         created_at: record.created_at,
@@ -142,7 +132,7 @@ pub(crate) async fn handle_admin_users_list(
     security(("session_cookie" = []), ("csrf_header" = [])),
     request_body = AdminUserCreateRequest,
     responses(
-        (status = 200, description = "Operator created.", body = AdminUserDetailResponse),
+        (status = 200, description = "Operator created.", body = AdminUserListItem),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 409, description = "Username already exists.", body = ServiceErrorResponse),
     ),
@@ -151,7 +141,7 @@ pub(crate) async fn handle_admin_user_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminUserCreateRequest>,
-) -> Result<Json<AdminUserDetailResponse>, AdminError> {
+) -> Result<Json<AdminUserListItem>, AdminError> {
     if body.password.is_empty() {
         return Err(AdminError::bad_request(
             "invalid_password",
@@ -193,7 +183,7 @@ pub(crate) async fn handle_admin_user_create(
                 None,
                 "success",
             );
-            Ok(Json(user_detail(&saved)))
+            Ok(Json(user_list_item(&saved)))
         }
         Err(e) => {
             let (reason, response) = classify_mutation_error(e);
@@ -219,7 +209,7 @@ pub(crate) async fn handle_admin_user_create(
     params(("id" = String, Path, description = "Operator id.")),
     request_body = AdminUserUpdateRequest,
     responses(
-        (status = 200, description = "Operator updated.", body = AdminUserDetailResponse),
+        (status = 200, description = "Operator updated.", body = AdminUserListItem),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Operator not found.", body = ServiceErrorResponse),
         (status = 409, description = "Username collision.", body = ServiceErrorResponse),
@@ -230,7 +220,7 @@ pub(crate) async fn handle_admin_user_update(
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
     Body(body): Body<AdminUserUpdateRequest>,
-) -> Result<Json<AdminUserDetailResponse>, AdminError> {
+) -> Result<Json<AdminUserListItem>, AdminError> {
     let result = mutate_collection(&state, |c| {
         let updated = c.update(&id, |u| {
             if let Some(username) = &body.username {
@@ -250,7 +240,7 @@ pub(crate) async fn handle_admin_user_update(
                 None,
                 "success",
             );
-            Ok(Json(user_detail(&updated)))
+            Ok(Json(user_list_item(&updated)))
         }
         Err(e) => {
             let (reason, response) = classify_mutation_error(e);

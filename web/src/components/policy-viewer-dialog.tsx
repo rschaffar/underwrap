@@ -13,8 +13,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  postPolicyGet,
-  type AdminPolicyGetResponse,
+  postWrapperPermissionsList,
+  type AdminWrapperPermissionsListResponse,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
@@ -38,9 +38,9 @@ export function PolicyViewerDialog({
   open,
   onClose,
 }: PolicyViewerDialogProps) {
-  const policy = useQuery<AdminPolicyGetResponse>({
+  const policy = useQuery<AdminWrapperPermissionsListResponse>({
     queryKey: ["admin", "policy", storeName],
-    queryFn: () => postPolicyGet({ store: storeName }),
+    queryFn: () => postWrapperPermissionsList({ store: storeName }),
     enabled: open,
     // The viewer is read-only and operators reopen it to confirm
     // recent edits. Cache freshness matters more than save round
@@ -49,9 +49,17 @@ export function PolicyViewerDialog({
     refetchOnMount: "always",
   });
 
+  // Render a `PolicyDocument`-shaped blob even though the wire format
+  // is just a permissions array; operators paste this into docs and
+  // tickets, so the on-screen shape stays stable across the
+  // policy/get → wrapper-permissions/list switch.
   const formatted = useMemo(() => {
     if (!policy.data) return "";
-    return JSON.stringify(policy.data.document, null, 2);
+    return JSON.stringify(
+      { permissions: policy.data.permissions },
+      null,
+      2,
+    );
   }, [policy.data]);
 
   const [copied, setCopied] = useState(false);
@@ -71,7 +79,7 @@ export function PolicyViewerDialog({
     }
   }
 
-  const permissions = policy.data?.document.permissions ?? [];
+  const permissions = policy.data?.permissions ?? [];
   const writablePermissionCount = permissions.filter((p) => p.writable).length;
 
   return (

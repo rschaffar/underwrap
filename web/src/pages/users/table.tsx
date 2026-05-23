@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import type {
-  AdminUserDetailResponse,
+  AdminUserListItem,
   AdminUsersListResponse,
 } from "@/api/client";
 import { formatEpochDate } from "@/lib/epoch";
@@ -8,9 +8,9 @@ import { formatEpochDate } from "@/lib/epoch";
 export interface UsersTableProps {
   users: AdminUsersListResponse["users"];
   meUsername: string | null;
-  onEdit: (u: AdminUserDetailResponse) => void;
-  onReset: (u: AdminUserDetailResponse) => void;
-  onDelete: (u: AdminUserDetailResponse) => void;
+  onEdit: (u: AdminUserListItem) => void;
+  onReset: (u: AdminUserListItem) => void;
+  onDelete: (u: AdminUserListItem) => void;
 }
 
 export function UsersTable({

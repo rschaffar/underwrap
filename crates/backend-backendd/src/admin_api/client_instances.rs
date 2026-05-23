@@ -16,10 +16,9 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use underwrap_protocol::service::{
-    AdminClientInstanceActionState, AdminClientInstanceCreateRequest,
-    AdminClientInstanceDetailResponse, AdminClientInstanceListItem, AdminClientInstanceStatus,
-    AdminClientInstanceUpdateRequest, AdminClientInstancesListResponse, AdminOkResponse,
-    ServiceErrorResponse,
+    AdminClientInstanceActionState, AdminClientInstanceCreateRequest, AdminClientInstanceListItem,
+    AdminClientInstanceStatus, AdminClientInstanceUpdateRequest, AdminClientInstancesListResponse,
+    AdminOkResponse, ServiceErrorResponse,
 };
 
 use crate::admin_api::AdminError;
@@ -87,25 +86,6 @@ fn admin_client_instance_list_item(
         status: client_instance_status_to_wire(record.status),
         last_seen_at: record.last_seen_at,
         current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
-        auto_create_wrapper_assets: record.auto_create_wrapper_assets,
-        actions,
-    }
-}
-
-fn admin_client_instance_detail(
-    record: &crate::runtime_clients::ClientInstanceRecord,
-    current_store_name: String,
-    actions: AdminClientInstanceActionState,
-) -> AdminClientInstanceDetailResponse {
-    AdminClientInstanceDetailResponse {
-        id: record.id.clone(),
-        display_name: record.display_name.clone(),
-        current_store_id: record.current_store_id.clone(),
-        current_store_name,
-        status: client_instance_status_to_wire(record.status),
-        last_seen_at: record.last_seen_at,
-        current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
-        current_credential_issued_at: record.current_credential.issued_at,
         auto_create_wrapper_assets: record.auto_create_wrapper_assets,
         actions,
     }
@@ -179,7 +159,7 @@ pub(crate) async fn handle_admin_client_instances_list(
     security(("session_cookie" = []), ("csrf_header" = [])),
     request_body = AdminClientInstanceCreateRequest,
     responses(
-        (status = 200, description = "Client instance registered.", body = AdminClientInstanceDetailResponse),
+        (status = 200, description = "Client instance registered.", body = AdminClientInstanceListItem),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 409, description = "Instance id already exists.", body = ServiceErrorResponse),
     ),
@@ -188,7 +168,7 @@ pub(crate) async fn handle_admin_client_instance_create(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminClientInstanceCreateRequest>,
-) -> Result<Json<AdminClientInstanceDetailResponse>, AdminError> {
+) -> Result<Json<AdminClientInstanceListItem>, AdminError> {
     let display_name = body.display_name.trim();
     if display_name.is_empty() {
         return Err(AdminError::bad_request(
@@ -267,7 +247,7 @@ pub(crate) async fn handle_admin_client_instance_create(
     );
     let current_store_name = resolve_store_name(&state, &record.current_store_id)?;
     let actions = admin_client_instance_actions(&record);
-    Ok(Json(admin_client_instance_detail(
+    Ok(Json(admin_client_instance_list_item(
         &record,
         current_store_name,
         actions,
@@ -282,7 +262,7 @@ pub(crate) async fn handle_admin_client_instance_create(
     params(("id" = String, Path, description = "Client instance id.")),
     request_body = AdminClientInstanceUpdateRequest,
     responses(
-        (status = 200, description = "Instance updated. Remapping to a new store drops the prior store's wrapper permissions for this instance.", body = AdminClientInstanceDetailResponse),
+        (status = 200, description = "Instance updated. Remapping to a new store drops the prior store's wrapper permissions for this instance.", body = AdminClientInstanceListItem),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Instance / target store not found.", body = ServiceErrorResponse),
     ),
@@ -292,7 +272,7 @@ pub(crate) async fn handle_admin_client_instance_update(
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
     Body(body): Body<AdminClientInstanceUpdateRequest>,
-) -> Result<Json<AdminClientInstanceDetailResponse>, AdminError> {
+) -> Result<Json<AdminClientInstanceListItem>, AdminError> {
     let mut instances = state.client_instances.write().unwrap();
     let existing = instances
         .get(&id)
@@ -392,7 +372,7 @@ pub(crate) async fn handle_admin_client_instance_update(
     );
     let current_store_name = resolve_store_name(&state, &updated.current_store_id)?;
     let actions = admin_client_instance_actions(&updated);
-    Ok(Json(admin_client_instance_detail(
+    Ok(Json(admin_client_instance_list_item(
         &updated,
         current_store_name,
         actions,

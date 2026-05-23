@@ -1,7 +1,7 @@
 //! Store admin CRUD + lifecycle: `/v1/admin/stores/*`.
 //!
-//! Covers `list`, `detail`, `create`, `update`, `delete` plus the
-//! three lifecycle operations `unlock`, `lock`, and `rotate-key`. CRUD
+//! Covers `list`, `create`, `update`, `delete` plus the three
+//! lifecycle operations `unlock`, `lock`, and `rotate-key`. CRUD
 //! and lifecycle share `admin_store`, the registry helpers, the audit
 //! shim, the data-dir helpers, the key-material helpers, and the
 //! usage / actions projections; they sit in this module so the two
@@ -18,8 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use underwrap_protocol::service::{
-    AdminStoreActionState, AdminStoreBackendKind, AdminStoreDetailResponse, AdminStoreListItem,
-    AdminStoreUsageSummary,
+    AdminStoreActionState, AdminStoreBackendKind, AdminStoreListItem, AdminStoreUsageSummary,
 };
 use underwrap_store::StorageBackend;
 
@@ -132,33 +131,6 @@ pub(super) fn admin_store_list_item(
         description: loaded.record.description.clone(),
         created_at: loaded.record.created_at,
         locked,
-        usage,
-        actions,
-    }
-}
-
-pub(super) fn admin_store_detail(
-    stores_file: &Path,
-    loaded: &LoadedStoreRecord,
-    locked: bool,
-    usage: AdminStoreUsageSummary,
-    actions: AdminStoreActionState,
-) -> AdminStoreDetailResponse {
-    let dir = match &loaded.record.storage {
-        underwrap_protocol::config::StorageConfig::Plain { dir }
-        | underwrap_protocol::config::StorageConfig::Encrypted { dir } => {
-            dir.to_string_lossy().to_string()
-        }
-    };
-    AdminStoreDetailResponse {
-        id: loaded.record.id.clone(),
-        name: loaded.record.name.clone(),
-        backend: backend_kind(&loaded.record.storage),
-        dir,
-        locked,
-        description: loaded.record.description.clone(),
-        created_at: loaded.record.created_at,
-        source_path: stores_file.to_string_lossy().to_string(),
         usage,
         actions,
     }

@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import {
-  type AdminStoreDetailResponse,
+  type AdminStoreListItem,
   postStoreRotateKey,
   putStoreUpdate,
 } from "@/api/client";
@@ -39,7 +39,7 @@ export function EditStoreDialog({
   store,
   onClose,
 }: {
-  store: AdminStoreDetailResponse;
+  store: AdminStoreListItem;
   onClose: () => void;
 }) {
   const qc = useQueryClient();

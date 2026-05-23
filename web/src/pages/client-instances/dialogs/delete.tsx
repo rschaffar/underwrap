@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  type AdminClientInstanceDetailResponse,
+  type AdminClientInstanceListItem,
   deleteClientInstance,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -22,7 +22,7 @@ export function DeleteClientInstanceDialog({
   onClose,
   onSuccess,
 }: {
-  instance: AdminClientInstanceDetailResponse;
+  instance: AdminClientInstanceListItem;
   onClose: () => void;
   onSuccess: () => Promise<void>;
 }) {

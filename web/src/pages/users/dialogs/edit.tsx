@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import {
-  type AdminUserDetailResponse,
+  type AdminUserListItem,
   putUserUpdate,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -44,7 +44,7 @@ export function EditUserDialog({
   user,
   onClose,
 }: {
-  user: AdminUserDetailResponse;
+  user: AdminUserListItem;
   onClose: () => void;
 }) {
   const qc = useQueryClient();

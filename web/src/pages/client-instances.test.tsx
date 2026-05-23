@@ -122,7 +122,6 @@ describe("ClientInstancesPage", () => {
       status: "active",
       last_seen_at: undefined,
       current_credential_fingerprint: "fp-new",
-      current_credential_issued_at: undefined,
       auto_create_wrapper_assets: false,
       actions: {
         can_edit_display_name: true,
@@ -142,7 +141,6 @@ describe("ClientInstancesPage", () => {
       status: body.status ?? (id === "client_work" ? "active" : "disabled"),
       last_seen_at: id === "client_work" ? 1_700_000_000 : undefined,
       current_credential_fingerprint: id === "client_work" ? "fp-work" : "fp-old",
-      current_credential_issued_at: undefined,
       auto_create_wrapper_assets: false,
       actions: {
         can_edit_display_name: true,

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import {
-  type AdminUserDetailResponse,
+  type AdminUserListItem,
   type AdminUsersListResponse,
   fetchUsers,
   type WhoamiResponse,
@@ -35,11 +35,11 @@ export function UsersPage({ principal }: UsersPageProps) {
   });
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<AdminUserDetailResponse | null>(null);
-  const [resetting, setResetting] = useState<AdminUserDetailResponse | null>(
+  const [editing, setEditing] = useState<AdminUserListItem | null>(null);
+  const [resetting, setResetting] = useState<AdminUserListItem | null>(
     null,
   );
-  const [deleting, setDeleting] = useState<AdminUserDetailResponse | null>(
+  const [deleting, setDeleting] = useState<AdminUserListItem | null>(
     null,
   );
 

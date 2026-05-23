@@ -109,7 +109,6 @@ export async function unwrap<T>(
 // table, which mirrors the Rust DTOs 1:1 via utoipa::ToSchema.
 type S = components["schemas"];
 export type AdminClientInstanceCreateRequest = S["AdminClientInstanceCreateRequest"];
-export type AdminClientInstanceDetailResponse = S["AdminClientInstanceDetailResponse"];
 export type AdminClientInstanceListItem = S["AdminClientInstanceListItem"];
 export type AdminClientInstanceUpdateRequest = S["AdminClientInstanceUpdateRequest"];
 export type AdminClientInstanceStatus = S["AdminClientInstanceStatus"];
@@ -123,8 +122,6 @@ export type AdminPairDeleteResponse = S["AdminPairDeleteResponse"];
 export type AdminPairsListRequest = S["AdminPairsListRequest"];
 export type AdminPairsListResponse = S["AdminPairsListResponse"];
 export type AdminPasswordChangeRequest = S["AdminPasswordChangeRequest"];
-export type AdminPolicyGetRequest = S["AdminPolicyGetRequest"];
-export type AdminPolicyGetResponse = S["AdminPolicyGetResponse"];
 export type AdminResourceCreateRequest = S["AdminResourceCreateRequest"];
 export type AdminResourceCreateResponse = S["AdminResourceCreateResponse"];
 export type AdminResourceDeleteBlockers = S["AdminResourceDeleteBlockers"];
@@ -148,7 +145,6 @@ export type AdminStoreBackendKind = S["AdminStoreBackendKind"];
 export type AdminStoreCreateRequest = S["AdminStoreCreateRequest"];
 export type AdminStoreCreateResponse = S["AdminStoreCreateResponse"];
 export type AdminStoreDeleteResponse = S["AdminStoreDeleteResponse"];
-export type AdminStoreDetailResponse = S["AdminStoreDetailResponse"];
 export type AdminStoreListItem = S["AdminStoreListItem"];
 export type AdminStoreRotateKeyResponse = S["AdminStoreRotateKeyResponse"];
 export type AdminStoreUnlockRequest = S["AdminStoreUnlockRequest"];
@@ -156,7 +152,6 @@ export type AdminStoreUpdateRequest = S["AdminStoreUpdateRequest"];
 export type AdminStoreUsageSummary = S["AdminStoreUsageSummary"];
 export type AdminStoresListResponse = S["AdminStoresListResponse"];
 export type AdminUserCreateRequest = S["AdminUserCreateRequest"];
-export type AdminUserDetailResponse = S["AdminUserDetailResponse"];
 export type AdminUserListItem = S["AdminUserListItem"];
 export type AdminUserResetPasswordRequest = S["AdminUserResetPasswordRequest"];
 export type AdminUserUpdateRequest = S["AdminUserUpdateRequest"];
@@ -172,7 +167,6 @@ export type BootstrapStatusResponse = S["BootstrapStatusResponse"];
 export type EntityCreator = S["EntityCreator"];
 export type LoginRequest = S["LoginRequest"];
 export type LoginResponse = S["LoginResponse"];
-export type PolicyDocument = S["PolicyDocument"];
 export type ResourceRecord = S["ResourceRecord"];
 export type ResourceSlot = S["ResourceSlot"];
 export type ServiceWrapperResourcePair = S["ServiceWrapperResourcePair"];
@@ -358,10 +352,6 @@ export function postWrapperPermissionDelete(
   return unwrap(
     client.POST("/v1/admin/wrapper-permissions/delete", { body }),
   );
-}
-
-export function postPolicyGet(body: AdminPolicyGetRequest) {
-  return unwrap(client.POST("/v1/admin/policy/get", { body }));
 }
 
 // ----- Secrets CRUD -----

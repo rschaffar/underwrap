@@ -8,8 +8,8 @@ use serde::Deserialize;
 use underwrap_protocol::config::StoreRecord;
 use underwrap_protocol::service::{
     AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
-    AdminStoreDeleteResponse, AdminStoreDetailResponse, AdminStoreUpdateRequest,
-    AdminStoreUsageSummary, AdminStoresListResponse, ServiceErrorResponse,
+    AdminStoreDeleteResponse, AdminStoreListItem, AdminStoreUpdateRequest, AdminStoreUsageSummary,
+    AdminStoresListResponse, ServiceErrorResponse,
 };
 use underwrap_store::StorageBackend;
 use utoipa_axum::router::OpenApiRouter;
@@ -31,9 +31,8 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 }
 
 use super::{
-    admin_store_actions, admin_store_detail, admin_store_list_item, admin_store_usage,
-    admin_store_usage_for_locked, create_data_dir_secure, generate_master_key_bytes,
-    master_key_hex, resolve_store_dir,
+    admin_store_actions, admin_store_list_item, admin_store_usage, admin_store_usage_for_locked,
+    create_data_dir_secure, generate_master_key_bytes, master_key_hex, resolve_store_dir,
 };
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
 
@@ -218,7 +217,7 @@ pub(crate) async fn handle_admin_store_create(
     };
     let actions = admin_store_actions(&loaded, &usage, false);
     Ok(Json(AdminStoreCreateResponse {
-        store: admin_store_detail(&state.stores_file, &loaded, false, usage, actions),
+        store: admin_store_list_item(&loaded, false, usage, actions),
         key_hex: generated_key_hex,
     }))
 }
@@ -231,7 +230,7 @@ pub(crate) async fn handle_admin_store_create(
     params(("name" = String, Path, description = "Store id.")),
     request_body = AdminStoreUpdateRequest,
     responses(
-        (status = 200, description = "Store updated.", body = AdminStoreDetailResponse),
+        (status = 200, description = "Store updated.", body = AdminStoreListItem),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
     ),
@@ -241,7 +240,7 @@ pub(crate) async fn handle_admin_store_update(
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
     Body(body): Body<AdminStoreUpdateRequest>,
-) -> Result<Json<AdminStoreDetailResponse>, AdminError> {
+) -> Result<Json<AdminStoreListItem>, AdminError> {
     let updated = {
         let reg = state.stores.read().unwrap();
         let loaded = reg
@@ -315,13 +314,7 @@ pub(crate) async fn handle_admin_store_update(
         None => admin_store_usage_for_locked(&state, &name),
     };
     let actions = admin_store_actions(&loaded, &usage, locked);
-    Ok(Json(admin_store_detail(
-        &state.stores_file,
-        &loaded,
-        locked,
-        usage,
-        actions,
-    )))
+    Ok(Json(admin_store_list_item(&loaded, locked, usage, actions)))
 }
 
 #[derive(Debug, Default, Deserialize)]

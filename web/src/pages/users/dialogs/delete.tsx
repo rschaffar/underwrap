@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  type AdminUserDetailResponse,
+  type AdminUserListItem,
   deleteUser,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
@@ -22,7 +22,7 @@ export function DeleteUserDialog({
   isLastUser,
   onClose,
 }: {
-  user: AdminUserDetailResponse;
+  user: AdminUserListItem;
   isLastUser: boolean;
   onClose: () => void;
 }) {

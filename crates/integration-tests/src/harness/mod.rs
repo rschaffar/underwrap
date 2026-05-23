@@ -577,7 +577,7 @@ impl TestDaemon {
         &self,
         id: &str,
         body: &underwrap_protocol::service::AdminClientInstanceUpdateRequest,
-    ) -> Result<underwrap_protocol::service::AdminClientInstanceDetailResponse> {
+    ) -> Result<underwrap_protocol::service::AdminClientInstanceListItem> {
         let response = self
             .admin_request(
                 reqwest::Method::PUT,
@@ -770,20 +770,8 @@ impl TestDaemon {
     }
 
     pub async fn get_policy(&self, store: &str) -> Result<Option<PolicyDocument>> {
-        let response = self
-            .admin_request(reqwest::Method::POST, "/v1/admin/policy/get")
-            .json(&underwrap_protocol::service::AdminPolicyGetRequest {
-                store: store.to_string(),
-            })
-            .send()
-            .await?;
-        anyhow::ensure!(
-            response.status().is_success(),
-            "admin API returned {}",
-            response.status()
-        );
-        let body: underwrap_protocol::service::AdminPolicyGetResponse = response.json().await?;
-        Ok(Some(body.document))
+        let permissions = self.list_permissions(store).await?;
+        Ok(Some(PolicyDocument { permissions }))
     }
 
     pub async fn put_policy(&self, store: &str, doc: &PolicyDocument) -> Result<()> {
