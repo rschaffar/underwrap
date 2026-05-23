@@ -262,12 +262,15 @@ let
         type = lib.types.nonEmptyListOf lib.types.str;
         description = ''
           Target-home-relative mount paths for the resource files slot.
-          The same backend resource is bind-mounted at every path in the
-          list and they all share a single daemon channel, so reads
-          observe identical content and writes can never race against
-          themselves regardless of which mount the target writes to.
+          Each path gets its own staging directory inside the namespace,
+          and every key in the resource's `files` section is routed to
+          the mount whose path is a prefix of the key (e.g. a key
+          `.config/gh/hosts.yml` lands under a `.config/gh` mount). The
+          paths must be non-overlapping — one path being a prefix of
+          another is rejected — so routing is unambiguous. Blob keys
+          that match no configured mount abort the wrapper.
         '';
-        example = [ ".config/gws" ".local/share/gws" ];
+        example = [ ".config/gh" ".config/git" ];
       };
     };
   };

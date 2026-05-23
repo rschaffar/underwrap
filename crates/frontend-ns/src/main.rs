@@ -25,9 +25,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use caps::{drop_caps, set_no_new_privs};
-use directory_credential::{
-    MountedDirectory, ResourceMountInput, cleanup_directory_mounts, prepare_directory_mounts,
-};
+use directory_credential::{MountedDirectory, cleanup_directory_mount, prepare_directory_mount};
 use env::build_target_env;
 use libsecret::setup_libsecret;
 use mounts::{
@@ -68,7 +66,7 @@ fn run() -> Result<(), String> {
 
     let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
 
-    let mounted_directories = prepare_mounted_directories(&resource_channel, &target_home)?;
+    let mounted_directory = prepare_mounted_directory(&resource_channel, &target_home)?;
 
     let libsecret_state_path = if libsecret_enabled {
         Some(PathBuf::from(format!(
@@ -91,7 +89,7 @@ fn run() -> Result<(), String> {
     } else {
         run_parent(
             pid,
-            &mounted_directories,
+            mounted_directory.as_ref(),
             &resource_channel,
             has_files,
             libsecret_state_path.as_deref(),
@@ -140,12 +138,12 @@ fn prepare_namespace(libsecret_enabled: bool, has_files: bool) -> Result<(), Str
     Ok(())
 }
 
-fn prepare_mounted_directories(
+fn prepare_mounted_directory(
     resource_channel: &ResourceChannel,
     target_home: &Path,
-) -> Result<Vec<MountedDirectory>, String> {
+) -> Result<Option<MountedDirectory>, String> {
     if resource_channel.files_target_paths.is_empty() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let blob = underwrap_protocol::resource_blob::ResourceBlob::from_canonical_bytes(
         &resource_channel.original_canonical,
@@ -156,13 +154,15 @@ fn prepare_mounted_directories(
             resource_channel.resource_id
         )
     })?;
-    let inputs = [ResourceMountInput {
-        resource_id: resource_channel.resource_id.as_str(),
-        blob: &blob,
-        target_paths: resource_channel.files_target_paths.as_slice(),
-    }];
-    prepare_directory_mounts(&inputs, target_home, &PathBuf::from(DIRECTORY_STAGING_ROOT))
-        .map_err(|e| format!("preparing files-slot mounts: {e}"))
+    prepare_directory_mount(
+        resource_channel.resource_id.as_str(),
+        &blob,
+        &resource_channel.files_target_paths,
+        target_home,
+        &PathBuf::from(DIRECTORY_STAGING_ROOT),
+    )
+    .map(Some)
+    .map_err(|e| format!("preparing files-slot mounts: {e}"))
 }
 
 fn fork_into_namespace() -> Result<libc::pid_t, String> {
@@ -252,7 +252,7 @@ fn disable_core_dumps() -> Result<(), String> {
 
 fn run_parent(
     pid: libc::pid_t,
-    mounted_directories: &[MountedDirectory],
+    mounted_directory: Option<&MountedDirectory>,
     resource_channel: &ResourceChannel,
     has_files: bool,
     libsecret_state_path: Option<&Path>,
@@ -268,12 +268,9 @@ fn run_parent(
     // the writeback walks the staging path, which is unaffected by the
     // unmounting of bind targets. We do however need the staging files
     // intact, so order is "walk first, then unmount".
-    let directory = mounted_directories
-        .iter()
-        .find(|d| d.resource_id == resource_channel.resource_id);
     let writeback_input = WritebackInput {
         channel: resource_channel,
-        directory,
+        directory: mounted_directory,
         libsecret_state_path: if resource_channel.libsecret {
             libsecret_state_path
         } else {
@@ -284,7 +281,7 @@ fn run_parent(
     let writeback_result = writeback::dispatch_writeback(&[writeback_input]);
 
     // Always run mount cleanup, regardless of writeback success/failure.
-    let cleanup_result = cleanup_mount_state(mounted_directories, has_files);
+    let cleanup_result = cleanup_mount_state(mounted_directory, has_files);
 
     match (writeback_result, cleanup_result) {
         (Ok(outcomes), Ok(())) => report_outcomes(&outcomes),
@@ -305,10 +302,12 @@ fn run_parent(
 }
 
 fn cleanup_mount_state(
-    mounted_directories: &[MountedDirectory],
+    mounted_directory: Option<&MountedDirectory>,
     has_files: bool,
 ) -> Result<(), String> {
-    cleanup_directory_mounts(mounted_directories).map_err(|e| format!("directory cleanup: {e}"))?;
+    if let Some(directory) = mounted_directory {
+        cleanup_directory_mount(directory).map_err(|e| format!("directory cleanup: {e}"))?;
+    }
     if has_files {
         cleanup_directory_staging_root(DIRECTORY_STAGING_ROOT)
             .map_err(|e| format!("directory staging cleanup: {e}"))?;

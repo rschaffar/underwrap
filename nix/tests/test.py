@@ -1112,7 +1112,10 @@ def local_directory_credentials():
             )
         )["files"].keys()
     )
-    assert dir_a_files == ["sub/nested", "token"], (
+    assert dir_a_files == [
+        ".config/underwrap-dir-a/sub/nested",
+        ".config/underwrap-dir-a/token",
+    ], (
         f"unexpected dir-a blob files: {dir_a_files}"
     )
     machine.log("PASS: resource blob carries the writeback")

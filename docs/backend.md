@@ -496,7 +496,7 @@ three slots inline:
 {
   "schema_version": 1,
   "env": { "GH_TOKEN": "<base64>" },
-  "files": { "config.toml": "<base64>" },
+  "files": { ".config/gh/hosts.yml": "<base64>" },
   "libsecret": {
     "aliases": { "default": "default" },
     "collections": {
@@ -521,6 +521,14 @@ three slots inline:
 logically-equal blobs. Change detection at the wrapper end-of-run
 will be a byte comparison once the wrapper-side rewrite lands;
 today the daemon still re-serializes on every flush.
+
+Keys in the `files` section are full relative paths inside the
+target's home view (e.g. `.config/gh/hosts.yml`). The backend treats
+them as opaque strings — it only enforces the usual no-traversal /
+no-leading-slash hygiene — but the frontend wrapper's `files.paths`
+determines which keys are projectable. The first path component(s)
+of every key must match one of the wrapper's configured mount paths;
+ns aborts the invocation if any blob key has no matching mount.
 
 `PlainBackend` stores the blob as one file per resource;
 `EncryptedBackend` AEAD-encrypts the blob as one ciphertext with one

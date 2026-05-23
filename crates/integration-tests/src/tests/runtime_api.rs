@@ -488,7 +488,7 @@ async fn finalize_accepts_blob_with_files_section_modified_and_env_unchanged() {
     let current_b64 = allow_blob(&daemon, "gh-authorized", "github/token").await;
     let mut blob = decoded_blob(&current_b64);
     blob.files.insert(
-        "config.toml".to_string(),
+        ".config/gh/hosts.yml".to_string(),
         SecretBytes::from(b"file contents".to_vec()),
     );
 
@@ -507,7 +507,7 @@ async fn finalize_accepts_blob_with_files_section_modified_and_env_unchanged() {
     // Round-trip: a follow-up open returns the new files section.
     let after_b64 = allow_blob(&daemon, "gh-authorized", "github/token").await;
     let after = decoded_blob(&after_b64);
-    assert!(after.files.contains_key("config.toml"));
+    assert!(after.files.contains_key(".config/gh/hosts.yml"));
     daemon.stop().await.unwrap();
 }
 

@@ -6,11 +6,13 @@ fn populated_blob() -> ResourceBlob {
         .insert("GH_TOKEN".into(), SecretBytes::from("ghp_test"));
     blob.env.insert("API_KEY".into(), SecretBytes::from("k"));
     blob.files.insert(
-        "config/app.toml".into(),
-        SecretBytes::from(b"x = 1\n".to_vec()),
+        ".config/gh/hosts.yml".into(),
+        SecretBytes::from(b"github.com:\n  user: alice\n".to_vec()),
     );
-    blob.files
-        .insert(".netrc".into(), SecretBytes::from("machine example"));
+    blob.files.insert(
+        ".config/git/config".into(),
+        SecretBytes::from(b"[user]\n  email = a@b\n".to_vec()),
+    );
 
     let mut items = BTreeMap::new();
     let mut attrs = BTreeMap::new();

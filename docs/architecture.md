@@ -190,10 +190,16 @@ the target's home view (read-only when the binding is read-only), and
 syncs changes back to the backend after exit for read-write bindings.
 
 The same backend resource can be projected at multiple paths within one
-wrapper by configuring `files.paths` as a list. All listed paths share
-a single staging directory and daemon channel, so concurrent writes
-through different mount points are serialized through one writeback
-path and observers always see identical content at every mount.
+wrapper by configuring `files.paths` as a list. Each configured path
+gets its own staging directory, and every file key in the resource
+blob is routed to the staging dir whose mount path is a prefix of the
+key (e.g. `.config/gh/hosts.yml` lands under the `.config/gh` mount).
+A blob key that does not match any configured mount path aborts the
+wrapper — the backend stores keys opaquely, but the frontend will not
+silently drop content that has nowhere to go. Mount paths in
+`files.paths` are required to be non-overlapping so routing is
+unambiguous; the NixOS module rejects configurations that violate
+this.
 
 ## Crate layout
 
