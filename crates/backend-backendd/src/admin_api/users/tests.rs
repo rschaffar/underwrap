@@ -254,7 +254,7 @@ fn user_reset_password_changes_hash() {
             u.password_hash = new_hash.clone();
             u.password_changed_at = now;
         })?;
-        Ok(())
+        Ok(((), CollectionWrite::Save(bob_id.clone())))
     })
     .unwrap();
 
@@ -291,4 +291,41 @@ fn debug_redacts_password_hash_in_collection_logging() {
         !formatted.contains("$argon2"),
         "Debug must redact password hashes; got: {formatted}",
     );
+}
+
+#[test]
+fn io_failure_during_save_surfaces_as_500() {
+    // Make the users dir read-only so save_user fails with EACCES.
+    // The handler must classify that as a 500 (Io), not a 400.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    seed_admin_into(&state, "alice");
+
+    // Lock the directory after the seed so the create handler fails
+    // when it tries to write the new user record.
+    use std::os::unix::fs::PermissionsExt;
+    let original_mode = std::fs::metadata(&state.users_dir)
+        .unwrap()
+        .permissions()
+        .mode();
+    std::fs::set_permissions(&state.users_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let (status, body) = run_handler(handle_admin_user_create(
+        State(state.clone()),
+        Extension(admin_principal()),
+        Body(underwrap_protocol::service::AdminUserCreateRequest {
+            username: "bob".into(),
+            password: "xxxxxxxxxxxx".into(),
+        }),
+    ));
+
+    // Restore so the tempdir cleanup can run.
+    std::fs::set_permissions(
+        &state.users_dir,
+        std::fs::Permissions::from_mode(original_mode),
+    )
+    .unwrap();
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["code"], "internal");
 }

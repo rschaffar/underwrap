@@ -247,7 +247,10 @@ pub(crate) async fn handle_admin_password_change(
             u.password_hash = new_hash_for_closure.clone();
             u.password_changed_at = now;
         })?;
-        Ok(())
+        Ok((
+            (),
+            crate::admin_api::users::CollectionWrite::Save(id_owned.clone()),
+        ))
     });
     match result {
         Ok(()) => {

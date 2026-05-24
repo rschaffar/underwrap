@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
 use axum::Json;
 use axum::extract::{Path, State};
 use tracing::warn;
@@ -35,119 +34,124 @@ pub(crate) fn user_list_item(record: &crate::users::UserRecord) -> AdminUserList
     }
 }
 
-/// Read-modify-write on the user collection, serialised across
-/// concurrent admin requests via `user_collection_lock`. The closure
-/// may mutate the collection in-place; on `Ok(_)` we diff the before
-/// and after collections and emit one per-record save or delete for
-/// each changed user. On `Err(_)` nothing is persisted.
-///
-/// The closure returns `anyhow::Result<T>` so user-level mutation
-/// errors flow through via `From<UserMutationError> for anyhow::Error`
-/// (auto-derived by `thiserror`); handlers then `downcast_ref` to
-/// match on the variant.
-pub(crate) fn mutate_collection<T, F>(state: &AdminRuntimeState, f: F) -> Result<T>
-where
-    F: FnOnce(&mut crate::users::UserCollection) -> Result<T>,
-{
-    use std::collections::HashMap;
-    let _guard = state.user_collection_lock.lock().unwrap();
-    let before = crate::users::load(&state.users_dir)?;
-    let mut after = before.clone();
-    let out = f(&mut after)?;
+/// What [`mutate_collection`] should persist after the closure
+/// finishes. Each handler mutates exactly one record; this avoids
+/// the diff scan the old API needed when the closure returned just
+/// `T`.
+pub(crate) enum CollectionWrite {
+    /// Persist the user record with this id (the closure just added
+    /// or updated it).
+    Save(String),
+    /// Delete the user record with this id from disk (the closure
+    /// just removed it from the collection).
+    Delete(String),
+}
 
-    let before_by_id: HashMap<&str, &crate::users::UserRecord> =
-        before.users.iter().map(|u| (u.id.as_str(), u)).collect();
-    let after_by_id: HashMap<&str, &crate::users::UserRecord> =
-        after.users.iter().map(|u| (u.id.as_str(), u)).collect();
+/// Errors raised inside [`mutate_collection`]. Split so handlers map
+/// the user-level invariant violations to typed 4xx responses and
+/// any disk / serialization failure to a 500 — instead of the old
+/// `anyhow` + downcast dance which surfaced IO errors as 400s.
+#[derive(Debug)]
+pub(crate) enum MutateCollectionError {
+    User(UserMutationError),
+    Io(anyhow::Error),
+}
 
-    for old in &before.users {
-        if !after_by_id.contains_key(old.id.as_str()) {
-            crate::users::delete_user(&state.users_dir, &old.id)?;
+impl std::fmt::Display for MutateCollectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MutateCollectionError::User(e) => std::fmt::Display::fmt(e, f),
+            MutateCollectionError::Io(e) => std::fmt::Display::fmt(e, f),
         }
     }
-    for new in &after.users {
-        if before_by_id.get(new.id.as_str()).copied() != Some(new) {
-            crate::users::save_user(&state.users_dir, new)?;
+}
+
+impl MutateCollectionError {
+    fn into_admin_response(self) -> (Option<&'static str>, AdminError) {
+        match self {
+            MutateCollectionError::User(UserMutationError::NotFound(_)) => {
+                (Some("not-found"), AdminError::not_found("unknown user"))
+            }
+            MutateCollectionError::User(ref e @ UserMutationError::DuplicateUsername(_)) => (
+                Some("already-exists"),
+                AdminError::conflict("username_already_exists", e.to_string()),
+            ),
+            MutateCollectionError::User(UserMutationError::LastUserProtected) => (
+                Some("last-user-protected"),
+                AdminError::conflict(
+                    "last_user_protected",
+                    "cannot delete the last remaining user",
+                ),
+            ),
+            MutateCollectionError::User(
+                ref e @ (UserMutationError::InvalidUsername | UserMutationError::BadHash),
+            ) => (None, AdminError::bad_request("invalid_user", e.to_string())),
+            MutateCollectionError::Io(e) => (
+                Some("io-failure"),
+                AdminError::internal("persisting user collection", e),
+            ),
+        }
+    }
+}
+
+/// Read-modify-write on the user collection, serialised across
+/// concurrent admin requests via `user_collection_lock`. The closure
+/// returns whatever value the handler needs back, plus a
+/// [`CollectionWrite`] saying which record changed; `mutate_collection`
+/// performs the corresponding `save_user` or `delete_user` after the
+/// closure succeeds. On any error nothing is persisted.
+pub(crate) fn mutate_collection<T, F>(
+    state: &AdminRuntimeState,
+    f: F,
+) -> Result<T, MutateCollectionError>
+where
+    F: FnOnce(&mut crate::users::UserCollection) -> Result<(T, CollectionWrite), UserMutationError>,
+{
+    let _guard = state.user_collection_lock.lock().unwrap();
+    let mut collection = crate::users::load(&state.users_dir).map_err(MutateCollectionError::Io)?;
+    let (out, write) = f(&mut collection).map_err(MutateCollectionError::User)?;
+    match write {
+        CollectionWrite::Save(id) => {
+            let record = collection
+                .find_by_id(&id)
+                .expect("Save(id) requires the record to be present in the collection");
+            crate::users::save_user(&state.users_dir, record).map_err(MutateCollectionError::Io)?;
+        }
+        CollectionWrite::Delete(id) => {
+            crate::users::delete_user(&state.users_dir, &id).map_err(MutateCollectionError::Io)?;
         }
     }
     Ok(out)
 }
 
-/// Map a `UserMutationError` to the audit reason + `AdminError` that
-/// the user-CRUD handlers emit. Keeps every handler's failure path in
-/// one place so the wire shape stays byte-for-byte consistent.
-fn user_mutation_response(err: &UserMutationError) -> (Option<&'static str>, AdminError) {
-    match err {
-        UserMutationError::NotFound(_) => {
-            (Some("not-found"), AdminError::not_found("unknown user"))
-        }
-        UserMutationError::DuplicateUsername(_) => (
-            Some("already-exists"),
-            AdminError::conflict("username_already_exists", err.to_string()),
-        ),
-        UserMutationError::LastUserProtected => (
-            Some("last-user-protected"),
-            AdminError::conflict(
-                "last_user_protected",
-                "cannot delete the last remaining user",
-            ),
-        ),
-        UserMutationError::InvalidUsername | UserMutationError::BadHash => (
-            None,
-            AdminError::bad_request("invalid_user", err.to_string()),
-        ),
-    }
-}
-
-/// Convert an `anyhow::Error` raised by a `mutate_collection` closure
-/// into the right `AdminError` + audit reason. Anything that wasn't a
-/// `UserMutationError` falls through to a 400 `invalid_user` envelope
-/// — unexpected validation errors are surfaced as bad requests so the
-/// operator gets the underlying message instead of a generic 500.
-fn classify_mutation_error(err: anyhow::Error) -> (Option<&'static str>, AdminError) {
-    match err.downcast_ref::<UserMutationError>() {
-        Some(mut_err) => user_mutation_response(mut_err),
-        None => (
-            None,
-            AdminError::bad_request("invalid_user", err.to_string()),
-        ),
-    }
-}
-
-/// Audit shim for the user-CRUD handlers. On `Ok(_)`, log a success
-/// event keyed by the username derived from the value; on `Err(_)`,
-/// classify the error into an `AdminError` + audit reason and log a
-/// failure event keyed by `failure_username` (typically the request's
-/// path-id or the create body's normalised name, since the value we
-/// could have inspected is gone with the error).
+/// Audit shim for the user-CRUD handlers. On `Ok(_)` emits a success
+/// event; on `Err(_)` classifies the error into an `AdminError` +
+/// audit reason and emits a failure event. The success and failure
+/// usernames come from the caller — handlers know both the path id
+/// they were given and the up-to-date username.
 fn audit_user_mutation<T>(
     action: &str,
     principal: &Principal,
-    failure_username: &str,
-    result: Result<T>,
-    success_username: impl FnOnce(&T) -> &str,
+    username: &str,
+    result: Result<T, MutateCollectionError>,
 ) -> Result<T, AdminError> {
     match result {
         Ok(value) => {
             log_admin_event(
                 action,
                 principal,
-                AuditEntity::User {
-                    username: success_username(&value),
-                },
+                AuditEntity::User { username },
                 None,
                 "success",
             );
             Ok(value)
         }
         Err(e) => {
-            let (reason, response) = classify_mutation_error(e);
+            let (reason, response) = e.into_admin_response();
             log_admin_event(
                 action,
                 principal,
-                AuditEntity::User {
-                    username: failure_username,
-                },
+                AuditEntity::User { username },
                 reason,
                 "failure",
             );
@@ -223,13 +227,16 @@ pub(crate) async fn handle_admin_user_create(
         password_changed_at: now,
     };
     let target_username = record.username.clone();
-    let result = mutate_collection(&state, |c| {
-        c.add(record.clone())?;
-        Ok(record)
-    });
-    let saved = audit_user_mutation("user.create", &principal, &target_username, result, |r| {
-        &r.username
-    })?;
+    let saved = audit_user_mutation(
+        "user.create",
+        &principal,
+        &target_username,
+        mutate_collection(&state, |c| {
+            let id = record.id.clone();
+            c.add(record.clone())?;
+            Ok((record.clone(), CollectionWrite::Save(id)))
+        }),
+    )?;
     Ok(Json(user_list_item(&saved)))
 }
 
@@ -253,15 +260,19 @@ pub(crate) async fn handle_admin_user_update(
     Path(id): Path<String>,
     Body(body): Body<AdminUserUpdateRequest>,
 ) -> Result<Json<AdminUserListItem>, AdminError> {
-    let result = mutate_collection(&state, |c| {
-        let updated = c.update(&id, |u| {
-            if let Some(username) = &body.username {
-                u.username = username.clone();
-            }
-        })?;
-        Ok(updated.clone())
-    });
-    let updated = audit_user_mutation("user.update", &principal, &id, result, |u| &u.username)?;
+    let updated = audit_user_mutation(
+        "user.update",
+        &principal,
+        &id,
+        mutate_collection(&state, |c| {
+            let updated = c.update(&id, |u| {
+                if let Some(username) = &body.username {
+                    u.username = username.clone();
+                }
+            })?;
+            Ok((updated.clone(), CollectionWrite::Save(id.clone())))
+        }),
+    )?;
     Ok(Json(user_list_item(&updated)))
 }
 
@@ -290,13 +301,6 @@ pub(crate) async fn handle_admin_user_reset_password(
         AdminError::internal_with_code("internal", "could not hash password")
     })?;
     let now = crate::users::now_epoch_secs();
-    let result = mutate_collection(&state, |c| {
-        let updated = c.update(&id, |u| {
-            u.password_hash = new_hash.clone();
-            u.password_changed_at = now;
-        })?;
-        Ok(updated.username.clone())
-    });
     // The target operator's existing sessions are invalidated
     // automatically: `axum_login` records the password-hash bytes in
     // each session and re-checks them on every request via
@@ -304,9 +308,18 @@ pub(crate) async fn handle_admin_user_reset_password(
     // request that arrives carrying any pre-rotation session for this
     // user fails the hash check and the session is flushed
     // server-side.
-    audit_user_mutation("user.password.reset", &principal, &id, result, |s| {
-        s.as_str()
-    })?;
+    audit_user_mutation(
+        "user.password.reset",
+        &principal,
+        &id,
+        mutate_collection(&state, |c| {
+            c.update(&id, |u| {
+                u.password_hash = new_hash.clone();
+                u.password_changed_at = now;
+            })?;
+            Ok(((), CollectionWrite::Save(id.clone())))
+        }),
+    )?;
     Ok(Json(AdminOkUserResponse { ok: true }))
 }
 
@@ -327,12 +340,19 @@ pub(crate) async fn handle_admin_user_delete(
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminOkUserResponse>, AdminError> {
-    let result = mutate_collection(&state, |c| Ok(c.remove(&id)?));
     // Per-user session revocation is automatic: once the record is
     // gone, `AuthBackend::get_user` returns None on any subsequent
     // request, `auth_session.user` is None, and the
     // `require_login_layer` rejects with 401.
-    audit_user_mutation("user.delete", &principal, &id, result, |r| &r.username)?;
+    audit_user_mutation(
+        "user.delete",
+        &principal,
+        &id,
+        mutate_collection(&state, |c| {
+            let removed = c.remove(&id)?;
+            Ok((removed, CollectionWrite::Delete(id.clone())))
+        }),
+    )?;
     Ok(Json(AdminOkUserResponse { ok: true }))
 }
 
