@@ -6,40 +6,24 @@
 //!
 //! - `env/<VAR>`
 //! - `files/<relative-path>`
-//! - `libsecret/<relative-id>`
+//! - `libsecret/...` (a structured subtree, addressed by its own
+//!   admin endpoints rather than per-key)
 //!
-//! Policy is slot-scoped via `env:<resource>`, `files:<resource>`, and
-//! `libsecret:<resource>` — the scoping strings here describe the grant
-//! key, not a storage path.
-//!
-//! Admin endpoints address per-slot entries via the structured tuple
-//! `(resource, slot, key)`; [`compose_secret_id`] is the canonical
-//! mapping from that tuple to the in-blob entry key used by the
-//! resource bundle expansion. [`parse_secret_id`] is the inverse, kept
-//! around for code paths that still receive a flattened id from the
-//! wire (e.g. legacy fixtures).
+//! Admin endpoints for the flat `env` / `files` slots address per-key
+//! entries via the structured tuple `(resource, slot, key)`;
+//! [`compose_secret_id`] is the canonical mapping from that tuple to
+//! the in-blob entry key, and [`parse_secret_id`] is the inverse used
+//! by the storage helpers in `secret_entries.rs`.
 
 use serde::{Deserialize, Serialize};
 
-pub const ENV_SLOT: &str = "env";
-pub const FILES_SLOT: &str = "files";
-pub const LIBSECRET_SLOT: &str = "libsecret";
+const ENV_SLOT: &str = "env";
+const FILES_SLOT: &str = "files";
+const LIBSECRET_SLOT: &str = "libsecret";
 
 /// Storage key for the canonical resource blob.
 pub fn resource_blob_key(resource_id: &str) -> String {
     format!("resources/{resource_id}")
-}
-
-pub fn env_resource(resource_id: &str) -> String {
-    format!("env:{resource_id}")
-}
-
-pub fn files_resource(resource_id: &str) -> String {
-    format!("files:{resource_id}")
-}
-
-pub fn libsecret_resource(resource_id: &str) -> String {
-    format!("libsecret:{resource_id}")
 }
 
 /// The three logical slots inside a resource blob.
@@ -149,32 +133,6 @@ pub fn parse_secret_id(secret_id: &str) -> Option<ParsedSecretId<'_>> {
         slot,
         inner: &secret_id[inner_start..],
     })
-}
-
-/// Convenience: just the resource id from a fully-qualified secret id.
-pub fn resource_from_secret_id(secret_id: &str) -> Option<&str> {
-    parse_secret_id(secret_id).map(|p| p.resource_id)
-}
-
-/// Convenience helpers that build the per-slot key shape used by the
-/// per-key admin API and by the in-memory per-resource bundle entries
-/// that secretsd / directory channels consume. The on-disk layout is
-/// one blob per resource (see [`resource_blob_key`]); these helpers
-/// only describe the address space of legacy in-memory keys.
-pub fn env_prefix(resource_id: &str) -> String {
-    format!("{resource_id}/{ENV_SLOT}")
-}
-
-pub fn files_prefix(resource_id: &str) -> String {
-    format!("{resource_id}/{FILES_SLOT}")
-}
-
-pub fn libsecret_prefix(resource_id: &str) -> String {
-    format!("{resource_id}/{LIBSECRET_SLOT}")
-}
-
-pub fn relative_to_prefix<'a>(id: &'a str, prefix: &str) -> Option<&'a str> {
-    id.strip_prefix(prefix)?.strip_prefix('/')
 }
 
 pub fn has_traversal(path: &str) -> bool {

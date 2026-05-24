@@ -29,15 +29,6 @@ fn parse_secret_id_handles_all_slots() {
 }
 
 #[test]
-fn resource_from_secret_id_returns_resource_only() {
-    assert_eq!(
-        resource_from_secret_id("github/token/env/GH_TOKEN"),
-        Some("github/token"),
-    );
-    assert_eq!(resource_from_secret_id("__underwrap/policy/document"), None);
-}
-
-#[test]
 fn compose_secret_id_round_trips_through_parse() {
     let composed = compose_secret_id("github/token", ResourceSlot::Env, "GH_TOKEN");
     assert_eq!(composed, "github/token/env/GH_TOKEN");
