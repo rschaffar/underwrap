@@ -128,10 +128,7 @@ export type AdminLibsecretCollectionView = S["AdminLibsecretCollectionView"];
 export type AdminLibsecretItemView = S["AdminLibsecretItemView"];
 type AdminLibsecretCollectionCreateRequest =
   S["AdminLibsecretCollectionCreateRequest"];
-type AdminLibsecretCollectionPatchRequest =
-  S["AdminLibsecretCollectionPatchRequest"];
 type AdminLibsecretItemCreateRequest = S["AdminLibsecretItemCreateRequest"];
-type AdminLibsecretItemPatchRequest = S["AdminLibsecretItemPatchRequest"];
 type AdminLibsecretAliasUpsertRequest = S["AdminLibsecretAliasUpsertRequest"];
 export type AdminStoreCreateRequest = S["AdminStoreCreateRequest"];
 export type AdminStoreListItem = S["AdminStoreListItem"];
@@ -566,23 +563,6 @@ export function postLibsecretCollection(
   );
 }
 
-export function patchLibsecretCollection(
-  storeId: string,
-  resourceId: string,
-  collectionId: string,
-  body: AdminLibsecretCollectionPatchRequest,
-) {
-  return unwrap(
-    client.PATCH(
-      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}",
-      {
-        params: { path: { sid: storeId, rid: resourceId, cid: collectionId } },
-        body,
-      },
-    ),
-  );
-}
-
 export function deleteLibsecretCollection(
   storeId: string,
   resourceId: string,
@@ -609,31 +589,6 @@ export function postLibsecretItem(
       "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items",
       {
         params: { path: { sid: storeId, rid: resourceId, cid: collectionId } },
-        body,
-      },
-    ),
-  );
-}
-
-export function patchLibsecretItem(
-  storeId: string,
-  resourceId: string,
-  collectionId: string,
-  itemId: string,
-  body: AdminLibsecretItemPatchRequest,
-) {
-  return unwrap(
-    client.PATCH(
-      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}",
-      {
-        params: {
-          path: {
-            sid: storeId,
-            rid: resourceId,
-            cid: collectionId,
-            iid: itemId,
-          },
-        },
         body,
       },
     ),

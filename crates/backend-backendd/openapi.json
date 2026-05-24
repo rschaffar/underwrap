@@ -2612,91 +2612,6 @@
             "csrf_header": []
           }
         ]
-      },
-      "patch": {
-        "tags": [
-          "libsecret"
-        ],
-        "operationId": "handle_patch_collection",
-        "parameters": [
-          {
-            "name": "sid",
-            "in": "path",
-            "description": "Store id.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "rid",
-            "in": "path",
-            "description": "Resource id.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cid",
-            "in": "path",
-            "description": "Collection id.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminLibsecretCollectionPatchRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Collection updated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminOkResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Collection not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
       }
     },
     "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items": {
@@ -2863,110 +2778,6 @@
           },
           "404": {
             "description": "Collection not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "423": {
-            "description": "Store is locked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          },
-          {
-            "csrf_header": []
-          }
-        ]
-      },
-      "patch": {
-        "tags": [
-          "libsecret"
-        ],
-        "operationId": "handle_patch_item",
-        "parameters": [
-          {
-            "name": "sid",
-            "in": "path",
-            "description": "Store id.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "rid",
-            "in": "path",
-            "description": "Resource id.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cid",
-            "in": "path",
-            "description": "Collection id.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "iid",
-            "in": "path",
-            "description": "Item id.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminLibsecretItemPatchRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Item updated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminOkResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation failed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Collection or item not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3604,18 +3415,6 @@
           }
         }
       },
-      "AdminLibsecretCollectionPatchRequest": {
-        "type": "object",
-        "description": "`PATCH .../libsecret/collections/{cid}`. Only the listed fields are\nupdated; omitted fields keep their current value.",
-        "properties": {
-          "label": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
       "AdminLibsecretCollectionView": {
         "type": "object",
         "required": [
@@ -3704,42 +3503,6 @@
         "properties": {
           "existed": {
             "type": "boolean"
-          }
-        }
-      },
-      "AdminLibsecretItemPatchRequest": {
-        "type": "object",
-        "description": "`PATCH .../libsecret/collections/{cid}/items/{iid}`. Each field is\noptional and replaces the existing value when present. When\n`attributes` is supplied it replaces the entire attribute map (no\nmerge — that would make \"clear an attribute\" impossible without a\ndedicated verb).",
-        "properties": {
-          "attributes": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "content_type": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "label": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "secret_b64": {
-            "type": [
-              "string",
-              "null"
-            ]
           }
         }
       },

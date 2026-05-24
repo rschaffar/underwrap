@@ -383,14 +383,6 @@ pub struct AdminLibsecretCollectionCreateResponse {
     pub id: String,
 }
 
-/// `PATCH .../libsecret/collections/{cid}`. Only the listed fields are
-/// updated; omitted fields keep their current value.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminLibsecretCollectionPatchRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
 /// `DELETE .../libsecret/collections/{cid}`. The deletion cascades to
 /// the collection's items in one save. Any aliases pointing at the
 /// deleted collection are scrubbed atomically and their names
@@ -418,23 +410,6 @@ pub struct AdminLibsecretItemCreateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminLibsecretItemCreateResponse {
     pub id: String,
-}
-
-/// `PATCH .../libsecret/collections/{cid}/items/{iid}`. Each field is
-/// optional and replaces the existing value when present. When
-/// `attributes` is supplied it replaces the entire attribute map (no
-/// merge — that would make "clear an attribute" impossible without a
-/// dedicated verb).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct AdminLibsecretItemPatchRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attributes: Option<BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]

@@ -7,10 +7,9 @@ use reqwest::StatusCode;
 use underwrap_protocol::service::{
     AdminLibsecretAliasDeleteResponse, AdminLibsecretAliasUpsertRequest,
     AdminLibsecretCollectionCreateRequest, AdminLibsecretCollectionCreateResponse,
-    AdminLibsecretCollectionDeleteResponse, AdminLibsecretCollectionPatchRequest,
-    AdminLibsecretItemCreateRequest, AdminLibsecretItemCreateResponse,
-    AdminLibsecretItemDeleteResponse, AdminLibsecretItemPatchRequest,
-    AdminLibsecretItemSecretResponse, AdminLibsecretTreeResponse, AdminOkResponse,
+    AdminLibsecretCollectionDeleteResponse, AdminLibsecretItemCreateRequest,
+    AdminLibsecretItemCreateResponse, AdminLibsecretItemDeleteResponse,
+    AdminLibsecretItemSecretResponse, AdminLibsecretTreeResponse,
 };
 
 fn b64(value: &str) -> String {
@@ -53,7 +52,7 @@ async fn empty_resource_returns_empty_tree() {
 }
 
 #[tokio::test]
-async fn collection_create_patch_delete_round_trip() {
+async fn collection_create_delete_round_trip() {
     let daemon = TestDaemon::start(one_wrapper_config()).await.unwrap();
     let rid = create_resource(&daemon, "lib/colcrud").await;
 
@@ -76,37 +75,9 @@ async fn collection_create_patch_delete_round_trip() {
     assert_eq!(tree.collections.len(), 1);
     assert_eq!(tree.collections[0].id, "default");
     assert_eq!(tree.collections[0].label, "Default");
-    let created_at = tree.collections[0].created;
-    let modified_at = tree.collections[0].modified;
     assert_eq!(
-        created_at, modified_at,
+        tree.collections[0].created, tree.collections[0].modified,
         "fresh collection has created==modified"
-    );
-
-    // Patch label; sleep one second so modified bump is observable.
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    let resp = daemon
-        .admin_request(
-            reqwest::Method::PATCH,
-            &libsecret_path(&rid, "/collections/default"),
-        )
-        .json(&AdminLibsecretCollectionPatchRequest {
-            label: Some("Renamed".into()),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let tree = get_tree(&daemon, &rid).await;
-    assert_eq!(tree.collections[0].label, "Renamed");
-    assert_eq!(
-        tree.collections[0].created, created_at,
-        "created stays stable"
-    );
-    assert!(
-        tree.collections[0].modified > modified_at,
-        "modified bumped on label change",
     );
 
     // Delete; aliases_scrubbed empty since no alias was set.
@@ -189,7 +160,7 @@ async fn collection_delete_scrubs_pointing_aliases() {
 }
 
 #[tokio::test]
-async fn item_create_patch_delete_and_reveal_round_trip() {
+async fn item_create_reveal_delete_round_trip() {
     let daemon = TestDaemon::start(one_wrapper_config()).await.unwrap();
     let rid = create_resource(&daemon, "lib/itemcrud").await;
 
@@ -224,7 +195,7 @@ async fn item_create_patch_delete_and_reveal_round_trip() {
     let created: AdminLibsecretItemCreateResponse = resp.json().await.unwrap();
     assert_eq!(created.id, "item_1");
 
-    // Reveal secret.
+    // Reveal returns the stored secret.
     let resp = daemon
         .admin_request(
             reqwest::Method::GET,
@@ -236,41 +207,6 @@ async fn item_create_patch_delete_and_reveal_round_trip() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: AdminLibsecretItemSecretResponse = resp.json().await.unwrap();
     assert_eq!(body.secret_b64, b64("ghp_abc"));
-
-    // Patch label + secret.
-    let resp = daemon
-        .admin_request(
-            reqwest::Method::PATCH,
-            &libsecret_path(&rid, "/collections/default/items/item_1"),
-        )
-        .json(&AdminLibsecretItemPatchRequest {
-            label: Some("GitHub PAT".into()),
-            content_type: None,
-            attributes: None,
-            secret_b64: Some(b64("ghp_xyz")),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let _: AdminOkResponse = resp.json().await.unwrap();
-
-    // Tree reflects the new label; secret bytes are not in tree.
-    let tree = get_tree(&daemon, &rid).await;
-    let item = &tree.collections[0].items[0];
-    assert_eq!(item.label, "GitHub PAT");
-
-    // Reveal returns the new secret.
-    let resp = daemon
-        .admin_request(
-            reqwest::Method::GET,
-            &libsecret_path(&rid, "/collections/default/items/item_1/secret"),
-        )
-        .send()
-        .await
-        .unwrap();
-    let body: AdminLibsecretItemSecretResponse = resp.json().await.unwrap();
-    assert_eq!(body.secret_b64, b64("ghp_xyz"));
 
     // Delete item.
     let resp = daemon

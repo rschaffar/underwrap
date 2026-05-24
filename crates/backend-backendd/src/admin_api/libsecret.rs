@@ -27,10 +27,9 @@ use underwrap_protocol::resource_blob::{Collection, Item, ResourceBlob};
 use underwrap_protocol::service::{
     AdminLibsecretAliasDeleteResponse, AdminLibsecretAliasUpsertRequest,
     AdminLibsecretCollectionCreateRequest, AdminLibsecretCollectionCreateResponse,
-    AdminLibsecretCollectionDeleteResponse, AdminLibsecretCollectionPatchRequest,
-    AdminLibsecretCollectionView, AdminLibsecretItemCreateRequest,
-    AdminLibsecretItemCreateResponse, AdminLibsecretItemDeleteResponse,
-    AdminLibsecretItemPatchRequest, AdminLibsecretItemSecretResponse, AdminLibsecretItemView,
+    AdminLibsecretCollectionDeleteResponse, AdminLibsecretCollectionView,
+    AdminLibsecretItemCreateRequest, AdminLibsecretItemCreateResponse,
+    AdminLibsecretItemDeleteResponse, AdminLibsecretItemSecretResponse, AdminLibsecretItemView,
     AdminLibsecretTreeResponse, AdminOkResponse, ServiceErrorResponse,
 };
 use underwrap_store::{load_resource_blob, save_resource_blob};
@@ -49,9 +48,9 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_get_tree))
         .routes(routes!(handle_post_collection))
-        .routes(routes!(handle_patch_collection, handle_delete_collection))
+        .routes(routes!(handle_delete_collection))
         .routes(routes!(handle_post_item))
-        .routes(routes!(handle_patch_item, handle_delete_item))
+        .routes(routes!(handle_delete_item))
         .routes(routes!(handle_get_item_secret))
         .routes(routes!(handle_put_alias, handle_delete_alias))
 }
@@ -268,62 +267,6 @@ pub(crate) async fn handle_post_collection(
 }
 
 #[utoipa::path(
-    patch,
-    path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}",
-    tag = "libsecret",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    params(
-        ("sid" = String, Path, description = "Store id."),
-        ("rid" = String, Path, description = "Resource id."),
-        ("cid" = String, Path, description = "Collection id."),
-    ),
-    request_body = AdminLibsecretCollectionPatchRequest,
-    responses(
-        (status = 200, description = "Collection updated.", body = AdminOkResponse),
-        (status = 404, description = "Collection not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_patch_collection(
-    State(state): State<Arc<AdminRuntimeState>>,
-    axum::Extension(principal): axum::Extension<Principal>,
-    Path((store_id, resource_id, cid)): Path<(String, String, String)>,
-    Body(body): Body<AdminLibsecretCollectionPatchRequest>,
-) -> Result<Json<AdminOkResponse>, AdminError> {
-    let outcome = with_blob(&state, &store_id, &resource_id, |blob| {
-        let collection = blob
-            .libsecret
-            .collections
-            .get_mut(&cid)
-            .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
-        let mut changed = false;
-        if let Some(label) = body.label
-            && label != collection.label
-        {
-            collection.label = label;
-            changed = true;
-        }
-        if changed {
-            collection.modified = now_epoch_secs();
-        }
-        Ok((AdminOkResponse { ok: true }, changed))
-    });
-    log_admin_event(
-        "libsecret.collection.update",
-        &principal,
-        AuditEntity::LibsecretEntity {
-            store: &store_id,
-            resource_id: &resource_id,
-            kind: LibsecretEntityKind::Collection,
-            path: &cid,
-        },
-        None,
-        audit_result(&outcome),
-    );
-    outcome.map(Json)
-}
-
-#[utoipa::path(
     delete,
     path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}",
     tag = "libsecret",
@@ -464,110 +407,6 @@ pub(crate) async fn handle_post_item(
         None,
         audit_result(&outcome),
     );
-    outcome.map(Json)
-}
-
-#[utoipa::path(
-    patch,
-    path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}",
-    tag = "libsecret",
-    security(("session_cookie" = []), ("csrf_header" = [])),
-    params(
-        ("sid" = String, Path, description = "Store id."),
-        ("rid" = String, Path, description = "Resource id."),
-        ("cid" = String, Path, description = "Collection id."),
-        ("iid" = String, Path, description = "Item id."),
-    ),
-    request_body = AdminLibsecretItemPatchRequest,
-    responses(
-        (status = 200, description = "Item updated.", body = AdminOkResponse),
-        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 404, description = "Collection or item not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-    ),
-)]
-pub(crate) async fn handle_patch_item(
-    State(state): State<Arc<AdminRuntimeState>>,
-    axum::Extension(principal): axum::Extension<Principal>,
-    Path((store_id, resource_id, cid, iid)): Path<(String, String, String, String)>,
-    Body(body): Body<AdminLibsecretItemPatchRequest>,
-) -> Result<Json<AdminOkResponse>, AdminError> {
-    let touched_secret = body.secret_b64.is_some();
-    let outcome = (|| -> Result<AdminOkResponse, AdminError> {
-        let new_secret = match &body.secret_b64 {
-            Some(b64) => Some(decode_b64(b64).map(SecretBytes::from)?),
-            None => None,
-        };
-        with_blob(&state, &store_id, &resource_id, |blob| {
-            let collection = blob
-                .libsecret
-                .collections
-                .get_mut(&cid)
-                .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
-            let item = collection.items.get_mut(&iid).ok_or_else(|| {
-                AdminError::not_found(format!("item '{iid}' in collection '{cid}'"))
-            })?;
-            let mut changed = false;
-            if let Some(label) = body.label
-                && label != item.label
-            {
-                item.label = label;
-                changed = true;
-            }
-            if let Some(ct) = body.content_type
-                && ct != item.content_type
-            {
-                item.content_type = ct;
-                changed = true;
-            }
-            if let Some(attrs) = body.attributes
-                && attrs != item.attributes
-            {
-                item.attributes = attrs;
-                changed = true;
-            }
-            if let Some(secret) = new_secret
-                && secret != item.secret
-            {
-                item.secret = secret;
-                changed = true;
-            }
-            if changed {
-                let now = now_epoch_secs();
-                item.modified = now;
-                collection.modified = now;
-            }
-            Ok((AdminOkResponse { ok: true }, changed))
-        })
-    })();
-    let entity_key = format!("{cid}/{iid}");
-    let result = audit_result(&outcome);
-    log_admin_event(
-        "libsecret.item.update",
-        &principal,
-        AuditEntity::LibsecretEntity {
-            store: &store_id,
-            resource_id: &resource_id,
-            kind: LibsecretEntityKind::Item,
-            path: &entity_key,
-        },
-        None,
-        result,
-    );
-    if touched_secret {
-        log_admin_event(
-            "libsecret.item.set_secret",
-            &principal,
-            AuditEntity::LibsecretEntity {
-                store: &store_id,
-                resource_id: &resource_id,
-                kind: LibsecretEntityKind::Item,
-                path: &entity_key,
-            },
-            None,
-            result,
-        );
-    }
     outcome.map(Json)
 }
 
