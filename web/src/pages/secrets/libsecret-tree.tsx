@@ -26,7 +26,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import {
   type AdminLibsecretCollectionView,
@@ -42,6 +41,8 @@ import {
   putLibsecretAlias,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
+
+import { RevealSecretView } from "./reveal-secret-view";
 
 // Operator-supplied ids are validated by the backend with
 // `[A-Za-z0-9._-]+`, max 128, no leading `_`. Mirror the rule in the
@@ -791,43 +792,6 @@ function RevealItemSecretDialog({
   itemId: string;
   onClose: () => void;
 }) {
-  const [confirmed, setConfirmed] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const read = useQuery({
-    queryKey: [
-      "admin",
-      "libsecret",
-      "item-secret",
-      storeName,
-      resourceId,
-      collectionId,
-      itemId,
-    ],
-    queryFn: () =>
-      fetchLibsecretItemSecret(storeName, resourceId, collectionId, itemId),
-    enabled: confirmed,
-    staleTime: 0,
-    gcTime: 0,
-    refetchOnMount: "always",
-  });
-  const decoded = useMemo(() => {
-    if (!read.data?.secret_b64) return null;
-    try {
-      return atob(read.data.secret_b64);
-    } catch {
-      return null;
-    }
-  }, [read.data]);
-  async function onCopy() {
-    if (!decoded) return;
-    try {
-      await navigator.clipboard.writeText(decoded);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
-    }
-  }
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
@@ -840,52 +804,29 @@ function RevealItemSecretDialog({
             in resource <code>{resourceId}</code>.
           </DialogDescription>
         </DialogHeader>
-        {!confirmed ? (
-          <>
-            <p className="text-xs text-(--color-muted)">
-              Press <strong>Show</strong> to fetch the value. It will
-              be displayed in plain text in this dialog.
-            </p>
-            <DialogFooter>
-              <Button type="button" variant="ghost" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="button" onClick={() => setConfirmed(true)}>
-                Show
-              </Button>
-            </DialogFooter>
-          </>
-        ) : read.isLoading ? (
-          <p className="text-sm text-(--color-muted)">Loading…</p>
-        ) : read.error ? (
-          <Alert>{describeApiError(read.error)}</Alert>
-        ) : decoded == null ? (
-          <Alert variant="warning">
-            The secret material could not be decoded as UTF-8 text.
-          </Alert>
-        ) : (
-          <div className="space-y-2">
-            <Label htmlFor="libsecret-reveal-value">Value</Label>
-            <textarea
-              id="libsecret-reveal-value"
-              data-testid="libsecret-reveal-value"
-              readOnly
-              value={decoded}
-              rows={6}
-              className="w-full rounded-md border border-(--color-line) bg-(--color-surface-0) p-2 font-mono text-xs text-(--color-fg)"
-            />
-            <Button type="button" variant="ghost" size="sm" onClick={onCopy}>
-              {copied ? "Copied" : "Copy to clipboard"}
-            </Button>
-          </div>
-        )}
-        {confirmed ? (
-          <DialogFooter>
-            <Button type="button" onClick={onClose}>
-              Close
-            </Button>
-          </DialogFooter>
-        ) : null}
+        <RevealSecretView
+          queryKey={[
+            "admin",
+            "libsecret",
+            "item-secret",
+            storeName,
+            resourceId,
+            collectionId,
+            itemId,
+          ]}
+          queryFn={() =>
+            fetchLibsecretItemSecret(
+              storeName,
+              resourceId,
+              collectionId,
+              itemId,
+            )
+          }
+          pickB64={(r) => r.secret_b64}
+          textareaId="libsecret-reveal-value"
+          textareaTestId="libsecret-reveal-value"
+          onClose={onClose}
+        />
       </DialogContent>
     </Dialog>
   );
