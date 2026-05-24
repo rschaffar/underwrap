@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum_login::AuthSession;
 use tracing::{info, warn};
 use underwrap_protocol::service::{
@@ -58,9 +59,6 @@ pub struct WhoamiResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
 }
-
-#[derive(serde::Serialize, utoipa::ToSchema)]
-pub struct EmptyObject {}
 
 pub(crate) fn public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     OpenApiRouter::new()
@@ -149,18 +147,18 @@ pub(crate) async fn handle_admin_login(
         (status = 204, description = "Session destroyed and cookie cleared."),
     ),
 )]
-pub(crate) async fn handle_admin_logout(mut auth_session: AdminAuthSession) -> Json<EmptyObject> {
+pub(crate) async fn handle_admin_logout(mut auth_session: AdminAuthSession) -> StatusCode {
     let username = auth_session.user.as_ref().map(|u| u.username.clone());
     if let Err(e) = auth_session.logout().await {
         warn!(err = ?e, "logout: AuthSession::logout failed");
-        // Fall through — we still want to respond 200 with the
+        // Fall through — we still want to respond 204 with the
         // session-clearing cookie that tower-sessions emits, so a
         // partially failed flush doesn't strand the client.
     }
     if let Some(name) = username {
         info!(username = %name, "logout: session flushed");
     }
-    Json(EmptyObject {})
+    StatusCode::NO_CONTENT
 }
 
 #[utoipa::path(
