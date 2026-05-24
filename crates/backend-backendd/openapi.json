@@ -877,6 +877,95 @@
         ]
       }
     },
+    "/v1/admin/stores/{id}/pairs/with-new-resource": {
+      "post": {
+        "tags": [
+          "pairs"
+        ],
+        "operationId": "handle_admin_pair_with_new_resource",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPairWithNewResourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Resource created and paired with the wrapper in one step.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPairWithNewResourceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
     "/v1/admin/stores/{id}/pairs/{wrapper}/{rid}": {
       "delete": {
         "tags": [
@@ -3671,6 +3760,37 @@
           },
           "ok": {
             "type": "boolean"
+          }
+        }
+      },
+      "AdminPairWithNewResourceRequest": {
+        "type": "object",
+        "description": "Body of `POST /v1/admin/stores/{id}/pairs/with-new-resource` —\ncreate a fresh resource and pair it with `wrapper` in one\ntransactional step, removing the orphan-resource window the SPA\notherwise has when sequencing two calls.",
+        "required": [
+          "wrapper",
+          "resource_name"
+        ],
+        "properties": {
+          "resource_name": {
+            "type": "string"
+          },
+          "wrapper": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminPairWithNewResourceResponse": {
+        "type": "object",
+        "required": [
+          "resource",
+          "pair"
+        ],
+        "properties": {
+          "pair": {
+            "$ref": "#/components/schemas/WrapperResourcePairRecord"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceRecord"
           }
         }
       },

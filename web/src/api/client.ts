@@ -112,6 +112,7 @@ export type AdminClientInstanceListItem = S["AdminClientInstanceListItem"];
 type AdminClientInstanceUpdateRequest = S["AdminClientInstanceUpdateRequest"];
 export type AdminClientInstancesListResponse = S["AdminClientInstancesListResponse"];
 type AdminPairCreateRequest = S["AdminPairCreateRequest"];
+type AdminPairWithNewResourceRequest = S["AdminPairWithNewResourceRequest"];
 export type AdminPairsListResponse = S["AdminPairsListResponse"];
 type AdminPasswordChangeRequest = S["AdminPasswordChangeRequest"];
 type AdminResourceCreateRequest = S["AdminResourceCreateRequest"];
@@ -364,6 +365,18 @@ export function fetchPairs(storeId: string) {
 export function postPairCreate(storeId: string, body: AdminPairCreateRequest) {
   return unwrap(
     client.POST("/v1/admin/stores/{id}/pairs", {
+      params: { path: { id: storeId } },
+      body,
+    }),
+  );
+}
+
+export function postPairWithNewResource(
+  storeId: string,
+  body: AdminPairWithNewResourceRequest,
+) {
+  return unwrap(
+    client.POST("/v1/admin/stores/{id}/pairs/with-new-resource", {
       params: { path: { id: storeId } },
       body,
     }),

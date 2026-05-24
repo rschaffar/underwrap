@@ -25,9 +25,8 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import {
   postPairCreate,
-  postResourceCreate,
+  postPairWithNewResource,
   type ResourceRecord,
-  type WrapperResourcePairRecord,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
@@ -51,12 +50,10 @@ type Values = z.infer<typeof schema>;
 export function CreatePairDialog({
   storeId,
   existingResources,
-  existingPairs,
   onClose,
 }: {
   storeId: string;
   existingResources: ResourceRecord[];
-  existingPairs: WrapperResourcePairRecord[];
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -71,9 +68,6 @@ export function CreatePairDialog({
     },
   });
 
-  const createResource = useMutation({
-    mutationFn: (name: string) => postResourceCreate(storeId, { name }),
-  });
   const createPair = useMutation({
     mutationFn: (vars: { wrapper: string; resource_id: string }) =>
       postPairCreate(storeId, {
@@ -81,37 +75,27 @@ export function CreatePairDialog({
         resource_id: vars.resource_id,
       }),
   });
-  const pending = createResource.isPending || createPair.isPending;
+  const createPairWithNewResource = useMutation({
+    mutationFn: (vars: { wrapper: string; resource_name: string }) =>
+      postPairWithNewResource(storeId, vars),
+  });
+  const pending = createPair.isPending || createPairWithNewResource.isPending;
 
   async function onSubmit(values: Values) {
     form.clearErrors("root");
     const w = values.wrapper.trim();
-    let chosenResourceId = values.resource_id ?? "";
-    if (values.mode === "new") {
-      const name = (values.new_resource_name ?? "").trim();
-      try {
-        const created = await createResource.mutateAsync(name);
-        chosenResourceId = created.resource.id;
-      } catch (e) {
-        form.setError("root", { message: describeApiError(e) });
-        return;
-      }
-    }
-    if (
-      existingPairs.some(
-        (p) => p.wrapper === w && p.resource_id === chosenResourceId,
-      )
-    ) {
-      form.setError("root", {
-        message: `Pair (${w}, ${chosenResourceId}) already exists.`,
-      });
-      return;
-    }
     try {
-      await createPair.mutateAsync({
-        wrapper: w,
-        resource_id: chosenResourceId,
-      });
+      if (values.mode === "new") {
+        await createPairWithNewResource.mutateAsync({
+          wrapper: w,
+          resource_name: (values.new_resource_name ?? "").trim(),
+        });
+      } else {
+        await createPair.mutateAsync({
+          wrapper: w,
+          resource_id: values.resource_id ?? "",
+        });
+      }
       await qc.invalidateQueries({
         queryKey: ["admin", "wrapper-permissions-view", storeId],
       });

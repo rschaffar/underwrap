@@ -211,7 +211,6 @@ export function WrapperPermissionsPage() {
         <CreatePairDialog
           storeId={storeId}
           existingResources={resources}
-          existingPairs={pairRecords}
           onClose={() => setCreatingPair(false)}
         />
       ) : null}

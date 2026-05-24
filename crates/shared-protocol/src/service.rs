@@ -562,6 +562,22 @@ pub struct AdminPairCreateResponse {
     pub pair: WrapperResourcePairRecord,
 }
 
+/// Body of `POST /v1/admin/stores/{id}/pairs/with-new-resource` —
+/// create a fresh resource and pair it with `wrapper` in one
+/// transactional step, removing the orphan-resource window the SPA
+/// otherwise has when sequencing two calls.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminPairWithNewResourceRequest {
+    pub wrapper: String,
+    pub resource_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminPairWithNewResourceResponse {
+    pub resource: ResourceRecord,
+    pub pair: WrapperResourcePairRecord,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema, Default)]
 pub struct AdminPairDeleteBlockers {
     pub permission_count: u32,
