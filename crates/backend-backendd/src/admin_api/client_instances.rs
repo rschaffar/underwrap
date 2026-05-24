@@ -64,9 +64,9 @@ fn current_store_names(state: &AdminRuntimeState) -> HashMap<String, String> {
         .stores
         .read()
         .unwrap()
-        .records
+        .entries
         .iter()
-        .map(|(id, loaded)| (id.clone(), loaded.record.name.clone()))
+        .map(|(id, entry)| (id.clone(), entry.record.name.clone()))
         .collect()
 }
 
@@ -94,9 +94,9 @@ fn resolve_store_name(state: &AdminRuntimeState, store_id: &str) -> Result<Strin
         .stores
         .read()
         .unwrap()
-        .records
+        .entries
         .get(store_id)
-        .map(|loaded| loaded.record.name.clone())
+        .map(|entry| entry.record.name.clone())
         .ok_or_else(|| {
             AdminError::internal_with_code(
                 "unknown_store",
@@ -186,7 +186,7 @@ pub(crate) async fn handle_admin_client_instance_create(
     let cert_fingerprint = current_credential.cert_fingerprint.clone();
     {
         let stores = state.stores.read().unwrap();
-        if !stores.records.contains_key(&body.current_store_id) {
+        if !stores.entries.contains_key(&body.current_store_id) {
             return Err(AdminError::bad_request("unknown_store", "unknown store"));
         }
     }
@@ -300,7 +300,7 @@ pub(crate) async fn handle_admin_client_instance_update(
             .stores
             .read()
             .unwrap()
-            .records
+            .entries
             .contains_key(current_store_id)
         {
             return Err(AdminError::bad_request("unknown_store", "unknown store"));

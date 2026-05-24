@@ -30,8 +30,8 @@ fn registry_round_trips_by_store_id() {
 
     let map = load_store_records(&dir).unwrap();
     assert_eq!(map.len(), 1);
-    assert_eq!(map["store_work"].record.name, "Work");
-    assert_eq!(map["store_work"].record.id, "store_work");
+    assert_eq!(map["store_work"].name, "Work");
+    assert_eq!(map["store_work"].id, "store_work");
 }
 
 #[test]
@@ -95,10 +95,10 @@ fn description_metadata_round_trips() {
     save_store_record(&dir, &record).unwrap();
     let map = load_store_records(&dir).unwrap();
     assert_eq!(
-        map["store_work"].record.description.as_deref(),
+        map["store_work"].description.as_deref(),
         Some("the work store")
     );
-    assert_eq!(map["store_work"].record.created_at, Some(123));
+    assert_eq!(map["store_work"].created_at, Some(123));
 }
 
 #[test]

@@ -30,18 +30,6 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 use super::{create_data_dir_secure, generate_master_key_bytes, master_key_hex};
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
 
-/// Get or lazily create the rotation `Mutex` for `store_id`. Held for
-/// the duration of a rotation so concurrent writes wait until the new
-/// backend has fully replaced the old one.
-fn rotation_lock(state: &AdminRuntimeState, store_id: &str) -> Arc<tokio::sync::Mutex<()>> {
-    let mut locks = state.rotation_locks.lock().unwrap();
-    Arc::clone(
-        locks
-            .entry(store_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-    )
-}
-
 /// `POST /v1/admin/stores/{id}/rotate-key` — mint a fresh 32-byte
 /// master key in memory, re-encrypt every resource in the store under
 /// it, atomically swap the data directory, install the new backend in
@@ -66,13 +54,12 @@ pub(crate) async fn handle_admin_store_rotate_key(
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Json<AdminStoreRotateKeyResponse>, AdminError> {
-    let (mut updated_record, dir, current_backend) = {
+    let (mut updated_record, dir, current_backend, rotate_lock) = {
         let reg = state.stores.read().unwrap();
-        let loaded = reg
-            .records
-            .get(&name)
-            .ok_or_else(AdminError::store_not_found)?;
-        let record = loaded.record.clone();
+        let entry = reg
+            .entry(&name)
+            .map_err(|_| AdminError::store_not_found())?;
+        let record = entry.record.clone();
         let dir = match &record.storage {
             underwrap_protocol::config::StorageConfig::Plain { .. } => {
                 return Err(AdminError::conflict(
@@ -82,19 +69,13 @@ pub(crate) async fn handle_admin_store_rotate_key(
             }
             underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.to_path_buf(),
         };
-        match reg.state.get(&name) {
-            Some(StoreState::Unlocked(b)) => (record, dir, Arc::clone(b)),
-            Some(StoreState::Locked) => return Err(AdminError::store_locked(&name)),
-            None => {
-                return Err(AdminError::internal_with_code(
-                    "internal",
-                    "store metadata present but registry state missing",
-                ));
-            }
+        let rotate_lock = Arc::clone(&entry.rotation_lock);
+        match &entry.state {
+            StoreState::Unlocked(b) => (record, dir, Arc::clone(b), rotate_lock),
+            StoreState::Locked => return Err(AdminError::store_locked(&name)),
         }
     };
 
-    let rotate_lock = rotation_lock(&state, &name);
     let _rotate_guard = rotate_lock.lock().await;
 
     let new_key_bytes = generate_master_key_bytes();
@@ -260,10 +241,9 @@ pub(crate) async fn handle_admin_store_rotate_key(
     updated_record.storage = underwrap_protocol::config::StorageConfig::Encrypted { dir };
     {
         let mut reg = state.stores.write().unwrap();
-        reg.state
-            .insert(name.clone(), StoreState::Unlocked(rotated_backend));
-        if let Some(loaded) = reg.records.get_mut(&name) {
-            loaded.record = updated_record.clone();
+        if let Some(entry) = reg.entries.get_mut(&name) {
+            entry.state = StoreState::Unlocked(rotated_backend);
+            entry.record = updated_record.clone();
         }
         if let Err(e) = save_store_record(&state.stores_dir, &updated_record) {
             return Err(AdminError::internal_with_code(
@@ -388,11 +368,10 @@ pub(crate) async fn handle_admin_store_unlock(
 ) -> Result<Json<AdminOkResponse>, AdminError> {
     let dir = {
         let reg = state.stores.read().unwrap();
-        let loaded = reg
-            .records
-            .get(&name)
-            .ok_or_else(AdminError::store_not_found)?;
-        match &loaded.record.storage {
+        let entry = reg
+            .entry(&name)
+            .map_err(|_| AdminError::store_not_found())?;
+        let dir = match &entry.record.storage {
             underwrap_protocol::config::StorageConfig::Plain { .. } => {
                 return Err(AdminError::bad_request(
                     "store_not_encrypted",
@@ -400,23 +379,18 @@ pub(crate) async fn handle_admin_store_unlock(
                 ));
             }
             underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.to_path_buf(),
+        };
+        match &entry.state {
+            StoreState::Unlocked(_) => {
+                return Err(AdminError::conflict(
+                    "already_unlocked",
+                    "store is already unlocked",
+                ));
+            }
+            StoreState::Locked => {}
         }
+        dir
     };
-    match state.stores.read().unwrap().state.get(&name) {
-        Some(StoreState::Unlocked(_)) => {
-            return Err(AdminError::conflict(
-                "already_unlocked",
-                "store is already unlocked",
-            ));
-        }
-        Some(StoreState::Locked) => {}
-        None => {
-            return Err(AdminError::internal_with_code(
-                "internal",
-                "store metadata present but registry state missing",
-            ));
-        }
-    }
     let key_bytes = match underwrap_store::parse_hex_key(&body.key_hex) {
         Ok(k) => k,
         Err(e) => {
@@ -527,12 +501,11 @@ pub(crate) async fn handle_admin_store_lock(
     AxumPath(name): AxumPath<String>,
 ) -> Result<Json<AdminStoreLockResponse>, AdminError> {
     let mut reg = state.stores.write().unwrap();
-    let loaded = reg
-        .records
-        .get(&name)
-        .ok_or_else(AdminError::store_not_found)?;
+    let entry = reg
+        .entry(&name)
+        .map_err(|_| AdminError::store_not_found())?;
     if matches!(
-        loaded.record.storage,
+        entry.record.storage,
         underwrap_protocol::config::StorageConfig::Plain { .. }
     ) {
         return Err(AdminError::bad_request(
@@ -540,7 +513,7 @@ pub(crate) async fn handle_admin_store_lock(
             "plain stores are never locked",
         ));
     }
-    let was_locked = matches!(reg.state.get(&name), Some(StoreState::Locked));
+    let was_locked = matches!(entry.state, StoreState::Locked);
     reg.lock(&name);
     drop(reg);
     let result = if was_locked { "noop" } else { "success" };

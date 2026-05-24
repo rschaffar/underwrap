@@ -19,7 +19,7 @@ use crate::admin_api::AdminError;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::store_registry::{
-    LoadedStoreRecord, StoreState, delete_store_record, save_store_record,
+    RegistryLookupError, StoreEntry, StoreState, delete_store_record, save_store_record,
 };
 use crate::users::Principal;
 
@@ -51,24 +51,22 @@ pub(crate) async fn handle_admin_stores_list(
     State(state): State<Arc<AdminRuntimeState>>,
 ) -> Result<Json<AdminStoresListResponse>, AdminError> {
     #[allow(clippy::type_complexity)]
-    let visible: Vec<(String, LoadedStoreRecord, Option<Arc<dyn StorageBackend>>)> = {
-        let reg = state.stores.read().unwrap();
-        reg.records
-            .iter()
-            .map(|(id, loaded)| {
-                let backend = reg.state.get(id).and_then(|s| s.backend()).cloned();
-                (id.clone(), loaded.clone(), backend)
-            })
-            .collect()
-    };
+    let visible: Vec<(StoreRecord, Option<Arc<dyn StorageBackend>>)> = state
+        .stores
+        .read()
+        .unwrap()
+        .entries
+        .values()
+        .map(|entry| (entry.record.clone(), entry.state.backend().cloned()))
+        .collect();
     let mut items = Vec::with_capacity(visible.len());
-    for (id, loaded, handle) in visible {
+    for (record, handle) in visible {
         let (usage, locked) = match handle.as_deref() {
-            Some(b) => (admin_store_usage(&state, &id, b)?, false),
-            None => (admin_store_usage_for_locked(&state, &id), true),
+            Some(b) => (admin_store_usage(&state, &record.id, b)?, false),
+            None => (admin_store_usage_for_locked(&state, &record.id), true),
         };
-        let actions = admin_store_actions(&loaded, &usage, locked);
-        items.push(admin_store_list_item(&loaded, locked, usage, actions));
+        let actions = admin_store_actions(&record, &usage, locked);
+        items.push(admin_store_list_item(&record, locked, usage, actions));
     }
     items.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
     Ok(Json(AdminStoresListResponse { items }))
@@ -102,7 +100,7 @@ pub(crate) async fn handle_admin_store_create(
     let visible_name = visible_name.to_string();
 
     let store_id = crate::ids::fresh_id("store", |candidate| {
-        state.stores.read().unwrap().records.contains_key(candidate)
+        state.stores.read().unwrap().entries.contains_key(candidate)
     });
 
     let validated_dir = resolve_store_dir(&state, &store_id)
@@ -111,9 +109,9 @@ pub(crate) async fn handle_admin_store_create(
     {
         let reg = state.stores.read().unwrap();
         if reg
-            .records
+            .entries
             .values()
-            .any(|existing| existing.record.name.eq_ignore_ascii_case(&visible_name))
+            .any(|entry| entry.record.name.eq_ignore_ascii_case(&visible_name))
         {
             return Err(AdminError::conflict(
                 "store_name_already_exists",
@@ -191,15 +189,14 @@ pub(crate) async fn handle_admin_store_create(
         storage,
     };
 
-    let loaded = LoadedStoreRecord { record };
     {
         let mut reg = state.stores.write().unwrap();
-        reg.state
-            .insert(store_id.clone(), StoreState::Unlocked(opened));
-        reg.records.insert(store_id.clone(), loaded.clone());
-        if let Err(e) = save_store_record(&state.stores_dir, &loaded.record) {
-            reg.state.remove(&store_id);
-            reg.records.remove(&store_id);
+        reg.entries.insert(
+            store_id.clone(),
+            StoreEntry::new(record.clone(), StoreState::Unlocked(opened)),
+        );
+        if let Err(e) = save_store_record(&state.stores_dir, &record) {
+            reg.entries.remove(&store_id);
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
                 format!("{e:#}"),
@@ -217,9 +214,9 @@ pub(crate) async fn handle_admin_store_create(
         mapped_client_instance_count: 0,
         has_secrets: false,
     };
-    let actions = admin_store_actions(&loaded, &usage, false);
+    let actions = admin_store_actions(&record, &usage, false);
     Ok(Json(AdminStoreCreateResponse {
-        store: admin_store_list_item(&loaded, false, usage, actions),
+        store: admin_store_list_item(&record, false, usage, actions),
         key_hex: generated_key_hex,
     }))
 }
@@ -245,11 +242,10 @@ pub(crate) async fn handle_admin_store_update(
 ) -> Result<Json<AdminStoreListItem>, AdminError> {
     let updated = {
         let reg = state.stores.read().unwrap();
-        let loaded = reg
-            .records
-            .get(&name)
-            .ok_or_else(AdminError::store_not_found)?;
-        let mut record = loaded.record.clone();
+        let entry = reg
+            .entry(&name)
+            .map_err(|_| AdminError::store_not_found())?;
+        let mut record = entry.record.clone();
         if let Some(new_name) = &body.name {
             let new_name = new_name.trim();
             if new_name.is_empty() {
@@ -259,7 +255,7 @@ pub(crate) async fn handle_admin_store_update(
                 ));
             }
             let new_name = new_name.to_string();
-            if reg.records.iter().any(|(other_id, other)| {
+            if reg.entries.iter().any(|(other_id, other)| {
                 other_id != &name && other.record.name.eq_ignore_ascii_case(&new_name)
             }) {
                 return Err(AdminError::conflict(
@@ -280,8 +276,8 @@ pub(crate) async fn handle_admin_store_update(
     };
     {
         let mut reg = state.stores.write().unwrap();
-        if let Some(loaded) = reg.records.get_mut(&name) {
-            loaded.record = updated.clone();
+        if let Some(entry) = reg.entries.get_mut(&name) {
+            entry.record = updated.clone();
         }
         if let Err(e) = save_store_record(&state.stores_dir, &updated) {
             return Err(AdminError::internal_with_code(
@@ -297,26 +293,27 @@ pub(crate) async fn handle_admin_store_update(
         None,
         "success",
     );
-    let loaded = LoadedStoreRecord { record: updated };
     let (handle, locked) = {
         let reg = state.stores.read().unwrap();
-        match reg.state.get(&name) {
-            Some(StoreState::Unlocked(b)) => (Some(Arc::clone(b)), false),
-            Some(StoreState::Locked) => (None, true),
-            None => {
-                return Err(AdminError::internal_with_code(
-                    "internal",
-                    "store metadata present but registry state missing",
-                ));
-            }
+        let entry = reg.entry(&name).map_err(|_| {
+            AdminError::internal_with_code(
+                "internal",
+                "store vanished from registry between update and read-back",
+            )
+        })?;
+        match &entry.state {
+            StoreState::Unlocked(b) => (Some(Arc::clone(b)), false),
+            StoreState::Locked => (None, true),
         }
     };
     let usage = match handle.as_deref() {
         Some(b) => admin_store_usage(&state, &name, b)?,
         None => admin_store_usage_for_locked(&state, &name),
     };
-    let actions = admin_store_actions(&loaded, &usage, locked);
-    Ok(Json(admin_store_list_item(&loaded, locked, usage, actions)))
+    let actions = admin_store_actions(&updated, &usage, locked);
+    Ok(Json(admin_store_list_item(
+        &updated, locked, usage, actions,
+    )))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -350,20 +347,14 @@ pub(crate) async fn handle_admin_store_delete(
 
     let (store_handle, dir_for_hint, locked) = {
         let reg = state.stores.read().unwrap();
-        let loaded = reg
-            .records
-            .get(&name)
-            .ok_or_else(AdminError::store_not_found)?;
-        let dir = loaded.record.storage.dir().to_path_buf();
-        match reg.state.get(&name) {
-            Some(StoreState::Unlocked(b)) => (Some(Arc::clone(b)), dir, false),
-            Some(StoreState::Locked) => (None, dir, true),
-            None => {
-                return Err(AdminError::internal_with_code(
-                    "internal",
-                    "store metadata present but registry state missing",
-                ));
-            }
+        let entry = reg.entry(&name).map_err(|e| match e {
+            RegistryLookupError::NotFound => AdminError::store_not_found(),
+            RegistryLookupError::Locked => AdminError::store_locked(&name),
+        })?;
+        let dir = entry.record.storage.dir().to_path_buf();
+        match &entry.state {
+            StoreState::Unlocked(b) => (Some(Arc::clone(b)), dir, false),
+            StoreState::Locked => (None, dir, true),
         }
     };
     if state
@@ -413,8 +404,7 @@ pub(crate) async fn handle_admin_store_delete(
 
     {
         let mut reg = state.stores.write().unwrap();
-        reg.state.remove(&name);
-        reg.records.remove(&name);
+        reg.entries.remove(&name);
         if let Err(e) = delete_store_record(&state.stores_dir, &name) {
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",

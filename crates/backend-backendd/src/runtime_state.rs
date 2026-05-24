@@ -41,12 +41,6 @@ pub(crate) struct AdminRuntimeState {
     /// store's display name. `None` disables creation (returns
     /// `data_root_not_configured`).
     pub(crate) stores_data_root: Option<PathBuf>,
-    /// Per-store rotation lock. Held for the duration of
-    /// `rotate-key` so that concurrent writes through the runtime
-    /// service do not land in the pre-swap data directory. Lazily
-    /// populated on first use; entries are never removed (the cost is
-    /// one `Mutex` per known store, which is negligible).
-    pub(crate) rotation_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Whether the browser-facing admin UI/API is enabled on the HTTPS
     /// listener. When false, `/v1/admin/*` and SPA routes return 404.
     pub(crate) admin_enabled: bool,

@@ -31,7 +31,7 @@ pub(crate) fn validate_runtime_client_mappings(
         // (encrypted, no key yet) and that is still a valid mapping —
         // runtime requests against a locked store surface
         // `store_locked` at request time.
-        if !registry.records.contains_key(&instance.current_store_id) {
+        if !registry.entries.contains_key(&instance.current_store_id) {
             anyhow::bail!(
                 "runtime client instance '{}' references unknown store '{}'",
                 instance.id,
@@ -64,7 +64,7 @@ pub(crate) fn resolve_runtime_client(
     // legitimately be `Locked` for this principal, and the caller has
     // to surface that as `store_locked`. Existence-only check.
     let store_id = instance.current_store_id.clone();
-    if !state.stores.read().unwrap().records.contains_key(&store_id) {
+    if !state.stores.read().unwrap().entries.contains_key(&store_id) {
         anyhow::bail!(
             "runtime client instance '{}' references unknown store '{}'",
             instance.id,

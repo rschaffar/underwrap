@@ -24,7 +24,8 @@ use underwrap_store::StorageBackend;
 
 use crate::admin_api::AdminError;
 use crate::runtime_state::AdminRuntimeState;
-use crate::store_registry::{LoadedStoreRecord, RegistryLookupError};
+use crate::store_registry::RegistryLookupError;
+use underwrap_protocol::config::StoreRecord;
 
 pub(crate) mod crud;
 pub(crate) mod lifecycle;
@@ -91,12 +92,12 @@ pub(super) fn admin_store_usage(
 }
 
 pub(super) fn admin_store_actions(
-    loaded: &LoadedStoreRecord,
+    record: &StoreRecord,
     usage: &AdminStoreUsageSummary,
     locked: bool,
 ) -> AdminStoreActionState {
     let is_encrypted = matches!(
-        &loaded.record.storage,
+        &record.storage,
         underwrap_protocol::config::StorageConfig::Encrypted { .. }
     );
     // Delete works for both locked and unlocked stores — we use the
@@ -116,17 +117,17 @@ pub(super) fn admin_store_actions(
 }
 
 pub(super) fn admin_store_list_item(
-    loaded: &LoadedStoreRecord,
+    record: &StoreRecord,
     locked: bool,
     usage: AdminStoreUsageSummary,
     actions: AdminStoreActionState,
 ) -> AdminStoreListItem {
     AdminStoreListItem {
-        id: loaded.record.id.clone(),
-        name: loaded.record.name.clone(),
-        backend: backend_kind(&loaded.record.storage),
-        description: loaded.record.description.clone(),
-        created_at: loaded.record.created_at,
+        id: record.id.clone(),
+        name: record.name.clone(),
+        backend: backend_kind(&record.storage),
+        description: record.description.clone(),
+        created_at: record.created_at,
         locked,
         usage,
         actions,

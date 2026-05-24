@@ -23,7 +23,7 @@ use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
     save_policy_document, save_resources_document,
 };
-use crate::store_registry::{LoadedStoreRecord, StoreRegistry, StoreState};
+use crate::store_registry::{StoreEntry, StoreRegistry, StoreState};
 
 /// A sample client cert in PEM form used by tests that need to seed
 /// a runtime-client record without going through the create API
@@ -171,12 +171,11 @@ pub(crate) fn test_users_paths() -> (PathBuf, PathBuf) {
 pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
     let (users_dir, bootstrap_file) = test_users_paths();
     AdminRuntimeState {
-        stores: Arc::new(std::sync::RwLock::new(StoreRegistry::new())),
+        stores: Arc::new(std::sync::RwLock::new(StoreRegistry::default())),
         client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
         stores_dir: PathBuf::new(),
         clients_dir: PathBuf::new(),
         stores_data_root: None,
-        rotation_locks: std::sync::Mutex::new(HashMap::new()),
         admin_enabled: true,
         allowed_origins: None,
         users_dir: users_dir.clone(),
@@ -194,15 +193,23 @@ pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
 pub(crate) fn test_admin_state(
     stores: HashMap<String, Arc<dyn StorageBackend>>,
 ) -> AdminRuntimeState {
-    let state: HashMap<String, StoreState> = stores
+    let entries: HashMap<String, StoreEntry> = stores
         .into_iter()
-        .map(|(id, b)| (id, StoreState::Unlocked(b)))
+        .map(|(id, b)| {
+            let record = underwrap_protocol::config::StoreRecord {
+                id: id.clone(),
+                name: id.clone(),
+                description: None,
+                created_at: None,
+                storage: underwrap_protocol::config::StorageConfig::Plain {
+                    dir: PathBuf::from("/dev/null"),
+                },
+            };
+            (id, StoreEntry::new(record, StoreState::Unlocked(b)))
+        })
         .collect();
     let mut s = default_admin_runtime_state();
-    s.stores = Arc::new(std::sync::RwLock::new(StoreRegistry {
-        state,
-        records: HashMap::new(),
-    }));
+    s.stores = Arc::new(std::sync::RwLock::new(StoreRegistry { entries }));
     s.admin_enabled = true;
     s
 }
@@ -248,23 +255,18 @@ pub(crate) fn service_state_with_runtime_client(
     status: crate::runtime_clients::ClientInstanceStatus,
     store_id: &str,
 ) -> AdminRuntimeState {
-    let state_map = HashMap::from([(
-        store_id.to_string(),
-        StoreState::Unlocked(Arc::new(MemTestStore::new())),
-    )]);
-    let records = HashMap::from([(
-        store_id.to_string(),
-        LoadedStoreRecord {
-            record: underwrap_protocol::config::StoreRecord {
-                id: store_id.to_string(),
-                name: store_id.to_string(),
-                description: None,
-                created_at: None,
-                storage: underwrap_protocol::config::StorageConfig::Plain {
-                    dir: PathBuf::from("/dev/null"),
-                },
-            },
+    let record = underwrap_protocol::config::StoreRecord {
+        id: store_id.to_string(),
+        name: store_id.to_string(),
+        description: None,
+        created_at: None,
+        storage: underwrap_protocol::config::StorageConfig::Plain {
+            dir: PathBuf::from("/dev/null"),
         },
+    };
+    let entries = HashMap::from([(
+        store_id.to_string(),
+        StoreEntry::new(record, StoreState::Unlocked(Arc::new(MemTestStore::new()))),
     )]);
     let client_instances = HashMap::from([(
         "inst_local".to_string(),
@@ -282,10 +284,7 @@ pub(crate) fn service_state_with_runtime_client(
         },
     )]);
     let mut s = default_admin_runtime_state();
-    s.stores = Arc::new(std::sync::RwLock::new(StoreRegistry {
-        state: state_map,
-        records,
-    }));
+    s.stores = Arc::new(std::sync::RwLock::new(StoreRegistry { entries }));
     s.client_instances = Arc::new(std::sync::RwLock::new(client_instances));
     s
 }

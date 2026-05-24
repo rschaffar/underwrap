@@ -4,7 +4,6 @@
 //! browser-facing admin UI/API from one HTTPS listener.
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
@@ -25,11 +24,8 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
     let users_dir = config.users_dir();
     let bootstrap_file = config.bootstrap_file();
     let definitions = load_store_records(&stores_dir)?;
-    let state_map = open_initial_stores(&definitions)?;
-    let store_registry = Arc::new(std::sync::RwLock::new(StoreRegistry {
-        state: state_map,
-        records: definitions.clone(),
-    }));
+    let entries = open_initial_stores(definitions)?;
+    let store_registry = Arc::new(std::sync::RwLock::new(StoreRegistry { entries }));
     let client_instances = Arc::new(std::sync::RwLock::new(
         crate::runtime_clients::load_client_instances(&clients_dir)?,
     ));
@@ -52,7 +48,6 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             stores_dir: stores_dir.clone(),
             clients_dir: clients_dir.clone(),
             stores_data_root: admin_config.and_then(|cfg| cfg.stores_data_root.clone()),
-            rotation_locks: std::sync::Mutex::new(HashMap::new()),
             admin_enabled: admin_config.is_some(),
             allowed_origins: admin_config.and_then(|cfg| cfg.allowed_origins.clone()),
             users_dir: users_dir.clone(),
@@ -71,7 +66,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             let snapshot = state.stores.read().unwrap();
             info!(
                 listen = %https_config.listen,
-                stores = snapshot.state.len(),
+                stores = snapshot.entries.len(),
                 instances = state.client_instances.read().unwrap().len(),
                 admin = state.admin_enabled,
                 "backend HTTPS listener ready",

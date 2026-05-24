@@ -8,7 +8,16 @@ use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest
 use super::*;
 use crate::admin_api::stores::crud::{handle_admin_store_create, handle_admin_stores_list};
 use crate::http::responses::Body;
+use crate::runtime_state::AdminRuntimeState;
+use crate::store_registry::StoreState;
 use crate::test_support::{admin_principal, create_store_for_test, crud_state, run_handler};
+
+fn is_locked(state: &AdminRuntimeState, store_id: &str) -> bool {
+    matches!(
+        state.stores.read().unwrap().entry(store_id),
+        Ok(entry) if matches!(entry.state, StoreState::Locked),
+    )
+}
 
 fn create_store(
     state: Arc<crate::runtime_state::AdminRuntimeState>,
@@ -179,7 +188,7 @@ fn unlock_round_trip_succeeds_with_correct_hex() {
         Path(store_id.clone()),
     ));
     assert_eq!(lock_status, StatusCode::OK);
-    assert!(state.stores.read().unwrap().is_locked(&store_id));
+    assert!(is_locked(&state, &store_id));
 
     let (status, _) = run_handler(handle_admin_store_unlock(
         State(state.clone()),
@@ -188,7 +197,7 @@ fn unlock_round_trip_succeeds_with_correct_hex() {
         Body(underwrap_protocol::service::AdminStoreUnlockRequest { key_hex }),
     ));
     assert_eq!(status, StatusCode::OK);
-    assert!(!state.stores.read().unwrap().is_locked(&store_id));
+    assert!(!is_locked(&state, &store_id));
 }
 
 #[test]
@@ -214,7 +223,7 @@ fn unlock_rejects_wrong_hex_and_keeps_store_locked() {
     ));
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(resp_body["code"], "key_mismatch");
-    assert!(state.stores.read().unwrap().is_locked(&store_id));
+    assert!(is_locked(&state, &store_id));
 }
 
 #[test]
@@ -293,7 +302,7 @@ fn lock_transitions_unlocked_encrypted_store() {
     let p = admin_principal();
     let body = create_store(state.clone(), &p, AdminStoreBackendKind::Encrypted, "vault");
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
-    assert!(!state.stores.read().unwrap().is_locked(&store_id));
+    assert!(!is_locked(&state, &store_id));
     let (status, body) = run_handler(handle_admin_store_lock(
         State(state.clone()),
         Extension(p.clone()),
@@ -301,7 +310,7 @@ fn lock_transitions_unlocked_encrypted_store() {
     ));
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["was_locked"], false);
-    assert!(state.stores.read().unwrap().is_locked(&store_id));
+    assert!(is_locked(&state, &store_id));
     // Second call is a no-op success.
     let (status, body) = run_handler(handle_admin_store_lock(
         State(state.clone()),

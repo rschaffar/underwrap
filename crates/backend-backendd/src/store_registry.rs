@@ -2,7 +2,7 @@
 //!
 //! The on-disk registry at `BackendConfig::stores_dir` holds one
 //! `<id>.json` file per store this backend instance owns. At startup
-//! every file is loaded and each entry is turned into a [`StoreState`]
+//! every file is loaded and each entry is turned into a [`StoreEntry`]
 //! — plain stores boot `Unlocked`, encrypted stores boot `Locked`
 //! until an operator submits the master key. The live `StoreRegistry`
 //! is shared (under an `RwLock`) with every admin / runtime handler so
@@ -21,13 +21,6 @@ use tracing::info;
 use underwrap_protocol::config::StoreRecord;
 use underwrap_store::StorageBackend;
 
-/// One store as loaded from the backend-managed store registry and
-/// opened locally.
-#[derive(Debug, Clone)]
-pub struct LoadedStoreRecord {
-    pub record: StoreRecord,
-}
-
 /// Live lock-state of one store. Plain stores are constructed as
 /// [`StoreState::Unlocked`] at startup and stay there for the
 /// lifetime of the process. Encrypted stores boot as
@@ -40,14 +33,31 @@ pub enum StoreState {
 }
 
 impl StoreState {
-    pub fn is_locked(&self) -> bool {
-        matches!(self, StoreState::Locked)
-    }
-
     pub fn backend(&self) -> Option<&Arc<dyn StorageBackend>> {
         match self {
             StoreState::Unlocked(b) => Some(b),
             StoreState::Locked => None,
+        }
+    }
+}
+
+/// One store as held by the live registry: persisted record, current
+/// lock state, and the rotation lock guarding key rotation against
+/// concurrent runtime writes. The rotation lock lives on the entry
+/// so it dies with the store on delete instead of leaking into an
+/// unbounded map on `AdminRuntimeState`.
+pub struct StoreEntry {
+    pub record: StoreRecord,
+    pub state: StoreState,
+    pub rotation_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl StoreEntry {
+    pub fn new(record: StoreRecord, state: StoreState) -> Self {
+        Self {
+            record,
+            state,
+            rotation_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 }
@@ -60,24 +70,28 @@ pub enum RegistryLookupError {
     Locked,
 }
 
-/// Open backends + provenance metadata for every store visible to the
-/// admin API. Wrapped in an `RwLock` inside [`crate::runtime_state::AdminRuntimeState`]
-/// so the CRUD handlers can mutate it without rebooting the daemon.
-/// Readers consult [`StoreRegistry::unlocked_backend`] to fetch the
-/// live `Arc<dyn StorageBackend>` for a store and surface
+/// Open backends + provenance metadata + rotation locks for every
+/// store visible to the admin API. Wrapped in an `RwLock` inside
+/// [`crate::runtime_state::AdminRuntimeState`] so the CRUD handlers
+/// can mutate it without rebooting the daemon. Readers consult
+/// [`StoreRegistry::unlocked_backend`] to fetch the live
+/// `Arc<dyn StorageBackend>` for a store and surface
 /// [`RegistryLookupError::Locked`] when the store hasn't been
 /// unlocked yet.
+#[derive(Default)]
 pub struct StoreRegistry {
-    pub state: HashMap<String, StoreState>,
-    pub records: HashMap<String, LoadedStoreRecord>,
+    pub entries: HashMap<String, StoreEntry>,
 }
 
 impl StoreRegistry {
-    pub fn new() -> Self {
-        Self {
-            state: HashMap::new(),
-            records: HashMap::new(),
-        }
+    /// Borrow the live entry for `store_id`, or surface
+    /// [`RegistryLookupError::NotFound`] when no such store is
+    /// registered. Callers needing to distinguish Locked vs Unlocked
+    /// match on the returned entry's `state` field.
+    pub fn entry(&self, store_id: &str) -> std::result::Result<&StoreEntry, RegistryLookupError> {
+        self.entries
+            .get(store_id)
+            .ok_or(RegistryLookupError::NotFound)
     }
 
     /// Return the live backend for `store_id` if it is unlocked, or a
@@ -87,38 +101,25 @@ impl StoreRegistry {
         &self,
         store_id: &str,
     ) -> std::result::Result<Arc<dyn StorageBackend>, RegistryLookupError> {
-        match self.state.get(store_id) {
-            Some(StoreState::Unlocked(b)) => Ok(Arc::clone(b)),
-            Some(StoreState::Locked) => Err(RegistryLookupError::Locked),
-            None => Err(RegistryLookupError::NotFound),
+        match &self.entry(store_id)?.state {
+            StoreState::Unlocked(b) => Ok(Arc::clone(b)),
+            StoreState::Locked => Err(RegistryLookupError::Locked),
         }
     }
 
-    /// `true` when the store exists in the registry and is currently
-    /// in the locked state. `false` for plain stores, for unlocked
-    /// encrypted stores, and for unknown ids.
-    pub fn is_locked(&self, store_id: &str) -> bool {
-        matches!(self.state.get(store_id), Some(StoreState::Locked))
-    }
-
     /// Install an unlocked backend for `store_id`. Used after a
-    /// successful unlock or by store creation. Returns the previous
-    /// state so the caller can decide what to do (e.g. error out on
-    /// `Unlocked` to avoid a race on already-unlocked stores).
-    pub fn unlock(
-        &mut self,
-        store_id: &str,
-        backend: Arc<dyn StorageBackend>,
-    ) -> Option<StoreState> {
-        self.state
-            .insert(store_id.to_string(), StoreState::Unlocked(backend))
+    /// successful unlock. The entry must already exist.
+    pub fn unlock(&mut self, store_id: &str, backend: Arc<dyn StorageBackend>) {
+        if let Some(entry) = self.entries.get_mut(store_id) {
+            entry.state = StoreState::Unlocked(backend);
+        }
     }
 
     /// Transition `store_id` to the locked state, dropping any held
     /// backend. Returns `true` when the store existed in the registry.
     pub fn lock(&mut self, store_id: &str) -> bool {
-        if self.state.contains_key(store_id) {
-            self.state.insert(store_id.to_string(), StoreState::Locked);
+        if let Some(entry) = self.entries.get_mut(store_id) {
+            entry.state = StoreState::Locked;
             true
         } else {
             false
@@ -131,35 +132,31 @@ impl StoreRegistry {
     /// store is unlocked because they just created it.
     #[cfg(test)]
     pub fn expect_unlocked(&self, store_id: &str) -> Arc<dyn StorageBackend> {
-        match self.state.get(store_id) {
-            Some(StoreState::Unlocked(b)) => Arc::clone(b),
-            Some(StoreState::Locked) => panic!("expected '{store_id}' to be unlocked"),
+        match self.entries.get(store_id) {
+            Some(entry) => match &entry.state {
+                StoreState::Unlocked(b) => Arc::clone(b),
+                StoreState::Locked => panic!("expected '{store_id}' to be unlocked"),
+            },
             None => panic!("expected '{store_id}' in registry"),
         }
     }
 }
 
-impl Default for StoreRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Build the initial [`StoreState`] map for the on-disk store
+/// Build the initial [`StoreEntry`] map for the on-disk store
 /// registry. Plain stores are opened immediately and inserted as
 /// [`StoreState::Unlocked`]. Encrypted stores are inserted as
 /// [`StoreState::Locked`] — the backend does not hold their master
 /// key, so they stay locked until an operator submits the key via
 /// `POST /v1/admin/stores/{id}/unlock`.
 pub(crate) fn open_initial_stores(
-    definitions: &HashMap<String, LoadedStoreRecord>,
-) -> Result<HashMap<String, StoreState>> {
-    let mut stores = HashMap::new();
-    for (id, def) in definitions {
-        let state = match &def.record.storage {
+    definitions: HashMap<String, StoreRecord>,
+) -> Result<HashMap<String, StoreEntry>> {
+    let mut entries = HashMap::new();
+    for (id, record) in definitions {
+        let state = match &record.storage {
             underwrap_protocol::config::StorageConfig::Plain { .. } => {
                 let backend: Arc<dyn StorageBackend> =
-                    Arc::from(underwrap_store::open(&def.record.storage)?);
+                    Arc::from(underwrap_store::open(&record.storage)?);
                 StoreState::Unlocked(backend)
             }
             underwrap_protocol::config::StorageConfig::Encrypted { .. } => {
@@ -170,9 +167,9 @@ pub(crate) fn open_initial_stores(
                 StoreState::Locked
             }
         };
-        stores.insert(id.clone(), state);
+        entries.insert(id, StoreEntry::new(record, state));
     }
-    Ok(stores)
+    Ok(entries)
 }
 
 impl crate::storage::json_dir_store::DirRecord for StoreRecord {
@@ -204,12 +201,9 @@ impl crate::storage::json_dir_store::DirRecord for StoreRecord {
 
 /// Load every store record found under `dir`. A missing directory is
 /// treated as an empty registry so a fresh backend can still boot.
-pub fn load_store_records(dir: &Path) -> Result<HashMap<String, LoadedStoreRecord>> {
+pub fn load_store_records(dir: &Path) -> Result<HashMap<String, StoreRecord>> {
     let records: Vec<StoreRecord> = crate::storage::json_dir_store::load_dir(dir)?;
-    Ok(records
-        .into_iter()
-        .map(|r| (r.id.clone(), LoadedStoreRecord { record: r }))
-        .collect())
+    Ok(records.into_iter().map(|r| (r.id.clone(), r)).collect())
 }
 
 /// Persist one store record to `<dir>/<id>.json` via the usual
