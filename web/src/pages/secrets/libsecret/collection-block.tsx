@@ -26,7 +26,7 @@ export function CollectionBlock({
     >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm">
         <ChevronRight
-          className="h-4 w-4 transition-transform group-open:rotate-90"
+          className="h-4 w-4 transition-transform group-[[open]]:rotate-90"
           aria-hidden
         />
         <span className="font-mono text-(--color-fg)">{collection.label}</span>

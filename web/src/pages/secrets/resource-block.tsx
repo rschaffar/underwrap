@@ -64,7 +64,7 @@ export function ResourceBlock({
     >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm">
         <ChevronRight
-          className="h-4 w-4 transition-transform group-open:rotate-90"
+          className="h-4 w-4 transition-transform group-[[open]]:rotate-90"
           aria-hidden
         />
         <span
