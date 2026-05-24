@@ -110,10 +110,12 @@ fn admin_pair_with_new_resource_creates_both_atomically() {
         State(state.clone()),
         Extension(p.clone()),
         Path(store_id.clone()),
-        Body(underwrap_protocol::service::AdminPairWithNewResourceRequest {
-            wrapper: "gh".into(),
-            resource_name: "github/token".into(),
-        }),
+        Body(
+            underwrap_protocol::service::AdminPairWithNewResourceRequest {
+                wrapper: "gh".into(),
+                resource_name: "github/token".into(),
+            },
+        ),
     ));
     assert_eq!(status, StatusCode::OK);
     let resource_id = body["resource"]["id"].as_str().unwrap().to_string();
@@ -133,10 +135,12 @@ fn admin_pair_with_new_resource_rejects_duplicate_name() {
         State(state.clone()),
         Extension(p),
         Path(store_id),
-        Body(underwrap_protocol::service::AdminPairWithNewResourceRequest {
-            wrapper: "gh".into(),
-            resource_name: "github/token".into(),
-        }),
+        Body(
+            underwrap_protocol::service::AdminPairWithNewResourceRequest {
+                wrapper: "gh".into(),
+                resource_name: "github/token".into(),
+            },
+        ),
     ));
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "resource_already_exists");
@@ -152,10 +156,12 @@ fn admin_pair_with_new_resource_validates_inputs() {
         State(state.clone()),
         Extension(p.clone()),
         Path(store_id.clone()),
-        Body(underwrap_protocol::service::AdminPairWithNewResourceRequest {
-            wrapper: "  ".into(),
-            resource_name: "github/token".into(),
-        }),
+        Body(
+            underwrap_protocol::service::AdminPairWithNewResourceRequest {
+                wrapper: "  ".into(),
+                resource_name: "github/token".into(),
+            },
+        ),
     ));
     assert_eq!(status_w, StatusCode::BAD_REQUEST);
     assert_eq!(body_w["code"], "invalid_pair");
@@ -164,10 +170,12 @@ fn admin_pair_with_new_resource_validates_inputs() {
         State(state),
         Extension(p),
         Path(store_id),
-        Body(underwrap_protocol::service::AdminPairWithNewResourceRequest {
-            wrapper: "gh".into(),
-            resource_name: "  ".into(),
-        }),
+        Body(
+            underwrap_protocol::service::AdminPairWithNewResourceRequest {
+                wrapper: "gh".into(),
+                resource_name: "  ".into(),
+            },
+        ),
     ));
     assert_eq!(status_r, StatusCode::BAD_REQUEST);
     assert_eq!(body_r["code"], "invalid_resource_name");

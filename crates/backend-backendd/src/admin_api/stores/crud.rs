@@ -9,8 +9,7 @@ use underwrap_protocol::config::StoreRecord;
 use underwrap_protocol::service::{
     AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
     AdminStoreDeleteCleanupHint, AdminStoreDeleteResponse, AdminStoreListItem,
-    AdminStoreUpdateRequest, AdminStoreUsageSummary,
-    AdminStoresListResponse, ServiceErrorResponse,
+    AdminStoreUpdateRequest, AdminStoreUsageSummary, AdminStoresListResponse, ServiceErrorResponse,
 };
 use underwrap_store::StorageBackend;
 use utoipa_axum::router::OpenApiRouter;

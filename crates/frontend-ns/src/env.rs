@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use underwrap_protocol::exec::ExecBundle;
-use underwrap_protocol::target_env::{CONFIGURABLE_FORCED_TARGET_ENV_NAMES, is_forced_target_env_name};
+use underwrap_protocol::target_env::{
+    CONFIGURABLE_FORCED_TARGET_ENV_NAMES, is_forced_target_env_name,
+};
 
 pub(crate) const DEFAULT_PASSTHROUGH: &[&str] = &[
     "USER",

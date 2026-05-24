@@ -4,14 +4,12 @@
 //! calling client instance is opted in, or refuses with a structured
 //! list of what would have been created.
 
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
+use axum::Json;
 
 use underwrap_protocol::policy::PolicyDocument;
 use underwrap_store::StorageBackend;
 
-use crate::runtime_api::responses::{error_response, json_response};
+use crate::runtime_api::error::{IntoInternal, RuntimeError};
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
@@ -34,25 +32,23 @@ pub(crate) fn handle_runtime_wrapper_register(
     store: &dyn StorageBackend,
     principal: &str,
     body: &underwrap_protocol::service::RuntimeWrapperRegisterRequest,
-) -> Response<Full<Bytes>> {
+) -> Result<Json<underwrap_protocol::service::RuntimeWrapperRegisterResponse>, RuntimeError> {
     use underwrap_protocol::entities::{EntityCreator, ResourceRecord, WrapperResourcePairRecord};
     use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
     use underwrap_protocol::service::{RuntimeWrapperRegisterPair, RuntimeWrapperRegisterResponse};
 
     for pair in &body.wrappers {
         if pair.wrapper_name.trim().is_empty() {
-            return error_response(
-                StatusCode::BAD_REQUEST,
+            return Err(RuntimeError::bad_request(
                 "invalid_wrapper_name",
                 "wrapper_name must be non-empty",
-            );
+            ));
         }
         if pair.resource_name.trim().is_empty() {
-            return error_response(
-                StatusCode::BAD_REQUEST,
+            return Err(RuntimeError::bad_request(
                 "invalid_resource_name",
                 "resource_name must be non-empty",
-            );
+            ));
         }
     }
 
@@ -65,26 +61,9 @@ pub(crate) fn handle_runtime_wrapper_register(
         .unwrap_or(false);
     let now = crate::users::now_epoch_secs();
 
-    let mut resources = match load_resources_document(store) {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading resources document: {e:#}"),
-            );
-        }
-    };
-    let mut pairs = match load_pairs_document(store) {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading pairs document: {e:#}"),
-            );
-        }
-    };
+    let mut resources =
+        load_resources_document(store).into_internal("loading resources document")?;
+    let mut pairs = load_pairs_document(store).into_internal("loading pairs document")?;
 
     // Build the (incoming resource name) → (resolved resource id) map.
     let mut resolved_resource_ids: std::collections::HashMap<String, String> =
@@ -151,42 +130,21 @@ pub(crate) fn handle_runtime_wrapper_register(
         // No-op fast path. Still may need to seed Locked permissions
         // for a new `client_instance` re-using pairs another instance
         // already created.
-        let mut policy = match load_policy_document(store) {
-            Ok(p) => p,
-            Err(e) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &format!("loading policy: {e:#}"),
-                );
-            }
-        };
-        if seed_locked_permissions(&mut policy, &resolved_resource_ids)
-            && let Err(e) = save_policy_document(store, &policy)
-        {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("saving policy: {e:#}"),
-            );
+        let mut policy = load_policy_document(store).into_internal("loading policy document")?;
+        if seed_locked_permissions(&mut policy, &resolved_resource_ids) {
+            save_policy_document(store, &policy).into_internal("saving policy document")?;
         }
-        return json_response(
-            StatusCode::OK,
-            &RuntimeWrapperRegisterResponse::Ok {
-                auto_created_resources: Vec::new(),
-                auto_created_pairs: Vec::new(),
-            },
-        );
+        return Ok(Json(RuntimeWrapperRegisterResponse::Ok {
+            auto_created_resources: Vec::new(),
+            auto_created_pairs: Vec::new(),
+        }));
     }
 
     if !auto_create_enabled {
-        return json_response(
-            StatusCode::OK,
-            &RuntimeWrapperRegisterResponse::AutoCreateDisabled {
-                missing_resources: missing_resources_set.into_iter().collect(),
-                missing_pairs,
-            },
-        );
+        return Ok(Json(RuntimeWrapperRegisterResponse::AutoCreateDisabled {
+            missing_resources: missing_resources_set.into_iter().collect(),
+            missing_pairs,
+        }));
     }
 
     let creator = EntityCreator::ClientInstance {
@@ -225,51 +183,23 @@ pub(crate) fn handle_runtime_wrapper_register(
         auto_created_pairs.push(pair.clone());
     }
 
-    let mut policy = match load_policy_document(store) {
-        Ok(p) => p,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading policy: {e:#}"),
-            );
-        }
-    };
+    let mut policy = load_policy_document(store).into_internal("loading policy document")?;
     let policy_dirty = seed_locked_permissions(&mut policy, &resolved_resource_ids);
 
-    if !auto_created_resources.is_empty()
-        && let Err(e) = save_resources_document(store, &resources)
-    {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("saving resources: {e:#}"),
-        );
+    if !auto_created_resources.is_empty() {
+        save_resources_document(store, &resources).into_internal("saving resources document")?;
     }
-    if !auto_created_pairs.is_empty()
-        && let Err(e) = save_pairs_document(store, &pairs)
-    {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("saving pairs: {e:#}"),
-        );
+    if !auto_created_pairs.is_empty() {
+        save_pairs_document(store, &pairs).into_internal("saving pairs document")?;
     }
-    if policy_dirty && let Err(e) = save_policy_document(store, &policy) {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &format!("saving policy: {e:#}"),
-        );
+    if policy_dirty {
+        save_policy_document(store, &policy).into_internal("saving policy document")?;
     }
 
-    json_response(
-        StatusCode::OK,
-        &RuntimeWrapperRegisterResponse::Ok {
-            auto_created_resources,
-            auto_created_pairs,
-        },
-    )
+    Ok(Json(RuntimeWrapperRegisterResponse::Ok {
+        auto_created_resources,
+        auto_created_pairs,
+    }))
 }
 
 /// Generate a stable resource id (`res_<10 hex bytes>`). Mirrors

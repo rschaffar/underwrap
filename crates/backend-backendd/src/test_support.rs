@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use bytes::Bytes;
 use hyper::StatusCode;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::policy::PolicyDocument;
@@ -308,9 +307,8 @@ pub(crate) fn fresh_bootstrap_state() -> AdminRuntimeState {
 }
 
 /// Run a future to completion from a synchronous test, using the
-/// current tokio runtime if any (e.g. `#[tokio::test]`) or spinning up
-/// a tiny one-shot runtime otherwise. Mirrors the pattern used by
-/// [`CollectBytesSync`] below.
+/// current tokio runtime if any (e.g. `#[tokio::test]`) or spinning
+/// up a tiny one-shot runtime otherwise.
 pub(crate) fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         tokio::task::block_in_place(|| handle.block_on(fut))
@@ -461,16 +459,18 @@ pub(crate) fn create_store_for_test(
     value["store"]["id"].as_str().unwrap().to_string()
 }
 
-/// Sync helper used by `runtime_api/*` tests that still return raw
-/// `Response<Full<Bytes>>`. Drains the body and decodes it as JSON,
-/// smuggling the HTTP status under `__status` so the test can assert
-/// both shape and code in one place. Admin-side tests use
+/// Sync helper used by `runtime_api/*` tests. Accepts anything
+/// `IntoResponse` (the handlers return `Result<Json<T>,
+/// RuntimeError>` since ticket 1100), turns it into an
+/// `axum::response::Response`, drains the body, and decodes it as
+/// JSON. The HTTP status is smuggled under `__status` so a single
+/// `assert_eq!` can check both shape and code. Admin-side tests use
 /// [`run_handler`] instead.
-pub(crate) fn response_body_json(
-    resp: hyper::Response<http_body_util::Full<Bytes>>,
-) -> serde_json::Value {
+pub(crate) fn response_body_json(resp: impl axum::response::IntoResponse) -> serde_json::Value {
+    use http_body_util::BodyExt;
+    let resp = resp.into_response();
     let (parts, body) = resp.into_parts();
-    let bytes = body.collect_bytes_simple();
+    let bytes = block_on(async { body.collect().await.unwrap().to_bytes().to_vec() });
     let v: serde_json::Value = serde_json::from_slice(&bytes).expect("response body is JSON");
     let mut obj = v.as_object().cloned().unwrap_or_default();
     obj.insert(
@@ -478,29 +478,6 @@ pub(crate) fn response_body_json(
         serde_json::Value::Number(parts.status.as_u16().into()),
     );
     serde_json::Value::Object(obj)
-}
-
-/// Local trait extension so we can grab the body bytes synchronously.
-pub(crate) trait CollectBytesSync {
-    fn collect_bytes_simple(self) -> Vec<u8>;
-}
-impl CollectBytesSync for http_body_util::Full<Bytes> {
-    fn collect_bytes_simple(self) -> Vec<u8> {
-        use http_body_util::BodyExt;
-        // If we're already on a tokio runtime (e.g. inside a
-        // `#[tokio::test(flavor = "multi_thread")]` test) we cannot
-        // construct a nested Runtime — use `block_in_place` to
-        // escape the worker. Otherwise spin up a small runtime
-        // just for this drain.
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            tokio::task::block_in_place(|| {
-                handle.block_on(async { self.collect().await.unwrap().to_bytes().to_vec() })
-            })
-        } else {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async { self.collect().await.unwrap().to_bytes().to_vec() })
-        }
-    }
 }
 
 pub(crate) fn entity_test_state_with_store(

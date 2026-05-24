@@ -1,5 +1,7 @@
 use super::*;
-use underwrap_protocol::target_env::{FORCED_TARGET_ENV_NAMES, CONFIGURABLE_FORCED_TARGET_ENV_NAMES};
+use underwrap_protocol::target_env::{
+    CONFIGURABLE_FORCED_TARGET_ENV_NAMES, FORCED_TARGET_ENV_NAMES,
+};
 
 #[test]
 fn config_name_uses_executable_basename() {

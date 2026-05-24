@@ -6,15 +6,13 @@
 //! form) and bumps `last_used_at`.
 
 use anyhow::Result;
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Response, StatusCode};
+use axum::Json;
 use tracing::warn;
 
 use underwrap_protocol::policy::{PolicyDocument, WrapperPermission};
 use underwrap_store::{StorageBackend, load_resource_blob, save_resource_blob};
 
-use crate::runtime_api::responses::{error_response, json_response};
+use crate::runtime_api::error::{IntoInternal, RuntimeError};
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
 };
@@ -82,51 +80,41 @@ pub(crate) fn resolve_invocation<'a>(
     }
 }
 
-/// Drive `resolve_invocation` to either an Allow tuple
-/// `(resource_id, writable)` or a structured Deny response built via
-/// `into_deny`. Folds the four-arm `InvocationLookup` match and the
-/// policy-load / lookup 500 paths into a single call site so the open
-/// and finalize handlers share one prelude.
-#[allow(clippy::result_large_err)]
-pub(crate) fn resolve_invocation_or_deny<F>(
+/// Either an Allow tuple `(resource_id, writable)` or a structured
+/// Deny reason. Handlers translate the Deny arm into their endpoint's
+/// `Deny` response variant.
+pub(crate) enum InvocationResolution {
+    Allow { resource_id: String, writable: bool },
+    Deny(String),
+}
+
+/// Run [`resolve_invocation`] and collapse the four-arm enum into the
+/// two-arm [`InvocationResolution`]. Any storage error becomes a
+/// `RuntimeError::internal`; structural denies (unregistered pair, no
+/// permission, denied permission) become `Deny(reason)`.
+pub(crate) fn resolve_invocation_or_deny(
     store: &dyn StorageBackend,
     principal: &str,
     wrapper_name: &str,
     resource_name: &str,
-    into_deny: F,
-) -> std::result::Result<(String, bool), Response<Full<Bytes>>>
-where
-    F: Fn(String) -> Response<Full<Bytes>>,
-{
-    let policy = match load_policy_document(store) {
-        Ok(p) => p,
-        Err(e) => {
-            return Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading policy: {e:#}"),
-            ));
+) -> Result<InvocationResolution, RuntimeError> {
+    let policy = load_policy_document(store).into_internal("loading policy document")?;
+    let lookup = resolve_invocation(store, principal, wrapper_name, resource_name, &policy)
+        .into_internal("policy lookup failed")?;
+    Ok(match lookup {
+        InvocationLookup::UnregisteredPair => {
+            InvocationResolution::Deny("unregistered-pair".into())
         }
-    };
-    let lookup = match resolve_invocation(store, principal, wrapper_name, resource_name, &policy) {
-        Ok(l) => l,
-        Err(e) => {
-            return Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("policy lookup failed: {e:#}"),
-            ));
-        }
-    };
-    match lookup {
-        InvocationLookup::UnregisteredPair => Err(into_deny("unregistered-pair".to_string())),
-        InvocationLookup::NoPermission => Err(into_deny("no-permission".to_string())),
-        InvocationLookup::Denied(reason) => Err(into_deny(reason)),
+        InvocationLookup::NoPermission => InvocationResolution::Deny("no-permission".into()),
+        InvocationLookup::Denied(reason) => InvocationResolution::Deny(reason),
         InvocationLookup::Allowed {
             resource_id,
             permission,
-        } => Ok((resource_id, permission.writable)),
-    }
+        } => InvocationResolution::Allow {
+            resource_id,
+            writable: permission.writable,
+        },
+    })
 }
 
 /// Set `last_used_at` on the `(wrapper, resource_id)` pair to the
@@ -163,52 +151,34 @@ pub(crate) fn handle_runtime_wrapper_invocation_open(
     store: &dyn StorageBackend,
     principal: &str,
     body: &underwrap_protocol::service::RuntimeWrapperInvocationOpenRequest,
-) -> Response<Full<Bytes>> {
+) -> Result<Json<underwrap_protocol::service::RuntimeWrapperInvocationOpenResponse>, RuntimeError> {
     use base64::Engine;
     use underwrap_protocol::service::RuntimeWrapperInvocationOpenResponse;
 
     if body.wrapper_name.trim().is_empty() || body.resource_name.trim().is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(RuntimeError::bad_request(
             "invalid_request",
             "wrapper_name and resource_name must be non-empty",
-        );
+        ));
     }
     let (resource_id, writable) = match resolve_invocation_or_deny(
         store,
         principal,
         &body.wrapper_name,
         &body.resource_name,
-        |reason| {
-            json_response(
-                StatusCode::OK,
-                &RuntimeWrapperInvocationOpenResponse::Deny { reason },
-            )
-        },
-    ) {
-        Ok(t) => t,
-        Err(response) => return response,
-    };
-    let blob = match load_resource_blob(store, &resource_id) {
-        Ok(b) => b,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("loading resource blob: {e:#}"),
-            );
+    )? {
+        InvocationResolution::Allow {
+            resource_id,
+            writable,
+        } => (resource_id, writable),
+        InvocationResolution::Deny(reason) => {
+            return Ok(Json(RuntimeWrapperInvocationOpenResponse::Deny { reason }));
         }
     };
-    let bytes = match blob.to_canonical_bytes() {
-        Ok(b) => b,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("serializing resource blob: {e:#}"),
-            );
-        }
-    };
+    let blob = load_resource_blob(store, &resource_id).into_internal("loading resource blob")?;
+    let bytes = blob
+        .to_canonical_bytes()
+        .into_internal("serializing resource blob")?;
     if let Err(e) = bump_pair_last_used(store, &body.wrapper_name, &resource_id) {
         warn!(
             audit = "pair_last_used_bump_failed",
@@ -218,14 +188,11 @@ pub(crate) fn handle_runtime_wrapper_invocation_open(
             err = %e,
         );
     }
-    json_response(
-        StatusCode::OK,
-        &RuntimeWrapperInvocationOpenResponse::Allow {
-            resource_id,
-            blob_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-            writable,
-        },
-    )
+    Ok(Json(RuntimeWrapperInvocationOpenResponse::Allow {
+        resource_id,
+        blob_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        writable,
+    }))
 }
 
 /// Handle `POST /v1/wrapper-invocations/finalize` — close an invocation.
@@ -239,53 +206,47 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
     store: &dyn StorageBackend,
     principal: &str,
     body: &underwrap_protocol::service::RuntimeWrapperInvocationFinalizeRequest,
-) -> Response<Full<Bytes>> {
+) -> Result<Json<underwrap_protocol::service::RuntimeWrapperInvocationFinalizeResponse>, RuntimeError>
+{
     use base64::Engine;
     use underwrap_protocol::resource_blob::ResourceBlob;
     use underwrap_protocol::service::RuntimeWrapperInvocationFinalizeResponse;
 
     if body.wrapper_name.trim().is_empty() || body.resource_name.trim().is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
+        return Err(RuntimeError::bad_request(
             "invalid_request",
             "wrapper_name and resource_name must be non-empty",
-        );
+        ));
     }
     let (resource_id, writable) = match resolve_invocation_or_deny(
         store,
         principal,
         &body.wrapper_name,
         &body.resource_name,
-        |reason| {
-            json_response(
-                StatusCode::OK,
-                &RuntimeWrapperInvocationFinalizeResponse::Deny { reason },
-            )
-        },
-    ) {
-        Ok(t) => t,
-        Err(response) => return response,
+    )? {
+        InvocationResolution::Allow {
+            resource_id,
+            writable,
+        } => (resource_id, writable),
+        InvocationResolution::Deny(reason) => {
+            return Ok(Json(RuntimeWrapperInvocationFinalizeResponse::Deny {
+                reason,
+            }));
+        }
     };
 
     if let Some(blob_b64) = &body.blob_b64 {
         if !writable {
-            return json_response(
-                StatusCode::OK,
-                &RuntimeWrapperInvocationFinalizeResponse::Deny {
-                    reason: "not-writable".to_string(),
-                },
-            );
+            return Ok(Json(RuntimeWrapperInvocationFinalizeResponse::Deny {
+                reason: "not-writable".to_string(),
+            }));
         }
-        let bytes = match base64::engine::general_purpose::STANDARD.decode(blob_b64) {
-            Ok(b) => b,
-            Err(_) => {
-                return json_response(
-                    StatusCode::OK,
-                    &RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
-                        reason: "decode-failed".to_string(),
-                    },
-                );
-            }
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(blob_b64) else {
+            return Ok(Json(
+                RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+                    reason: "decode-failed".to_string(),
+                },
+            ));
         };
         let new_blob = match ResourceBlob::from_canonical_bytes(&bytes) {
             Ok(b) => b,
@@ -301,57 +262,33 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
                 } else {
                     "decode-failed"
                 };
-                return json_response(
-                    StatusCode::OK,
-                    &RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+                return Ok(Json(
+                    RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
                         reason: reason.to_string(),
                     },
-                );
+                ));
             }
         };
-        let canonical = match new_blob.to_canonical_bytes() {
-            Ok(b) => b,
-            Err(e) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &format!("re-serializing blob: {e:#}"),
-                );
-            }
-        };
+        let canonical = new_blob
+            .to_canonical_bytes()
+            .into_internal("re-serializing blob")?;
         if canonical != bytes {
-            return json_response(
-                StatusCode::OK,
-                &RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+            return Ok(Json(
+                RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
                     reason: "noncanonical-blob".to_string(),
                 },
-            );
+            ));
         }
-        let current = match load_resource_blob(store, &resource_id) {
-            Ok(b) => b,
-            Err(e) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &format!("loading current blob: {e:#}"),
-                );
-            }
-        };
+        let current =
+            load_resource_blob(store, &resource_id).into_internal("loading current blob")?;
         if new_blob.env != current.env {
-            return json_response(
-                StatusCode::OK,
-                &RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+            return Ok(Json(
+                RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
                     reason: "env-section-immutable".to_string(),
                 },
-            );
+            ));
         }
-        if let Err(e) = save_resource_blob(store, &resource_id, &new_blob) {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("saving resource blob: {e:#}"),
-            );
-        }
+        save_resource_blob(store, &resource_id, &new_blob).into_internal("saving resource blob")?;
     }
 
     if let Err(e) = bump_pair_last_used(store, &body.wrapper_name, &resource_id) {
@@ -363,10 +300,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
             err = %e,
         );
     }
-    json_response(
-        StatusCode::OK,
-        &RuntimeWrapperInvocationFinalizeResponse::Ok,
-    )
+    Ok(Json(RuntimeWrapperInvocationFinalizeResponse::Ok))
 }
 
 #[cfg(test)]

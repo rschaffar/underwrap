@@ -2,7 +2,9 @@ use super::*;
 use std::collections::HashMap;
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::exec::ExecResourceBinding;
-use underwrap_protocol::target_env::{FORCED_TARGET_ENV_NAMES, CONFIGURABLE_FORCED_TARGET_ENV_NAMES};
+use underwrap_protocol::target_env::{
+    CONFIGURABLE_FORCED_TARGET_ENV_NAMES, FORCED_TARGET_ENV_NAMES,
+};
 
 fn sample_binding() -> ExecResourceBinding {
     ExecResourceBinding {

@@ -21,7 +21,9 @@ use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::exec::{ExecBundle, ExecResourceBinding};
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
-use underwrap_protocol::target_env::{CONFIGURABLE_FORCED_TARGET_ENV_NAMES, is_forced_target_env_name};
+use underwrap_protocol::target_env::{
+    CONFIGURABLE_FORCED_TARGET_ENV_NAMES, is_forced_target_env_name,
+};
 
 /// Fixed config directory used when running with elevated privileges.
 const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
