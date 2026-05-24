@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { SecretsPage } from "./secrets/page";
@@ -32,6 +32,17 @@ function renderWithQuery(ui: React.ReactNode) {
     defaultOptions: { queries: { retry: false } },
   });
   return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+}
+
+/**
+ * Resource blocks gate their libsecret query on the `<details>` open
+ * state to keep the secrets page from firing N libsecret fetches on
+ * mount. Tests that want to assert libsecret content explicitly
+ * expand the block first.
+ */
+function expandResourceBlock(block: HTMLElement) {
+  block.setAttribute("open", "");
+  fireEvent(block, new Event("toggle", { bubbles: false }));
 }
 
 describe("SecretsPage", () => {
@@ -138,7 +149,10 @@ describe("SecretsPage", () => {
     expect(within(ghToken).getByTestId("slot-files")).toHaveTextContent(/none/i);
 
     // Resources that only have libsecret content now render the
-    // libsecret tree directly under the resource block.
+    // libsecret tree directly under the resource block — but only
+    // after the operator expands it (lazy fetch).
+    const ghGh = await screen.findByTestId("resource-block-github/gh");
+    expandResourceBlock(ghGh);
     const ghGhItem = await screen.findByTestId(
       "libsecret-item-default-credential",
     );
@@ -166,8 +180,9 @@ describe("SecretsPage", () => {
 
     const block = await screen.findByTestId("resource-block-res_gh");
     expect(block).toBeInTheDocument();
-    // The libsecret tree component renders inside the block once the
-    // empty-tree query resolves.
+    // Libsecret content is fetched lazily on expand to avoid one
+    // round-trip per resource on page mount.
+    expandResourceBlock(block);
     const tree = await within(block).findByTestId("libsecret-tree");
     expect(tree).toHaveTextContent(/none/i);
     expect(

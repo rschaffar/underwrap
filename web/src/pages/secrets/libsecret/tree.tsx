@@ -21,13 +21,22 @@ import { libsecretTreeKey } from "./internal";
 export function LibsecretTree({
   storeId,
   resourceId,
+  enabled = true,
 }: {
   storeId: string;
   resourceId: string;
+  /**
+   * Gate the libsecret round-trip on a parent's expand state. The
+   * tree mounts inside a `<details>` per resource block; expanding
+   * one resource shouldn't pull the libsecret payload for the
+   * other N-1.
+   */
+  enabled?: boolean;
 }) {
   const tree = useQuery<AdminLibsecretTreeResponse>({
     queryKey: libsecretTreeKey(storeId, resourceId),
     queryFn: () => fetchLibsecretTree(storeId, resourceId),
+    enabled,
   });
 
   const [creatingCollection, setCreatingCollection] = useState(false);

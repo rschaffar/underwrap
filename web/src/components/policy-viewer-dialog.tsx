@@ -1,17 +1,15 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Copy, Check } from "lucide-react";
 
 import { AdminDialog } from "@/components/admin-dialog";
-import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
-import { fetchWrapperPermissions } from "@/api/client";
-import { describeApiError } from "@/lib/error-message";
+import type { WrapperPermission } from "@/api/client";
 
 interface PolicyViewerDialogProps {
   storeId: string;
   open: boolean;
+  permissions: WrapperPermission[];
   onClose: () => void;
 }
 
@@ -22,41 +20,30 @@ interface PolicyViewerDialogProps {
  * underlying document shape; this dialog renders the raw JSON the
  * backend stores, plus a quick count of writable permissions.
  *
- * Editing intentionally stays in the Wrapper permissions view.
+ * Permissions arrive as a prop from the parent's wrapper-permissions
+ * view query, so opening the dialog doesn't fire a second
+ * round-trip for the same data.
  */
 export function PolicyViewerDialog({
   storeId,
   open,
+  permissions,
   onClose,
 }: PolicyViewerDialogProps) {
-  const policy = useQuery({
-    queryKey: ["admin", "wrapper-permissions", storeId],
-    queryFn: () => fetchWrapperPermissions(storeId),
-    enabled: open,
-  });
-
   // Render a `PolicyDocument`-shaped blob even though the wire format
   // is just a permissions array; operators paste this into docs and
   // tickets, so the on-screen shape stays stable across the
   // policy/get → wrapper-permissions/list switch.
-  const formatted = useMemo(() => {
-    if (!policy.data) return "";
-    return JSON.stringify(
-      { permissions: policy.data.permissions },
-      null,
-      2,
-    );
-  }, [policy.data]);
+  const formatted = useMemo(
+    () => JSON.stringify({ permissions }, null, 2),
+    [permissions],
+  );
 
   const [copied, setCopied] = useState(false);
   async function onCopy() {
-    if (!formatted) return;
     try {
       await navigator.clipboard.writeText(formatted);
       setCopied(true);
-      // Reset the icon after a short delay so the button stays useful
-      // for a follow-up paste without the user having to close the
-      // dialog.
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
       // Older browsers / non-secure contexts: leave the badge as-is.
@@ -65,7 +52,6 @@ export function PolicyViewerDialog({
     }
   }
 
-  const permissions = policy.data?.permissions ?? [];
   const writablePermissionCount = permissions.filter((p) => p.writable).length;
 
   return (
@@ -81,53 +67,40 @@ export function PolicyViewerDialog({
         </>
       }
     >
-      {policy.isLoading ? (
-          <p className="text-sm text-(--color-muted)">Loading policy…</p>
-        ) : policy.error ? (
-          <Alert>{describeApiError(policy.error)}</Alert>
-        ) : (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3 text-xs">
-              <span className="text-(--color-muted)">
-                Writable permissions:
-              </span>
-              <span
-                data-testid="writable-permissions-badge"
-                className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-(--color-fg)"
-              >
-                {writablePermissionCount} of {permissions.length}
-              </span>
-            </div>
-            <pre
-              data-testid="policy-json"
-              className="max-h-[60vh] overflow-auto rounded-md border border-(--color-line) bg-(--color-surface-0) p-3 text-xs leading-relaxed text-(--color-fg)"
-            >
-              {formatted}
-            </pre>
-          </div>
-        )}
-
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={onCopy}
-            disabled={!formatted}
+      <div className="space-y-3">
+        <div className="flex items-center gap-3 text-xs">
+          <span className="text-(--color-muted)">Writable permissions:</span>
+          <span
+            data-testid="writable-permissions-badge"
+            className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-(--color-fg)"
           >
-            {copied ? (
-              <>
-                <Check className="mr-1.5 h-4 w-4" aria-hidden /> Copied
-              </>
-            ) : (
-              <>
-                <Copy className="mr-1.5 h-4 w-4" aria-hidden /> Copy JSON
-              </>
-            )}
-          </Button>
-          <Button type="button" onClick={onClose}>
-            Close
-          </Button>
-        </DialogFooter>
+            {writablePermissionCount} of {permissions.length}
+          </span>
+        </div>
+        <pre
+          data-testid="policy-json"
+          className="max-h-[60vh] overflow-auto rounded-md border border-(--color-line) bg-(--color-surface-0) p-3 text-xs leading-relaxed text-(--color-fg)"
+        >
+          {formatted}
+        </pre>
+      </div>
+
+      <DialogFooter>
+        <Button type="button" variant="ghost" onClick={onCopy}>
+          {copied ? (
+            <>
+              <Check className="mr-1.5 h-4 w-4" aria-hidden /> Copied
+            </>
+          ) : (
+            <>
+              <Copy className="mr-1.5 h-4 w-4" aria-hidden /> Copy JSON
+            </>
+          )}
+        </Button>
+        <Button type="button" onClick={onClose}>
+          Close
+        </Button>
+      </DialogFooter>
     </AdminDialog>
   );
 }

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { ChevronRight, Eye, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -57,9 +58,11 @@ export function ResourceBlock({
   // Display the operator-facing name when the catalog knows about
   // this resource; orphan groups fall back to the id.
   const displayLabel = provenance?.name ?? group.resource_id;
+  const [open, setOpen] = useState(false);
   return (
     <details
       data-testid={`resource-block-${group.resource_id}`}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
       className="group rounded-md border border-(--color-line) bg-(--color-surface-0)/40 open:bg-(--color-surface-0)/70"
     >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm">
@@ -144,6 +147,7 @@ export function ResourceBlock({
         <LibsecretTree
           storeId={storeId}
           resourceId={group.resource_id}
+          enabled={open}
         />
       </div>
     </details>

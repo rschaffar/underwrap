@@ -230,6 +230,7 @@ export function WrapperPermissionsPage() {
       <PolicyViewerDialog
         storeId={storeId}
         open={rawOpen}
+        permissions={view.data?.permissions ?? []}
         onClose={() => setRawOpen(false)}
       />
     </div>
