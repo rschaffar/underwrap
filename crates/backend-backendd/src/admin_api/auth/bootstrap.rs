@@ -148,7 +148,7 @@ pub(crate) async fn handle_admin_bootstrap(
         crate::admin_api::util::validate_password_or_bad_request(&body.password)?;
     }
 
-    let now = crate::users::now_epoch_secs();
+    let now = crate::time::now_epoch_secs();
     let password_hash = crate::auth::hash_password(&body.password).map_err(|e| {
         warn!(err = %e, "bootstrap: argon2 hash failed");
         AdminError::internal_with_code("internal", "could not hash password")
@@ -177,13 +177,7 @@ pub(crate) async fn handle_admin_bootstrap(
             "could not persist user",
         ));
     }
-    if let Err(e) = crate::users::mark_bootstrap_completed(
-        &state.admin().bootstrap_file,
-        &crate::users::BootstrapSentinel {
-            completed_at: now,
-            by_username: record.username.clone(),
-        },
-    ) {
+    if let Err(e) = crate::users::mark_bootstrap_completed(&state.admin().bootstrap_file) {
         warn!(err = %e, "bootstrap: writing sentinel failed");
         return Err(AdminError::internal_with_code(
             "internal",

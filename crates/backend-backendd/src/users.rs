@@ -17,7 +17,6 @@
 //! tracing-captured CRUD output never contains the hash material.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use rand::RngCore;
@@ -83,25 +82,17 @@ impl std::fmt::Debug for UserRecord {
     }
 }
 
-/// The in-memory user collection.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// The in-memory user collection. `Debug` is derived through
+/// [`UserRecord`]'s manual `Debug`, which redacts the password hash —
+/// no separate impl needed here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserCollection {
     pub users: Vec<UserRecord>,
 }
 
-impl std::fmt::Debug for UserCollection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `UserRecord`'s Debug impl already redacts the hash; we
-        // implement Debug here to keep the same redaction-by-default
-        // posture for the wrapper.
-        f.debug_struct("UserCollection")
-            .field("users", &self.users)
-            .finish()
-    }
-}
-
 impl UserCollection {
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.users.len()
     }
 
@@ -186,15 +177,6 @@ impl UserCollection {
     }
 }
 
-/// Persistent marker that the online bootstrap flow has completed.
-/// Stored on disk in a dedicated sentinel file; the mere presence of
-/// that file is the signal that bootstrap has run.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BootstrapSentinel {
-    pub completed_at: u64,
-    pub by_username: String,
-}
-
 /// Normalise a username: trimmed, lowercase. Usernames are compared
 /// case-insensitively because users routinely confuse `Alice` and
 /// `alice` between admin set-up and login.
@@ -208,15 +190,6 @@ pub fn new_user_id() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
-}
-
-/// Current epoch seconds, saturating to 0 on the very-unlikely
-/// pre-1970 clock case.
-pub fn now_epoch_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 impl crate::storage::json_dir_store::DirRecord for UserRecord {
@@ -282,26 +255,12 @@ pub fn bootstrap_completed(bootstrap_file: &Path) -> Result<bool> {
     }
 }
 
-/// Read the sentinel record, if present.
-pub fn load_bootstrap_sentinel(bootstrap_file: &Path) -> Result<Option<BootstrapSentinel>> {
-    let text = match std::fs::read_to_string(bootstrap_file) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(e).with_context(|| format!("reading {}", bootstrap_file.display()));
-        }
-    };
-    let sentinel: BootstrapSentinel = serde_json::from_str(&text)
-        .with_context(|| format!("parsing bootstrap sentinel {}", bootstrap_file.display()))?;
-    Ok(Some(sentinel))
-}
-
-/// Persist the bootstrap-completed sentinel to its dedicated file.
-/// Atomic via tempfile + rename so a crash partway through never
-/// leaves a half-written sentinel that would lock further bootstrap
-/// attempts behind unreadable JSON.
-pub fn mark_bootstrap_completed(bootstrap_file: &Path, sentinel: &BootstrapSentinel) -> Result<()> {
-    let json = serde_json::to_vec_pretty(sentinel).context("serialising bootstrap sentinel")?;
+/// Mark the bootstrap-completed sentinel as set. Only the file's
+/// presence carries information; the body is intentionally empty so
+/// there is no metadata to mis-parse on a later read. Atomic via
+/// tempfile + rename so a crash partway through never leaves an
+/// inconsistent half-state.
+pub fn mark_bootstrap_completed(bootstrap_file: &Path) -> Result<()> {
     let dir = bootstrap_file.parent().ok_or_else(|| {
         anyhow::anyhow!(
             "bootstrap sentinel path '{}' has no parent directory",
@@ -310,11 +269,8 @@ pub fn mark_bootstrap_completed(bootstrap_file: &Path, sentinel: &BootstrapSenti
     })?;
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating bootstrap sentinel parent dir {}", dir.display()))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+    let tmp = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("creating temp bootstrap sentinel under {}", dir.display()))?;
-    use std::io::Write;
-    tmp.write_all(&json)
-        .context("writing temp bootstrap sentinel")?;
     tmp.as_file()
         .sync_all()
         .context("fsync temp bootstrap sentinel")?;

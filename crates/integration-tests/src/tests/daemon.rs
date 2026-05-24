@@ -78,7 +78,7 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
         }),
         admin: Some(underwrap_backendd::AdminConfig {
             allowed_origins: Vec::new(),
-            session_lifetime_secs: underwrap_backendd::auth::DEFAULT_SESSION_LIFETIME_SECS,
+            session_lifetime_secs: underwrap_backendd::DEFAULT_SESSION_LIFETIME_SECS,
             stores_data_root: Some(base.join("stores-data-root")),
         }),
     })
@@ -236,7 +236,7 @@ async fn underwrapd_binary_start_and_read() {
         }),
         admin: Some(underwrap_backendd::AdminConfig {
             allowed_origins: Vec::new(),
-            session_lifetime_secs: underwrap_backendd::auth::DEFAULT_SESSION_LIFETIME_SECS,
+            session_lifetime_secs: underwrap_backendd::DEFAULT_SESSION_LIFETIME_SECS,
             stores_data_root: None,
         }),
     })

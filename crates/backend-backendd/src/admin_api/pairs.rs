@@ -20,7 +20,7 @@ use crate::admin_api::csrf::Principal;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::IntoInternal;
 use crate::http::responses::Body;
-use crate::runtime_api::wrappers::generate_resource_id;
+
 use crate::runtime_state::ListenerState;
 use crate::storage::documents::{
     load_pairs_document, load_resources_document, policy_permission_dependents,
@@ -112,7 +112,7 @@ pub(crate) async fn handle_admin_pair_create(
             id: principal.id.clone(),
             username: principal.username.clone(),
         },
-        created_at: crate::users::now_epoch_secs(),
+        created_at: crate::time::now_epoch_secs(),
         last_used_at: None,
     };
     pairs
@@ -179,13 +179,13 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
     }
     let original_resources = res_doc.clone();
     let resource = ResourceRecord {
-        id: generate_resource_id(),
+        id: crate::ids::random_id("res"),
         name: resource_name.to_string(),
         created_by: EntityCreator::Operator {
             id: principal.id.clone(),
             username: principal.username.clone(),
         },
-        created_at: crate::users::now_epoch_secs(),
+        created_at: crate::time::now_epoch_secs(),
     };
     res_doc
         .insert(resource.clone())
@@ -200,7 +200,7 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
             id: principal.id.clone(),
             username: principal.username.clone(),
         },
-        created_at: crate::users::now_epoch_secs(),
+        created_at: crate::time::now_epoch_secs(),
         last_used_at: None,
     };
     pairs_doc

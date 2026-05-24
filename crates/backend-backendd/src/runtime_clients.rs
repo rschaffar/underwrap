@@ -92,12 +92,6 @@ pub fn current_credential_from_pem(cert_pem: String) -> Result<CurrentCredential
     })
 }
 
-pub fn cert_fingerprint_from_pem_file(path: &Path) -> Result<String> {
-    let pem = std::fs::read_to_string(path)
-        .with_context(|| format!("reading client certificate PEM {}", path.display()))?;
-    cert_fingerprint_from_pem(&pem)
-}
-
 impl crate::storage::json_dir_store::DirRecord for ClientInstanceRecord {
     const KIND: &'static str = "runtime client instance";
     const KIND_PLURAL_DIR: &'static str = "clients directory";

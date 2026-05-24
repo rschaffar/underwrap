@@ -397,7 +397,7 @@ pub(crate) fn run_bootstrap(
         let err = AdminError::bad_request(code, "password rejected");
         return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
-    let now = crate::users::now_epoch_secs();
+    let now = crate::time::now_epoch_secs();
     let hash = crate::auth::hash_password(password).unwrap();
     let record = crate::users::UserRecord {
         id: crate::users::new_user_id(),
@@ -409,14 +409,7 @@ pub(crate) fn run_bootstrap(
     let mut new_collection = crate::users::UserCollection::default();
     new_collection.add(record.clone()).unwrap();
     crate::users::save_user(&state.admin().users_dir, &record).unwrap();
-    crate::users::mark_bootstrap_completed(
-        &state.admin().bootstrap_file,
-        &crate::users::BootstrapSentinel {
-            completed_at: now,
-            by_username: record.username.clone(),
-        },
-    )
-    .unwrap();
+    crate::users::mark_bootstrap_completed(&state.admin().bootstrap_file).unwrap();
     log_bootstrap_attempt(&record.username, None, "success");
     let body = crate::admin_api::auth::bootstrap::BootstrapResponse {
         username: record.username.clone(),
@@ -538,7 +531,7 @@ pub(crate) fn seed_admin_into(state: &ListenerState, username: &str) -> String {
     // Returns the operator id of the seeded admin so tests can
     // build a principal that refers to a real record.
     let hash = crate::auth::hash_password("seed-pass").unwrap();
-    let now = crate::users::now_epoch_secs();
+    let now = crate::time::now_epoch_secs();
     let id = crate::users::new_user_id();
     let record = crate::users::UserRecord {
         id: id.clone(),

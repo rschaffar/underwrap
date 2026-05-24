@@ -248,7 +248,7 @@ fn user_reset_password_changes_hash() {
         .clone();
 
     let new_hash = crate::auth::hash_password("new-pass").unwrap();
-    let now = crate::users::now_epoch_secs();
+    let now = crate::time::now_epoch_secs();
     mutate_collection(&state, |c| {
         c.update(&bob_id, |u| {
             u.password_hash = new_hash.clone();

@@ -9,7 +9,12 @@
 //! `ResourcesDocument`, `PairsDocument`).
 
 use anyhow::{Context, Result};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
+use underwrap_protocol::entities::{
+    PAIRS_DOCUMENT_SECRET_ID, PairsDocument, RESOURCES_DOCUMENT_SECRET_ID, ResourcesDocument,
+};
 use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument};
 use underwrap_store::StorageBackend;
 
@@ -22,66 +27,71 @@ pub(crate) const ENTITY_DEPENDENT_SAMPLE_LIMIT: usize = 5;
 
 const RESERVED_PREFIX: &str = "__underwrap/";
 
+/// One of the three per-store control-plane documents (policy /
+/// resources / pairs). The trait pins the on-disk secret id and a
+/// short human-readable name used in error context, so the generic
+/// load/save helpers don't have to be parameterised over either.
+pub(crate) trait Document: Default + Serialize + DeserializeOwned {
+    const SECRET_ID: &'static str;
+    const NAME: &'static str;
+}
+
+impl Document for PolicyDocument {
+    const SECRET_ID: &'static str = POLICY_DOCUMENT_SECRET_ID;
+    const NAME: &'static str = "policy";
+}
+
+impl Document for ResourcesDocument {
+    const SECRET_ID: &'static str = RESOURCES_DOCUMENT_SECRET_ID;
+    const NAME: &'static str = "resources";
+}
+
+impl Document for PairsDocument {
+    const SECRET_ID: &'static str = PAIRS_DOCUMENT_SECRET_ID;
+    const NAME: &'static str = "pairs";
+}
+
+/// Load a control-plane document by its [`Document::SECRET_ID`].
+/// Treats a missing blob as the document's default — that is the
+/// expected state on a fresh store.
+pub(crate) fn load_document<T: Document>(store: &dyn StorageBackend) -> Result<T> {
+    match store.read(T::SECRET_ID)? {
+        Some(material) => serde_json::from_slice(material.as_ref())
+            .with_context(|| format!("parsing backend {} document", T::NAME)),
+        None => Ok(T::default()),
+    }
+}
+
+/// Persist a control-plane document under its [`Document::SECRET_ID`].
+pub(crate) fn save_document<T: Document>(store: &dyn StorageBackend, doc: &T) -> Result<()> {
+    store.write(T::SECRET_ID, serde_json::to_vec(doc)?.as_slice())
+}
+
+// Thin per-document aliases. Each forwards to the generic helper above
+// so call sites stay readable (`load_policy_document(store)` reads
+// better than `load_document::<PolicyDocument>(store)` at the seven
+// admin/runtime handlers that consume these documents).
+
 pub(crate) fn load_policy_document(store: &dyn StorageBackend) -> Result<PolicyDocument> {
-    match store.read(POLICY_DOCUMENT_SECRET_ID)? {
-        Some(material) => {
-            serde_json::from_slice(material.as_ref()).context("parsing backend policy document")
-        }
-        None => Ok(PolicyDocument::default()),
-    }
+    load_document(store)
 }
-
-pub(crate) fn load_resources_document(
-    store: &dyn StorageBackend,
-) -> Result<underwrap_protocol::entities::ResourcesDocument> {
-    use underwrap_protocol::entities::{RESOURCES_DOCUMENT_SECRET_ID, ResourcesDocument};
-    match store.read(RESOURCES_DOCUMENT_SECRET_ID)? {
-        Some(material) => {
-            serde_json::from_slice(material.as_ref()).context("parsing backend resources document")
-        }
-        None => Ok(ResourcesDocument::default()),
-    }
+pub(crate) fn save_policy_document(store: &dyn StorageBackend, doc: &PolicyDocument) -> Result<()> {
+    save_document(store, doc)
 }
-
+pub(crate) fn load_resources_document(store: &dyn StorageBackend) -> Result<ResourcesDocument> {
+    load_document(store)
+}
 pub(crate) fn save_resources_document(
     store: &dyn StorageBackend,
-    doc: &underwrap_protocol::entities::ResourcesDocument,
+    doc: &ResourcesDocument,
 ) -> Result<()> {
-    use underwrap_protocol::entities::RESOURCES_DOCUMENT_SECRET_ID;
-    store.write(
-        RESOURCES_DOCUMENT_SECRET_ID,
-        serde_json::to_vec(doc)?.as_slice(),
-    )
+    save_document(store, doc)
 }
-
-pub(crate) fn load_pairs_document(
-    store: &dyn StorageBackend,
-) -> Result<underwrap_protocol::entities::PairsDocument> {
-    use underwrap_protocol::entities::{PAIRS_DOCUMENT_SECRET_ID, PairsDocument};
-    match store.read(PAIRS_DOCUMENT_SECRET_ID)? {
-        Some(material) => {
-            serde_json::from_slice(material.as_ref()).context("parsing backend pairs document")
-        }
-        None => Ok(PairsDocument::default()),
-    }
+pub(crate) fn load_pairs_document(store: &dyn StorageBackend) -> Result<PairsDocument> {
+    load_document(store)
 }
-
-pub(crate) fn save_pairs_document(
-    store: &dyn StorageBackend,
-    doc: &underwrap_protocol::entities::PairsDocument,
-) -> Result<()> {
-    use underwrap_protocol::entities::PAIRS_DOCUMENT_SECRET_ID;
-    store.write(
-        PAIRS_DOCUMENT_SECRET_ID,
-        serde_json::to_vec(doc)?.as_slice(),
-    )
-}
-
-pub(crate) fn save_policy_document(store: &dyn StorageBackend, doc: &PolicyDocument) -> Result<()> {
-    store.write(
-        POLICY_DOCUMENT_SECRET_ID,
-        serde_json::to_vec(doc)?.as_slice(),
-    )
+pub(crate) fn save_pairs_document(store: &dyn StorageBackend, doc: &PairsDocument) -> Result<()> {
+    save_document(store, doc)
 }
 
 pub(crate) fn resource_secret_dependents(
@@ -110,7 +120,7 @@ pub(crate) fn policy_permission_dependents(
     Vec<underwrap_protocol::service::AdminWrapperPermissionKey>,
 )> {
     use underwrap_protocol::service::AdminWrapperPermissionKey;
-    let policy = load_policy_document(store)?;
+    let policy: PolicyDocument = load_document(store)?;
     let dependents: Vec<AdminWrapperPermissionKey> = policy
         .permissions
         .iter()

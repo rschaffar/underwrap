@@ -222,7 +222,7 @@ pub(crate) async fn handle_admin_user_create(
         warn!(err = %e, "users.create: argon2 hash failed");
         AdminError::internal_with_code("internal", "could not hash password")
     })?;
-    let now = crate::users::now_epoch_secs();
+    let now = crate::time::now_epoch_secs();
     let record = crate::users::UserRecord {
         id: crate::users::new_user_id(),
         username: username_norm.clone(),
@@ -304,7 +304,7 @@ pub(crate) async fn handle_admin_user_reset_password(
         warn!(err = %e, "users.reset-password: argon2 hash failed");
         AdminError::internal_with_code("internal", "could not hash password")
     })?;
-    let now = crate::users::now_epoch_secs();
+    let now = crate::time::now_epoch_secs();
     // The target operator's existing sessions are invalidated
     // automatically: `axum_login` records the password-hash bytes in
     // each session and re-checks them on every request via

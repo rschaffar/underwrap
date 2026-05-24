@@ -17,14 +17,7 @@ async fn bootstrap_status_required_on_fresh_store() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bootstrap_status_false_when_sentinel_set() {
     let state = Arc::new(fresh_bootstrap_state());
-    crate::users::mark_bootstrap_completed(
-        &state.admin().bootstrap_file,
-        &crate::users::BootstrapSentinel {
-            completed_at: 1000,
-            by_username: "alice".into(),
-        },
-    )
-    .unwrap();
+    crate::users::mark_bootstrap_completed(&state.admin().bootstrap_file).unwrap();
     let (status, body) = run_handler(handle_admin_bootstrap_status(State(state)));
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["bootstrap_required"], false);

@@ -60,7 +60,7 @@ pub(crate) fn handle_runtime_wrapper_register(
         .get(principal)
         .map(|r| r.auto_create_wrapper_assets)
         .unwrap_or(false);
-    let now = crate::users::now_epoch_secs();
+    let now = crate::time::now_epoch_secs();
 
     let mut resources =
         load_resources_document(store).into_internal("loading resources document")?;
@@ -154,7 +154,7 @@ pub(crate) fn handle_runtime_wrapper_register(
 
     let mut auto_created_resources: Vec<String> = Vec::new();
     for name in &missing_resources_set {
-        let id = generate_resource_id();
+        let id = crate::ids::random_id("res");
         resources
             .insert(ResourceRecord {
                 id: id.clone(),
@@ -201,13 +201,6 @@ pub(crate) fn handle_runtime_wrapper_register(
         auto_created_resources,
         auto_created_pairs,
     }))
-}
-
-/// Generate a stable resource id (`res_<10 hex bytes>`). Mirrors
-/// `generate_client_instance_id` in shape so the two id namespaces
-/// look related but distinct.
-pub(crate) fn generate_resource_id() -> String {
-    crate::ids::random_id("res")
 }
 
 #[cfg(test)]

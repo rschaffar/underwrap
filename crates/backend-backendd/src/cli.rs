@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::{BackendConfig, users};
+use crate::{BackendConfig, time, users};
 
 pub fn parse_backend_config(config_text: &str) -> Result<BackendConfig> {
     serde_yaml::from_str(config_text).context("parsing config")
@@ -34,7 +34,7 @@ pub fn recover_user(users_dir: &Path, username: &str, password: &str) -> Result<
         );
     }
     let hash = crate::auth::hash_password(password)?;
-    let now = users::now_epoch_secs();
+    let now = time::now_epoch_secs();
     let record = users::UserRecord {
         id: users::new_user_id(),
         username: normalised,
@@ -42,11 +42,6 @@ pub fn recover_user(users_dir: &Path, username: &str, password: &str) -> Result<
         created_at: now,
         password_changed_at: now,
     };
-    // Re-use `UserCollection::add` for its uniqueness + hash invariants;
-    // we throw the collection away because the file we actually need to
-    // write is just this one new record.
-    let mut probe = collection;
-    probe.add(record.clone())?;
     users::save_user(users_dir, &record)?;
     Ok(())
 }

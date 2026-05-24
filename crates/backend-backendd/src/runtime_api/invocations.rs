@@ -68,7 +68,7 @@ pub(crate) fn resolve_invocation<'a>(
             permission,
         }),
         WrapperApprovalMode::UnlockedUntil { until_epoch } => {
-            if crate::users::now_epoch_secs() > *until_epoch {
+            if crate::time::now_epoch_secs() > *until_epoch {
                 Ok(InvocationLookup::Denied("expired".to_string()))
             } else {
                 Ok(InvocationLookup::Allowed {
@@ -126,7 +126,7 @@ pub(crate) fn bump_pair_last_used(
     wrapper: &str,
     resource_id: &str,
 ) -> Result<()> {
-    let now = crate::users::now_epoch_secs();
+    let now = crate::time::now_epoch_secs();
     let mut doc = load_pairs_document(store)?;
     let Some(pair) = doc
         .pairs

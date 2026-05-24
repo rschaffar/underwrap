@@ -170,7 +170,7 @@ impl TestDaemon {
             }),
             admin: Some(underwrap_backendd::AdminConfig {
                 allowed_origins: Vec::new(),
-                session_lifetime_secs: underwrap_backendd::auth::DEFAULT_SESSION_LIFETIME_SECS,
+                session_lifetime_secs: underwrap_backendd::DEFAULT_SESSION_LIFETIME_SECS,
                 stores_data_root: Some(stores_data_root.clone()),
             }),
         };

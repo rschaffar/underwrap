@@ -101,12 +101,6 @@ impl AuthBackend {
             rate_limiter: Arc::new(RateLimiter::new()),
         }
     }
-
-    /// Access the shared rate limiter, e.g. for tests that need to
-    /// drive its state directly.
-    pub fn rate_limiter(&self) -> &RateLimiter {
-        &self.rate_limiter
-    }
 }
 
 impl AuthnBackend for AuthBackend {

@@ -143,20 +143,13 @@ fn non_json_files_are_ignored() {
 fn bootstrap_sentinel_absent_by_default() {
     let path = test_bootstrap_file();
     assert!(!bootstrap_completed(&path).unwrap());
-    assert!(load_bootstrap_sentinel(&path).unwrap().is_none());
 }
 
 #[test]
 fn bootstrap_sentinel_round_trip() {
     let path = test_bootstrap_file();
-    let sentinel = BootstrapSentinel {
-        completed_at: 1234,
-        by_username: "alice".into(),
-    };
-    mark_bootstrap_completed(&path, &sentinel).unwrap();
+    mark_bootstrap_completed(&path).unwrap();
     assert!(bootstrap_completed(&path).unwrap());
-    let loaded = load_bootstrap_sentinel(&path).unwrap().unwrap();
-    assert_eq!(loaded, sentinel);
 }
 
 #[test]
@@ -168,14 +161,7 @@ fn bootstrap_sentinel_lives_independently_of_users_dir() {
     let sentinel_path = test_bootstrap_file();
     let record = sample_record("alice");
     save_user(&dir, &record).unwrap();
-    mark_bootstrap_completed(
-        &sentinel_path,
-        &BootstrapSentinel {
-            completed_at: 1234,
-            by_username: "alice".into(),
-        },
-    )
-    .unwrap();
+    mark_bootstrap_completed(&sentinel_path).unwrap();
     assert_eq!(load(&dir).unwrap().len(), 1);
     assert!(bootstrap_completed(&sentinel_path).unwrap());
 }

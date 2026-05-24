@@ -192,7 +192,7 @@ pub(crate) async fn handle_admin_store_create(
         id: store_id.clone(),
         name: visible_name,
         description: body.description.clone(),
-        created_at: Some(crate::users::now_epoch_secs()),
+        created_at: Some(crate::time::now_epoch_secs()),
         storage,
     };
 

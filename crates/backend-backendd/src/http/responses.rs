@@ -24,7 +24,7 @@ pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// JSON request extractor. Reads the body up to
 /// [`MAX_REQUEST_BODY_BYTES`], parses it as `T`, and rejects with the
 /// canonical `invalid_request` 400 envelope on either failure.
-pub(crate) struct Body<T>(pub T);
+pub(crate) struct Body<T>(pub(crate) T);
 
 impl<S, T> FromRequest<S> for Body<T>
 where
