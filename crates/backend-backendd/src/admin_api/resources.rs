@@ -20,18 +20,18 @@ use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
+use crate::admin_api::csrf::Principal;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::IntoInternal;
 use crate::http::responses::Body;
 use crate::runtime_api::wrappers::generate_resource_id;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::storage::documents::{
     ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_resources_document,
     policy_permission_dependents, resource_secret_dependents, save_resources_document,
 };
-use crate::users::Principal;
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(
             handle_admin_resources_list,
@@ -56,7 +56,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     ),
 )]
 pub(crate) async fn handle_admin_resources_list(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminResourcesListResponse>, AdminError> {
     let store = admin_store(&state, &store_id)?;
@@ -84,7 +84,7 @@ pub(crate) async fn handle_admin_resources_list(
     ),
 )]
 pub(crate) async fn handle_admin_resource_create(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(store_id): Path<String>,
     Body(body): Body<AdminResourceCreateRequest>,
@@ -145,7 +145,7 @@ pub(crate) async fn handle_admin_resource_create(
     ),
 )]
 pub(crate) async fn handle_admin_resource_delete(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id)): Path<(String, String)>,
 ) -> Result<Json<AdminResourceDeleteResponse>, AdminError> {
@@ -236,7 +236,7 @@ pub(crate) async fn handle_admin_resource_delete(
     ),
 )]
 pub(crate) async fn handle_admin_resource_rename(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id)): Path<(String, String)>,
     Body(body): Body<AdminResourceRenameRequest>,

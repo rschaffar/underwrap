@@ -72,7 +72,7 @@ fn admin_pair_delete_refuses_when_permissions_reference_the_pair() {
     ));
     assert_eq!(create_status, StatusCode::OK);
     {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         save_policy_document(
             reg.expect_unlocked(&store_id).as_ref(),
             &PolicyDocument {

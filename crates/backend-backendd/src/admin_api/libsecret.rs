@@ -36,15 +36,16 @@ use underwrap_store::{load_resource_blob, save_resource_blob};
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, LibsecretEntityKind, log_admin_event, result_label};
+use crate::admin_api::csrf::Principal;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::{IntoInternal, decode_b64, encode_b64};
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
-use crate::users::{Principal, now_epoch_secs};
+use crate::runtime_state::ListenerState;
+use crate::users::now_epoch_secs;
 
 const MAX_ID_LEN: usize = 128;
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_get_tree))
         .routes(routes!(handle_post_collection))
@@ -108,7 +109,7 @@ fn next_auto_id<T>(prefix: &str, existing: &BTreeMap<String, T>) -> String {
 
 /// Load the resource blob for a read-only handler.
 fn read_blob(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     store_id: &str,
     resource_id: &str,
 ) -> Result<ResourceBlob, AdminError> {
@@ -120,7 +121,7 @@ fn read_blob(
 /// `dirty = true`. Concurrent writers race on the blob as a whole
 /// (last writer wins), matching the rest of the admin surface.
 fn with_blob<R>(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     store_id: &str,
     resource_id: &str,
     f: impl FnOnce(&mut ResourceBlob) -> Result<(R, bool), AdminError>,
@@ -154,7 +155,7 @@ fn with_blob<R>(
     ),
 )]
 pub(crate) async fn handle_get_tree(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Path((store_id, resource_id)): Path<(String, String)>,
 ) -> Result<Json<AdminLibsecretTreeResponse>, AdminError> {
     let section = read_blob(&state, &store_id, &resource_id)?.libsecret;
@@ -210,7 +211,7 @@ pub(crate) async fn handle_get_tree(
     ),
 )]
 pub(crate) async fn handle_post_collection(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id)): Path<(String, String)>,
     Body(body): Body<AdminLibsecretCollectionCreateRequest>,
@@ -278,7 +279,7 @@ pub(crate) async fn handle_post_collection(
     ),
 )]
 pub(crate) async fn handle_delete_collection(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, cid)): Path<(String, String, String)>,
 ) -> Result<Json<AdminLibsecretCollectionDeleteResponse>, AdminError> {
@@ -344,7 +345,7 @@ pub(crate) async fn handle_delete_collection(
     ),
 )]
 pub(crate) async fn handle_post_item(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, cid)): Path<(String, String, String)>,
     Body(body): Body<AdminLibsecretItemCreateRequest>,
@@ -423,7 +424,7 @@ pub(crate) async fn handle_post_item(
     ),
 )]
 pub(crate) async fn handle_delete_item(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, cid, iid)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminLibsecretItemDeleteResponse>, AdminError> {
@@ -473,7 +474,7 @@ pub(crate) async fn handle_delete_item(
     ),
 )]
 pub(crate) async fn handle_get_item_secret(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Path((store_id, resource_id, cid, iid)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminLibsecretItemSecretResponse>, AdminError> {
     let blob = read_blob(&state, &store_id, &resource_id)?;
@@ -512,7 +513,7 @@ pub(crate) async fn handle_get_item_secret(
     ),
 )]
 pub(crate) async fn handle_put_alias(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, name)): Path<(String, String, String)>,
     Body(body): Body<AdminLibsecretAliasUpsertRequest>,
@@ -563,7 +564,7 @@ pub(crate) async fn handle_put_alias(
     ),
 )]
 pub(crate) async fn handle_delete_alias(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, name)): Path<(String, String, String)>,
 ) -> Result<Json<AdminLibsecretAliasDeleteResponse>, AdminError> {

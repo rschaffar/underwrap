@@ -15,8 +15,8 @@ use crate::test_support::{
 };
 
 fn create_store(
-    state: Arc<crate::runtime_state::AdminRuntimeState>,
-    p: &crate::users::Principal,
+    state: Arc<crate::runtime_state::ListenerState>,
+    p: &crate::admin_api::csrf::Principal,
     body: &AdminStoreCreateRequest,
 ) -> (StatusCode, serde_json::Value) {
     run_handler(handle_admin_store_create(
@@ -34,7 +34,7 @@ fn create_store(
 /// old detail shape — it omits `dir` and `source_path` — so any test
 /// that needed those reads them from the registry file directly.
 fn store_detail(
-    state: Arc<crate::runtime_state::AdminRuntimeState>,
+    state: Arc<crate::runtime_state::ListenerState>,
     store_id: &str,
 ) -> (StatusCode, serde_json::Value) {
     let (status, body) = run_handler(handle_admin_stores_list(State(state)));
@@ -49,8 +49,8 @@ fn store_detail(
 }
 
 fn store_delete(
-    state: Arc<crate::runtime_state::AdminRuntimeState>,
-    p: &crate::users::Principal,
+    state: Arc<crate::runtime_state::ListenerState>,
+    p: &crate::admin_api::csrf::Principal,
     store_id: &str,
     force: bool,
 ) -> (StatusCode, serde_json::Value) {
@@ -100,7 +100,7 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     assert_eq!(body["store"]["actions"]["can_force_delete"], false);
     // The per-store record landed on disk under the configured stores
     // directory.
-    let record_path = state.stores_dir.join(format!("{store_id}.json"));
+    let record_path = state.admin().stores_dir.join(format!("{store_id}.json"));
     assert!(record_path.exists(), "store record file must be created");
     // The runtime registry sees it.
     let (_, body) = run_handler(handle_admin_stores_list(State(state.clone())));
@@ -153,7 +153,11 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     assert_eq!(body["ok"], true);
     assert!(!body.as_object().unwrap().contains_key("cleanup_hint"));
     assert!(
-        !state.stores_dir.join(format!("{store_id}.json")).exists(),
+        !state
+            .admin()
+            .stores_dir
+            .join(format!("{store_id}.json"))
+            .exists(),
         "store record file must be removed by delete"
     );
 }
@@ -162,7 +166,7 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
 fn create_refuses_when_stores_data_root_unconfigured() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut owned = crud_state(tmp.path());
-    owned.stores_data_root = None;
+    crate::test_support::admin_mut(&mut owned).stores_data_root = None;
     let state = Arc::new(owned);
     let (status, body) = create_store(
         state,
@@ -211,7 +215,7 @@ fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
     let expected_dir = tmp.path().join("data").join(&store_id);
     // Drop a secret in so the store is non-empty.
     {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         reg.expect_unlocked(&store_id)
             .write("greeting", &SecretBytes::from(b"hello".to_vec()))
             .unwrap();
@@ -308,7 +312,12 @@ fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
     // The unlock canary lives in the data directory under its
     // reserved id; we read it back through the live registry
     // backend so we know the key in memory still decrypts it.
-    let backend = state.stores.read().unwrap().expect_unlocked(&store_id);
+    let backend = state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .expect_unlocked(&store_id);
     let canary = backend
         .read(underwrap_store::ENCRYPTED_CANARY_ID)
         .unwrap()
@@ -372,7 +381,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
         },
     );
     {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         reg.expect_unlocked(&plain_id)
             .write("secret/item", b"value")
             .unwrap();
@@ -380,7 +389,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
             .write("secret/item", b"value")
             .unwrap();
     }
-    state.client_instances.write().unwrap().insert(
+    state.shared.client_instances.write().unwrap().insert(
         "client_a".into(),
         crate::runtime_clients::ClientInstanceRecord {
             id: "client_a".into(),

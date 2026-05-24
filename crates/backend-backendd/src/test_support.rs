@@ -18,7 +18,7 @@ use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest
 use underwrap_store::{StorageBackend, save_resource_blob};
 
 use crate::admin_api::stores::crud::handle_admin_store_create;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::{AdminState, ListenerState, SharedState};
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
     save_policy_document, save_resources_document,
@@ -163,36 +163,49 @@ pub(crate) fn test_users_paths() -> (PathBuf, PathBuf) {
     (users_dir, bootstrap_file)
 }
 
-/// Canonical "blank" AdminRuntimeState: empty registry, no client
+/// Canonical "blank" ListenerState: empty registry, no client
 /// instances, admin enabled, embedded SPA, fresh in-memory session
 /// store, a fresh temporary users directory + bootstrap file. Every
 /// named builder below starts here and mutates the one or two fields
 /// it actually cares about.
-pub(crate) fn default_admin_runtime_state() -> AdminRuntimeState {
+pub(crate) fn default_admin_runtime_state() -> ListenerState {
     let (users_dir, bootstrap_file) = test_users_paths();
-    AdminRuntimeState {
-        stores: Arc::new(std::sync::RwLock::new(StoreRegistry::default())),
-        client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
-        stores_dir: PathBuf::new(),
-        clients_dir: PathBuf::new(),
-        stores_data_root: None,
-        admin_enabled: true,
-        allowed_origins: None,
-        users_dir: users_dir.clone(),
-        bootstrap_file,
-        auth_backend: crate::auth::AuthBackend::new(users_dir),
-        session_store: tower_sessions::MemoryStore::default(),
-        csrf_config: crate::admin_api::csrf::build_csrf_config(false),
-        session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
-        cookies_secure: false,
-        bootstrap_lock: std::sync::Mutex::new(()),
-        user_collection_lock: std::sync::Mutex::new(()),
+    let cookies_secure = false;
+    ListenerState {
+        shared: SharedState {
+            stores: Arc::new(std::sync::RwLock::new(StoreRegistry::default())),
+            client_instances: Arc::new(std::sync::RwLock::new(HashMap::new())),
+        },
+        admin: Some(AdminState {
+            stores_dir: PathBuf::new(),
+            clients_dir: PathBuf::new(),
+            stores_data_root: None,
+            allowed_origins: None,
+            users_dir: users_dir.clone(),
+            bootstrap_file,
+            auth_backend: crate::auth::AuthBackend::new(users_dir),
+            session_store: tower_sessions::MemoryStore::default(),
+            csrf_config: crate::admin_api::csrf::build_csrf_config(cookies_secure),
+            session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
+            cookies_secure,
+            bootstrap_lock: std::sync::Mutex::new(()),
+            user_collection_lock: std::sync::Mutex::new(()),
+        }),
     }
 }
 
-pub(crate) fn test_admin_state(
-    stores: HashMap<String, Arc<dyn StorageBackend>>,
-) -> AdminRuntimeState {
+/// Borrow the AdminState mutably from a `ListenerState` built by one of
+/// the test helpers below. Panics if the state was built without admin —
+/// the test helpers always set it, so the unwrap is for programming
+/// errors, not run-time conditions.
+pub(crate) fn admin_mut(state: &mut ListenerState) -> &mut AdminState {
+    state
+        .admin
+        .as_mut()
+        .expect("test ListenerState lacks AdminState")
+}
+
+pub(crate) fn test_admin_state(stores: HashMap<String, Arc<dyn StorageBackend>>) -> ListenerState {
     let entries: HashMap<String, StoreEntry> = stores
         .into_iter()
         .map(|(id, b)| {
@@ -209,8 +222,7 @@ pub(crate) fn test_admin_state(
         })
         .collect();
     let mut s = default_admin_runtime_state();
-    s.stores = Arc::new(std::sync::RwLock::new(StoreRegistry { entries }));
-    s.admin_enabled = true;
+    s.shared.stores = Arc::new(std::sync::RwLock::new(StoreRegistry { entries }));
     s
 }
 
@@ -225,9 +237,9 @@ pub(crate) fn headers_with(pairs: &[(&str, &str)]) -> hyper::HeaderMap {
     headers
 }
 
-pub(crate) fn seeded_admin_state(username: &str, password: &str) -> AdminRuntimeState {
+pub(crate) fn seeded_admin_state(username: &str, password: &str) -> ListenerState {
     let mut s = default_admin_runtime_state();
-    s.session_lifetime_secs = 3600;
+    admin_mut(&mut s).session_lifetime_secs = 3600;
     let hash = crate::auth::hash_password(password).unwrap();
     let record = crate::users::UserRecord {
         id: crate::users::new_user_id(),
@@ -240,13 +252,14 @@ pub(crate) fn seeded_admin_state(username: &str, password: &str) -> AdminRuntime
     // production paths, then write the single record to disk.
     let mut collection = crate::users::UserCollection::default();
     collection.add(record.clone()).unwrap();
-    crate::users::save_user(&s.users_dir, &record).unwrap();
+    let users_dir = admin_mut(&mut s).users_dir.clone();
+    crate::users::save_user(&users_dir, &record).unwrap();
     // Rebuild the `AuthBackend` so it points at the now-written users
     // directory. The backend reads the dir from disk on every
     // `authenticate` / `get_user` call, but the path is captured at
     // construction time, so re-pointing it here makes login tests
     // resolve against the freshly-seeded record.
-    s.auth_backend = crate::auth::AuthBackend::new(s.users_dir.clone());
+    admin_mut(&mut s).auth_backend = crate::auth::AuthBackend::new(users_dir);
     s
 }
 
@@ -254,7 +267,7 @@ pub(crate) fn service_state_with_runtime_client(
     cert_der: &[u8],
     status: crate::runtime_clients::ClientInstanceStatus,
     store_id: &str,
-) -> AdminRuntimeState {
+) -> ListenerState {
     let record = underwrap_protocol::config::StoreRecord {
         id: store_id.to_string(),
         name: store_id.to_string(),
@@ -284,8 +297,8 @@ pub(crate) fn service_state_with_runtime_client(
         },
     )]);
     let mut s = default_admin_runtime_state();
-    s.stores = Arc::new(std::sync::RwLock::new(StoreRegistry { entries }));
-    s.client_instances = Arc::new(std::sync::RwLock::new(client_instances));
+    s.shared.stores = Arc::new(std::sync::RwLock::new(StoreRegistry { entries }));
+    s.shared.client_instances = Arc::new(std::sync::RwLock::new(client_instances));
     s
 }
 
@@ -299,9 +312,9 @@ pub(crate) fn expect_404<T, E: IntoResponse>(result: std::result::Result<T, E>) 
     }
 }
 
-pub(crate) fn fresh_bootstrap_state() -> AdminRuntimeState {
+pub(crate) fn fresh_bootstrap_state() -> ListenerState {
     let mut s = default_admin_runtime_state();
-    s.session_lifetime_secs = 3600;
+    admin_mut(&mut s).session_lifetime_secs = 3600;
     s
 }
 
@@ -351,7 +364,7 @@ where
 /// Used by tests that only care about the DB-side state transition
 /// and don't want to spin up an `AdminAuthSession`.
 pub(crate) fn run_bootstrap(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     username: &str,
     password: &str,
 ) -> (StatusCode, serde_json::Value) {
@@ -363,8 +376,8 @@ pub(crate) fn run_bootstrap(
         let err = AdminError::bad_request("invalid_credentials", "missing username");
         return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
-    let _guard = state.bootstrap_lock.lock().unwrap();
-    if crate::users::bootstrap_completed(&state.bootstrap_file).unwrap_or(true) {
+    let _guard = state.admin().bootstrap_lock.lock().unwrap();
+    if crate::users::bootstrap_completed(&state.admin().bootstrap_file).unwrap_or(true) {
         log_bootstrap_attempt(
             &username_norm,
             Some("bootstrap-already-completed"),
@@ -373,7 +386,7 @@ pub(crate) fn run_bootstrap(
         let err = AdminError::conflict("bootstrap_already_completed", "already done");
         return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
     }
-    let collection = crate::users::load(&state.users_dir).unwrap();
+    let collection = crate::users::load(&state.admin().users_dir).unwrap();
     if !collection.is_empty() {
         log_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
         let err = AdminError::conflict("users_already_exist", "already populated");
@@ -395,9 +408,9 @@ pub(crate) fn run_bootstrap(
     };
     let mut new_collection = crate::users::UserCollection::default();
     new_collection.add(record.clone()).unwrap();
-    crate::users::save_user(&state.users_dir, &record).unwrap();
+    crate::users::save_user(&state.admin().users_dir, &record).unwrap();
     crate::users::mark_bootstrap_completed(
-        &state.bootstrap_file,
+        &state.admin().bootstrap_file,
         &crate::users::BootstrapSentinel {
             completed_at: now,
             by_username: record.username.clone(),
@@ -411,31 +424,34 @@ pub(crate) fn run_bootstrap(
     run_handler(async { Ok::<_, crate::admin_api::AdminError>(axum::Json(body)) })
 }
 
-pub(crate) fn admin_principal() -> crate::users::Principal {
-    crate::users::Principal {
+pub(crate) fn admin_principal() -> crate::admin_api::csrf::Principal {
+    crate::admin_api::csrf::Principal {
         id: "admin-id".into(),
         username: "alice".into(),
     }
 }
 
-/// Build an `AdminRuntimeState` wired up for CRUD tests: a
+/// Build an `ListenerState` wired up for CRUD tests: a
 /// dedicated store registry, user-state file, and one allowed
 /// data root, all under the supplied tempdir.
-pub(crate) fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
+pub(crate) fn crud_state(tmp: &std::path::Path) -> ListenerState {
     let dynamic_dir = tmp.join("stores.d");
     std::fs::create_dir_all(&dynamic_dir).unwrap();
     let data_root = tmp.join("data");
     std::fs::create_dir_all(&data_root).unwrap();
     let mut s = default_admin_runtime_state();
-    s.stores_dir = tmp.join("stores");
-    s.clients_dir = tmp.join("clients");
-    s.stores_data_root = Some(data_root);
-    s.users_dir = tmp.join("users");
-    s.bootstrap_file = tmp.join("bootstrap.json");
-    // Point the AuthBackend at the new tempdir-relative users dir;
-    // `default_admin_runtime_state` initialised it against the
-    // process-wide test temp dir we have now overridden.
-    s.auth_backend = crate::auth::AuthBackend::new(s.users_dir.clone());
+    {
+        let admin = admin_mut(&mut s);
+        admin.stores_dir = tmp.join("stores");
+        admin.clients_dir = tmp.join("clients");
+        admin.stores_data_root = Some(data_root);
+        admin.users_dir = tmp.join("users");
+        admin.bootstrap_file = tmp.join("bootstrap.json");
+        // Point the AuthBackend at the new tempdir-relative users dir;
+        // `default_admin_runtime_state` initialised it against the
+        // process-wide test temp dir we have now overridden.
+        admin.auth_backend = crate::auth::AuthBackend::new(admin.users_dir.clone());
+    }
     s
 }
 
@@ -445,8 +461,8 @@ pub(crate) fn crud_state(tmp: &std::path::Path) -> AdminRuntimeState {
 /// hit the real code path, but the helper hides the extractor wrapping
 /// from per-module tests that just want "give me a store id".
 pub(crate) fn create_store_for_test(
-    state: Arc<AdminRuntimeState>,
-    principal: &crate::users::Principal,
+    state: Arc<ListenerState>,
+    principal: &crate::admin_api::csrf::Principal,
     body: &AdminStoreCreateRequest,
 ) -> String {
     let (status, value) = run_handler(handle_admin_store_create(
@@ -479,9 +495,7 @@ pub(crate) fn response_body_json(resp: impl axum::response::IntoResponse) -> ser
     serde_json::Value::Object(obj)
 }
 
-pub(crate) fn entity_test_state_with_store(
-    tmp: &std::path::Path,
-) -> (Arc<AdminRuntimeState>, String) {
+pub(crate) fn entity_test_state_with_store(tmp: &std::path::Path) -> (Arc<ListenerState>, String) {
     let state = Arc::new(crud_state(tmp));
     let p = admin_principal();
     let id = create_store_for_test(
@@ -500,8 +514,8 @@ pub(crate) fn entity_test_state_with_store(
 /// id the backend assigned. Tests use this when they need to issue
 /// subsequent id-addressed calls against the same resource.
 pub(crate) fn create_resource_id_for_test(
-    state: Arc<AdminRuntimeState>,
-    principal: &crate::users::Principal,
+    state: Arc<ListenerState>,
+    principal: &crate::admin_api::csrf::Principal,
     store_id: &str,
     name: &str,
 ) -> String {
@@ -520,7 +534,7 @@ pub(crate) fn create_resource_id_for_test(
         .to_string()
 }
 
-pub(crate) fn seed_admin_into(state: &AdminRuntimeState, username: &str) -> String {
+pub(crate) fn seed_admin_into(state: &ListenerState, username: &str) -> String {
     // Returns the operator id of the seeded admin so tests can
     // build a principal that refers to a real record.
     let hash = crate::auth::hash_password("seed-pass").unwrap();
@@ -535,12 +549,12 @@ pub(crate) fn seed_admin_into(state: &AdminRuntimeState, username: &str) -> Stri
     };
     let mut c = crate::users::UserCollection::default();
     c.add(record.clone()).unwrap();
-    crate::users::save_user(&state.users_dir, &record).unwrap();
+    crate::users::save_user(&state.admin().users_dir, &record).unwrap();
     id
 }
 
-pub(crate) fn admin_principal_with_id(id: &str) -> crate::users::Principal {
-    crate::users::Principal {
+pub(crate) fn admin_principal_with_id(id: &str) -> crate::admin_api::csrf::Principal {
+    crate::admin_api::csrf::Principal {
         id: id.into(),
         username: "alice".into(),
     }
@@ -553,7 +567,7 @@ pub(crate) fn admin_principal_with_id(id: &str) -> crate::users::Principal {
 /// individual tests to issue the new runtime endpoints.
 pub(crate) struct RuntimeApiFixture {
     pub(crate) _tmp: tempfile::TempDir,
-    pub(crate) state: Arc<AdminRuntimeState>,
+    pub(crate) state: Arc<ListenerState>,
     pub(crate) store_id: String,
     pub(crate) instance_id: String,
     pub(crate) resource_id: String,
@@ -562,6 +576,7 @@ pub(crate) struct RuntimeApiFixture {
 impl RuntimeApiFixture {
     pub(crate) fn store(&self) -> Arc<dyn StorageBackend> {
         self.state
+            .shared
             .stores
             .read()
             .unwrap()
@@ -597,7 +612,7 @@ pub(crate) fn make_runtime_api_fixture() -> RuntimeApiFixture {
 
     let instance_id = "inst-runtime".to_string();
     {
-        let mut instances = state.client_instances.write().unwrap();
+        let mut instances = state.shared.client_instances.write().unwrap();
         instances.insert(
             instance_id.clone(),
             crate::runtime_clients::ClientInstanceRecord {
@@ -614,11 +629,17 @@ pub(crate) fn make_runtime_api_fixture() -> RuntimeApiFixture {
             },
         );
         for record in instances.values() {
-            crate::runtime_clients::save_client_instance(&state.clients_dir, record).unwrap();
+            crate::runtime_clients::save_client_instance(&state.admin().clients_dir, record)
+                .unwrap();
         }
     }
 
-    let store = state.stores.read().unwrap().expect_unlocked(&store_id);
+    let store = state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .expect_unlocked(&store_id);
     let resource_id = "res_alpha".to_string();
     let mut resources = load_resources_document(store.as_ref()).unwrap();
     resources

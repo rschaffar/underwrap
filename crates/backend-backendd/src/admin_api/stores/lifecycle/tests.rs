@@ -8,20 +8,20 @@ use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest
 use super::*;
 use crate::admin_api::stores::crud::{handle_admin_store_create, handle_admin_stores_list};
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::store_registry::StoreState;
 use crate::test_support::{admin_principal, create_store_for_test, crud_state, run_handler};
 
-fn is_locked(state: &AdminRuntimeState, store_id: &str) -> bool {
+fn is_locked(state: &ListenerState, store_id: &str) -> bool {
     matches!(
-        state.stores.read().unwrap().entry(store_id),
+        state.shared.stores.read().unwrap().entry(store_id),
         Ok(entry) if matches!(entry.state, StoreState::Locked),
     )
 }
 
 fn create_store(
-    state: Arc<crate::runtime_state::AdminRuntimeState>,
-    p: &crate::users::Principal,
+    state: Arc<crate::runtime_state::ListenerState>,
+    p: &crate::admin_api::csrf::Principal,
     backend: AdminStoreBackendKind,
     name: &str,
 ) -> serde_json::Value {
@@ -49,7 +49,12 @@ async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
 
     // Seed a known plaintext under the original key.
     {
-        let backend = state.stores.read().unwrap().expect_unlocked(&store_id);
+        let backend = state
+            .shared
+            .stores
+            .read()
+            .unwrap()
+            .expect_unlocked(&store_id);
         backend.write("greeting", b"hello").unwrap();
     }
 
@@ -74,7 +79,12 @@ async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
     // The active backend still decodes the same plaintext (now
     // under the new key).
     {
-        let backend = state.stores.read().unwrap().expect_unlocked(&store_id);
+        let backend = state
+            .shared
+            .stores
+            .read()
+            .unwrap()
+            .expect_unlocked(&store_id);
         assert_eq!(
             backend.read("greeting").unwrap().unwrap().as_ref(),
             b"hello"

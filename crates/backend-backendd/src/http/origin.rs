@@ -18,7 +18,7 @@ use tracing::warn;
 
 use crate::admin_api::AdminError;
 use crate::config::AdminConfig;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 
 /// Validate the browser-facing admin configuration.
 pub(crate) fn validate_admin_config(config: &AdminConfig) -> Result<()> {
@@ -89,7 +89,7 @@ pub(crate) fn referer_to_origin(referer: &str) -> Option<String> {
 /// Axum middleware that runs the origin check before the inner service.
 /// Short-circuits with `403 bad_origin` on rejection.
 pub(crate) async fn origin_layer(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -97,7 +97,7 @@ pub(crate) async fn origin_layer(
     if let Err(reason) = check_admin_origin(
         request.method(),
         request.headers(),
-        state.allowed_origins.as_deref(),
+        state.admin().allowed_origins.as_deref(),
     ) {
         warn!(reason = reason, "rejected admin request (origin check)");
         return AdminError::forbidden("bad_origin", reason).into_response();

@@ -37,8 +37,18 @@ use tracing::{info, warn};
 
 use crate::admin_api::AdminError;
 use crate::auth::AuthBackend;
-use crate::runtime_state::AdminRuntimeState;
-use crate::users::{Principal, UserRecord};
+use crate::runtime_state::ListenerState;
+use crate::users::UserRecord;
+
+/// Resolved identity for an admin request, derived from the
+/// authenticated session cookie. Inserted as a request extension by
+/// [`resolve_principal_layer`] so downstream handlers can read the
+/// id/username without hitting the user collection again.
+#[derive(Debug, Clone)]
+pub(crate) struct Principal {
+    pub id: String,
+    pub username: String,
+}
 
 /// CSRF cookie name. The `__Host-` prefix requires `Secure; Path=/`
 /// and forbids a `Domain` attribute, which closes off cookie-write
@@ -152,7 +162,7 @@ pub(crate) async fn attach_csrf_response_layer(request: Request, next: Next) -> 
 /// log a structured admin event, and insert a [`Principal`] extension
 /// for downstream handlers.
 pub(crate) async fn resolve_principal_layer(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     auth_session: AuthSession<AuthBackend>,
     mut request: Request,
     next: Next,
@@ -182,10 +192,10 @@ pub(crate) async fn resolve_principal_layer(
 /// — the session's stored auth hash will mismatch on the next
 /// request anyway, but rejecting here keeps the response consistent.
 fn resolve_live_principal(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     user: &UserRecord,
 ) -> std::result::Result<Principal, AdminError> {
-    let collection = crate::users::load(&state.users_dir).map_err(|e| {
+    let collection = crate::users::load(&state.admin().users_dir).map_err(|e| {
         warn!(err = %e, "could not load user collection");
         AdminError::internal_with_code("internal", "user collection unavailable")
     })?;

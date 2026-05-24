@@ -10,8 +10,8 @@ use crate::test_support::{
     admin_principal, create_resource_id_for_test, entity_test_state_with_store, run_handler,
 };
 
-fn principal() -> crate::users::Principal {
-    crate::users::Principal {
+fn principal() -> crate::admin_api::csrf::Principal {
+    crate::admin_api::csrf::Principal {
         id: "alice-id".into(),
         username: "alice".into(),
     }
@@ -59,7 +59,12 @@ fn admin_secret_rename_moves_entry_atomically() {
 
     // The new key holds the original material; the old key is gone.
     let entries = {
-        let backend = state.stores.read().unwrap().expect_unlocked(&store_id);
+        let backend = state
+            .shared
+            .stores
+            .read()
+            .unwrap()
+            .expect_unlocked(&store_id);
         list_secret_entries(backend.as_ref(), None).unwrap()
     };
     let keys: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();

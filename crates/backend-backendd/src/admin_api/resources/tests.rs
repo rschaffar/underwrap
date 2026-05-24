@@ -161,7 +161,7 @@ fn admin_resource_delete_refuses_with_structured_blockers() {
     // shape routes through the blob shim and ends up inside the
     // `resources/<resource_id>` blob.
     {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         let blob_key = format!("{}/env/GH_TOKEN", resource_id);
         write_resource_entry(
             reg.expect_unlocked(&store_id).as_ref(),
@@ -172,7 +172,7 @@ fn admin_resource_delete_refuses_with_structured_blockers() {
     }
     // A wrapper permission referencing the resource.
     {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         save_policy_document(
             reg.expect_unlocked(&store_id).as_ref(),
             &PolicyDocument {

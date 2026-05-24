@@ -83,14 +83,6 @@ impl std::fmt::Debug for UserRecord {
     }
 }
 
-/// Resolved identity for an admin request, derived from the
-/// authenticated session cookie.
-#[derive(Debug, Clone)]
-pub struct Principal {
-    pub id: String,
-    pub username: String,
-}
-
 /// The in-memory user collection.
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserCollection {

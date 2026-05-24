@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::store_registry::StoreRegistry;
 
 /// Outcome of authenticating a runtime client request. Carries the
@@ -43,14 +43,14 @@ pub(crate) fn validate_runtime_client_mappings(
 }
 
 pub(crate) fn resolve_runtime_client(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     certs: &[rustls::pki_types::CertificateDer<'static>],
 ) -> Result<RuntimeRequestPrincipal> {
     let cert = certs
         .first()
         .context("client did not present a certificate")?;
     let fingerprint = crate::runtime_clients::cert_fingerprint_from_der(cert.as_ref());
-    let client_instances = state.client_instances.read().unwrap();
+    let client_instances = state.shared.client_instances.read().unwrap();
     let instance = client_instances
         .values()
         .find(|instance| instance.current_credential.cert_fingerprint == fingerprint)
@@ -64,7 +64,14 @@ pub(crate) fn resolve_runtime_client(
     // legitimately be `Locked` for this principal, and the caller has
     // to surface that as `store_locked`. Existence-only check.
     let store_id = instance.current_store_id.clone();
-    if !state.stores.read().unwrap().entries.contains_key(&store_id) {
+    if !state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .entries
+        .contains_key(&store_id)
+    {
         anyhow::bail!(
             "runtime client instance '{}' references unknown store '{}'",
             instance.id,

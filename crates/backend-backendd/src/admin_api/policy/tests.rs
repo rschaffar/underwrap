@@ -66,7 +66,7 @@ fn drop_client_instance_permissions_on_locked_store_warns_and_audits() {
     );
 
     // Force the registry into the Locked state for this store id.
-    state.stores.write().unwrap().lock(&store_id);
+    state.shared.stores.write().unwrap().lock(&store_id);
 
     let out = capture(|| {
         drop_client_instance_permissions(&state, &p, &store_id, "inst_xyz")

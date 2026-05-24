@@ -12,7 +12,7 @@ use tracing::info;
 use underwrap_protocol::policy::WrapperPermission;
 use underwrap_protocol::resource::ResourceSlot;
 
-use crate::users::Principal;
+use crate::admin_api::csrf::Principal;
 
 /// Identifies what an admin event acted on. Each variant maps to a
 /// distinct `kind:` prefix in the formatted `resource` field, and

@@ -16,14 +16,14 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
+use crate::admin_api::csrf::Principal;
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::store_registry::{
     RegistryLookupError, StoreEntry, StoreState, delete_store_record, save_store_record,
 };
-use crate::users::Principal;
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_stores_list, handle_admin_store_create))
         .routes(routes!(
@@ -48,10 +48,11 @@ use crate::admin_api::audit::{AuditEntity, log_admin_event};
     ),
 )]
 pub(crate) async fn handle_admin_stores_list(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
 ) -> Result<Json<AdminStoresListResponse>, AdminError> {
     #[allow(clippy::type_complexity)]
     let visible: Vec<(StoreRecord, Option<Arc<dyn StorageBackend>>)> = state
+        .shared
         .stores
         .read()
         .unwrap()
@@ -86,7 +87,7 @@ pub(crate) async fn handle_admin_stores_list(
     ),
 )]
 pub(crate) async fn handle_admin_store_create(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminStoreCreateRequest>,
 ) -> Result<Json<AdminStoreCreateResponse>, AdminError> {
@@ -100,14 +101,20 @@ pub(crate) async fn handle_admin_store_create(
     let visible_name = visible_name.to_string();
 
     let store_id = crate::ids::fresh_id("store", |candidate| {
-        state.stores.read().unwrap().entries.contains_key(candidate)
+        state
+            .shared
+            .stores
+            .read()
+            .unwrap()
+            .entries
+            .contains_key(candidate)
     });
 
     let validated_dir = resolve_store_dir(&state, &store_id)
         .map_err(|(code, msg)| AdminError::bad_request(code, msg))?;
 
     {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         if reg
             .entries
             .values()
@@ -190,12 +197,12 @@ pub(crate) async fn handle_admin_store_create(
     };
 
     {
-        let mut reg = state.stores.write().unwrap();
+        let mut reg = state.shared.stores.write().unwrap();
         reg.entries.insert(
             store_id.clone(),
             StoreEntry::new(record.clone(), StoreState::Unlocked(opened)),
         );
-        if let Err(e) = save_store_record(&state.stores_dir, &record) {
+        if let Err(e) = save_store_record(&state.admin().stores_dir, &record) {
             reg.entries.remove(&store_id);
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
@@ -235,13 +242,13 @@ pub(crate) async fn handle_admin_store_create(
     ),
 )]
 pub(crate) async fn handle_admin_store_update(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
     Body(body): Body<AdminStoreUpdateRequest>,
 ) -> Result<Json<AdminStoreListItem>, AdminError> {
     let updated = {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         let entry = reg
             .entry(&name)
             .map_err(|_| AdminError::store_not_found())?;
@@ -275,11 +282,11 @@ pub(crate) async fn handle_admin_store_update(
         record
     };
     {
-        let mut reg = state.stores.write().unwrap();
+        let mut reg = state.shared.stores.write().unwrap();
         if let Some(entry) = reg.entries.get_mut(&name) {
             entry.record = updated.clone();
         }
-        if let Err(e) = save_store_record(&state.stores_dir, &updated) {
+        if let Err(e) = save_store_record(&state.admin().stores_dir, &updated) {
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
                 format!("{e:#}"),
@@ -294,7 +301,7 @@ pub(crate) async fn handle_admin_store_update(
         "success",
     );
     let (handle, locked) = {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         let entry = reg.entry(&name).map_err(|_| {
             AdminError::internal_with_code(
                 "internal",
@@ -338,7 +345,7 @@ pub(crate) struct DeleteQuery {
     ),
 )]
 pub(crate) async fn handle_admin_store_delete(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
     Query(query): Query<DeleteQuery>,
@@ -346,7 +353,7 @@ pub(crate) async fn handle_admin_store_delete(
     let force = query.force;
 
     let (store_handle, dir_for_hint, locked) = {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         let entry = reg.entry(&name).map_err(|e| match e {
             RegistryLookupError::NotFound => AdminError::store_not_found(),
             RegistryLookupError::Locked => AdminError::store_locked(&name),
@@ -358,6 +365,7 @@ pub(crate) async fn handle_admin_store_delete(
         }
     };
     if state
+        .shared
         .client_instances
         .read()
         .unwrap()
@@ -403,9 +411,9 @@ pub(crate) async fn handle_admin_store_delete(
     }
 
     {
-        let mut reg = state.stores.write().unwrap();
+        let mut reg = state.shared.stores.write().unwrap();
         reg.entries.remove(&name);
-        if let Err(e) = delete_store_record(&state.stores_dir, &name) {
+        if let Err(e) = delete_store_record(&state.admin().stores_dir, &name) {
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
                 format!("{e:#}"),

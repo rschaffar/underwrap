@@ -23,7 +23,7 @@ use tracing::warn;
 
 use crate::http::responses::Body;
 use crate::runtime_api::error::RuntimeError;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::store_registry::RegistryLookupError;
 
 pub(crate) mod error;
@@ -38,7 +38,7 @@ use principal::resolve_runtime_client;
 #[derive(Clone)]
 pub(crate) struct PeerCertificates(pub(crate) Arc<Vec<rustls::pki_types::CertificateDer<'static>>>);
 
-pub(crate) fn runtime_router() -> Router<Arc<AdminRuntimeState>> {
+pub(crate) fn runtime_router() -> Router<Arc<ListenerState>> {
     Router::new()
         .route("/v1/wrappers", post(axum_wrappers_register))
         .route("/v1/wrapper-invocations", post(axum_invocation_open))
@@ -52,7 +52,7 @@ pub(crate) fn runtime_router() -> Router<Arc<AdminRuntimeState>> {
 /// `PeerCertificates` extension. Returns either a ready-to-use principal
 /// and unlocked store, or the canonical error response.
 fn resolve_runtime_request(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     peer_certs: &PeerCertificates,
 ) -> Result<(String, Arc<dyn underwrap_store::StorageBackend>), RuntimeError> {
     let resolved = resolve_runtime_client(state, peer_certs.0.as_ref()).map_err(|e| {
@@ -60,6 +60,7 @@ fn resolve_runtime_request(
         RuntimeError::unauthorized("unauthorized", "runtime client is not currently authorized")
     })?;
     let store = match state
+        .shared
         .stores
         .read()
         .unwrap()
@@ -80,7 +81,7 @@ fn resolve_runtime_request(
 }
 
 async fn axum_wrappers_register(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(peer_certs): axum::Extension<PeerCertificates>,
     Body(parsed): Body<underwrap_protocol::service::RuntimeWrapperRegisterRequest>,
 ) -> Result<Json<underwrap_protocol::service::RuntimeWrapperRegisterResponse>, RuntimeError> {
@@ -89,7 +90,7 @@ async fn axum_wrappers_register(
 }
 
 async fn axum_invocation_open(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(peer_certs): axum::Extension<PeerCertificates>,
     Body(parsed): Body<underwrap_protocol::service::RuntimeWrapperInvocationOpenRequest>,
 ) -> Result<Json<underwrap_protocol::service::RuntimeWrapperInvocationOpenResponse>, RuntimeError> {
@@ -98,7 +99,7 @@ async fn axum_invocation_open(
 }
 
 async fn axum_invocation_finalize(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(peer_certs): axum::Extension<PeerCertificates>,
     Body(parsed): Body<underwrap_protocol::service::RuntimeWrapperInvocationFinalizeRequest>,
 ) -> Result<Json<underwrap_protocol::service::RuntimeWrapperInvocationFinalizeResponse>, RuntimeError>

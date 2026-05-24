@@ -15,12 +15,12 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
+use crate::admin_api::csrf::Principal;
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::store_registry::{StoreState, save_store_record};
-use crate::users::Principal;
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_store_rotate_key))
         .routes(routes!(handle_admin_store_unlock))
@@ -50,12 +50,12 @@ use crate::admin_api::audit::{AuditEntity, log_admin_event};
     ),
 )]
 pub(crate) async fn handle_admin_store_rotate_key(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Json<AdminStoreRotateKeyResponse>, AdminError> {
     let (mut updated_record, dir, current_backend, rotate_lock) = {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         let entry = reg
             .entry(&name)
             .map_err(|_| AdminError::store_not_found())?;
@@ -240,12 +240,12 @@ pub(crate) async fn handle_admin_store_rotate_key(
 
     updated_record.storage = underwrap_protocol::config::StorageConfig::Encrypted { dir };
     {
-        let mut reg = state.stores.write().unwrap();
+        let mut reg = state.shared.stores.write().unwrap();
         if let Some(entry) = reg.entries.get_mut(&name) {
             entry.state = StoreState::Unlocked(rotated_backend);
             entry.record = updated_record.clone();
         }
-        if let Err(e) = save_store_record(&state.stores_dir, &updated_record) {
+        if let Err(e) = save_store_record(&state.admin().stores_dir, &updated_record) {
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
                 format!("{e:#}"),
@@ -361,13 +361,13 @@ fn reencrypt_into(
     ),
 )]
 pub(crate) async fn handle_admin_store_unlock(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
     Body(body): Body<AdminStoreUnlockRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
     let dir = {
-        let reg = state.stores.read().unwrap();
+        let reg = state.shared.stores.read().unwrap();
         let entry = reg
             .entry(&name)
             .map_err(|_| AdminError::store_not_found())?;
@@ -466,7 +466,7 @@ pub(crate) async fn handle_admin_store_unlock(
         }
     }
     {
-        let mut reg = state.stores.write().unwrap();
+        let mut reg = state.shared.stores.write().unwrap();
         reg.unlock(&name, Arc::new(backend));
     }
     log_admin_event(
@@ -496,11 +496,11 @@ pub(crate) async fn handle_admin_store_unlock(
     ),
 )]
 pub(crate) async fn handle_admin_store_lock(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Json<AdminStoreLockResponse>, AdminError> {
-    let mut reg = state.stores.write().unwrap();
+    let mut reg = state.shared.stores.write().unwrap();
     let entry = reg
         .entry(&name)
         .map_err(|_| AdminError::store_not_found())?;

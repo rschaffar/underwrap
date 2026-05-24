@@ -34,7 +34,7 @@ use tracing::error;
 use crate::admin_api::AdminError;
 use crate::admin_api::admin_router;
 use crate::runtime_api::{PeerCertificates, runtime_router};
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::web::serve_spa;
 
 pub(crate) mod origin;
@@ -43,7 +43,7 @@ pub(crate) mod responses;
 pub(crate) async fn https_accept_loop(
     listener: TcpListener,
     acceptor: TlsAcceptor,
-    state: Arc<AdminRuntimeState>,
+    state: Arc<ListenerState>,
 ) -> Result<()> {
     let app = build_app(state);
     loop {
@@ -60,11 +60,11 @@ pub(crate) async fn https_accept_loop(
 
 /// Compose the admin router (if enabled), the runtime router, and the
 /// SPA fallback into one top-level `Router<()>` ready to serve.
-fn build_app(state: Arc<AdminRuntimeState>) -> Router {
-    let runtime: Router<Arc<AdminRuntimeState>> = runtime_router();
+fn build_app(state: Arc<ListenerState>) -> Router {
+    let runtime: Router<Arc<ListenerState>> = runtime_router();
 
-    if state.admin_enabled {
-        let admin: Router<Arc<AdminRuntimeState>> = admin_router(state.clone());
+    if state.admin_enabled() {
+        let admin: Router<Arc<ListenerState>> = admin_router(state.clone());
         Router::new()
             .merge(runtime)
             .merge(admin)

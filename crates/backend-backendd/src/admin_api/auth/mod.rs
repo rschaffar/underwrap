@@ -34,11 +34,12 @@ use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
+use crate::admin_api::csrf::Principal;
 use crate::admin_api::users::mutate_collection;
 use crate::auth::{AuthBackend, AuthError, Credentials};
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
-use crate::users::{Principal, UserRecord};
+use crate::runtime_state::ListenerState;
+use crate::users::UserRecord;
 
 pub(crate) type AdminAuthSession = AuthSession<AuthBackend>;
 
@@ -62,14 +63,14 @@ pub(crate) struct WhoamiResponse {
     pub username: Option<String>,
 }
 
-pub(crate) fn public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn public_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_login))
         .routes(routes!(handle_admin_whoami))
         .merge(bootstrap::openapi_router())
 }
 
-pub(crate) fn protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn protected_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_password_change))
         .routes(routes!(handle_admin_logout))
@@ -201,12 +202,12 @@ pub(crate) async fn handle_admin_whoami(auth_session: AdminAuthSession) -> Json<
 )]
 pub(crate) async fn handle_admin_password_change(
     mut auth_session: AdminAuthSession,
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminPasswordChangeRequest>,
 ) -> Result<Json<AdminOkUserResponse>, AdminError> {
     crate::admin_api::util::validate_password_or_bad_request(&body.new_password)?;
-    let collection = crate::users::load(&state.users_dir).map_err(|e| {
+    let collection = crate::users::load(&state.admin().users_dir).map_err(|e| {
         warn!(err = %e, "auth.password: collection unreadable");
         AdminError::internal_with_code("internal", "user collection unavailable")
     })?;

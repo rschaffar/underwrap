@@ -14,7 +14,7 @@ use crate::config::BackendConfig;
 use crate::http::https_accept_loop;
 use crate::http::origin::validate_admin_config;
 use crate::runtime_api::principal::validate_runtime_client_mappings;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::{AdminState, ListenerState, SharedState};
 use crate::store_registry::{StoreRegistry, load_store_records, open_initial_stores};
 use crate::tls::build_https_acceptor;
 
@@ -42,33 +42,42 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
             .with_context(|| format!("binding HTTPS listener {}", https_config.listen))?;
         let tls_acceptor = build_https_acceptor(&https_config.tls)?;
         let admin_config = config.admin.as_ref();
-        let state = Arc::new(AdminRuntimeState {
+        let shared = SharedState {
             stores: Arc::clone(&store_registry),
             client_instances: Arc::clone(&client_instances),
-            stores_dir: stores_dir.clone(),
-            clients_dir: clients_dir.clone(),
-            stores_data_root: admin_config.and_then(|cfg| cfg.stores_data_root.clone()),
-            admin_enabled: admin_config.is_some(),
-            allowed_origins: admin_config.and_then(|cfg| cfg.allowed_origins.clone()),
-            users_dir: users_dir.clone(),
-            bootstrap_file: bootstrap_file.clone(),
-            auth_backend: crate::auth::AuthBackend::new(users_dir.clone()),
-            session_store: tower_sessions::MemoryStore::default(),
-            csrf_config: crate::admin_api::csrf::build_csrf_config(true),
-            session_lifetime_secs: admin_config
-                .and_then(|cfg| cfg.session_lifetime_secs)
-                .unwrap_or(crate::auth::DEFAULT_SESSION_LIFETIME_SECS),
-            cookies_secure: true,
-            bootstrap_lock: std::sync::Mutex::new(()),
-            user_collection_lock: std::sync::Mutex::new(()),
+        };
+        let admin = admin_config.map(|cfg| {
+            // TLS-terminated admin listener — cookies issued from here
+            // are always served over HTTPS, so `Secure` is mandatory.
+            // The same flag is threaded into the CSRF config so the two
+            // never drift.
+            let cookies_secure = true;
+            AdminState {
+                stores_dir: stores_dir.clone(),
+                clients_dir: clients_dir.clone(),
+                stores_data_root: cfg.stores_data_root.clone(),
+                allowed_origins: cfg.allowed_origins.clone(),
+                users_dir: users_dir.clone(),
+                bootstrap_file: bootstrap_file.clone(),
+                auth_backend: crate::auth::AuthBackend::new(users_dir.clone()),
+                session_store: tower_sessions::MemoryStore::default(),
+                csrf_config: crate::admin_api::csrf::build_csrf_config(cookies_secure),
+                session_lifetime_secs: cfg
+                    .session_lifetime_secs
+                    .unwrap_or(crate::auth::DEFAULT_SESSION_LIFETIME_SECS),
+                cookies_secure,
+                bootstrap_lock: std::sync::Mutex::new(()),
+                user_collection_lock: std::sync::Mutex::new(()),
+            }
         });
+        let state = Arc::new(ListenerState { shared, admin });
         {
-            let snapshot = state.stores.read().unwrap();
+            let snapshot = state.shared.stores.read().unwrap();
             info!(
                 listen = %https_config.listen,
                 stores = snapshot.entries.len(),
-                instances = state.client_instances.read().unwrap().len(),
-                admin = state.admin_enabled,
+                instances = state.shared.client_instances.read().unwrap().len(),
+                admin = state.admin_enabled(),
                 "backend HTTPS listener ready",
             );
         }

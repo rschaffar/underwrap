@@ -18,8 +18,8 @@ use crate::test_support::{
 };
 
 fn delete_store(
-    state: Arc<crate::runtime_state::AdminRuntimeState>,
-    p: &crate::users::Principal,
+    state: Arc<crate::runtime_state::ListenerState>,
+    p: &crate::admin_api::csrf::Principal,
     name: &str,
     force: bool,
 ) -> (StatusCode, serde_json::Value) {
@@ -148,7 +148,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
     let doomed_id = "doomed".to_string();
     let survivor_id = "survivor".to_string();
     {
-        let mut instances = state.client_instances.write().unwrap();
+        let mut instances = state.shared.client_instances.write().unwrap();
         for (id, fp) in [(&doomed_id, "fp-doomed"), (&survivor_id, "fp-survivor")] {
             let record = crate::runtime_clients::ClientInstanceRecord {
                 id: id.clone(),
@@ -162,7 +162,8 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
                 },
                 auto_create_wrapper_assets: false,
             };
-            crate::runtime_clients::save_client_instance(&state.clients_dir, &record).unwrap();
+            crate::runtime_clients::save_client_instance(&state.admin().clients_dir, &record)
+                .unwrap();
             instances.insert(id.clone(), record);
         }
     }
@@ -190,6 +191,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
 
     let before = load_policy_document(
         state
+            .shared
             .stores
             .read()
             .unwrap()
@@ -210,6 +212,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
     // remains so we know we cascaded by id, not by store-wide nuke.
     let after = load_policy_document(
         state
+            .shared
             .stores
             .read()
             .unwrap()
@@ -269,8 +272,9 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
             },
             auto_create_wrapper_assets: false,
         };
-        crate::runtime_clients::save_client_instance(&state.clients_dir, &record).unwrap();
+        crate::runtime_clients::save_client_instance(&state.admin().clients_dir, &record).unwrap();
         state
+            .shared
             .client_instances
             .write()
             .unwrap()
@@ -280,7 +284,12 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
     // Corrupt the old store's policy document so the cascade's
     // load_policy_document() call returns Err.
     {
-        let old_backend = state.stores.read().unwrap().expect_unlocked(&old_store_id);
+        let old_backend = state
+            .shared
+            .stores
+            .read()
+            .unwrap()
+            .expect_unlocked(&old_store_id);
         old_backend
             .write(POLICY_DOCUMENT_SECRET_ID, b"{ not json")
             .unwrap();
@@ -301,6 +310,7 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         state
+            .shared
             .client_instances
             .read()
             .unwrap()
@@ -360,7 +370,7 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     assert_eq!(toggled_body["auto_create_wrapper_assets"], true);
 
     // Persisted across a fresh load.
-    let reloaded = crate::runtime_clients::load_client_instances(&state.clients_dir)
+    let reloaded = crate::runtime_clients::load_client_instances(&state.admin().clients_dir)
         .expect("reload client instances");
     assert!(reloaded.get(&id).unwrap().auto_create_wrapper_assets);
 

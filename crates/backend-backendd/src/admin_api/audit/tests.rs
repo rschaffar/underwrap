@@ -15,7 +15,7 @@ use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
 use underwrap_protocol::resource::ResourceSlot;
 
 use super::*;
-use crate::users::Principal;
+use crate::admin_api::csrf::Principal;
 
 /// `MakeWriter` that appends each emitted byte to a shared buffer.
 /// Lets us round-trip the `tracing::info!` line into a string we can

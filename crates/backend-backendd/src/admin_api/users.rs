@@ -21,9 +21,10 @@ use underwrap_protocol::service::{
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
+use crate::admin_api::csrf::Principal;
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
-use crate::users::{Principal, UserMutationError};
+use crate::runtime_state::ListenerState;
+use crate::users::UserMutationError;
 
 pub(crate) fn user_list_item(record: &crate::users::UserRecord) -> AdminUserListItem {
     AdminUserListItem {
@@ -101,24 +102,27 @@ impl MutateCollectionError {
 /// performs the corresponding `save_user` or `delete_user` after the
 /// closure succeeds. On any error nothing is persisted.
 pub(crate) fn mutate_collection<T, F>(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     f: F,
 ) -> Result<T, MutateCollectionError>
 where
     F: FnOnce(&mut crate::users::UserCollection) -> Result<(T, CollectionWrite), UserMutationError>,
 {
-    let _guard = state.user_collection_lock.lock().unwrap();
-    let mut collection = crate::users::load(&state.users_dir).map_err(MutateCollectionError::Io)?;
+    let _guard = state.admin().user_collection_lock.lock().unwrap();
+    let mut collection =
+        crate::users::load(&state.admin().users_dir).map_err(MutateCollectionError::Io)?;
     let (out, write) = f(&mut collection).map_err(MutateCollectionError::User)?;
     match write {
         CollectionWrite::Save(id) => {
             let record = collection
                 .find_by_id(&id)
                 .expect("Save(id) requires the record to be present in the collection");
-            crate::users::save_user(&state.users_dir, record).map_err(MutateCollectionError::Io)?;
+            crate::users::save_user(&state.admin().users_dir, record)
+                .map_err(MutateCollectionError::Io)?;
         }
         CollectionWrite::Delete(id) => {
-            crate::users::delete_user(&state.users_dir, &id).map_err(MutateCollectionError::Io)?;
+            crate::users::delete_user(&state.admin().users_dir, &id)
+                .map_err(MutateCollectionError::Io)?;
         }
     }
     Ok(out)
@@ -160,7 +164,7 @@ fn audit_user_mutation<T>(
     }
 }
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_users_list, handle_admin_user_create))
         .routes(routes!(handle_admin_user_update, handle_admin_user_delete))
@@ -178,9 +182,9 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     ),
 )]
 pub(crate) async fn handle_admin_users_list(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
 ) -> Result<Json<AdminUsersListResponse>, AdminError> {
-    let collection = crate::users::load(&state.users_dir).map_err(|e| {
+    let collection = crate::users::load(&state.admin().users_dir).map_err(|e| {
         warn!(err = %e, "users.list: collection unreadable");
         AdminError::internal_with_code("internal", "user collection unavailable")
     })?;
@@ -202,7 +206,7 @@ pub(crate) async fn handle_admin_users_list(
     ),
 )]
 pub(crate) async fn handle_admin_user_create(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminUserCreateRequest>,
 ) -> Result<Json<AdminUserListItem>, AdminError> {
@@ -255,7 +259,7 @@ pub(crate) async fn handle_admin_user_create(
     ),
 )]
 pub(crate) async fn handle_admin_user_update(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
     Body(body): Body<AdminUserUpdateRequest>,
@@ -290,7 +294,7 @@ pub(crate) async fn handle_admin_user_update(
     ),
 )]
 pub(crate) async fn handle_admin_user_reset_password(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
     Body(body): Body<AdminUserResetPasswordRequest>,
@@ -336,7 +340,7 @@ pub(crate) async fn handle_admin_user_reset_password(
     ),
 )]
 pub(crate) async fn handle_admin_user_delete(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminOkUserResponse>, AdminError> {

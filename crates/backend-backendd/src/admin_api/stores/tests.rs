@@ -32,7 +32,7 @@ fn resolve_store_dir_uses_id_as_leaf_under_root() {
 fn resolve_store_dir_rejects_when_root_unconfigured() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut state = crud_state(tmp.path());
-    state.stores_data_root = None;
+    crate::test_support::admin_mut(&mut state).stores_data_root = None;
     let err = resolve_store_dir(&state, "store_x").expect_err("must refuse without root");
     assert_eq!(err.0, "data_root_not_configured");
 }
@@ -41,7 +41,8 @@ fn resolve_store_dir_rejects_when_root_unconfigured() {
 fn resolve_store_dir_rejects_relative_root() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut state = crud_state(tmp.path());
-    state.stores_data_root = Some(std::path::PathBuf::from("relative/data"));
+    crate::test_support::admin_mut(&mut state).stores_data_root =
+        Some(std::path::PathBuf::from("relative/data"));
     let err = resolve_store_dir(&state, "store_x").expect_err("must refuse relative root");
     assert_eq!(err.0, "data_root_not_absolute");
 }

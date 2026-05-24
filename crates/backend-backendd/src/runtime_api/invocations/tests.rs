@@ -9,7 +9,12 @@ fn bump_pair_last_used_sets_timestamp_only_on_matching_pair() {
     use underwrap_protocol::entities::{EntityCreator, WrapperResourcePairRecord};
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let store_arc = state.stores.read().unwrap().expect_unlocked(&store_id);
+    let store_arc = state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .expect_unlocked(&store_id);
     let store: &dyn StorageBackend = store_arc.as_ref();
 
     let mut pairs = load_pairs_document(store).unwrap();
@@ -50,7 +55,12 @@ fn bump_pair_last_used_sets_timestamp_only_on_matching_pair() {
 fn bump_pair_last_used_silent_when_no_pair() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
-    let store_arc = state.stores.read().unwrap().expect_unlocked(&store_id);
+    let store_arc = state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .expect_unlocked(&store_id);
     // No pair record for (gh, res_token) → no-op, no error.
     bump_pair_last_used(store_arc.as_ref(), "gh", "res_token").unwrap();
 }

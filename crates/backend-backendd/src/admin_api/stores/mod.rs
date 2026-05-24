@@ -7,8 +7,8 @@
 //! usage / actions projections; they sit in this module so the two
 //! halves can each `use super::*;`.
 //!
-//! All five CRUD handlers operate on the runtime `state.stores`
-//! registry plus the per-store JSON files under `state.stores_dir`.
+//! All five CRUD handlers operate on the runtime `state.shared.stores`
+//! registry plus the per-store JSON files under `state.admin().stores_dir`.
 //! Atomicity comes from `tempfile::NamedTempFile` `persist()` on the
 //! per-record write side and a brief held `write()` lock on the
 //! in-memory registry update.
@@ -23,7 +23,7 @@ use underwrap_protocol::service::{
 use underwrap_store::StorageBackend;
 
 use crate::admin_api::AdminError;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::store_registry::RegistryLookupError;
 use underwrap_protocol::config::StoreRecord;
 
@@ -36,10 +36,10 @@ pub(crate) mod lifecycle;
 /// Returns the live backend or the canonical not-found / locked
 /// [`AdminError`].
 pub(crate) fn admin_store(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     store: &str,
 ) -> std::result::Result<Arc<dyn StorageBackend>, AdminError> {
-    match state.stores.read().unwrap().unlocked_backend(store) {
+    match state.shared.stores.read().unwrap().unlocked_backend(store) {
         Ok(s) => Ok(s),
         Err(RegistryLookupError::Locked) => Err(AdminError::store_locked(store)),
         Err(RegistryLookupError::NotFound) => Err(AdminError::store_not_found()),
@@ -57,9 +57,10 @@ pub(super) fn backend_kind(
     }
 }
 
-fn mapped_client_instance_count(state: &AdminRuntimeState, store_id: &str) -> u32 {
+fn mapped_client_instance_count(state: &ListenerState, store_id: &str) -> u32 {
     crate::admin_api::util::saturating_u32(
         state
+            .shared
             .client_instances
             .read()
             .unwrap()
@@ -70,7 +71,7 @@ fn mapped_client_instance_count(state: &AdminRuntimeState, store_id: &str) -> u3
 }
 
 pub(super) fn admin_store_usage(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     store_id: &str,
     store: &dyn underwrap_store::StorageBackend,
 ) -> std::result::Result<AdminStoreUsageSummary, AdminError> {
@@ -140,7 +141,7 @@ pub(super) fn admin_store_list_item(
 /// force-delete bucket and the operator gets a clear "unlock first
 /// or force-delete" decision.
 pub(super) fn admin_store_usage_for_locked(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     store_id: &str,
 ) -> AdminStoreUsageSummary {
     AdminStoreUsageSummary {
@@ -154,10 +155,10 @@ pub(super) fn admin_store_usage_for_locked(
 /// display name, so the directory leaf is the random store id. An
 /// unconfigured root disables creation entirely.
 pub(crate) fn resolve_store_dir(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     store_id: &str,
 ) -> std::result::Result<PathBuf, (&'static str, String)> {
-    let Some(root) = state.stores_data_root.as_ref() else {
+    let Some(root) = state.admin().stores_data_root.as_ref() else {
         return Err((
             "data_root_not_configured",
             "store creation is disabled: backend.yaml has no `admin.stores_data_root`".to_string(),
@@ -210,7 +211,7 @@ pub(super) fn create_data_dir_secure(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))
 }
 
-pub(crate) fn openapi_router() -> utoipa_axum::router::OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> utoipa_axum::router::OpenApiRouter<Arc<ListenerState>> {
     use utoipa_axum::router::OpenApiRouter;
     OpenApiRouter::new()
         .merge(crud::openapi_router())

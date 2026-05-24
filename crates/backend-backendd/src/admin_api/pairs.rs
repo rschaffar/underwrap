@@ -16,18 +16,18 @@ use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
+use crate::admin_api::csrf::Principal;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::IntoInternal;
 use crate::http::responses::Body;
 use crate::runtime_api::wrappers::generate_resource_id;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::storage::documents::{
     load_pairs_document, load_resources_document, policy_permission_dependents,
     save_pairs_document, save_resources_document,
 };
-use crate::users::Principal;
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_pairs_list, handle_admin_pair_create))
         .routes(routes!(handle_admin_pair_with_new_resource))
@@ -47,7 +47,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     ),
 )]
 pub(crate) async fn handle_admin_pairs_list(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminPairsListResponse>, AdminError> {
     let store = admin_store(&state, &store_id)?;
@@ -76,7 +76,7 @@ pub(crate) async fn handle_admin_pairs_list(
     ),
 )]
 pub(crate) async fn handle_admin_pair_create(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(store_id): Path<String>,
     Body(body): Body<AdminPairCreateRequest>,
@@ -148,7 +148,7 @@ pub(crate) async fn handle_admin_pair_create(
     ),
 )]
 pub(crate) async fn handle_admin_pair_with_new_resource(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(store_id): Path<String>,
     Body(body): Body<AdminPairWithNewResourceRequest>,
@@ -262,7 +262,7 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
     ),
 )]
 pub(crate) async fn handle_admin_pair_delete(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, wrapper, resource_id)): Path<(String, String, String)>,
 ) -> Result<Json<AdminPairDeleteResponse>, AdminError> {

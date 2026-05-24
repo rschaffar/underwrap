@@ -23,7 +23,7 @@ use crate::admin_api::audit::log_bootstrap_attempt;
 
 use crate::admin_api::auth::AdminAuthSession;
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 pub(crate) struct BootstrapRequest {
@@ -41,7 +41,7 @@ pub(crate) struct BootstrapResponse {
     pub username: String,
 }
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_bootstrap_status))
         .routes(routes!(handle_admin_bootstrap))
@@ -61,10 +61,11 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     ),
 )]
 pub(crate) async fn handle_admin_bootstrap_status(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
 ) -> Json<BootstrapStatusResponse> {
-    let sentinel_set = crate::users::bootstrap_completed(&state.bootstrap_file).unwrap_or(true);
-    let collection_empty = crate::users::load(&state.users_dir)
+    let sentinel_set =
+        crate::users::bootstrap_completed(&state.admin().bootstrap_file).unwrap_or(true);
+    let collection_empty = crate::users::load(&state.admin().users_dir)
         .map(|c| c.is_empty())
         .unwrap_or(false);
     Json(BootstrapStatusResponse {
@@ -90,7 +91,7 @@ pub(crate) async fn handle_admin_bootstrap_status(
 )]
 pub(crate) async fn handle_admin_bootstrap(
     mut auth_session: AdminAuthSession,
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Body(body): Body<BootstrapRequest>,
 ) -> Result<Json<BootstrapResponse>, AdminError> {
     let username_norm = crate::users::normalise_username(&body.username);
@@ -106,9 +107,9 @@ pub(crate) async fn handle_admin_bootstrap(
     // written. The lock is held only across the synchronous DB work
     // — it is released before we hit any `.await` so the request
     // future stays `Send`.
-    let bootstrap_guard = state.bootstrap_lock.lock().unwrap();
+    let bootstrap_guard = state.admin().bootstrap_lock.lock().unwrap();
 
-    match crate::users::bootstrap_completed(&state.bootstrap_file) {
+    match crate::users::bootstrap_completed(&state.admin().bootstrap_file) {
         Ok(true) => {
             log_bootstrap_attempt(
                 &username_norm,
@@ -130,7 +131,7 @@ pub(crate) async fn handle_admin_bootstrap(
         }
     }
 
-    let collection = crate::users::load(&state.users_dir).map_err(|e| {
+    let collection = crate::users::load(&state.admin().users_dir).map_err(|e| {
         warn!(err = %e, "bootstrap: loading user collection failed");
         AdminError::internal_with_code("internal", "user collection unavailable")
     })?;
@@ -169,7 +170,7 @@ pub(crate) async fn handle_admin_bootstrap(
             e.to_string(),
         ));
     }
-    if let Err(e) = crate::users::save_user(&state.users_dir, &record) {
+    if let Err(e) = crate::users::save_user(&state.admin().users_dir, &record) {
         warn!(err = %e, "bootstrap: writing user record failed");
         return Err(AdminError::internal_with_code(
             "internal",
@@ -177,7 +178,7 @@ pub(crate) async fn handle_admin_bootstrap(
         ));
     }
     if let Err(e) = crate::users::mark_bootstrap_completed(
-        &state.bootstrap_file,
+        &state.admin().bootstrap_file,
         &crate::users::BootstrapSentinel {
             completed_at: now,
             by_username: record.username.clone(),

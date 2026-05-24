@@ -20,12 +20,12 @@ use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
+use crate::admin_api::csrf::Principal;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::IntoInternal;
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::storage::documents::{load_policy_document, save_policy_document};
-use crate::users::Principal;
 
 /// Strip every wrapper permission whose `client_instance` matches
 /// `client_instance_id` from the policy document of `store_id`. Used
@@ -51,13 +51,19 @@ use crate::users::Principal;
 /// orphan rows are audit-visible and self-healing when the store
 /// unlocks; surfacing them is the right trade-off.
 pub(crate) fn drop_client_instance_permissions(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     principal: &Principal,
     store_id: &str,
     client_instance_id: &str,
 ) -> Result<()> {
     use crate::store_registry::RegistryLookupError;
-    let store = match state.stores.read().unwrap().unlocked_backend(store_id) {
+    let store = match state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .unlocked_backend(store_id)
+    {
         Ok(s) => s,
         Err(RegistryLookupError::Locked) => {
             tracing::warn!(
@@ -95,7 +101,7 @@ pub(crate) fn drop_client_instance_permissions(
     save_policy_document(store.as_ref(), &doc)
 }
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_wrapper_permissions_list))
         .routes(routes!(
@@ -117,7 +123,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permissions_list(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminWrapperPermissionsListResponse>, AdminError> {
     let store = admin_store(&state, &store_id)?;
@@ -147,7 +153,7 @@ pub(crate) async fn handle_admin_wrapper_permissions_list(
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permission_upsert(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, client_instance, wrapper, resource_id)): Path<(String, String, String, String)>,
     Body(body): Body<AdminWrapperPermissionUpsertRequest>,
@@ -225,7 +231,7 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permission_delete(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, client_instance, wrapper, resource_id)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {

@@ -10,7 +10,7 @@ fn runtime_wrapper_register_seeds_pair_when_auto_create_enabled() {
     let fx = make_runtime_api_fixture();
     // Flip auto-create on for this instance.
     {
-        let mut instances = fx.state.client_instances.write().unwrap();
+        let mut instances = fx.state.shared.client_instances.write().unwrap();
         instances
             .get_mut(&fx.instance_id)
             .unwrap()

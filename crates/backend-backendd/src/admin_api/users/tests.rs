@@ -47,7 +47,7 @@ fn user_create_persists_record_and_omits_password_hash_from_response() {
     );
 
     // The record landed in the user collection.
-    let collection = crate::users::load(&state.users_dir).unwrap();
+    let collection = crate::users::load(&state.admin().users_dir).unwrap();
     assert_eq!(collection.users.len(), 2);
     assert!(collection.find_by_username("bob").is_some());
 }
@@ -188,7 +188,7 @@ fn user_delete_refuses_last_user() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "last_user_protected");
     // Record still in the collection.
-    let collection = crate::users::load(&state.users_dir).unwrap();
+    let collection = crate::users::load(&state.admin().users_dir).unwrap();
     assert!(collection.find_by_id(&alice_id).is_some());
 }
 
@@ -240,7 +240,7 @@ fn user_reset_password_changes_hash() {
     assert_eq!(create_status, StatusCode::OK);
     let bob_id = create_body["id"].as_str().unwrap().to_string();
 
-    let hash_before = crate::users::load(&state.users_dir)
+    let hash_before = crate::users::load(&state.admin().users_dir)
         .unwrap()
         .find_by_id(&bob_id)
         .unwrap()
@@ -258,7 +258,7 @@ fn user_reset_password_changes_hash() {
     })
     .unwrap();
 
-    let hash_after = crate::users::load(&state.users_dir)
+    let hash_after = crate::users::load(&state.admin().users_dir)
         .unwrap()
         .find_by_id(&bob_id)
         .unwrap()
@@ -285,7 +285,7 @@ fn debug_redacts_password_hash_in_collection_logging() {
         }),
     ));
     assert_eq!(status, StatusCode::OK);
-    let collection = crate::users::load(&state.users_dir).unwrap();
+    let collection = crate::users::load(&state.admin().users_dir).unwrap();
     let formatted = format!("{collection:?}");
     assert!(
         !formatted.contains("$argon2"),
@@ -304,11 +304,15 @@ fn io_failure_during_save_surfaces_as_500() {
     // Lock the directory after the seed so the create handler fails
     // when it tries to write the new user record.
     use std::os::unix::fs::PermissionsExt;
-    let original_mode = std::fs::metadata(&state.users_dir)
+    let original_mode = std::fs::metadata(&state.admin().users_dir)
         .unwrap()
         .permissions()
         .mode();
-    std::fs::set_permissions(&state.users_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    std::fs::set_permissions(
+        &state.admin().users_dir,
+        std::fs::Permissions::from_mode(0o555),
+    )
+    .unwrap();
 
     let (status, body) = run_handler(handle_admin_user_create(
         State(state.clone()),
@@ -321,7 +325,7 @@ fn io_failure_during_save_surfaces_as_500() {
 
     // Restore so the tempdir cleanup can run.
     std::fs::set_permissions(
-        &state.users_dir,
+        &state.admin().users_dir,
         std::fs::Permissions::from_mode(original_mode),
     )
     .unwrap();

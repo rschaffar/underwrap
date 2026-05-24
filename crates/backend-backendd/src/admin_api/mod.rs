@@ -64,7 +64,7 @@ use utoipa_axum::router::OpenApiRouter;
 
 use crate::http::origin::origin_layer;
 use crate::openapi::ApiDoc;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 
 use self::csrf::{
     attach_csrf_response_layer, require_login_layer, resolve_principal_layer, verify_csrf_layer,
@@ -77,7 +77,7 @@ pub(crate) const SESSION_COOKIE_NAME: &str = "__Host-uw-session";
 /// Public sub-router (login, whoami, bootstrap). Shared between the
 /// live HTTPS listener and the OpenAPI export drift test. Bootstrap
 /// is merged inside [`auth::public_router`].
-fn build_public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+fn build_public_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new().merge(auth::public_router())
 }
 
@@ -85,7 +85,7 @@ fn build_public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 /// between the live HTTPS listener (where layers wrap this output)
 /// and the OpenAPI export test (which only cares about the path
 /// table).
-fn build_protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+fn build_protected_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .merge(auth::protected_router())
         .merge(users::openapi_router())
@@ -101,21 +101,22 @@ fn build_protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
 
 /// Build the live admin sub-router for `/v1/admin/*` with every
 /// tower layer wired in. The returned router is parameterized by
-/// `Arc<AdminRuntimeState>` so the caller composes it with the
+/// `Arc<ListenerState>` so the caller composes it with the
 /// runtime router and provides state once via `.with_state(...)`.
-pub(crate) fn admin_router(state: Arc<AdminRuntimeState>) -> Router<Arc<AdminRuntimeState>> {
-    let session_lifetime =
-        TimeDuration::seconds(i64::try_from(state.session_lifetime_secs).unwrap_or(i64::MAX));
-    let session_layer = SessionManagerLayer::new(state.session_store.clone())
+pub(crate) fn admin_router(state: Arc<ListenerState>) -> Router<Arc<ListenerState>> {
+    let session_lifetime = TimeDuration::seconds(
+        i64::try_from(state.admin().session_lifetime_secs).unwrap_or(i64::MAX),
+    );
+    let session_layer = SessionManagerLayer::new(state.admin().session_store.clone())
         .with_name(SESSION_COOKIE_NAME)
         .with_http_only(true)
         .with_same_site(SameSite::Strict)
-        .with_secure(state.cookies_secure)
+        .with_secure(state.admin().cookies_secure)
         .with_path("/")
         .with_expiry(Expiry::OnInactivity(session_lifetime));
     let auth_layer =
-        AuthManagerLayerBuilder::new(state.auth_backend.clone(), session_layer).build();
-    let csrf_layer = CsrfLayer::new(state.csrf_config.clone());
+        AuthManagerLayerBuilder::new(state.admin().auth_backend.clone(), session_layer).build();
+    let csrf_layer = CsrfLayer::new(state.admin().csrf_config.clone());
 
     // `.layer` wraps the current router with the supplied middleware,
     // so layers read inside-out — the *first* `.layer(...)` call is

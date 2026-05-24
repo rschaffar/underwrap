@@ -33,15 +33,15 @@ use underwrap_store::{
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event, result_label};
+use crate::admin_api::csrf::Principal;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::{IntoInternal, decode_b64, encode_b64};
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::storage::secret_entries::{
     delete_resource_entry, list_secret_entries, read_resource_entry,
     validate_and_compose_secret_id, write_resource_entry,
 };
-use crate::users::Principal;
 
 /// Parse a slot segment from the URL path or surface a 400 error.
 ///
@@ -75,7 +75,7 @@ pub(crate) struct SecretListQuery {
     pub(crate) resource_id: Option<String>,
 }
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_secrets_list))
         .routes(routes!(
@@ -102,7 +102,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     ),
 )]
 pub(crate) async fn handle_admin_secrets_list(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Path(store_id): Path<String>,
     Query(query): Query<SecretListQuery>,
 ) -> Result<Json<AdminSecretListResponse>, AdminError> {
@@ -130,7 +130,7 @@ pub(crate) async fn handle_admin_secrets_list(
     ),
 )]
 pub(crate) async fn handle_admin_secret_read(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Path((store_id, resource_id, slot, key)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminSecretReadResponse>, AdminError> {
     let slot = parse_slot(&slot)?;
@@ -163,7 +163,7 @@ pub(crate) async fn handle_admin_secret_read(
     ),
 )]
 pub(crate) async fn handle_admin_secret_write(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, slot, key)): Path<(String, String, String, String)>,
     Body(body): Body<AdminSecretWriteRequest>,
@@ -211,7 +211,7 @@ pub(crate) async fn handle_admin_secret_write(
     ),
 )]
 pub(crate) async fn handle_admin_secret_delete(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, slot, key)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminSecretDeleteResponse>, AdminError> {
@@ -264,7 +264,7 @@ pub(crate) async fn handle_admin_secret_delete(
     ),
 )]
 pub(crate) async fn handle_admin_secret_rename(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, slot, from_key)): Path<(String, String, String, String)>,
     Body(body): Body<AdminSecretRenameRequest>,
@@ -288,7 +288,7 @@ pub(crate) async fn handle_admin_secret_rename(
 }
 
 async fn rename_inner(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     store_id: &str,
     resource_id: &str,
     slot: ResourceSlot,

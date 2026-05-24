@@ -23,10 +23,10 @@ use underwrap_protocol::service::{
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
+use crate::admin_api::csrf::Principal;
 use crate::admin_api::policy::drop_client_instance_permissions;
 use crate::http::responses::Body;
-use crate::runtime_state::AdminRuntimeState;
-use crate::users::Principal;
+use crate::runtime_state::ListenerState;
 
 fn client_instance_status_to_wire(
     status: crate::runtime_clients::ClientInstanceStatus,
@@ -59,8 +59,9 @@ fn admin_client_instance_actions(
     }
 }
 
-fn current_store_names(state: &AdminRuntimeState) -> HashMap<String, String> {
+fn current_store_names(state: &ListenerState) -> HashMap<String, String> {
     state
+        .shared
         .stores
         .read()
         .unwrap()
@@ -89,8 +90,9 @@ fn admin_client_instance_list_item(
 }
 
 /// Look up the display name of `store_id` in the live registry.
-fn resolve_store_name(state: &AdminRuntimeState, store_id: &str) -> Result<String, AdminError> {
+fn resolve_store_name(state: &ListenerState, store_id: &str) -> Result<String, AdminError> {
     state
+        .shared
         .stores
         .read()
         .unwrap()
@@ -105,7 +107,7 @@ fn resolve_store_name(state: &AdminRuntimeState, store_id: &str) -> Result<Strin
         })
 }
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(
             handle_admin_client_instances_list,
@@ -127,11 +129,11 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     ),
 )]
 pub(crate) async fn handle_admin_client_instances_list(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
 ) -> Result<Json<AdminClientInstancesListResponse>, AdminError> {
     let store_names = current_store_names(&state);
     let mut items = Vec::new();
-    for record in state.client_instances.read().unwrap().values() {
+    for record in state.shared.client_instances.read().unwrap().values() {
         let Some(current_store_name) = store_names.get(&record.current_store_id).cloned() else {
             return Err(AdminError::internal_with_code(
                 "unknown_store",
@@ -162,7 +164,7 @@ pub(crate) async fn handle_admin_client_instances_list(
     ),
 )]
 pub(crate) async fn handle_admin_client_instance_create(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminClientInstanceCreateRequest>,
 ) -> Result<Json<AdminClientInstanceListItem>, AdminError> {
@@ -185,19 +187,20 @@ pub(crate) async fn handle_admin_client_instance_create(
     })?;
     let cert_fingerprint = current_credential.cert_fingerprint.clone();
     {
-        let stores = state.stores.read().unwrap();
+        let stores = state.shared.stores.read().unwrap();
         if !stores.entries.contains_key(&body.current_store_id) {
             return Err(AdminError::bad_request("unknown_store", "unknown store"));
         }
     }
     let id = crate::ids::fresh_id("inst", |candidate| {
         state
+            .shared
             .client_instances
             .read()
             .unwrap()
             .contains_key(candidate)
     });
-    let mut instances = state.client_instances.write().unwrap();
+    let mut instances = state.shared.client_instances.write().unwrap();
     if instances
         .values()
         .any(|existing| existing.display_name.eq_ignore_ascii_case(&display_name))
@@ -226,7 +229,9 @@ pub(crate) async fn handle_admin_client_instance_create(
         auto_create_wrapper_assets: body.auto_create_wrapper_assets.unwrap_or(false),
     };
     instances.insert(id.clone(), record.clone());
-    if let Err(e) = crate::runtime_clients::save_client_instance(&state.clients_dir, &record) {
+    if let Err(e) =
+        crate::runtime_clients::save_client_instance(&state.admin().clients_dir, &record)
+    {
         instances.remove(&id);
         return Err(AdminError::internal_with_code(
             "write_client_instances_failed",
@@ -264,12 +269,12 @@ pub(crate) async fn handle_admin_client_instance_create(
     ),
 )]
 pub(crate) async fn handle_admin_client_instance_update(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
     Body(body): Body<AdminClientInstanceUpdateRequest>,
 ) -> Result<Json<AdminClientInstanceListItem>, AdminError> {
-    let mut instances = state.client_instances.write().unwrap();
+    let mut instances = state.shared.client_instances.write().unwrap();
     let existing = instances
         .get(&id)
         .cloned()
@@ -297,6 +302,7 @@ pub(crate) async fn handle_admin_client_instance_update(
     }
     if let Some(current_store_id) = &body.current_store_id {
         if !state
+            .shared
             .stores
             .read()
             .unwrap()
@@ -333,7 +339,9 @@ pub(crate) async fn handle_admin_client_instance_update(
         updated.auto_create_wrapper_assets = flag;
     }
     instances.insert(id.clone(), updated.clone());
-    if let Err(e) = crate::runtime_clients::save_client_instance(&state.clients_dir, &updated) {
+    if let Err(e) =
+        crate::runtime_clients::save_client_instance(&state.admin().clients_dir, &updated)
+    {
         return Err(AdminError::internal_with_code(
             "write_client_instances_failed",
             format!("{e:#}"),
@@ -383,15 +391,16 @@ pub(crate) async fn handle_admin_client_instance_update(
     ),
 )]
 pub(crate) async fn handle_admin_client_instance_delete(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
-    let mut instances = state.client_instances.write().unwrap();
+    let mut instances = state.shared.client_instances.write().unwrap();
     let removed = instances
         .remove(&id)
         .ok_or_else(AdminError::client_instance_not_found)?;
-    if let Err(e) = crate::runtime_clients::delete_client_instance(&state.clients_dir, &id) {
+    if let Err(e) = crate::runtime_clients::delete_client_instance(&state.admin().clients_dir, &id)
+    {
         // Roll the in-memory state back so the next request sees the same
         // view as the on-disk file.
         instances.insert(id.clone(), removed);

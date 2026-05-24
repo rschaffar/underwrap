@@ -18,13 +18,13 @@ use utoipa_axum::routes;
 use crate::admin_api::AdminError;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::IntoInternal;
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document,
 };
 use crate::storage::secret_entries::list_secret_entries;
 
-pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_wrapper_permissions_view))
         .routes(routes!(handle_admin_secrets_view))
@@ -43,7 +43,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permissions_view(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminWrapperPermissionsView>, AdminError> {
     let store = admin_store(&state, &store_id)?;
@@ -77,7 +77,7 @@ pub(crate) async fn handle_admin_wrapper_permissions_view(
     ),
 )]
 pub(crate) async fn handle_admin_secrets_view(
-    State(state): State<Arc<AdminRuntimeState>>,
+    State(state): State<Arc<ListenerState>>,
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminSecretsView>, AdminError> {
     let store = admin_store(&state, &store_id)?;

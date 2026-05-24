@@ -45,7 +45,7 @@ impl StoreState {
 /// lock state, and the rotation lock guarding key rotation against
 /// concurrent runtime writes. The rotation lock lives on the entry
 /// so it dies with the store on delete instead of leaking into an
-/// unbounded map on `AdminRuntimeState`.
+/// unbounded map on `ListenerState`.
 pub struct StoreEntry {
     pub record: StoreRecord,
     pub state: StoreState,
@@ -72,7 +72,7 @@ pub enum RegistryLookupError {
 
 /// Open backends + provenance metadata + rotation locks for every
 /// store visible to the admin API. Wrapped in an `RwLock` inside
-/// [`crate::runtime_state::AdminRuntimeState`] so the CRUD handlers
+/// [`crate::runtime_state::ListenerState`] so the CRUD handlers
 /// can mutate it without rebooting the daemon. Readers consult
 /// [`StoreRegistry::unlocked_backend`] to fetch the live
 /// `Arc<dyn StorageBackend>` for a store and surface

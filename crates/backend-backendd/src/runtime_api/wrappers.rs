@@ -10,7 +10,7 @@ use underwrap_protocol::policy::PolicyDocument;
 use underwrap_store::StorageBackend;
 
 use crate::runtime_api::error::{IntoInternal, RuntimeError};
-use crate::runtime_state::AdminRuntimeState;
+use crate::runtime_state::ListenerState;
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
     save_policy_document, save_resources_document,
@@ -28,7 +28,7 @@ use crate::storage::documents::{
 /// so a freshly-registered daemon shows up as deny-by-default in the
 /// admin SPA.
 pub(crate) fn handle_runtime_wrapper_register(
-    state: &AdminRuntimeState,
+    state: &ListenerState,
     store: &dyn StorageBackend,
     principal: &str,
     body: &underwrap_protocol::service::RuntimeWrapperRegisterRequest,
@@ -53,6 +53,7 @@ pub(crate) fn handle_runtime_wrapper_register(
     }
 
     let auto_create_enabled = state
+        .shared
         .client_instances
         .read()
         .unwrap()
