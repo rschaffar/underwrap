@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
 }
 
 fn run_admin(cmd: AdminCommand, config: BackendConfig) -> Result<()> {
-    let users_dir = config.users_dir();
+    let users_dir = config.users_dir.clone();
     match cmd {
         AdminCommand::RecoverUser { username } => {
             let mut password = String::new();

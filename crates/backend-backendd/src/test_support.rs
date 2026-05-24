@@ -180,7 +180,7 @@ pub(crate) fn default_admin_runtime_state() -> ListenerState {
             stores_dir: PathBuf::new(),
             clients_dir: PathBuf::new(),
             stores_data_root: None,
-            allowed_origins: None,
+            allowed_origins: Vec::new(),
             users_dir: users_dir.clone(),
             bootstrap_file,
             auth_backend: crate::auth::AuthBackend::new(users_dir),

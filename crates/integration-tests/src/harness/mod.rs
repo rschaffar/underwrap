@@ -157,10 +157,10 @@ impl TestDaemon {
         };
         underwrap_backendd::runtime_clients::save_client_instance(&clients_dir, &runtime_client)?;
         let backend_config = underwrap_backendd::BackendConfig {
-            stores_dir: Some(stores_dir),
-            clients_dir: Some(clients_dir),
-            users_dir: Some(base.join("users")),
-            bootstrap_file: Some(base.join("bootstrap.json")),
+            stores_dir,
+            clients_dir,
+            users_dir: base.join("users"),
+            bootstrap_file: base.join("bootstrap.json"),
             https: Some(underwrap_backendd::HttpsConfig {
                 listen: format!("127.0.0.1:{https_port}"),
                 tls: underwrap_backendd::HttpsTlsConfig {
@@ -169,8 +169,8 @@ impl TestDaemon {
                 },
             }),
             admin: Some(underwrap_backendd::AdminConfig {
-                allowed_origins: None,
-                session_lifetime_secs: None,
+                allowed_origins: Vec::new(),
+                session_lifetime_secs: underwrap_backendd::auth::DEFAULT_SESSION_LIFETIME_SECS,
                 stores_data_root: Some(stores_data_root.clone()),
             }),
         };

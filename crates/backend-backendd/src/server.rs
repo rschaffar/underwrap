@@ -19,10 +19,10 @@ use crate::store_registry::{StoreRegistry, load_store_records, open_initial_stor
 use crate::tls::build_https_acceptor;
 
 pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
-    let stores_dir = config.stores_dir();
-    let clients_dir = config.clients_dir();
-    let users_dir = config.users_dir();
-    let bootstrap_file = config.bootstrap_file();
+    let stores_dir = config.stores_dir.clone();
+    let clients_dir = config.clients_dir.clone();
+    let users_dir = config.users_dir.clone();
+    let bootstrap_file = config.bootstrap_file.clone();
     let definitions = load_store_records(&stores_dir)?;
     let entries = open_initial_stores(definitions)?;
     let store_registry = Arc::new(std::sync::RwLock::new(StoreRegistry { entries }));
@@ -62,9 +62,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
                 auth_backend: crate::auth::AuthBackend::new(users_dir.clone()),
                 session_store: tower_sessions::MemoryStore::default(),
                 csrf_config: crate::admin_api::csrf::build_csrf_config(cookies_secure),
-                session_lifetime_secs: cfg
-                    .session_lifetime_secs
-                    .unwrap_or(crate::auth::DEFAULT_SESSION_LIFETIME_SECS),
+                session_lifetime_secs: cfg.session_lifetime_secs,
                 cookies_secure,
                 bootstrap_lock: std::sync::Mutex::new(()),
                 user_collection_lock: std::sync::Mutex::new(()),

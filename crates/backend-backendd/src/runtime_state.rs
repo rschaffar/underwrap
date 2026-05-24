@@ -54,9 +54,9 @@ pub(crate) struct AdminState {
     /// store's display name. `None` disables creation (returns
     /// `data_root_not_configured`).
     pub(crate) stores_data_root: Option<PathBuf>,
-    /// When present, every state-changing request must carry an `Origin`
-    /// (or `Referer`) matching one of these entries.
-    pub(crate) allowed_origins: Option<Vec<String>>,
+    /// Allowlist of `Origin` (or `Referer`) values for state-changing
+    /// requests. Empty means no allowlist enforcement.
+    pub(crate) allowed_origins: Vec<String>,
     /// Directory holding one JSON file per admin operator
     /// (`<users_dir>/<id>.json`).
     pub(crate) users_dir: PathBuf,

@@ -22,11 +22,9 @@ use crate::runtime_state::ListenerState;
 
 /// Validate the browser-facing admin configuration.
 pub(crate) fn validate_admin_config(config: &AdminConfig) -> Result<()> {
-    if let Some(origins) = &config.allowed_origins {
-        for origin in origins {
-            if origin.trim().is_empty() {
-                anyhow::bail!("admin.allowed_origins contains an empty entry");
-            }
+    for origin in &config.allowed_origins {
+        if origin.trim().is_empty() {
+            anyhow::bail!("admin.allowed_origins contains an empty entry");
         }
     }
     Ok(())
@@ -34,19 +32,18 @@ pub(crate) fn validate_admin_config(config: &AdminConfig) -> Result<()> {
 
 /// Check the `Origin` (or `Referer`) header of a state-changing request
 /// against the configured allowlist. GET/HEAD/OPTIONS are not gated.
-/// Returns `Ok(())` when no allowlist is configured.
+/// Returns `Ok(())` when the allowlist is empty.
 pub(crate) fn check_admin_origin(
     method: &Method,
     headers: &hyper::HeaderMap,
-    allowed: Option<&[String]>,
+    allowed: &[String],
 ) -> std::result::Result<(), &'static str> {
     if matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS) {
         return Ok(());
     }
-    let allowed = match allowed {
-        Some(list) if !list.is_empty() => list,
-        _ => return Ok(()),
-    };
+    if allowed.is_empty() {
+        return Ok(());
+    }
     let presented = headers
         .get(hyper::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
@@ -97,7 +94,7 @@ pub(crate) async fn origin_layer(
     if let Err(reason) = check_admin_origin(
         request.method(),
         request.headers(),
-        state.admin().allowed_origins.as_deref(),
+        &state.admin().allowed_origins,
     ) {
         warn!(reason = reason, "rejected admin request (origin check)");
         return AdminError::forbidden("bad_origin", reason).into_response();

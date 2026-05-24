@@ -3,13 +3,25 @@ use crate::users;
 
 #[test]
 fn parse_backend_config_parses_minimal_yaml() {
-    // Empty YAML works because the backend-managed store registry
-    // path and https+admin blocks are optional.
+    // Empty YAML works because every dir/file path has a serde default
+    // and the https + admin blocks are optional.
     let config = parse_backend_config("{}\n").unwrap();
-    assert!(config.stores_dir.is_none());
-    assert!(config.clients_dir.is_none());
-    assert!(config.users_dir.is_none());
-    assert!(config.bootstrap_file.is_none());
+    assert_eq!(
+        config.stores_dir,
+        std::path::PathBuf::from(crate::config::DEFAULT_STORES_DIR),
+    );
+    assert_eq!(
+        config.clients_dir,
+        std::path::PathBuf::from(crate::config::DEFAULT_CLIENTS_DIR),
+    );
+    assert_eq!(
+        config.users_dir,
+        std::path::PathBuf::from(crate::users::DEFAULT_USERS_DIR),
+    );
+    assert_eq!(
+        config.bootstrap_file,
+        std::path::PathBuf::from(crate::users::DEFAULT_BOOTSTRAP_FILE),
+    );
     assert!(config.https.is_none());
     assert!(config.admin.is_none());
 }
@@ -25,17 +37,14 @@ bootstrap_file: /var/u/bootstrap.json
 "#,
     )
     .unwrap();
+    assert_eq!(config.stores_dir, std::path::PathBuf::from("/var/u/stores"));
     assert_eq!(
-        config.stores_dir(),
-        std::path::PathBuf::from("/var/u/stores"),
-    );
-    assert_eq!(
-        config.clients_dir(),
+        config.clients_dir,
         std::path::PathBuf::from("/var/u/clients"),
     );
-    assert_eq!(config.users_dir(), std::path::PathBuf::from("/var/u/users"),);
+    assert_eq!(config.users_dir, std::path::PathBuf::from("/var/u/users"));
     assert_eq!(
-        config.bootstrap_file(),
+        config.bootstrap_file,
         std::path::PathBuf::from("/var/u/bootstrap.json"),
     );
 }
