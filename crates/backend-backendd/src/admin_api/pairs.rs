@@ -16,12 +16,13 @@ use utoipa_axum::routes;
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::admin_api::stores::admin_store;
+use crate::admin_api::util::IntoInternal;
 use crate::http::responses::Body;
 use crate::runtime_api::wrappers::generate_resource_id;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
-    ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document,
-    load_resources_document, save_pairs_document, save_resources_document,
+    load_pairs_document, load_resources_document, policy_permission_dependents,
+    save_pairs_document, save_resources_document,
 };
 use crate::users::Principal;
 
@@ -49,8 +50,7 @@ pub(crate) async fn handle_admin_pairs_list(
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminPairsListResponse>, AdminError> {
     let store = admin_store(&state, &store_id)?;
-    let mut doc = load_pairs_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading pairs document", e))?;
+    let mut doc = load_pairs_document(store.as_ref()).into_internal("loading pairs document")?;
     doc.pairs.sort_by(|a, b| {
         a.wrapper
             .cmp(&b.wrapper)
@@ -91,16 +91,15 @@ pub(crate) async fn handle_admin_pair_create(
         ));
     }
     let store = admin_store(&state, &store_id)?;
-    let resources = load_resources_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading resources document", e))?;
+    let resources =
+        load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     if resources.find_by_id(resource_id).is_none() {
         return Err(AdminError::bad_request(
             "unknown_resource",
             format!("resource id '{resource_id}' must exist before a pair can reference it"),
         ));
     }
-    let mut pairs = load_pairs_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading pairs document", e))?;
+    let mut pairs = load_pairs_document(store.as_ref()).into_internal("loading pairs document")?;
     if pairs.find(wrapper, resource_id).is_some() {
         return Err(AdminError::conflict(
             "pair_already_exists",
@@ -120,8 +119,7 @@ pub(crate) async fn handle_admin_pair_create(
     pairs
         .insert(record.clone())
         .expect("find returned None just above");
-    save_pairs_document(store.as_ref(), &pairs)
-        .map_err(|e| AdminError::internal("persisting pairs document", e))?;
+    save_pairs_document(store.as_ref(), &pairs).into_internal("persisting pairs document")?;
     log_admin_event(
         "pair.create",
         &principal,
@@ -174,8 +172,8 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
     }
     let store = admin_store(&state, &store_id)?;
 
-    let mut res_doc = load_resources_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading resources document", e))?;
+    let mut res_doc =
+        load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     if res_doc.find_by_name(resource_name).is_some() {
         return Err(AdminError::conflict(
             "resource_already_exists",
@@ -196,8 +194,8 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
         .insert(resource.clone())
         .expect("find_by_name returned None and id is freshly generated");
 
-    let mut pairs_doc = load_pairs_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading pairs document", e))?;
+    let mut pairs_doc =
+        load_pairs_document(store.as_ref()).into_internal("loading pairs document")?;
     let pair = WrapperResourcePairRecord {
         wrapper: wrapper.to_string(),
         resource_id: resource.id.clone(),
@@ -213,7 +211,7 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
         .expect("freshly generated resource id cannot collide with existing pairs");
 
     save_resources_document(store.as_ref(), &res_doc)
-        .map_err(|e| AdminError::internal("persisting resources document", e))?;
+        .into_internal("persisting resources document")?;
     if let Err(e) = save_pairs_document(store.as_ref(), &pairs_doc) {
         // Best-effort rollback so the resource doesn't dangle without
         // its companion pair. If even the rollback fails, the operator
@@ -271,30 +269,19 @@ pub(crate) async fn handle_admin_pair_delete(
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, wrapper, resource_id)): Path<(String, String, String)>,
 ) -> Result<Json<AdminPairDeleteResponse>, AdminError> {
-    use underwrap_protocol::service::{AdminPairDeleteBlockers, AdminWrapperPermissionKey};
+    use underwrap_protocol::service::AdminPairDeleteBlockers;
 
     let store = admin_store(&state, &store_id)?;
-    let mut doc = load_pairs_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading pairs document", e))?;
+    let mut doc = load_pairs_document(store.as_ref()).into_internal("loading pairs document")?;
     if doc.find(&wrapper, &resource_id).is_none() {
         return Err(AdminError::not_found("unknown pair"));
     }
 
-    let policy = load_policy_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading policy document", e))?;
-    let dependent_permissions: Vec<AdminWrapperPermissionKey> = policy
-        .permissions
-        .iter()
-        .filter(|p| p.wrapper == wrapper && p.resource_id == resource_id)
-        .map(|p| AdminWrapperPermissionKey {
-            client_instance: p.client_instance.clone(),
-            wrapper: p.wrapper.clone(),
-            resource_id: p.resource_id.clone(),
+    let (permission_count, sample_permissions) =
+        policy_permission_dependents(store.as_ref(), |p| {
+            p.wrapper == wrapper && p.resource_id == resource_id
         })
-        .collect();
-    let permission_count = u32::try_from(dependent_permissions.len()).unwrap_or(u32::MAX);
-    let mut sample_permissions = dependent_permissions;
-    sample_permissions.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+        .into_internal("loading policy document")?;
 
     if permission_count > 0 {
         log_admin_event(
@@ -317,8 +304,7 @@ pub(crate) async fn handle_admin_pair_delete(
     }
 
     doc.remove(&wrapper, &resource_id);
-    save_pairs_document(store.as_ref(), &doc)
-        .map_err(|e| AdminError::internal("persisting pairs document", e))?;
+    save_pairs_document(store.as_ref(), &doc).into_internal("persisting pairs document")?;
     log_admin_event(
         "pair.delete",
         &principal,

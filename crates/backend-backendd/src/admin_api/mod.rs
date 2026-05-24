@@ -34,7 +34,6 @@
 
 pub(crate) mod audit;
 pub mod auth;
-pub(crate) mod body_b64;
 pub(crate) mod client_instances;
 pub(crate) mod csrf;
 pub(crate) mod error;
@@ -45,6 +44,7 @@ pub(crate) mod resources;
 pub(crate) mod secrets;
 pub(crate) mod stores;
 pub(crate) mod users;
+pub(crate) mod util;
 pub(crate) mod views;
 
 pub(crate) use error::AdminError;

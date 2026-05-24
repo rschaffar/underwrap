@@ -206,16 +206,7 @@ pub(crate) async fn handle_admin_password_change(
     use crate::admin_api::audit::{AuditEntity, log_admin_event};
     use crate::admin_api::users::mutate_collection;
 
-    if let Err(code) = crate::auth::validate_password(&body.new_password) {
-        return Err(AdminError::bad_request(
-            code,
-            match code {
-                "password_empty" => "new password must not be empty",
-                "password_too_short" => "new password too short",
-                _ => "password rejected",
-            },
-        ));
-    }
+    crate::admin_api::util::validate_password_or_bad_request(&body.new_password)?;
     let collection = crate::users::load(&state.users_dir).map_err(|e| {
         warn!(err = %e, "auth.password: collection unreadable");
         AdminError::internal_with_code("internal", "user collection unavailable")

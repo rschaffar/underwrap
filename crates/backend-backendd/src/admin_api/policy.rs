@@ -21,6 +21,7 @@ use utoipa_axum::routes;
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::admin_api::stores::admin_store;
+use crate::admin_api::util::IntoInternal;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{load_policy_document, save_policy_document};
@@ -78,8 +79,7 @@ pub(crate) async fn handle_admin_wrapper_permissions_list(
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminWrapperPermissionsListResponse>, AdminError> {
     let store = admin_store(&state, &store_id)?;
-    let doc = load_policy_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading policy document", e))?;
+    let doc = load_policy_document(store.as_ref()).into_internal("loading policy document")?;
     Ok(Json(AdminWrapperPermissionsListResponse {
         permissions: doc.permissions,
     }))
@@ -125,8 +125,7 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
         reason: body.reason,
     };
     let store = admin_store(&state, &store_id)?;
-    let mut doc = load_policy_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading policy document", e))?;
+    let mut doc = load_policy_document(store.as_ref()).into_internal("loading policy document")?;
     if let Some(slot) = doc.permissions.iter_mut().find(|p| {
         p.client_instance == client_instance && p.wrapper == wrapper && p.resource_id == resource_id
     }) {
@@ -189,8 +188,7 @@ pub(crate) async fn handle_admin_wrapper_permission_delete(
     Path((store_id, client_instance, wrapper, resource_id)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
     let store = admin_store(&state, &store_id)?;
-    let mut doc = load_policy_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading policy document", e))?;
+    let mut doc = load_policy_document(store.as_ref()).into_internal("loading policy document")?;
     let before = doc.permissions.len();
     doc.permissions.retain(|p| {
         !(p.client_instance == client_instance
@@ -201,8 +199,7 @@ pub(crate) async fn handle_admin_wrapper_permission_delete(
     if !removed {
         return Err(AdminError::not_found("no matching wrapper permission"));
     }
-    save_policy_document(store.as_ref(), &doc)
-        .map_err(|e| AdminError::internal("persisting policy document", e))?;
+    save_policy_document(store.as_ref(), &doc).into_internal("persisting policy document")?;
     let removed_permission = WrapperPermission {
         client_instance: client_instance.clone(),
         wrapper: wrapper.clone(),

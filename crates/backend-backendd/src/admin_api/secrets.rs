@@ -32,9 +32,9 @@ use underwrap_store::{
 };
 
 use crate::admin_api::AdminError;
-use crate::admin_api::audit::{AuditEntity, log_admin_event};
-use crate::admin_api::body_b64::{decode_b64, encode_b64};
+use crate::admin_api::audit::{AuditEntity, log_admin_event, result_label};
 use crate::admin_api::stores::admin_store;
+use crate::admin_api::util::{IntoInternal, decode_b64, encode_b64};
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::secret_entries::{
@@ -54,8 +54,7 @@ use crate::users::Principal;
 /// a stale URL.
 fn parse_slot(slot: &str) -> Result<ResourceSlot, AdminError> {
     match ResourceSlot::parse(slot) {
-        Some(ResourceSlot::Env) => Ok(ResourceSlot::Env),
-        Some(ResourceSlot::Files) => Ok(ResourceSlot::Files),
+        Some(s @ (ResourceSlot::Env | ResourceSlot::Files)) => Ok(s),
         Some(ResourceSlot::Libsecret) => Err(AdminError::bad_request(
             "slot_not_supported",
             "libsecret content is addressed through the structured \
@@ -73,7 +72,6 @@ fn parse_slot(slot: &str) -> Result<ResourceSlot, AdminError> {
 pub(crate) struct SecretListQuery {
     /// Restrict listing to a single resource. Omit to return entries
     /// for every resource in the store.
-    #[serde(default)]
     pub(crate) resource_id: Option<String>,
 }
 
@@ -110,7 +108,7 @@ pub(crate) async fn handle_admin_secrets_list(
 ) -> Result<Json<AdminSecretListResponse>, AdminError> {
     let store = admin_store(&state, &store_id)?;
     let entries = list_secret_entries(store.as_ref(), query.resource_id.as_deref())
-        .map_err(|e| AdminError::internal("listing secret entries", e))?;
+        .into_internal("listing secret entries")?;
     Ok(Json(AdminSecretListResponse { entries }))
 }
 
@@ -138,8 +136,8 @@ pub(crate) async fn handle_admin_secret_read(
     let slot = parse_slot(&slot)?;
     let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
     let store = admin_store(&state, &store_id)?;
-    let material = read_resource_entry(store.as_ref(), &secret_id)
-        .map_err(|e| AdminError::internal("reading resource entry", e))?;
+    let material =
+        read_resource_entry(store.as_ref(), &secret_id).into_internal("reading resource entry")?;
     Ok(Json(AdminSecretReadResponse {
         material_b64: material.map(|material| encode_b64(material.as_ref())),
     }))
@@ -179,11 +177,6 @@ pub(crate) async fn handle_admin_secret_write(
     // on the policy document gate wrapper-side writes only — admin
     // sessions can't be locked out of their own backend.
     let outcome = write_resource_entry(store.as_ref(), &secret_id, &material);
-    let result = if outcome.is_ok() {
-        "success"
-    } else {
-        "failure"
-    };
     log_admin_event(
         "secret.write",
         &principal,
@@ -194,9 +187,9 @@ pub(crate) async fn handle_admin_secret_write(
             key: &key,
         },
         None,
-        result,
+        result_label(&outcome),
     );
-    outcome.map_err(|e| AdminError::internal("writing secret entry", e))?;
+    outcome.into_internal("writing secret entry")?;
     Ok(Json(AdminOkResponse { ok: true }))
 }
 
@@ -229,11 +222,6 @@ pub(crate) async fn handle_admin_secret_delete(
     let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
     let store = admin_store(&state, &store_id)?;
     let outcome = delete_resource_entry(store.as_ref(), &secret_id);
-    let result = if outcome.is_ok() {
-        "success"
-    } else {
-        "failure"
-    };
     log_admin_event(
         "secret.delete",
         &principal,
@@ -244,9 +232,9 @@ pub(crate) async fn handle_admin_secret_delete(
             key: &key,
         },
         None,
-        result,
+        result_label(&outcome),
     );
-    let existed = outcome.map_err(|e| AdminError::internal("deleting secret entry", e))?;
+    let existed = outcome.into_internal("deleting secret entry")?;
     Ok(Json(AdminSecretDeleteResponse { existed }))
 }
 
@@ -294,7 +282,7 @@ pub(crate) async fn handle_admin_secret_rename(
             key: &from_key,
         },
         Some(&operation),
-        if result.is_ok() { "success" } else { "failure" },
+        result_label(&result),
     );
     result.map(Json)
 }
@@ -310,10 +298,10 @@ async fn rename_inner(
     let from_id = validate_and_compose_secret_id(resource_id, slot, from_key)?;
     let to_id = validate_and_compose_secret_id(resource_id, slot, &body.to_key)?;
     let store = admin_store(state, store_id)?;
-    let blob = load_resource_blob(store.as_ref(), resource_id)
-        .map_err(|e| AdminError::internal("loading resource blob", e))?;
-    let mut entries = expand_blob_to_entries(resource_id, &blob)
-        .map_err(|e| AdminError::internal("expanding resource blob", e))?;
+    let blob =
+        load_resource_blob(store.as_ref(), resource_id).into_internal("loading resource blob")?;
+    let mut entries =
+        expand_blob_to_entries(resource_id, &blob).into_internal("expanding resource blob")?;
 
     // The from-entry must exist; the to-entry must not (unless this
     // is a same-key rename, which collapses to a pure material write).
@@ -341,9 +329,9 @@ async fn rename_inner(
     entries.insert(to_id.clone(), new_material);
 
     let new_blob = blob_from_resource_entries(resource_id, &entries)
-        .map_err(|e| AdminError::internal("building resource blob", e))?;
+        .into_internal("building resource blob")?;
     save_resource_blob(store.as_ref(), resource_id, &new_blob)
-        .map_err(|e| AdminError::internal("saving resource blob", e))?;
+        .into_internal("saving resource blob")?;
     Ok(AdminOkResponse { ok: true })
 }
 

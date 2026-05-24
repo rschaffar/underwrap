@@ -7,10 +7,6 @@
 //! `Option<_>` slots are `Some`/`None` per entity kind are asserted by
 //! `audit/tests.rs`.
 //!
-//! Per-subdomain wrappers used to format the entity string by hand;
-//! they have all been replaced by the [`AuditEntity`] enum so the
-//! `kind:id` formatting lives in exactly one place.
-
 use tracing::info;
 
 use underwrap_protocol::policy::WrapperPermission;
@@ -153,6 +149,13 @@ pub(crate) fn log_admin_event(
         operation,
         result,
     );
+}
+
+/// `"success"` if the result is `Ok`, `"failure"` otherwise. Used
+/// by handlers that always emit an audit event regardless of the
+/// outcome of the underlying call.
+pub(crate) fn result_label<T, E>(r: &Result<T, E>) -> &'static str {
+    if r.is_ok() { "success" } else { "failure" }
 }
 
 /// Emit a bootstrap-attempt audit line. Distinct from

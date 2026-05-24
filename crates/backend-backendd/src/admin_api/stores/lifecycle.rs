@@ -302,80 +302,60 @@ fn reencrypt_into(
     principal: &Principal,
     store_name: &str,
 ) -> Result<(), AdminError> {
-    let ids = match from.list("") {
-        Ok(ids) => ids,
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(stage_dir);
-            log_admin_event(
-                "store.rotate-key",
-                principal,
-                AuditEntity::Store { store: store_name },
-                Some("list-failed"),
-                "failure",
-            );
-            return Err(AdminError::internal_with_code(
-                "rotate_list_failed",
-                format!("listing existing resources for rotation: {e:#}"),
-            ));
-        }
-    };
-    // Make sure the canary is always present in the new backend even
-    // if the source store somehow lost it (e.g. operator deleted it
-    // by hand). Write it once up front; the loop below will skip its
-    // own re-write so we don't fight ourselves over the canary id.
-    if let Err(e) = to.write(
-        underwrap_store::ENCRYPTED_CANARY_ID,
-        underwrap_store::ENCRYPTED_CANARY_PLAINTEXT,
-    ) {
+    let bail = |reason: &'static str, code: &str, message: String| -> AdminError {
         let _ = std::fs::remove_dir_all(stage_dir);
         log_admin_event(
             "store.rotate-key",
             principal,
             AuditEntity::Store { store: store_name },
-            Some("canary-write-failed"),
+            Some(reason),
             "failure",
         );
-        return Err(AdminError::internal_with_code(
+        AdminError::internal_with_code(code.to_string(), message)
+    };
+    let ids = from.list("").map_err(|e| {
+        bail(
+            "list-failed",
+            "rotate_list_failed",
+            format!("listing existing resources for rotation: {e:#}"),
+        )
+    })?;
+    // Make sure the canary is always present in the new backend even
+    // if the source store somehow lost it (e.g. operator deleted it
+    // by hand). Write it once up front; the loop below will skip its
+    // own re-write so we don't fight ourselves over the canary id.
+    to.write(
+        underwrap_store::ENCRYPTED_CANARY_ID,
+        underwrap_store::ENCRYPTED_CANARY_PLAINTEXT,
+    )
+    .map_err(|e| {
+        bail(
+            "canary-write-failed",
             "rotate_canary_failed",
             format!("writing canary in staged data dir: {e:#}"),
-        ));
-    }
+        )
+    })?;
     for id in ids {
         if id == underwrap_store::ENCRYPTED_CANARY_ID {
             continue;
         }
-        let material = match from.read(&id) {
-            Ok(Some(m)) => m,
-            Ok(None) => continue, // raced — gone
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(stage_dir);
-                log_admin_event(
-                    "store.rotate-key",
-                    principal,
-                    AuditEntity::Store { store: store_name },
-                    Some("read-failed"),
-                    "failure",
-                );
-                return Err(AdminError::internal_with_code(
-                    "rotate_read_failed",
-                    format!("reading '{id}' for rotation: {e:#}"),
-                ));
-            }
+        let material = match from.read(&id).map_err(|e| {
+            bail(
+                "read-failed",
+                "rotate_read_failed",
+                format!("reading '{id}' for rotation: {e:#}"),
+            )
+        })? {
+            Some(m) => m,
+            None => continue, // raced — gone
         };
-        if let Err(e) = to.write(&id, material.as_ref()) {
-            let _ = std::fs::remove_dir_all(stage_dir);
-            log_admin_event(
-                "store.rotate-key",
-                principal,
-                AuditEntity::Store { store: store_name },
-                Some("write-failed"),
-                "failure",
-            );
-            return Err(AdminError::internal_with_code(
+        to.write(&id, material.as_ref()).map_err(|e| {
+            bail(
+                "write-failed",
                 "rotate_write_failed",
                 format!("writing '{id}' to staged data dir: {e:#}"),
-            ));
-        }
+            )
+        })?;
     }
     Ok(())
 }

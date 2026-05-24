@@ -92,9 +92,39 @@ pub(crate) fn resource_secret_dependents(
     ids.retain(|id| !id.starts_with(RESERVED_PREFIX));
     ids.sort();
     ids.dedup();
-    let count = u32::try_from(ids.len()).unwrap_or(u32::MAX);
+    let count = crate::admin_api::util::saturating_u32(ids.len());
     ids.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
     Ok((count, ids))
+}
+
+/// Count permissions in the store's policy document that match
+/// `predicate`, plus a [`ENTITY_DEPENDENT_SAMPLE_LIMIT`]-sized sample
+/// of their `(client_instance, wrapper, resource_id)` keys for the
+/// structured "delete refused" responses on pair and resource
+/// delete.
+pub(crate) fn policy_permission_dependents(
+    store: &dyn StorageBackend,
+    predicate: impl Fn(&underwrap_protocol::policy::WrapperPermission) -> bool,
+) -> Result<(
+    u32,
+    Vec<underwrap_protocol::service::AdminWrapperPermissionKey>,
+)> {
+    use underwrap_protocol::service::AdminWrapperPermissionKey;
+    let policy = load_policy_document(store)?;
+    let dependents: Vec<AdminWrapperPermissionKey> = policy
+        .permissions
+        .iter()
+        .filter(|p| predicate(p))
+        .map(|p| AdminWrapperPermissionKey {
+            client_instance: p.client_instance.clone(),
+            wrapper: p.wrapper.clone(),
+            resource_id: p.resource_id.clone(),
+        })
+        .collect();
+    let count = crate::admin_api::util::saturating_u32(dependents.len());
+    let mut sample = dependents;
+    sample.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+    Ok((count, sample))
 }
 
 #[cfg(test)]

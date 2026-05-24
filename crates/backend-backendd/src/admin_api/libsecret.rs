@@ -35,9 +35,9 @@ use underwrap_protocol::service::{
 use underwrap_store::{load_resource_blob, save_resource_blob};
 
 use crate::admin_api::AdminError;
-use crate::admin_api::audit::{AuditEntity, LibsecretEntityKind, log_admin_event};
-use crate::admin_api::body_b64::{decode_b64, encode_b64};
+use crate::admin_api::audit::{AuditEntity, LibsecretEntityKind, log_admin_event, result_label};
 use crate::admin_api::stores::admin_store;
+use crate::admin_api::util::{IntoInternal, decode_b64, encode_b64};
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 use crate::users::{Principal, now_epoch_secs};
@@ -113,8 +113,7 @@ fn read_blob(
     resource_id: &str,
 ) -> Result<ResourceBlob, AdminError> {
     let store = admin_store(state, store_id)?;
-    load_resource_blob(store.as_ref(), resource_id)
-        .map_err(|e| AdminError::internal("loading resource blob", e))
+    load_resource_blob(store.as_ref(), resource_id).into_internal("loading resource blob")
 }
 
 /// Load the blob, hand it to `f`, save it back if `f` reports
@@ -127,18 +126,14 @@ fn with_blob<R>(
     f: impl FnOnce(&mut ResourceBlob) -> Result<(R, bool), AdminError>,
 ) -> Result<R, AdminError> {
     let store = admin_store(state, store_id)?;
-    let mut blob = load_resource_blob(store.as_ref(), resource_id)
-        .map_err(|e| AdminError::internal("loading resource blob", e))?;
+    let mut blob =
+        load_resource_blob(store.as_ref(), resource_id).into_internal("loading resource blob")?;
     let (result, dirty) = f(&mut blob)?;
     if dirty {
         save_resource_blob(store.as_ref(), resource_id, &blob)
-            .map_err(|e| AdminError::internal("saving resource blob", e))?;
+            .into_internal("saving resource blob")?;
     }
     Ok(result)
-}
-
-fn audit_result<T>(r: &Result<T, AdminError>) -> &'static str {
-    if r.is_ok() { "success" } else { "failure" }
 }
 
 // ---- GET tree -------------------------------------------------------------
@@ -261,7 +256,7 @@ pub(crate) async fn handle_post_collection(
             path: &entity_key,
         },
         None,
-        audit_result(&outcome),
+        result_label(&outcome),
     );
     outcome.map(Json)
 }
@@ -322,7 +317,7 @@ pub(crate) async fn handle_delete_collection(
             path: &cid,
         },
         None,
-        audit_result(&outcome),
+        result_label(&outcome),
     );
     outcome.map(Json)
 }
@@ -405,7 +400,7 @@ pub(crate) async fn handle_post_item(
             path: &entity_key,
         },
         None,
-        audit_result(&outcome),
+        result_label(&outcome),
     );
     outcome.map(Json)
 }
@@ -455,7 +450,7 @@ pub(crate) async fn handle_delete_item(
             path: &entity_key,
         },
         None,
-        audit_result(&outcome),
+        result_label(&outcome),
     );
     outcome.map(Json)
 }
@@ -546,7 +541,7 @@ pub(crate) async fn handle_put_alias(
             path: &name,
         },
         None,
-        audit_result(&outcome),
+        result_label(&outcome),
     );
     outcome.map(Json)
 }
@@ -586,7 +581,7 @@ pub(crate) async fn handle_delete_alias(
             path: &name,
         },
         None,
-        audit_result(&outcome),
+        result_label(&outcome),
     );
     outcome.map(Json)
 }

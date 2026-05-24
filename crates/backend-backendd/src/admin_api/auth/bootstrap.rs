@@ -144,14 +144,7 @@ pub(crate) async fn handle_admin_bootstrap(
 
     if let Err(code) = crate::auth::validate_password(&body.password) {
         log_bootstrap_attempt(&username_norm, Some(code), "failure");
-        return Err(AdminError::bad_request(
-            code,
-            match code {
-                "password_empty" => "password is required",
-                "password_too_short" => "password too short",
-                _ => "password rejected",
-            },
-        ));
+        crate::admin_api::util::validate_password_or_bad_request(&body.password)?;
     }
 
     let now = crate::users::now_epoch_secs();

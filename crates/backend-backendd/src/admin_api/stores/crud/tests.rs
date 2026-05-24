@@ -54,9 +54,7 @@ fn store_delete(
     store_id: &str,
     force: bool,
 ) -> (StatusCode, serde_json::Value) {
-    let q = DeleteQuery {
-        force: force.then(|| "true".to_string()),
-    };
+    let q = DeleteQuery { force };
     run_handler(handle_admin_store_delete(
         State(state),
         Extension(p.clone()),

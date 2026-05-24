@@ -202,16 +202,7 @@ pub(crate) async fn handle_admin_user_create(
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminUserCreateRequest>,
 ) -> Result<Json<AdminUserListItem>, AdminError> {
-    if let Err(code) = crate::auth::validate_password(&body.password) {
-        return Err(AdminError::bad_request(
-            code,
-            match code {
-                "password_empty" => "password must not be empty",
-                "password_too_short" => "password too short",
-                _ => "password rejected",
-            },
-        ));
-    }
+    crate::admin_api::util::validate_password_or_bad_request(&body.password)?;
     let username_norm = crate::users::normalise_username(&body.username);
     if username_norm.is_empty() {
         return Err(AdminError::bad_request(
@@ -293,16 +284,7 @@ pub(crate) async fn handle_admin_user_reset_password(
     Path(id): Path<String>,
     Body(body): Body<AdminUserResetPasswordRequest>,
 ) -> Result<Json<AdminOkUserResponse>, AdminError> {
-    if let Err(code) = crate::auth::validate_password(&body.password) {
-        return Err(AdminError::bad_request(
-            code,
-            match code {
-                "password_empty" => "password must not be empty",
-                "password_too_short" => "password too short",
-                _ => "password rejected",
-            },
-        ));
-    }
+    crate::admin_api::util::validate_password_or_bad_request(&body.password)?;
     let new_hash = crate::auth::hash_password(&body.password).map_err(|e| {
         warn!(err = %e, "users.reset-password: argon2 hash failed");
         AdminError::internal_with_code("internal", "could not hash password")

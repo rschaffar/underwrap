@@ -56,12 +56,8 @@ pub(super) fn backend_kind(
     }
 }
 
-fn saturating_u32(value: usize) -> u32 {
-    value.min(u32::MAX as usize) as u32
-}
-
 fn mapped_client_instance_count(state: &AdminRuntimeState, store_id: &str) -> u32 {
-    saturating_u32(
+    crate::admin_api::util::saturating_u32(
         state
             .client_instances
             .read()

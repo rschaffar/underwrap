@@ -322,7 +322,7 @@ pub(crate) async fn handle_admin_store_update(
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct DeleteQuery {
     #[serde(default)]
-    pub(crate) force: Option<String>,
+    pub(crate) force: bool,
 }
 
 #[utoipa::path(
@@ -332,7 +332,7 @@ pub(crate) struct DeleteQuery {
     security(("session_cookie" = []), ("csrf_header" = [])),
     params(
         ("id" = String, Path, description = "Store id."),
-        ("force" = Option<String>, Query, description = "Pass `true` / `1` / empty to bypass the empty-store guard."),
+        ("force" = bool, Query, description = "Pass `?force=true` to bypass the empty-store guard."),
     ),
     responses(
         (status = 200, description = "Store removed.", body = AdminStoreDeleteResponse),
@@ -346,10 +346,7 @@ pub(crate) async fn handle_admin_store_delete(
     AxumPath(name): AxumPath<String>,
     Query(query): Query<DeleteQuery>,
 ) -> Result<Json<AdminStoreDeleteResponse>, AdminError> {
-    let force = query
-        .force
-        .as_deref()
-        .is_some_and(|v| matches!(v, "true" | "1" | ""));
+    let force = query.force;
 
     let (store_handle, dir_for_hint, locked) = {
         let reg = state.stores.read().unwrap();

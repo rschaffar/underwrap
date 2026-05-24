@@ -635,10 +635,10 @@
           {
             "name": "force",
             "in": "query",
-            "description": "Pass `true` / `1` / empty to bypass the empty-store guard.",
-            "required": false,
+            "description": "Pass `?force=true` to bypass the empty-store guard.",
+            "required": true,
             "schema": {
-              "type": "string"
+              "type": "boolean"
             }
           }
         ],

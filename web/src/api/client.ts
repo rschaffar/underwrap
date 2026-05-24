@@ -235,7 +235,7 @@ export function deleteStore(storeId: string, opts: { force?: boolean } = {}) {
     client.DELETE("/v1/admin/stores/{id}", {
       params: {
         path: { id: storeId },
-        query: opts.force ? { force: "true" } : undefined,
+        query: { force: opts.force ?? false },
       },
     }),
   );

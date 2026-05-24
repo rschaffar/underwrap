@@ -20,12 +20,13 @@ use utoipa_axum::routes;
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::admin_api::stores::admin_store;
+use crate::admin_api::util::IntoInternal;
 use crate::http::responses::Body;
 use crate::runtime_api::wrappers::generate_resource_id;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
-    ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_policy_document,
-    load_resources_document, resource_secret_dependents, save_resources_document,
+    ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_resources_document,
+    policy_permission_dependents, resource_secret_dependents, save_resources_document,
 };
 use crate::users::Principal;
 
@@ -58,8 +59,8 @@ pub(crate) async fn handle_admin_resources_list(
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminResourcesListResponse>, AdminError> {
     let store = admin_store(&state, &store_id)?;
-    let mut doc = load_resources_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading resources document", e))?;
+    let mut doc =
+        load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     doc.resources.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(Json(AdminResourcesListResponse {
         resources: doc.resources,
@@ -97,8 +98,8 @@ pub(crate) async fn handle_admin_resource_create(
         ));
     }
     let store = admin_store(&state, &store_id)?;
-    let mut doc = load_resources_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading resources document", e))?;
+    let mut doc =
+        load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     if doc.find_by_name(name).is_some() {
         return Err(AdminError::conflict(
             "resource_already_exists",
@@ -116,8 +117,7 @@ pub(crate) async fn handle_admin_resource_create(
     };
     doc.insert(record.clone())
         .expect("find returned None just above");
-    save_resources_document(store.as_ref(), &doc)
-        .map_err(|e| AdminError::internal("persisting resources document", e))?;
+    save_resources_document(store.as_ref(), &doc).into_internal("persisting resources document")?;
     log_admin_event(
         "resource.create",
         &principal,
@@ -150,13 +150,11 @@ pub(crate) async fn handle_admin_resource_delete(
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id)): Path<(String, String)>,
 ) -> Result<Json<AdminResourceDeleteResponse>, AdminError> {
-    use underwrap_protocol::service::{
-        AdminResourceDeleteBlockers, AdminWrapperPermissionKey, ServiceWrapperResourcePair,
-    };
+    use underwrap_protocol::service::{AdminResourceDeleteBlockers, ServiceWrapperResourcePair};
 
     let store = admin_store(&state, &store_id)?;
-    let mut doc = load_resources_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading resources document", e))?;
+    let mut doc =
+        load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     let Some(target) = doc.find_by_id(&resource_id) else {
         return Err(AdminError::not_found("unknown resource"));
     };
@@ -164,10 +162,9 @@ pub(crate) async fn handle_admin_resource_delete(
 
     let (secret_count, sample_secret_ids) =
         resource_secret_dependents(store.as_ref(), &resource_id)
-            .map_err(|e| AdminError::internal("scanning resource dependents", e))?;
+            .into_internal("scanning resource dependents")?;
 
-    let pairs = load_pairs_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading pairs document", e))?;
+    let pairs = load_pairs_document(store.as_ref()).into_internal("loading pairs document")?;
     let dependent_pairs: Vec<ServiceWrapperResourcePair> = pairs
         .pairs_for_resource(&resource_id)
         .map(|p| ServiceWrapperResourcePair {
@@ -175,25 +172,13 @@ pub(crate) async fn handle_admin_resource_delete(
             resource: target_name.clone(),
         })
         .collect();
-    let pair_count = u32::try_from(dependent_pairs.len()).unwrap_or(u32::MAX);
+    let pair_count = crate::admin_api::util::saturating_u32(dependent_pairs.len());
     let mut sample_pairs = dependent_pairs;
     sample_pairs.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
 
-    let policy = load_policy_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading policy document", e))?;
-    let dependent_permissions: Vec<AdminWrapperPermissionKey> = policy
-        .permissions
-        .iter()
-        .filter(|p| p.resource_id == resource_id)
-        .map(|p| AdminWrapperPermissionKey {
-            client_instance: p.client_instance.clone(),
-            wrapper: p.wrapper.clone(),
-            resource_id: p.resource_id.clone(),
-        })
-        .collect();
-    let permission_count = u32::try_from(dependent_permissions.len()).unwrap_or(u32::MAX);
-    let mut sample_permissions = dependent_permissions;
-    sample_permissions.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+    let (permission_count, sample_permissions) =
+        policy_permission_dependents(store.as_ref(), |p| p.resource_id == resource_id)
+            .into_internal("loading policy document")?;
 
     if secret_count > 0 || pair_count > 0 || permission_count > 0 {
         log_admin_event(
@@ -219,8 +204,7 @@ pub(crate) async fn handle_admin_resource_delete(
     }
 
     doc.remove(&resource_id);
-    save_resources_document(store.as_ref(), &doc)
-        .map_err(|e| AdminError::internal("persisting resources document", e))?;
+    save_resources_document(store.as_ref(), &doc).into_internal("persisting resources document")?;
     log_admin_event(
         "resource.delete",
         &principal,
@@ -270,8 +254,8 @@ pub(crate) async fn handle_admin_resource_rename(
         ));
     }
     let store = admin_store(&state, &store_id)?;
-    let mut doc = load_resources_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading resources document", e))?;
+    let mut doc =
+        load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     match doc.rename(&resource_id, new_name) {
         Ok(true) => {}
         Ok(false) => return Err(AdminError::not_found("unknown resource")),
@@ -286,8 +270,7 @@ pub(crate) async fn handle_admin_resource_rename(
         .find_by_id(&resource_id)
         .expect("rename above returned Ok(true)")
         .clone();
-    save_resources_document(store.as_ref(), &doc)
-        .map_err(|e| AdminError::internal("persisting resources document", e))?;
+    save_resources_document(store.as_ref(), &doc).into_internal("persisting resources document")?;
     log_admin_event(
         "resource.rename",
         &principal,

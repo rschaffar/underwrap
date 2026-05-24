@@ -17,6 +17,7 @@ use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
 use crate::admin_api::stores::admin_store;
+use crate::admin_api::util::IntoInternal;
 use crate::runtime_state::AdminRuntimeState;
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document,
@@ -46,17 +47,15 @@ pub(crate) async fn handle_admin_wrapper_permissions_view(
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminWrapperPermissionsView>, AdminError> {
     let store = admin_store(&state, &store_id)?;
-    let policy = load_policy_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading policy document", e))?;
-    let mut pairs = load_pairs_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading pairs document", e))?;
+    let policy = load_policy_document(store.as_ref()).into_internal("loading policy document")?;
+    let mut pairs = load_pairs_document(store.as_ref()).into_internal("loading pairs document")?;
     pairs.pairs.sort_by(|a, b| {
         a.wrapper
             .cmp(&b.wrapper)
             .then(a.resource_id.cmp(&b.resource_id))
     });
-    let mut resources = load_resources_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading resources document", e))?;
+    let mut resources =
+        load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     resources.resources.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(Json(AdminWrapperPermissionsView {
         permissions: policy.permissions,
@@ -82,10 +81,10 @@ pub(crate) async fn handle_admin_secrets_view(
     Path(store_id): Path<String>,
 ) -> Result<Json<AdminSecretsView>, AdminError> {
     let store = admin_store(&state, &store_id)?;
-    let entries = list_secret_entries(store.as_ref(), None)
-        .map_err(|e| AdminError::internal("listing secret entries", e))?;
-    let mut resources = load_resources_document(store.as_ref())
-        .map_err(|e| AdminError::internal("loading resources document", e))?;
+    let entries =
+        list_secret_entries(store.as_ref(), None).into_internal("listing secret entries")?;
+    let mut resources =
+        load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     resources.resources.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(Json(AdminSecretsView {
         entries,
