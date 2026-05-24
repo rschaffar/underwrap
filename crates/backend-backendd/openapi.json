@@ -708,7 +708,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StoreLockResponse"
+                  "$ref": "#/components/schemas/AdminStoreLockResponse"
                 }
               }
             }
@@ -4079,6 +4079,22 @@
           }
         }
       },
+      "AdminStoreLockResponse": {
+        "type": "object",
+        "description": "Response of `POST /v1/admin/stores/{id}/lock`. Carries the\nidempotence flag so the SPA can distinguish \"we just locked the\nstore\" from \"store was already locked when we got here\".",
+        "required": [
+          "ok",
+          "was_locked"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "was_locked": {
+            "type": "boolean"
+          }
+        }
+      },
       "AdminStoreRotateKeyResponse": {
         "type": "object",
         "description": "Response from `POST /v1/admin/stores/{name}/rotate-key`. The new\nkey is returned exactly once. Every resource in the store has\nbeen transparently re-encrypted under the new key before the\nresponse is sent; `warning` carries a one-line reminder that the\noperator is solely responsible for saving the new value (the\nbackend does not store it on disk).",
@@ -4500,22 +4516,6 @@
           },
           "wrapper": {
             "type": "string"
-          }
-        }
-      },
-      "StoreLockResponse": {
-        "type": "object",
-        "description": "Response of `POST /v1/admin/stores/{id}/lock`. Carries the\nidempotence flag so the SPA can distinguish \"we just locked the\nstore\" from \"store was already locked when we got here\".",
-        "required": [
-          "ok",
-          "was_locked"
-        ],
-        "properties": {
-          "ok": {
-            "type": "boolean"
-          },
-          "was_locked": {
-            "type": "boolean"
           }
         }
       },

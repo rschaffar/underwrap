@@ -184,6 +184,15 @@ pub struct AdminStoreUpdateRequest {
     pub description: Option<String>,
 }
 
+/// Response of `POST /v1/admin/stores/{id}/lock`. Carries the
+/// idempotence flag so the SPA can distinguish "we just locked the
+/// store" from "store was already locked when we got here".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminStoreLockResponse {
+    pub ok: bool,
+    pub was_locked: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreDeleteResponse {
     pub ok: bool,

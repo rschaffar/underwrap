@@ -7,7 +7,8 @@ use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use tracing::warn;
 use underwrap_protocol::service::{
-    AdminOkResponse, AdminStoreRotateKeyResponse, AdminStoreUnlockRequest, ServiceErrorResponse,
+    AdminOkResponse, AdminStoreLockResponse, AdminStoreRotateKeyResponse, AdminStoreUnlockRequest,
+    ServiceErrorResponse,
 };
 use underwrap_store::StorageBackend;
 use utoipa_axum::router::OpenApiRouter;
@@ -536,7 +537,7 @@ pub(crate) async fn handle_admin_store_unlock(
     security(("session_cookie" = []), ("csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     responses(
-        (status = 200, description = "Store locked; in-memory key material wiped.", body = StoreLockResponse),
+        (status = 200, description = "Store locked; in-memory key material wiped.", body = AdminStoreLockResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
     ),
 )]
@@ -544,7 +545,7 @@ pub(crate) async fn handle_admin_store_lock(
     State(state): State<Arc<AdminRuntimeState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
-) -> Result<Json<StoreLockResponse>, AdminError> {
+) -> Result<Json<AdminStoreLockResponse>, AdminError> {
     let mut reg = state.stores.write().unwrap();
     let loaded = reg
         .records
@@ -570,19 +571,10 @@ pub(crate) async fn handle_admin_store_lock(
         None,
         result,
     );
-    Ok(Json(StoreLockResponse {
+    Ok(Json(AdminStoreLockResponse {
         ok: true,
         was_locked,
     }))
-}
-
-/// Response of `POST /v1/admin/stores/{id}/lock`. Carries the
-/// idempotence flag so the SPA can distinguish "we just locked the
-/// store" from "store was already locked when we got here".
-#[derive(serde::Serialize, utoipa::ToSchema)]
-pub struct StoreLockResponse {
-    pub ok: bool,
-    pub was_locked: bool,
 }
 
 #[cfg(test)]
