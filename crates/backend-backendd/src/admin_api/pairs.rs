@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
+use underwrap_protocol::entities::{EntityCreator, ResourceRecord, WrapperResourcePairRecord};
 use underwrap_protocol::service::{
-    AdminPairCreateRequest, AdminPairCreateResponse, AdminPairDeleteResponse,
-    AdminPairWithNewResourceRequest, AdminPairWithNewResourceResponse, AdminPairsListResponse,
-    ServiceErrorResponse,
+    AdminPairCreateRequest, AdminPairCreateResponse, AdminPairDeleteBlockers,
+    AdminPairDeleteResponse, AdminPairWithNewResourceRequest, AdminPairWithNewResourceResponse,
+    AdminPairsListResponse, ServiceErrorResponse,
 };
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -80,8 +81,6 @@ pub(crate) async fn handle_admin_pair_create(
     Path(store_id): Path<String>,
     Body(body): Body<AdminPairCreateRequest>,
 ) -> Result<Json<AdminPairCreateResponse>, AdminError> {
-    use underwrap_protocol::entities::{EntityCreator, WrapperResourcePairRecord};
-
     let wrapper = body.wrapper.trim();
     let resource_id = body.resource_id.trim();
     if wrapper.is_empty() || resource_id.is_empty() {
@@ -154,8 +153,6 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
     Path(store_id): Path<String>,
     Body(body): Body<AdminPairWithNewResourceRequest>,
 ) -> Result<Json<AdminPairWithNewResourceResponse>, AdminError> {
-    use underwrap_protocol::entities::{EntityCreator, ResourceRecord, WrapperResourcePairRecord};
-
     let wrapper = body.wrapper.trim();
     let resource_name = body.resource_name.trim();
     if wrapper.is_empty() {
@@ -269,12 +266,10 @@ pub(crate) async fn handle_admin_pair_delete(
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, wrapper, resource_id)): Path<(String, String, String)>,
 ) -> Result<Json<AdminPairDeleteResponse>, AdminError> {
-    use underwrap_protocol::service::AdminPairDeleteBlockers;
-
     let store = admin_store(&state, &store_id)?;
     let mut doc = load_pairs_document(store.as_ref()).into_internal("loading pairs document")?;
     if doc.find(&wrapper, &resource_id).is_none() {
-        return Err(AdminError::not_found("unknown pair"));
+        return Err(AdminError::pair_not_found());
     }
 
     let (permission_count, sample_permissions) =

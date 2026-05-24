@@ -26,18 +26,18 @@ use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
-pub struct BootstrapRequest {
+pub(crate) struct BootstrapRequest {
     pub username: String,
     pub password: String,
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
-pub struct BootstrapStatusResponse {
+pub(crate) struct BootstrapStatusResponse {
     pub bootstrap_required: bool,
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
-pub struct BootstrapResponse {
+pub(crate) struct BootstrapResponse {
     pub username: String,
 }
 

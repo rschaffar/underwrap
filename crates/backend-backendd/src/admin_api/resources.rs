@@ -9,10 +9,11 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
+use underwrap_protocol::entities::{EntityCreator, InsertError, ResourceRecord};
 use underwrap_protocol::service::{
-    AdminResourceCreateRequest, AdminResourceCreateResponse, AdminResourceDeleteResponse,
-    AdminResourceRenameRequest, AdminResourceRenameResponse, AdminResourcesListResponse,
-    ServiceErrorResponse,
+    AdminResourceCreateRequest, AdminResourceCreateResponse, AdminResourceDeleteBlockers,
+    AdminResourceDeleteResponse, AdminResourceRenameRequest, AdminResourceRenameResponse,
+    AdminResourcesListResponse, ServiceErrorResponse, ServiceWrapperResourcePair,
 };
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -88,8 +89,6 @@ pub(crate) async fn handle_admin_resource_create(
     Path(store_id): Path<String>,
     Body(body): Body<AdminResourceCreateRequest>,
 ) -> Result<Json<AdminResourceCreateResponse>, AdminError> {
-    use underwrap_protocol::entities::{EntityCreator, ResourceRecord};
-
     let name = body.name.trim();
     if name.is_empty() {
         return Err(AdminError::bad_request(
@@ -150,13 +149,11 @@ pub(crate) async fn handle_admin_resource_delete(
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id)): Path<(String, String)>,
 ) -> Result<Json<AdminResourceDeleteResponse>, AdminError> {
-    use underwrap_protocol::service::{AdminResourceDeleteBlockers, ServiceWrapperResourcePair};
-
     let store = admin_store(&state, &store_id)?;
     let mut doc =
         load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     let Some(target) = doc.find_by_id(&resource_id) else {
-        return Err(AdminError::not_found("unknown resource"));
+        return Err(AdminError::resource_not_found());
     };
     let target_name = target.name.clone();
 
@@ -244,8 +241,6 @@ pub(crate) async fn handle_admin_resource_rename(
     Path((store_id, resource_id)): Path<(String, String)>,
     Body(body): Body<AdminResourceRenameRequest>,
 ) -> Result<Json<AdminResourceRenameResponse>, AdminError> {
-    use underwrap_protocol::entities::InsertError;
-
     let new_name = body.new_name.trim();
     if new_name.is_empty() {
         return Err(AdminError::bad_request(
@@ -258,7 +253,7 @@ pub(crate) async fn handle_admin_resource_rename(
         load_resources_document(store.as_ref()).into_internal("loading resources document")?;
     match doc.rename(&resource_id, new_name) {
         Ok(true) => {}
-        Ok(false) => return Err(AdminError::not_found("unknown resource")),
+        Ok(false) => return Err(AdminError::resource_not_found()),
         Err(InsertError::Duplicate) => {
             return Err(AdminError::conflict(
                 "resource_already_exists",

@@ -34,11 +34,7 @@ pub(crate) struct AdminError {
 }
 
 impl AdminError {
-    pub(crate) fn new(
-        status: StatusCode,
-        code: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
+    fn new(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             status,
             code: code.into(),
@@ -56,6 +52,18 @@ impl AdminError {
 
     pub(crate) fn store_not_found() -> Self {
         Self::not_found("unknown store")
+    }
+
+    pub(crate) fn client_instance_not_found() -> Self {
+        Self::not_found("unknown client instance")
+    }
+
+    pub(crate) fn resource_not_found() -> Self {
+        Self::not_found("unknown resource")
+    }
+
+    pub(crate) fn pair_not_found() -> Self {
+        Self::not_found("unknown pair")
     }
 
     pub(crate) fn store_locked(store_id: &str) -> Self {

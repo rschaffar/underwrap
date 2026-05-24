@@ -17,7 +17,7 @@
 //! [`public_router`] below — there is no separate top-level
 //! `bootstrap` module.
 
-pub mod bootstrap;
+pub(crate) mod bootstrap;
 
 use std::sync::Arc;
 
@@ -33,6 +33,8 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::admin_api::AdminError;
+use crate::admin_api::audit::{AuditEntity, log_admin_event};
+use crate::admin_api::users::mutate_collection;
 use crate::auth::{AuthBackend, AuthError, Credentials};
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
@@ -41,18 +43,18 @@ use crate::users::{Principal, UserRecord};
 pub(crate) type AdminAuthSession = AuthSession<AuthBackend>;
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
-pub struct LoginRequest {
+pub(crate) struct LoginRequest {
     username: String,
     password: String,
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
-pub struct LoginResponse {
+pub(crate) struct LoginResponse {
     pub username: String,
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
-pub struct WhoamiResponse {
+pub(crate) struct WhoamiResponse {
     /// Present when a session is attached; absent when the request is
     /// unauthenticated. The SPA treats `username !== undefined` as
     /// the authenticated check.
@@ -203,9 +205,6 @@ pub(crate) async fn handle_admin_password_change(
     axum::Extension(principal): axum::Extension<Principal>,
     Body(body): Body<AdminPasswordChangeRequest>,
 ) -> Result<Json<AdminOkUserResponse>, AdminError> {
-    use crate::admin_api::audit::{AuditEntity, log_admin_event};
-    use crate::admin_api::users::mutate_collection;
-
     crate::admin_api::util::validate_password_or_bad_request(&body.new_password)?;
     let collection = crate::users::load(&state.users_dir).map_err(|e| {
         warn!(err = %e, "auth.password: collection unreadable");

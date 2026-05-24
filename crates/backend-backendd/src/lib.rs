@@ -21,10 +21,6 @@ pub mod web;
 // `ts_export` binding test, and the `underwrap-backendd` binary itself)
 // reach for these types via the crate root.
 pub use crate::admin_api::admin_openapi_spec;
-pub use crate::admin_api::auth::bootstrap::{
-    BootstrapRequest, BootstrapResponse, BootstrapStatusResponse,
-};
-pub use crate::admin_api::auth::{LoginRequest, LoginResponse, WhoamiResponse};
 pub use crate::config::{
     AdminConfig, BackendConfig, DEFAULT_STORES_DIR, HttpsConfig, HttpsTlsConfig,
 };

@@ -33,7 +33,7 @@
 //!   per subdomain.
 
 pub(crate) mod audit;
-pub mod auth;
+pub(crate) mod auth;
 pub(crate) mod client_instances;
 pub(crate) mod csrf;
 pub(crate) mod error;

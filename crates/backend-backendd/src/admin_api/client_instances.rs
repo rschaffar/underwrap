@@ -273,7 +273,7 @@ pub(crate) async fn handle_admin_client_instance_update(
     let existing = instances
         .get(&id)
         .cloned()
-        .ok_or_else(|| AdminError::not_found("unknown client instance"))?;
+        .ok_or_else(AdminError::client_instance_not_found)?;
     let old_store_id = existing.current_store_id.clone();
     let mut updated = existing;
     if let Some(display_name) = &body.display_name {
@@ -390,7 +390,7 @@ pub(crate) async fn handle_admin_client_instance_delete(
     let mut instances = state.client_instances.write().unwrap();
     let removed = instances
         .remove(&id)
-        .ok_or_else(|| AdminError::not_found("unknown client instance"))?;
+        .ok_or_else(AdminError::client_instance_not_found)?;
     if let Err(e) = crate::runtime_clients::delete_client_instance(&state.clients_dir, &id) {
         // Roll the in-memory state back so the next request sees the same
         // view as the on-disk file.
