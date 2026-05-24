@@ -14,10 +14,11 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { postSecretRename, putSecret } from "@/api/client";
+
 import { useFormDialog } from "@/hooks/use-form-dialog";
 
 import type { SecretAddress } from "../model";
+import { postSecretRename, putSecret } from "@/api/client";
 
 // The dialog edits the structured `(resource, slot, key)` address
 // directly. Resource and slot are locked in both modes — they're

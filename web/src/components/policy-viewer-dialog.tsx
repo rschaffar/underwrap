@@ -6,10 +6,7 @@ import { AdminDialog } from "@/components/admin-dialog";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
-import {
-  fetchWrapperPermissions,
-  type AdminWrapperPermissionsListResponse,
-} from "@/api/client";
+import { fetchWrapperPermissions } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
 interface PolicyViewerDialogProps {
@@ -32,9 +29,10 @@ export function PolicyViewerDialog({
   open,
   onClose,
 }: PolicyViewerDialogProps) {
-  const policy = useQuery<AdminWrapperPermissionsListResponse>({
+  const policy = useQuery({
     queryKey: ["admin", "wrapper-permissions", storeId],
-    queryFn: () => fetchWrapperPermissions(storeId),
+    queryFn: () =>
+      fetchWrapperPermissions(storeId),
     enabled: open,
     // The viewer is read-only and operators reopen it to confirm
     // recent edits. Cache freshness matters more than save round

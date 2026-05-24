@@ -3,6 +3,13 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import {
+  fetchClientInstances,
+  fetchStores,
+  postClientInstanceCreate,
+  putClientInstanceUpdate,
+} from "@/api/client";
+
 import { ClientInstancesPage } from "./client-instances/page";
 
 vi.mock("@/api/client", async () => {
@@ -15,13 +22,6 @@ vi.mock("@/api/client", async () => {
     postClientInstanceCreate: vi.fn(),
   };
 });
-
-import {
-  fetchClientInstances,
-  fetchStores,
-  postClientInstanceCreate,
-  putClientInstanceUpdate,
-} from "@/api/client";
 
 function renderWithQuery(ui: React.ReactNode) {
   const qc = new QueryClient({

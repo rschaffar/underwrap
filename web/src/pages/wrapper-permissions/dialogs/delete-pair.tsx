@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import { Alert } from "@/components/ui/alert";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { deletePair, type WrapperResourcePairRecord } from "@/api/client";
+import { type WrapperResourcePairRecord, deletePair } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
 type DeletePairResult = Awaited<ReturnType<typeof deletePair>>;

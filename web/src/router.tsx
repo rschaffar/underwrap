@@ -22,10 +22,10 @@ import { UsersPage } from "@/pages/users/page";
 import { ProfilePage } from "@/pages/profile";
 import {
   ApiError,
+  type WhoamiResponse,
   fetchBootstrapStatus,
   fetchWhoami,
   postLogout,
-  type WhoamiResponse,
 } from "@/api/client";
 import { Button } from "@/components/ui/button";
 

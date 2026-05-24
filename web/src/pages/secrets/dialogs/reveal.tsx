@@ -1,4 +1,4 @@
-import { fetchSecret } from "@/api/client";
+import { api } from "@/api/client";
 
 import type { SecretAddress } from "../model";
 import { RevealSecretView } from "../reveal-secret-view";
@@ -33,7 +33,7 @@ export function RevealSecretDialog({
         address.key,
       ]}
       queryFn={() =>
-        fetchSecret(storeId, address.resource_id, address.slot, address.key)
+        api.GET("/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}", { params: { path: { id: storeId, rid: address.resource_id, slot: address.slot, key: address.key } } })
       }
       pickB64={(r) => r.material_b64}
       textareaId="reveal-value"

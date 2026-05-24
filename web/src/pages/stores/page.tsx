@@ -3,11 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  type AdminStoreListItem,
-  type AdminStoresListResponse,
-  fetchStores,
-} from "@/api/client";
+import { type AdminStoreListItem, type AdminStoresListResponse, fetchStores } from "@/api/client";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 

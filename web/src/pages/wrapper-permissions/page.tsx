@@ -9,10 +9,10 @@ import { PolicyViewerDialog } from "@/components/policy-viewer-dialog";
 import {
   type AdminStoresListResponse,
   type AdminWrapperPermissionsView,
-  fetchStores,
-  fetchWrapperPermissionsView,
   type WrapperPermission,
   type WrapperResourcePairRecord,
+  fetchStores,
+  fetchWrapperPermissionsView,
 } from "@/api/client";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";

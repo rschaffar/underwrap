@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 import {
   type AdminUserListItem,
   type AdminUsersListResponse,
-  fetchUsers,
   type WhoamiResponse,
+  fetchUsers,
 } from "@/api/client";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";

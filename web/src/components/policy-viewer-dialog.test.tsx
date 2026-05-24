@@ -2,6 +2,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { fetchWrapperPermissions } from "@/api/client";
+
 import { PolicyViewerDialog } from "./policy-viewer-dialog";
 
 // `fetchWrapperPermissions` is the only API call this dialog
@@ -15,8 +17,6 @@ vi.mock("@/api/client", async () => {
     fetchWrapperPermissions: vi.fn(),
   };
 });
-
-import { fetchWrapperPermissions } from "@/api/client";
 
 function renderWithQuery(ui: React.ReactNode) {
   const qc = new QueryClient({

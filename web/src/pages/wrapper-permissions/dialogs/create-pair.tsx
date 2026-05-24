@@ -14,11 +14,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import {
-  postPairCreate,
-  postPairWithNewResource,
-  type ResourceRecord,
-} from "@/api/client";
+import { type ResourceRecord, postPairCreate, postPairWithNewResource } from "@/api/client";
 import { useFormDialog } from "@/hooks/use-form-dialog";
 
 const schema = z

@@ -8,10 +8,10 @@ import { DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  deleteWrapperPermission,
-  putWrapperPermission,
   type WrapperApprovalMode,
   type WrapperPermission,
+  deleteWrapperPermission,
+  putWrapperPermission,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 import { toDatetimeLocal } from "@/lib/epoch";

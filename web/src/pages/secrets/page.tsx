@@ -8,9 +8,9 @@ import { Select } from "@/components/ui/select";
 import {
   type AdminSecretsView,
   type AdminStoresListResponse,
+  type ResourceRecord,
   fetchSecretsView,
   fetchStores,
-  type ResourceRecord,
 } from "@/api/client";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";

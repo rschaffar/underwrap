@@ -1,4 +1,4 @@
-import { fetchLibsecretItemSecret } from "@/api/client";
+import { api } from "@/api/client";
 
 import { RevealSecretView } from "../../reveal-secret-view";
 
@@ -36,7 +36,7 @@ export function RevealItemSecretDialog({
         itemId,
       ]}
       queryFn={() =>
-        fetchLibsecretItemSecret(storeId, resourceId, collectionId, itemId)
+        api.GET("/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}/secret", { params: { path: { sid: storeId, rid: resourceId, cid: collectionId, iid: itemId } } })
       }
       pickB64={(r) => r.secret_b64}
       textareaId="libsecret-reveal-value"

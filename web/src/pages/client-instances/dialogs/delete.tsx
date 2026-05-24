@@ -1,9 +1,6 @@
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useConfirmMutation } from "@/hooks/use-confirm-mutation";
-import {
-  type AdminClientInstanceListItem,
-  deleteClientInstance,
-} from "@/api/client";
+import { type AdminClientInstanceListItem, deleteClientInstance } from "@/api/client";
 
 export function DeleteClientInstanceDialog({
   instance,

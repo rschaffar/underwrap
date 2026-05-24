@@ -4,10 +4,7 @@ import { Plus } from "lucide-react";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  type AdminLibsecretTreeResponse,
-  fetchLibsecretTree,
-} from "@/api/client";
+import { type AdminLibsecretTreeResponse, fetchLibsecretTree } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
 
 import { AliasesPanel } from "./aliases-panel";

@@ -13,10 +13,7 @@ vi.mock("@/api/client", async () => {
   };
 });
 
-import {
-  type AdminLibsecretTreeResponse,
-  fetchLibsecretTree,
-} from "@/api/client";
+import { type AdminLibsecretTreeResponse, fetchLibsecretTree } from "@/api/client";
 
 function renderTree(ui: React.ReactNode) {
   const qc = new QueryClient({

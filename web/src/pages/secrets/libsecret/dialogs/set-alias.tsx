@@ -14,10 +14,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import {
-  type AdminLibsecretCollectionView,
-  putLibsecretAlias,
-} from "@/api/client";
+import { type AdminLibsecretCollectionView, putLibsecretAlias } from "@/api/client";
 import { useFormDialog } from "@/hooks/use-form-dialog";
 
 import { ID_PATTERN, libsecretTreeKey } from "../internal";

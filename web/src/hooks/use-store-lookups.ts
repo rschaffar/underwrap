@@ -1,10 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  type AdminClientInstancesListResponse,
-  fetchClientInstances,
-} from "@/api/client";
+import { type AdminClientInstancesListResponse, fetchClientInstances } from "@/api/client";
 
 /**
  * Shared lookups for per-store admin pages: the global

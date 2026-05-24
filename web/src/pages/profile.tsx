@@ -15,10 +15,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  postPasswordChange,
-  type WhoamiResponse,
-} from "@/api/client";
+import { type WhoamiResponse, postPasswordChange } from "@/api/client";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 
