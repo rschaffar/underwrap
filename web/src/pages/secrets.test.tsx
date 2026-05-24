@@ -217,22 +217,23 @@ describe("SecretsPage", () => {
 });
 
 describe("groupSecretEntries", () => {
-  it("buckets by resource and sorts each slot by key", () => {
+  it("buckets env+files entries by resource and silently drops libsecret", () => {
     const groups = groupSecretEntries([
       { resource_id: "github/token", slot: "env", key: "GH_USERNAME" },
       { resource_id: "github/token", slot: "env", key: "GH_TOKEN" },
       { resource_id: "github/token", slot: "files", key: "config.json" },
+      // Libsecret entries should never come through this endpoint
+      // after the flat-KV bridge was retired, but the grouper drops
+      // them defensively in case a stale response sneaks through.
       { resource_id: "github/gh", slot: "libsecret", key: "credential" },
       { resource_id: "aws/access-key", slot: "env", key: "AWS_KEY" },
     ]);
     expect(groups.map((r) => r.resource_id)).toEqual([
       "aws/access-key",
-      "github/gh",
       "github/token",
     ]);
     const token = groups.find((r) => r.resource_id === "github/token")!;
     expect(token.env.map((e) => e.key)).toEqual(["GH_TOKEN", "GH_USERNAME"]);
     expect(token.files.map((e) => e.key)).toEqual(["config.json"]);
-    expect(token.libsecret).toEqual([]);
   });
 });

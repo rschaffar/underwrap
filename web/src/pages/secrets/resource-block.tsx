@@ -6,7 +6,7 @@ import { describeCreator } from "@/lib/creator";
 import { normalizeEpoch } from "@/lib/epoch";
 
 import {
-  FLAT_SECRET_SLOTS,
+  SECRET_SLOTS,
   type SecretEntry,
   type SecretResourceGroup,
   type SecretSlot,
@@ -45,7 +45,7 @@ export function ResourceBlock({
   // libsecret content is fetched and rendered structurally by
   // `LibsecretTree`, so we summarize only the flat env/files counts
   // here. The tree component carries its own counts inline.
-  const summary = FLAT_SECRET_SLOTS.filter((slot) => group[slot].length > 0)
+  const summary = SECRET_SLOTS.filter((slot) => group[slot].length > 0)
     .map((slot) => `${slot} (${group[slot].length})`)
     .join(" · ");
   const provenanceLabel = provenance
@@ -132,7 +132,7 @@ export function ResourceBlock({
         ) : null}
       </summary>
       <div className="space-y-3 border-t border-(--color-line)/60 px-4 py-3">
-        {FLAT_SECRET_SLOTS.map((slot) => (
+        {SECRET_SLOTS.map((slot) => (
           <SlotSection
             key={slot}
             slot={slot}

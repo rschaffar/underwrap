@@ -82,7 +82,6 @@ export function SecretsPage() {
           resource_id: record.id,
           env: [],
           files: [],
-          libsecret: [],
         });
       }
     }
