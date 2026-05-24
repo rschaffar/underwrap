@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::entities::{ResourceRecord, WrapperResourcePairRecord};
 use crate::policy::WrapperPermission;
-use crate::resource::ResourceSlot;
+use crate::resource::KvSecretSlot;
 
 // ===== Users admin API =====
 //
@@ -293,11 +293,14 @@ pub struct AdminSecretWriteRequest {
     pub material_b64: String,
 }
 
-/// One per-slot entry as listed by the admin surface.
+/// One per-slot entry as listed by the admin surface. The flat-KV
+/// admin endpoints (`env`, `files`) emit these; the `libsecret` slot
+/// is structurally a tree and is addressed by its own endpoints, so
+/// it never appears here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminSecretEntry {
     pub resource_id: String,
-    pub slot: ResourceSlot,
+    pub slot: KvSecretSlot,
     pub key: String,
 }
 

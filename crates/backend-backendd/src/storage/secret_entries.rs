@@ -73,7 +73,7 @@ pub(crate) fn list_secret_entries(
     store: &dyn StorageBackend,
     resource_filter: Option<&str>,
 ) -> Result<Vec<underwrap_protocol::service::AdminSecretEntry>> {
-    use underwrap_protocol::resource::parse_secret_id;
+    use underwrap_protocol::resource::{KvSecretSlot, parse_secret_id};
     use underwrap_protocol::service::AdminSecretEntry;
 
     let resources: Vec<String> = match resource_filter {
@@ -90,15 +90,19 @@ pub(crate) fn list_secret_entries(
         let blob = load_resource_blob(store, resource_id)?;
         let blob_entries = expand_blob_to_entries(resource_id, &blob)?;
         for entry_key in blob_entries.into_keys() {
-            // `expand_blob_to_entries` produces ids of the canonical
-            // `<resource>/<slot>/<inner>` shape; anything else is a
-            // bug. Skip silently rather than fail the whole listing.
+            // `expand_blob_to_entries` only produces env/files entries,
+            // so the `KvSecretSlot` conversion below cannot fail. Any
+            // other parse outcome would be a bug — skip it rather than
+            // failing the whole listing.
             let Some(parsed) = parse_secret_id(&entry_key) else {
+                continue;
+            };
+            let Ok(slot) = KvSecretSlot::try_from(parsed.slot) else {
                 continue;
             };
             entries.push(AdminSecretEntry {
                 resource_id: parsed.resource_id.to_string(),
-                slot: parsed.slot,
+                slot,
                 key: parsed.inner.to_string(),
             });
         }

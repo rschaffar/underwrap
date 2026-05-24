@@ -61,6 +61,36 @@ impl std::str::FromStr for ResourceSlot {
     }
 }
 
+/// Subset of [`ResourceSlot`] that the flat-KV admin surface emits.
+/// The `libsecret` slot is structurally a tree and is addressed by
+/// its own admin endpoints, so it never appears in flat-entry listings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum KvSecretSlot {
+    Env,
+    Files,
+}
+
+impl From<KvSecretSlot> for ResourceSlot {
+    fn from(s: KvSecretSlot) -> Self {
+        match s {
+            KvSecretSlot::Env => Self::Env,
+            KvSecretSlot::Files => Self::Files,
+        }
+    }
+}
+
+impl TryFrom<ResourceSlot> for KvSecretSlot {
+    type Error = ResourceSlot;
+    fn try_from(s: ResourceSlot) -> Result<Self, Self::Error> {
+        match s {
+            ResourceSlot::Env => Ok(Self::Env),
+            ResourceSlot::Files => Ok(Self::Files),
+            ResourceSlot::Libsecret => Err(s),
+        }
+    }
+}
+
 /// Compose the in-blob entry key for `(resource_id, slot, key)`. This
 /// is the canonical mapping admin handlers use to route a structured
 /// secret address into the legacy entry map produced by

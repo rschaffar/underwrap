@@ -3841,7 +3841,7 @@
       },
       "AdminSecretEntry": {
         "type": "object",
-        "description": "One per-slot entry as listed by the admin surface.",
+        "description": "One per-slot entry as listed by the admin surface. The flat-KV\nadmin endpoints (`env`, `files`) emit these; the `libsecret` slot\nis structurally a tree and is addressed by its own endpoints, so\nit never appears here.",
         "required": [
           "resource_id",
           "slot",
@@ -3855,7 +3855,7 @@
             "type": "string"
           },
           "slot": {
-            "$ref": "#/components/schemas/ResourceSlot"
+            "$ref": "#/components/schemas/KvSecretSlot"
           }
         }
       },
@@ -4427,6 +4427,14 @@
         ],
         "description": "Who created an entity record. Distinguishes admin operators (who\nregister resources/pairs by hand through the admin API) from\nruntime client instances (which auto-create on startup when their\n`auto_create_wrapper_assets` flag is on)."
       },
+      "KvSecretSlot": {
+        "type": "string",
+        "description": "Subset of [`ResourceSlot`] that the flat-KV admin surface emits.\nThe `libsecret` slot is structurally a tree and is addressed by\nits own admin endpoints, so it never appears in flat-entry listings.",
+        "enum": [
+          "env",
+          "files"
+        ]
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -4478,15 +4486,6 @@
             "type": "string"
           }
         }
-      },
-      "ResourceSlot": {
-        "type": "string",
-        "description": "The three logical slots inside a resource blob.",
-        "enum": [
-          "env",
-          "files",
-          "libsecret"
-        ]
       },
       "ServiceErrorResponse": {
         "type": "object",

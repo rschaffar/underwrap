@@ -147,7 +147,7 @@ type BootstrapRequest = S["BootstrapRequest"];
 export type EntityCreator = S["EntityCreator"];
 type LoginRequest = S["LoginRequest"];
 export type ResourceRecord = S["ResourceRecord"];
-export type ResourceSlot = S["ResourceSlot"];
+export type KvSecretSlot = S["KvSecretSlot"];
 export type WhoamiResponse = S["WhoamiResponse"];
 export type WrapperApprovalMode = S["WrapperApprovalMode"];
 export type WrapperPermission = S["WrapperPermission"];
@@ -452,7 +452,7 @@ export function fetchSecrets(storeId: string, resourceId?: string) {
 export function fetchSecret(
   storeId: string,
   resourceId: string,
-  slot: ResourceSlot,
+  slot: KvSecretSlot,
   key: string,
 ) {
   return unwrap(
@@ -465,7 +465,7 @@ export function fetchSecret(
 export function putSecret(
   storeId: string,
   resourceId: string,
-  slot: ResourceSlot,
+  slot: KvSecretSlot,
   key: string,
   body: AdminSecretWriteRequest,
 ) {
@@ -480,7 +480,7 @@ export function putSecret(
 export function deleteSecret(
   storeId: string,
   resourceId: string,
-  slot: ResourceSlot,
+  slot: KvSecretSlot,
   key: string,
 ) {
   return unwrap(
@@ -493,7 +493,7 @@ export function deleteSecret(
 export function postSecretRename(
   storeId: string,
   resourceId: string,
-  slot: ResourceSlot,
+  slot: KvSecretSlot,
   fromKey: string,
   body: AdminSecretRenameRequest,
 ) {
@@ -512,8 +512,7 @@ export function postSecretRename(
 //
 // Mirrors the Secret Service spec hierarchy: GET the whole tree
 // (aliases + collections + items meta), reveal one item secret on
-// demand, mutate collections / items / aliases per spec verb. None
-// of these go through the legacy flat-KV bridge.
+// demand, mutate collections / items / aliases per spec verb.
 
 export function fetchLibsecretTree(storeId: string, resourceId: string) {
   return unwrap(
