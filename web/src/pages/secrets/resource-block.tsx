@@ -12,7 +12,7 @@ import {
   type SecretSlot,
   resourceCount,
 } from "./model";
-import { LibsecretTree } from "./libsecret-tree";
+import { LibsecretTree } from "./libsecret";
 
 interface RowActions {
   onReveal: (entry: SecretEntry) => void;

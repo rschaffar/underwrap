@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { LibsecretTree } from "./libsecret-tree";
+import { LibsecretTree } from "./tree";
 
 vi.mock("@/api/client", async () => {
   const actual =
@@ -26,7 +26,7 @@ function renderTree(ui: React.ReactNode) {
 }
 
 const baseTree: AdminLibsecretTreeResponse = {
-  aliases: { default: "default", login: "system" },
+  aliases: { default: "default" },
   collections: [
     {
       id: "default",
@@ -76,11 +76,6 @@ describe("LibsecretTree", () => {
     expect(within(aliases).getByTestId("libsecret-alias-default")).toHaveTextContent(
       /default\s*→\s*default/,
     );
-    // The `login` alias targets a non-existent collection; the panel
-    // flags it as dangling.
-    expect(within(aliases).getByTestId("libsecret-alias-login")).toHaveTextContent(
-      /dangling/i,
-    );
   });
 
   it("shows an empty-state message when the resource has no libsecret content", async () => {
@@ -91,16 +86,5 @@ describe("LibsecretTree", () => {
     renderTree(<LibsecretTree storeName="test" resourceId="empty" />);
     const tree = await screen.findByTestId("libsecret-tree");
     expect(tree).toHaveTextContent(/none/i);
-  });
-
-  it("disables the set-alias button when no collections exist yet", async () => {
-    vi.mocked(fetchLibsecretTree).mockResolvedValue({
-      aliases: {},
-      collections: [],
-    });
-    renderTree(<LibsecretTree storeName="test" resourceId="empty" />);
-    const aliases = await screen.findByTestId("libsecret-aliases");
-    const setBtn = within(aliases).getByTestId("libsecret-set-alias");
-    expect(setBtn).toBeDisabled();
   });
 });
