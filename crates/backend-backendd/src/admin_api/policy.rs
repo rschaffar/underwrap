@@ -32,16 +32,58 @@ use crate::users::Principal;
 /// when a client instance is reassigned to a different store, so its
 /// authorizations on the previous store do not silently resurface if
 /// it is ever remapped back.
+///
+/// Behaviour by `RegistryLookupError` arm:
+/// - `Locked`: the store is locked, so we can't read or rewrite its
+///   policy document. Returns `Ok(())` after emitting a structured
+///   `tracing::warn!` plus a `client-instance.orphan-permissions`
+///   audit event so operators can find the orphans. The next time
+///   the store is unlocked, the rows can be cleaned up by hand.
+/// - `NotFound`: the previous store was already deleted, so there
+///   is no policy document to clean. Logged at `info` and treated
+///   as `Ok(())`.
+///
+/// The reason `Locked` does not fail the parent operation: at this
+/// point the client-instance registry has already been written to
+/// disk, and refusing the parent would leave the operator with no
+/// way to complete the remap/delete until the previous store is
+/// unlocked — which may be intentional and operator-controlled. The
+/// orphan rows are audit-visible and self-healing when the store
+/// unlocks; surfacing them is the right trade-off.
 pub(crate) fn drop_client_instance_permissions(
     state: &AdminRuntimeState,
+    principal: &Principal,
     store_id: &str,
     client_instance_id: &str,
 ) -> Result<()> {
+    use crate::store_registry::RegistryLookupError;
     let store = match state.stores.read().unwrap().unlocked_backend(store_id) {
         Ok(s) => s,
-        // Skip when locked or unknown — the unlock path will be the
-        // place to apply this kind of cleanup if it ever matters.
-        Err(_) => return Ok(()),
+        Err(RegistryLookupError::Locked) => {
+            tracing::warn!(
+                store = %store_id,
+                client_instance = %client_instance_id,
+                "store locked: wrapper permissions for reassigned/deleted client instance left in place; unlock the store to clean them up",
+            );
+            log_admin_event(
+                "client-instance.orphan-permissions",
+                principal,
+                AuditEntity::ClientInstance {
+                    id: client_instance_id,
+                },
+                Some("store-locked"),
+                "skipped",
+            );
+            return Ok(());
+        }
+        Err(RegistryLookupError::NotFound) => {
+            tracing::info!(
+                store = %store_id,
+                client_instance = %client_instance_id,
+                "previous store gone: no policy cleanup needed for reassigned/deleted client instance",
+            );
+            return Ok(());
+        }
     };
     let mut doc = load_policy_document(store.as_ref())?;
     let before = doc.permissions.len();
@@ -220,3 +262,6 @@ pub(crate) async fn handle_admin_wrapper_permission_delete(
     );
     Ok(Json(AdminOkResponse { ok: true }))
 }
+
+#[cfg(test)]
+mod tests;

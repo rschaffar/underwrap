@@ -341,7 +341,7 @@ pub(crate) async fn handle_admin_client_instance_update(
     }
     drop(instances);
     if old_store_id != updated.current_store_id
-        && let Err(e) = drop_client_instance_permissions(&state, &old_store_id, &id)
+        && let Err(e) = drop_client_instance_permissions(&state, &principal, &old_store_id, &id)
     {
         // Best-effort: log and continue. The remap already persisted
         // to disk, so failing the response with 500 would leave the
@@ -407,7 +407,9 @@ pub(crate) async fn handle_admin_client_instance_delete(
     // "stale" entries that the SPA renders as nameless columns in the
     // wrapper-permissions table and that grant the same authorization
     // back if the same client instance id is ever reused.
-    if let Err(e) = drop_client_instance_permissions(&state, &removed.current_store_id, &id) {
+    if let Err(e) =
+        drop_client_instance_permissions(&state, &principal, &removed.current_store_id, &id)
+    {
         // Best-effort: log and continue. The instance is already gone from
         // the registry, so leaving orphaned policy rows is preferable to
         // failing the delete (and leaving the operator with no way to
