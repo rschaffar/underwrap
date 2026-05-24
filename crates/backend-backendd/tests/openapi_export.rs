@@ -14,7 +14,7 @@
 
 use std::path::PathBuf;
 
-use underwrap_backendd::openapi::admin_openapi_spec;
+use underwrap_backendd::admin_openapi_spec;
 
 fn openapi_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("openapi.json")

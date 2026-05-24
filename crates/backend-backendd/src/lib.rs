@@ -20,6 +20,7 @@ pub mod web;
 // Public-API surface. External consumers (integration-tests, the
 // `ts_export` binding test, and the `underwrap-backendd` binary itself)
 // reach for these types via the crate root.
+pub use crate::admin_api::admin_openapi_spec;
 pub use crate::admin_api::auth::bootstrap::{
     BootstrapRequest, BootstrapResponse, BootstrapStatusResponse,
 };

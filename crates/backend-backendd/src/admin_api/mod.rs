@@ -74,20 +74,36 @@ use self::csrf::{
 /// `Secure; Path=/; no Domain`, which closes subdomain confusion.
 pub(crate) const SESSION_COOKIE_NAME: &str = "__Host-uw-session";
 
-/// Build the admin sub-router for `/v1/admin/*` together with the
-/// `utoipa` OpenAPI document derived from each subdomain's
-/// `#[utoipa::path(...)]` annotations. The returned router is
-/// parameterized by `Arc<AdminRuntimeState>` so the caller composes it
-/// with the runtime router and provides state once via
-/// `.with_state(...)`.
-///
-/// The OpenAPI document is the same one the `openapi_export.rs` drift
-/// test asserts on; it is also what the front-end client generator
-/// consumes.
-pub(crate) fn admin_router_and_openapi(
-    state: Arc<AdminRuntimeState>,
-) -> (Router<Arc<AdminRuntimeState>>, OpenApi) {
-    // ---- tower-sessions + axum-login ----------------------------------
+/// Public sub-router (login, whoami, bootstrap). Shared between the
+/// live HTTPS listener and the OpenAPI export drift test. Bootstrap
+/// is merged inside [`auth::public_router`].
+fn build_public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new().merge(auth::public_router())
+}
+
+/// Protected sub-router, without any tower layers applied. Shared
+/// between the live HTTPS listener (where layers wrap this output)
+/// and the OpenAPI export test (which only cares about the path
+/// table).
+fn build_protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
+    OpenApiRouter::new()
+        .merge(auth::protected_router())
+        .merge(users::openapi_router())
+        .merge(stores::openapi_router())
+        .merge(client_instances::openapi_router())
+        .merge(secrets::openapi_router())
+        .merge(libsecret::openapi_router())
+        .merge(resources::openapi_router())
+        .merge(pairs::openapi_router())
+        .merge(policy::openapi_router())
+        .merge(views::openapi_router())
+}
+
+/// Build the live admin sub-router for `/v1/admin/*` with every
+/// tower layer wired in. The returned router is parameterized by
+/// `Arc<AdminRuntimeState>` so the caller composes it with the
+/// runtime router and provides state once via `.with_state(...)`.
+pub(crate) fn admin_router(state: Arc<AdminRuntimeState>) -> Router<Arc<AdminRuntimeState>> {
     let session_lifetime =
         TimeDuration::seconds(i64::try_from(state.session_lifetime_secs).unwrap_or(i64::MAX));
     let session_layer = SessionManagerLayer::new(state.session_store.clone())
@@ -99,15 +115,7 @@ pub(crate) fn admin_router_and_openapi(
         .with_expiry(Expiry::OnInactivity(session_lifetime));
     let auth_layer =
         AuthManagerLayerBuilder::new(state.auth_backend.clone(), session_layer).build();
-
-    // ---- axum_csrf ----------------------------------------------------
     let csrf_layer = CsrfLayer::new(state.csrf_config.clone());
-
-    // ---- OpenApiRouter composition ------------------------------------
-    //
-    // Every subdomain contributes utoipa-annotated routes; the
-    // OpenAPI document is built from them and committed to
-    // `openapi.json`.
 
     // `.layer` wraps the current router with the supplied middleware,
     // so layers read inside-out — the *first* `.layer(...)` call is
@@ -123,60 +131,29 @@ pub(crate) fn admin_router_and_openapi(
         .layer(from_fn(verify_csrf_layer))
         .layer(from_fn(require_login_layer));
 
-    // The outer composition. `attach_csrf_response_layer` and
-    // `csrf_layer` apply to *both* sub-routers so the SPA always sees
-    // a fresh `X-CSRF-Token` even on public endpoints (login,
-    // whoami). The auth layer must also wrap both because
-    // `handle_admin_login` calls `auth_session.login(&user)`.
-    let composed = OpenApiRouter::with_openapi(ApiDoc::openapi())
+    // `attach_csrf_response_layer` and `csrf_layer` apply to *both*
+    // sub-routers so the SPA always sees a fresh `X-CSRF-Token` even
+    // on public endpoints (login, whoami). The auth layer also wraps
+    // both because `handle_admin_login` calls
+    // `auth_session.login(&user)`.
+    OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(build_public_router())
         .merge(protected)
         .layer(from_fn(attach_csrf_response_layer))
         .layer(csrf_layer)
         .layer(auth_layer)
-        .layer(from_fn_with_state(state, origin_layer));
-
-    composed.split_for_parts()
+        .layer(from_fn_with_state(state, origin_layer))
+        .split_for_parts()
+        .0
 }
 
-/// Public sub-router (login, whoami, bootstrap). Shared between the
-/// live HTTPS listener and the OpenAPI export drift test. Bootstrap
-/// is merged inside [`auth::public_router`].
-fn build_public_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
-    OpenApiRouter::new().merge(auth::public_router())
-}
-
-/// Protected sub-router, without any tower layers applied. Used both
-/// by the live router (where layers wrap this output) and by the
-/// OpenAPI export test (which only cares about the path table).
-fn build_protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
-    OpenApiRouter::new()
-        .merge(auth::protected_router())
-        .merge(users::openapi_router())
-        .merge(stores::openapi_router())
-        .merge(client_instances::openapi_router())
-        .merge(secrets::openapi_router())
-        .merge(libsecret::openapi_router())
-        .merge(resources::openapi_router())
-        .merge(pairs::openapi_router())
-        .merge(policy::openapi_router())
-        .merge(views::openapi_router())
-}
-
-/// OpenAPI-only export. Constructs the same router tree as the live
-/// `admin_router_and_openapi` (minus the tower layers, which don't
-/// affect the spec) and returns just the `OpenApi` document.
-pub(crate) fn admin_openapi_spec() -> OpenApi {
+/// OpenAPI-only export. Constructs the same path table as
+/// [`admin_router`] (minus the tower layers, which don't affect the
+/// spec) and returns the `OpenApi` document. Used by the drift test
+/// in `tests/openapi_export.rs` and re-exported from `lib.rs`.
+pub fn admin_openapi_spec() -> OpenApi {
     OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(build_public_router())
         .merge(build_protected_router())
         .into_openapi()
-}
-
-/// Backwards-compatible wrapper that drops the OpenAPI document. Kept
-/// for code paths that don't care about the spec (the live HTTPS
-/// listener). The drift test calls
-/// [`admin_router_and_openapi`] directly to inspect the spec.
-pub(crate) fn admin_router(state: Arc<AdminRuntimeState>) -> Router<Arc<AdminRuntimeState>> {
-    admin_router_and_openapi(state).0
 }
