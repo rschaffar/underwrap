@@ -56,8 +56,6 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
         .routes(routes!(handle_put_alias, handle_delete_alias))
 }
 
-// ---- shared helpers -------------------------------------------------------
-
 /// Validate a caller-supplied id (collection id, item id, alias name).
 /// The rules — `[A-Za-z0-9._-]+`, max 128 chars, no leading `_` — keep
 /// the id usable as a D-Bus path segment and reserve `_`-prefixed names
@@ -137,8 +135,6 @@ fn with_blob<R>(
     Ok(result)
 }
 
-// ---- GET tree -------------------------------------------------------------
-
 #[utoipa::path(
     get,
     path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret",
@@ -189,8 +185,6 @@ pub(crate) async fn handle_get_tree(
         collections,
     }))
 }
-
-// ---- Collection CRUD ------------------------------------------------------
 
 #[utoipa::path(
     post,
@@ -322,8 +316,6 @@ pub(crate) async fn handle_delete_collection(
     );
     outcome.map(Json)
 }
-
-// ---- Item CRUD + secret reveal -------------------------------------------
 
 #[utoipa::path(
     post,
@@ -491,8 +483,6 @@ pub(crate) async fn handle_get_item_secret(
         secret_b64: encode_b64(item.secret.as_ref()),
     }))
 }
-
-// ---- Alias CRUD -----------------------------------------------------------
 
 #[utoipa::path(
     put,

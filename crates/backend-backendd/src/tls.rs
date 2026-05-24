@@ -44,16 +44,18 @@ pub(crate) fn build_https_acceptor(config: &HttpsTlsConfig) -> Result<TlsAccepto
 /// The handshake signature is still verified against the leaf's public key so
 /// a stolen cert without its private key cannot be replayed.
 #[derive(Debug)]
-struct FingerprintClientCertVerifier {
-    supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
-}
+struct FingerprintClientCertVerifier;
 
 impl FingerprintClientCertVerifier {
     fn new() -> Self {
-        let provider = rustls::crypto::ring::default_provider();
-        Self {
-            supported_algs: provider.signature_verification_algorithms,
-        }
+        Self
+    }
+
+    /// `install_default` and `default_provider` return the same
+    /// `CryptoProvider` instance; reaching for it on every signature
+    /// check is a cheap pointer follow and removes the cached copy.
+    fn algs() -> rustls::crypto::WebPkiSupportedAlgorithms {
+        rustls::crypto::ring::default_provider().signature_verification_algorithms
     }
 }
 
@@ -85,7 +87,7 @@ impl rustls::server::danger::ClientCertVerifier for FingerprintClientCertVerifie
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &Self::algs())
     }
 
     fn verify_tls13_signature(
@@ -94,11 +96,11 @@ impl rustls::server::danger::ClientCertVerifier for FingerprintClientCertVerifie
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &Self::algs())
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.supported_algs.supported_schemes()
+        Self::algs().supported_schemes()
     }
 }
 

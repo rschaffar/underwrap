@@ -33,7 +33,7 @@ use axum_login::AuthSession;
 use hyper::Method;
 use hyper::header::HeaderValue;
 use tower_sessions::cookie::SameSite;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::admin_api::AdminError;
 use crate::auth::AuthBackend;
@@ -176,12 +176,6 @@ pub(crate) async fn resolve_principal_layer(
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
-    info!(
-        user = %principal.username,
-        method = %request.method(),
-        path = request.uri().path(),
-        "admin request",
-    );
     request.extensions_mut().insert(principal);
     next.run(request).await
 }
