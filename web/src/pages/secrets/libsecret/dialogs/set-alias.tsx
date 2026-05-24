@@ -44,13 +44,13 @@ const aliasSchema = z.object({
 });
 
 export function SetAliasDialog({
-  storeName,
+  storeId,
   resourceId,
   collections,
   existingAliases,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   resourceId: string;
   collections: AdminLibsecretCollectionView[];
   existingAliases: string[];
@@ -67,7 +67,7 @@ export function SetAliasDialog({
   });
   const mut = useMutation({
     mutationFn: (v: z.infer<typeof aliasSchema>) =>
-      putLibsecretAlias(storeName, resourceId, v.name, {
+      putLibsecretAlias(storeId, resourceId, v.name, {
         collection_id: v.collection_id,
       }),
   });
@@ -76,7 +76,7 @@ export function SetAliasDialog({
     try {
       await mut.mutateAsync(v);
       await qc.invalidateQueries({
-        queryKey: libsecretTreeKey(storeName, resourceId),
+        queryKey: libsecretTreeKey(storeId, resourceId),
       });
       onClose();
     } catch (e) {

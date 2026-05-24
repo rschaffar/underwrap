@@ -38,12 +38,12 @@ export function SecretsPage() {
     queryKey: ["admin", "stores"],
     queryFn: fetchStores,
   });
-  const { storeName, setStoreName } = useStoreSelector(stores.data?.items);
+  const { storeId, setStoreId } = useStoreSelector(stores.data?.items);
 
   const list = useQuery<AdminSecretsView>({
-    queryKey: ["admin", "secrets-view", storeName],
-    queryFn: () => fetchSecretsView(storeName!),
-    enabled: !!storeName,
+    queryKey: ["admin", "secrets-view", storeId],
+    queryFn: () => fetchSecretsView(storeId!),
+    enabled: !!storeId,
   });
   const { displayNameById } = useClientInstanceDirectory();
   const resources = list.data?.resources ?? [];
@@ -102,7 +102,7 @@ export function SecretsPage() {
   const [deletingResource, setDeletingResource] = useState<string | null>(null);
   const [renamingResource, setRenamingResource] = useState<string | null>(null);
 
-  if (!storeName) {
+  if (!storeId) {
     return (
       <div className="space-y-4">
         <h2 className="text-xl font-semibold text-(--color-fg)">Secrets</h2>
@@ -143,8 +143,8 @@ export function SecretsPage() {
             Store:{" "}
             <Select
               data-testid="secrets-store-select"
-              value={storeName}
-              onChange={(e) => setStoreName(e.target.value)}
+              value={storeId}
+              onChange={(e) => setStoreId(e.target.value)}
               className="ml-1 h-auto w-auto px-2 py-1"
             >
               {(stores.data?.items ?? []).map((s) => (
@@ -174,7 +174,7 @@ export function SecretsPage() {
             <ResourceBlock
               key={group.resource_id}
               group={group}
-              storeName={storeName}
+              storeId={storeId}
               provenance={resourceProvenance.get(group.resource_id)}
               displayNameById={displayNameById}
               onReveal={(entry) =>
@@ -210,14 +210,14 @@ export function SecretsPage() {
 
       {revealing ? (
         <RevealSecretDialog
-          storeName={storeName}
+          storeId={storeId}
           address={revealing}
           onClose={() => setRevealing(null)}
         />
       ) : null}
       {creating ? (
         <WriteSecretDialog
-          storeName={storeName}
+          storeId={storeId}
           mode="create"
           address={{ ...creating, key: "" }}
           onClose={() => setCreating(null)}
@@ -225,14 +225,14 @@ export function SecretsPage() {
       ) : null}
       {creatingResource ? (
         <CreateResourceDialog
-          storeName={storeName}
+          storeId={storeId}
           existingResources={resources.map((r) => r.name)}
           onClose={() => setCreatingResource(false)}
         />
       ) : null}
       {editing ? (
         <WriteSecretDialog
-          storeName={storeName}
+          storeId={storeId}
           mode="edit"
           address={editing}
           onClose={() => setEditing(null)}
@@ -240,14 +240,14 @@ export function SecretsPage() {
       ) : null}
       {deleting ? (
         <DeleteSecretDialog
-          storeName={storeName}
+          storeId={storeId}
           address={deleting}
           onClose={() => setDeleting(null)}
         />
       ) : null}
       {deletingResource ? (
         <DeleteResourceDialog
-          storeName={storeName}
+          storeId={storeId}
           resourceId={deletingResource}
           resourceName={resourceNameById.get(deletingResource) ?? deletingResource}
           onClose={() => setDeletingResource(null)}
@@ -255,7 +255,7 @@ export function SecretsPage() {
       ) : null}
       {renamingResource ? (
         <RenameResourceDialog
-          storeName={storeName}
+          storeId={storeId}
           resourceId={renamingResource}
           currentName={
             resourceNameById.get(renamingResource) ?? renamingResource

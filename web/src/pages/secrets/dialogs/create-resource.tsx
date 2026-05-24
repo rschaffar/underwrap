@@ -32,11 +32,11 @@ const resourceSchema = z.object({
 type ResourceValues = z.infer<typeof resourceSchema>;
 
 export function CreateResourceDialog({
-  storeName,
+  storeId,
   existingResources,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   existingResources: string[];
   onClose: () => void;
 }) {
@@ -48,14 +48,14 @@ export function CreateResourceDialog({
   const known = useMemo(() => new Set(existingResources), [existingResources]);
   const mut = useMutation({
     mutationFn: (name: string) =>
-      postResourceCreate(storeName, { name }),
+      postResourceCreate(storeId, { name }),
     onSuccess: async () => {
       await Promise.all([
         qc.invalidateQueries({
-          queryKey: ["admin", "secrets-view", storeName],
+          queryKey: ["admin", "secrets-view", storeId],
         }),
         qc.invalidateQueries({
-          queryKey: ["admin", "wrapper-permissions-view", storeName],
+          queryKey: ["admin", "wrapper-permissions-view", storeId],
         }),
       ]);
       onClose();

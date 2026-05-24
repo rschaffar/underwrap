@@ -37,13 +37,13 @@ type RenameResourceValues = z.infer<typeof renameResourceSchema>;
  * blob key) stay put — this is a metadata flip.
  */
 export function RenameResourceDialog({
-  storeName,
+  storeId,
   resourceId,
   currentName,
   existingNames,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   resourceId: string;
   currentName: string;
   existingNames: string[];
@@ -60,14 +60,14 @@ export function RenameResourceDialog({
   );
   const mut = useMutation({
     mutationFn: (new_name: string) =>
-      putResourceRename(storeName, resourceId, { new_name }),
+      putResourceRename(storeId, resourceId, { new_name }),
     onSuccess: async () => {
       await Promise.all([
         qc.invalidateQueries({
-          queryKey: ["admin", "secrets-view", storeName],
+          queryKey: ["admin", "secrets-view", storeId],
         }),
         qc.invalidateQueries({
-          queryKey: ["admin", "wrapper-permissions-view", storeName],
+          queryKey: ["admin", "wrapper-permissions-view", storeId],
         }),
       ]);
       onClose();

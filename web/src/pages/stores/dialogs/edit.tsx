@@ -47,7 +47,7 @@ export function EditStoreDialog({
   const [rotateConfirm, setRotateConfirm] = useState(false);
   const [rotateWarning, setRotateWarning] = useState<string | null>(null);
   const [revealKey, setRevealKey] = useState<{
-    storeName: string;
+    name: string;
     keyHex: string;
     warning: string;
   } | null>(null);
@@ -69,7 +69,7 @@ export function EditStoreDialog({
     onSuccess: (res) => {
       setRotateWarning(null);
       setRevealKey({
-        storeName: store.name,
+        name: store.name,
         keyHex: res.key_hex,
         warning: res.warning,
       });
@@ -80,7 +80,7 @@ export function EditStoreDialog({
   if (revealKey) {
     return (
       <KeyRevealDialog
-        title={`New encryption key for ${revealKey.storeName}`}
+        title={`New encryption key for ${revealKey.name}`}
         description={
           <>
             <strong>Heads up:</strong> {revealKey.warning} This is the

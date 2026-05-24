@@ -22,7 +22,7 @@ interface RowActions {
 
 export function ResourceBlock({
   group,
-  storeName,
+  storeId,
   provenance,
   displayNameById,
   onAddEntry,
@@ -31,7 +31,7 @@ export function ResourceBlock({
   ...actions
 }: {
   group: SecretResourceGroup;
-  storeName: string;
+  storeId: string;
   provenance: ResourceRecord | undefined;
   displayNameById: Map<string, string>;
   onAddEntry: (slot: SecretSlot) => void;
@@ -142,7 +142,7 @@ export function ResourceBlock({
           />
         ))}
         <LibsecretTree
-          storeName={storeName}
+          storeId={storeId}
           resourceId={group.resource_id}
         />
       </div>

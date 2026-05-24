@@ -6,12 +6,12 @@ import { deleteLibsecretCollection } from "@/api/client";
 import { libsecretTreeKey } from "../internal";
 
 export function DeleteCollectionDialog({
-  storeName,
+  storeId,
   resourceId,
   collectionId,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   resourceId: string;
   collectionId: string;
   onClose: () => void;
@@ -19,10 +19,10 @@ export function DeleteCollectionDialog({
   const qc = useQueryClient();
   const mut = useMutation({
     mutationFn: () =>
-      deleteLibsecretCollection(storeName, resourceId, collectionId),
+      deleteLibsecretCollection(storeId, resourceId, collectionId),
     onSuccess: async () => {
       await qc.invalidateQueries({
-        queryKey: libsecretTreeKey(storeName, resourceId),
+        queryKey: libsecretTreeKey(storeId, resourceId),
       });
       onClose();
     },

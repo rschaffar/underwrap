@@ -9,24 +9,24 @@ import { useEffect, useState } from "react";
  */
 export function useStoreSelector(
   availableStores: ReadonlyArray<{ id: string }> | undefined,
-): { storeName: string | null; setStoreName: (id: string) => void } {
-  const [storeName, setStoreName] = useState<string | null>(() => {
+): { storeId: string | null; setStoreId: (id: string) => void } {
+  const [storeId, setStoreId] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     return new URLSearchParams(window.location.search).get("store");
   });
 
   useEffect(() => {
-    if (storeName) return;
+    if (storeId) return;
     const first = availableStores?.[0]?.id;
-    if (first) setStoreName(first);
-  }, [storeName, availableStores]);
+    if (first) setStoreId(first);
+  }, [storeId, availableStores]);
 
   useEffect(() => {
-    if (!storeName) return;
+    if (!storeId) return;
     const url = new URL(window.location.href);
-    url.searchParams.set("store", storeName);
+    url.searchParams.set("store", storeId);
     window.history.replaceState({}, "", url.toString());
-  }, [storeName]);
+  }, [storeId]);
 
-  return { storeName, setStoreName };
+  return { storeId, setStoreId };
 }

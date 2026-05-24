@@ -40,13 +40,13 @@ function BlockersAlert({
 }
 
 export function DeletePairDialog({
-  storeName,
+  storeId,
   pair,
   displayNameById,
   resourceName,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   pair: WrapperResourcePairRecord;
   displayNameById: Map<string, string>;
   resourceName: string;
@@ -54,14 +54,14 @@ export function DeletePairDialog({
 }) {
   const qc = useQueryClient();
   const mut = useMutation({
-    mutationFn: () => deletePair(storeName, pair.wrapper, pair.resource_id),
+    mutationFn: () => deletePair(storeId, pair.wrapper, pair.resource_id),
   });
 
   async function onConfirm() {
     const result = await mut.mutateAsync();
     if (result.ok) {
       await qc.invalidateQueries({
-        queryKey: ["admin", "wrapper-permissions-view", storeName],
+        queryKey: ["admin", "wrapper-permissions-view", storeId],
       });
       onClose();
     }

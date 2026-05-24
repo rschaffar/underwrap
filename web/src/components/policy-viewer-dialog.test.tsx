@@ -61,7 +61,7 @@ describe("PolicyViewerDialog", () => {
     });
 
     renderWithQuery(
-      <PolicyViewerDialog storeName="prod" open={true} onClose={() => {}} />,
+      <PolicyViewerDialog storeId="prod" open={true} onClose={() => {}} />,
     );
 
     // The dialog opens with the store name in the title.
@@ -91,7 +91,7 @@ describe("PolicyViewerDialog", () => {
       permissions: [],
     });
     renderWithQuery(
-      <PolicyViewerDialog storeName="dev" open={true} onClose={() => {}} />,
+      <PolicyViewerDialog storeId="dev" open={true} onClose={() => {}} />,
     );
     expect(
       await screen.findByTestId("writable-permissions-badge"),
@@ -104,7 +104,7 @@ describe("PolicyViewerDialog", () => {
       new ApiError(500, "internal_error", "the backend exploded"),
     );
     renderWithQuery(
-      <PolicyViewerDialog storeName="prod" open={true} onClose={() => {}} />,
+      <PolicyViewerDialog storeId="prod" open={true} onClose={() => {}} />,
     );
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /the backend exploded/i,
@@ -134,7 +134,7 @@ describe("PolicyViewerDialog", () => {
     });
 
     renderWithQuery(
-      <PolicyViewerDialog storeName="prod" open={true} onClose={() => {}} />,
+      <PolicyViewerDialog storeId="prod" open={true} onClose={() => {}} />,
     );
     await screen.findByTestId("policy-json");
     const copyBtn = screen.getByRole("button", { name: /copy json/i });

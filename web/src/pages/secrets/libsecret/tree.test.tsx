@@ -54,7 +54,7 @@ describe("LibsecretTree", () => {
 
   it("renders collections + items + aliases from the structured endpoint", async () => {
     vi.mocked(fetchLibsecretTree).mockResolvedValue(baseTree);
-    renderTree(<LibsecretTree storeName="test" resourceId="github/gh" />);
+    renderTree(<LibsecretTree storeId="test" resourceId="github/gh" />);
 
     const tree = await screen.findByTestId("libsecret-tree");
     expect(tree).toBeInTheDocument();
@@ -83,7 +83,7 @@ describe("LibsecretTree", () => {
       aliases: {},
       collections: [],
     });
-    renderTree(<LibsecretTree storeName="test" resourceId="empty" />);
+    renderTree(<LibsecretTree storeId="test" resourceId="empty" />);
     const tree = await screen.findByTestId("libsecret-tree");
     expect(tree).toHaveTextContent(/none/i);
   });

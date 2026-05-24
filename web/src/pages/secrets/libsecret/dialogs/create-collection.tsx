@@ -41,12 +41,12 @@ const collectionSchema = z.object({
 });
 
 export function CreateCollectionDialog({
-  storeName,
+  storeId,
   resourceId,
   existingIds,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   resourceId: string;
   existingIds: string[];
   onClose: () => void;
@@ -59,7 +59,7 @@ export function CreateCollectionDialog({
   });
   const mut = useMutation({
     mutationFn: (v: z.infer<typeof collectionSchema>) =>
-      postLibsecretCollection(storeName, resourceId, {
+      postLibsecretCollection(storeId, resourceId, {
         id: v.id || undefined,
         label: v.label,
       }),
@@ -73,7 +73,7 @@ export function CreateCollectionDialog({
     try {
       await mut.mutateAsync(v);
       await qc.invalidateQueries({
-        queryKey: libsecretTreeKey(storeName, resourceId),
+        queryKey: libsecretTreeKey(storeId, resourceId),
       });
       onClose();
     } catch (e) {

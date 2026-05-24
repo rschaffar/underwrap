@@ -6,21 +6,21 @@ import { deleteSecret } from "@/api/client";
 import type { SecretAddress } from "../model";
 
 export function DeleteSecretDialog({
-  storeName,
+  storeId,
   address,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   address: SecretAddress;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const mut = useMutation({
     mutationFn: () =>
-      deleteSecret(storeName, address.resource_id, address.slot, address.key),
+      deleteSecret(storeId, address.resource_id, address.slot, address.key),
     onSuccess: async () => {
       await qc.invalidateQueries({
-        queryKey: ["admin", "secrets-view", storeName],
+        queryKey: ["admin", "secrets-view", storeId],
       });
       onClose();
     },
@@ -34,7 +34,7 @@ export function DeleteSecretDialog({
           <code>
             {address.resource_id} · {address.slot} · {address.key}
           </code>{" "}
-          from <code>{storeName}</code>. This cannot be undone.
+          from <code>{storeId}</code>. This cannot be undone.
         </>
       }
       destructive

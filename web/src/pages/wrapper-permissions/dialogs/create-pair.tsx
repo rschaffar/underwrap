@@ -49,12 +49,12 @@ const schema = z
 type Values = z.infer<typeof schema>;
 
 export function CreatePairDialog({
-  storeName,
+  storeId,
   existingResources,
   existingPairs,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   existingResources: ResourceRecord[];
   existingPairs: WrapperResourcePairRecord[];
   onClose: () => void;
@@ -72,11 +72,11 @@ export function CreatePairDialog({
   });
 
   const createResource = useMutation({
-    mutationFn: (name: string) => postResourceCreate(storeName, { name }),
+    mutationFn: (name: string) => postResourceCreate(storeId, { name }),
   });
   const createPair = useMutation({
     mutationFn: (vars: { wrapper: string; resource_id: string }) =>
-      postPairCreate(storeName, {
+      postPairCreate(storeId, {
         wrapper: vars.wrapper,
         resource_id: vars.resource_id,
       }),
@@ -113,7 +113,7 @@ export function CreatePairDialog({
         resource_id: chosenResourceId,
       });
       await qc.invalidateQueries({
-        queryKey: ["admin", "wrapper-permissions-view", storeName],
+        queryKey: ["admin", "wrapper-permissions-view", storeId],
       });
       onClose();
     } catch (e) {

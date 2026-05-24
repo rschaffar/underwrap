@@ -6,22 +6,22 @@ import { deleteLibsecretAlias } from "@/api/client";
 import { libsecretTreeKey } from "../internal";
 
 export function DeleteAliasDialog({
-  storeName,
+  storeId,
   resourceId,
   name,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   resourceId: string;
   name: string;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const mut = useMutation({
-    mutationFn: () => deleteLibsecretAlias(storeName, resourceId, name),
+    mutationFn: () => deleteLibsecretAlias(storeId, resourceId, name),
     onSuccess: async () => {
       await qc.invalidateQueries({
-        queryKey: libsecretTreeKey(storeName, resourceId),
+        queryKey: libsecretTreeKey(storeId, resourceId),
       });
       onClose();
     },

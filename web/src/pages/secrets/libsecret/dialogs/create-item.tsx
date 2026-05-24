@@ -44,13 +44,13 @@ const itemSchema = z.object({
 });
 
 export function CreateItemDialog({
-  storeName,
+  storeId,
   resourceId,
   collectionId,
   existingIds,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   resourceId: string;
   collectionId: string;
   existingIds: string[];
@@ -70,7 +70,7 @@ export function CreateItemDialog({
   });
   const mut = useMutation({
     mutationFn: (v: z.infer<typeof itemSchema>) =>
-      postLibsecretItem(storeName, resourceId, collectionId, {
+      postLibsecretItem(storeId, resourceId, collectionId, {
         id: v.id || undefined,
         label: v.label,
         content_type: v.content_type,
@@ -87,7 +87,7 @@ export function CreateItemDialog({
     try {
       await mut.mutateAsync(v);
       await qc.invalidateQueries({
-        queryKey: libsecretTreeKey(storeName, resourceId),
+        queryKey: libsecretTreeKey(storeId, resourceId),
       });
       onClose();
     } catch (e) {

@@ -22,15 +22,15 @@ import { SetAliasDialog } from "./dialogs/set-alias";
 import { libsecretTreeKey } from "./internal";
 
 export function LibsecretTree({
-  storeName,
+  storeId,
   resourceId,
 }: {
-  storeName: string;
+  storeId: string;
   resourceId: string;
 }) {
   const tree = useQuery<AdminLibsecretTreeResponse>({
-    queryKey: libsecretTreeKey(storeName, resourceId),
-    queryFn: () => fetchLibsecretTree(storeName, resourceId),
+    queryKey: libsecretTreeKey(storeId, resourceId),
+    queryFn: () => fetchLibsecretTree(storeId, resourceId),
   });
 
   const [creatingCollection, setCreatingCollection] = useState(false);
@@ -113,7 +113,7 @@ export function LibsecretTree({
 
       {creatingCollection ? (
         <CreateCollectionDialog
-          storeName={storeName}
+          storeId={storeId}
           resourceId={resourceId}
           existingIds={data.collections.map((c) => c.id)}
           onClose={() => setCreatingCollection(false)}
@@ -121,7 +121,7 @@ export function LibsecretTree({
       ) : null}
       {creatingItem ? (
         <CreateItemDialog
-          storeName={storeName}
+          storeId={storeId}
           resourceId={resourceId}
           collectionId={creatingItem.collectionId}
           existingIds={
@@ -133,7 +133,7 @@ export function LibsecretTree({
       ) : null}
       {revealing ? (
         <RevealItemSecretDialog
-          storeName={storeName}
+          storeId={storeId}
           resourceId={resourceId}
           collectionId={revealing.collectionId}
           itemId={revealing.itemId}
@@ -142,7 +142,7 @@ export function LibsecretTree({
       ) : null}
       {deletingCollection ? (
         <DeleteCollectionDialog
-          storeName={storeName}
+          storeId={storeId}
           resourceId={resourceId}
           collectionId={deletingCollection}
           onClose={() => setDeletingCollection(null)}
@@ -150,7 +150,7 @@ export function LibsecretTree({
       ) : null}
       {deletingItem ? (
         <DeleteItemDialog
-          storeName={storeName}
+          storeId={storeId}
           resourceId={resourceId}
           collectionId={deletingItem.collectionId}
           itemId={deletingItem.itemId}
@@ -159,7 +159,7 @@ export function LibsecretTree({
       ) : null}
       {creatingAlias ? (
         <SetAliasDialog
-          storeName={storeName}
+          storeId={storeId}
           resourceId={resourceId}
           collections={data.collections}
           existingAliases={Object.keys(data.aliases)}
@@ -168,7 +168,7 @@ export function LibsecretTree({
       ) : null}
       {deletingAlias ? (
         <DeleteAliasDialog
-          storeName={storeName}
+          storeId={storeId}
           resourceId={resourceId}
           name={deletingAlias}
           onClose={() => setDeletingAlias(null)}

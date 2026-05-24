@@ -66,19 +66,19 @@ function BlockersAlert({ blockers }: { blockers: Blockers | null | undefined }) 
 }
 
 export function DeleteResourceDialog({
-  storeName,
+  storeId,
   resourceId,
   resourceName,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   resourceId: string;
   resourceName: string;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const mut = useMutation({
-    mutationFn: () => deleteResource(storeName, resourceId),
+    mutationFn: () => deleteResource(storeId, resourceId),
   });
   async function onConfirm() {
     const result = await mut.mutateAsync();
@@ -88,10 +88,10 @@ export function DeleteResourceDialog({
       // view keys keeps either page consistent on next visit.
       await Promise.all([
         qc.invalidateQueries({
-          queryKey: ["admin", "secrets-view", storeName],
+          queryKey: ["admin", "secrets-view", storeId],
         }),
         qc.invalidateQueries({
-          queryKey: ["admin", "wrapper-permissions-view", storeName],
+          queryKey: ["admin", "wrapper-permissions-view", storeId],
         }),
       ]);
       onClose();

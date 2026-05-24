@@ -52,7 +52,7 @@ export function CreateStoreDialog({
   // confirms acknowledgement and we close the modal. Never persisted
   // beyond React state — no localStorage / sessionStorage / URL.
   const [revealKey, setRevealKey] = useState<{
-    storeName: string;
+    name: string;
     keyHex: string;
   } | null>(null);
   const form = useForm<CreateValues>({
@@ -72,7 +72,7 @@ export function CreateStoreDialog({
         // Encrypted store: surface the master key once. We keep the
         // create dialog mounted underneath so onClose isn't called
         // until the operator finishes the reveal flow.
-        setRevealKey({ storeName: res.store.name, keyHex: res.key_hex });
+        setRevealKey({ name: res.store.name, keyHex: res.key_hex });
       } else {
         onClose();
       }
@@ -93,7 +93,7 @@ export function CreateStoreDialog({
   if (revealKey) {
     return (
       <KeyRevealDialog
-        title={`Encryption key for ${revealKey.storeName}`}
+        title={`Encryption key for ${revealKey.name}`}
         description={
           <>
             This is the only time the master key will be shown. The

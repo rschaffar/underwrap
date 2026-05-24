@@ -19,7 +19,7 @@ import {
 import { describeApiError } from "@/lib/error-message";
 
 interface PolicyViewerDialogProps {
-  storeName: string;
+  storeId: string;
   open: boolean;
   onClose: () => void;
 }
@@ -34,13 +34,13 @@ interface PolicyViewerDialogProps {
  * Editing intentionally stays in the Wrapper permissions view.
  */
 export function PolicyViewerDialog({
-  storeName,
+  storeId,
   open,
   onClose,
 }: PolicyViewerDialogProps) {
   const policy = useQuery<AdminWrapperPermissionsListResponse>({
-    queryKey: ["admin", "wrapper-permissions", storeName],
-    queryFn: () => fetchWrapperPermissions(storeName),
+    queryKey: ["admin", "wrapper-permissions", storeId],
+    queryFn: () => fetchWrapperPermissions(storeId),
     enabled: open,
     // The viewer is read-only and operators reopen it to confirm
     // recent edits. Cache freshness matters more than save round
@@ -86,7 +86,7 @@ export function PolicyViewerDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Raw policy: {storeName}</DialogTitle>
+          <DialogTitle>Raw policy: {storeId}</DialogTitle>
           <DialogDescription>
             The persisted <code>PolicyDocument</code> for this store.
             Read-only — use the Wrapper permissions view to change

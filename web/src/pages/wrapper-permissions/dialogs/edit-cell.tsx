@@ -25,7 +25,7 @@ import { toDatetimeLocal } from "@/lib/epoch";
 import type { ModeKind } from "../derivations";
 
 export function EditCellDialog({
-  storeName,
+  storeId,
   clientInstance,
   clientInstanceDisplayName,
   wrapper,
@@ -34,7 +34,7 @@ export function EditCellDialog({
   existing,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   clientInstance: string;
   clientInstanceDisplayName: string;
   wrapper: string;
@@ -60,7 +60,7 @@ export function EditCellDialog({
   const upsert = useMutation({
     mutationFn: (mode: WrapperApprovalMode) =>
       putWrapperPermission(
-        storeName,
+        storeId,
         clientInstance,
         wrapper,
         resourceId,
@@ -72,7 +72,7 @@ export function EditCellDialog({
       ),
     onSuccess: async () => {
       await qc.invalidateQueries({
-        queryKey: ["admin", "wrapper-permissions-view", storeName],
+        queryKey: ["admin", "wrapper-permissions-view", storeId],
       });
       onClose();
     },
@@ -80,10 +80,10 @@ export function EditCellDialog({
   });
   const remove = useMutation({
     mutationFn: () =>
-      deleteWrapperPermission(storeName, clientInstance, wrapper, resourceId),
+      deleteWrapperPermission(storeId, clientInstance, wrapper, resourceId),
     onSuccess: async () => {
       await qc.invalidateQueries({
-        queryKey: ["admin", "wrapper-permissions-view", storeName],
+        queryKey: ["admin", "wrapper-permissions-view", storeId],
       });
       onClose();
     },

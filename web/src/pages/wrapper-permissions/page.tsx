@@ -36,15 +36,15 @@ export function WrapperPermissionsPage() {
     queryKey: ["admin", "stores"],
     queryFn: fetchStores,
   });
-  const { storeName, setStoreName } = useStoreSelector(stores.data?.items);
+  const { storeId, setStoreId } = useStoreSelector(stores.data?.items);
 
   // Aggregate view: one round-trip pulls permissions, pairs, and the
   // resources catalog for this store. Client-instance directory is a
   // global lookup, so it stays as a separate query.
   const view = useQuery<AdminWrapperPermissionsView>({
-    queryKey: ["admin", "wrapper-permissions-view", storeName],
-    queryFn: () => fetchWrapperPermissionsView(storeName!),
-    enabled: !!storeName,
+    queryKey: ["admin", "wrapper-permissions-view", storeId],
+    queryFn: () => fetchWrapperPermissionsView(storeId!),
+    enabled: !!storeId,
   });
   const { clientInstances: clientInstanceItems, displayNameById } =
     useClientInstanceDirectory();
@@ -65,11 +65,11 @@ export function WrapperPermissionsPage() {
   const clientInstances = useMemo(
     () =>
       clientInstancesForStore(
-        storeName ?? "",
+        storeId ?? "",
         clientInstanceItems,
         view.data?.permissions ?? [],
       ),
-    [storeName, clientInstanceItems, view.data],
+    [storeId, clientInstanceItems, view.data],
   );
 
   /** Map `(client_instance, wrapper, resource)` → permission. */
@@ -92,7 +92,7 @@ export function WrapperPermissionsPage() {
   const [deletingPair, setDeletingPair] =
     useState<WrapperResourcePairRecord | null>(null);
 
-  if (!storeName) {
+  if (!storeId) {
     return (
       <div className="space-y-4">
         <h2 className="text-xl font-semibold text-(--color-fg)">
@@ -146,8 +146,8 @@ export function WrapperPermissionsPage() {
             Store:{" "}
             <Select
               data-testid="wrappers-store-select"
-              value={storeName}
-              onChange={(e) => setStoreName(e.target.value)}
+              value={storeId}
+              onChange={(e) => setStoreId(e.target.value)}
               className="ml-1 h-auto w-auto px-2 py-1"
             >
               {(stores.data?.items ?? []).map((s) => (
@@ -192,7 +192,7 @@ export function WrapperPermissionsPage() {
 
       {editing ? (
         <EditCellDialog
-          storeName={storeName}
+          storeId={storeId}
           clientInstance={editing.clientInstance}
           clientInstanceDisplayName={
             displayNameById.get(editing.clientInstance) ?? editing.clientInstance
@@ -209,7 +209,7 @@ export function WrapperPermissionsPage() {
 
       {creatingPair ? (
         <CreatePairDialog
-          storeName={storeName}
+          storeId={storeId}
           existingResources={resources}
           existingPairs={pairRecords}
           onClose={() => setCreatingPair(false)}
@@ -218,7 +218,7 @@ export function WrapperPermissionsPage() {
 
       {deletingPair ? (
         <DeletePairDialog
-          storeName={storeName}
+          storeId={storeId}
           pair={deletingPair}
           displayNameById={displayNameById}
           resourceName={
@@ -229,7 +229,7 @@ export function WrapperPermissionsPage() {
       ) : null}
 
       <PolicyViewerDialog
-        storeName={storeName}
+        storeId={storeId}
         open={rawOpen}
         onClose={() => setRawOpen(false)}
       />

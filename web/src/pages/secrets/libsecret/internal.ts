@@ -8,8 +8,8 @@
 // remain authoritative.
 export const ID_PATTERN = /^(?!_)[A-Za-z0-9._-]+$/;
 
-export function libsecretTreeKey(storeName: string, resourceId: string) {
-  return ["admin", "libsecret", storeName, resourceId] as const;
+export function libsecretTreeKey(storeId: string, resourceId: string) {
+  return ["admin", "libsecret", storeId, resourceId] as const;
 }
 
 export function parseAttributes(input: string): Record<string, string> {

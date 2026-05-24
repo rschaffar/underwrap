@@ -45,12 +45,12 @@ const writeSchema = z.object({
 type WriteValues = z.infer<typeof writeSchema>;
 
 export function WriteSecretDialog({
-  storeName,
+  storeId,
   mode,
   address,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   mode: "create" | "edit";
   /**
    * The address the dialog opens against. In `create` mode `key` is
@@ -68,7 +68,7 @@ export function WriteSecretDialog({
 
   const writeMut = useMutation({
     mutationFn: (v: { key: string; material: string }) =>
-      putSecret(storeName, address.resource_id, address.slot, v.key, {
+      putSecret(storeId, address.resource_id, address.slot, v.key, {
         material_b64: btoa(v.material),
       }),
   });
@@ -78,7 +78,7 @@ export function WriteSecretDialog({
   const renameMut = useMutation({
     mutationFn: (v: { from_key: string; to_key: string; material?: string }) =>
       postSecretRename(
-        storeName,
+        storeId,
         address.resource_id,
         address.slot,
         v.from_key,
@@ -106,7 +106,7 @@ export function WriteSecretDialog({
         await writeMut.mutateAsync(v);
       }
       await qc.invalidateQueries({
-        queryKey: ["admin", "secrets-view", storeName],
+        queryKey: ["admin", "secrets-view", storeId],
       });
       onClose();
     } catch (e) {

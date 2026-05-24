@@ -11,11 +11,11 @@ import type { SecretAddress } from "../model";
 import { RevealSecretView } from "../reveal-secret-view";
 
 export function RevealSecretDialog({
-  storeName,
+  storeId,
   address,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   address: SecretAddress;
   onClose: () => void;
 }) {
@@ -28,7 +28,7 @@ export function RevealSecretDialog({
             <code>
               {address.resource_id} · {address.slot} · {address.key}
             </code>{" "}
-            from <code>{storeName}</code>.
+            from <code>{storeId}</code>.
           </DialogDescription>
         </DialogHeader>
         <RevealSecretView
@@ -36,14 +36,14 @@ export function RevealSecretDialog({
             "admin",
             "secret",
             "read",
-            storeName,
+            storeId,
             address.resource_id,
             address.slot,
             address.key,
           ]}
           queryFn={() =>
             fetchSecret(
-              storeName,
+              storeId,
               address.resource_id,
               address.slot,
               address.key,

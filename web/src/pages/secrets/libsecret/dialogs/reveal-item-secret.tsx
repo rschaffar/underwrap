@@ -10,13 +10,13 @@ import { fetchLibsecretItemSecret } from "@/api/client";
 import { RevealSecretView } from "../../reveal-secret-view";
 
 export function RevealItemSecretDialog({
-  storeName,
+  storeId,
   resourceId,
   collectionId,
   itemId,
   onClose,
 }: {
-  storeName: string;
+  storeId: string;
   resourceId: string;
   collectionId: string;
   itemId: string;
@@ -39,14 +39,14 @@ export function RevealItemSecretDialog({
             "admin",
             "libsecret",
             "item-secret",
-            storeName,
+            storeId,
             resourceId,
             collectionId,
             itemId,
           ]}
           queryFn={() =>
             fetchLibsecretItemSecret(
-              storeName,
+              storeId,
               resourceId,
               collectionId,
               itemId,
