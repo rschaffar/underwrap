@@ -133,10 +133,6 @@ fn save_blob(
         .map_err(|e| AdminError::internal("saving resource blob", e))
 }
 
-fn decode_secret_b64(b64: &str) -> Result<SecretBytes, AdminError> {
-    decode_b64(b64).map(SecretBytes::from)
-}
-
 fn audit_libsecret<'a>(
     store: &'a str,
     resource_id: &'a str,
@@ -483,7 +479,7 @@ async fn post_item_inner(
     cid: &str,
     body: AdminLibsecretItemCreateRequest,
 ) -> Result<AdminLibsecretItemCreateResponse, AdminError> {
-    let secret = decode_secret_b64(&body.secret_b64)?;
+    let secret = decode_b64(&body.secret_b64).map(SecretBytes::from)?;
     let (store, mut blob) = load_blob(state, store_id, resource_id)?;
     let collection = blob
         .libsecret
@@ -593,7 +589,7 @@ async fn patch_item_inner(
     body: AdminLibsecretItemPatchRequest,
 ) -> Result<AdminOkResponse, AdminError> {
     let new_secret = match &body.secret_b64 {
-        Some(b64) => Some(decode_secret_b64(b64)?),
+        Some(b64) => Some(decode_b64(b64).map(SecretBytes::from)?),
         None => None,
     };
     let (store, mut blob) = load_blob(state, store_id, resource_id)?;

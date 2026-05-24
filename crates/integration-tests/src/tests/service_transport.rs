@@ -183,25 +183,37 @@ async fn flat_secret_endpoints_reject_libsecret_slot() {
         .unwrap();
     let resource_id = resource_record.resource.id.clone();
 
-    for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
-        let resp = daemon
-            .admin_request(
-                method.clone(),
-                &format!("/v1/admin/stores/test/secrets/{resource_id}/libsecret/_aliases",),
-            )
-            .send()
-            .await
-            .unwrap();
+    // Every flat-secret verb (GET / PUT / DELETE) must produce the
+    // same `slot_not_supported` rejection. PUT carries a body, so
+    // include one to prove the slot check fires before body parsing.
+    let cases: Vec<(reqwest::Method, Option<serde_json::Value>)> = vec![
+        (reqwest::Method::GET, None),
+        (
+            reqwest::Method::PUT,
+            Some(serde_json::json!({ "material_b64": "eA==" })),
+        ),
+        (reqwest::Method::DELETE, None),
+    ];
+    for (method, body) in cases {
+        let mut req = daemon.admin_request(
+            method.clone(),
+            &format!("/v1/admin/stores/test/secrets/{resource_id}/libsecret/_aliases"),
+        );
+        if let Some(json) = body {
+            req = req.json(&json);
+        }
+        let resp = req.send().await.unwrap();
         assert_eq!(
             resp.status(),
             reqwest::StatusCode::BAD_REQUEST,
             "{method} on flat libsecret slot must be rejected with 400",
         );
-        let body: underwrap_protocol::service::ServiceErrorResponse = resp.json().await.unwrap();
-        assert_eq!(body.code, "slot_not_supported");
+        let envelope: underwrap_protocol::service::ServiceErrorResponse =
+            resp.json().await.unwrap();
+        assert_eq!(envelope.code, "slot_not_supported");
         assert!(
-            body.message.contains("/libsecret/"),
-            "error message should point at the structured endpoint, got {body:?}",
+            envelope.message.contains("/libsecret/"),
+            "error message should point at the structured endpoint, got {envelope:?}",
         );
     }
 
