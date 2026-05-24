@@ -310,3 +310,59 @@ fn blob_from_resource_entries_drops_orphan_libsecret_items() {
     let col = blob.libsecret.collections.get("default").unwrap();
     assert!(col.items.is_empty());
 }
+
+#[test]
+fn expand_omits_aliases_row_when_alias_map_is_empty() {
+    // A resource with collections but no aliases must not synthesize a
+    // `_aliases` row. Otherwise an admin delete of `_aliases` silently
+    // reappears on the next read (the original regression).
+    let mut blob = populated_blob();
+    blob.libsecret.aliases.clear();
+
+    let entries = expand_blob_to_entries("r", &blob).unwrap();
+
+    assert!(
+        !entries.contains_key("r/libsecret/_aliases"),
+        "expected no _aliases row when aliases map is empty, got keys: {:?}",
+        entries.keys().collect::<Vec<_>>(),
+    );
+    // Collection content is still projected.
+    assert!(entries.contains_key("r/libsecret/default/_meta"));
+    assert!(entries.contains_key("r/libsecret/default/gh-cli.meta"));
+}
+
+#[test]
+fn expand_emits_aliases_row_when_alias_map_is_non_empty() {
+    let blob = populated_blob();
+    let entries = expand_blob_to_entries("r", &blob).unwrap();
+
+    let aliases_bytes = entries
+        .get("r/libsecret/_aliases")
+        .expect("aliases row must be present when alias map is non-empty");
+    let decoded: BTreeMap<String, String> = serde_json::from_slice(aliases_bytes.as_ref()).unwrap();
+    assert_eq!(decoded.get("default").map(String::as_str), Some("default"));
+
+    let rebuilt = blob_from_resource_entries("r", &entries).unwrap();
+    assert_eq!(rebuilt.libsecret.aliases, blob.libsecret.aliases);
+}
+
+#[test]
+fn delete_aliases_row_is_idempotent_across_expand_roundtrip() {
+    // Emulates the admin delete flow: expand → drop the _aliases entry
+    // → recompose blob → expand again. The _aliases key must stay gone.
+    let blob = populated_blob();
+    let mut entries = expand_blob_to_entries("r", &blob).unwrap();
+    assert!(entries.remove("r/libsecret/_aliases").is_some());
+
+    let rebuilt = blob_from_resource_entries("r", &entries).unwrap();
+    assert!(
+        rebuilt.libsecret.aliases.is_empty(),
+        "aliases map should be empty after dropping _aliases row",
+    );
+
+    let re_expanded = expand_blob_to_entries("r", &rebuilt).unwrap();
+    assert!(
+        !re_expanded.contains_key("r/libsecret/_aliases"),
+        "_aliases row must not be re-synthesized on the next expand",
+    );
+}

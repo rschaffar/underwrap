@@ -131,7 +131,7 @@ pub fn blob_from_resource_entries(
 fn libsecret_section_to_kv(section: &LibsecretSection) -> Result<BTreeMap<String, SecretBytes>> {
     let mut out = BTreeMap::new();
 
-    if !section.aliases.is_empty() || !section.collections.is_empty() {
+    if !section.aliases.is_empty() {
         let aliases_json =
             serde_json::to_vec(&section.aliases).context("encoding libsecret _aliases")?;
         out.insert("_aliases".to_string(), SecretBytes::from(aliases_json));
