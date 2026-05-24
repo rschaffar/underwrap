@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use base64::Engine;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -39,6 +38,7 @@ use underwrap_store::{load_resource_blob, save_resource_blob};
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, LibsecretEntityKind, log_admin_event};
+use crate::admin_api::body_b64::{decode_b64, encode_b64};
 use crate::admin_api::stores::admin_store;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
@@ -134,12 +134,7 @@ fn save_blob(
 }
 
 fn decode_secret_b64(b64: &str) -> Result<SecretBytes, AdminError> {
-    base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .map(SecretBytes::from)
-        .map_err(|e| {
-            AdminError::bad_request("invalid_request", format!("invalid base64 secret: {e}"))
-        })
+    decode_b64(b64).map(SecretBytes::from)
 }
 
 fn audit_libsecret<'a>(
@@ -741,9 +736,8 @@ pub(crate) async fn handle_get_item_secret(
         .items
         .get(&iid)
         .ok_or_else(|| AdminError::not_found(format!("item '{iid}' in collection '{cid}'")))?;
-    let bytes: &[u8] = item.secret.as_ref();
     Ok(Json(AdminLibsecretItemSecretResponse {
-        secret_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        secret_b64: encode_b64(item.secret.as_ref()),
     }))
 }
 

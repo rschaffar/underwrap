@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use base64::Engine;
 use serde::Deserialize;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -28,6 +27,7 @@ use underwrap_store::{
 
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
+use crate::admin_api::body_b64::{decode_b64, encode_b64};
 use crate::admin_api::stores::admin_store;
 use crate::http::responses::Body;
 use crate::runtime_state::AdminRuntimeState;
@@ -119,10 +119,7 @@ pub(crate) async fn handle_admin_secret_read(
     let material = read_resource_entry(store.as_ref(), &secret_id)
         .map_err(|e| AdminError::internal("reading resource entry", e))?;
     Ok(Json(AdminSecretReadResponse {
-        material_b64: material.map(|material| {
-            let bytes: &[u8] = material.as_ref();
-            base64::engine::general_purpose::STANDARD.encode(bytes)
-        }),
+        material_b64: material.map(|material| encode_b64(material.as_ref())),
     }))
 }
 
@@ -153,11 +150,7 @@ pub(crate) async fn handle_admin_secret_write(
 ) -> Result<Json<AdminOkResponse>, AdminError> {
     let slot = parse_slot(&slot)?;
     let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
-    let material = base64::engine::general_purpose::STANDARD
-        .decode(&body.material_b64)
-        .map_err(|e| {
-            AdminError::bad_request("invalid_request", format!("invalid base64 payload: {e}"))
-        })?;
+    let material = decode_b64(&body.material_b64)?;
     let store = admin_store(&state, &store_id)?;
 
     // Admin writes are always allowed. Per-resource write permissions
@@ -317,16 +310,7 @@ async fn rename_inner(
     // existing value across.
     let new_material: SecretBytes = match &body.material_b64 {
         None => existing,
-        Some(b64) => SecretBytes::from(
-            base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .map_err(|e| {
-                    AdminError::bad_request(
-                        "invalid_request",
-                        format!("invalid base64 payload: {e}"),
-                    )
-                })?,
-        ),
+        Some(b64) => SecretBytes::from(decode_b64(b64)?),
     };
 
     if !same_key {

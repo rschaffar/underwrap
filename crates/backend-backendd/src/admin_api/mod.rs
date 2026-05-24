@@ -34,6 +34,7 @@
 
 pub(crate) mod audit;
 pub mod auth;
+pub(crate) mod body_b64;
 pub(crate) mod client_instances;
 pub(crate) mod csrf;
 pub(crate) mod error;
