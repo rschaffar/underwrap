@@ -296,7 +296,6 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-libsecret": "test/libsecret-store",
     "test-caps": "test/caps-tok",
     "test-ns-pids": "test/ns-pids-store",
-    "test-keyring-probe": "test/libsecret-store",
     "test-dir-write": "test/dir-a",
     "test-dir-read": "test/dir-a",
     "test-dir-readonly-write": "test/dir-a",
@@ -548,7 +547,6 @@ def local_store_and_basic_ops():
         ("test-libsecret", "test/libsecret-store"),
         ("test-caps", "test/caps-tok"),
         ("test-ns-pids", "test/ns-pids-store"),
-        ("test-keyring-probe", "test/libsecret-store"),
     ]:
         grant_local_unlocked(wrapper, resource)
 
@@ -1047,28 +1045,58 @@ def local_libsecret_mode():
     machine.log("PASS: no secret material leaked outside backend")
 
 
-def local_go_keyring_compatibility():
+def local_libsecret_two_slot_compatibility():
     # ============================================================
-    # LOCAL INSTANCE: go-keyring-compatible Secret Service flow
+    # LOCAL INSTANCE: two items sharing `service` but differing in `username`
     # ============================================================
+    # Models gh's login pattern: a user-slot item keyed by
+    # (service, username=<account>) plus an active-slot item keyed by
+    # (service, username=""). secretsd must hold both as distinct items.
 
     import tempfile, os
     with tempfile.NamedTemporaryFile(mode='w', suffix='.secret', delete=False) as f:
-        f.write('keyring_roundtrip_value')
+        f.write('libsecret_two_slot_value')
         secret_file = f.name
-    machine.copy_from_host(secret_file, "/tmp/.keyring-probe-secret")
+    machine.copy_from_host(secret_file, "/tmp/.two-slot-secret")
     os.unlink(secret_file)
-    machine.succeed("chmod 600 /tmp/.keyring-probe-secret && chown testuser /tmp/.keyring-probe-secret")
-    output = machine.succeed(
+    machine.succeed("chmod 600 /tmp/.two-slot-secret && chown testuser /tmp/.two-slot-secret")
+
+    # User slot: (service=gh:github.com, username=rschaffar).
+    machine.succeed(
         'su testuser -s /bin/sh -c "'
-        'cat /tmp/.keyring-probe-secret | '
-        '/run/wrappers/bin/local-test-keyring-probe gh-login-sequence '
-        '--service gh:github.com --user rschaffar --secret-stdin"'
+        'cat /tmp/.two-slot-secret | '
+        '/run/wrappers/bin/local-test-libsecret store '
+        '--label=UserSlot service gh:github.com username rschaffar"'
+    )
+    user_out = machine.succeed(
+        'su testuser -s /bin/sh -c '
+        '"/run/wrappers/bin/local-test-libsecret lookup '
+        'service gh:github.com username rschaffar"'
     ).strip()
-    machine.succeed("rm -f /tmp/.keyring-probe-secret")
-    assert "user-slot=ok" in output, output
-    assert "active-slot=ok" in output, output
-    machine.log("PASS: go-keyring-compatible Secret Service sequence works")
+    user_last = user_out.split("\n")[-1].strip()
+    assert user_last == "libsecret_two_slot_value", \
+        f"user slot mismatch: got '{user_last}'"
+    machine.log("PASS: user slot store/lookup")
+
+    # Active slot: (service=gh:github.com, username="").
+    machine.succeed(
+        'su testuser -s /bin/sh -c "'
+        'cat /tmp/.two-slot-secret | '
+        "/run/wrappers/bin/local-test-libsecret store "
+        "--label=ActiveSlot service gh:github.com username ''\""
+    )
+    active_out = machine.succeed(
+        'su testuser -s /bin/sh -c "'
+        "/run/wrappers/bin/local-test-libsecret lookup "
+        "service gh:github.com username ''\""
+    ).strip()
+    active_last = active_out.split("\n")[-1].strip()
+    assert active_last == "libsecret_two_slot_value", \
+        f"active slot mismatch: got '{active_last}'"
+    machine.log("PASS: active slot store/lookup")
+
+    machine.succeed("rm -f /tmp/.two-slot-secret")
+    machine.log("PASS: libsecret two-slot compatibility (gh-style)")
 
 
 def local_directory_credentials():
@@ -2186,7 +2214,7 @@ def audit_and_no_secret_leaks():
     assert "locked_secret" not in logs, "secret leaked!"
     assert "secret_via_service" not in logs, "secret leaked!"
     assert "my_gh_token_value" not in logs, "libsecret secret leaked!"
-    assert "keyring_roundtrip_value" not in logs, "keyring probe secret leaked!"
+    assert "libsecret_two_slot_value" not in logs, "two-slot secret leaked!"
     machine.log("PASS: audit events present, no secrets in logs")
 
     machine.log("ALL TESTS PASSED")
@@ -2206,7 +2234,7 @@ local_core_dump_protection()
 local_symlink_confused_deputy_attack()
 local_proc_isolation_libsecret_mode()
 local_libsecret_mode()
-local_go_keyring_compatibility()
+local_libsecret_two_slot_compatibility()
 local_directory_credentials()
 local_atomic_writeback()
 remote_service_lifecycle()

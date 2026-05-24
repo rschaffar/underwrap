@@ -702,6 +702,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 
 [[package]]
+name = "debug-tool"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+]
+
+[[package]]
 name = "der-parser"
 version = "10.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -872,15 +881,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "frontend-debug-tool"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "libc",
-]
-
-[[package]]
 name = "frontend-exec"
 version = "0.1.0"
 dependencies = [
@@ -906,17 +906,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zeroize",
-]
-
-[[package]]
-name = "frontend-keyring-probe"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "serde",
- "tokio",
- "zbus",
 ]
 
 [[package]]

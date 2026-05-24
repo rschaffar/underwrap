@@ -1,5 +1,5 @@
 [package]
-name = "frontend-debug-tool"
+name = "debug-tool"
 description = "Unsafe developer inspection tool for underwrap wrapped environments"
 version.workspace = true
 edition.workspace = true

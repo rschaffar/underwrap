@@ -34,7 +34,6 @@
             filter = path: type:
               (craneLib.filterCargoSources path type)
               || (pkgs.lib.hasInfix "/src/assets/" path)
-              || (pkgs.lib.hasInfix "/crates/frontend-keyring-probe" path)
               # The committed OpenAPI spec at
               # `crates/backend-backendd/openapi.json` is read off disk
               # by the `openapi_export` drift test and rewritten +
@@ -131,14 +130,7 @@
             underwrapd = mkCrate "frontend-underwrapd";
             underwrap-exec = mkCrate "frontend-exec";
             underwrap-ns = mkCrate "frontend-ns";
-            underwrap-debug-tool = mkCrate "frontend-debug-tool";
-            underwrap-keyring-probe = mkCrate "frontend-keyring-probe";
-            underwrap-go-keyring-probe = pkgs.buildGoModule {
-              pname = "underwrap-go-keyring-probe";
-              version = "0.1.0";
-              src = ./nix/tests/go-keyring-probe;
-              vendorHash = "sha256-4MyeW7s/AEDkNMcFWie5mWS9F47OtFSX7QBpcTktrrc=";
-            };
+            underwrap-debug-tool = mkCrate "debug-tool";
             underwrap-backendd = mkCrate "backend-backendd";
             underwrap-secretsd = mkCrate "frontend-secretsd";
             # Expose the SPA build separately so the VM test (and any
@@ -261,7 +253,6 @@
               nodes.machine = { pkgs, ... }: import ./nix/tests/node.nix {
                 inherit pkgs;
                 underwrapPackage = perSystem.packages.${system}.default;
-                goKeyringProbePackage = perSystem.packages.${system}.underwrap-go-keyring-probe;
                 nixosModule = self.nixosModules.default;
               };
 

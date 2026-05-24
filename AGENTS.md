@@ -59,8 +59,7 @@ crates/
   frontend-exec/           # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
   frontend-ns/             # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
   frontend-secretsd/       # D-Bus Secret Service provider for libsecret mode
-  frontend-debug-tool/     # CLI for debugging wrapper-socket flows
-  frontend-keyring-probe/  # Smoke-test binary for the libsecret round-trip
+  debug-tool/              # Unsafe inspection CLI; can be installed as a wrapper target via `addUnsafeDebugTool`
   backend-backendd/        # Central HTTPS service + admin API + auth + SPA hosting + policy authority
   integration-tests/       # Cargo integration tests (real daemon + backend)
 web/                       # Vite + React + shadcn admin SPA (served by backend-backendd)

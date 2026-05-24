@@ -1,5 +1,5 @@
 # VM test node: both local and remote instances on one machine.
-{ pkgs, underwrapPackage, goKeyringProbePackage, nixosModule, ... }:
+{ pkgs, underwrapPackage, nixosModule, ... }:
 
 let
   testCaPem = pkgs.writeText "underwrap-test-ca.pem" (builtins.readFile ../../testdata/pki/ca.pem);
@@ -357,11 +357,6 @@ in {
           };
           test-libsecret = {
             target = "${pkgs.libsecret}/bin/secret-tool";
-            resource = "test/libsecret-store";
-            libsecret = true;
-          };
-          test-keyring-probe = {
-            target = "${goKeyringProbePackage}/bin/underwrap-go-keyring-probe";
             resource = "test/libsecret-store";
             libsecret = true;
           };
