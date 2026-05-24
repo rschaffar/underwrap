@@ -4,9 +4,17 @@
 //! calling client instance is opted in, or refuses with a structured
 //! list of what would have been created.
 
+use std::collections::{BTreeSet, HashMap};
+
 use axum::Json;
 
-use underwrap_protocol::policy::PolicyDocument;
+use underwrap_protocol::entities::{
+    EntityCreator, PairsDocument, ResourceRecord, ResourcesDocument, WrapperResourcePairRecord,
+};
+use underwrap_protocol::policy::{PolicyDocument, WrapperApprovalMode, WrapperPermission};
+use underwrap_protocol::service::{
+    RuntimeWrapperRegisterPair, RuntimeWrapperRegisterRequest, RuntimeWrapperRegisterResponse,
+};
 use underwrap_store::StorageBackend;
 
 use crate::runtime_api::error::{IntoInternal, RuntimeError};
@@ -16,27 +24,28 @@ use crate::storage::documents::{
     save_policy_document, save_resources_document,
 };
 
-/// Handle `POST /v1/wrappers`.
-///
-/// Computes the diff between the request's pairs and what's already
-/// in the resource/pair documents, then either auto-creates the
-/// missing entities (if the calling client instance is opted in) or
-/// returns a structured refusal listing what would have been created.
-/// On the happy path the documents are written back; on the refusal
-/// path the store is untouched. Permissions for newly-paired
-/// `(client_instance, wrapper, resource)` rows are seeded `Locked`
-/// so a freshly-registered daemon shows up as deny-by-default in the
-/// admin SPA.
-pub(crate) fn handle_runtime_wrapper_register(
-    state: &ListenerState,
-    store: &dyn StorageBackend,
-    principal: &str,
-    body: &underwrap_protocol::service::RuntimeWrapperRegisterRequest,
-) -> Result<Json<underwrap_protocol::service::RuntimeWrapperRegisterResponse>, RuntimeError> {
-    use underwrap_protocol::entities::{EntityCreator, ResourceRecord, WrapperResourcePairRecord};
-    use underwrap_protocol::policy::{WrapperApprovalMode, WrapperPermission};
-    use underwrap_protocol::service::{RuntimeWrapperRegisterPair, RuntimeWrapperRegisterResponse};
+/// Pre-write diff between an incoming register request and the
+/// resource/pair documents on disk. `resolved_resource_ids` maps each
+/// incoming `resource_name` whose record already exists to its id;
+/// `missing_resources` is the unresolved set; `missing_pairs` is every
+/// incoming row whose `(wrapper, resource_id)` is not yet paired (or
+/// whose resource isn't yet resolved at all).
+#[derive(Debug, Default)]
+struct RegisterDiff {
+    resolved_resource_ids: HashMap<String, String>,
+    missing_resources: BTreeSet<String>,
+    missing_pairs: Vec<RuntimeWrapperRegisterPair>,
+}
 
+impl RegisterDiff {
+    fn is_empty(&self) -> bool {
+        self.missing_resources.is_empty() && self.missing_pairs.is_empty()
+    }
+}
+
+/// Reject empty wrapper/resource names up front; everything downstream
+/// assumes those are non-empty.
+fn validate_register_request(body: &RuntimeWrapperRegisterRequest) -> Result<(), RuntimeError> {
     for pair in &body.wrappers {
         if pair.wrapper_name.trim().is_empty() {
             return Err(RuntimeError::bad_request(
@@ -51,6 +60,131 @@ pub(crate) fn handle_runtime_wrapper_register(
             ));
         }
     }
+    Ok(())
+}
+
+/// Compute what's missing from the resource/pair documents relative to
+/// the incoming request. Pure function — no IO, no mutation; the
+/// driver decides whether to commit or refuse based on the result.
+fn compute_register_diff(
+    body: &RuntimeWrapperRegisterRequest,
+    resources: &ResourcesDocument,
+    pairs: &PairsDocument,
+) -> RegisterDiff {
+    let mut diff = RegisterDiff::default();
+    for pair in &body.wrappers {
+        match resources.find_by_name(&pair.resource_name) {
+            Some(record) => {
+                diff.resolved_resource_ids
+                    .insert(pair.resource_name.clone(), record.id.clone());
+            }
+            None => {
+                diff.missing_resources.insert(pair.resource_name.clone());
+            }
+        }
+    }
+    diff.missing_pairs = body
+        .wrappers
+        .iter()
+        .filter(|p| match diff.resolved_resource_ids.get(&p.resource_name) {
+            Some(rid) => pairs.find(&p.wrapper_name, rid).is_none(),
+            None => true,
+        })
+        .cloned()
+        .collect();
+    diff
+}
+
+/// Materialise the missing resources and pairs into the documents.
+/// Updates the diff's `resolved_resource_ids` map in place so the
+/// caller can use it for permission seeding.
+fn apply_auto_create(
+    resources: &mut ResourcesDocument,
+    pairs: &mut PairsDocument,
+    diff: &mut RegisterDiff,
+    creator: &EntityCreator,
+    now: u64,
+) -> (Vec<String>, Vec<RuntimeWrapperRegisterPair>) {
+    let mut created_resources: Vec<String> = Vec::new();
+    for name in &diff.missing_resources {
+        let id = crate::ids::random_id("res");
+        resources
+            .insert(ResourceRecord {
+                id: id.clone(),
+                name: name.clone(),
+                created_by: creator.clone(),
+                created_at: now,
+            })
+            .expect("missing-set guarantees no duplicate");
+        diff.resolved_resource_ids.insert(name.clone(), id);
+        created_resources.push(name.clone());
+    }
+    let mut created_pairs: Vec<RuntimeWrapperRegisterPair> = Vec::new();
+    for pair in &diff.missing_pairs {
+        let rid = diff
+            .resolved_resource_ids
+            .get(&pair.resource_name)
+            .expect("resource id resolved for every missing pair after auto-create");
+        pairs
+            .insert(WrapperResourcePairRecord {
+                wrapper: pair.wrapper_name.clone(),
+                resource_id: rid.clone(),
+                created_by: creator.clone(),
+                created_at: now,
+                last_used_at: None,
+            })
+            .expect("missing-set guarantees no duplicate");
+        created_pairs.push(pair.clone());
+    }
+    (created_resources, created_pairs)
+}
+
+/// Seed a `Locked` permission for every incoming
+/// `(client_instance, wrapper, resource_id)` whose resource id is
+/// resolved and that doesn't already have a permission row. Returns
+/// `true` when the policy document was modified — callers persist only
+/// in that case.
+fn seed_locked_permissions(
+    policy: &mut PolicyDocument,
+    body: &RuntimeWrapperRegisterRequest,
+    resolved: &HashMap<String, String>,
+    principal: &str,
+) -> bool {
+    let mut dirty = false;
+    for incoming in &body.wrappers {
+        let Some(rid) = resolved.get(&incoming.resource_name) else {
+            continue;
+        };
+        let already = policy.permissions.iter().any(|p| {
+            p.client_instance == principal
+                && p.wrapper == incoming.wrapper_name
+                && p.resource_id == *rid
+        });
+        if !already {
+            policy.permissions.push(WrapperPermission {
+                client_instance: principal.to_string(),
+                wrapper: incoming.wrapper_name.clone(),
+                resource_id: rid.clone(),
+                mode: WrapperApprovalMode::Locked,
+                writable: false,
+                reason: None,
+            });
+            dirty = true;
+        }
+    }
+    dirty
+}
+
+/// Handle `POST /v1/wrappers`. Loads the three control-plane
+/// documents, dispatches between no-op / refusal / commit, and
+/// persists exactly what changed.
+pub(crate) fn handle_runtime_wrapper_register(
+    state: &ListenerState,
+    store: &dyn StorageBackend,
+    principal: &str,
+    body: &RuntimeWrapperRegisterRequest,
+) -> Result<Json<RuntimeWrapperRegisterResponse>, RuntimeError> {
+    validate_register_request(body)?;
 
     let auto_create_enabled = state
         .shared
@@ -65,74 +199,14 @@ pub(crate) fn handle_runtime_wrapper_register(
     let mut resources =
         load_resources_document(store).into_internal("loading resources document")?;
     let mut pairs = load_pairs_document(store).into_internal("loading pairs document")?;
+    let mut diff = compute_register_diff(body, &resources, &pairs);
 
-    // Build the (incoming resource name) → (resolved resource id) map.
-    let mut resolved_resource_ids: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut missing_resources_set: std::collections::BTreeSet<String> =
-        std::collections::BTreeSet::new();
-    for pair in &body.wrappers {
-        match resources.find_by_name(&pair.resource_name) {
-            Some(record) => {
-                resolved_resource_ids.insert(pair.resource_name.clone(), record.id.clone());
-            }
-            None => {
-                missing_resources_set.insert(pair.resource_name.clone());
-            }
-        }
-    }
-
-    // A "missing pair" is any incoming pair whose (wrapper, resolved
-    // resource id) is not already in the pairs document. Pairs whose
-    // resource isn't even resolved yet (auto-create disabled and a new
-    // resource name was sent) trivially count as missing.
-    let missing_pairs: Vec<RuntimeWrapperRegisterPair> = body
-        .wrappers
-        .iter()
-        .filter(|p| match resolved_resource_ids.get(&p.resource_name) {
-            Some(rid) => pairs.find(&p.wrapper_name, rid).is_none(),
-            None => true,
-        })
-        .cloned()
-        .collect();
-
-    // Auto-seed a `Locked` permission for every incoming
-    // `(client_instance, wrapper, resource_id)` whose resource id is
-    // resolved. Computed now, persisted only on committing branches.
-    let seed_locked_permissions = |policy: &mut PolicyDocument,
-                                   resolved: &std::collections::HashMap<String, String>|
-     -> bool {
-        let mut dirty = false;
-        for incoming in &body.wrappers {
-            let Some(rid) = resolved.get(&incoming.resource_name) else {
-                continue;
-            };
-            let already = policy.permissions.iter().any(|p| {
-                p.client_instance == principal
-                    && p.wrapper == incoming.wrapper_name
-                    && p.resource_id == *rid
-            });
-            if !already {
-                policy.permissions.push(WrapperPermission {
-                    client_instance: principal.to_string(),
-                    wrapper: incoming.wrapper_name.clone(),
-                    resource_id: rid.clone(),
-                    mode: WrapperApprovalMode::Locked,
-                    writable: false,
-                    reason: None,
-                });
-                dirty = true;
-            }
-        }
-        dirty
-    };
-
-    if missing_resources_set.is_empty() && missing_pairs.is_empty() {
-        // No-op fast path. Still may need to seed Locked permissions
-        // for a new `client_instance` re-using pairs another instance
+    if diff.is_empty() {
+        // No-op fast path. May still need to seed `Locked` permissions
+        // for a fresh `client_instance` re-using pairs another instance
         // already created.
         let mut policy = load_policy_document(store).into_internal("loading policy document")?;
-        if seed_locked_permissions(&mut policy, &resolved_resource_ids) {
+        if seed_locked_permissions(&mut policy, body, &diff.resolved_resource_ids, principal) {
             save_policy_document(store, &policy).into_internal("saving policy document")?;
         }
         return Ok(Json(RuntimeWrapperRegisterResponse::Ok {
@@ -143,49 +217,20 @@ pub(crate) fn handle_runtime_wrapper_register(
 
     if !auto_create_enabled {
         return Ok(Json(RuntimeWrapperRegisterResponse::AutoCreateDisabled {
-            missing_resources: missing_resources_set.into_iter().collect(),
-            missing_pairs,
+            missing_resources: diff.missing_resources.into_iter().collect(),
+            missing_pairs: diff.missing_pairs,
         }));
     }
 
     let creator = EntityCreator::ClientInstance {
         id: principal.to_string(),
     };
-
-    let mut auto_created_resources: Vec<String> = Vec::new();
-    for name in &missing_resources_set {
-        let id = crate::ids::random_id("res");
-        resources
-            .insert(ResourceRecord {
-                id: id.clone(),
-                name: name.clone(),
-                created_by: creator.clone(),
-                created_at: now,
-            })
-            .expect("missing-set guarantees no duplicate");
-        resolved_resource_ids.insert(name.clone(), id);
-        auto_created_resources.push(name.clone());
-    }
-
-    let mut auto_created_pairs: Vec<RuntimeWrapperRegisterPair> = Vec::new();
-    for pair in &missing_pairs {
-        let rid = resolved_resource_ids
-            .get(&pair.resource_name)
-            .expect("resource id resolved for every missing pair after auto-create");
-        pairs
-            .insert(WrapperResourcePairRecord {
-                wrapper: pair.wrapper_name.clone(),
-                resource_id: rid.clone(),
-                created_by: creator.clone(),
-                created_at: now,
-                last_used_at: None,
-            })
-            .expect("missing-set guarantees no duplicate");
-        auto_created_pairs.push(pair.clone());
-    }
+    let (auto_created_resources, auto_created_pairs) =
+        apply_auto_create(&mut resources, &mut pairs, &mut diff, &creator, now);
 
     let mut policy = load_policy_document(store).into_internal("loading policy document")?;
-    let policy_dirty = seed_locked_permissions(&mut policy, &resolved_resource_ids);
+    let policy_dirty =
+        seed_locked_permissions(&mut policy, body, &diff.resolved_resource_ids, principal);
 
     if !auto_created_resources.is_empty() {
         save_resources_document(store, &resources).into_internal("saving resources document")?;

@@ -19,6 +19,13 @@ pub(crate) struct RuntimeRequestPrincipal {
     pub(crate) store_id: String,
 }
 
+/// Startup-side check that every runtime client instance maps to a
+/// known store. The same invariant must be maintained at runtime by
+/// the admin store-delete handler (see
+/// `admin_api::stores::crud::handle_admin_store_delete`, which refuses
+/// to delete a store while any client instance still maps to it via
+/// the `store_in_use` 409). Touching either side without the other
+/// will let a stale mapping survive across a restart.
 pub(crate) fn validate_runtime_client_mappings(
     stores: &Arc<std::sync::RwLock<StoreRegistry>>,
     client_instances: &Arc<
@@ -62,25 +69,13 @@ pub(crate) fn resolve_runtime_client(
     );
     // We deliberately don't fetch the backend Arc here — a store can
     // legitimately be `Locked` for this principal, and the caller has
-    // to surface that as `store_locked`. Existence-only check.
-    let store_id = instance.current_store_id.clone();
-    if !state
-        .shared
-        .stores
-        .read()
-        .unwrap()
-        .entries
-        .contains_key(&store_id)
-    {
-        anyhow::bail!(
-            "runtime client instance '{}' references unknown store '{}'",
-            instance.id,
-            store_id,
-        );
-    }
+    // to surface that as `store_locked`. The caller's downstream
+    // `unlocked_backend(store_id)` call will already return
+    // `NotFound` for an unknown id, so re-checking existence here
+    // would be a redundant lock acquisition.
     Ok(RuntimeRequestPrincipal {
         instance_id: instance.id.clone(),
-        store_id,
+        store_id: instance.current_store_id.clone(),
     })
 }
 
