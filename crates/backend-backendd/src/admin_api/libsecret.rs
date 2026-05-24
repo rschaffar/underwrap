@@ -25,7 +25,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use underwrap_protocol::message::SecretBytes;
-use underwrap_protocol::resource_blob::{Collection, Item, LibsecretSection};
+use underwrap_protocol::resource_blob::{Collection, Item, ResourceBlob};
 use underwrap_protocol::service::{
     AdminLibsecretAliasDeleteResponse, AdminLibsecretAliasUpsertRequest,
     AdminLibsecretCollectionCreateRequest, AdminLibsecretCollectionCreateResponse,
@@ -98,35 +98,38 @@ fn validate_id(kind: &str, id: &str) -> Result<(), AdminError> {
 /// the lowest positive integer producing a key not already present in
 /// `existing`.
 fn next_auto_id<T>(prefix: &str, existing: &BTreeMap<String, T>) -> String {
-    for n in 1u64.. {
+    let mut n = 1u64;
+    loop {
         let candidate = format!("{prefix}{n}");
         if !existing.contains_key(&candidate) {
             return candidate;
         }
+        n += 1;
     }
-    unreachable!("u64 exhausted while picking a libsecret id")
 }
 
-fn load_section(
+/// Load the full resource blob for an admin handler. Returns the
+/// backend handle alongside the blob so the caller can save once at
+/// the end. Handlers mutate `blob.libsecret` in place and save the
+/// whole blob; concurrent writers race on the blob as a whole (last
+/// writer wins), matching the rest of the admin surface.
+fn load_blob(
     state: &AdminRuntimeState,
     store_id: &str,
     resource_id: &str,
-) -> Result<(Arc<dyn underwrap_store::StorageBackend>, LibsecretSection), AdminError> {
+) -> Result<(Arc<dyn underwrap_store::StorageBackend>, ResourceBlob), AdminError> {
     let store = admin_store(state, store_id)?;
     let blob = load_resource_blob(store.as_ref(), resource_id)
         .map_err(|e| AdminError::internal("loading resource blob", e))?;
-    Ok((store, blob.libsecret))
+    Ok((store, blob))
 }
 
-fn save_section(
+fn save_blob(
     store: &dyn underwrap_store::StorageBackend,
     resource_id: &str,
-    section: LibsecretSection,
+    blob: &ResourceBlob,
 ) -> Result<(), AdminError> {
-    let mut blob = load_resource_blob(store, resource_id)
-        .map_err(|e| AdminError::internal("reloading resource blob", e))?;
-    blob.libsecret = section;
-    save_resource_blob(store, resource_id, &blob)
+    save_resource_blob(store, resource_id, blob)
         .map_err(|e| AdminError::internal("saving resource blob", e))
 }
 
@@ -174,7 +177,8 @@ pub(crate) async fn handle_get_tree(
     State(state): State<Arc<AdminRuntimeState>>,
     Path((store_id, resource_id)): Path<(String, String)>,
 ) -> Result<Json<AdminLibsecretTreeResponse>, AdminError> {
-    let (_store, section) = load_section(&state, &store_id, &resource_id)?;
+    let (_store, blob) = load_blob(&state, &store_id, &resource_id)?;
+    let section = blob.libsecret;
     let collections = section
         .collections
         .into_iter()
@@ -258,12 +262,12 @@ async fn post_collection_inner(
     resource_id: &str,
     body: AdminLibsecretCollectionCreateRequest,
 ) -> Result<AdminLibsecretCollectionCreateResponse, AdminError> {
-    let (store, mut section) = load_section(state, store_id, resource_id)?;
+    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
 
     let id = match body.id {
         Some(requested) => {
             validate_id("collection", &requested)?;
-            if section.collections.contains_key(&requested) {
+            if blob.libsecret.collections.contains_key(&requested) {
                 return Err(AdminError::conflict(
                     "collection_exists",
                     format!("collection '{requested}' already exists"),
@@ -271,11 +275,11 @@ async fn post_collection_inner(
             }
             requested
         }
-        None => next_auto_id("c", &section.collections),
+        None => next_auto_id("c", &blob.libsecret.collections),
     };
 
     let now = now_epoch_secs();
-    section.collections.insert(
+    blob.libsecret.collections.insert(
         id.clone(),
         Collection {
             label: body.label,
@@ -284,7 +288,7 @@ async fn post_collection_inner(
             items: BTreeMap::new(),
         },
     );
-    save_section(store.as_ref(), resource_id, section)?;
+    save_blob(store.as_ref(), resource_id, &blob)?;
     Ok(AdminLibsecretCollectionCreateResponse { id })
 }
 
@@ -338,8 +342,9 @@ async fn patch_collection_inner(
     cid: &str,
     body: AdminLibsecretCollectionPatchRequest,
 ) -> Result<AdminOkResponse, AdminError> {
-    let (store, mut section) = load_section(state, store_id, resource_id)?;
-    let collection = section
+    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
+    let collection = blob
+        .libsecret
         .collections
         .get_mut(cid)
         .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
@@ -352,7 +357,7 @@ async fn patch_collection_inner(
     }
     if changed {
         collection.modified = now_epoch_secs();
-        save_section(store.as_ref(), resource_id, section)?;
+        save_blob(store.as_ref(), resource_id, &blob)?;
     }
     Ok(AdminOkResponse { ok: true })
 }
@@ -404,19 +409,24 @@ async fn delete_collection_inner(
     resource_id: &str,
     cid: &str,
 ) -> Result<AdminLibsecretCollectionDeleteResponse, AdminError> {
-    let (store, mut section) = load_section(state, store_id, resource_id)?;
-    let existed = section.collections.remove(cid).is_some();
-    let aliases_scrubbed: Vec<String> = section
+    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
+    let existed = blob.libsecret.collections.remove(cid).is_some();
+    // Scrub any aliases pointing at this id — including dangling ones,
+    // where the alias target id was never an extant collection. The
+    // operator gets a consistent post-condition either way: after this
+    // call, no alias references `cid`.
+    let aliases_scrubbed: Vec<String> = blob
+        .libsecret
         .aliases
         .iter()
         .filter(|(_, target)| target.as_str() == cid)
         .map(|(name, _)| name.clone())
         .collect();
     for name in &aliases_scrubbed {
-        section.aliases.remove(name);
+        blob.libsecret.aliases.remove(name);
     }
     if existed || !aliases_scrubbed.is_empty() {
-        save_section(store.as_ref(), resource_id, section)?;
+        save_blob(store.as_ref(), resource_id, &blob)?;
     }
     Ok(AdminLibsecretCollectionDeleteResponse {
         existed,
@@ -479,8 +489,9 @@ async fn post_item_inner(
     body: AdminLibsecretItemCreateRequest,
 ) -> Result<AdminLibsecretItemCreateResponse, AdminError> {
     let secret = decode_secret_b64(&body.secret_b64)?;
-    let (store, mut section) = load_section(state, store_id, resource_id)?;
-    let collection = section
+    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
+    let collection = blob
+        .libsecret
         .collections
         .get_mut(cid)
         .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
@@ -512,7 +523,7 @@ async fn post_item_inner(
         },
     );
     collection.modified = now;
-    save_section(store.as_ref(), resource_id, section)?;
+    save_blob(store.as_ref(), resource_id, &blob)?;
     Ok(AdminLibsecretItemCreateResponse { id })
 }
 
@@ -590,8 +601,9 @@ async fn patch_item_inner(
         Some(b64) => Some(decode_secret_b64(b64)?),
         None => None,
     };
-    let (store, mut section) = load_section(state, store_id, resource_id)?;
-    let collection = section
+    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
+    let collection = blob
+        .libsecret
         .collections
         .get_mut(cid)
         .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
@@ -629,7 +641,7 @@ async fn patch_item_inner(
         let now = now_epoch_secs();
         item.modified = now;
         collection.modified = now;
-        save_section(store.as_ref(), resource_id, section)?;
+        save_blob(store.as_ref(), resource_id, &blob)?;
     }
     Ok(AdminOkResponse { ok: true })
 }
@@ -684,15 +696,16 @@ async fn delete_item_inner(
     cid: &str,
     iid: &str,
 ) -> Result<AdminLibsecretItemDeleteResponse, AdminError> {
-    let (store, mut section) = load_section(state, store_id, resource_id)?;
-    let collection = section
+    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
+    let collection = blob
+        .libsecret
         .collections
         .get_mut(cid)
         .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
     let existed = collection.items.remove(iid).is_some();
     if existed {
         collection.modified = now_epoch_secs();
-        save_section(store.as_ref(), resource_id, section)?;
+        save_blob(store.as_ref(), resource_id, &blob)?;
     }
     Ok(AdminLibsecretItemDeleteResponse { existed })
 }
@@ -718,8 +731,9 @@ pub(crate) async fn handle_get_item_secret(
     State(state): State<Arc<AdminRuntimeState>>,
     Path((store_id, resource_id, cid, iid)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminLibsecretItemSecretResponse>, AdminError> {
-    let (_store, section) = load_section(&state, &store_id, &resource_id)?;
-    let collection = section
+    let (_store, blob) = load_blob(&state, &store_id, &resource_id)?;
+    let collection = blob
+        .libsecret
         .collections
         .get(&cid)
         .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
@@ -782,17 +796,17 @@ async fn put_alias_inner(
     body: AdminLibsecretAliasUpsertRequest,
 ) -> Result<AdminOkResponse, AdminError> {
     validate_id("alias", name)?;
-    let (store, mut section) = load_section(state, store_id, resource_id)?;
-    if !section.collections.contains_key(&body.collection_id) {
+    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
+    if !blob.libsecret.collections.contains_key(&body.collection_id) {
         return Err(AdminError::not_found(format!(
             "collection '{}'",
             body.collection_id
         )));
     }
-    let prev = section.aliases.insert(name.to_string(), body.collection_id);
-    let changed = prev.as_ref() != section.aliases.get(name);
-    if changed {
-        save_section(store.as_ref(), resource_id, section)?;
+    let target = body.collection_id;
+    if blob.libsecret.aliases.get(name) != Some(&target) {
+        blob.libsecret.aliases.insert(name.to_string(), target);
+        save_blob(store.as_ref(), resource_id, &blob)?;
     }
     Ok(AdminOkResponse { ok: true })
 }
@@ -839,10 +853,10 @@ async fn delete_alias_inner(
     resource_id: &str,
     name: &str,
 ) -> Result<AdminLibsecretAliasDeleteResponse, AdminError> {
-    let (store, mut section) = load_section(state, store_id, resource_id)?;
-    let existed = section.aliases.remove(name).is_some();
+    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
+    let existed = blob.libsecret.aliases.remove(name).is_some();
     if existed {
-        save_section(store.as_ref(), resource_id, section)?;
+        save_blob(store.as_ref(), resource_id, &blob)?;
     }
     Ok(AdminLibsecretAliasDeleteResponse { existed })
 }

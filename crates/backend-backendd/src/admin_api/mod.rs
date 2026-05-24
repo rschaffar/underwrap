@@ -29,7 +29,8 @@
 //!   operator setup endpoints live as a submodule under
 //!   [`auth::bootstrap`].
 //! - [`users`], [`stores`], [`client_instances`], [`secrets`],
-//!   [`policy`], [`resources`], [`pairs`] — admin CRUD per subdomain.
+//!   [`libsecret`], [`policy`], [`resources`], [`pairs`] — admin CRUD
+//!   per subdomain.
 
 pub(crate) mod audit;
 pub mod auth;

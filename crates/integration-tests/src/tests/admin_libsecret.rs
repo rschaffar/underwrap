@@ -384,3 +384,42 @@ async fn collection_create_rejects_leading_underscore_id() {
 
     daemon.stop().await.unwrap();
 }
+
+#[tokio::test]
+async fn alias_put_rejects_leading_underscore_name() {
+    // The alias name lives in the URL path; reaching the handler still
+    // counts as an admin attempt, so the validator must reject it
+    // before mutating the blob.
+    let daemon = TestDaemon::start(one_wrapper_config()).await.unwrap();
+    let rid = create_resource(&daemon, "lib/aliasvalid").await;
+
+    // Seed a real collection so the failure is the alias-name shape,
+    // not the unknown-collection 404.
+    daemon
+        .admin_request(reqwest::Method::POST, &libsecret_path(&rid, "/collections"))
+        .json(&AdminLibsecretCollectionCreateRequest {
+            id: Some("default".into()),
+            label: "Default".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+
+    let resp = daemon
+        .admin_request(
+            reqwest::Method::PUT,
+            &libsecret_path(&rid, "/aliases/_reserved"),
+        )
+        .json(&AdminLibsecretAliasUpsertRequest {
+            collection_id: "default".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let tree = get_tree(&daemon, &rid).await;
+    assert!(tree.aliases.is_empty());
+
+    daemon.stop().await.unwrap();
+}

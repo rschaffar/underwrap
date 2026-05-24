@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::entities::{ResourceRecord, WrapperResourcePairRecord};
@@ -336,7 +338,7 @@ pub struct AdminLibsecretTreeResponse {
     /// Service level; aliases pointing at non-existent collections
     /// are not produced by this endpoint (the alias-PUT handler
     /// enforces target existence).
-    pub aliases: std::collections::BTreeMap<String, String>,
+    pub aliases: BTreeMap<String, String>,
     /// Collections in id order. Item secret bytes are omitted; the
     /// SPA fetches them on demand via the reveal endpoint.
     pub collections: Vec<AdminLibsecretCollectionView>,
@@ -358,7 +360,7 @@ pub struct AdminLibsecretItemView {
     pub content_type: String,
     pub created: u64,
     pub modified: u64,
-    pub attributes: std::collections::BTreeMap<String, String>,
+    pub attributes: BTreeMap<String, String>,
 }
 
 /// `GET .../libsecret/collections/{cid}/items/{iid}/secret`.
@@ -409,7 +411,7 @@ pub struct AdminLibsecretItemCreateRequest {
     pub label: String,
     pub content_type: String,
     #[serde(default)]
-    pub attributes: std::collections::BTreeMap<String, String>,
+    pub attributes: BTreeMap<String, String>,
     pub secret_b64: String,
 }
 
@@ -430,7 +432,7 @@ pub struct AdminLibsecretItemPatchRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attributes: Option<std::collections::BTreeMap<String, String>>,
+    pub attributes: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_b64: Option<String>,
 }
