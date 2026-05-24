@@ -2202,6 +2202,883 @@
         ]
       }
     },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret": {
+      "get": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_get_tree",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whole libsecret tree (item secrets omitted).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretTreeResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/aliases/{name}": {
+      "put": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_put_alias",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Alias name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLibsecretAliasUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Alias set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_delete_alias",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Alias name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Alias removed (existed flag in body).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretAliasDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections": {
+      "post": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_post_collection",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLibsecretCollectionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Collection created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretCollectionCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Collection id already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}": {
+      "delete": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_delete_collection",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Collection deleted; any aliases pointing at it are scrubbed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretCollectionDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_patch_collection",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLibsecretCollectionPatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Collection updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items": {
+      "post": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_post_item",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLibsecretItemCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Item created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretItemCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Item id already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}": {
+      "delete": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_delete_item",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "iid",
+            "in": "path",
+            "description": "Item id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Item removed (existed flag in body).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretItemDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_patch_item",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "iid",
+            "in": "path",
+            "description": "Item id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLibsecretItemPatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Item updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection or item not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}/secret": {
+      "get": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_get_item_secret",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "iid",
+            "in": "path",
+            "description": "Item id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Item secret material, base64-encoded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretItemSecretResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection or item not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/admin/users": {
       "get": {
         "tags": [
@@ -2654,6 +3531,295 @@
             "items": {
               "$ref": "#/components/schemas/AdminClientInstanceListItem"
             }
+          }
+        }
+      },
+      "AdminLibsecretAliasDeleteResponse": {
+        "type": "object",
+        "required": [
+          "existed"
+        ],
+        "properties": {
+          "existed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminLibsecretAliasUpsertRequest": {
+        "type": "object",
+        "description": "`PUT .../libsecret/aliases/{name}`. `collection_id` must name an\nexisting collection; the handler returns 404 otherwise.",
+        "required": [
+          "collection_id"
+        ],
+        "properties": {
+          "collection_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretCollectionCreateRequest": {
+        "type": "object",
+        "description": "`POST .../libsecret/collections`. `id` is optional; when absent the\nserver derives one from the label.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretCollectionCreateResponse": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretCollectionDeleteResponse": {
+        "type": "object",
+        "description": "`DELETE .../libsecret/collections/{cid}`. The deletion cascades to\nthe collection's items in one save. Any aliases pointing at the\ndeleted collection are scrubbed atomically and their names\nreported in `aliases_scrubbed`.",
+        "required": [
+          "existed"
+        ],
+        "properties": {
+          "aliases_scrubbed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "existed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminLibsecretCollectionPatchRequest": {
+        "type": "object",
+        "description": "`PATCH .../libsecret/collections/{cid}`. Only the listed fields are\nupdated; omitted fields keep their current value.",
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AdminLibsecretCollectionView": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "created",
+          "modified",
+          "items"
+        ],
+        "properties": {
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminLibsecretItemView"
+            }
+          },
+          "label": {
+            "type": "string"
+          },
+          "modified": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminLibsecretItemCreateRequest": {
+        "type": "object",
+        "description": "`POST .../libsecret/collections/{cid}/items`. `id` is optional; when\nabsent the server derives one from the label.",
+        "required": [
+          "label",
+          "content_type",
+          "secret_b64"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "secret_b64": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretItemCreateResponse": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretItemDeleteResponse": {
+        "type": "object",
+        "required": [
+          "existed"
+        ],
+        "properties": {
+          "existed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminLibsecretItemPatchRequest": {
+        "type": "object",
+        "description": "`PATCH .../libsecret/collections/{cid}/items/{iid}`. Each field is\noptional and replaces the existing value when present. When\n`attributes` is supplied it replaces the entire attribute map (no\nmerge — that would make \"clear an attribute\" impossible without a\ndedicated verb).",
+        "properties": {
+          "attributes": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secret_b64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AdminLibsecretItemSecretResponse": {
+        "type": "object",
+        "description": "`GET .../libsecret/collections/{cid}/items/{iid}/secret`.",
+        "required": [
+          "secret_b64"
+        ],
+        "properties": {
+          "secret_b64": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretItemView": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "content_type",
+          "created",
+          "modified",
+          "attributes"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "modified": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminLibsecretTreeResponse": {
+        "type": "object",
+        "description": "Whole-tree view of one resource's libsecret section. The shape\nthe admin SPA renders top-level.",
+        "required": [
+          "aliases",
+          "collections"
+        ],
+        "properties": {
+          "aliases": {
+            "type": "object",
+            "description": "Alias name → collection id. Free-form name space at the\nService level; aliases pointing at non-existent collections\nare not produced by this endpoint (the alias-PUT handler\nenforces target existence).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "collections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminLibsecretCollectionView"
+            },
+            "description": "Collections in id order. Item secret bytes are omitted; the\nSPA fetches them on demand via the reveal endpoint."
           }
         }
       },

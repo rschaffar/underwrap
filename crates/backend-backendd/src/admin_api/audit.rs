@@ -49,6 +49,38 @@ pub(crate) enum AuditEntity<'a> {
         slot: ResourceSlot,
         key: &'a str,
     },
+    /// Structured libsecret entity inside a resource. The `kind`
+    /// discriminator (`alias` / `collection` / `item`) carries the
+    /// spec concept so operators can filter audit lines per Secret
+    /// Service object without parsing the flat-key shape.
+    LibsecretEntity {
+        store: &'a str,
+        resource_id: &'a str,
+        kind: LibsecretEntityKind,
+        /// Alias name, collection id, or `<collection>/<item>`
+        /// depending on `kind`.
+        path: &'a str,
+    },
+}
+
+/// The Secret Service object kind an `AuditEntity::LibsecretEntity`
+/// refers to. Distinct from `ResourceSlot::Libsecret`, which only
+/// disambiguates the top-level slot inside a resource.
+#[derive(Copy, Clone)]
+pub(crate) enum LibsecretEntityKind {
+    Alias,
+    Collection,
+    Item,
+}
+
+impl LibsecretEntityKind {
+    fn name(self) -> &'static str {
+        match self {
+            LibsecretEntityKind::Alias => "alias",
+            LibsecretEntityKind::Collection => "collection",
+            LibsecretEntityKind::Item => "item",
+        }
+    }
 }
 
 impl AuditEntity<'_> {
@@ -74,6 +106,12 @@ impl AuditEntity<'_> {
                 slot,
                 key,
             } => format!("secret:{store}/{resource_id}/{}/{key}", slot.name()),
+            AuditEntity::LibsecretEntity {
+                store,
+                resource_id,
+                kind,
+                path,
+            } => format!("libsecret-{}:{store}/{resource_id}/{path}", kind.name()),
         }
     }
 
@@ -88,7 +126,8 @@ impl AuditEntity<'_> {
             | AuditEntity::Store { .. }
             | AuditEntity::ClientInstance { .. }
             | AuditEntity::Resource { .. }
-            | AuditEntity::Secret { .. } => None,
+            | AuditEntity::Secret { .. }
+            | AuditEntity::LibsecretEntity { .. } => None,
         }
     }
 }

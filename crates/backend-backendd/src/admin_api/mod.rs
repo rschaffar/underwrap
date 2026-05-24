@@ -36,6 +36,7 @@ pub mod auth;
 pub(crate) mod client_instances;
 pub(crate) mod csrf;
 pub(crate) mod error;
+pub(crate) mod libsecret;
 pub(crate) mod pairs;
 pub(crate) mod policy;
 pub(crate) mod resources;
@@ -153,6 +154,7 @@ fn build_protected_router() -> OpenApiRouter<Arc<AdminRuntimeState>> {
         .merge(stores::openapi_router())
         .merge(client_instances::openapi_router())
         .merge(secrets::openapi_router())
+        .merge(libsecret::openapi_router())
         .merge(resources::openapi_router())
         .merge(pairs::openapi_router())
         .merge(policy::openapi_router())

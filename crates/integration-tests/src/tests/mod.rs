@@ -156,6 +156,7 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
 // Store and read flow
 // ===========================================================================
 
+mod admin_libsecret;
 mod client_instances;
 mod daemon;
 mod directory_and_status;

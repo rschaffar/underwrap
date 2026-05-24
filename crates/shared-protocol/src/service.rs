@@ -316,6 +316,142 @@ pub struct AdminSecretDeleteResponse {
     pub existed: bool,
 }
 
+// ===== Libsecret admin CRUD =====
+//
+// Structured admin surface for the libsecret slot. Mirrors the Secret
+// Service spec hierarchy: a Service-level alias table plus a set of
+// Collections, each holding Items. Each handler is one atomic
+// load-modify-save against the resource blob.
+//
+// `created` is set on POST, `modified` is bumped server-side on every
+// mutation; clients never send either field. Item secret bytes are
+// omitted from the tree view and exposed on a dedicated reveal
+// endpoint so a bulk listing never carries secret material.
+
+/// Whole-tree view of one resource's libsecret section. The shape
+/// the admin SPA renders top-level.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretTreeResponse {
+    /// Alias name → collection id. Free-form name space at the
+    /// Service level; aliases pointing at non-existent collections
+    /// are not produced by this endpoint (the alias-PUT handler
+    /// enforces target existence).
+    pub aliases: std::collections::BTreeMap<String, String>,
+    /// Collections in id order. Item secret bytes are omitted; the
+    /// SPA fetches them on demand via the reveal endpoint.
+    pub collections: Vec<AdminLibsecretCollectionView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretCollectionView {
+    pub id: String,
+    pub label: String,
+    pub created: u64,
+    pub modified: u64,
+    pub items: Vec<AdminLibsecretItemView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretItemView {
+    pub id: String,
+    pub label: String,
+    pub content_type: String,
+    pub created: u64,
+    pub modified: u64,
+    pub attributes: std::collections::BTreeMap<String, String>,
+}
+
+/// `GET .../libsecret/collections/{cid}/items/{iid}/secret`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretItemSecretResponse {
+    pub secret_b64: String,
+}
+
+/// `POST .../libsecret/collections`. `id` is optional; when absent the
+/// server derives one from the label.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretCollectionCreateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretCollectionCreateResponse {
+    pub id: String,
+}
+
+/// `PATCH .../libsecret/collections/{cid}`. Only the listed fields are
+/// updated; omitted fields keep their current value.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretCollectionPatchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// `DELETE .../libsecret/collections/{cid}`. The deletion cascades to
+/// the collection's items in one save. Any aliases pointing at the
+/// deleted collection are scrubbed atomically and their names
+/// reported in `aliases_scrubbed`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretCollectionDeleteResponse {
+    pub existed: bool,
+    #[serde(default)]
+    pub aliases_scrubbed: Vec<String>,
+}
+
+/// `POST .../libsecret/collections/{cid}/items`. `id` is optional; when
+/// absent the server derives one from the label.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretItemCreateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub label: String,
+    pub content_type: String,
+    #[serde(default)]
+    pub attributes: std::collections::BTreeMap<String, String>,
+    pub secret_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretItemCreateResponse {
+    pub id: String,
+}
+
+/// `PATCH .../libsecret/collections/{cid}/items/{iid}`. Each field is
+/// optional and replaces the existing value when present. When
+/// `attributes` is supplied it replaces the entire attribute map (no
+/// merge — that would make "clear an attribute" impossible without a
+/// dedicated verb).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretItemPatchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_b64: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretItemDeleteResponse {
+    pub existed: bool,
+}
+
+/// `PUT .../libsecret/aliases/{name}`. `collection_id` must name an
+/// existing collection; the handler returns 404 otherwise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretAliasUpsertRequest {
+    pub collection_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminLibsecretAliasDeleteResponse {
+    pub existed: bool,
+}
+
 // ===== Wrapper permission CRUD =====
 //
 // One `WrapperPermission` per `(client_instance, wrapper, resource)`
