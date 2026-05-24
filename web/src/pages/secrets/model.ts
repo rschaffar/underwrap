@@ -2,7 +2,14 @@ import type { AdminSecretEntry, ResourceSlot } from "@/api/client";
 
 /** The three backend slots every resource has. */
 export const SECRET_SLOTS = ["env", "files", "libsecret"] as const satisfies ReadonlyArray<ResourceSlot>;
+/**
+ * Slots that the admin SPA renders as flat key/value rows. `libsecret`
+ * is structurally a tree (Secret Service collections → items + aliases)
+ * and gets its own `LibsecretTree` component, so it's excluded here.
+ */
+export const FLAT_SECRET_SLOTS = ["env", "files"] as const satisfies ReadonlyArray<ResourceSlot>;
 export type SecretSlot = ResourceSlot;
+export type FlatSecretSlot = (typeof FLAT_SECRET_SLOTS)[number];
 
 /** A single per-slot entry inside a resource. */
 export interface SecretEntry {

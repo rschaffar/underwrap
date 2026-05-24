@@ -6,12 +6,13 @@ import { describeCreator } from "@/lib/creator";
 import { normalizeEpoch } from "@/lib/epoch";
 
 import {
-  SECRET_SLOTS,
+  FLAT_SECRET_SLOTS,
   type SecretEntry,
   type SecretResourceGroup,
   type SecretSlot,
   resourceCount,
 } from "./model";
+import { LibsecretTree } from "./libsecret-tree";
 
 interface RowActions {
   onReveal: (entry: SecretEntry) => void;
@@ -21,6 +22,7 @@ interface RowActions {
 
 export function ResourceBlock({
   group,
+  storeName,
   provenance,
   displayNameById,
   onAddEntry,
@@ -29,6 +31,7 @@ export function ResourceBlock({
   ...actions
 }: {
   group: SecretResourceGroup;
+  storeName: string;
   provenance: ResourceRecord | undefined;
   displayNameById: Map<string, string>;
   onAddEntry: (slot: SecretSlot) => void;
@@ -39,7 +42,10 @@ export function ResourceBlock({
   // The summary line shows which slots have content. It avoids
   // overpromising an empty slot section before the operator
   // expands.
-  const summary = SECRET_SLOTS.filter((slot) => group[slot].length > 0)
+  // libsecret content is fetched and rendered structurally by
+  // `LibsecretTree`, so we summarize only the flat env/files counts
+  // here. The tree component carries its own counts inline.
+  const summary = FLAT_SECRET_SLOTS.filter((slot) => group[slot].length > 0)
     .map((slot) => `${slot} (${group[slot].length})`)
     .join(" · ");
   const provenanceLabel = provenance
@@ -126,7 +132,7 @@ export function ResourceBlock({
         ) : null}
       </summary>
       <div className="space-y-3 border-t border-(--color-line)/60 px-4 py-3">
-        {SECRET_SLOTS.map((slot) => (
+        {FLAT_SECRET_SLOTS.map((slot) => (
           <SlotSection
             key={slot}
             slot={slot}
@@ -135,6 +141,10 @@ export function ResourceBlock({
             {...actions}
           />
         ))}
+        <LibsecretTree
+          storeName={storeName}
+          resourceId={group.resource_id}
+        />
       </div>
     </details>
   );

@@ -175,6 +175,7 @@ export function SecretsPage() {
             <ResourceBlock
               key={group.resource_id}
               group={group}
+              storeName={storeName}
               provenance={resourceProvenance.get(group.resource_id)}
               displayNameById={displayNameById}
               onReveal={(entry) =>

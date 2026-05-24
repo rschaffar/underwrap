@@ -123,6 +123,16 @@ export type AdminSecretReadResponse = S["AdminSecretReadResponse"];
 type AdminSecretRenameRequest = S["AdminSecretRenameRequest"];
 type AdminSecretWriteRequest = S["AdminSecretWriteRequest"];
 export type AdminSecretsView = S["AdminSecretsView"];
+export type AdminLibsecretTreeResponse = S["AdminLibsecretTreeResponse"];
+export type AdminLibsecretCollectionView = S["AdminLibsecretCollectionView"];
+export type AdminLibsecretItemView = S["AdminLibsecretItemView"];
+type AdminLibsecretCollectionCreateRequest =
+  S["AdminLibsecretCollectionCreateRequest"];
+type AdminLibsecretCollectionPatchRequest =
+  S["AdminLibsecretCollectionPatchRequest"];
+type AdminLibsecretItemCreateRequest = S["AdminLibsecretItemCreateRequest"];
+type AdminLibsecretItemPatchRequest = S["AdminLibsecretItemPatchRequest"];
+type AdminLibsecretAliasUpsertRequest = S["AdminLibsecretAliasUpsertRequest"];
 export type AdminStoreCreateRequest = S["AdminStoreCreateRequest"];
 export type AdminStoreListItem = S["AdminStoreListItem"];
 type AdminStoreUnlockRequest = S["AdminStoreUnlockRequest"];
@@ -496,6 +506,190 @@ export function postSecretRename(
       {
         params: { path: { id: storeId, rid: resourceId, slot, key: fromKey } },
         body,
+      },
+    ),
+  );
+}
+
+// ----- Structured libsecret admin -----
+//
+// Mirrors the Secret Service spec hierarchy: GET the whole tree
+// (aliases + collections + items meta), reveal one item secret on
+// demand, mutate collections / items / aliases per spec verb. None
+// of these go through the legacy flat-KV bridge.
+
+export function fetchLibsecretTree(storeId: string, resourceId: string) {
+  return unwrap(
+    client.GET(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret",
+      { params: { path: { sid: storeId, rid: resourceId } } },
+    ),
+  );
+}
+
+export function fetchLibsecretItemSecret(
+  storeId: string,
+  resourceId: string,
+  collectionId: string,
+  itemId: string,
+) {
+  return unwrap(
+    client.GET(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}/secret",
+      {
+        params: {
+          path: {
+            sid: storeId,
+            rid: resourceId,
+            cid: collectionId,
+            iid: itemId,
+          },
+        },
+      },
+    ),
+  );
+}
+
+export function postLibsecretCollection(
+  storeId: string,
+  resourceId: string,
+  body: AdminLibsecretCollectionCreateRequest,
+) {
+  return unwrap(
+    client.POST(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections",
+      {
+        params: { path: { sid: storeId, rid: resourceId } },
+        body,
+      },
+    ),
+  );
+}
+
+export function patchLibsecretCollection(
+  storeId: string,
+  resourceId: string,
+  collectionId: string,
+  body: AdminLibsecretCollectionPatchRequest,
+) {
+  return unwrap(
+    client.PATCH(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}",
+      {
+        params: { path: { sid: storeId, rid: resourceId, cid: collectionId } },
+        body,
+      },
+    ),
+  );
+}
+
+export function deleteLibsecretCollection(
+  storeId: string,
+  resourceId: string,
+  collectionId: string,
+) {
+  return unwrap(
+    client.DELETE(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}",
+      {
+        params: { path: { sid: storeId, rid: resourceId, cid: collectionId } },
+      },
+    ),
+  );
+}
+
+export function postLibsecretItem(
+  storeId: string,
+  resourceId: string,
+  collectionId: string,
+  body: AdminLibsecretItemCreateRequest,
+) {
+  return unwrap(
+    client.POST(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items",
+      {
+        params: { path: { sid: storeId, rid: resourceId, cid: collectionId } },
+        body,
+      },
+    ),
+  );
+}
+
+export function patchLibsecretItem(
+  storeId: string,
+  resourceId: string,
+  collectionId: string,
+  itemId: string,
+  body: AdminLibsecretItemPatchRequest,
+) {
+  return unwrap(
+    client.PATCH(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}",
+      {
+        params: {
+          path: {
+            sid: storeId,
+            rid: resourceId,
+            cid: collectionId,
+            iid: itemId,
+          },
+        },
+        body,
+      },
+    ),
+  );
+}
+
+export function deleteLibsecretItem(
+  storeId: string,
+  resourceId: string,
+  collectionId: string,
+  itemId: string,
+) {
+  return unwrap(
+    client.DELETE(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}",
+      {
+        params: {
+          path: {
+            sid: storeId,
+            rid: resourceId,
+            cid: collectionId,
+            iid: itemId,
+          },
+        },
+      },
+    ),
+  );
+}
+
+export function putLibsecretAlias(
+  storeId: string,
+  resourceId: string,
+  name: string,
+  body: AdminLibsecretAliasUpsertRequest,
+) {
+  return unwrap(
+    client.PUT(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/aliases/{name}",
+      {
+        params: { path: { sid: storeId, rid: resourceId, name } },
+        body,
+      },
+    ),
+  );
+}
+
+export function deleteLibsecretAlias(
+  storeId: string,
+  resourceId: string,
+  name: string,
+) {
+  return unwrap(
+    client.DELETE(
+      "/v1/admin/stores/{sid}/resources/{rid}/libsecret/aliases/{name}",
+      {
+        params: { path: { sid: storeId, rid: resourceId, name } },
       },
     ),
   );

@@ -125,16 +125,17 @@ test("secrets full round trip: create → reveal → edit → delete (env slot)"
   await expect(resourceBlockAfter.getByTestId("slot-env")).toHaveText(/none/i);
 });
 
-test("admin creates and deletes a libsecret slot entry", async ({
+test("admin builds a libsecret tree end-to-end (collection + item + alias)", async ({
   page,
   backendWithAdmin,
 }) => {
-  // Mirror the env round-trip for the libsecret slot. The Delete
-  // dialog and `/v1/admin/secret/delete` handler are slot-agnostic on
-  // both client and server, but libsecret keys round-trip through a
-  // richer canonical form (aliases + collection meta + item
-  // meta+secret) — exercising a real key end-to-end is the only way
-  // to catch a regression in that path.
+  // Exercises the structured libsecret admin surface end-to-end:
+  // create a collection, add an item with a secret + attributes, set
+  // an alias targeting that collection, reveal the item secret, then
+  // tear it all down via the alias-, item-, and collection-delete
+  // verbs. Each verb maps 1:1 to a Secret Service spec concept; none
+  // of them go through the flat-KV `_aliases`/`_meta`/`.secret`
+  // bridge.
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
 
@@ -148,32 +149,102 @@ test("admin creates and deletes a libsecret slot entry", async ({
   await expect(block).toBeVisible();
   await block.locator("summary").click();
 
-  const libsecretSection = block.getByTestId("slot-libsecret");
-  await libsecretSection.getByTestId("slot-libsecret-add").click();
-  const createDlg = page.getByRole("dialog", { name: /create libsecret entry/i });
-  // `_aliases` survives the canonical round-trip when its JSON payload
-  // is non-empty: `libsecret_section_to_kv` only re-emits `_aliases`
-  // when aliases or collections are non-empty (see
-  // `shared-store/src/resource_blob.rs`).
-  await createDlg.getByLabel("Key").fill("_aliases");
-  await createDlg.getByTestId("material-input").fill('{"default":"abc"}');
-  await createDlg.getByRole("button", { name: /^create$/i }).click();
-  await expect(createDlg).toBeHidden();
+  const tree = block.getByTestId("libsecret-tree");
+  await expect(tree).toBeVisible();
 
-  await expect(libsecretSection.getByText("_aliases")).toBeVisible();
+  // Create a collection with explicit id `default`.
+  await tree.getByTestId("libsecret-add-collection").click();
+  const colDlg = page.getByRole("dialog", {
+    name: /create libsecret collection/i,
+  });
+  await colDlg.getByLabel(/^id/i).fill("default");
+  await colDlg.getByLabel(/^label/i).fill("Default");
+  await colDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(colDlg).toBeHidden();
 
-  // Delete the single libsecret entry. The resource record stays.
-  const row = libsecretSection
-    .getByText("_aliases")
-    .locator("xpath=ancestor::li");
-  await row.getByRole("button", { name: /^delete$/i }).click();
-  const delDlg = page.getByRole("dialog", { name: /delete secret/i });
-  await delDlg.getByRole("button", { name: /^delete$/i }).click();
-  await expect(delDlg).toBeHidden();
+  const collection = tree.getByTestId("libsecret-collection-default");
+  await expect(collection).toBeVisible();
+  await collection.locator("summary").click();
 
+  // Create an item inside that collection.
+  await collection.getByTestId("libsecret-add-item-default").click();
+  const itemDlg = page.getByRole("dialog", {
+    name: /create libsecret item/i,
+  });
+  await itemDlg.getByLabel(/^label/i).fill("GitHub CLI");
+  await itemDlg.getByLabel(/^content type/i).fill("text/plain");
+  await itemDlg
+    .getByTestId("libsecret-item-attributes-input")
+    .fill("xdg:schema=org.freedesktop.Secret.Generic\nservice=github.com");
+  await itemDlg
+    .getByTestId("libsecret-item-secret-input")
+    .fill("ghp_e2e_value_v1");
+  await itemDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(itemDlg).toBeHidden();
+
+  const item = tree.getByTestId("libsecret-item-default-item_1");
+  await expect(item).toBeVisible();
+  await expect(item).toHaveText(/GitHub CLI/);
+  await expect(item).toHaveText(/text\/plain/);
+  await expect(item).toHaveText(/xdg:schema=org.freedesktop.Secret.Generic/);
+
+  // Reveal the item secret. The Show step gates the read; the value
+  // surfaces only after confirmation.
+  await item.getByRole("button", { name: /reveal/i }).click();
+  const revealDlg = page.getByRole("dialog", {
+    name: /reveal libsecret item secret/i,
+  });
+  await expect(revealDlg).toBeVisible();
+  await expect(revealDlg.getByTestId("libsecret-reveal-value")).toHaveCount(0);
+  await revealDlg.getByRole("button", { name: /^show$/i }).click();
+  await expect(revealDlg.getByTestId("libsecret-reveal-value")).toHaveValue(
+    "ghp_e2e_value_v1",
+  );
+  await revealDlg.getByText("Close", { exact: true }).click();
+  await expect(revealDlg).toBeHidden();
+
+  // Set the `default` alias pointing at the collection.
+  const aliases = tree.getByTestId("libsecret-aliases");
+  await aliases.getByTestId("libsecret-set-alias").click();
+  const aliasDlg = page.getByRole("dialog", {
+    name: /set libsecret alias/i,
+  });
+  await aliasDlg.getByLabel(/alias name/i).fill("default");
+  await aliasDlg.getByRole("button", { name: /^save$/i }).click();
+  await expect(aliasDlg).toBeHidden();
+
+  const aliasRow = tree.getByTestId("libsecret-alias-default");
+  await expect(aliasRow).toContainText(/default\s*→\s*default/);
+  await expect(aliasRow).not.toContainText(/dangling/i);
+
+  // Delete the alias. Collection + item stay.
+  await aliasRow.getByRole("button", { name: /^delete$/i }).click();
+  const delAliasDlg = page.getByRole("dialog", { name: /delete alias/i });
+  await delAliasDlg.getByRole("button", { name: /^delete$/i }).click();
+  await expect(delAliasDlg).toBeHidden();
+  await expect(aliases).not.toHaveText(/libsecret-alias-default/);
+
+  // Delete the item.
+  await item.getByRole("button", { name: /^delete$/i }).click();
+  const delItemDlg = page.getByRole("dialog", { name: /delete item/i });
+  await delItemDlg.getByRole("button", { name: /^delete$/i }).click();
+  await expect(delItemDlg).toBeHidden();
+  await expect(
+    tree.getByTestId("libsecret-item-default-item_1"),
+  ).toHaveCount(0);
+
+  // Finally, delete the collection itself.
+  await collection
+    .getByTestId("libsecret-delete-collection-default")
+    .click();
+  const delColDlg = page.getByRole("dialog", { name: /delete collection/i });
+  await delColDlg.getByRole("button", { name: /^delete$/i }).click();
+  await expect(delColDlg).toBeHidden();
+
+  // The libsecret tree is empty again. The resource record stays.
   const blockAfter = resourceBlockByName(page, "libsecret/demo");
   await expect(blockAfter).toBeVisible();
-  await expect(blockAfter.getByTestId("slot-libsecret")).toHaveText(/none/i);
+  await expect(blockAfter.getByTestId("libsecret-tree")).toHaveText(/none/i);
 });
 
 // The wrapper-writable per-slot toggle moved off the Secrets page

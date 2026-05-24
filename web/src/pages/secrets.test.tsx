@@ -15,11 +15,14 @@ vi.mock("@/api/client", async () => {
     fetchStores: vi.fn(),
     fetchClientInstances: vi.fn(),
     fetchSecretsView: vi.fn(),
+    fetchLibsecretTree: vi.fn(),
   };
 });
 
 import {
+  type AdminLibsecretTreeResponse,
   fetchClientInstances,
+  fetchLibsecretTree,
   fetchSecretsView,
   fetchStores,
 } from "@/api/client";
@@ -56,31 +59,75 @@ describe("SecretsPage", () => {
     vi.mocked(fetchStores).mockReset();
     vi.mocked(fetchClientInstances).mockReset();
     vi.mocked(fetchSecretsView).mockReset();
+    vi.mocked(fetchLibsecretTree).mockReset();
     vi.mocked(fetchSecretsView).mockResolvedValue({
       entries: [],
       resources: [],
     });
     vi.mocked(fetchClientInstances).mockResolvedValue({ items: [] });
+    // Default: every libsecret tree fetch returns an empty tree. Tests
+    // that care about the libsecret view override this in-scope.
+    vi.mocked(fetchLibsecretTree).mockResolvedValue({
+      aliases: {},
+      collections: [],
+    });
   });
 
   it("groups structured secret entries by resource", async () => {
     vi.mocked(fetchStores).mockResolvedValue(storesList);
+    // libsecret content for one resource comes through the structured
+    // tree endpoint; flat env/files entries still flow through
+    // secrets-view. The github/gh resource is libsecret-only, so it
+    // appears only in the `resources` list — `groupSecretEntries`
+    // doesn't see it via flat entries.
     vi.mocked(fetchSecretsView).mockResolvedValue({
       entries: [
         { resource_id: "github/token", slot: "env", key: "GH_TOKEN" },
         { resource_id: "github/token", slot: "env", key: "GH_USERNAME" },
-        { resource_id: "github/gh", slot: "libsecret", key: "credential" },
         { resource_id: "aws/access-key", slot: "env", key: "AWS_KEY" },
       ],
-      resources: [],
+      resources: [
+        {
+          id: "github/gh",
+          name: "github/gh",
+          created_by: { kind: "operator", id: "op", username: "alice" },
+          created_at: 0,
+        },
+      ],
     });
+    vi.mocked(fetchLibsecretTree).mockImplementation(
+      async (_store: string, rid: string): Promise<AdminLibsecretTreeResponse> => {
+        if (rid === "github/gh") {
+          return {
+            aliases: { default: "default" },
+            collections: [
+              {
+                id: "default",
+                label: "Default",
+                created: 0,
+                modified: 0,
+                items: [
+                  {
+                    id: "credential",
+                    label: "credential",
+                    content_type: "text/plain",
+                    created: 0,
+                    modified: 0,
+                    attributes: {},
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        return { aliases: {}, collections: [] };
+      },
+    );
     renderWithQuery(<SecretsPage />);
 
     const ghToken = await screen.findByTestId("resource-block-github/token");
-    const ghGh = await screen.findByTestId("resource-block-github/gh");
     const aws = await screen.findByTestId("resource-block-aws/access-key");
     expect(ghToken).toBeInTheDocument();
-    expect(ghGh).toBeInTheDocument();
     expect(aws).toBeInTheDocument();
 
     // The github/token block's env section lists exactly the two
@@ -89,12 +136,13 @@ describe("SecretsPage", () => {
     expect(within(ghTokenEnv).getByText("GH_TOKEN")).toBeInTheDocument();
     expect(within(ghTokenEnv).getByText("GH_USERNAME")).toBeInTheDocument();
     expect(within(ghToken).getByTestId("slot-files")).toHaveTextContent(/none/i);
-    expect(within(ghToken).getByTestId("slot-libsecret")).toHaveTextContent(
-      /none/i,
-    );
 
-    const ghGhLibsecret = within(ghGh).getByTestId("slot-libsecret");
-    expect(within(ghGhLibsecret).getByText("credential")).toBeInTheDocument();
+    // Resources that only have libsecret content now render the
+    // libsecret tree directly under the resource block.
+    const ghGhItem = await screen.findByTestId(
+      "libsecret-item-default-credential",
+    );
+    expect(ghGhItem).toHaveTextContent("credential");
   });
 
   it("lists resources from the backend even when they hold zero secrets", async () => {
@@ -118,9 +166,10 @@ describe("SecretsPage", () => {
 
     const block = await screen.findByTestId("resource-block-res_gh");
     expect(block).toBeInTheDocument();
-    expect(within(block).getByTestId("slot-libsecret")).toHaveTextContent(
-      /none/i,
-    );
+    // The libsecret tree component renders inside the block once the
+    // empty-tree query resolves.
+    const tree = await within(block).findByTestId("libsecret-tree");
+    expect(tree).toHaveTextContent(/none/i);
     expect(
       within(block).getByTestId("resource-provenance-res_gh"),
     ).toHaveTextContent(/by alice/i);
