@@ -1,7 +1,8 @@
 use super::*;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use underwrap_protocol::message::SecretBytes;
+use underwrap_protocol::resource_blob::{Collection, Item, LibsecretSection};
 
 /// Minimal in-memory backend, just for these helpers.
 struct MemStore {
@@ -200,6 +201,10 @@ fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+/// Build a blob with env + files content plus a libsecret section
+/// that exists only in the structured form. The libsecret content
+/// must not leak into the flat-KV view; the admin tree endpoints are
+/// the only way to address it.
 fn populated_blob() -> ResourceBlob {
     let mut blob = ResourceBlob::empty();
     blob.env
@@ -244,7 +249,7 @@ fn populated_blob() -> ResourceBlob {
 }
 
 #[test]
-fn expand_and_roundtrip_blob_to_entries() {
+fn expand_emits_only_env_and_files_entries() {
     let blob = populated_blob();
     let entries = expand_blob_to_entries("github/token", &blob).unwrap();
 
@@ -256,113 +261,53 @@ fn expand_and_roundtrip_blob_to_entries() {
         entries.get("github/token/files/config/app.toml").unwrap(),
         &SecretBytes::from("x=1\n")
     );
-    assert!(entries.contains_key("github/token/libsecret/_aliases"));
-    assert!(entries.contains_key("github/token/libsecret/default/_meta"));
-    assert!(entries.contains_key("github/token/libsecret/default/gh-cli.meta"));
-    assert_eq!(
-        entries
-            .get("github/token/libsecret/default/gh-cli.secret")
-            .unwrap(),
-        &SecretBytes::from("ghp_secret")
-    );
 
-    let rebuilt = blob_from_resource_entries("github/token", &entries).unwrap();
-    assert_eq!(rebuilt, blob);
+    // Libsecret content must NOT appear in the flat-KV projection
+    // anymore — that bridge was retired with the introduction of the
+    // structured /libsecret/* admin endpoints.
+    let libsecret_keys: Vec<&String> = entries
+        .keys()
+        .filter(|k| k.contains("/libsecret/"))
+        .collect();
+    assert!(
+        libsecret_keys.is_empty(),
+        "libsecret content leaked into flat-KV projection: {libsecret_keys:?}",
+    );
 }
 
 #[test]
-fn blob_from_resource_entries_ignores_other_resources() {
+fn blob_from_resource_entries_ignores_other_resources_and_libsecret() {
     let mut entries = HashMap::new();
     entries.insert("a/env/X".to_string(), SecretBytes::from("a"));
     entries.insert("b/env/Y".to_string(), SecretBytes::from("b"));
+    // Stray libsecret-shaped keys must not be parsed — the flat-KV
+    // bridge no longer handles that slot. A misbehaving caller can't
+    // resurrect the old shape just by sending the keys.
+    entries.insert(
+        "a/libsecret/_aliases".to_string(),
+        SecretBytes::from("ignored"),
+    );
 
     let blob = blob_from_resource_entries("a", &entries).unwrap();
     assert_eq!(blob.env.len(), 1);
     assert_eq!(blob.env.get("X").unwrap(), &SecretBytes::from("a"));
+    assert!(
+        blob.libsecret.aliases.is_empty(),
+        "libsecret content must not be reconstructed from flat entries",
+    );
+    assert!(blob.libsecret.collections.is_empty());
 }
 
 #[test]
-fn blob_from_resource_entries_drops_orphan_libsecret_items() {
-    // A .secret without a matching .meta should be dropped silently.
+fn blob_from_resource_entries_yields_empty_libsecret() {
+    // Even when the input map carries no libsecret-shaped keys at all,
+    // the returned blob's libsecret section is empty. Callers that
+    // want to preserve libsecret content across a flat-KV mutation
+    // must load the existing blob and merge — see the admin
+    // libsecret endpoints.
     let mut entries = HashMap::new();
-    // _aliases + collection meta + orphan secret
-    entries.insert(
-        "r/libsecret/_aliases".to_string(),
-        SecretBytes::from(serde_json::to_vec(&BTreeMap::<String, String>::new()).unwrap()),
-    );
-    entries.insert(
-        "r/libsecret/default/_meta".to_string(),
-        SecretBytes::from(
-            serde_json::to_vec(&serde_json::json!({
-                "label": "Default",
-                "created": 0u64,
-                "modified": 0u64,
-            }))
-            .unwrap(),
-        ),
-    );
-    entries.insert(
-        "r/libsecret/default/orphan.secret".to_string(),
-        SecretBytes::from("x"),
-    );
-
+    entries.insert("r/env/X".to_string(), SecretBytes::from("a"));
     let blob = blob_from_resource_entries("r", &entries).unwrap();
-    let col = blob.libsecret.collections.get("default").unwrap();
-    assert!(col.items.is_empty());
-}
-
-#[test]
-fn expand_omits_aliases_row_when_alias_map_is_empty() {
-    // A resource with collections but no aliases must not synthesize a
-    // `_aliases` row. Otherwise an admin delete of `_aliases` silently
-    // reappears on the next read (the original regression).
-    let mut blob = populated_blob();
-    blob.libsecret.aliases.clear();
-
-    let entries = expand_blob_to_entries("r", &blob).unwrap();
-
-    assert!(
-        !entries.contains_key("r/libsecret/_aliases"),
-        "expected no _aliases row when aliases map is empty, got keys: {:?}",
-        entries.keys().collect::<Vec<_>>(),
-    );
-    // Collection content is still projected.
-    assert!(entries.contains_key("r/libsecret/default/_meta"));
-    assert!(entries.contains_key("r/libsecret/default/gh-cli.meta"));
-}
-
-#[test]
-fn expand_emits_aliases_row_when_alias_map_is_non_empty() {
-    let blob = populated_blob();
-    let entries = expand_blob_to_entries("r", &blob).unwrap();
-
-    let aliases_bytes = entries
-        .get("r/libsecret/_aliases")
-        .expect("aliases row must be present when alias map is non-empty");
-    let decoded: BTreeMap<String, String> = serde_json::from_slice(aliases_bytes.as_ref()).unwrap();
-    assert_eq!(decoded.get("default").map(String::as_str), Some("default"));
-
-    let rebuilt = blob_from_resource_entries("r", &entries).unwrap();
-    assert_eq!(rebuilt.libsecret.aliases, blob.libsecret.aliases);
-}
-
-#[test]
-fn delete_aliases_row_is_idempotent_across_expand_roundtrip() {
-    // Emulates the admin delete flow: expand → drop the _aliases entry
-    // → recompose blob → expand again. The _aliases key must stay gone.
-    let blob = populated_blob();
-    let mut entries = expand_blob_to_entries("r", &blob).unwrap();
-    assert!(entries.remove("r/libsecret/_aliases").is_some());
-
-    let rebuilt = blob_from_resource_entries("r", &entries).unwrap();
-    assert!(
-        rebuilt.libsecret.aliases.is_empty(),
-        "aliases map should be empty after dropping _aliases row",
-    );
-
-    let re_expanded = expand_blob_to_entries("r", &rebuilt).unwrap();
-    assert!(
-        !re_expanded.contains_key("r/libsecret/_aliases"),
-        "_aliases row must not be re-synthesized on the next expand",
-    );
+    assert!(blob.libsecret.aliases.is_empty());
+    assert!(blob.libsecret.collections.is_empty());
 }

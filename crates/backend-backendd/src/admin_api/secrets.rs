@@ -1,6 +1,12 @@
 //! Per-key admin secret CRUD under
 //! `/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}`.
 //!
+//! Handles only the genuinely flat-KV slots: `env` (name → value) and
+//! `files` (path → bytes). Libsecret content is structured and goes
+//! through [`super::libsecret`]; requests targeting the `libsecret`
+//! slot here are rejected with `slot_not_supported` and a pointer at
+//! the structured endpoints.
+//!
 //! Translates the URL-addressed `(store, resource_id, slot, key)`
 //! tuple through the resource-blob layout for per-key reads/writes;
 //! the `rename` handler is the only multi-step one and is
@@ -38,13 +44,29 @@ use crate::storage::secret_entries::{
 use crate::users::Principal;
 
 /// Parse a slot segment from the URL path or surface a 400 error.
+///
+/// The flat-KV admin endpoints in this module address only the `env`
+/// and `files` slots. Libsecret content is structured (Service →
+/// Collections → Items + an alias table) and lives behind the
+/// `/v1/admin/stores/{sid}/resources/{rid}/libsecret/*` endpoints in
+/// [`super::libsecret`]; rejecting it here keeps the two surfaces
+/// from drifting and gives operators a clear pointer when they hit
+/// a stale URL.
 fn parse_slot(slot: &str) -> Result<ResourceSlot, AdminError> {
-    ResourceSlot::parse(slot).ok_or_else(|| {
-        AdminError::bad_request(
+    match ResourceSlot::parse(slot) {
+        Some(ResourceSlot::Env) => Ok(ResourceSlot::Env),
+        Some(ResourceSlot::Files) => Ok(ResourceSlot::Files),
+        Some(ResourceSlot::Libsecret) => Err(AdminError::bad_request(
+            "slot_not_supported",
+            "libsecret content is addressed through the structured \
+             /v1/admin/stores/{sid}/resources/{rid}/libsecret/* endpoints, \
+             not the flat-KV secrets endpoints",
+        )),
+        None => Err(AdminError::bad_request(
             "invalid_request",
-            format!("unknown slot '{slot}'; expected one of env, files, libsecret"),
-        )
-    })
+            format!("unknown slot '{slot}'; expected one of env, files"),
+        )),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
