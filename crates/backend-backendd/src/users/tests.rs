@@ -123,8 +123,8 @@ fn duplicate_username_across_files_is_rejected_on_load() {
     b.username = "alice".into();
     save_user(&dir, &a).unwrap();
     save_user(&dir, &b).unwrap();
-    let err = load(&dir).expect_err("duplicate usernames must fail");
-    assert!(format!("{err:#}").contains("duplicate username"));
+    let err = load(&dir).expect_err("duplicate user usernames must fail");
+    assert!(format!("{err:#}").contains("duplicate user username"));
 }
 
 #[test]

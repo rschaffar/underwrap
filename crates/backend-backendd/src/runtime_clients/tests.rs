@@ -94,7 +94,9 @@ fn duplicate_fingerprint_across_files_is_rejected() {
     save_client_instance(&dir, &a).unwrap();
     save_client_instance(&dir, &b).unwrap();
     let err = load_client_instances(&dir).expect_err("duplicate fingerprints must fail");
-    assert!(format!("{err:#}").contains("duplicate runtime client credential fingerprint"));
+    assert!(
+        format!("{err:#}").contains("duplicate runtime client instance credential fingerprint")
+    );
 }
 
 #[test]
@@ -107,7 +109,7 @@ fn duplicate_display_name_across_files_is_rejected() {
     save_client_instance(&dir, &a).unwrap();
     save_client_instance(&dir, &b).unwrap();
     let err = load_client_instances(&dir).expect_err("duplicate display names must fail");
-    assert!(format!("{err:#}").contains("duplicate runtime client display name"));
+    assert!(format!("{err:#}").contains("duplicate runtime client instance display name"));
 }
 
 #[test]

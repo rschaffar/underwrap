@@ -37,9 +37,9 @@ pub(crate) fn random_hex_8() -> String {
 
 /// True for ids/names that are safe to use as a filename and as a URL
 /// path segment: lowercase ASCII letters, digits, `-` or `_`, starting
-/// with an alphanumeric. Shared by the store-id and
-/// client-instance-id validators.
-pub(crate) fn is_valid_simple_id(name: &str) -> bool {
+/// with an alphanumeric. Shared by every on-disk-record id (users,
+/// stores, client instances, resources).
+pub(crate) fn is_valid_id(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }

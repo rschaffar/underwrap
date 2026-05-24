@@ -65,7 +65,7 @@ fn duplicate_visible_name_across_files_is_rejected() {
     .unwrap();
 
     let err = load_store_records(&dir).expect_err("duplicate visible name must abort");
-    assert!(format!("{err:#}").contains("duplicate visible store name"));
+    assert!(format!("{err:#}").contains("duplicate store visible name"));
 }
 
 #[test]

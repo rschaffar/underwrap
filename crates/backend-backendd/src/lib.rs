@@ -25,6 +25,5 @@ pub use crate::config::{
     AdminConfig, BackendConfig, DEFAULT_STORES_DIR, HttpsConfig, HttpsTlsConfig,
 };
 pub use crate::store_registry::{
-    LoadedStoreRecord, RegistryLookupError, StoreRegistry, StoreState, is_valid_store_id,
-    load_store_records,
+    LoadedStoreRecord, RegistryLookupError, StoreRegistry, StoreState, load_store_records,
 };

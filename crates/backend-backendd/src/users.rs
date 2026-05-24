@@ -16,8 +16,7 @@
 //! [`UserRecord`] `Debug` impl redacts them and tests assert that
 //! tracing-captured CRUD output never contains the hash material.
 
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -228,139 +227,58 @@ pub fn now_epoch_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Path of the JSON file holding the record for user id `user_id`.
-fn record_path(dir: &Path, user_id: &str) -> PathBuf {
-    dir.join(format!("{user_id}.json"))
-}
+impl crate::storage::json_dir_store::DirRecord for UserRecord {
+    const KIND: &'static str = "user";
+    const KIND_PLURAL_DIR: &'static str = "users directory";
 
-/// Parse a single `<id>.json` file. The id is taken from the file
-/// stem and backfilled into the returned record; the body itself
-/// does not carry it.
-fn load_one(path: &Path) -> Result<UserRecord> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading user record {}", path.display()))?;
-    let mut record: UserRecord = serde_json::from_str(&text)
-        .with_context(|| format!("parsing user record {}", path.display()))?;
-    let id = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "user record path '{}' has no valid file stem",
-                path.display()
-            )
-        })?
-        .to_string();
-    anyhow::ensure!(
-        is_valid_user_id(&id),
-        "invalid user id '{}' derived from file {}",
-        id,
-        path.display()
-    );
-    record.id = id;
-    Ok(record)
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn set_id(&mut self, id: String) {
+        self.id = id;
+    }
+
+    fn validate_fields(&self, path: &Path) -> Result<()> {
+        anyhow::ensure!(
+            !self.username.trim().is_empty(),
+            "user '{}' has an empty username in {}",
+            self.id,
+            path.display(),
+        );
+        anyhow::ensure!(
+            self.password_hash.starts_with("$argon2"),
+            "user '{}' has a non-argon2 password hash in {}",
+            self.id,
+            path.display(),
+        );
+        Ok(())
+    }
+
+    fn uniqueness_keys(&self) -> Vec<(&'static str, String)> {
+        vec![("username", self.username.clone())]
+    }
 }
 
 /// Load every user record found under `dir`. A missing directory is
 /// treated as an empty collection; that is the state the bootstrap
-/// flow expects to find on a fresh backend. Subdirectories and
-/// non-`.json` siblings (e.g. `<id>.json.bak`) are ignored so
-/// operator backups don't break the load. Hard-errors on duplicate
-/// usernames across files — the in-memory collection enforces that
-/// invariant, so two files claiming the same name indicates manual
-/// tampering that should not start the daemon.
+/// flow expects to find on a fresh backend.
 pub fn load(dir: &Path) -> Result<UserCollection> {
-    let read = match std::fs::read_dir(dir) {
-        Ok(read) => read,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(UserCollection::default());
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("reading users directory {}", dir.display()));
-        }
-    };
-
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in read {
-        let entry =
-            entry.with_context(|| format!("iterating users directory {}", dir.display()))?;
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("statting {}", entry.path().display()))?;
-        if !file_type.is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        paths.push(path);
-    }
-    paths.sort();
-
-    let mut users = Vec::new();
-    let mut usernames = BTreeSet::new();
-    for path in paths {
-        let record = load_one(&path)?;
-        anyhow::ensure!(
-            !record.username.trim().is_empty(),
-            "user '{}' has an empty username in {}",
-            record.id,
-            path.display()
-        );
-        anyhow::ensure!(
-            record.password_hash.starts_with("$argon2"),
-            "user '{}' has a non-argon2 password hash in {}",
-            record.id,
-            path.display()
-        );
-        anyhow::ensure!(
-            usernames.insert(record.username.clone()),
-            "duplicate username '{}' across files in {}",
-            record.username,
-            dir.display(),
-        );
-        users.push(record);
-    }
-    Ok(UserCollection { users })
+    Ok(UserCollection {
+        users: crate::storage::json_dir_store::load_dir(dir)?,
+    })
 }
 
 /// Persist one user record to `<dir>/<id>.json` via the usual
-/// tempfile + atomic rename. The on-disk body does not carry the id
-/// — it is implied by the filename.
+/// tempfile + atomic rename.
 pub fn save_user(dir: &Path, record: &UserRecord) -> Result<()> {
-    anyhow::ensure!(
-        is_valid_user_id(&record.id),
-        "invalid user id '{}'",
-        record.id,
-    );
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating users directory {}", dir.display()))?;
-    let json = serde_json::to_vec_pretty(record).context("serialising user record")?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("creating temp user record under {}", dir.display()))?;
-    use std::io::Write;
-    tmp.write_all(&json).context("writing temp user record")?;
-    tmp.as_file().sync_all().context("fsync temp user record")?;
-    let target = record_path(dir, &record.id);
-    tmp.persist(&target).map_err(|e| {
-        anyhow::anyhow!(
-            "atomically persisting user record to {}: {e}",
-            target.display(),
-        )
-    })?;
-    Ok(())
+    crate::storage::json_dir_store::save(dir, record)
 }
 
 /// Remove `<dir>/<id>.json`. Missing files are tolerated so the
 /// admin delete path remains idempotent under retry.
 pub fn delete_user(dir: &Path, user_id: &str) -> Result<()> {
-    let path = record_path(dir, user_id);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).with_context(|| format!("removing user record {}", path.display())),
-    }
+    crate::storage::json_dir_store::delete(dir, "user", user_id)
 }
 
 /// True iff the bootstrap-completed sentinel file is present.
@@ -415,10 +333,6 @@ pub fn mark_bootstrap_completed(bootstrap_file: &Path, sentinel: &BootstrapSenti
         )
     })?;
     Ok(())
-}
-
-fn is_valid_user_id(id: &str) -> bool {
-    crate::ids::is_valid_simple_id(id)
 }
 
 #[cfg(test)]

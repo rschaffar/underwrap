@@ -21,8 +21,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -98,189 +98,89 @@ pub fn cert_fingerprint_from_pem_file(path: &Path) -> Result<String> {
     cert_fingerprint_from_pem(&pem)
 }
 
-/// Path of the JSON file holding `client_instance_id`'s record.
-fn record_path(dir: &Path, client_instance_id: &str) -> PathBuf {
-    dir.join(format!("{client_instance_id}.json"))
-}
+impl crate::storage::json_dir_store::DirRecord for ClientInstanceRecord {
+    const KIND: &'static str = "runtime client instance";
+    const KIND_PLURAL_DIR: &'static str = "clients directory";
 
-/// Parse a single `<id>.json` file. The id is taken from the file
-/// stem and backfilled into the returned record; the body itself does
-/// not carry it.
-fn load_one(path: &Path) -> Result<ClientInstanceRecord> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading runtime client record {}", path.display()))?;
-    let mut record: ClientInstanceRecord = serde_json::from_str(&text)
-        .with_context(|| format!("parsing runtime client record {}", path.display()))?;
-    let id = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "runtime client record path '{}' has no valid file stem",
-                path.display()
-            )
-        })?
-        .to_string();
-    anyhow::ensure!(
-        is_valid_client_instance_id(&id),
-        "invalid runtime client instance id '{}' derived from file {}",
-        id,
-        path.display()
-    );
-    record.id = id;
-    validate_record_fields(&record, path)?;
-    Ok(record)
-}
+    fn id(&self) -> &str {
+        &self.id
+    }
 
-fn validate_record_fields(record: &ClientInstanceRecord, path: &Path) -> Result<()> {
-    anyhow::ensure!(
-        !record.display_name.trim().is_empty(),
-        "runtime client instance '{}' has an empty display name in {}",
-        record.id,
-        path.display()
-    );
-    anyhow::ensure!(
-        !record.current_store_id.trim().is_empty(),
-        "runtime client instance '{}' has an empty current_store_id in {}",
-        record.id,
-        path.display()
-    );
-    anyhow::ensure!(
-        !record.current_credential.cert_fingerprint.trim().is_empty(),
-        "runtime client instance '{}' has an empty current credential fingerprint in {}",
-        record.id,
-        path.display()
-    );
-    anyhow::ensure!(
-        !record.current_credential.cert_pem.trim().is_empty(),
-        "runtime client instance '{}' has an empty current credential PEM in {}",
-        record.id,
-        path.display()
-    );
-    let derived_fingerprint = cert_fingerprint_from_pem(&record.current_credential.cert_pem)
-        .with_context(|| {
-            format!(
-                "parsing current credential PEM for runtime client instance '{}' in {}",
-                record.id,
-                path.display()
-            )
-        })?;
-    anyhow::ensure!(
-        derived_fingerprint == record.current_credential.cert_fingerprint,
-        "runtime client instance '{}' has a current credential fingerprint/PEM mismatch in {}",
-        record.id,
-        path.display()
-    );
-    Ok(())
+    fn set_id(&mut self, id: String) {
+        self.id = id;
+    }
+
+    fn validate_fields(&self, path: &Path) -> Result<()> {
+        anyhow::ensure!(
+            !self.display_name.trim().is_empty(),
+            "runtime client instance '{}' has an empty display name in {}",
+            self.id,
+            path.display(),
+        );
+        anyhow::ensure!(
+            !self.current_store_id.trim().is_empty(),
+            "runtime client instance '{}' has an empty current_store_id in {}",
+            self.id,
+            path.display(),
+        );
+        anyhow::ensure!(
+            !self.current_credential.cert_fingerprint.trim().is_empty(),
+            "runtime client instance '{}' has an empty current credential fingerprint in {}",
+            self.id,
+            path.display(),
+        );
+        anyhow::ensure!(
+            !self.current_credential.cert_pem.trim().is_empty(),
+            "runtime client instance '{}' has an empty current credential PEM in {}",
+            self.id,
+            path.display(),
+        );
+        let derived_fingerprint = cert_fingerprint_from_pem(&self.current_credential.cert_pem)
+            .with_context(|| {
+                format!(
+                    "parsing current credential PEM for runtime client instance '{}' in {}",
+                    self.id,
+                    path.display(),
+                )
+            })?;
+        anyhow::ensure!(
+            derived_fingerprint == self.current_credential.cert_fingerprint,
+            "runtime client instance '{}' has a current credential fingerprint/PEM mismatch in {}",
+            self.id,
+            path.display(),
+        );
+        Ok(())
+    }
+
+    fn uniqueness_keys(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "display name",
+                self.display_name.trim().to_ascii_lowercase(),
+            ),
+            (
+                "credential fingerprint",
+                self.current_credential.cert_fingerprint.clone(),
+            ),
+        ]
+    }
 }
 
 pub fn load_client_instances(dir: &Path) -> Result<HashMap<String, ClientInstanceRecord>> {
-    let read = match std::fs::read_dir(dir) {
-        Ok(read) => read,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(e) => {
-            return Err(e).with_context(|| format!("reading clients directory {}", dir.display()));
-        }
-    };
-
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in read {
-        let entry =
-            entry.with_context(|| format!("iterating clients directory {}", dir.display()))?;
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("statting {}", entry.path().display()))?;
-        if !file_type.is_file() {
-            continue;
-        }
-        let path = entry.path();
-        // Skip files without a `.json` extension; operators may leave
-        // backup files (e.g. `<id>.json.bak`) without breaking the load.
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        paths.push(path);
-    }
-    paths.sort();
-
-    let mut out = HashMap::new();
-    let mut display_names = BTreeSet::new();
-    let mut fingerprints = BTreeSet::new();
-    for path in paths {
-        let record = load_one(&path)?;
-        let display_name_key = record.display_name.trim().to_ascii_lowercase();
-        anyhow::ensure!(
-            display_names.insert(display_name_key),
-            "duplicate runtime client display name '{}' across files in {}",
-            record.display_name,
-            dir.display()
-        );
-        anyhow::ensure!(
-            fingerprints.insert(record.current_credential.cert_fingerprint.clone()),
-            "duplicate runtime client credential fingerprint '{}' across files in {}",
-            record.current_credential.cert_fingerprint,
-            dir.display()
-        );
-        let id = record.id.clone();
-        anyhow::ensure!(
-            out.insert(id.clone(), record).is_none(),
-            "duplicate runtime client instance id '{}' across files in {}",
-            id,
-            dir.display()
-        );
-    }
-    Ok(out)
+    let records: Vec<ClientInstanceRecord> = crate::storage::json_dir_store::load_dir(dir)?;
+    Ok(records.into_iter().map(|r| (r.id.clone(), r)).collect())
 }
 
 /// Persist one client instance record to `<dir>/<id>.json` via the
-/// usual tempfile + atomic rename. The on-disk body does not carry
-/// the id — it is implied by the filename.
+/// usual tempfile + atomic rename.
 pub fn save_client_instance(dir: &Path, record: &ClientInstanceRecord) -> Result<()> {
-    anyhow::ensure!(
-        is_valid_client_instance_id(&record.id),
-        "invalid runtime client instance id '{}'",
-        record.id,
-    );
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating clients directory {}", dir.display()))?;
-    let json =
-        serde_json::to_vec_pretty(record).context("serialising runtime client instance record")?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir).with_context(|| {
-        format!(
-            "creating temp client instance record under {}",
-            dir.display()
-        )
-    })?;
-    use std::io::Write;
-    tmp.write_all(&json)
-        .context("writing runtime client instance record tempfile")?;
-    tmp.as_file()
-        .sync_all()
-        .context("fsync runtime client instance record tempfile")?;
-    let target = record_path(dir, &record.id);
-    tmp.persist(&target).map_err(|e| {
-        anyhow::anyhow!(
-            "atomically persisting runtime client instance record to {}: {e}",
-            target.display(),
-        )
-    })?;
-    Ok(())
+    crate::storage::json_dir_store::save(dir, record)
 }
 
 /// Remove `<dir>/<id>.json`. Missing files are tolerated so the
 /// admin delete path remains idempotent under retry.
 pub fn delete_client_instance(dir: &Path, client_instance_id: &str) -> Result<()> {
-    let path = record_path(dir, client_instance_id);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e)
-            .with_context(|| format!("removing runtime client instance record {}", path.display())),
-    }
-}
-
-pub fn is_valid_client_instance_id(id: &str) -> bool {
-    crate::ids::is_valid_simple_id(id)
+    crate::storage::json_dir_store::delete(dir, "runtime client instance", client_instance_id)
 }
 
 #[cfg(test)]
