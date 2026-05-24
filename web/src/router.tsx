@@ -5,13 +5,10 @@ import {
   Router,
   RouterProvider,
   redirect,
-  useNavigate,
 } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useEffect } from "react";
 
 import { AppShell } from "@/components/app-shell";
-import { Dashboard } from "@/pages/dashboard";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
 import { WrapperPermissionsPage } from "@/pages/wrapper-permissions/page";
@@ -34,50 +31,22 @@ interface RouterContext {
   principal: WhoamiResponse | null;
 }
 
+// Listing queries are invalidated on mutation `onSuccess`, so a
+// non-zero `staleTime` would only delay refetches without adding
+// value. Per-query overrides should be rare (use a longer
+// `staleTime` for genuinely background-cacheable data like
+// `whoami` if it ever becomes a bottleneck).
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
       retry: 1,
-      staleTime: 30_000,
+      staleTime: 0,
     },
   },
 });
 
 const rootRoute = new RootRoute({
-  beforeLoad: async ({ location }) => {
-    // Skip auth resolution on the public auth routes; the guard is
-    // applied below on every protected child by re-checking principal.
-    if (
-      location.pathname === "/login" ||
-      location.pathname === "/bootstrap"
-    ) {
-      return { principal: null };
-    }
-    try {
-      const principal = await fetchWhoami();
-      if (principal.username !== undefined) {
-        return { principal };
-      }
-    } catch (err) {
-      // Network or schema error — fall through to the bootstrap probe
-      // so the user lands somewhere actionable instead of a blank page.
-      if (!(err instanceof ApiError)) {
-        throw err;
-      }
-    }
-    // Unauthenticated. Decide between /login and /bootstrap.
-    let bootstrapRequired = false;
-    try {
-      bootstrapRequired = (await fetchBootstrapStatus()).bootstrap_required;
-    } catch {
-      // Network error: prefer the login redirect over silently breaking.
-    }
-    throw redirect({
-      to: bootstrapRequired ? "/bootstrap" : "/login",
-      search: { next: location.href },
-    });
-  },
   component: RootLayout,
   notFoundComponent: NotFound,
   errorComponent: ErrorScreen,
@@ -128,44 +97,47 @@ function NotFound() {
 const appLayoutRoute = new Route({
   getParentRoute: () => rootRoute,
   id: "app",
-  component: function AppLayoutComponent() {
-    const navigate = useNavigate();
-    return (
-      <AppShell
-        onLogout={async () => {
-          // Delegate the actual POST to the `/logout` route so there's
-          // one place that knows how to revoke + clear caches + redirect.
-          await navigate({ to: "/logout" });
-        }}
-      >
-        <Outlet />
-      </AppShell>
-    );
+  beforeLoad: async ({ location }) => {
+    try {
+      const principal = await fetchWhoami();
+      if (principal.username !== undefined) {
+        return { principal };
+      }
+    } catch (err) {
+      // Network or schema error — fall through to the bootstrap probe
+      // so the user lands somewhere actionable instead of a blank page.
+      if (!(err instanceof ApiError)) {
+        throw err;
+      }
+    }
+    let bootstrapRequired = false;
+    try {
+      bootstrapRequired = (await fetchBootstrapStatus()).bootstrap_required;
+    } catch {
+      // Network error: prefer the login redirect over silently breaking.
+    }
+    throw redirect({
+      to: bootstrapRequired ? "/bootstrap" : "/login",
+      search: { next: location.href },
+    });
   },
+  component: AppLayoutComponent,
 });
 
-// Single source of truth for nav-targetable paths under the protected
-// app shell. The `NAV` array in `app-shell.tsx` constrains its href
-// values to this union, and `routePathsAreConsistent` (below) asserts
-// the set matches the actual registered routes. The pair makes it
-// impossible for a nav entry to point at a missing route or for a
-// route to be added without surfacing it through the type that NAV
-// consumes.
-export const APP_ROUTE_PATHS = [
-  "/",
-  "/wrappers",
-  "/secrets",
-  "/stores",
-  "/client-instances",
-  "/users",
-  "/profile",
-] as const;
-export type AppRoutePath = (typeof APP_ROUTE_PATHS)[number];
+function AppLayoutComponent() {
+  return (
+    <AppShell>
+      <Outlet />
+    </AppShell>
+  );
+}
 
 const indexRoute = new Route({
   getParentRoute: () => appLayoutRoute,
   path: "/",
-  component: Dashboard,
+  beforeLoad: () => {
+    throw redirect({ to: "/secrets", replace: true });
+  },
 });
 
 const storesRoute = new Route({
@@ -212,73 +184,70 @@ const secretsRoute = new Route({
 
 // ----- Public auth routes -----
 
-function LoginRouteComponent() {
-  const navigate = useNavigate();
-  return (
-    <LoginPage
-      onSuccess={async () => {
-        await queryClient.invalidateQueries();
-        // Honour `?next=` if it points at a same-origin pathname; otherwise
-        // fall back to the dashboard. Never follow arbitrary URLs from the
-        // query string — that would be an open redirect.
-        const search = new URLSearchParams(window.location.search);
-        const safe = safeNextPath(search.get("next"));
-        await navigate({ to: safe ?? "/", replace: true });
-      }}
-    />
-  );
+interface LoginSearch {
+  next?: string;
 }
 
 const loginRoute = new Route({
   getParentRoute: () => rootRoute,
   path: "/login",
-  component: LoginRouteComponent,
+  validateSearch: (search): LoginSearch => {
+    const safe = safeNextPath(
+      typeof search.next === "string" ? search.next : null,
+    );
+    return safe ? { next: safe } : {};
+  },
+  component: function LoginRouteComponent() {
+    const { next } = loginRoute.useSearch();
+    const navigate = loginRoute.useNavigate();
+    return (
+      <LoginPage
+        onSuccess={async () => {
+          await queryClient.invalidateQueries();
+          await navigate({ to: next ?? "/", replace: true });
+        }}
+      />
+    );
+  },
 });
-
-function BootstrapRouteComponent() {
-  const navigate = useNavigate();
-  return (
-    <BootstrapPage
-      onSuccess={async () => {
-        await queryClient.invalidateQueries();
-        await navigate({ to: "/" });
-      }}
-    />
-  );
-}
 
 const bootstrapRoute = new Route({
   getParentRoute: () => rootRoute,
   path: "/bootstrap",
-  component: BootstrapRouteComponent,
+  component: function BootstrapRouteComponent() {
+    const navigate = bootstrapRoute.useNavigate();
+    return (
+      <BootstrapPage
+        onSuccess={async () => {
+          await queryClient.invalidateQueries();
+          await navigate({ to: "/" });
+        }}
+      />
+    );
+  },
 });
-
-function LogoutRouteComponent() {
-  const navigate = useNavigate();
-  useEffect(() => {
-    void (async () => {
-      try {
-        await postLogout();
-      } catch {
-        // Even if the server rejects (already revoked, CSRF, etc.) we still
-        // proceed to /login — the session cookie is either gone server-side
-        // or never existed.
-      }
-      queryClient.clear();
-      await navigate({ to: "/login", replace: true });
-    })();
-  }, [navigate]);
-  return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <p className="text-sm text-(--color-muted)">Signing out…</p>
-    </div>
-  );
-}
 
 const logoutRoute = new Route({
   getParentRoute: () => rootRoute,
   path: "/logout",
-  component: LogoutRouteComponent,
+  beforeLoad: async () => {
+    try {
+      await postLogout();
+    } catch {
+      // Even if the server rejects (already revoked, CSRF, etc.) we still
+      // proceed to /login — the session cookie is either gone server-side
+      // or never existed.
+    }
+    queryClient.clear();
+    throw redirect({ to: "/login", replace: true });
+  },
+  component: function LogoutRouteComponent() {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6">
+        <p className="text-sm text-(--color-muted)">Signing out…</p>
+      </div>
+    );
+  },
 });
 
 /**
@@ -298,21 +267,16 @@ export function safeNextPath(next: string | null): string | null {
   }
 }
 
-// Exported so the consistency test in `router.test.tsx` can compare
-// the actual registered path set against `APP_ROUTE_PATHS`. Keep this
-// list ordered the same way as `APP_ROUTE_PATHS` for readability.
-export const appRoutes = [
-  indexRoute,
-  wrapperPermissionsRoute,
-  secretsRoute,
-  storesRoute,
-  clientInstancesRoute,
-  usersRoute,
-  profileRoute,
-];
-
 const routeTree = rootRoute.addChildren([
-  appLayoutRoute.addChildren([...appRoutes]),
+  appLayoutRoute.addChildren([
+    indexRoute,
+    wrapperPermissionsRoute,
+    secretsRoute,
+    storesRoute,
+    clientInstancesRoute,
+    usersRoute,
+    profileRoute,
+  ]),
   loginRoute,
   bootstrapRoute,
   logoutRoute,
@@ -321,7 +285,6 @@ const routeTree = rootRoute.addChildren([
 const router = new Router({
   routeTree,
   context: { queryClient, principal: null } as RouterContext,
-  defaultPreload: "intent",
 });
 
 declare module "@tanstack/react-router" {

@@ -31,14 +31,8 @@ export function PolicyViewerDialog({
 }: PolicyViewerDialogProps) {
   const policy = useQuery({
     queryKey: ["admin", "wrapper-permissions", storeId],
-    queryFn: () =>
-      fetchWrapperPermissions(storeId),
+    queryFn: () => fetchWrapperPermissions(storeId),
     enabled: open,
-    // The viewer is read-only and operators reopen it to confirm
-    // recent edits. Cache freshness matters more than save round
-    // trips; refetch every time the dialog mounts.
-    staleTime: 0,
-    refetchOnMount: "always",
   });
 
   // Render a `PolicyDocument`-shaped blob even though the wire format

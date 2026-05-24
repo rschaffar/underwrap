@@ -15,7 +15,7 @@ import {
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 import { useStoreSelector } from "@/hooks/use-store-selector";
-import { useClientInstanceDirectory } from "@/hooks/use-store-lookups";
+import { useClientInstanceDirectory } from "@/hooks/use-client-instance-directory";
 
 import {
   type SecretAddress,

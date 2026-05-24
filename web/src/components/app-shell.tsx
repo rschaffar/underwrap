@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
 import {
   Menu,
   Moon,
@@ -24,20 +25,17 @@ import {
 } from "@/components/ui/sheet";
 import { useTheme } from "@/hooks/use-theme";
 import { cn } from "@/lib/utils";
-import { type AppRoutePath } from "@/router";
 
 interface NavItem {
   label: string;
   icon: typeof LayoutDashboard;
-  // Constrained to the union of registered app-shell route paths so
-  // a nav entry cannot point at a missing route. Adding a new
-  // destination requires updating `APP_ROUTE_PATHS` in router.tsx,
-  // which in turn is asserted to match the live route tree.
-  href: AppRoutePath;
+  // TanStack Router's `<Link to=...>` type-checks against the live
+  // route tree, so this field can't reference a route that doesn't
+  // exist.
+  href: Parameters<typeof Link>[0]["to"];
 }
 
 export const NAV: NavItem[] = [
-  { label: "Dashboard", icon: LayoutDashboard, href: "/" },
   { label: "Wrapper permissions", icon: Grid3x3, href: "/wrappers" },
   { label: "Secrets", icon: KeyRound, href: "/secrets" },
   { label: "Stores", icon: Lock, href: "/stores" },
@@ -53,15 +51,15 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         underwrap
       </div>
       {NAV.map(({ label, icon: Icon, href }) => (
-        <a
+        <Link
           key={label}
-          href={href}
+          to={href}
           onClick={onNavigate}
           className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-(--color-fg)/85 hover:bg-(--color-surface-1) hover:text-(--color-fg)"
         >
           <Icon className="h-4 w-4" aria-hidden />
           {label}
-        </a>
+        </Link>
       ))}
     </nav>
   );
@@ -69,11 +67,9 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
 interface AppShellProps {
   children: ReactNode;
-  /** Optional sign-out callback. When omitted the logout button is hidden. */
-  onLogout?: () => void | Promise<void>;
 }
 
-export function AppShell({ children, onLogout }: AppShellProps) {
+export function AppShell({ children }: AppShellProps) {
   const { theme, toggle } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -117,18 +113,11 @@ export function AppShell({ children, onLogout }: AppShellProps) {
           >
             {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
-          {onLogout ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Sign out"
-              onClick={() => {
-                void onLogout();
-              }}
-            >
+          <Button variant="ghost" size="icon" aria-label="Sign out" asChild>
+            <Link to="/logout">
               <LogOut className="h-4 w-4" />
-            </Button>
-          ) : null}
+            </Link>
+          </Button>
         </div>
       </header>
 

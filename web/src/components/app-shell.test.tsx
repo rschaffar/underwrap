@@ -1,6 +1,23 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode, AnchorHTMLAttributes } from "react";
+
+// The shell renders `<Link>` from TanStack Router, which requires a
+// RouterProvider context. The shell's behaviour under test is its
+// chrome (header, drawer, theme toggle), not link navigation, so we
+// stub `Link` with a plain anchor and skip the router setup.
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({
+    to,
+    children,
+    ...rest
+  }: { to: string; children: ReactNode } & AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a href={to} {...rest}>
+      {children}
+    </a>
+  ),
+}));
 
 import { AppShell } from "./app-shell";
 
