@@ -11,11 +11,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import type { components } from "@/api/schema";
 import {
   type AdminStoreListItem,
   deleteStore,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
+
+type CleanupHint = components["schemas"]["AdminStoreDeleteCleanupHint"];
 
 export function DeleteStoreDialog({
   store,
@@ -27,7 +30,7 @@ export function DeleteStoreDialog({
   const qc = useQueryClient();
   const [force, setForce] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [cleanupHint, setCleanupHint] = useState<string | null>(null);
+  const [cleanupHint, setCleanupHint] = useState<CleanupHint | null>(null);
 
   const mut = useMutation({
     mutationFn: (opts: { force: boolean }) => deleteStore(store.id, opts),
@@ -64,9 +67,16 @@ export function DeleteStoreDialog({
               disk — follow up manually.
             </DialogDescription>
           </DialogHeader>
-          <pre className="overflow-x-auto rounded-md border border-(--color-line) bg-(--color-surface-1) p-3 text-xs text-(--color-muted)">
-            {cleanupHint}
-          </pre>
+          <div className="space-y-2 text-xs text-(--color-muted)">
+            <p>
+              Data directory left in place at{" "}
+              <code className="text-(--color-text)">{cleanupHint.data_dir}</code>.
+              Back it up first if needed, then remove it manually:
+            </p>
+            <pre className="overflow-x-auto rounded-md border border-(--color-line) bg-(--color-surface-1) p-3">
+              {cleanupHint.command}
+            </pre>
+          </div>
           <DialogFooter>
             <Button onClick={onClose}>Close</Button>
           </DialogFooter>

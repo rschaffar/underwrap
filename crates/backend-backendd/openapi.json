@@ -4013,6 +4013,22 @@
           }
         }
       },
+      "AdminStoreDeleteCleanupHint": {
+        "type": "object",
+        "description": "Structured hint for the manual cleanup the operator still has to\nperform after a force-delete: the data dir was left in place so\nthe operator can decide whether to back it up, and the command\nthey would run to remove it.",
+        "required": [
+          "data_dir",
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "data_dir": {
+            "type": "string"
+          }
+        }
+      },
       "AdminStoreDeleteResponse": {
         "type": "object",
         "required": [
@@ -4020,11 +4036,15 @@
         ],
         "properties": {
           "cleanup_hint": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Filesystem cleanup the operator still has to do by hand. Set\nwhen `force=true` deleted a store whose data dir is non-empty;\nthe server intentionally never `rm -rf`s secret material."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdminStoreDeleteCleanupHint",
+                "description": "Filesystem cleanup the operator still has to do by hand. Set\nwhen `force=true` deleted a store whose data dir is non-empty;\nthe server intentionally never `rm -rf`s secret material."
+              }
+            ]
           },
           "ok": {
             "type": "boolean"

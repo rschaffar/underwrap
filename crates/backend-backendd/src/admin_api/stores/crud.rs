@@ -8,7 +8,8 @@ use serde::Deserialize;
 use underwrap_protocol::config::StoreRecord;
 use underwrap_protocol::service::{
     AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
-    AdminStoreDeleteResponse, AdminStoreListItem, AdminStoreUpdateRequest, AdminStoreUsageSummary,
+    AdminStoreDeleteCleanupHint, AdminStoreDeleteResponse, AdminStoreListItem,
+    AdminStoreUpdateRequest, AdminStoreUsageSummary,
     AdminStoresListResponse, ServiceErrorResponse,
 };
 use underwrap_store::StorageBackend;
@@ -426,13 +427,11 @@ pub(crate) async fn handle_admin_store_delete(
         }
     }
     let cleanup_hint = if non_empty {
-        Some(format!(
-            "store '{name}' had secrets at deletion time. The store record has been removed; \
-             the data dir at {} was left in place so you can decide whether to back it up first. \
-             Remove it manually (`rm -rf {}`) when ready.",
-            dir_for_hint.display(),
-            dir_for_hint.display(),
-        ))
+        let data_dir = dir_for_hint.display().to_string();
+        Some(AdminStoreDeleteCleanupHint {
+            command: format!("rm -rf {data_dir}"),
+            data_dir,
+        })
     } else {
         None
     };

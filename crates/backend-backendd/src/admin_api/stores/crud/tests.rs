@@ -226,9 +226,14 @@ fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
     let (status, body) = store_delete(state.clone(), &p, &store_id, true);
     assert_eq!(status, StatusCode::OK);
     let hint = body["cleanup_hint"]
-        .as_str()
-        .expect("force-delete must include a cleanup_hint when non-empty");
-    assert!(hint.contains(expected_dir.to_string_lossy().as_ref()));
+        .as_object()
+        .expect("force-delete must include a structured cleanup_hint when non-empty");
+    let data_dir = hint["data_dir"].as_str().unwrap();
+    let command = hint["command"].as_str().unwrap();
+    let expected = expected_dir.to_string_lossy();
+    assert_eq!(data_dir, expected.as_ref());
+    assert!(command.contains(expected.as_ref()));
+    assert!(command.starts_with("rm -rf "));
 }
 
 #[test]

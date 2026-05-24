@@ -200,7 +200,17 @@ pub struct AdminStoreDeleteResponse {
     /// when `force=true` deleted a store whose data dir is non-empty;
     /// the server intentionally never `rm -rf`s secret material.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cleanup_hint: Option<String>,
+    pub cleanup_hint: Option<AdminStoreDeleteCleanupHint>,
+}
+
+/// Structured hint for the manual cleanup the operator still has to
+/// perform after a force-delete: the data dir was left in place so
+/// the operator can decide whether to back it up, and the command
+/// they would run to remove it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminStoreDeleteCleanupHint {
+    pub data_dir: String,
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
