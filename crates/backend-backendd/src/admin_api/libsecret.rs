@@ -3,12 +3,11 @@
 //!
 //! Mirrors the Secret Service spec hierarchy directly: a Service-level
 //! alias table plus a set of Collections, each holding Items. Every
-//! handler performs one atomic `load_resource_blob` → mutate →
-//! `save_resource_blob` cycle against the structured `LibsecretSection`
-//! in the resource blob. None of these endpoints go through the legacy
-//! flat-KV bridge (`expand_blob_to_entries`); the synthetic `_aliases`
-//! / `<col>/_meta` / `<item>.meta` / `<item>.secret` keys never enter
-//! the admin surface.
+//! mutating handler runs through `with_blob`, which performs one atomic
+//! load → mutate → save cycle against the structured `LibsecretSection`
+//! in the resource blob and saves only when the closure reports the
+//! blob actually changed. None of these endpoints go through the legacy
+//! flat-KV bridge.
 //!
 //! `created` is set on POST; `modified` is bumped server-side on every
 //! successful mutation. Clients never supply either field. Item secret
@@ -108,43 +107,39 @@ fn next_auto_id<T>(prefix: &str, existing: &BTreeMap<String, T>) -> String {
     }
 }
 
-/// Load the full resource blob for an admin handler. Returns the
-/// backend handle alongside the blob so the caller can save once at
-/// the end. Handlers mutate `blob.libsecret` in place and save the
-/// whole blob; concurrent writers race on the blob as a whole (last
-/// writer wins), matching the rest of the admin surface.
-fn load_blob(
+/// Load the resource blob for a read-only handler.
+fn read_blob(
     state: &AdminRuntimeState,
     store_id: &str,
     resource_id: &str,
-) -> Result<(Arc<dyn underwrap_store::StorageBackend>, ResourceBlob), AdminError> {
+) -> Result<ResourceBlob, AdminError> {
     let store = admin_store(state, store_id)?;
-    let blob = load_resource_blob(store.as_ref(), resource_id)
-        .map_err(|e| AdminError::internal("loading resource blob", e))?;
-    Ok((store, blob))
+    load_resource_blob(store.as_ref(), resource_id)
+        .map_err(|e| AdminError::internal("loading resource blob", e))
 }
 
-fn save_blob(
-    store: &dyn underwrap_store::StorageBackend,
+/// Load the blob, hand it to `f`, save it back if `f` reports
+/// `dirty = true`. Concurrent writers race on the blob as a whole
+/// (last writer wins), matching the rest of the admin surface.
+fn with_blob<R>(
+    state: &AdminRuntimeState,
+    store_id: &str,
     resource_id: &str,
-    blob: &ResourceBlob,
-) -> Result<(), AdminError> {
-    save_resource_blob(store, resource_id, blob)
-        .map_err(|e| AdminError::internal("saving resource blob", e))
+    f: impl FnOnce(&mut ResourceBlob) -> Result<(R, bool), AdminError>,
+) -> Result<R, AdminError> {
+    let store = admin_store(state, store_id)?;
+    let mut blob = load_resource_blob(store.as_ref(), resource_id)
+        .map_err(|e| AdminError::internal("loading resource blob", e))?;
+    let (result, dirty) = f(&mut blob)?;
+    if dirty {
+        save_resource_blob(store.as_ref(), resource_id, &blob)
+            .map_err(|e| AdminError::internal("saving resource blob", e))?;
+    }
+    Ok(result)
 }
 
-fn audit_libsecret<'a>(
-    store: &'a str,
-    resource_id: &'a str,
-    kind: LibsecretEntityKind,
-    path: &'a str,
-) -> AuditEntity<'a> {
-    AuditEntity::LibsecretEntity {
-        store,
-        resource_id,
-        kind,
-        path,
-    }
+fn audit_result<T>(r: &Result<T, AdminError>) -> &'static str {
+    if r.is_ok() { "success" } else { "failure" }
 }
 
 // ---- GET tree -------------------------------------------------------------
@@ -168,8 +163,7 @@ pub(crate) async fn handle_get_tree(
     State(state): State<Arc<AdminRuntimeState>>,
     Path((store_id, resource_id)): Path<(String, String)>,
 ) -> Result<Json<AdminLibsecretTreeResponse>, AdminError> {
-    let (_store, blob) = load_blob(&state, &store_id, &resource_id)?;
-    let section = blob.libsecret;
+    let section = read_blob(&state, &store_id, &resource_id)?.libsecret;
     let collections = section
         .collections
         .into_iter()
@@ -227,60 +221,50 @@ pub(crate) async fn handle_post_collection(
     Path((store_id, resource_id)): Path<(String, String)>,
     Body(body): Body<AdminLibsecretCollectionCreateRequest>,
 ) -> Result<Json<AdminLibsecretCollectionCreateResponse>, AdminError> {
-    let outcome = post_collection_inner(&state, &store_id, &resource_id, body).await;
-    let (entity_key, result) = match &outcome {
-        Ok(resp) => (resp.id.clone(), "success"),
-        Err(_) => ("<unknown>".to_string(), "failure"),
-    };
+    let outcome = with_blob(&state, &store_id, &resource_id, |blob| {
+        let id = match body.id {
+            Some(requested) => {
+                validate_id("collection", &requested)?;
+                if blob.libsecret.collections.contains_key(&requested) {
+                    return Err(AdminError::conflict(
+                        "collection_exists",
+                        format!("collection '{requested}' already exists"),
+                    ));
+                }
+                requested
+            }
+            None => next_auto_id("c", &blob.libsecret.collections),
+        };
+        let now = now_epoch_secs();
+        blob.libsecret.collections.insert(
+            id.clone(),
+            Collection {
+                label: body.label,
+                created: now,
+                modified: now,
+                items: BTreeMap::new(),
+            },
+        );
+        Ok((AdminLibsecretCollectionCreateResponse { id }, true))
+    });
+    let entity_key = outcome
+        .as_ref()
+        .ok()
+        .map(|r| r.id.clone())
+        .unwrap_or_else(|| "<unknown>".to_string());
     log_admin_event(
         "libsecret.collection.create",
         &principal,
-        audit_libsecret(
-            &store_id,
-            &resource_id,
-            LibsecretEntityKind::Collection,
-            &entity_key,
-        ),
+        AuditEntity::LibsecretEntity {
+            store: &store_id,
+            resource_id: &resource_id,
+            kind: LibsecretEntityKind::Collection,
+            path: &entity_key,
+        },
         None,
-        result,
+        audit_result(&outcome),
     );
     outcome.map(Json)
-}
-
-async fn post_collection_inner(
-    state: &AdminRuntimeState,
-    store_id: &str,
-    resource_id: &str,
-    body: AdminLibsecretCollectionCreateRequest,
-) -> Result<AdminLibsecretCollectionCreateResponse, AdminError> {
-    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
-
-    let id = match body.id {
-        Some(requested) => {
-            validate_id("collection", &requested)?;
-            if blob.libsecret.collections.contains_key(&requested) {
-                return Err(AdminError::conflict(
-                    "collection_exists",
-                    format!("collection '{requested}' already exists"),
-                ));
-            }
-            requested
-        }
-        None => next_auto_id("c", &blob.libsecret.collections),
-    };
-
-    let now = now_epoch_secs();
-    blob.libsecret.collections.insert(
-        id.clone(),
-        Collection {
-            label: body.label,
-            created: now,
-            modified: now,
-            items: BTreeMap::new(),
-        },
-    );
-    save_blob(store.as_ref(), resource_id, &blob)?;
-    Ok(AdminLibsecretCollectionCreateResponse { id })
 }
 
 #[utoipa::path(
@@ -306,51 +290,37 @@ pub(crate) async fn handle_patch_collection(
     Path((store_id, resource_id, cid)): Path<(String, String, String)>,
     Body(body): Body<AdminLibsecretCollectionPatchRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
-    let outcome = patch_collection_inner(&state, &store_id, &resource_id, &cid, body).await;
+    let outcome = with_blob(&state, &store_id, &resource_id, |blob| {
+        let collection = blob
+            .libsecret
+            .collections
+            .get_mut(&cid)
+            .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
+        let mut changed = false;
+        if let Some(label) = body.label
+            && label != collection.label
+        {
+            collection.label = label;
+            changed = true;
+        }
+        if changed {
+            collection.modified = now_epoch_secs();
+        }
+        Ok((AdminOkResponse { ok: true }, changed))
+    });
     log_admin_event(
         "libsecret.collection.update",
         &principal,
-        audit_libsecret(
-            &store_id,
-            &resource_id,
-            LibsecretEntityKind::Collection,
-            &cid,
-        ),
-        None,
-        if outcome.is_ok() {
-            "success"
-        } else {
-            "failure"
+        AuditEntity::LibsecretEntity {
+            store: &store_id,
+            resource_id: &resource_id,
+            kind: LibsecretEntityKind::Collection,
+            path: &cid,
         },
+        None,
+        audit_result(&outcome),
     );
     outcome.map(Json)
-}
-
-async fn patch_collection_inner(
-    state: &AdminRuntimeState,
-    store_id: &str,
-    resource_id: &str,
-    cid: &str,
-    body: AdminLibsecretCollectionPatchRequest,
-) -> Result<AdminOkResponse, AdminError> {
-    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
-    let collection = blob
-        .libsecret
-        .collections
-        .get_mut(cid)
-        .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
-    let mut changed = false;
-    if let Some(label) = body.label
-        && label != collection.label
-    {
-        collection.label = label;
-        changed = true;
-    }
-    if changed {
-        collection.modified = now_epoch_secs();
-        save_blob(store.as_ref(), resource_id, &blob)?;
-    }
-    Ok(AdminOkResponse { ok: true })
 }
 
 #[utoipa::path(
@@ -374,55 +344,44 @@ pub(crate) async fn handle_delete_collection(
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, cid)): Path<(String, String, String)>,
 ) -> Result<Json<AdminLibsecretCollectionDeleteResponse>, AdminError> {
-    let outcome = delete_collection_inner(&state, &store_id, &resource_id, &cid).await;
+    let outcome = with_blob(&state, &store_id, &resource_id, |blob| {
+        let existed = blob.libsecret.collections.remove(&cid).is_some();
+        // Scrub any aliases pointing at this id — including dangling
+        // ones, where the alias target id was never an extant
+        // collection. The operator gets a consistent post-condition
+        // either way: after this call, no alias references `cid`.
+        let aliases_scrubbed: Vec<String> = blob
+            .libsecret
+            .aliases
+            .iter()
+            .filter(|(_, target)| target.as_str() == cid)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in &aliases_scrubbed {
+            blob.libsecret.aliases.remove(name);
+        }
+        let dirty = existed || !aliases_scrubbed.is_empty();
+        Ok((
+            AdminLibsecretCollectionDeleteResponse {
+                existed,
+                aliases_scrubbed,
+            },
+            dirty,
+        ))
+    });
     log_admin_event(
         "libsecret.collection.delete",
         &principal,
-        audit_libsecret(
-            &store_id,
-            &resource_id,
-            LibsecretEntityKind::Collection,
-            &cid,
-        ),
-        None,
-        if outcome.is_ok() {
-            "success"
-        } else {
-            "failure"
+        AuditEntity::LibsecretEntity {
+            store: &store_id,
+            resource_id: &resource_id,
+            kind: LibsecretEntityKind::Collection,
+            path: &cid,
         },
+        None,
+        audit_result(&outcome),
     );
     outcome.map(Json)
-}
-
-async fn delete_collection_inner(
-    state: &AdminRuntimeState,
-    store_id: &str,
-    resource_id: &str,
-    cid: &str,
-) -> Result<AdminLibsecretCollectionDeleteResponse, AdminError> {
-    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
-    let existed = blob.libsecret.collections.remove(cid).is_some();
-    // Scrub any aliases pointing at this id — including dangling ones,
-    // where the alias target id was never an extant collection. The
-    // operator gets a consistent post-condition either way: after this
-    // call, no alias references `cid`.
-    let aliases_scrubbed: Vec<String> = blob
-        .libsecret
-        .aliases
-        .iter()
-        .filter(|(_, target)| target.as_str() == cid)
-        .map(|(name, _)| name.clone())
-        .collect();
-    for name in &aliases_scrubbed {
-        blob.libsecret.aliases.remove(name);
-    }
-    if existed || !aliases_scrubbed.is_empty() {
-        save_blob(store.as_ref(), resource_id, &blob)?;
-    }
-    Ok(AdminLibsecretCollectionDeleteResponse {
-        existed,
-        aliases_scrubbed,
-    })
 }
 
 // ---- Item CRUD + secret reveal -------------------------------------------
@@ -452,70 +411,60 @@ pub(crate) async fn handle_post_item(
     Path((store_id, resource_id, cid)): Path<(String, String, String)>,
     Body(body): Body<AdminLibsecretItemCreateRequest>,
 ) -> Result<Json<AdminLibsecretItemCreateResponse>, AdminError> {
-    let outcome = post_item_inner(&state, &store_id, &resource_id, &cid, body).await;
-    let (entity_key, result) = match &outcome {
-        Ok(resp) => (format!("{cid}/{}", resp.id), "success"),
-        Err(_) => (format!("{cid}/<unknown>"), "failure"),
+    let outcome = (|| -> Result<AdminLibsecretItemCreateResponse, AdminError> {
+        let secret = decode_b64(&body.secret_b64).map(SecretBytes::from)?;
+        with_blob(&state, &store_id, &resource_id, |blob| {
+            let collection = blob
+                .libsecret
+                .collections
+                .get_mut(&cid)
+                .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
+            let id = match body.id {
+                Some(requested) => {
+                    validate_id("item", &requested)?;
+                    if collection.items.contains_key(&requested) {
+                        return Err(AdminError::conflict(
+                            "item_exists",
+                            format!("item '{requested}' already exists in collection '{cid}'"),
+                        ));
+                    }
+                    requested
+                }
+                None => next_auto_id("item_", &collection.items),
+            };
+            let now = now_epoch_secs();
+            collection.items.insert(
+                id.clone(),
+                Item {
+                    label: body.label,
+                    content_type: body.content_type,
+                    created: now,
+                    modified: now,
+                    attributes: body.attributes,
+                    secret,
+                },
+            );
+            collection.modified = now;
+            Ok((AdminLibsecretItemCreateResponse { id }, true))
+        })
+    })();
+    let entity_key = match &outcome {
+        Ok(resp) => format!("{cid}/{}", resp.id),
+        Err(_) => format!("{cid}/<unknown>"),
     };
     log_admin_event(
         "libsecret.item.create",
         &principal,
-        audit_libsecret(
-            &store_id,
-            &resource_id,
-            LibsecretEntityKind::Item,
-            &entity_key,
-        ),
+        AuditEntity::LibsecretEntity {
+            store: &store_id,
+            resource_id: &resource_id,
+            kind: LibsecretEntityKind::Item,
+            path: &entity_key,
+        },
         None,
-        result,
+        audit_result(&outcome),
     );
     outcome.map(Json)
-}
-
-async fn post_item_inner(
-    state: &AdminRuntimeState,
-    store_id: &str,
-    resource_id: &str,
-    cid: &str,
-    body: AdminLibsecretItemCreateRequest,
-) -> Result<AdminLibsecretItemCreateResponse, AdminError> {
-    let secret = decode_b64(&body.secret_b64).map(SecretBytes::from)?;
-    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
-    let collection = blob
-        .libsecret
-        .collections
-        .get_mut(cid)
-        .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
-
-    let id = match body.id {
-        Some(requested) => {
-            validate_id("item", &requested)?;
-            if collection.items.contains_key(&requested) {
-                return Err(AdminError::conflict(
-                    "item_exists",
-                    format!("item '{requested}' already exists in collection '{cid}'"),
-                ));
-            }
-            requested
-        }
-        None => next_auto_id("item_", &collection.items),
-    };
-
-    let now = now_epoch_secs();
-    collection.items.insert(
-        id.clone(),
-        Item {
-            label: body.label,
-            content_type: body.content_type,
-            created: now,
-            modified: now,
-            attributes: body.attributes,
-            secret,
-        },
-    );
-    collection.modified = now;
-    save_blob(store.as_ref(), resource_id, &blob)?;
-    Ok(AdminLibsecretItemCreateResponse { id })
 }
 
 #[utoipa::path(
@@ -544,97 +493,82 @@ pub(crate) async fn handle_patch_item(
     Body(body): Body<AdminLibsecretItemPatchRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
     let touched_secret = body.secret_b64.is_some();
-    let outcome = patch_item_inner(&state, &store_id, &resource_id, &cid, &iid, body).await;
-    let result_str = if outcome.is_ok() {
-        "success"
-    } else {
-        "failure"
-    };
+    let outcome = (|| -> Result<AdminOkResponse, AdminError> {
+        let new_secret = match &body.secret_b64 {
+            Some(b64) => Some(decode_b64(b64).map(SecretBytes::from)?),
+            None => None,
+        };
+        with_blob(&state, &store_id, &resource_id, |blob| {
+            let collection = blob
+                .libsecret
+                .collections
+                .get_mut(&cid)
+                .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
+            let item = collection.items.get_mut(&iid).ok_or_else(|| {
+                AdminError::not_found(format!("item '{iid}' in collection '{cid}'"))
+            })?;
+            let mut changed = false;
+            if let Some(label) = body.label
+                && label != item.label
+            {
+                item.label = label;
+                changed = true;
+            }
+            if let Some(ct) = body.content_type
+                && ct != item.content_type
+            {
+                item.content_type = ct;
+                changed = true;
+            }
+            if let Some(attrs) = body.attributes
+                && attrs != item.attributes
+            {
+                item.attributes = attrs;
+                changed = true;
+            }
+            if let Some(secret) = new_secret
+                && secret != item.secret
+            {
+                item.secret = secret;
+                changed = true;
+            }
+            if changed {
+                let now = now_epoch_secs();
+                item.modified = now;
+                collection.modified = now;
+            }
+            Ok((AdminOkResponse { ok: true }, changed))
+        })
+    })();
     let entity_key = format!("{cid}/{iid}");
+    let result = audit_result(&outcome);
     log_admin_event(
         "libsecret.item.update",
         &principal,
-        audit_libsecret(
-            &store_id,
-            &resource_id,
-            LibsecretEntityKind::Item,
-            &entity_key,
-        ),
+        AuditEntity::LibsecretEntity {
+            store: &store_id,
+            resource_id: &resource_id,
+            kind: LibsecretEntityKind::Item,
+            path: &entity_key,
+        },
         None,
-        result_str,
+        result,
     );
     if touched_secret {
         log_admin_event(
             "libsecret.item.set_secret",
             &principal,
-            audit_libsecret(
-                &store_id,
-                &resource_id,
-                LibsecretEntityKind::Item,
-                &entity_key,
-            ),
+            AuditEntity::LibsecretEntity {
+                store: &store_id,
+                resource_id: &resource_id,
+                kind: LibsecretEntityKind::Item,
+                path: &entity_key,
+            },
             None,
-            result_str,
+            result,
         );
     }
     outcome.map(Json)
-}
-
-async fn patch_item_inner(
-    state: &AdminRuntimeState,
-    store_id: &str,
-    resource_id: &str,
-    cid: &str,
-    iid: &str,
-    body: AdminLibsecretItemPatchRequest,
-) -> Result<AdminOkResponse, AdminError> {
-    let new_secret = match &body.secret_b64 {
-        Some(b64) => Some(decode_b64(b64).map(SecretBytes::from)?),
-        None => None,
-    };
-    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
-    let collection = blob
-        .libsecret
-        .collections
-        .get_mut(cid)
-        .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
-    let item = collection
-        .items
-        .get_mut(iid)
-        .ok_or_else(|| AdminError::not_found(format!("item '{iid}' in collection '{cid}'")))?;
-
-    let mut changed = false;
-    if let Some(label) = body.label
-        && label != item.label
-    {
-        item.label = label;
-        changed = true;
-    }
-    if let Some(ct) = body.content_type
-        && ct != item.content_type
-    {
-        item.content_type = ct;
-        changed = true;
-    }
-    if let Some(attrs) = body.attributes
-        && attrs != item.attributes
-    {
-        item.attributes = attrs;
-        changed = true;
-    }
-    if let Some(secret) = new_secret
-        && secret != item.secret
-    {
-        item.secret = secret;
-        changed = true;
-    }
-    if changed {
-        let now = now_epoch_secs();
-        item.modified = now;
-        collection.modified = now;
-        save_blob(store.as_ref(), resource_id, &blob)?;
-    }
-    Ok(AdminOkResponse { ok: true })
 }
 
 #[utoipa::path(
@@ -659,46 +593,32 @@ pub(crate) async fn handle_delete_item(
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, cid, iid)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminLibsecretItemDeleteResponse>, AdminError> {
-    let outcome = delete_item_inner(&state, &store_id, &resource_id, &cid, &iid).await;
+    let outcome = with_blob(&state, &store_id, &resource_id, |blob| {
+        let collection = blob
+            .libsecret
+            .collections
+            .get_mut(&cid)
+            .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
+        let existed = collection.items.remove(&iid).is_some();
+        if existed {
+            collection.modified = now_epoch_secs();
+        }
+        Ok((AdminLibsecretItemDeleteResponse { existed }, existed))
+    });
     let entity_key = format!("{cid}/{iid}");
     log_admin_event(
         "libsecret.item.delete",
         &principal,
-        audit_libsecret(
-            &store_id,
-            &resource_id,
-            LibsecretEntityKind::Item,
-            &entity_key,
-        ),
-        None,
-        if outcome.is_ok() {
-            "success"
-        } else {
-            "failure"
+        AuditEntity::LibsecretEntity {
+            store: &store_id,
+            resource_id: &resource_id,
+            kind: LibsecretEntityKind::Item,
+            path: &entity_key,
         },
+        None,
+        audit_result(&outcome),
     );
     outcome.map(Json)
-}
-
-async fn delete_item_inner(
-    state: &AdminRuntimeState,
-    store_id: &str,
-    resource_id: &str,
-    cid: &str,
-    iid: &str,
-) -> Result<AdminLibsecretItemDeleteResponse, AdminError> {
-    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
-    let collection = blob
-        .libsecret
-        .collections
-        .get_mut(cid)
-        .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
-    let existed = collection.items.remove(iid).is_some();
-    if existed {
-        collection.modified = now_epoch_secs();
-        save_blob(store.as_ref(), resource_id, &blob)?;
-    }
-    Ok(AdminLibsecretItemDeleteResponse { existed })
 }
 
 #[utoipa::path(
@@ -722,7 +642,7 @@ pub(crate) async fn handle_get_item_secret(
     State(state): State<Arc<AdminRuntimeState>>,
     Path((store_id, resource_id, cid, iid)): Path<(String, String, String, String)>,
 ) -> Result<Json<AdminLibsecretItemSecretResponse>, AdminError> {
-    let (_store, blob) = load_blob(&state, &store_id, &resource_id)?;
+    let blob = read_blob(&state, &store_id, &resource_id)?;
     let collection = blob
         .libsecret
         .collections
@@ -763,42 +683,33 @@ pub(crate) async fn handle_put_alias(
     Path((store_id, resource_id, name)): Path<(String, String, String)>,
     Body(body): Body<AdminLibsecretAliasUpsertRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
-    let outcome = put_alias_inner(&state, &store_id, &resource_id, &name, body).await;
+    let outcome = (|| -> Result<AdminOkResponse, AdminError> {
+        validate_id("alias", &name)?;
+        with_blob(&state, &store_id, &resource_id, |blob| {
+            let target = body.collection_id;
+            if !blob.libsecret.collections.contains_key(&target) {
+                return Err(AdminError::not_found(format!("collection '{target}'")));
+            }
+            let dirty = blob.libsecret.aliases.get(&name) != Some(&target);
+            if dirty {
+                blob.libsecret.aliases.insert(name.clone(), target);
+            }
+            Ok((AdminOkResponse { ok: true }, dirty))
+        })
+    })();
     log_admin_event(
         "libsecret.alias.set",
         &principal,
-        audit_libsecret(&store_id, &resource_id, LibsecretEntityKind::Alias, &name),
-        None,
-        if outcome.is_ok() {
-            "success"
-        } else {
-            "failure"
+        AuditEntity::LibsecretEntity {
+            store: &store_id,
+            resource_id: &resource_id,
+            kind: LibsecretEntityKind::Alias,
+            path: &name,
         },
+        None,
+        audit_result(&outcome),
     );
     outcome.map(Json)
-}
-
-async fn put_alias_inner(
-    state: &AdminRuntimeState,
-    store_id: &str,
-    resource_id: &str,
-    name: &str,
-    body: AdminLibsecretAliasUpsertRequest,
-) -> Result<AdminOkResponse, AdminError> {
-    validate_id("alias", name)?;
-    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
-    if !blob.libsecret.collections.contains_key(&body.collection_id) {
-        return Err(AdminError::not_found(format!(
-            "collection '{}'",
-            body.collection_id
-        )));
-    }
-    let target = body.collection_id;
-    if blob.libsecret.aliases.get(name) != Some(&target) {
-        blob.libsecret.aliases.insert(name.to_string(), target);
-        save_blob(store.as_ref(), resource_id, &blob)?;
-    }
-    Ok(AdminOkResponse { ok: true })
 }
 
 #[utoipa::path(
@@ -822,33 +733,23 @@ pub(crate) async fn handle_delete_alias(
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, name)): Path<(String, String, String)>,
 ) -> Result<Json<AdminLibsecretAliasDeleteResponse>, AdminError> {
-    let outcome = delete_alias_inner(&state, &store_id, &resource_id, &name).await;
+    let outcome = with_blob(&state, &store_id, &resource_id, |blob| {
+        let existed = blob.libsecret.aliases.remove(&name).is_some();
+        Ok((AdminLibsecretAliasDeleteResponse { existed }, existed))
+    });
     log_admin_event(
         "libsecret.alias.delete",
         &principal,
-        audit_libsecret(&store_id, &resource_id, LibsecretEntityKind::Alias, &name),
-        None,
-        if outcome.is_ok() {
-            "success"
-        } else {
-            "failure"
+        AuditEntity::LibsecretEntity {
+            store: &store_id,
+            resource_id: &resource_id,
+            kind: LibsecretEntityKind::Alias,
+            path: &name,
         },
+        None,
+        audit_result(&outcome),
     );
     outcome.map(Json)
-}
-
-async fn delete_alias_inner(
-    state: &AdminRuntimeState,
-    store_id: &str,
-    resource_id: &str,
-    name: &str,
-) -> Result<AdminLibsecretAliasDeleteResponse, AdminError> {
-    let (store, mut blob) = load_blob(state, store_id, resource_id)?;
-    let existed = blob.libsecret.aliases.remove(name).is_some();
-    if existed {
-        save_blob(store.as_ref(), resource_id, &blob)?;
-    }
-    Ok(AdminLibsecretAliasDeleteResponse { existed })
 }
 
 #[cfg(test)]
