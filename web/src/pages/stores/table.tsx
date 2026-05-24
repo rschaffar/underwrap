@@ -21,6 +21,7 @@ export interface StoresTableProps {
   onDelete: (item: AdminStoresListResponse["items"][number]) => void;
   onUnlock: (item: AdminStoresListResponse["items"][number]) => void;
   onLock: (item: AdminStoresListResponse["items"][number]) => void;
+  onRotateKey: (item: AdminStoresListResponse["items"][number]) => void;
 }
 
 export function StoresTable({
@@ -29,6 +30,7 @@ export function StoresTable({
   onDelete,
   onUnlock,
   onLock,
+  onRotateKey,
 }: StoresTableProps) {
   if (items.length === 0) {
     return (
@@ -54,6 +56,7 @@ export function StoresTable({
               item.actions.can_delete_now || item.actions.can_force_delete;
             const canUnlock = item.actions.can_unlock;
             const canLock = item.actions.can_lock;
+            const canRotate = item.actions.can_rotate_key;
             return (
               <tr
                 key={item.id}
@@ -135,6 +138,15 @@ export function StoresTable({
                     >
                       Edit
                     </Button>
+                    {canRotate ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onRotateKey(item)}
+                      >
+                        Rotate key
+                      </Button>
+                    ) : null}
                     <Button
                       variant="destructive"
                       size="sm"

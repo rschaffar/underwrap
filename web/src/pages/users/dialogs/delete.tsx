@@ -1,11 +1,7 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-
 import { Alert } from "@/components/ui/alert";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import {
-  type AdminUserListItem,
-  deleteUser,
-} from "@/api/client";
+import { useConfirmMutation } from "@/hooks/use-confirm-mutation";
+import { type AdminUserListItem, deleteUser } from "@/api/client";
 
 export function DeleteUserDialog({
   user,
@@ -16,13 +12,10 @@ export function DeleteUserDialog({
   isLastUser: boolean;
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
+  const { confirm, pending, submitError } = useConfirmMutation({
     mutationFn: () => deleteUser(user.id),
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["admin", "users"] });
-      onClose();
-    },
+    invalidate: [["admin", "users"]],
+    onSuccess: onClose,
   });
   return (
     <ConfirmDialog
@@ -40,8 +33,10 @@ export function DeleteUserDialog({
       disabled={isLastUser}
       confirmLabel="Delete"
       pendingLabel="Deleting…"
-      onConfirm={() => mut.mutateAsync()}
+      onConfirm={() => confirm()}
       onClose={onClose}
+      pending={pending}
+      submitError={submitError}
     />
   );
 }

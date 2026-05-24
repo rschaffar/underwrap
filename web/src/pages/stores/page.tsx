@@ -17,6 +17,7 @@ import { EditStoreDialog } from "./dialogs/edit";
 import { DeleteStoreDialog } from "./dialogs/delete";
 import { UnlockStoreDialog } from "./dialogs/unlock";
 import { LockStoreDialog } from "./dialogs/lock";
+import { RotateStoreKeyDialog } from "./dialogs/rotate-key";
 
 export function StoresPage() {
   useDocumentTitle("underwrap — stores");
@@ -35,6 +36,9 @@ export function StoresPage() {
     null,
   );
   const [locking, setLocking] = useState<AdminStoreListItem | null>(
+    null,
+  );
+  const [rotating, setRotating] = useState<AdminStoreListItem | null>(
     null,
   );
 
@@ -62,6 +66,7 @@ export function StoresPage() {
           onDelete={(item) => setDeleting(item)}
           onUnlock={(item) => setUnlocking(item)}
           onLock={(item) => setLocking(item)}
+          onRotateKey={(item) => setRotating(item)}
         />
       )}
 
@@ -93,6 +98,12 @@ export function StoresPage() {
         <LockStoreDialog
           store={locking}
           onClose={() => setLocking(null)}
+        />
+      ) : null}
+      {rotating ? (
+        <RotateStoreKeyDialog
+          store={rotating}
+          onClose={() => setRotating(null)}
         />
       ) : null}
     </div>

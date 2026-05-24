@@ -1,16 +1,10 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
+import { AdminDialog } from "@/components/admin-dialog";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -117,28 +111,30 @@ export function EditCellDialog({
   }
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>
-            {wrapper} / {resourceName} → {clientInstanceDisplayName}
-          </DialogTitle>
-          <DialogDescription>
-            Set the mode{" "}
-            <span title={clientInstance}>{clientInstanceDisplayName}</span>{" "}
-            uses when calling{" "}
-            <code className="rounded bg-(--color-surface-1) px-1 py-0.5">{wrapper}</code>{" "}
-            for resource{" "}
-            <code
-              className="rounded bg-(--color-surface-1) px-1 py-0.5"
-              title={resourceId}
-            >
-              {resourceName}
-            </code>
-            . The mode is checked server-side on every read.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4">
+    <AdminDialog
+      open
+      onClose={onClose}
+      title={`${wrapper} / ${resourceName} → ${clientInstanceDisplayName}`}
+      description={
+        <>
+          Set the mode{" "}
+          <span title={clientInstance}>{clientInstanceDisplayName}</span>{" "}
+          uses when calling{" "}
+          <code className="rounded bg-(--color-surface-1) px-1 py-0.5">
+            {wrapper}
+          </code>{" "}
+          for resource{" "}
+          <code
+            className="rounded bg-(--color-surface-1) px-1 py-0.5"
+            title={resourceId}
+          >
+            {resourceName}
+          </code>
+          . The mode is checked server-side on every read.
+        </>
+      }
+    >
+      <div className="space-y-4">
           <fieldset
             className="flex flex-wrap gap-2"
             data-testid="mode-radio-group"
@@ -227,7 +223,6 @@ export function EditCellDialog({
             </Button>
           </div>
         </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </AdminDialog>
   );
 }

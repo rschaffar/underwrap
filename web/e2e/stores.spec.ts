@@ -128,18 +128,18 @@ test("rotate-key flow surfaces a fresh key once for an existing encrypted store"
   ).trim();
   await page.getByTestId("key-reveal-confirm").click();
 
-  // Open edit and trigger a rotate.
+  // Trigger a rotate via the dedicated table action.
   await page
     .getByRole("row", { name: /rotvault/ })
-    .getByRole("button", { name: /edit/i })
+    .getByRole("button", { name: /rotate key/i })
     .click();
-  const editDlg = page.getByRole("dialog", {
-    name: /edit store: rotvault/i,
+  const rotateDlg = page.getByRole("dialog", {
+    name: /rotate master key: rotvault/i,
   });
-  await editDlg
-    .getByRole("checkbox", { name: /existing secrets/i })
+  await rotateDlg
+    .getByRole("checkbox", { name: /every resource will be re-encrypted/i })
     .check();
-  await editDlg.getByRole("button", { name: /rotate key/i }).click();
+  await rotateDlg.getByRole("button", { name: /rotate key/i }).click();
 
   const reveal = page.getByTestId("key-reveal-dialog");
   await expect(reveal).toBeVisible();

@@ -1,6 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { useConfirmMutation } from "@/hooks/use-confirm-mutation";
 import {
   type AdminClientInstanceListItem,
   putClientInstanceUpdate,
@@ -15,18 +14,12 @@ export function SetStatusDialog({
   nextStatus: "active" | "disabled";
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
-    mutationFn: (status: "active" | "disabled") =>
-      putClientInstanceUpdate(instance.id, { status }),
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["admin", "client-instances"] });
-      onClose();
-    },
+  const { confirm, pending, submitError } = useConfirmMutation<"active" | "disabled">({
+    mutationFn: (status) => putClientInstanceUpdate(instance.id, { status }),
+    invalidate: [["admin", "client-instances"]],
+    onSuccess: onClose,
   });
-
   const disabling = nextStatus === "disabled";
-
   return (
     <ConfirmDialog
       title={`${disabling ? "Disable" : "Re-enable"}: ${instance.display_name}`}
@@ -38,8 +31,10 @@ export function SetStatusDialog({
       destructive={disabling}
       confirmLabel={disabling ? "Disable now" : "Re-enable now"}
       pendingLabel={disabling ? "Disabling…" : "Updating…"}
-      onConfirm={() => mut.mutateAsync(nextStatus)}
+      onConfirm={() => confirm(nextStatus)}
       onClose={onClose}
+      pending={pending}
+      submitError={submitError}
     />
   );
 }

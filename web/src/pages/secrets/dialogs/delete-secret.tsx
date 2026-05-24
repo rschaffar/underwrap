@@ -1,6 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { useConfirmMutation } from "@/hooks/use-confirm-mutation";
 import { deleteSecret } from "@/api/client";
 
 import type { SecretAddress } from "../model";
@@ -14,16 +13,11 @@ export function DeleteSecretDialog({
   address: SecretAddress;
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
+  const { confirm, pending, submitError } = useConfirmMutation({
     mutationFn: () =>
       deleteSecret(storeId, address.resource_id, address.slot, address.key),
-    onSuccess: async () => {
-      await qc.invalidateQueries({
-        queryKey: ["admin", "secrets-view", storeId],
-      });
-      onClose();
-    },
+    invalidate: [["admin", "secrets-view", storeId]],
+    onSuccess: onClose,
   });
   return (
     <ConfirmDialog
@@ -40,8 +34,10 @@ export function DeleteSecretDialog({
       destructive
       confirmLabel="Delete"
       pendingLabel="Deleting…"
-      onConfirm={() => mut.mutateAsync()}
+      onConfirm={() => confirm()}
       onClose={onClose}
+      pending={pending}
+      submitError={submitError}
     />
   );
 }

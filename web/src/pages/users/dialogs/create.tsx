@@ -1,19 +1,9 @@
-import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 
+import { AdminDialog } from "@/components/admin-dialog";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { DialogFooter } from "@/components/ui/dialog";
 import {
   Form,
   FormControl,
@@ -24,11 +14,8 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  type AdminUserCreateRequest,
-  postUserCreate,
-} from "@/api/client";
-import { describeApiError } from "@/lib/error-message";
+import { type AdminUserCreateRequest, postUserCreate } from "@/api/client";
+import { useFormDialog } from "@/hooks/use-form-dialog";
 
 const createSchema = z
   .object({
@@ -49,107 +36,83 @@ export function CreateUserDialog({
   open: boolean;
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const form = useForm<CreateValues>({
-    resolver: zodResolver(createSchema),
-    defaultValues: {
-      username: "",
-      password: "",
-      confirm: "",
-    },
+  const { form, onSubmit, pending, submitError } = useFormDialog({
+    schema: createSchema,
+    defaultValues: { username: "", password: "", confirm: "" },
+    toRequest: (v: CreateValues): AdminUserCreateRequest => ({
+      username: v.username,
+      password: v.password,
+    }),
+    submit: (req) => postUserCreate(req as AdminUserCreateRequest),
+    invalidate: [["admin", "users"]],
+    onSuccess: onClose,
   });
-  const create = useMutation({
-    mutationFn: (body: AdminUserCreateRequest) => postUserCreate(body),
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["admin", "users"] });
-      onClose();
-    },
-    onError: (err) => setSubmitError(describeApiError(err)),
-  });
-  function onSubmit(values: CreateValues) {
-    setSubmitError(null);
-    create.mutate({
-      username: values.username,
-      password: values.password,
-    });
-  }
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Create user</DialogTitle>
-          <DialogDescription>
-            The password is sent over TLS, hashed server-side with
-            Argon2id, and never echoed back.
-          </DialogDescription>
-        </DialogHeader>
-        <Form {...form}>
-          <form
-            onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-4"
-            noValidate
-          >
-            <FormField
-              control={form.control}
-              name="username"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Username</FormLabel>
-                  <FormControl>
-                    <Input
-                      autoFocus
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="password"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Password</FormLabel>
-                  <FormControl>
-                    <Input type="password" autoComplete="new-password" {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    At least 12 characters.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="confirm"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Confirm password</FormLabel>
-                  <FormControl>
-                    <Input type="password" autoComplete="new-password" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            {submitError ? <Alert>{submitError}</Alert> : null}
-            <DialogFooter>
-              <Button type="button" variant="ghost" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={create.isPending}>
-                {create.isPending ? "Creating…" : "Create"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
-      </DialogContent>
-    </Dialog>
+    <AdminDialog
+      open={open}
+      onClose={onClose}
+      title="Create user"
+      description="The password is sent over TLS, hashed server-side with Argon2id, and never echoed back."
+    >
+      <Form {...form}>
+        <form onSubmit={onSubmit} className="space-y-4" noValidate>
+          <FormField
+            control={form.control}
+            name="username"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Username</FormLabel>
+                <FormControl>
+                  <Input
+                    autoFocus
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="password"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Password</FormLabel>
+                <FormControl>
+                  <Input type="password" autoComplete="new-password" {...field} />
+                </FormControl>
+                <FormDescription>At least 12 characters.</FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="confirm"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Confirm password</FormLabel>
+                <FormControl>
+                  <Input type="password" autoComplete="new-password" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          {submitError ? <Alert>{submitError}</Alert> : null}
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={pending}>
+              {pending ? "Creating…" : "Create"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </Form>
+    </AdminDialog>
   );
 }

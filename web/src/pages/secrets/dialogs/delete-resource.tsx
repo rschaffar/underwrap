@@ -1,8 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { Alert } from "@/components/ui/alert";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { deleteResource } from "@/api/client";
+import { describeApiError } from "@/lib/error-message";
 
 type DeleteResourceResult = Awaited<ReturnType<typeof deleteResource>>;
 type Blockers = NonNullable<DeleteResourceResult["blocked_by"]>;
@@ -65,6 +67,10 @@ function BlockersAlert({ blockers }: { blockers: Blockers | null | undefined }) 
   );
 }
 
+// This dialog can't use `useConfirmMutation` directly because it needs
+// `mut.data?.blocked_by` for the "soft refusal" path where the backend
+// returns 200 ok=false with a blockers list. We thread pending +
+// submitError through the same ConfirmDialog props the hook would.
 export function DeleteResourceDialog({
   storeId,
   resourceId,
@@ -77,19 +83,20 @@ export function DeleteResourceDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const mut = useMutation({
     mutationFn: () => deleteResource(storeId, resourceId),
+    onError: (err) => setSubmitError(describeApiError(err)),
   });
   async function onConfirm() {
+    setSubmitError(null);
     const result = await mut.mutateAsync();
     if (result.ok) {
       // The secrets and wrapper-permissions pages both surface
       // resources via their aggregate views, so invalidating both
       // view keys keeps either page consistent on next visit.
       await Promise.all([
-        qc.invalidateQueries({
-          queryKey: ["admin", "secrets-view", storeId],
-        }),
+        qc.invalidateQueries({ queryKey: ["admin", "secrets-view", storeId] }),
         qc.invalidateQueries({
           queryKey: ["admin", "wrapper-permissions-view", storeId],
         }),
@@ -109,6 +116,8 @@ export function DeleteResourceDialog({
       confirmTestId="resource-delete-confirm"
       onConfirm={onConfirm}
       onClose={onClose}
+      pending={mut.isPending}
+      submitError={submitError}
     />
   );
 }

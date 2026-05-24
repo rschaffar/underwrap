@@ -2,16 +2,10 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Copy, Check } from "lucide-react";
 
+import { AdminDialog } from "@/components/admin-dialog";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { DialogFooter } from "@/components/ui/dialog";
 import {
   fetchWrapperPermissions,
   type AdminWrapperPermissionsListResponse,
@@ -83,18 +77,19 @@ export function PolicyViewerDialog({
   const writablePermissionCount = permissions.filter((p) => p.writable).length;
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Raw policy: {storeId}</DialogTitle>
-          <DialogDescription>
-            The persisted <code>PolicyDocument</code> for this store.
-            Read-only — use the Wrapper permissions view to change
-            permissions.
-          </DialogDescription>
-        </DialogHeader>
-
-        {policy.isLoading ? (
+    <AdminDialog
+      open={open}
+      onClose={onClose}
+      title={`Raw policy: ${storeId}`}
+      description={
+        <>
+          The persisted <code>PolicyDocument</code> for this store.
+          Read-only — use the Wrapper permissions view to change
+          permissions.
+        </>
+      }
+    >
+      {policy.isLoading ? (
           <p className="text-sm text-(--color-muted)">Loading policy…</p>
         ) : policy.error ? (
           <Alert>{describeApiError(policy.error)}</Alert>
@@ -141,7 +136,6 @@ export function PolicyViewerDialog({
             Close
           </Button>
         </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </AdminDialog>
   );
 }

@@ -1,17 +1,9 @@
 import * as React from "react";
-import { useState } from "react";
 
+import { AdminDialog } from "@/components/admin-dialog";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { describeApiError } from "@/lib/error-message";
+import { DialogFooter } from "@/components/ui/dialog";
 
 export interface ConfirmDialogProps {
   title: string;
@@ -24,6 +16,10 @@ export interface ConfirmDialogProps {
   onClose: () => void;
   /** When set, the confirm button is disabled. */
   disabled?: boolean;
+  /** Owned by the caller (typically `useConfirmMutation`). */
+  pending: boolean;
+  /** Owned by the caller. Rendered as the standard `<Alert>`. */
+  submitError: string | null;
   /** Test id applied to the confirm button (for Playwright selectors). */
   confirmTestId?: string;
 }
@@ -38,47 +34,28 @@ export function ConfirmDialog({
   onConfirm,
   onClose,
   disabled,
+  pending,
+  submitError,
   confirmTestId,
 }: ConfirmDialogProps) {
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
-
-  async function handleConfirm() {
-    setSubmitError(null);
-    setPending(true);
-    try {
-      await onConfirm();
-    } catch (err) {
-      setSubmitError(describeApiError(err));
-    } finally {
-      setPending(false);
-    }
-  }
-
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        {body}
-        {submitError ? <Alert>{submitError}</Alert> : null}
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            variant={destructive ? "destructive" : "default"}
-            disabled={disabled || pending}
-            onClick={handleConfirm}
-            data-testid={confirmTestId}
-          >
-            {pending ? pendingLabel : confirmLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <AdminDialog open onClose={onClose} title={title} description={description}>
+      {body}
+      {submitError ? <Alert>{submitError}</Alert> : null}
+      <DialogFooter>
+        <Button type="button" variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          variant={destructive ? "destructive" : "default"}
+          disabled={disabled || pending}
+          onClick={() => void onConfirm()}
+          data-testid={confirmTestId}
+        >
+          {pending ? pendingLabel : confirmLabel}
+        </Button>
+      </DialogFooter>
+    </AdminDialog>
   );
 }

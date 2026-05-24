@@ -1,0 +1,88 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  useForm,
+  type DefaultValues,
+  type FieldValues,
+  type UseFormReturn,
+} from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+
+import { describeApiError } from "@/lib/error-message";
+
+export interface UseFormDialogOptions<TValues extends FieldValues, TRequest> {
+  // We can't constrain this tightly without bumping into zod-resolver's
+  // generic awkwardness; the caller picks the schema and the hook just
+  // hands it to `zodResolver` as-is.
+  schema: unknown;
+  defaultValues: DefaultValues<TValues>;
+  /**
+   * Maps validated form values to the mutation argument. Optional —
+   * defaults to passing the values through untouched.
+   */
+  toRequest?: (values: TValues) => TRequest;
+  /** The actual network call. Throws on failure. */
+  submit: (request: TRequest) => Promise<unknown>;
+  /** Query keys to invalidate after a successful mutation. */
+  invalidate?: ReadonlyArray<readonly unknown[]>;
+  /**
+   * Called on success after invalidation completes. Receives the
+   * mutation's return value so multi-step flows (e.g. create-then-
+   * reveal-key) can route off the response without redoing the call.
+   */
+  onSuccess: (result: unknown) => void;
+}
+
+export interface UseFormDialogResult<TValues extends FieldValues> {
+  form: UseFormReturn<TValues>;
+  /** Submit handler to pass to `<form onSubmit={...}>`. */
+  onSubmit: ReturnType<UseFormReturn<TValues>["handleSubmit"]>;
+  /** True while the mutation is in flight. */
+  pending: boolean;
+  /** The "root" submit error message, if any. */
+  submitError: string | undefined;
+}
+
+/**
+ * Wraps the boilerplate every form-bearing admin dialog used to repeat:
+ * `useForm` + zod resolver + a `useMutation` whose `onSuccess`
+ * invalidates a list of query keys and whose `onError` writes to the
+ * form's "root" error so a single `<Alert>` driven by
+ * `form.formState.errors.root` renders the submit failure.
+ */
+export function useFormDialog<TValues extends FieldValues, TRequest = TValues>(
+  opts: UseFormDialogOptions<TValues, TRequest>,
+): UseFormDialogResult<TValues> {
+  const qc = useQueryClient();
+  const form = useForm<TValues>({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    resolver: zodResolver(opts.schema as any),
+    defaultValues: opts.defaultValues,
+  });
+  const mut = useMutation({
+    mutationFn: (request: TRequest) => opts.submit(request),
+    onSuccess: async (result) => {
+      if (opts.invalidate) {
+        await Promise.all(
+          opts.invalidate.map((key) => qc.invalidateQueries({ queryKey: key })),
+        );
+      }
+      opts.onSuccess(result);
+    },
+    onError: (err) => {
+      form.setError("root", { message: describeApiError(err) });
+    },
+  });
+  const onSubmit = form.handleSubmit((values) => {
+    form.clearErrors("root");
+    const request = opts.toRequest
+      ? opts.toRequest(values as TValues)
+      : (values as unknown as TRequest);
+    mut.mutate(request);
+  });
+  return {
+    form,
+    onSubmit,
+    pending: mut.isPending,
+    submitError: form.formState.errors.root?.message,
+  };
+}

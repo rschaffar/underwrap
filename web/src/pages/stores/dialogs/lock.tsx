@@ -1,10 +1,6 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import {
-  type AdminStoreListItem,
-  postStoreLock,
-} from "@/api/client";
+import { useConfirmMutation } from "@/hooks/use-confirm-mutation";
+import { type AdminStoreListItem, postStoreLock } from "@/api/client";
 
 /**
  * Confirmation dialog for locking an encrypted store. Drops the
@@ -18,15 +14,11 @@ export function LockStoreDialog({
   store: AdminStoreListItem;
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
-  const lock = useMutation({
+  const { confirm, pending, submitError } = useConfirmMutation({
     mutationFn: () => postStoreLock(store.id),
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["admin", "stores"] });
-      onClose();
-    },
+    invalidate: [["admin", "stores"]],
+    onSuccess: onClose,
   });
-
   return (
     <ConfirmDialog
       title={`Lock store: ${store.name}`}
@@ -41,8 +33,10 @@ export function LockStoreDialog({
       destructive
       confirmLabel="Lock"
       pendingLabel="Locking…"
-      onConfirm={() => lock.mutateAsync()}
+      onConfirm={() => confirm()}
       onClose={onClose}
+      pending={pending}
+      submitError={submitError}
     />
   );
 }

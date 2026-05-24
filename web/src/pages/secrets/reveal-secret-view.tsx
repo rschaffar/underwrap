@@ -1,6 +1,7 @@
 import { type ReactNode, useMemo, useState } from "react";
 import { useQuery, type QueryKey } from "@tanstack/react-query";
 
+import { AdminDialog } from "@/components/admin-dialog";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
@@ -8,19 +9,18 @@ import { Label } from "@/components/ui/label";
 import { describeApiError } from "@/lib/error-message";
 
 /**
- * Shared body for the "reveal a secret value" dialogs.
+ * Self-contained "reveal a secret value" dialog. Owns the `AdminDialog`
+ * shell *and* the body so flat-KV and libsecret callers stop repeating
+ * the same Radix boilerplate around it.
  *
- * Both the flat-KV secret reveal and the libsecret item-secret reveal
- * follow the same UX: confirm gate → fetch → b64 decode → textarea +
- * copy-to-clipboard. The differences between the two are exactly the
- * query key, the fetch function, and the textarea id; everything else
- * is shared here.
- *
- * The body owns the dialog's main content area and the trailing
- * footer. The caller is responsible for rendering the dialog shell
- * (title, description) and the Close handler.
+ * UX: confirm gate → fetch → b64 decode → textarea + copy-to-clipboard.
+ * The differences between the two use sites are exactly the query
+ * key, the fetch function, the title/description, and the textarea
+ * id.
  */
 export function RevealSecretView<T>({
+  title,
+  description,
   queryKey,
   queryFn,
   pickB64,
@@ -28,6 +28,8 @@ export function RevealSecretView<T>({
   textareaTestId,
   onClose,
 }: {
+  title: ReactNode;
+  description: ReactNode;
   queryKey: QueryKey;
   queryFn: () => Promise<T>;
   /**
@@ -75,8 +77,9 @@ export function RevealSecretView<T>({
     }
   }
 
+  let content: ReactNode;
   if (!confirmed) {
-    return (
+    content = (
       <>
         <p className="text-xs text-(--color-muted)">
           Press <strong>Show</strong> to fetch the value. It will be
@@ -92,48 +95,52 @@ export function RevealSecretView<T>({
         </DialogFooter>
       </>
     );
-  }
-
-  let body: ReactNode;
-  if (read.isLoading) {
-    body = <p className="text-sm text-(--color-muted)">Loading…</p>;
-  } else if (read.error) {
-    body = <Alert>{describeApiError(read.error)}</Alert>;
-  } else if (decoded == null) {
-    body = (
-      <Alert variant="warning">
-        {b64 == null
-          ? "The secret does not exist (or was removed)."
-          : "The secret material could not be decoded as UTF-8 text."}
-      </Alert>
-    );
   } else {
-    body = (
-      <div className="space-y-2">
-        <Label htmlFor={textareaId}>Value</Label>
-        <textarea
-          id={textareaId}
-          data-testid={textareaTestId}
-          readOnly
-          value={decoded}
-          rows={6}
-          className="w-full rounded-md border border-(--color-line) bg-(--color-surface-0) p-2 font-mono text-xs text-(--color-fg)"
-        />
-        <Button type="button" variant="ghost" size="sm" onClick={onCopy}>
-          {copied ? "Copied" : "Copy to clipboard"}
-        </Button>
-      </div>
+    let body: ReactNode;
+    if (read.isLoading) {
+      body = <p className="text-sm text-(--color-muted)">Loading…</p>;
+    } else if (read.error) {
+      body = <Alert>{describeApiError(read.error)}</Alert>;
+    } else if (decoded == null) {
+      body = (
+        <Alert variant="warning">
+          {b64 == null
+            ? "The secret does not exist (or was removed)."
+            : "The secret material could not be decoded as UTF-8 text."}
+        </Alert>
+      );
+    } else {
+      body = (
+        <div className="space-y-2">
+          <Label htmlFor={textareaId}>Value</Label>
+          <textarea
+            id={textareaId}
+            data-testid={textareaTestId}
+            readOnly
+            value={decoded}
+            rows={6}
+            className="w-full rounded-md border border-(--color-line) bg-(--color-surface-0) p-2 font-mono text-xs text-(--color-fg)"
+          />
+          <Button type="button" variant="ghost" size="sm" onClick={onCopy}>
+            {copied ? "Copied" : "Copy to clipboard"}
+          </Button>
+        </div>
+      );
+    }
+    content = (
+      <>
+        {body}
+        <DialogFooter>
+          <Button type="button" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </>
     );
   }
-
   return (
-    <>
-      {body}
-      <DialogFooter>
-        <Button type="button" onClick={onClose}>
-          Close
-        </Button>
-      </DialogFooter>
-    </>
+    <AdminDialog open onClose={onClose} title={title} description={description}>
+      {content}
+    </AdminDialog>
   );
 }

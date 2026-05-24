@@ -1,6 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { useConfirmMutation } from "@/hooks/use-confirm-mutation";
 import { deleteLibsecretCollection } from "@/api/client";
 
 import { libsecretTreeKey } from "../internal";
@@ -16,16 +15,11 @@ export function DeleteCollectionDialog({
   collectionId: string;
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
+  const { confirm, pending, submitError } = useConfirmMutation({
     mutationFn: () =>
       deleteLibsecretCollection(storeId, resourceId, collectionId),
-    onSuccess: async () => {
-      await qc.invalidateQueries({
-        queryKey: libsecretTreeKey(storeId, resourceId),
-      });
-      onClose();
-    },
+    invalidate: [libsecretTreeKey(storeId, resourceId)],
+    onSuccess: onClose,
   });
   return (
     <ConfirmDialog
@@ -40,8 +34,10 @@ export function DeleteCollectionDialog({
       destructive
       confirmLabel="Delete"
       pendingLabel="Deleting…"
-      onConfirm={() => mut.mutateAsync()}
+      onConfirm={() => confirm()}
       onClose={onClose}
+      pending={pending}
+      submitError={submitError}
     />
   );
 }

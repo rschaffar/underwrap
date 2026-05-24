@@ -1,18 +1,10 @@
 import { useMemo } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 
+import { AdminDialog } from "@/components/admin-dialog";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { DialogFooter } from "@/components/ui/dialog";
 import {
   Form,
   FormControl,
@@ -24,7 +16,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { postResourceCreate } from "@/api/client";
-import { describeApiError } from "@/lib/error-message";
+import { useFormDialog } from "@/hooks/use-form-dialog";
 
 const resourceSchema = z.object({
   resource: z.string().trim().min(1, "Resource name is required."),
@@ -40,91 +32,74 @@ export function CreateResourceDialog({
   existingResources: string[];
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
-  const form = useForm<ResourceValues>({
-    resolver: zodResolver(resourceSchema),
-    defaultValues: { resource: "" },
-  });
   const known = useMemo(() => new Set(existingResources), [existingResources]);
-  const mut = useMutation({
-    mutationFn: (name: string) =>
-      postResourceCreate(storeId, { name }),
-    onSuccess: async () => {
-      await Promise.all([
-        qc.invalidateQueries({
-          queryKey: ["admin", "secrets-view", storeId],
-        }),
-        qc.invalidateQueries({
-          queryKey: ["admin", "wrapper-permissions-view", storeId],
-        }),
-      ]);
-      onClose();
+  const { form, onSubmit, pending, submitError } = useFormDialog<ResourceValues>({
+    schema: resourceSchema,
+    defaultValues: { resource: "" },
+    submit: (v) => {
+      const name = (v as ResourceValues).resource;
+      if (known.has(name)) {
+        throw new Error("A resource with that name already exists.");
+      }
+      return postResourceCreate(storeId, { name });
     },
-    onError: (err) => {
-      form.setError("resource", { message: describeApiError(err) });
-    },
+    invalidate: [
+      ["admin", "secrets-view", storeId],
+      ["admin", "wrapper-permissions-view", storeId],
+    ],
+    onSuccess: onClose,
   });
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Create resource</DialogTitle>
-          <DialogDescription>
-            Add a resource record to this store. Use the{" "}
-            <strong className="text-(--color-fg)">+</strong> button on each
-            slot (env, files, libsecret) to populate it.
-          </DialogDescription>
-        </DialogHeader>
-        <Form {...form}>
-          <form
-            onSubmit={form.handleSubmit((v) => {
-              if (known.has(v.resource)) {
-                form.setError("resource", {
-                  message: "A resource with that name already exists.",
-                });
-                return;
-              }
-              mut.mutate(v.resource);
-            })}
-            className="space-y-4"
-            noValidate
-          >
-            <FormField
-              control={form.control}
-              name="resource"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Resource name</FormLabel>
-                  <FormControl>
-                    <Input
-                      autoFocus
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      placeholder="e.g. github/token"
-                      data-testid="create-resource-input"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    A human-readable label. The on-disk id is generated.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <DialogFooter>
-              <Button type="button" variant="ghost" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={mut.isPending}>
-                {mut.isPending ? "Creating…" : "Create"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
-      </DialogContent>
-    </Dialog>
+    <AdminDialog
+      open
+      onClose={onClose}
+      title="Create resource"
+      description={
+        <>
+          Add a resource record to this store. Use the{" "}
+          <strong className="text-(--color-fg)">+</strong> button on each
+          slot (env, files, libsecret) to populate it.
+        </>
+      }
+    >
+      <Form {...form}>
+        <form onSubmit={onSubmit} className="space-y-4" noValidate>
+          <FormField
+            control={form.control}
+            name="resource"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Resource name</FormLabel>
+                <FormControl>
+                  <Input
+                    autoFocus
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="e.g. github/token"
+                    data-testid="create-resource-input"
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  A human-readable label. The on-disk id is generated.
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          {submitError ? <Alert>{submitError}</Alert> : null}
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={pending}>
+              {pending ? "Creating…" : "Create"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </Form>
+    </AdminDialog>
   );
 }

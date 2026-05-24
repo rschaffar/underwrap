@@ -1,11 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { Alert } from "@/components/ui/alert";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import {
-  deletePair,
-  type WrapperResourcePairRecord,
-} from "@/api/client";
+import { deletePair, type WrapperResourcePairRecord } from "@/api/client";
+import { describeApiError } from "@/lib/error-message";
 
 type DeletePairResult = Awaited<ReturnType<typeof deletePair>>;
 type Blockers = NonNullable<DeletePairResult["blocked_by"]>;
@@ -53,11 +52,14 @@ export function DeletePairDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const mut = useMutation({
     mutationFn: () => deletePair(storeId, pair.wrapper, pair.resource_id),
+    onError: (err) => setSubmitError(describeApiError(err)),
   });
 
   async function onConfirm() {
+    setSubmitError(null);
     const result = await mut.mutateAsync();
     if (result.ok) {
       await qc.invalidateQueries({
@@ -84,6 +86,8 @@ export function DeletePairDialog({
       pendingLabel="Deleting…"
       onConfirm={onConfirm}
       onClose={onClose}
+      pending={mut.isPending}
+      submitError={submitError}
     />
   );
 }
