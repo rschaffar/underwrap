@@ -69,7 +69,7 @@ export function AliasesPanel({
               <span className="font-mono text-(--color-fg)">{target}</span>
               {danglingTargets.has(name) ? (
                 <span
-                  className="ml-1 rounded bg-(--color-warning)/20 px-1.5 py-0.5 text-[0.65rem] text-(--color-warning)"
+                  className="ml-1 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[0.65rem] text-amber-200"
                   title="The target collection does not exist."
                 >
                   dangling

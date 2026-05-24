@@ -45,6 +45,11 @@ export function formatEpochAbsolute(
   return new Date(n * 1000).toLocaleString();
 }
 
+/** Convert a backend epoch (seconds) to a `Date`. */
+export function epochToDate(epoch: number): Date {
+  return new Date(epoch * 1000);
+}
+
 /** Render an epoch as a date-only label. */
 export function formatEpochDate(
   value: bigint | number | null | undefined,

@@ -2,7 +2,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useConfirmMutation } from "@/hooks/use-confirm-mutation";
 import { deleteLibsecretItem } from "@/api/client";
 
-import { libsecretTreeKey } from "../internal";
+import { libsecretTreeKey } from "../helpers";
 
 export function DeleteItemDialog({
   storeId,

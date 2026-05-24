@@ -1,11 +1,7 @@
 import type {
-  WrapperApprovalMode,
   WrapperPermission,
   WrapperResourcePairRecord,
 } from "@/api/client";
-
-/** Canonical kebab string for a permission mode. */
-export type ModeKind = WrapperApprovalMode["kind"];
 
 /** A `(wrapper, resource_id)` pair — one row in the table. */
 export interface WrapperResource {
@@ -15,6 +11,19 @@ export interface WrapperResource {
 
 export function wrapperResourceKey(wr: WrapperResource): string {
   return `${wr.wrapper}|${wr.resource_id}`;
+}
+
+/**
+ * Composite key for the `(client_instance, wrapper, resource_id)`
+ * permission table — used by both the page-level index and the
+ * column-rendering loop.
+ */
+export function permissionKey(
+  clientInstance: string,
+  wrapper: string,
+  resourceId: string,
+): string {
+  return `${clientInstance}|${wrapper}|${resourceId}`;
 }
 
 /**

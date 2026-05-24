@@ -6,10 +6,14 @@ import type {
   WrapperPermission,
   WrapperResourcePairRecord,
 } from "@/api/client";
-import { formatEpochAbsolute, formatEpochRelative } from "@/lib/epoch";
+import { epochToDate, formatEpochAbsolute, formatEpochRelative } from "@/lib/epoch";
 import { describeCreator } from "@/lib/creator";
 
-import { type WrapperResource, wrapperResourceKey } from "./derivations";
+import {
+  type WrapperResource,
+  permissionKey,
+  wrapperResourceKey,
+} from "./derivations";
 
 export function ResourceGroupedPairsTable({
   groups,
@@ -108,7 +112,7 @@ export function ResourceGroupedPairsTable({
                     )}
                   </td>
                   {clientInstances.map((c) => {
-                    const key = `${c}|${pair.wrapper}|${pair.resource_id}`;
+                    const key = permissionKey(c, pair.wrapper, pair.resource_id);
                     const permission = permissionIndex.get(key) ?? null;
                     return (
                       <td key={key} className="px-3 py-3">
@@ -182,7 +186,7 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
         </span>
       );
     case "unlocked-until": {
-      const date = new Date(mode.until_epoch * 1000);
+      const date = epochToDate(mode.until_epoch);
       return (
         <span
           data-testid="mode-unlocked-until"

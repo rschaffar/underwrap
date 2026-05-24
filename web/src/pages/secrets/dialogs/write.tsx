@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 
 import { useFormDialog } from "@/hooks/use-form-dialog";
 
-import type { SecretAddress } from "../model";
+import type { SecretAddress } from "../grouping";
 import { postSecretRename, putSecret } from "@/api/client";
 
 // The dialog edits the structured `(resource, slot, key)` address

@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { SecretsPage } from "./secrets/page";
-import { groupSecretEntries } from "./secrets/model";
+import { groupSecretEntries } from "./secrets/grouping";
 
 // Mock the API surface; the unit tests assert rendering decisions
 // only and stay hermetic from a real backend.

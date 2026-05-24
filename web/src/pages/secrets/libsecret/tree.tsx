@@ -16,7 +16,7 @@ import { DeleteCollectionDialog } from "./dialogs/delete-collection";
 import { DeleteItemDialog } from "./dialogs/delete-item";
 import { RevealItemSecretDialog } from "./dialogs/reveal-item-secret";
 import { SetAliasDialog } from "./dialogs/set-alias";
-import { libsecretTreeKey } from "./internal";
+import { libsecretTreeKey } from "./helpers";
 
 export function LibsecretTree({
   storeId,

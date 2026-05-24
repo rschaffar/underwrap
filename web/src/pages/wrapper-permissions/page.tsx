@@ -18,10 +18,12 @@ import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 import { useStoreSelector } from "@/hooks/use-store-selector";
 import { useClientInstanceDirectory } from "@/hooks/use-client-instance-directory";
+import { useResourceCatalog } from "@/hooks/use-resource-catalog";
 
 import {
   clientInstancesForStore,
   groupPairsByResource,
+  permissionKey,
   sortPairs,
 } from "./derivations";
 import { ResourceGroupedPairsTable } from "./table";
@@ -50,36 +52,34 @@ export function WrapperPermissionsPage() {
     useClientInstanceDirectory();
 
   const resources = view.data?.resources ?? [];
-  const resourceNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const r of resources) {
-      map.set(r.id, r.name);
-    }
-    return map;
-  }, [resources]);
+  const { nameById: resourceNameById } = useResourceCatalog(resources);
 
   const pairRecords = useMemo(
     () => sortPairs(view.data?.pairs ?? []),
     [view.data],
   );
+  const permissions = view.data?.permissions ?? [];
+  const totalPermissionCount = permissions.length;
+  const writablePermissionCount = permissions.filter((p) => p.writable).length;
+
   const clientInstances = useMemo(
     () =>
       clientInstancesForStore(
         storeId ?? "",
         clientInstanceItems,
-        view.data?.permissions ?? [],
+        permissions,
       ),
-    [storeId, clientInstanceItems, view.data],
+    [storeId, clientInstanceItems, permissions],
   );
 
   /** Map `(client_instance, wrapper, resource)` → permission. */
   const permissionIndex = useMemo(() => {
     const map = new Map<string, WrapperPermission>();
-    for (const p of view.data?.permissions ?? []) {
-      map.set(`${p.client_instance}|${p.wrapper}|${p.resource_id}`, p);
+    for (const p of permissions) {
+      map.set(permissionKey(p.client_instance, p.wrapper, p.resource_id), p);
     }
     return map;
-  }, [view.data]);
+  }, [permissions]);
 
   const [editing, setEditing] = useState<{
     clientInstance: string;
@@ -114,9 +114,18 @@ export function WrapperPermissionsPage() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-(--color-fg)">
-            Wrapper permissions
-          </h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-xl font-semibold text-(--color-fg)">
+              Wrapper permissions
+            </h2>
+            <span
+              data-testid="writable-permissions-badge"
+              className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-xs text-(--color-fg)"
+              title="Permissions that allow wrapper-side writes"
+            >
+              {writablePermissionCount} writable of {totalPermissionCount}
+            </span>
+          </div>
           <p className="mt-1 text-sm text-(--color-muted)">
             Wrapper/resource pairs registered with the backend, and the
             permission each runtime client instance holds against them.
@@ -230,7 +239,7 @@ export function WrapperPermissionsPage() {
       <PolicyViewerDialog
         storeId={storeId}
         open={rawOpen}
-        permissions={view.data?.permissions ?? []}
+        permissions={permissions}
         onClose={() => setRawOpen(false)}
       />
     </div>

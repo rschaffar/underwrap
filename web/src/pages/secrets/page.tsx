@@ -8,7 +8,6 @@ import { Select } from "@/components/ui/select";
 import {
   type AdminSecretsView,
   type AdminStoresListResponse,
-  type ResourceRecord,
   fetchSecretsView,
   fetchStores,
 } from "@/api/client";
@@ -16,13 +15,14 @@ import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 import { useStoreSelector } from "@/hooks/use-store-selector";
 import { useClientInstanceDirectory } from "@/hooks/use-client-instance-directory";
+import { useResourceCatalog } from "@/hooks/use-resource-catalog";
 
 import {
   type SecretAddress,
   type SecretResourceGroup,
   type SecretSlot,
   groupSecretEntries,
-} from "./model";
+} from "./grouping";
 import { ResourceBlock } from "./resource-block";
 import { RevealSecretDialog } from "./dialogs/reveal";
 import { WriteSecretDialog } from "./dialogs/write";
@@ -47,24 +47,8 @@ export function SecretsPage() {
   });
   const { displayNameById } = useClientInstanceDirectory();
   const resources = list.data?.resources ?? [];
-  const resourceNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const r of resources) {
-      map.set(r.id, r.name);
-    }
-    return map;
-  }, [resources]);
-
-  // Resource id → record lookup for the provenance display. Different
-  // shape from `resourceNameById` (which only carries the name), so
-  // kept page-local rather than pushed into the shared hook.
-  const resourceProvenance = useMemo(() => {
-    const map = new Map<string, ResourceRecord>();
-    for (const r of resources) {
-      map.set(r.id, r);
-    }
-    return map;
-  }, [resources]);
+  const { nameById: resourceNameById, recordById: resourceProvenance } =
+    useResourceCatalog(resources);
 
   const grouped = useMemo(
     () => groupSecretEntries(list.data?.entries ?? []),

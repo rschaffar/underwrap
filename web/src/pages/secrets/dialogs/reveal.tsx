@@ -1,6 +1,6 @@
 import { api } from "@/api/client";
 
-import type { SecretAddress } from "../model";
+import type { SecretAddress } from "../grouping";
 import { RevealSecretView } from "../reveal-secret-view";
 
 export function RevealSecretDialog({

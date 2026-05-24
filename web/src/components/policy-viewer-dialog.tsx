@@ -52,8 +52,6 @@ export function PolicyViewerDialog({
     }
   }
 
-  const writablePermissionCount = permissions.filter((p) => p.writable).length;
-
   return (
     <AdminDialog
       open={open}
@@ -67,23 +65,12 @@ export function PolicyViewerDialog({
         </>
       }
     >
-      <div className="space-y-3">
-        <div className="flex items-center gap-3 text-xs">
-          <span className="text-(--color-muted)">Writable permissions:</span>
-          <span
-            data-testid="writable-permissions-badge"
-            className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-(--color-fg)"
-          >
-            {writablePermissionCount} of {permissions.length}
-          </span>
-        </div>
-        <pre
-          data-testid="policy-json"
-          className="max-h-[60vh] overflow-auto rounded-md border border-(--color-line) bg-(--color-surface-0) p-3 text-xs leading-relaxed text-(--color-fg)"
-        >
-          {formatted}
-        </pre>
-      </div>
+      <pre
+        data-testid="policy-json"
+        className="max-h-[60vh] overflow-auto rounded-md border border-(--color-line) bg-(--color-surface-0) p-3 text-xs leading-relaxed text-(--color-fg)"
+      >
+        {formatted}
+      </pre>
 
       <DialogFooter>
         <Button type="button" variant="ghost" onClick={onCopy}>

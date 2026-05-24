@@ -47,10 +47,6 @@ describe("PolicyViewerDialog", () => {
       await screen.findByRole("heading", { name: /raw policy: prod/i }),
     ).toBeInTheDocument();
 
-    expect(
-      await screen.findByTestId("writable-permissions-badge"),
-    ).toHaveTextContent(/1 of 3/i);
-
     const pre = await screen.findByTestId("policy-json");
     expect(pre).toHaveTextContent("gh-authorized");
     expect(pre).toHaveTextContent("aws-prod");
@@ -61,7 +57,7 @@ describe("PolicyViewerDialog", () => {
     expect(screen.getByRole("button", { name: /copy json/i })).toBeEnabled();
   });
 
-  it("shows 0 writable when the policy is empty", () => {
+  it("renders an empty permissions JSON when the policy is empty", () => {
     render(
       <PolicyViewerDialog
         storeId="dev"
@@ -70,8 +66,8 @@ describe("PolicyViewerDialog", () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.getByTestId("writable-permissions-badge")).toHaveTextContent(
-      /0 of 0/i,
+    expect(screen.getByTestId("policy-json").textContent).toContain(
+      '"permissions": []',
     );
   });
 

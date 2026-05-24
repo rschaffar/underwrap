@@ -14,9 +14,7 @@ import {
   putWrapperPermission,
 } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
-import { toDatetimeLocal } from "@/lib/epoch";
-
-import type { ModeKind } from "../derivations";
+import { epochToDate, toDatetimeLocal } from "@/lib/epoch";
 
 export function EditCellDialog({
   storeId,
@@ -38,12 +36,12 @@ export function EditCellDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [kind, setKind] = useState<ModeKind>(
+  const [kind, setKind] = useState<WrapperApprovalMode["kind"]>(
     existing?.mode?.kind ?? "locked",
   );
   const [untilLocal, setUntilLocal] = useState<string>(() => {
     if (existing?.mode?.kind === "unlocked-until") {
-      return toDatetimeLocal(new Date(existing.mode.until_epoch * 1000));
+      return toDatetimeLocal(epochToDate(existing.mode.until_epoch));
     }
     return toDatetimeLocal(new Date(Date.now() + 30 * 60 * 1000));
   });

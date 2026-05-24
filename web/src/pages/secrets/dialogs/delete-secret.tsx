@@ -2,7 +2,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useConfirmMutation } from "@/hooks/use-confirm-mutation";
 import { api } from "@/api/client";
 
-import type { SecretAddress } from "../model";
+import type { SecretAddress } from "../grouping";
 
 export function DeleteSecretDialog({
   storeId,

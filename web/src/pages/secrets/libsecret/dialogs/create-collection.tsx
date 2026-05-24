@@ -17,16 +17,10 @@ import { Input } from "@/components/ui/input";
 import { postLibsecretCollection } from "@/api/client";
 import { useFormDialog } from "@/hooks/use-form-dialog";
 
-import { ID_PATTERN, libsecretTreeKey } from "../internal";
+import { libsecretTreeKey, optionalLibsecretIdField } from "../helpers";
 
 const collectionSchema = z.object({
-  id: z
-    .string()
-    .optional()
-    .refine(
-      (s) => !s || ID_PATTERN.test(s),
-      "Id must match [A-Za-z0-9._-]+ and not start with '_'.",
-    ),
+  id: optionalLibsecretIdField(),
   label: z.string().min(1, "Label is required."),
 });
 type CollectionValues = z.infer<typeof collectionSchema>;

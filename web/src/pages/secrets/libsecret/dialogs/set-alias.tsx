@@ -17,16 +17,10 @@ import { Select } from "@/components/ui/select";
 import { type AdminLibsecretCollectionView, putLibsecretAlias } from "@/api/client";
 import { useFormDialog } from "@/hooks/use-form-dialog";
 
-import { ID_PATTERN, libsecretTreeKey } from "../internal";
+import { libsecretIdField, libsecretTreeKey } from "../helpers";
 
 const aliasSchema = z.object({
-  name: z
-    .string()
-    .min(1, "Alias name is required.")
-    .refine(
-      (s) => ID_PATTERN.test(s),
-      "Name must match [A-Za-z0-9._-]+ and not start with '_'.",
-    ),
+  name: libsecretIdField(),
   collection_id: z.string().min(1, "Pick a collection."),
 });
 type AliasValues = z.infer<typeof aliasSchema>;

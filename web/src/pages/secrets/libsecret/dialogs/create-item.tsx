@@ -17,17 +17,15 @@ import { Input } from "@/components/ui/input";
 
 import { useFormDialog } from "@/hooks/use-form-dialog";
 
-import { ID_PATTERN, libsecretTreeKey, parseAttributes } from "../internal";
+import {
+  libsecretTreeKey,
+  optionalLibsecretIdField,
+  parseAttributes,
+} from "../helpers";
 import { postLibsecretItem } from "@/api/client";
 
 const itemSchema = z.object({
-  id: z
-    .string()
-    .optional()
-    .refine(
-      (s) => !s || ID_PATTERN.test(s),
-      "Id must match [A-Za-z0-9._-]+ and not start with '_'.",
-    ),
+  id: optionalLibsecretIdField(),
   label: z.string().min(1, "Label is required."),
   content_type: z.string().min(1, "Content type is required."),
   attributes: z.string(),

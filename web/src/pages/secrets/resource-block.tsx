@@ -4,7 +4,7 @@ import { ChevronRight, Eye, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ResourceRecord } from "@/api/client";
 import { describeCreator } from "@/lib/creator";
-import { normalizeEpoch } from "@/lib/epoch";
+import { epochToDate, normalizeEpoch } from "@/lib/epoch";
 
 import {
   SECRET_SLOTS,
@@ -12,8 +12,8 @@ import {
   type SecretResourceGroup,
   type SecretSlot,
   resourceCount,
-} from "./model";
-import { LibsecretTree } from "./libsecret";
+} from "./grouping";
+import { LibsecretTree } from "./libsecret/tree";
 
 interface RowActions {
   onReveal: (entry: SecretEntry) => void;
@@ -54,7 +54,7 @@ export function ResourceBlock({
     : null;
   const provenanceEpoch = normalizeEpoch(provenance?.created_at);
   const provenanceDate =
-    provenanceEpoch === null ? null : new Date(provenanceEpoch * 1000);
+    provenanceEpoch === null ? null : epochToDate(provenanceEpoch);
   // Display the operator-facing name when the catalog knows about
   // this resource; orphan groups fall back to the id.
   const displayLabel = provenance?.name ?? group.resource_id;
