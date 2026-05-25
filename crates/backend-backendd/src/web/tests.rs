@@ -21,15 +21,10 @@ fn head(path: &str) -> Request {
         .unwrap()
 }
 
-/// Embedded SPA smoke test. Fails when the embed is empty / placeholder
-/// only — i.e. when `$UNDERWRAP_WEB_DIST` at compile time pointed at an
-/// unbuilt `web/dist/`. Without this gate the binary builds and starts
-/// fine but serves 503 to every `/` request.
-///
-/// **Local development**: this test requires the SPA to be built. Run
-/// `cd web && npm run build` before `cargo test -p backend-backendd`.
-/// The Nix derivation sets `UNDERWRAP_WEB_DIST` to the built bundle
-/// automatically.
+/// Embedded SPA smoke test. `build.rs` already refuses to compile if
+/// `index.html` is missing, so this is a defense-in-depth check that
+/// also catches a rust-embed misconfiguration (e.g. the macro
+/// resolved the env var to a different path than `build.rs` did).
 #[tokio::test]
 async fn root_serves_index_html_no_store() {
     let resp = serve_spa(get("/")).await;

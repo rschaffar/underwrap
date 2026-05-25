@@ -4,10 +4,17 @@
 //! enforced on the JSON API under `/v1/admin/...` that the SPA then calls.
 //!
 //! Assets are compiled into the binary via `rust-embed` from
-//! `$UNDERWRAP_WEB_DIST` (the Nix flake points this at the built `web/dist/`).
-//! In debug builds, `rust-embed` reads the same files dynamically from disk
-//! at request time, so a `npm run build` is enough to iterate on the SPA
-//! without rebuilding the daemon. Release builds bake the assets in.
+//! `$UNDERWRAP_WEB_DIST`. The Nix flake sets this to the
+//! sandbox-built bundle; the workspace-local `build.rs` defaults it
+//! to `web/dist/` and **fails the build** when the bundle's
+//! `index.html` is missing. A backend binary therefore can never
+//! be linked against an empty embed — `serve_spa` takes that
+//! invariant for granted.
+//!
+//! In debug builds, `rust-embed` reads the same files dynamically
+//! from disk at request time, so a `npm run build` is enough to
+//! iterate on the SPA without rebuilding the daemon. Release builds
+//! bake the assets in.
 //!
 //! For any non-API GET/HEAD that does not match a file, [`serve_spa`]
 //! falls back to `index.html` so client-side routing can take over.
@@ -52,10 +59,11 @@ pub async fn serve_spa(req: Request) -> Response {
 
     let (asset, resolved) = match EmbeddedAssets::get(lookup) {
         Some(file) => (file, lookup.to_string()),
-        None => match EmbeddedAssets::get("index.html") {
-            Some(file) => (file, "index.html".to_string()),
-            None => return spa_unavailable(),
-        },
+        None => (
+            EmbeddedAssets::get("index.html")
+                .expect("build.rs asserts index.html is in the embedded SPA bundle"),
+            "index.html".to_string(),
+        ),
     };
 
     let body = if *req.method() == Method::HEAD {
@@ -87,23 +95,6 @@ fn cache_control_for(rel: &str) -> &'static str {
     } else {
         "public, max-age=300, must-revalidate"
     }
-}
-
-fn spa_unavailable() -> Response {
-    let body = "<!doctype html>\
-        <html><head><meta charset=\"utf-8\"><title>underwrap admin</title></head>\
-        <body style=\"font-family:sans-serif;padding:2em;\">\
-        <h1>SPA not built</h1>\
-        <p>The admin UI bundle is not embedded. Build <code>web/</code> and \
-        rebuild the backend (the Nix flake's <code>underwrap-backendd</code> \
-        derivation does this automatically).</p>\
-        </body></html>";
-    Response::builder()
-        .status(StatusCode::SERVICE_UNAVAILABLE)
-        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from(body))
-        .expect("static body builds")
 }
 
 #[cfg(test)]
