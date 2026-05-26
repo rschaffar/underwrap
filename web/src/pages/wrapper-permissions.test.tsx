@@ -88,13 +88,19 @@ describe("derivation helpers", () => {
 });
 
 describe("ModeBadge", () => {
-  it("renders one of the three mode variants", () => {
+  it("renders one of the four mode variants", () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const past = Math.floor(Date.now() / 1000) - 3600;
     const variants: Array<{ mode: WrapperApprovalMode; testid: string }> = [
       { mode: { kind: "locked" }, testid: "mode-locked" },
       { mode: { kind: "unlocked" }, testid: "mode-unlocked" },
       {
-        mode: { kind: "unlocked-until", until_epoch: 1_700_000_000 },
+        mode: { kind: "unlocked-until", until_epoch: future },
         testid: "mode-unlocked-until",
+      },
+      {
+        mode: { kind: "unlocked-until", until_epoch: past },
+        testid: "mode-expired",
       },
     ];
     for (const v of variants) {

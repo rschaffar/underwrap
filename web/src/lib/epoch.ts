@@ -60,6 +60,31 @@ export function formatEpochDate(
 }
 
 /**
+ * Render an epoch as a short time label, prefixed with the date only when
+ * it differs from `now`'s local date. Useful for short-lived deadlines
+ * where the date is usually obvious but matters once it crosses midnight.
+ */
+export function formatEpochShort(
+  value: bigint | number | null | undefined,
+  now: number = Date.now(),
+): string {
+  const n = normalizeEpoch(value);
+  if (n === null) return "never";
+  const date = new Date(n * 1000);
+  const today = new Date(now);
+  const sameDay =
+    date.getFullYear() === today.getFullYear() &&
+    date.getMonth() === today.getMonth() &&
+    date.getDate() === today.getDate();
+  const timeStr = date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  if (sameDay) return timeStr;
+  return `${date.toLocaleDateString()} ${timeStr}`;
+}
+
+/**
  * Format a `Date` as the `YYYY-MM-DDTHH:MM` string that
  * `<input type="datetime-local">` expects (browser-local timezone, no
  * timezone suffix). The tzoffset arithmetic shifts a UTC Date back into

@@ -6,7 +6,12 @@ import type {
   WrapperPermission,
   WrapperResourcePairRecord,
 } from "@/api/client";
-import { epochToDate, formatEpochAbsolute, formatEpochRelative } from "@/lib/epoch";
+import {
+  epochToDate,
+  formatEpochAbsolute,
+  formatEpochRelative,
+  formatEpochShort,
+} from "@/lib/epoch";
 import { describeCreator } from "@/lib/creator";
 
 import {
@@ -187,13 +192,27 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
       );
     case "unlocked-until": {
       const date = epochToDate(mode.until_epoch);
+      const expired = date.getTime() <= Date.now();
+      if (expired) {
+        return (
+          <span
+            data-testid="mode-expired"
+            className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-xs text-rose-200"
+            title={`Expired ${date.toString()}`}
+          >
+            <ShieldOff className="h-3 w-3" aria-hidden /> expired{" "}
+            {formatEpochShort(mode.until_epoch)}
+          </span>
+        );
+      }
       return (
         <span
           data-testid="mode-unlocked-until"
           className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-200"
           title={`Expires ${date.toString()}`}
         >
-          <Hourglass className="h-3 w-3" aria-hidden /> until {date.toLocaleDateString()}
+          <Hourglass className="h-3 w-3" aria-hidden /> until{" "}
+          {formatEpochShort(mode.until_epoch)}
         </span>
       );
     }
