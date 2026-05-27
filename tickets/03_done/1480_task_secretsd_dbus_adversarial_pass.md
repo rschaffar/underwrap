@@ -119,3 +119,38 @@ trust from "Yama protects the target's environ" to "secretsd
 correctly mediates D-Bus method calls from the target." That trust
 shift is the right one to make, but it deserves a deliberate
 review of the new surface.
+
+## Resolution (2026-05-27)
+
+Delivered:
+- **Read-through pass + write-up**: `docs/secretsd-threat-notes.md`
+  documents trust boundaries and the per-handler input assumptions for
+  every method on `Service`, `Collection`, and `Item` (the doc fits the
+  codebase's no-noise-comments style better than inline annotations).
+- **State-file size cap**: `state::dump` now rejects any keyring whose
+  canonical form exceeds `DEFAULT_MAX_STATE_BYTES` (1 MiB), overridable
+  via the new `--max-state-bytes` secretsd CLI arg. The check runs before
+  the on-disk file is touched, so a rejected mutation leaves the prior
+  state intact and leaves no temp file. Tested in `state/tests.rs`.
+- **Canonicalisation invariant (generative)**: `section_store/tests.rs`
+  exercises the JCS write path with adversarial labels/attributes/content
+  types and arbitrary secret bytes (control chars, embedded NUL, non-UTF-8,
+  8 KiB values) and asserts canonicalisation succeeds and round-trips
+  stably.
+- **init-fd**: confirmed it is a *trusted* boundary (ns, not the target,
+  is the producer; ns closes the write end so the read terminates).
+  Documented rather than artificially bounded.
+
+Consciously **not** done (toolchain decision — flagged for follow-up):
+- A dedicated `cargo-fuzz` harness. It requires a nightly toolchain and a
+  separate fuzz crate (a dependency/toolchain decision per CLAUDE.md
+  "ask first"). The generative canonicalisation test covers the JCS
+  write-path surface in the normal `cargo test` run; a fuzz harness would
+  extend it as a non-blocking CI smoke run once the toolchain question is
+  settled. See `docs/secretsd-threat-notes.md` "Known follow-ups".
+
+The default `--max-state-bytes` is built into secretsd; surfacing it in
+the *frontend config* (ns → wrapper config plumbing) was deferred because
+the single-instance redesign (`epic_single_instance_wrapper_redesign`)
+rewrites that config surface and ns invocation. The cap is enforced
+regardless via the built-in default.

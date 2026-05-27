@@ -65,3 +65,28 @@ be a hard error.
   absent (skipped when the precondition can't be set up).
 - VM test green: underwrap-ns continues to drop caps successfully
   under the supported configuration.
+
+## Resolution (2026-05-27) — premise was wrong, resolved differently
+
+The VM test disproved this ticket's central assumption. NixOS
+`security.wrappers` (`setcap-wrapper.c`) **deliberately strips
+`CAP_SETPCAP`** from the ambient set it grants the wrapped binary
+("cap_setpcap in set, skipping it"). So `underwrap-ns` never receives
+`CAP_SETPCAP` even though the module lists `cap_setpcap+ep`;
+`PR_CAPBSET_DROP` always returns `EPERM`, and the original silent
+`break` was masking that the bounding-set drop has never run in this
+deployment. Making `EPERM` fatal breaks every wrapper invocation.
+
+Decision (operator): keep `EPERM` non-fatal, but document **why** it is
+expected in `caps.rs`, and make explicit that the security boundary is
+the final `capset` (clears permitted/effective/inheritable to empty)
+plus `PR_SET_NO_NEW_PRIVS` — not `PR_CAPBSET_DROP`. The bounding set
+being non-empty grants nothing once permitted is empty and no-new-privs
+is set.
+
+Delivered instead of the hard error:
+- An accurate `EPERM => break` comment in `caps.rs` explaining the
+  NixOS-wrapper interaction.
+- `caps/tests.rs::drop_caps_clears_effective_without_cap_setpcap`,
+  which verifies the real invariant: `drop_caps` succeeds and leaves an
+  empty effective capability set even without `CAP_SETPCAP`.
