@@ -197,6 +197,13 @@ pub(super) fn principal_client_name(principal: &str) -> Result<&'static str> {
 pub(super) fn test_pki_paths(base: &Path, client_name: &str) -> Result<TestPkiPaths> {
     let pki_dir = base.join("pki");
     std::fs::create_dir_all(&pki_dir)?;
+    // The daemon also requires the credential's parent directory to be
+    // 0700 or tighter (matching the NixOS module's `${stateDir}` tmpfiles
+    // entry). `create_dir_all` honors the umask (typically 0755), so pin it.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&pki_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
 
     let ca_cert = pki_dir.join("ca.pem");
     let server_cert = pki_dir.join("server.pem");
@@ -225,6 +232,15 @@ pub(super) fn test_pki_paths(base: &Path, client_name: &str) -> Result<TestPkiPa
     let client_key = pki_dir.join(client_key);
     std::fs::write(&client_cert, client_cert_bytes)?;
     std::fs::write(&client_key, client_key_bytes)?;
+    // The daemon refuses to start unless its mTLS credential is 0600 or
+    // tighter (see frontend-underwrapd startup::check_credential_permissions),
+    // matching what underwrap-keygen writes. `std::fs::write` honors the
+    // umask (typically 0644), so tighten explicitly here.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&client_cert, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(&client_key, std::fs::Permissions::from_mode(0o600))?;
+    }
 
     Ok(TestPkiPaths {
         ca_cert,

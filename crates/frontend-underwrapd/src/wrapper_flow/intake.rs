@@ -38,9 +38,10 @@ pub(super) async fn authorize_wrapper_peer(
     // wrapper config to use but grants no privilege on its own.
     if peer.as_ref().and_then(|p| p.egid) != Some(expected_gid) {
         let reason = format!(
-            "peer egid {:?} does not match instance group gid {}",
+            "peer egid {:?} does not match instance group gid {} (auth_path {:?})",
             peer.as_ref().and_then(|p| p.egid),
             expected_gid,
+            peer.as_ref().map(|p| p.auth_path),
         );
         warn!(peer = ?peer, "wrapper identity rejected");
         audit::auth_denied(

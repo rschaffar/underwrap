@@ -106,12 +106,34 @@ Done and committed:
   operator roles/grants removed, page renames). All specs updated; 30/30
   green. Shared `adminMutate` helper added to `web/e2e/fixtures.ts`.
 
-Remaining in Phase 3: **1470** (systemd unit hardening on the rewritten
-module + cert/key startup mode check), **1440** (`SO_PEERPIDFD` peer auth
-in the daemon intake — security-critical), **1570** (VM test rework:
-`uw-<inst> [debug] <wrapper>`, shims, one group/socket, target authority,
-expiry, spoofing). After 1570, run `nix build
-.#checks.x86_64-linux.vm-test` to close 1550 + 1570.
+Also done and committable-green (code complete; VM-acceptance gated on
+1570, so the ticket files sit in `02_inprogress`):
+
+- **1470** (systemd hardening + cert/key startup mode check) — added the
+  remaining `serviceConfig` directives (`ProtectKernelLogs`,
+  `ProtectProc=invisible`, `ProcSubset=pid`, `RestrictNamespaces`,
+  empty `CapabilityBoundingSet`/`AmbientCapabilities`, `SystemCallFilter`
+  with `@system-service ~@privileged @resources @chown`, explicit
+  `ReadOnlyPaths`). `@chown` is re-allowed because the daemon chowns its
+  wrapper socket. `frontend-keygen` now writes the cert `0600` (key was
+  `0400`); new `startup::check_credential_permissions` refuses to start
+  on a present-but-over-permissive cert/key/parent-dir. PKI test harness
+  tightened to `0600`/`0700`.
+- **1440** (`SO_PEERPIDFD` peer auth) — `peer_auth.rs` rewritten:
+  race-free pidfd primary path (pid pinned across the `/proc` read),
+  `SO_PEERCRED`+`/proc` fallback for pre-6.5 with a warn-once,
+  uid/gid cross-check catching PID reuse, `PeerAuthPath` in the audit
+  line, `log_peer_auth_mode()` startup probe, and a
+  `hardenTargetHost ⇒ kernel ≥ 6.5` module assertion. No new dep.
+
+`cargo test --workspace` (incl. integration-tests), clippy, fmt all
+green; module parses.
+
+Remaining in Phase 3: **1570** (VM test rework: `uw-<inst> [debug]
+<wrapper>`, shims, one group/socket, target authority, expiry, spoofing,
+plus 1470's cert-mode assertion and 1440's peer-auth path). After 1570,
+run `nix build .#checks.x86_64-linux.vm-test` to close 1550 + 1470 +
+1440 + 1570.
 
 ---
 

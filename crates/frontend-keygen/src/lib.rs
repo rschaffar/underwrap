@@ -164,7 +164,7 @@ pub fn run(cli: Cli) -> Result<()> {
         0o400,
         &targets.client_cert_out,
         cert_pem.as_bytes(),
-        0o440,
+        0o600,
         targets.credential_owner,
     )?;
 

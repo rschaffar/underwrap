@@ -126,3 +126,39 @@ the running kernel version when `hardenTargetHost = true`.
 - `docs/security.md` §"Why effective GID instead of real GID?"
   updated to mention SO_PEERPIDFD as the primary path and
   SO_PEERCRED as the fallback, with the version assumption.
+
+## Resolution (2026-05-27) — code complete, VM-acceptance gated on 1570
+
+Implemented in `crates/frontend-underwrapd/src/peer_auth.rs`
+(rewritten) + sibling `peer_auth/tests.rs`:
+
+- **Primary `SO_PEERPIDFD` path.** `getsockopt(SO_PEERPIDFD)` yields a
+  pidfd; the daemon resolves the stable PID via
+  `/proc/self/fdinfo/<pidfd>` and reads `/proc/<pid>/status` **while
+  holding the pidfd open**, so the kernel cannot recycle the PID across
+  the read — race-free. The pidfd is closed only after the read.
+- **`SO_PEERCRED` fallback** for pre-6.5 kernels. `warn_fallback_once()`
+  fires the first time it is used.
+- **uid/gid cross-check** (`creds_consistent`): the `SO_PEERCRED`
+  uid/gid must match a `/proc` column (real *or* effective, for
+  robustness against the real-vs-effective question). A recycled PID
+  describes an unrelated process whose ids won't match, so reuse is
+  caught on the fallback path.
+- **`PeerAuthPath`** (`PeerPidfd` | `PeerCredFallback`) is recorded on
+  `PeerCred` and surfaced in the intake rejection audit line
+  (`wrapper_flow/intake.rs`) for forensics.
+- **Startup probe** `log_peer_auth_mode()` (called from `server::run`)
+  logs at boot whether this kernel offers the race-free path.
+- **NixOS assertion**: under `hardenTargetHost = true` the module now
+  asserts `kernel.version >= 6.5`.
+
+`libc` 0.2.184 already exposes `SO_PEERPIDFD`; no new dependency.
+
+Unit tests cover proc-status / fdinfo parsing, the cross-check matrix
+(real-column match, effective-column match, unrelated-ids rejection,
+reaped-`Pid: -1`), and an end-to-end `get_peer_cred` over a real
+`socketpair`. `cargo test --workspace`, clippy, and fmt are green.
+
+**Still open (folds into 1570):** the VM test must stay green on the VM
+kernel; the `docs/security.md` §"Why effective GID …" rewrite is
+deferred to the Phase 4 consolidated docs pass.

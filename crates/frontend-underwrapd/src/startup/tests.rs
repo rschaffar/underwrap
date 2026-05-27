@@ -41,3 +41,75 @@ fn validate_config_rejects_partial_backend_credentials() {
     let err = validate_config(&config).expect_err("partial creds must fail");
     assert!(format!("{err:#}").contains("both be set or both be omitted"));
 }
+
+mod credential_permissions {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn write_mode(path: &std::path::Path, mode: u32) {
+        std::fs::write(path, b"x").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Absent files must not fail (the daemon self-heals before keygen runs).
+    #[test]
+    fn missing_credential_files_are_tolerated() {
+        let mut config = minimal_config();
+        config.backend.client_cert_file = Some(std::path::PathBuf::from("/nonexistent/client.pem"));
+        config.backend.client_key_file = Some(std::path::PathBuf::from("/nonexistent/client.key"));
+        check_credential_permissions(&config).expect("missing files must be tolerated");
+    }
+
+    #[test]
+    fn accepts_0600_owned_by_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let cert = dir.path().join("client.pem");
+        let key = dir.path().join("client.key");
+        write_mode(&cert, 0o600);
+        write_mode(&key, 0o400);
+
+        let mut config = minimal_config();
+        config.backend.client_cert_file = Some(cert);
+        config.backend.client_key_file = Some(key);
+        check_credential_permissions(&config).expect("0600/0400 under 0700 dir must pass");
+    }
+
+    #[test]
+    fn rejects_group_readable_key() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let cert = dir.path().join("client.pem");
+        let key = dir.path().join("client.key");
+        write_mode(&cert, 0o600);
+        write_mode(&key, 0o640);
+
+        let mut config = minimal_config();
+        config.backend.client_cert_file = Some(cert);
+        config.backend.client_key_file = Some(key);
+        let err = check_credential_permissions(&config).expect_err("0640 key must be rejected");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("0o640"), "unexpected error: {msg}");
+        assert!(msg.contains("client key"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn rejects_world_accessible_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cert = dir.path().join("client.pem");
+        let key = dir.path().join("client.key");
+        write_mode(&cert, 0o600);
+        write_mode(&key, 0o600);
+
+        let mut config = minimal_config();
+        config.backend.client_cert_file = Some(cert);
+        config.backend.client_key_file = Some(key);
+        let err =
+            check_credential_permissions(&config).expect_err("0755 parent dir must be rejected");
+        assert!(
+            format!("{err:#}").contains("parent directory"),
+            "unexpected error: {err:#}",
+        );
+    }
+}

@@ -170,17 +170,35 @@ let
         ProtectControlGroups = true;
         ProtectKernelModules = true;
         ProtectKernelTunables = true;
+        ProtectKernelLogs = true;
         ProtectClock = true;
         ProtectHostname = true;
+        ProtectProc = "invisible";
+        ProcSubset = "pid";
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
         RestrictSUIDSGID = true;
         RestrictRealtime = true;
+        RestrictNamespaces = true;
         SystemCallArchitectures = "native";
+        # `~@privileged` strips the chown family, but the daemon chowns its
+        # wrapper socket to the instance group (startup.rs `bind_socket`) so
+        # group members can connect — re-allow @chown after the removal.
+        SystemCallFilter = [ "@system-service" "~@privileged @resources" "@chown" ];
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
         NoNewPrivileges = true;
+        # The daemon holds secrets and the mTLS client identity but needs
+        # no capabilities of its own — it binds an already-created socket
+        # dir and connects outbound. Drop the entire bounding set.
+        CapabilityBoundingSet = "";
+        AmbientCapabilities = "";
         LimitCORE = 0;
+        # `${stateDir}` holds the mTLS cert/key (read-only at runtime; only
+        # keygen, run separately as the operator, writes there). `${runDir}`
+        # holds the wrapper socket the daemon binds. /etc/underwrap is the
+        # config, already read-only under ProtectSystem=strict.
         ReadWritePaths = [ runDir ];
+        ReadOnlyPaths = [ stateDir "/etc/underwrap" ];
       };
     };
 
@@ -530,6 +548,15 @@ in {
         {
           assertion = swapDevicesAreHardened;
           message = "services.underwrap.hardenTargetHost is enabled but at least one swapDevice is not encrypted. Tokens paged out of a wrapped target's memory would surface as plaintext on disk. Enable randomEncryption or LUKS on every swapDevice, remove swap, or set services.underwrap.hardenTargetHost = false (and accept the weaker claim).";
+        }
+        {
+          # The daemon's wrapper peer-auth gate prefers the race-free
+          # SO_PEERPIDFD path (Linux 6.5+). On older kernels it falls back
+          # to SO_PEERCRED + /proc, which is theoretically vulnerable to
+          # PID recycling. Under the hardened posture, require 6.5+ so the
+          # sole kernel-enforced identity factor is race-free.
+          assertion = lib.versionAtLeast config.boot.kernelPackages.kernel.version "6.5";
+          message = "services.underwrap.hardenTargetHost is enabled but the configured kernel (${config.boot.kernelPackages.kernel.version}) predates 6.5, which lacks SO_PEERPIDFD. Wrapper peer auth would use the racy SO_PEERCRED + /proc fallback. Use a >= 6.5 kernel, or set services.underwrap.hardenTargetHost = false (and accept the weaker claim).";
         }
       ];
 

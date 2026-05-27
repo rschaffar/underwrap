@@ -84,6 +84,95 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
     Ok(())
 }
 
+/// Refuse to start if an mTLS client credential file exists on disk but
+/// is readable beyond the daemon user.
+///
+/// The daemon self-heals when the credential is absent (the operator
+/// hasn't run `underwrap-keygen` yet, or the backend hasn't issued a
+/// cert), so a *missing* file is not an error — only a present file with
+/// the wrong owner, an over-permissive mode, or a world/group-accessible
+/// parent directory is. This turns a key-leak misconfiguration into a
+/// loud startup failure instead of silent operator-discipline reliance.
+pub(crate) fn check_credential_permissions(config: &DaemonConfig) -> Result<()> {
+    let euid = unsafe { libc::geteuid() };
+    let entries = [
+        (
+            "backend client cert",
+            config.backend.client_cert_file.as_ref(),
+        ),
+        (
+            "backend client key",
+            config.backend.client_key_file.as_ref(),
+        ),
+    ];
+    for (label, path) in entries {
+        let Some(path) = path else { continue };
+        if !path.exists() {
+            continue;
+        }
+        let meta = std::fs::metadata(path)
+            .with_context(|| format!("stat {label} file {}", path.display()))?;
+        check_credential_file_meta(label, &path.display().to_string(), &meta, euid)?;
+
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
+            && let Ok(pmeta) = std::fs::metadata(parent)
+        {
+            check_credential_dir_meta(label, &parent.display().to_string(), &pmeta, euid)?;
+        }
+    }
+    Ok(())
+}
+
+/// `0600` or tighter, owned by the daemon's effective uid.
+fn check_credential_file_meta(
+    label: &str,
+    display: &str,
+    meta: &std::fs::Metadata,
+    euid: u32,
+) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    anyhow::ensure!(
+        meta.uid() == euid,
+        "{label} file {display} is owned by uid {} but the daemon runs as uid {euid}; \
+         refusing to start (run underwrap-keygen as the daemon user)",
+        meta.uid(),
+    );
+    let mode = meta.permissions().mode() & 0o777;
+    anyhow::ensure!(
+        mode & !0o600 == 0,
+        "{label} file {display} has mode {mode:#o}; must be 0600 or tighter \
+         (no group/other access); refusing to start",
+    );
+    Ok(())
+}
+
+/// Parent directory: `0700` or tighter, owned by the daemon's effective uid.
+fn check_credential_dir_meta(
+    label: &str,
+    display: &str,
+    meta: &std::fs::Metadata,
+    euid: u32,
+) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    anyhow::ensure!(
+        meta.uid() == euid,
+        "{label} parent directory {display} is owned by uid {} but the daemon runs as \
+         uid {euid}; refusing to start",
+        meta.uid(),
+    );
+    let mode = meta.permissions().mode() & 0o777;
+    anyhow::ensure!(
+        mode & 0o077 == 0,
+        "{label} parent directory {display} has mode {mode:#o}; must be 0700 or tighter \
+         (no group/other access); refusing to start",
+    );
+    Ok(())
+}
+
 pub(crate) fn validate_relative_credential_path(path: &str) -> Result<()> {
     anyhow::ensure!(!path.is_empty(), "path must not be empty");
     anyhow::ensure!(!path.starts_with('/'), "path must be relative");

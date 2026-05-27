@@ -157,3 +157,38 @@ operator discipline.
   assertion (or unit test of the validation function).
 - Existing tests still green: `cargo test --workspace`,
   `cargo clippy --all-targets --workspace -- -D warnings`.
+
+## Resolution (2026-05-27) — code complete, VM-acceptance gated on 1570
+
+**Systemd unit** (`nix/modules/underwrap.nix`, `mkInstance`
+`serviceConfig`): added the remaining hardening directives on top of
+what 1550 already carried — `ProtectKernelLogs`, `ProtectProc =
+"invisible"`, `ProcSubset = "pid"`, `RestrictNamespaces`,
+`CapabilityBoundingSet = ""`, `AmbientCapabilities = ""`,
+`SystemCallFilter = [ "@system-service" "~@privileged @resources"
+"@chown" ]`, and explicit `ReadOnlyPaths = [ stateDir "/etc/underwrap"
+]`. `@chown` is re-added after the `~@privileged` removal because the
+daemon chowns its wrapper socket to the instance group in
+`startup::bind_socket` — without it socket setup would SIGSYS.
+`ReadWritePaths` stays `[ runDir ]` (the daemon only *reads* the cert/key
+under `stateDir` at runtime; keygen writes them out-of-band).
+
+**Cert/key modes:**
+- `frontend-keygen` now writes the client **cert** at `0600` (was
+  `0440`); the key was already `0400`.
+- New `startup::check_credential_permissions` (called from
+  `server::run` right after `validate_config`) refuses to start when a
+  *present* credential file is owned by another uid, is wider than
+  `0600`, or sits in a parent dir wider than `0700`. Absent files are
+  tolerated (self-heal before keygen runs). Unit tests cover
+  accept-0600, reject-group-readable, reject-world-dir, tolerate-missing.
+- The integration-test PKI harness (`harness/pki.rs`) now writes its
+  client cert/key `0600` and the `pki` dir `0700` to satisfy the check.
+
+`cargo test --workspace`, clippy, and fmt are green. The module parses.
+
+**Still open (folds into 1570):** VM-test assertion that the deployed
+cert/key are `0600` owned by the daemon user; capture
+`systemd-analyze security underwrapd-<inst>` before/after numbers in the
+PR; the `docs/security.md` §"Target-host daemon" addition is deferred to
+the Phase 4 docs pass.

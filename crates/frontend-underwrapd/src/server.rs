@@ -19,7 +19,10 @@ use underwrap_protocol::service::{
 };
 
 use crate::backend_client::BackendClient;
-use crate::startup::{bind_socket, next_listener_result, resolve_instance_gid, validate_config};
+use crate::startup::{
+    bind_socket, check_credential_permissions, next_listener_result, resolve_instance_gid,
+    validate_config,
+};
 use crate::wrapper_flow::handle_wrapper;
 
 /// Maximum concurrent connections per socket.
@@ -153,6 +156,8 @@ pub(crate) fn unenrolled_message(url: &str) -> String {
 
 pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     validate_config(&config)?;
+    check_credential_permissions(&config)?;
+    crate::peer_auth::log_peer_auth_mode();
 
     let instance_gid = resolve_instance_gid(&config)?;
     let state = Arc::new(State::new(config.clone()));
