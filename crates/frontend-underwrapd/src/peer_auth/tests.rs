@@ -66,6 +66,58 @@ fn creds_consistent_rejects_unrelated_ids() {
 }
 
 #[test]
+fn finish_peer_cred_reports_cred_mismatch() {
+    // /proc describes a process whose ids match neither SO_PEERCRED
+    // column — the PID-reuse signature. The reject must carry the
+    // distinct CredMismatch arm (so intake can audit it), not Unresolved,
+    // and surface the SO_PEERCRED uid/gid plus the auth path.
+    let cred = libc::ucred {
+        pid: 31337,
+        uid: 1000,
+        gid: 1000,
+    };
+    let status = "Uid:\t4242\t4242\t4242\t4242\nGid:\t4242\t4242\t4242\t4242\n";
+    let err = finish_peer_cred(cred, 31337, status, PeerAuthPath::PeerCredFallback)
+        .expect_err("mismatched ids must be rejected");
+    assert_eq!(
+        err,
+        PeerAuthReject::CredMismatch {
+            uid: 1000,
+            gid: 1000,
+            auth_path: PeerAuthPath::PeerCredFallback,
+        },
+    );
+}
+
+#[test]
+fn finish_peer_cred_reports_unresolved_on_unparseable_status() {
+    // A /proc/<pid>/status we cannot parse yields nothing reliable about
+    // the peer, so it is Unresolved rather than a mismatch.
+    let cred = libc::ucred {
+        pid: 31337,
+        uid: 1000,
+        gid: 1000,
+    };
+    let err = finish_peer_cred(cred, 31337, "garbage\n", PeerAuthPath::PeerPidfd)
+        .expect_err("unparseable status must be rejected");
+    assert_eq!(err, PeerAuthReject::Unresolved);
+}
+
+#[test]
+fn finish_peer_cred_accepts_consistent_ids() {
+    let cred = libc::ucred {
+        pid: 31337,
+        uid: 1000,
+        gid: 1000,
+    };
+    let peer = finish_peer_cred(cred, 31337, STATUS, PeerAuthPath::PeerPidfd)
+        .expect("consistent ids must be accepted");
+    assert_eq!(peer.uid, 1000);
+    assert_eq!(peer.egid, Some(6001));
+    assert_eq!(peer.auth_path, PeerAuthPath::PeerPidfd);
+}
+
+#[test]
 fn parse_fdinfo_pid_extracts_stable_pid() {
     let fdinfo = "pos:\t0\nflags:\t02000000\nmnt_id:\t15\nPid:\t31337\nNSpid:\t31337\n";
     assert_eq!(parse_fdinfo_pid(fdinfo), Some(31337));
@@ -101,7 +153,7 @@ fn get_peer_cred_resolves_self_over_socketpair() {
         libc::close(fds[1]);
     }
 
-    let cred = cred.expect("peer of a socketpair is resolvable");
+    let cred = cred.expect("peer of a socketpair is authenticated");
     assert_eq!(cred.pid, std::process::id());
     assert_eq!(cred.uid, unsafe { libc::getuid() });
     assert_eq!(cred.egid, Some(unsafe { libc::getegid() }));

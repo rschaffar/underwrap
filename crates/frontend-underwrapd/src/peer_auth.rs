@@ -35,6 +35,27 @@ pub(crate) struct PeerCred {
     pub(crate) auth_path: PeerAuthPath,
 }
 
+/// Why a peer connection could not be authenticated. Distinguishing
+/// these lets the intake layer emit a forensically useful audit event:
+/// a cross-check failure is the signature of PID reuse and must be at
+/// least as visible as an ordinary egid mismatch, whereas an unresolved
+/// peer carries no reliable identity to log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeerAuthReject {
+    /// The peer's credentials could not be resolved at all (no
+    /// `SO_PEERCRED`, no readable/parseable `/proc`). Nothing reliable is
+    /// known about the peer.
+    Unresolved,
+    /// `SO_PEERCRED` uid/gid disagreed with `/proc/<pid>/status` — the
+    /// signature of PID reuse. The uid/gid are the `SO_PEERCRED` values
+    /// captured at connect time.
+    CredMismatch {
+        uid: u32,
+        gid: u32,
+        auth_path: PeerAuthPath,
+    },
+}
+
 /// Real and effective UID/GID parsed from `/proc/<pid>/status`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProcIds {
@@ -44,17 +65,17 @@ struct ProcIds {
     egid: u32,
 }
 
-pub(crate) fn get_peer_cred(stream: &UnixStream) -> Option<PeerCred> {
+pub(crate) fn get_peer_cred(stream: &UnixStream) -> Result<PeerCred, PeerAuthReject> {
     use std::os::unix::io::AsRawFd;
     get_peer_cred_for_fd(stream.as_raw_fd())
 }
 
-fn get_peer_cred_for_fd(fd: RawFd) -> Option<PeerCred> {
+fn get_peer_cred_for_fd(fd: RawFd) -> Result<PeerCred, PeerAuthReject> {
     let cred = match peer_ucred(fd) {
         Some(c) => c,
         None => {
             warn!("failed to get SO_PEERCRED");
-            return None;
+            return Err(PeerAuthReject::Unresolved);
         }
     };
 
@@ -82,7 +103,7 @@ fn get_peer_cred_for_fd(fd: RawFd) -> Option<PeerCred> {
                 // pidfd fdinfo is guaranteed to expose `Pid:`, so the
                 // fdinfo-shape case is not expected on a supported host.
                 warn!("SO_PEERPIDFD obtained but peer PID/proc resolution failed; rejecting");
-                None
+                Err(PeerAuthReject::Unresolved)
             }
         };
     }
@@ -90,7 +111,10 @@ fn get_peer_cred_for_fd(fd: RawFd) -> Option<PeerCred> {
     // Fallback path: pre-6.5 kernel without SO_PEERPIDFD.
     warn_fallback_once();
     let pid = cred.pid as u32;
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
+        Ok(s) => s,
+        Err(_) => return Err(PeerAuthReject::Unresolved),
+    };
     finish_peer_cred(cred, pid, &status, PeerAuthPath::PeerCredFallback)
 }
 
@@ -102,8 +126,11 @@ fn finish_peer_cred(
     pid: u32,
     status: &str,
     auth_path: PeerAuthPath,
-) -> Option<PeerCred> {
-    let ids = parse_proc_status_ids(status)?;
+) -> Result<PeerCred, PeerAuthReject> {
+    let ids = match parse_proc_status_ids(status) {
+        Some(ids) => ids,
+        None => return Err(PeerAuthReject::Unresolved),
+    };
     if !creds_consistent(cred.uid, cred.gid, &ids) {
         warn!(
             ?auth_path,
@@ -115,9 +142,13 @@ fn finish_peer_cred(
             proc_egid = ids.egid,
             "SO_PEERCRED uid/gid disagree with /proc/<pid>/status — possible PID reuse; rejecting peer",
         );
-        return None;
+        return Err(PeerAuthReject::CredMismatch {
+            uid: cred.uid,
+            gid: cred.gid,
+            auth_path,
+        });
     }
-    Some(PeerCred {
+    Ok(PeerCred {
         pid,
         uid: cred.uid,
         gid: cred.gid,

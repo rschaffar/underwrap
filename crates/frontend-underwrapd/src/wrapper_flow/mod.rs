@@ -29,7 +29,7 @@ pub(crate) async fn handle_wrapper(
         None => return Ok(()),
     };
 
-    let request = match read_initial_wrapper_request(&mut stream, peer.as_ref(), peer_uid).await? {
+    let request = match read_initial_wrapper_request(&mut stream, &peer, peer_uid).await? {
         Some(request) => request,
         None => return Ok(()),
     };
@@ -52,7 +52,7 @@ pub(crate) async fn handle_wrapper(
         scope.as_deref(),
         &wrapper_name,
         variant,
-        peer.as_ref(),
+        &peer,
         peer_uid,
         &state,
     )
@@ -79,7 +79,7 @@ async fn open_one_invocation(
     scope: Option<&str>,
     wrapper_name: &str,
     variant: WrapperVariant,
-    peer: Option<&PeerCred>,
+    peer: &PeerCred,
     peer_uid: u32,
     state: &State,
 ) -> ReadOutcome {
