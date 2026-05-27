@@ -506,10 +506,17 @@ def local_socket_permissions():
     perms = machine.succeed("stat -c %a /run/underwrap-local").strip()
     assert perms == "755", f"expected 755, got {perms}"
 
-    # Exactly one wrapper socket per instance, owned by the instance group.
+    # Exactly one wrapper socket per instance: mode 0660, owned by the
+    # daemon user, group = the instance group. The daemon does NOT chown
+    # the socket (no @chown in its syscall filter); it relies on its
+    # primary group being the instance group and verifies the gid at bind.
+    # Assert both owner and group so a regression in that inheritance —
+    # not just the group — is caught.
     socket = "/run/underwrap-local/wrapper.sock"
     perms = machine.succeed(f"stat -c %a {socket}").strip()
     assert perms == "660", f"expected 660, got {perms}"
+    owner = machine.succeed(f"stat -c %U {socket}").strip()
+    assert owner == "underwrap-local", f"expected daemon-user owner, got {owner}"
     grp = machine.succeed(f"stat -c %G {socket}").strip()
     assert grp == "underwrap-local", f"expected instance group, got {grp}"
     count = machine.succeed(

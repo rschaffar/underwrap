@@ -113,3 +113,59 @@ mod credential_permissions {
         );
     }
 }
+
+mod socket_binding {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    // The daemon no longer chowns its wrapper socket; it relies on the
+    // socket inheriting the daemon's primary group (= instance group) and
+    // verifies that gid in `bind_socket`. These tests pin both halves of
+    // that contract on a real bound socket.
+
+    #[tokio::test]
+    async fn socket_inherits_caller_uid_and_gid_and_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wrapper.sock");
+        let egid = unsafe { libc::getegid() };
+
+        // Passing the caller's egid as the expected gid models the
+        // production invariant (daemon primary group == instance group).
+        let _listener = bind_socket(&path, 0o660, "test", Some(egid)).expect("bind must succeed");
+
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(
+            meta.uid(),
+            unsafe { libc::geteuid() },
+            "socket owner must be the binding process's uid",
+        );
+        assert_eq!(
+            meta.gid(),
+            egid,
+            "socket group must be the binding process's primary group",
+        );
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o660,
+            "socket mode must be 0660",
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_socket_with_unexpected_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wrapper.sock");
+        // A gid the socket cannot possibly have been created with (the
+        // socket's group is always the caller's egid). bind_socket must
+        // fail closed rather than serve a wrongly-grouped socket.
+        let wrong_gid = unsafe { libc::getegid() }.wrapping_add(424_242);
+
+        let err = bind_socket(&path, 0o660, "test", Some(wrong_gid))
+            .expect_err("wrong instance group must be rejected");
+        assert!(
+            format!("{err:#}").contains("wrongly-grouped socket"),
+            "unexpected error: {err:#}",
+        );
+    }
+}

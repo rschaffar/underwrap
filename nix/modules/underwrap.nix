@@ -187,13 +187,14 @@ let
         RestrictRealtime = true;
         RestrictNamespaces = true;
         SystemCallArchitectures = "native";
-        # Remove the privileged syscalls, then re-allow @chown: the daemon
-        # chowns its wrapper socket to the instance group (startup.rs
-        # `bind_socket`) so group members can connect. @resources is NOT
-        # removed — the daemon calls setrlimit(RLIMIT_CORE, 0) at startup
-        # (main.rs), which lives in @resources; stripping it would SIGSYS
-        # the daemon on boot.
-        SystemCallFilter = [ "@system-service" "~@privileged" "@chown" ];
+        # Remove the privileged syscalls. The daemon does NOT chown its
+        # wrapper socket — it runs with the instance group as its primary
+        # group, so the bound socket inherits that group, and `bind_socket`
+        # verifies the gid rather than setting it (startup.rs). So @chown is
+        # not re-allowed. @resources is NOT removed — the daemon calls
+        # setrlimit(RLIMIT_CORE, 0) at startup (main.rs), which lives in
+        # @resources; stripping it would SIGSYS the daemon on boot.
+        SystemCallFilter = [ "@system-service" "~@privileged" ];
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
         NoNewPrivileges = true;
         # The daemon holds secrets and the mTLS client identity but needs

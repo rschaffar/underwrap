@@ -201,7 +201,7 @@ pub(crate) fn bind_socket(
     path: &std::path::Path,
     mode: u32,
     label: &str,
-    group_gid: Option<u32>,
+    expected_gid: Option<u32>,
 ) -> Result<UnixListener> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -213,21 +213,32 @@ pub(crate) fn bind_socket(
 
     #[cfg(unix)]
     {
-        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
         use std::os::unix::fs::PermissionsExt;
-
-        if let Some(gid) = group_gid {
-            let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
-                .with_context(|| format!("converting {label} socket path for chown"))?;
-            let ret = unsafe { libc::chown(c_path.as_ptr(), u32::MAX, gid) };
-            if ret != 0 {
-                let err = std::io::Error::last_os_error();
-                anyhow::bail!("setting {label} socket group to {gid} failed: {err}");
-            }
-        }
 
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
             .with_context(|| format!("setting {label} socket permissions to {mode:#o}"))?;
+
+        // The 0660 socket is gated on the instance group. We do NOT chown
+        // it: the daemon's primary group already *is* the instance group
+        // (NixOS module + integration harness both run it that way), so a
+        // freshly bound socket inherits that group from the daemon's egid.
+        // Rather than re-assert it with a privileged chown (which would
+        // force `@chown` back into the systemd syscall filter), verify the
+        // kernel-assigned group and fail closed if it is wrong — a
+        // wrongly-grouped socket would silently widen or break the gate.
+        if let Some(gid) = expected_gid {
+            let meta = std::fs::metadata(path)
+                .with_context(|| format!("stat {label} socket {} for gid check", path.display()))?;
+            anyhow::ensure!(
+                meta.gid() == gid,
+                "{label} socket {} was created with group gid {} but the instance group is \
+                 gid {gid}; the daemon's primary group must be the instance group — refusing \
+                 to serve a wrongly-grouped socket",
+                path.display(),
+                meta.gid(),
+            );
+        }
     }
 
     info!(path = %path.display(), mode = format!("{mode:#o}"), "{label} socket listening");
