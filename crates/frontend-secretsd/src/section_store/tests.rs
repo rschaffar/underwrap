@@ -49,6 +49,76 @@ fn store_from_empty_section_seeds_default_collection() {
     );
 }
 
+/// Invariant: any value secretsd accepts via D-Bus (item labels, attribute
+/// keys/values, content types, and arbitrary secret bytes) must project into
+/// a `LibsecretSection` that canonicalises without error and round-trips
+/// stably. This is the generative cousin of a fuzz target over the JCS write
+/// path — it exercises control characters, embedded NULs, non-UTF-8 secret
+/// bytes, large values, and JSON-significant characters.
+#[test]
+fn target_modifiable_values_always_canonicalise_and_round_trip() {
+    use std::collections::HashMap;
+    use underwrap_secretsd_store::SecretStore;
+
+    // Adversarial string fragments for labels / attributes / content types.
+    let nasty_strings: Vec<String> = vec![
+        String::new(),
+        " ".to_string(),
+        "\t\r\n".to_string(),
+        "\u{0001}\u{0002}\u{0007}".to_string(),
+        "quotes\"and\\backslash".to_string(),
+        "json{}[]:,significant".to_string(),
+        "🔐 é 日本語 \u{1F600}".to_string(),
+        "embedded\u{0000}nul".to_string(),
+        "a".repeat(8 * 1024),
+    ];
+
+    // Adversarial secret payloads, including non-UTF-8 and NUL bytes.
+    let nasty_secrets: Vec<Vec<u8>> = vec![
+        Vec::new(),
+        vec![0u8],
+        vec![0xff, 0x00, 0xfe, 0x01, 0x80],
+        (0u8..=255).collect(),
+        b"normal-token".to_vec(),
+        vec![0xc3, 0x28], // invalid UTF-8 sequence
+    ];
+
+    let mut store = SecretStore::new_default();
+
+    let mut n = 0usize;
+    for label in &nasty_strings {
+        for secret in &nasty_secrets {
+            // Vary the attribute key and value across the nasty set too.
+            let key = &nasty_strings[n % nasty_strings.len()];
+            let val = &nasty_strings[(n + 1) % nasty_strings.len()];
+            let mut attrs = HashMap::new();
+            attrs.insert(key.clone(), val.clone());
+
+            let content_type = &nasty_strings[(n + 2) % nasty_strings.len()];
+
+            store
+                .create_item("default", label, &attrs, secret, content_type, false)
+                .expect("create_item should accept arbitrary target-supplied values");
+            n += 1;
+        }
+    }
+
+    // The whole accumulated keyring must canonicalise...
+    let section = section_from_store(&store);
+    let bytes = section
+        .to_canonical_bytes()
+        .expect("section with adversarial values must canonicalise");
+
+    // ...and round-trip stably (bytes are JCS-canonical and idempotent).
+    let reparsed =
+        LibsecretSection::from_canonical_bytes(&bytes).expect("canonical bytes must parse back");
+    let bytes2 = reparsed
+        .to_canonical_bytes()
+        .expect("reparsed section must re-canonicalise");
+    assert_eq!(bytes, bytes2, "canonicalisation must be idempotent");
+    assert_eq!(reparsed, section, "round-trip must preserve the section");
+}
+
 #[test]
 fn store_from_section_preserves_secret_bytes() {
     let section = sample_section();

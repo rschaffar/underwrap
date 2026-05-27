@@ -54,8 +54,8 @@ pub fn send_fd(socket: &StdUnixStream, fd: RawFd) -> Result<()> {
 /// Returns the received fd and the data byte.
 pub fn recv_fd(socket: &StdUnixStream) -> Result<RawFd> {
     use libc::{
-        CMSG_DATA, CMSG_FIRSTHDR, CMSG_SPACE, SCM_RIGHTS, SOL_SOCKET, c_void, iovec, msghdr,
-        recvmsg,
+        CMSG_DATA, CMSG_FIRSTHDR, CMSG_LEN, CMSG_SPACE, SCM_RIGHTS, SOL_SOCKET, c_void, iovec,
+        msghdr, recvmsg,
     };
     use std::mem;
 
@@ -84,12 +84,24 @@ pub fn recv_fd(socket: &StdUnixStream) -> Result<RawFd> {
             bail!("recvmsg: connection closed");
         }
 
+        // Ancillary truncation means the sender attached more (or larger)
+        // control data than our one-fd buffer could hold; the surplus fds
+        // would be silently dropped. Reject rather than continue.
+        if msg.msg_flags & libc::MSG_CTRUNC != 0 {
+            bail!("recvmsg ancillary data truncated (MSG_CTRUNC)");
+        }
+
         let cmsg = CMSG_FIRSTHDR(&msg);
         if cmsg.is_null() {
             bail!("no ancillary data received");
         }
         if (*cmsg).cmsg_level != SOL_SOCKET || (*cmsg).cmsg_type != SCM_RIGHTS {
             bail!("unexpected ancillary data type");
+        }
+        // Confirm the cmsg actually carries a full RawFd before reading one
+        // out of CMSG_DATA.
+        if (*cmsg).cmsg_len < CMSG_LEN(mem::size_of::<RawFd>() as u32) as usize {
+            bail!("ancillary data too short to contain an fd");
         }
 
         let mut fd: RawFd = -1;

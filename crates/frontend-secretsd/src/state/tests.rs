@@ -59,3 +59,56 @@ fn dump_replaces_existing_file_atomically() {
     assert_ne!(read, b"stale");
     let _ = LibsecretSection::from_canonical_bytes(&read).unwrap();
 }
+
+#[test]
+fn dump_with_cap_accepts_state_under_the_limit() {
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let path = tempdir.path().join("libsecret-state.jcs");
+
+    // A generous cap admits a normal keyring.
+    dump_with_cap(&populated_store(), &path, 64 * 1024).unwrap();
+    let read = std::fs::read(&path).unwrap();
+    let _ = LibsecretSection::from_canonical_bytes(&read).unwrap();
+}
+
+#[test]
+fn dump_with_cap_rejects_oversized_state_and_preserves_prior_file() {
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let path = tempdir.path().join("libsecret-state.jcs");
+
+    // Persist a valid baseline within a generous cap.
+    dump_with_cap(&populated_store(), &path, 64 * 1024).unwrap();
+    let baseline = std::fs::read(&path).unwrap();
+
+    // A subsequent mutation whose canonical form exceeds a tiny cap must be
+    // rejected, and the previously-persisted state must remain intact (the
+    // cap is checked before the on-disk file is touched).
+    let err = dump_with_cap(&populated_store(), &path, 4).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("exceeding"),
+        "unexpected error: {err:#}"
+    );
+
+    let after = std::fs::read(&path).unwrap();
+    assert_eq!(
+        after, baseline,
+        "rejected write must not alter the state file"
+    );
+    // And no stray temp file is left behind.
+    let tmp = tempdir.path().join(".libsecret-state.jcs.new");
+    assert!(
+        !tmp.exists(),
+        "temp file should not be left after a rejected write"
+    );
+}
+
+#[test]
+fn default_cap_is_generous_relative_to_a_normal_keyring() {
+    // Sanity: the built-in default comfortably admits a populated keyring, so
+    // the cap only bites pathological growth, not real usage.
+    let section_len = crate::section_store::section_from_store(&populated_store())
+        .to_canonical_bytes()
+        .unwrap()
+        .len() as u64;
+    assert!(section_len < DEFAULT_MAX_STATE_BYTES);
+}

@@ -15,22 +15,59 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use underwrap_secretsd_store::SecretStore;
 
 use crate::section_store::section_from_store;
+
+/// Default upper bound on the persisted libsecret state, in bytes. The
+/// staging tmpfs `underwrap-ns` mounts for the bus dir is `size=4m`; this cap
+/// is well under that and far larger than any real libsecret keyring needs.
+/// It exists so a compromised target cannot grow the keyring without bound
+/// (filling the tmpfs / churning IO) via repeated D-Bus mutations.
+pub const DEFAULT_MAX_STATE_BYTES: u64 = 1024 * 1024;
+
+static MAX_STATE_BYTES: OnceLock<u64> = OnceLock::new();
+
+/// Set the persisted-state size cap (from the `--max-state-bytes` CLI arg).
+/// Called once at startup before serving; ignored if called again.
+pub fn configure_max_state_bytes(max: u64) {
+    let _ = MAX_STATE_BYTES.set(max);
+}
+
+fn configured_max_state_bytes() -> u64 {
+    MAX_STATE_BYTES
+        .get()
+        .copied()
+        .unwrap_or(DEFAULT_MAX_STATE_BYTES)
+}
 
 /// Project `store` back into a `LibsecretSection`, canonicalize, and
 /// write atomically to `path`. The file is created with mode `0o600`
 /// (the tmpfs is already mode `0o700` and inside the ns's mount
 /// namespace, so this is defense in depth).
 pub fn dump(store: &SecretStore, path: &Path) -> Result<()> {
+    dump_with_cap(store, path, configured_max_state_bytes())
+}
+
+fn dump_with_cap(store: &SecretStore, path: &Path, max_bytes: u64) -> Result<()> {
     let section = section_from_store(store);
     let bytes = section
         .to_canonical_bytes()
         .context("canonicalizing libsecret section")?;
+    // Enforce the cap BEFORE touching the on-disk file: a rejected mutation
+    // must leave the previously-persisted (valid) state intact rather than
+    // truncating it.
+    if bytes.len() as u64 > max_bytes {
+        bail!(
+            "libsecret keyring state is {} bytes, exceeding the {max_bytes}-byte cap; \
+             refusing to persist (mutation rejected)",
+            bytes.len()
+        );
+    }
     write_atomic(path, &bytes)
 }
 

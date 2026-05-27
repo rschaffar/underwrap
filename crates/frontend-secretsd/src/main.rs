@@ -43,6 +43,9 @@ struct Args {
     init_fd: i32,
     state_path: PathBuf,
     ready_fd: Option<i32>,
+    /// Optional override for the persisted-state size cap. `None` keeps the
+    /// built-in `state::DEFAULT_MAX_STATE_BYTES`.
+    max_state_bytes: Option<u64>,
 }
 
 fn parse_args_from(args: &[String]) -> Result<Args> {
@@ -50,6 +53,7 @@ fn parse_args_from(args: &[String]) -> Result<Args> {
     let mut init_fd = None;
     let mut state_path = None;
     let mut ready_fd = None;
+    let mut max_state_bytes = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -87,6 +91,15 @@ fn parse_args_from(args: &[String]) -> Result<Args> {
                         .context("--ready-fd must be a number")?,
                 );
             }
+            "--max-state-bytes" => {
+                i += 1;
+                max_state_bytes = Some(
+                    args.get(i)
+                        .context("--max-state-bytes requires a value")?
+                        .parse()
+                        .context("--max-state-bytes must be a number")?,
+                );
+            }
             other => bail!("unknown argument: {other}"),
         }
         i += 1;
@@ -96,6 +109,7 @@ fn parse_args_from(args: &[String]) -> Result<Args> {
         init_fd: init_fd.context("--init-fd is required")?,
         state_path: state_path.context("--state-path is required")?,
         ready_fd,
+        max_state_bytes,
     })
 }
 
@@ -138,6 +152,10 @@ async fn main() -> Result<()> {
     }
 
     let args = parse_args()?;
+
+    if let Some(max) = args.max_state_bytes {
+        state::configure_max_state_bytes(max);
+    }
 
     if metadata_trace_enabled() {
         tracing::info!(

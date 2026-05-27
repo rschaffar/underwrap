@@ -366,6 +366,12 @@ in {
             libsecret = true;
             envSet.PATH = pkgs.lib.makeBinPath [ pkgs.coreutils ];
           };
+          test-ns-pids-env = {
+            target = "${listPidsScript}";
+            resource = "test/ns-pids-env-store";
+            env = true;
+            envSet.PATH = pkgs.lib.makeBinPath [ pkgs.coreutils ];
+          };
           test-caps = {
             target = "${capsScript}";
             resource = "test/caps-tok";

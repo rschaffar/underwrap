@@ -9,6 +9,7 @@
 //! mutation atomically to `--state-path` so ns can read the final
 //! state after the namespace dies.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -24,9 +25,22 @@ pub(crate) fn require_absolute_env_path(var_name: &str) -> Result<String, String
     Ok(value)
 }
 
+/// Apply a sanitised environment to a helper `Command`: clear the inherited
+/// (caller-derived) environment, then reintroduce only the trusted whitelist.
+/// This keeps caller-controlled service-discovery variables (`XDG_DATA_DIRS`,
+/// `XDG_RUNTIME_DIR`, `DBUS_*`, `LD_*`) out of the private bus daemon.
+fn apply_helper_env(cmd: &mut Command, helper_env: &HashMap<String, String>) {
+    cmd.env_clear();
+    for (key, value) in helper_env {
+        cmd.env(key, value);
+    }
+}
+
 pub(crate) fn setup_libsecret(
     cmd: &mut Command,
     secret_fd: i32,
+    channel_fd: i32,
+    helper_env: &HashMap<String, String>,
     section_bytes: &[u8],
     state_path: &Path,
 ) -> Result<(), String> {
@@ -79,6 +93,7 @@ pub(crate) fn setup_libsecret(
     if dbus_pid == 0 {
         unsafe {
             libc::close(secret_fd);
+            libc::close(channel_fd);
             libc::close(ready_read);
             libc::close(ready_write);
             libc::close(dbus_addr_read);
@@ -86,7 +101,8 @@ pub(crate) fn setup_libsecret(
             libc::close(init_write);
         }
         use std::os::unix::process::CommandExt;
-        let err = Command::new(&dbus_daemon)
+        let mut dbus_cmd = Command::new(&dbus_daemon);
+        dbus_cmd
             .arg("--session")
             .arg(format!("--address={bus_address}"))
             .arg("--nofork")
@@ -96,8 +112,9 @@ pub(crate) fn setup_libsecret(
                 let log = std::fs::File::create(format!("{bus_dir}/dbus-daemon.log"))
                     .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
                 std::process::Stdio::from(log)
-            })
-            .exec();
+            });
+        apply_helper_env(&mut dbus_cmd, helper_env);
+        let err = dbus_cmd.exec();
         eprintln!("underwrap-ns: exec dbus-daemon failed: {err}");
         std::process::exit(1);
     }
@@ -134,11 +151,13 @@ pub(crate) fn setup_libsecret(
     if secretsd_pid == 0 {
         unsafe {
             libc::close(secret_fd);
+            libc::close(channel_fd);
             libc::close(ready_read);
             libc::close(init_write);
         }
         use std::os::unix::process::CommandExt;
-        let err = Command::new(&secretsd)
+        let mut secretsd_cmd = Command::new(&secretsd);
+        secretsd_cmd
             .arg("--bus-address")
             .arg(&actual_bus_address)
             .arg("--init-fd")
@@ -151,8 +170,9 @@ pub(crate) fn setup_libsecret(
                 let log = std::fs::File::create(format!("{bus_dir}/secretsd.log"))
                     .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
                 std::process::Stdio::from(log)
-            })
-            .exec();
+            });
+        apply_helper_env(&mut secretsd_cmd, helper_env);
+        let err = secretsd_cmd.exec();
         eprintln!("underwrap-ns: exec secretsd failed: {err}");
         std::process::exit(1);
     }

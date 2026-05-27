@@ -1,9 +1,10 @@
 use std::os::unix::fs::PermissionsExt;
 
-pub(crate) fn setup_directory_mount_namespace_base(
-    staging_root_path: &str,
-    mount_directory_staging: bool,
-) -> Result<(), String> {
+/// Make the whole mount tree private+recursive so that any mount we perform
+/// inside the namespace (staging tmpfs, fresh `/proc`, bus dir, real-bus hide)
+/// does not propagate back to the host mount namespace. Called unconditionally
+/// after `unshare(CLONE_NEWNS)` in every mode.
+pub(crate) fn make_mount_namespace_private() -> Result<(), String> {
     let root = std::ffi::CString::new("/").unwrap();
     let ret = unsafe {
         libc::mount(
@@ -18,37 +19,47 @@ pub(crate) fn setup_directory_mount_namespace_base(
         let err = std::io::Error::last_os_error();
         return Err(format!("mount(MS_PRIVATE|MS_REC) failed: {err}"));
     }
-
-    if mount_directory_staging {
-        std::fs::create_dir_all(staging_root_path).map_err(|e| {
-            format!("creating directory staging mount point {staging_root_path}: {e}")
-        })?;
-        std::fs::set_permissions(staging_root_path, std::fs::Permissions::from_mode(0o000))
-            .map_err(|e| format!("setting mountpoint permissions on {staging_root_path}: {e}"))?;
-        let staging_root = std::ffi::CString::new(staging_root_path).unwrap();
-        let tmpfs = std::ffi::CString::new("tmpfs").unwrap();
-        let ret = unsafe {
-            libc::mount(
-                tmpfs.as_ptr(),
-                staging_root.as_ptr(),
-                tmpfs.as_ptr(),
-                0,
-                c"size=8m,mode=0700,noswap".as_ptr() as *const libc::c_void,
-            )
-        };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EINVAL) {
-                return Err("mount tmpfs for directory staging failed: kernel does not support tmpfs noswap".to_string());
-            }
-            return Err(format!("mount tmpfs for directory staging failed: {err}"));
-        }
-    }
-
     Ok(())
 }
 
-pub(crate) fn setup_mount_namespace() -> Result<(), String> {
+/// Stage the files-slot tmpfs root. Only invoked when the wrapper projects a
+/// files slot; the mount-tree-private step is now a separate, unconditional
+/// concern (see `make_mount_namespace_private`).
+pub(crate) fn setup_directory_staging_tmpfs(staging_root_path: &str) -> Result<(), String> {
+    std::fs::create_dir_all(staging_root_path)
+        .map_err(|e| format!("creating directory staging mount point {staging_root_path}: {e}"))?;
+    std::fs::set_permissions(staging_root_path, std::fs::Permissions::from_mode(0o000))
+        .map_err(|e| format!("setting mountpoint permissions on {staging_root_path}: {e}"))?;
+    let staging_root = std::ffi::CString::new(staging_root_path).unwrap();
+    let tmpfs = std::ffi::CString::new("tmpfs").unwrap();
+    let ret = unsafe {
+        libc::mount(
+            tmpfs.as_ptr(),
+            staging_root.as_ptr(),
+            tmpfs.as_ptr(),
+            0,
+            c"size=8m,mode=0700,noswap".as_ptr() as *const libc::c_void,
+        )
+    };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EINVAL) {
+            return Err(
+                "mount tmpfs for directory staging failed: kernel does not support tmpfs noswap"
+                    .to_string(),
+            );
+        }
+        return Err(format!("mount tmpfs for directory staging failed: {err}"));
+    }
+    Ok(())
+}
+
+/// Mount a fresh `proc` over `/proc` inside the new PID namespace. Must be
+/// called from a process that is *inside* the new PID namespace (i.e. after
+/// `fork_into_namespace`), otherwise the mount binds to the original PID
+/// namespace and process discovery is not actually limited. Run in every mode
+/// so the target only sees namespace-local PIDs.
+pub(crate) fn remount_proc() -> Result<(), String> {
     let proc_path = std::ffi::CString::new("/proc").unwrap();
     let proc_type = std::ffi::CString::new("proc").unwrap();
     let ret = unsafe {
@@ -64,7 +75,10 @@ pub(crate) fn setup_mount_namespace() -> Result<(), String> {
         let err = std::io::Error::last_os_error();
         return Err(format!("mount fresh /proc failed: {err}"));
     }
+    Ok(())
+}
 
+pub(crate) fn setup_mount_namespace() -> Result<(), String> {
     let bus_dir = "/tmp/.underwrap-ns-bus";
     std::fs::create_dir_all(bus_dir)
         .map_err(|e| format!("creating bus mount point {bus_dir}: {e}"))?;

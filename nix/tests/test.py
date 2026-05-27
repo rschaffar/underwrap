@@ -296,6 +296,7 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-libsecret": "test/libsecret-store",
     "test-caps": "test/caps-tok",
     "test-ns-pids": "test/ns-pids-store",
+    "test-ns-pids-env": "test/ns-pids-env-store",
     "test-dir-write": "test/dir-a",
     "test-dir-read": "test/dir-a",
     "test-dir-readonly-write": "test/dir-a",
@@ -547,6 +548,7 @@ def local_store_and_basic_ops():
         ("test-libsecret", "test/libsecret-store"),
         ("test-caps", "test/caps-tok"),
         ("test-ns-pids", "test/ns-pids-store"),
+        ("test-ns-pids-env", "test/ns-pids-env-store"),
     ]:
         grant_local_unlocked(wrapper, resource)
 
@@ -556,6 +558,7 @@ def local_store_and_basic_ops():
     admin_write_secret(ADMIN_LOCAL, "local", "test-sleep", "test/dumpable-tok/env/DUMPABLE_SECRET", "dumpable_test_secret")
     admin_write_secret(ADMIN_LOCAL, "local", "test-crash", "test/crash-tok/env/CRASH_SECRET", "crash_secret_value")
     admin_write_secret(ADMIN_LOCAL, "local", "test-caps", "test/caps-tok/env/CAPS_SECRET", "caps_test_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-ns-pids-env", "test/ns-pids-env-store/env/NSPIDS_SECRET", "nspids_env_val")
 
     # Admin writes may update operator-managed credential refs centrally.
     admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token/env/MY_TOKEN", "overwrite")
@@ -921,6 +924,30 @@ def local_symlink_confused_deputy_attack():
         f"FAIL: symlink wrapper loaded the wrong config: {output}"
     machine.succeed("rm -f /tmp/local-test-echo2")
     machine.log("PASS: symlink confused-deputy attack prevented (egid-based identity)")
+
+
+def local_proc_isolation_env_mode():
+    # ============================================================
+    # LOCAL INSTANCE: /proc isolation in env-only mode
+    # ============================================================
+    # Every mode now unshares a mount namespace and remounts /proc inside
+    # the new PID namespace, so even an env-only wrapper (no libsecret, no
+    # files) must only see namespace-local PIDs — not host PIDs.
+
+    ns_pids_output = machine.succeed(
+        su("/run/wrappers/bin/local-test-ns-pids-env")
+    ).strip()
+    visible_pids = [line.strip() for line in ns_pids_output.split("\n")
+                    if line.strip().isdigit()]
+    machine.log(f"PIDs visible inside env-mode namespace: {visible_pids}")
+
+    # A fresh /proc against the new PID namespace exposes only the target
+    # (PID 1) and its few transient children — definitely not host PIDs.
+    assert len(visible_pids) < 20, \
+        f"FAIL: too many PIDs visible ({len(visible_pids)}) — env-mode /proc may show host PIDs: {visible_pids}"
+    assert "1" in visible_pids, \
+        f"FAIL: PID 1 not visible in env-mode namespace — /proc mount may be wrong: {visible_pids}"
+    machine.log("PASS: /proc in env-only mode shows only namespace-local PIDs")
 
 
 def local_proc_isolation_libsecret_mode():
@@ -2229,6 +2256,7 @@ local_isolation()
 local_spoofing_resistance()
 local_daemon_restart_persistence()
 local_pid_namespace_proc_isolation()
+local_proc_isolation_env_mode()
 local_ancestor_attack()
 local_core_dump_protection()
 local_symlink_confused_deputy_attack()

@@ -29,7 +29,8 @@ use directory_credential::{DirectoryMount, cleanup_directory_mounts, prepare_dir
 use env::build_target_env;
 use libsecret::setup_libsecret;
 use mounts::{
-    cleanup_directory_staging_root, setup_directory_mount_namespace_base, setup_mount_namespace,
+    cleanup_directory_staging_root, make_mount_namespace_private, remount_proc,
+    setup_directory_staging_tmpfs, setup_mount_namespace,
 };
 use resource_channel::ResourceChannel;
 use underwrap_protocol::exec::ExecBundle;
@@ -67,7 +68,7 @@ fn run() -> Result<(), String> {
         resolve_target_identity().map_err(|e| format!("resolving target identity: {e}"))?;
 
     make_process_non_dumpable()?;
-    prepare_namespace(libsecret_enabled, has_files)?;
+    prepare_namespace(has_files)?;
 
     let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
 
@@ -124,21 +125,22 @@ fn make_process_non_dumpable() -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_namespace(libsecret_enabled: bool, has_files: bool) -> Result<(), String> {
-    let unshare_flags = if libsecret_enabled || has_files {
-        libc::CLONE_NEWPID | libc::CLONE_NEWNS
-    } else {
-        libc::CLONE_NEWPID
-    };
-    let ret = unsafe { libc::unshare(unshare_flags) };
+fn prepare_namespace(has_files: bool) -> Result<(), String> {
+    // Always create a fresh PID + mount namespace. The mount namespace is
+    // unconditional now so that every mode can remount /proc against the new
+    // PID namespace (see remount_proc), limiting process discovery uniformly.
+    let ret = unsafe { libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
         return Err(format!("unshare failed: {err}"));
     }
 
-    if libsecret_enabled || has_files {
-        setup_directory_mount_namespace_base(DIRECTORY_STAGING_ROOT, has_files)
-            .map_err(|e| format!("mount namespace setup failed: {e}"))?;
+    make_mount_namespace_private()
+        .map_err(|e| format!("making mount namespace private failed: {e}"))?;
+
+    if has_files {
+        setup_directory_staging_tmpfs(DIRECTORY_STAGING_ROOT)
+            .map_err(|e| format!("directory staging setup failed: {e}"))?;
     }
 
     Ok(())
@@ -192,6 +194,10 @@ fn run_child(
     libsecret_enabled: bool,
     libsecret_state_path: Option<&Path>,
 ) -> Result<(), String> {
+    // Inside the new PID namespace: mount a fresh /proc in every mode so the
+    // target only sees namespace-local PIDs.
+    remount_proc().map_err(|e| format!("remounting /proc failed: {e}"))?;
+
     if libsecret_enabled {
         setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
     }
@@ -212,15 +218,31 @@ fn run_child(
         &target_identity.home,
         target_identity.uid,
     )?;
-    for (key, value) in target_env {
-        cmd.env(key, value);
-    }
 
     if libsecret_enabled {
         let state_path = libsecret_state_path
             .ok_or_else(|| "libsecret enabled but no state path provided".to_string())?;
         let section_bytes = libsecret_section_bytes(resource_channel)?;
-        setup_libsecret(&mut cmd, SECRET_FD, &section_bytes, state_path)?;
+        // The bus daemon and secretsd run with a sanitised environment drawn
+        // from the trusted target env only, so caller-controlled
+        // service-discovery paths cannot reach the private bus.
+        let helper_env: std::collections::HashMap<String, String> =
+            ["HOME", "PATH", "LANG", "LC_ALL", "TZ"]
+                .iter()
+                .filter_map(|k| target_env.get(*k).map(|v| ((*k).to_string(), v.clone())))
+                .collect();
+        setup_libsecret(
+            &mut cmd,
+            SECRET_FD,
+            resource_channel.channel_fd,
+            &helper_env,
+            &section_bytes,
+            state_path,
+        )?;
+    }
+
+    for (key, value) in target_env {
+        cmd.env(key, value);
     }
 
     resource_channel::close_channel_fd_for_exec(resource_channel);
