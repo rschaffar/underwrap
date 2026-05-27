@@ -12,6 +12,127 @@ up and executed in the right order without re-deriving the
 dependencies. Read this first, then the relevant epic, then the
 ticket.
 
+---
+
+## CURRENT STATE — RESUME HERE (updated 2026-05-27)
+
+### Phase 1 — DONE and committed (workspace + VM test green)
+
+All hardening tickets are in `tickets/03_done/`. Committed as:
+
+- `Frontend security hardening pass (tickets 1400/1410/1420/1430/1450/1480)`
+- `Record resolution notes on tickets 1430 and 1480`
+
+Note on **1430**: resolved *differently* than written. The premise was
+wrong — NixOS `security.wrappers` deliberately strips `CAP_SETPCAP` from
+the ambient set, so `underwrap-ns` never has it and `PR_CAPBSET_DROP`
+always EPERMs. EPERM is kept non-fatal with an explanatory comment; the
+real boundary is the final `capset` (permitted=0) + `PR_SET_NO_NEW_PRIVS`.
+(Saved to auto-memory `project_nixos_wrapper_strips_setpcap`.) The
+`cargo-fuzz` harness in 1480 was consciously deferred (nightly-toolchain
+decision) — see `docs/secretsd-threat-notes.md`.
+
+### Phase 2 — IN PROGRESS (workspace does NOT compile)
+
+Committed WIP: `WIP redesign bundle: shared-protocol foundation (1500 + 1510)`
+(commit `583b8e4`).
+
+- **1500 DONE**, **1510 DONE** — `shared-protocol` is green *in isolation*
+  (`cargo fmt/clippy/test -p shared-protocol`). The crate compiles; the
+  **workspace does not**, because the consumer crates still reference
+  removed `WrapperDef` fields and the old `Read`/`ReadOk`/runtime-request
+  shapes. This is the expected mid-cutover state.
+
+**REMAINING Phase 2 work — do these next, then the workspace compiles
+again:**
+
+1. **1530 — daemon (`frontend-underwrapd`). THE SECURITY CRUX.**
+   - Bind ONE socket per instance (`config.socket`) owned by
+     `config.group` gid (mode 0660). Drop the per-wrapper socket-bind
+     loop and `build_wrapper_gid_map` (now a single gid). Touch
+     `server.rs` (bind loop ~189-198), `startup.rs`
+     (`build_wrapper_gid_map` 10-30, `validate_config` 52-95, `bind_socket`
+     125-160).
+   - Intake (`wrapper_flow/intake.rs` `authorize_wrapper_peer` 15-64):
+     check peer egid == instance gid; then read the client `Read`
+     request, validate `wrapper_name` against `config.wrappers` (reject
+     unknown and the reserved `debug` token), relay `variant` to the
+     backend.
+   - `wrapper_flow/mod.rs:42` matches `Read { scope }` — now
+     `Read { wrapper_name, variant, scope }`.
+   - `wrapper_flow/read.rs` (`open_invocation` ~70-173): drop
+     `logical_name` fallback (use the client `wrapper_name`, already
+     validated); pass `variant` to `backend_client`; build `ReadOk` with
+     the **daemon-chosen `target`** (configured `target` for Real,
+     `config.debug_tool_target` for Debug) + `env_passthrough` / `env_set`
+     / `xdg_runtime_dir_base` from config. **CRUX: the daemon picks the
+     binary; emit `debug_tool_target` ONLY after the backend allowed a
+     `variant = Debug` open. A client sending `variant = Real` can never
+     get the debug tool.**
+   - `register_wrapper_assets` (`server.rs` 103-143): map key IS the
+     bare wrapper name now (drop `logical_name.unwrap_or_else(...)`).
+   - `backend_client.rs`: thread `variant` onto the open/finalize request
+     structs.
+   - `wrapper_resource_channel.rs`: pass the same `variant` into finalize.
+
+2. **1520 — `frontend-exec` single binary.**
+   - argv parsing: `uw-<instance> [debug] <wrapper> [args...]`. basename
+     identifies the INSTANCE (not the wrapper). Load the single instance
+     `DaemonConfig` (no per-wrapper sidecar). `detect_wrapper_config_name_from_executable`
+     (260-298) and the `WrapperExecConfig`/`WrapperFile` sidecar structs
+     (~320-427) go away / are reworked.
+   - Send `Read { wrapper_name, variant, scope }`; receive `ReadOk` (now
+     with `target`/env); build the exec for `underwrap-ns` using the
+     **daemon-returned** `target` + env (don't read target locally).
+   - `ExecBundle` is unchanged structurally (target still reaches ns via
+     argv, now sourced from `ReadOk.target`). The `request_secret`
+     destructure at `main.rs:443-456` must add the new `ReadOk` fields.
+
+3. **1540 — backend (`backend-backendd`).**
+   - `runtime_api/invocations.rs` `resolve_invocation` (39-81): take
+     `variant`, apply the matrix via the shared `policy::decide` (now
+     `decide(permission, variant, now)`); finalize re-checks variant too.
+   - Round-trip `UnsafeDebugUntil` through `admin_api/policy.rs`; OpenAPI
+     reflects the new mode + the `variant` request field (regen consumers
+     in Phase 3's SPA ticket 1560).
+   - Update backend tests/`test_support.rs` for the new request shapes.
+
+4. **integration-tests** — every `WrapperRequest::Read { scope }` and
+   `ReadOk { .. }` destructure and the harness `WrapperDef`
+   construction (`harness/mod.rs:122`, `tests/daemon.rs:299`, etc.) need
+   the new fields. See the consumer map below.
+
+**Bundle exit:** `cargo build`, `cargo test --workspace`, clippy all green.
+Then commit the bundle (amend/replace the WIP or stack a follow-up commit
+that makes the workspace green). Only after that do Phase 3 / Phase 4.
+
+### Consumer map (from a thorough sweep — fix these callsites)
+
+Removed-field readers: `.socket` → `frontend-underwrapd/startup.rs:54-63`,
+`server.rs:194`, `integration-tests/harness/mod.rs:122`,
+`tests/daemon.rs:299`. `.group` → `startup.rs:16`. `.logical_name` →
+`server.rs:106-109`, `wrapper_flow/read.rs:70-73`.
+
+`WrapperRequest::Read` constructed at `frontend-exec/main.rs:436`,
+`integration-tests` harness `mod.rs:262,282`, `tests/daemon.rs:372`,
+`tests/store_read.rs:95`, `tests/wrapper_writeback.rs:64`; matched at
+`frontend-underwrapd/wrapper_flow/mod.rs:42`.
+
+`ReadOk` built at `frontend-underwrapd/wrapper_flow/read.rs:166-173`;
+destructured at `frontend-exec/main.rs:443-456`, `integration-tests`
+`tests/mod.rs:121`, `tests/directory_and_status.rs:95-101`,
+`tests/store_read.rs:37`, `tests/wrapper_writeback.rs:67-77`.
+
+`xdg_runtime_dir_base` currently originates in the frontend-exec sidecar
+(`main.rs:327-415`); post-redesign it comes from `DaemonConfig` and is
+relayed in `ReadOk`. The `ExecBundle` field stays.
+
+(Phase 3 then does 1550 NixOS module, 1470 systemd, 1560 SPA, 1440
+SO_PEERPIDFD, 1570 VM test. Phase 4 = consolidated docs incl. 1580 +
+the deferred doc bits.)
+
+---
+
 ## Guiding constraints
 
 - **No-legacy cutover.** Replace subsystems in one shot; never ship a
