@@ -24,9 +24,69 @@ pub struct DaemonConfig {
     /// Backend service the frontend talks to.
     pub backend: BackendServiceConfig,
 
-    /// Wrapper definitions, keyed by wrapper name.
+    /// Instance name. Used for debug metadata and (in the NixOS module)
+    /// the `uw-<instance>` binary / `underwrap-<instance>` group naming.
+    pub instance: String,
+
+    /// The single wrapper socket for this instance. One socket per
+    /// instance now selects the daemon; the wrapper name is a
+    /// client-supplied selector carried over IPC, not encoded in the
+    /// socket path.
+    pub socket: PathBuf,
+
+    /// The single setgid group gating `socket` (mode 0660). Acquiring
+    /// this group is the sole kernel-enforced gate.
+    pub group: String,
+
+    /// Absolute path to the `underwrap-ns` helper the daemon names in
+    /// the exec plan.
+    pub ns_binary: PathBuf,
+
+    /// Absolute path to the debug tool exec'd for `variant = Debug`.
+    /// The daemon emits this only after the backend authorised a
+    /// `Debug` invocation, never the wrapper.
+    pub debug_tool_target: PathBuf,
+
+    /// Base directory from which the target `XDG_RUNTIME_DIR` is derived
+    /// as `<xdg_runtime_dir_base>/<uid>`.
+    pub xdg_runtime_dir_base: String,
+
+    /// Wrapper definitions, keyed by the bare wrapper name. The map key
+    /// is the canonical name registered with the backend and selected by
+    /// clients over IPC.
     #[serde(default)]
     pub wrappers: HashMap<String, WrapperDef>,
+}
+
+/// Reserved wrapper-name token: `uw-<instance> debug <wrapper>` selects
+/// the debug variant, so a wrapper may not itself be named `debug`.
+pub const RESERVED_WRAPPER_NAME_DEBUG: &str = "debug";
+
+impl DaemonConfig {
+    /// Validate the instance-level invariants that are independent of the
+    /// daemon's runtime environment (group/socket existence is checked at
+    /// bind time). Rejects a wrapper named `debug` (reserved subcommand
+    /// token) and a wrapper with no projection slot enabled.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.instance.is_empty() {
+            return Err("instance name must not be empty".to_string());
+        }
+        for (name, wrapper) in &self.wrappers {
+            if name == RESERVED_WRAPPER_NAME_DEBUG {
+                return Err(format!(
+                    "wrapper name '{RESERVED_WRAPPER_NAME_DEBUG}' is reserved \
+                     (it is the debug subcommand token)"
+                ));
+            }
+            if !(wrapper.env || wrapper.files.is_some() || wrapper.libsecret) {
+                return Err(format!(
+                    "wrapper '{name}' enables no projection slot \
+                     (set at least one of env/files/libsecret)"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Storage backend configuration — how `underwrap-backendd` persists secrets
@@ -118,16 +178,17 @@ pub struct BackendServiceConfig {
 }
 
 /// A wrapper definition.
+///
+/// The map key in `DaemonConfig::wrappers` is the canonical wrapper name;
+/// there is no per-wrapper socket or group any more (one of each per
+/// instance). Exec parameters that used to live in a per-wrapper sidecar
+/// config (`env_passthrough`, `env_set`) are absorbed here so the daemon
+/// can supply the full exec plan in `ReadOk`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WrapperDef {
-    /// Absolute path to the target binary to exec.
+    /// Absolute path to the target binary to exec for `variant = Real`.
     pub target: PathBuf,
-
-    /// Human-facing wrapper name used for backend catalog registration.
-    /// Defaults to the wrapper map key when omitted.
-    #[serde(default)]
-    pub logical_name: Option<String>,
 
     /// Backend resource id this wrapper projects into the target. Each
     /// wrapper projects exactly one resource; the resource itself
@@ -149,11 +210,13 @@ pub struct WrapperDef {
     #[serde(default)]
     pub libsecret: bool,
 
-    /// Unix socket path for this wrapper's authenticated daemon channel.
-    pub socket: PathBuf,
+    /// User environment variables allowed through to the target.
+    #[serde(default)]
+    pub env_passthrough: Vec<String>,
 
-    /// Unix group name for GID-based wrapper identity.
-    pub group: String,
+    /// Static environment variables injected into the target.
+    #[serde(default)]
+    pub env_set: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

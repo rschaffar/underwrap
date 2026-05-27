@@ -9,3 +9,6 @@ pub mod resource_blob;
 pub mod scm_rights;
 pub mod service;
 pub mod target_env;
+pub mod variant;
+
+pub use variant::WrapperVariant;

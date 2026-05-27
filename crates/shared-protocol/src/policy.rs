@@ -18,6 +18,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::variant::WrapperVariant;
+
 /// Reserved secret id used to persist the policy document inside a backend store.
 pub const POLICY_DOCUMENT_SECRET_ID: &str = "__underwrap/policy/document";
 
@@ -43,6 +45,12 @@ pub enum WrapperApprovalMode {
     /// Allow invocations until `until_epoch`; deny afterwards. The expiry is
     /// checked lazily on each request — no server-side sweeper.
     UnlockedUntil { until_epoch: u64 },
+    /// Allow **both** the real wrapper and its debug variant until
+    /// `until_epoch`; deny afterwards. This is the only mode under which a
+    /// `variant = Debug` invocation is allowed — it exposes the projected
+    /// secret material to the debug tool, so it is gated behind an explicit
+    /// operator opt-in with a TTL. Expiry is checked lazily per request.
+    UnsafeDebugUntil { until_epoch: u64 },
 }
 
 /// One per-store wrapper permission.
@@ -112,10 +120,11 @@ impl PolicyDocument {
         client_instance: &str,
         wrapper: &str,
         resource_id: &str,
+        variant: WrapperVariant,
         now_epoch: u64,
     ) -> Option<PolicyDecision> {
         let permission = self.find_permission(client_instance, wrapper, resource_id)?;
-        Some(decide(permission, now_epoch))
+        Some(decide(permission, variant, now_epoch))
     }
 
     pub fn evaluate_permission(
@@ -123,8 +132,15 @@ impl PolicyDocument {
         client_instance: &str,
         wrapper: &str,
         resource_id: &str,
+        variant: WrapperVariant,
     ) -> Option<PolicyDecision> {
-        self.evaluate_permission_at(client_instance, wrapper, resource_id, now_epoch_secs())
+        self.evaluate_permission_at(
+            client_instance,
+            wrapper,
+            resource_id,
+            variant,
+            now_epoch_secs(),
+        )
     }
 
     /// True when the wrapper is permitted to write to `resource_id`
@@ -137,7 +153,37 @@ impl PolicyDocument {
     }
 }
 
-fn decide(permission: &WrapperPermission, now_epoch: u64) -> PolicyDecision {
+/// Evaluate a permission for a specific invocation `variant`. The
+/// matrix (columns = variant):
+///
+/// | mode                          | Real            | Debug                       |
+/// |-------------------------------|-----------------|-----------------------------|
+/// | `Locked`                      | Deny            | Deny                        |
+/// | `Unlocked`                    | Allow           | Deny (not in unsafe-debug)  |
+/// | `UnlockedUntil` not expired   | Allow           | Deny (not in unsafe-debug)  |
+/// | `UnlockedUntil` expired       | Deny (expired)  | Deny (expired)              |
+/// | `UnsafeDebugUntil` not expired| Allow           | Allow                       |
+/// | `UnsafeDebugUntil` expired    | Deny (expired)  | Deny (expired)              |
+pub fn decide(
+    permission: &WrapperPermission,
+    variant: WrapperVariant,
+    now_epoch: u64,
+) -> PolicyDecision {
+    let expired = |until_epoch: u64| -> PolicyDecision {
+        PolicyDecision::Deny {
+            reason: format!(
+                "permission for '{}'/'{}' expired at epoch {until_epoch}, now {now_epoch}",
+                permission.wrapper, permission.resource_id
+            ),
+        }
+    };
+    let not_debug_mode = || PolicyDecision::Deny {
+        reason: format!(
+            "permission for '{}'/'{}' is not in unsafe-debug mode",
+            permission.wrapper, permission.resource_id
+        ),
+    };
+
     match permission.mode.clone() {
         WrapperApprovalMode::Locked => PolicyDecision::Deny {
             reason: permission
@@ -145,16 +191,26 @@ fn decide(permission: &WrapperPermission, now_epoch: u64) -> PolicyDecision {
                 .clone()
                 .unwrap_or_else(|| format!("permission for '{}' is locked", permission.wrapper)),
         },
-        WrapperApprovalMode::Unlocked => PolicyDecision::Allow,
+        WrapperApprovalMode::Unlocked => match variant {
+            WrapperVariant::Real => PolicyDecision::Allow,
+            WrapperVariant::Debug => not_debug_mode(),
+        },
         WrapperApprovalMode::UnlockedUntil { until_epoch } => {
             if now_epoch > until_epoch {
-                PolicyDecision::Deny {
-                    reason: format!(
-                        "permission for '{}'/'{}' expired at epoch {until_epoch}, now {now_epoch}",
-                        permission.wrapper, permission.resource_id
-                    ),
-                }
+                expired(until_epoch)
             } else {
+                match variant {
+                    WrapperVariant::Real => PolicyDecision::Allow,
+                    WrapperVariant::Debug => not_debug_mode(),
+                }
+            }
+        }
+        WrapperApprovalMode::UnsafeDebugUntil { until_epoch } => {
+            if now_epoch > until_epoch {
+                expired(until_epoch)
+            } else {
+                // Both variants are allowed under an active unsafe-debug
+                // permission.
                 PolicyDecision::Allow
             }
         }

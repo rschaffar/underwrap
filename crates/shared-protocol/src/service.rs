@@ -677,6 +677,10 @@ pub enum RuntimeWrapperRegisterResponse {
 pub struct RuntimeWrapperInvocationOpenRequest {
     pub wrapper_name: String,
     pub resource_name: String,
+    /// Real target or debug tool. The backend evaluates the policy for
+    /// this variant; only `UnsafeDebugUntil` admits `Debug`.
+    #[serde(default)]
+    pub variant: crate::variant::WrapperVariant,
 }
 
 /// Response to `POST /v1/wrapper-invocations`.
@@ -711,6 +715,9 @@ pub enum RuntimeWrapperInvocationOpenResponse {
 pub struct RuntimeWrapperInvocationFinalizeRequest {
     pub wrapper_name: String,
     pub resource_name: String,
+    /// Real target or debug tool — re-evaluated server-side on finalize.
+    #[serde(default)]
+    pub variant: crate::variant::WrapperVariant,
     /// `Some` = writeback. The wrapper sends the entire updated blob,
     /// not a diff. `None` = usage signal only (still bumps last_used_at).
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,57 +1,63 @@
 use super::*;
 
-#[test]
-fn minimal_config() {
-    let yaml = r#"
+/// Instance-level header shared by the fixtures below. One socket, one
+/// group, one ns binary, one debug tool per instance.
+const INSTANCE_HEADER: &str = r#"
 backend:
   url: https://backend.example.internal:8443
   ca_file: /etc/underwrap/ca.pem
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
+instance: local
+socket: /run/underwrap/local.sock
+group: underwrap-local
+ns_binary: /run/wrappers/bin/underwrap-ns
+debug_tool_target: /run/current-system/sw/bin/underwrap-debug-tool
+xdg_runtime_dir_base: /run/user
 "#;
-    let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+
+fn with_header(body: &str) -> String {
+    format!("{INSTANCE_HEADER}{body}")
+}
+
+#[test]
+fn minimal_config() {
+    let config: DaemonConfig = serde_yaml::from_str(INSTANCE_HEADER).unwrap();
     assert!(config.wrappers.is_empty());
+    assert_eq!(config.instance, "local");
+    assert_eq!(config.socket, PathBuf::from("/run/underwrap/local.sock"));
+    assert_eq!(config.group, "underwrap-local");
+    assert_eq!(
+        config.ns_binary,
+        PathBuf::from("/run/wrappers/bin/underwrap-ns")
+    );
+    assert_eq!(config.xdg_runtime_dir_base, "/run/user");
     assert_eq!(config.backend.url, "https://backend.example.internal:8443");
-    assert_eq!(
-        config.backend.ca_file,
-        Some(PathBuf::from("/etc/underwrap/ca.pem"))
-    );
-    assert_eq!(
-        config.backend.client_cert_file,
-        Some(PathBuf::from("/etc/underwrap/client.pem"))
-    );
-    assert_eq!(
-        config.backend.client_key_file,
-        Some(PathBuf::from("/etc/underwrap/client.key"))
-    );
 }
 
 #[test]
 fn full_wrapper_config() {
-    let yaml = r#"
-backend:
-  url: https://backend.example.internal:8443
-  ca_file: /etc/underwrap/ca.pem
-  client_cert_file: /etc/underwrap/client.pem
-  client_key_file: /etc/underwrap/client.key
+    let yaml = with_header(
+        r#"
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
-    socket: /run/underwrap/gh-authorized.sock
-    group: underwrap-gh-authorized
     resource: github/token
     env: true
+    env_passthrough:
+      - TERM
+    env_set:
+      PATH: /run/current-system/sw/bin
   gws-auth:
     target: /usr/bin/gws
-    socket: /run/underwrap/gws-auth.sock
-    group: underwrap-gws-auth
     resource: gws/state
     files:
       paths:
         - .config/gws
         - .local/share/gws
-"#;
-    let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+"#,
+    );
+    let config: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
     assert_eq!(config.wrappers.len(), 2);
     let gh = &config.wrappers["gh-authorized"];
     assert_eq!(gh.target, PathBuf::from("/usr/bin/gh"));
@@ -59,6 +65,11 @@ wrappers:
     assert!(gh.env);
     assert!(gh.files.is_none());
     assert!(!gh.libsecret);
+    assert_eq!(gh.env_passthrough, vec!["TERM".to_string()]);
+    assert_eq!(
+        gh.env_set.get("PATH").map(String::as_str),
+        Some("/run/current-system/sw/bin")
+    );
     let gws = &config.wrappers["gws-auth"];
     assert_eq!(gws.resource, "gws/state");
     assert!(!gws.env);
@@ -66,102 +77,122 @@ wrappers:
         gws.files.as_ref().unwrap().paths,
         vec![".config/gws".to_string(), ".local/share/gws".to_string()],
     );
+    config.validate().unwrap();
 }
 
 #[test]
 fn wrapper_rejects_unknown_fields() {
-    let yaml = r#"
-backend:
-  url: https://x
-  ca_file: /x
-  client_cert_file: /y
-  client_key_file: /z
+    let yaml = with_header(
+        r#"
 wrappers:
   bad:
     target: /usr/bin/true
-    socket: /run/x.sock
-    group: g
     resource: github/token
     variable: GH_TOKEN
-"#;
-    let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+"#,
+    );
+    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
     assert!(err.to_string().contains("unknown field `variable`"));
 }
 
 #[test]
-fn wrapper_rejects_legacy_resources_map() {
-    // The old multi-resource shape (`resources: { ... }`) is rejected
-    // by `deny_unknown_fields` so stale configs fail loudly instead
-    // of silently dropping projection slots.
-    let yaml = r#"
-backend:
-  url: https://x
-  ca_file: /x
-  client_cert_file: /y
-  client_key_file: /z
+fn wrapper_rejects_legacy_socket_and_group_fields() {
+    // socket/group moved to instance level; a per-wrapper socket/group is
+    // now an unknown field so stale configs fail loudly.
+    let yaml = with_header(
+        r#"
 wrappers:
   bad:
     target: /usr/bin/true
+    resource: github/token
     socket: /run/x.sock
-    group: g
+"#,
+    );
+    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
+    assert!(err.to_string().contains("unknown field `socket`"));
+}
+
+#[test]
+fn wrapper_rejects_legacy_resources_map() {
+    let yaml = with_header(
+        r#"
+wrappers:
+  bad:
+    target: /usr/bin/true
     resources:
       github/token:
         env: true
-"#;
-    let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+"#,
+    );
+    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
     assert!(err.to_string().contains("unknown field `resources`"));
 }
 
 #[test]
 fn wrapper_requires_resource() {
-    let yaml = r#"
-backend:
-  url: https://x
-  ca_file: /x
-  client_cert_file: /y
-  client_key_file: /z
+    let yaml = with_header(
+        r#"
 wrappers:
   bad:
     target: /usr/bin/true
-    socket: /run/x.sock
-    group: g
     env: true
-"#;
-    let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+"#,
+    );
+    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
     assert!(err.to_string().contains("missing field `resource`"));
 }
 
 #[test]
 fn files_projection_requires_paths() {
-    let yaml = r#"
-backend:
-  url: https://x
-  ca_file: /x
-  client_cert_file: /y
-  client_key_file: /z
+    let yaml = with_header(
+        r#"
 wrappers:
   bad:
     target: /usr/bin/true
-    socket: /run/x.sock
-    group: g
     resource: gws/state
     files: {}
-"#;
-    let err = serde_yaml::from_str::<DaemonConfig>(yaml).unwrap_err();
+"#,
+    );
+    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
     assert!(err.to_string().contains("missing field `paths`"));
 }
 
 #[test]
+fn validate_rejects_reserved_debug_wrapper_name() {
+    let yaml = with_header(
+        r#"
+wrappers:
+  debug:
+    target: /usr/bin/true
+    resource: github/token
+    env: true
+"#,
+    );
+    let config: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
+    let err = config.validate().unwrap_err();
+    assert!(err.contains("reserved"), "unexpected error: {err}");
+}
+
+#[test]
+fn validate_rejects_wrapper_with_no_projection_slot() {
+    let yaml = with_header(
+        r#"
+wrappers:
+  noslot:
+    target: /usr/bin/true
+    resource: github/token
+"#,
+    );
+    let config: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
+    let err = config.validate().unwrap_err();
+    assert!(
+        err.contains("no projection slot"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn shipped_examples_config_yaml_parses() {
-    // Locks the relationship between the annotated example we ship
-    // and the actual config schema. If a future change drops or
-    // renames a field used in `examples/config.yaml`, this test
-    // surfaces the drift instead of letting the example rot.
-    //
-    // Skips silently when `examples/` isn't in the build sandbox
-    // (e.g. nix builds that copy only `crates/` into the source
-    // tree). The drift check still fires under a normal
-    // workspace-root `cargo test`, which is where humans run it.
     let manifest = env!("CARGO_MANIFEST_DIR");
     let repo_root = std::path::Path::new(manifest)
         .parent()

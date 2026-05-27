@@ -17,11 +17,34 @@ backend:
   client_cert_file: /var/lib/underwrap/client.pem
   client_key_file: /var/lib/underwrap/client.key
 
+# One instance = one setgid wrapper binary (`uw-<instance>`), one setgid
+# group, and one socket. The wrapper is invoked as
+# `uw-<instance> <wrapper-name> [args...]` for a normal run, or
+# `uw-<instance> debug <wrapper-name> [...]` for the unsafe debug tool.
+# The wrapper name is a client-supplied selector validated against the
+# `wrappers` map below; the instance group (which gates the 0660 socket)
+# is the sole kernel-enforced gate, and the backend policy is the
+# authorization authority.
+instance: example
+
+# The single wrapper socket for this instance, gated by `group` (0660).
+socket: /run/underwrap/example.sock
+group: underwrap-example
+
+# Helper binaries the daemon names in the exec plan it returns to the
+# wrapper. The daemon — not the wrapper — chooses which target to exec,
+# so `debug_tool_target` is only ever used after the backend authorised a
+# `debug` invocation (an `unsafe-debug-until` permission).
+ns_binary: /run/wrappers/bin/underwrap-ns
+debug_tool_target: /run/current-system/sw/bin/underwrap-debug-tool
+
+# Base directory from which the target XDG_RUNTIME_DIR is derived as
+# <xdg_runtime_dir_base>/<uid>.
+xdg_runtime_dir_base: /run/user
+
 wrappers:
-  # Each wrapper entry defines one underwrap-facing command.
-  # The socket and group together form the authenticated wrapper identity:
-  # the socket selects the expected wrapper, and the peer's effective GID
-  # must match the configured group for that socket.
+  # Each wrapper entry defines one underwrap-facing command, selected by
+  # its map key (the canonical wrapper name).
   #
   # A wrapper projects **exactly one** backend resource. The resource
   # always has three slots:
@@ -30,11 +53,9 @@ wrappers:
   #   <resource>/libsecret/*
   # Enable any combination of `env`, `files`, and `libsecret` below to
   # decide which of those slots are projected into the target. At least
-  # one slot must be enabled.
+  # one slot must be enabled. The name `debug` is reserved.
   gh-authorized:
     target: /usr/bin/gh
-    socket: /run/underwrap/gh-authorized.sock
-    group: underwrap-gh-authorized
     resource: github/token
     env: true
 
@@ -43,15 +64,16 @@ wrappers:
   # repo and allowed subcommand, then call a store-pinned gh internally.
   agent-gh-comment:
     target: /nix/store/...-agent-gh-comment/bin/agent-gh-comment
-    socket: /run/underwrap/agent-gh-comment.sock
-    group: underwrap-agent-gh-comment
     resource: github/token
     env: true
+    # Optional: user env vars allowed through, and static env vars to inject.
+    env_passthrough:
+      - TERM
+    env_set:
+      PATH: /run/current-system/sw/bin
 
   agent-slack:
     target: /usr/bin/slack-cli
-    socket: /run/underwrap/agent-slack.sock
-    group: underwrap-agent-slack
     resource: slack/xoxp
     env: true
 
@@ -60,23 +82,17 @@ wrappers:
   # (wrapper, resource) rows so they remain independently authorized.
   gh-auth:
     target: /usr/bin/gh
-    socket: /run/underwrap/gh-auth.sock
-    group: underwrap-gh-auth
     resource: github/gh
     libsecret: true
 
   gh-pr:
     target: /nix/store/...-gh-pr-helper/bin/gh-pr-helper
-    socket: /run/underwrap/gh-pr.sock
-    group: underwrap-gh-pr
     resource: github/gh
     libsecret: true
 
   # A tool that persists backend-managed credential state in a directory tree.
   gws-auth:
     target: /usr/bin/gws
-    socket: /run/underwrap/gws-auth.sock
-    group: underwrap-gws-auth
     resource: gws/state
     files:
       # One or more target-home-relative mount paths. The single backend
@@ -88,10 +104,9 @@ wrappers:
       # when the backend wrapper permission denies writes. The backend
       # is the sole write authority: any modifications attempted on a
       # read-only permission are dropped at the end-of-run writeback
-      # and the wrapper
-      # emits one journal event + one stderr line per affected
-      # resource. Set `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` on the
-      # wrapper invocation to silence the stderr line (the journal
-      # event is always emitted).
+      # and the wrapper emits one journal event + one stderr line per
+      # affected resource. Set `UNDERWRAP_SUPPRESS_READONLY_WARNING=1`
+      # on the wrapper invocation to silence the stderr line (the
+      # journal event is always emitted).
       paths:
         - .config/gws

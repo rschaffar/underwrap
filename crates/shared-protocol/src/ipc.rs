@@ -180,6 +180,24 @@ impl WireDecode for String {
     }
 }
 
+impl WireEncode for std::path::PathBuf {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        // Paths in this system are NixOS store / config paths and are
+        // UTF-8; encode as the string form to reuse the length-prefixed
+        // string framing.
+        let s = self
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", self.display()))?;
+        s.encode(out)
+    }
+}
+
+impl WireDecode for std::path::PathBuf {
+    fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
+        Ok(std::path::PathBuf::from(reader.read_string()?))
+    }
+}
+
 impl<T: WireEncode> WireEncode for Option<T> {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {

@@ -1,24 +1,42 @@
 use anyhow::{Result, anyhow};
+use std::path::PathBuf;
 
 use crate::config::AccessMode;
 use crate::ipc::{WireDecode, WireEncode, WireReader};
+use crate::variant::WrapperVariant;
 
 use super::common::SecretBytes;
 use super::errors::ErrorCode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperRequest {
-    /// Normal secret read. The daemon authenticates the peer, asks the
-    /// backend to authorise the invocation, and answers with `ReadOk`
-    /// (or `Error`).
-    Read { scope: Option<String> },
+    /// Normal secret read. The daemon authenticates the peer (instance
+    /// group egid), validates the client-supplied `wrapper_name` against
+    /// its config, asks the backend to authorise the invocation for the
+    /// given `variant`, and answers with `ReadOk` (or `Error`).
+    Read {
+        /// Client-supplied wrapper name; validated against config. The
+        /// kernel no longer binds identity to a per-wrapper group, so the
+        /// daemon must check this against its known wrappers.
+        wrapper_name: String,
+        /// Real target or debug tool. The daemon, not the client, picks
+        /// the binary based on the variant the backend authorised.
+        variant: WrapperVariant,
+        scope: Option<String>,
+    },
 }
 
 impl WireEncode for WrapperRequest {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {
-            Self::Read { scope } => {
+            Self::Read {
+                wrapper_name,
+                variant,
+                scope,
+            } => {
                 0u8.encode(out)?;
+                wrapper_name.encode(out)?;
+                variant.encode(out)?;
                 scope.encode(out)
             }
         }
@@ -29,6 +47,8 @@ impl WireDecode for WrapperRequest {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         match u8::decode(reader)? {
             0 => Ok(Self::Read {
+                wrapper_name: String::decode(reader)?,
+                variant: WrapperVariant::decode(reader)?,
                 scope: Option::<String>::decode(reader)?,
             }),
             other => Err(anyhow!("invalid wrapper request discriminant: {other}")),
@@ -36,6 +56,10 @@ impl WireDecode for WrapperRequest {
     }
 }
 
+// ReadOk carries the full exec plan and is the dominant variant; Error is
+// rare and small. Boxing the hot path to equalise variant sizes would add an
+// allocation on every successful read for no real benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperResponse {
     ReadOk {
@@ -57,6 +81,18 @@ pub enum WrapperResponse {
         /// for this resource should be bind-mounted in the namespace.
         /// Empty when the wrapper does not project a `files` slot.
         files_target_paths: Vec<String>,
+        /// Daemon-chosen binary to exec: the configured `target` for
+        /// `variant = Real`, or the instance's `debug_tool_target` for
+        /// `variant = Debug`. The wrapper never chooses this — it is the
+        /// trust-boundary control that stops a client from running the
+        /// debug tool under a `Real` authorisation.
+        target: PathBuf,
+        /// User env vars the target may inherit (from the wrapper config).
+        env_passthrough: Vec<String>,
+        /// Static env vars injected into the target (from the config).
+        env_set: std::collections::HashMap<String, String>,
+        /// Base dir from which ns derives `XDG_RUNTIME_DIR`.
+        xdg_runtime_dir_base: String,
     },
     Error {
         code: ErrorCode,
@@ -74,6 +110,10 @@ impl WireEncode for WrapperResponse {
                 access,
                 libsecret,
                 files_target_paths,
+                target,
+                env_passthrough,
+                env_set,
+                xdg_runtime_dir_base,
             } => {
                 0u8.encode(out)?;
                 env.encode(out)?;
@@ -81,7 +121,11 @@ impl WireEncode for WrapperResponse {
                 resource_name.encode(out)?;
                 access.encode(out)?;
                 libsecret.encode(out)?;
-                files_target_paths.encode(out)
+                files_target_paths.encode(out)?;
+                target.encode(out)?;
+                env_passthrough.encode(out)?;
+                env_set.encode(out)?;
+                xdg_runtime_dir_base.encode(out)
             }
             Self::Error { code, message } => {
                 1u8.encode(out)?;
@@ -102,6 +146,10 @@ impl WireDecode for WrapperResponse {
                 access: AccessMode::decode(reader)?,
                 libsecret: bool::decode(reader)?,
                 files_target_paths: Vec::<String>::decode(reader)?,
+                target: PathBuf::decode(reader)?,
+                env_passthrough: Vec::<String>::decode(reader)?,
+                env_set: std::collections::HashMap::<String, String>::decode(reader)?,
+                xdg_runtime_dir_base: String::decode(reader)?,
             }),
             1 => Ok(Self::Error {
                 code: ErrorCode::decode(reader)?,
