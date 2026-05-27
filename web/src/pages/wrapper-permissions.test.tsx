@@ -88,7 +88,7 @@ describe("derivation helpers", () => {
 });
 
 describe("ModeBadge", () => {
-  it("renders one of the four mode variants", () => {
+  it("renders every mode/expiry badge variant", () => {
     const future = Math.floor(Date.now() / 1000) + 3600;
     const past = Math.floor(Date.now() / 1000) - 3600;
     const variants: Array<{ mode: WrapperApprovalMode; testid: string }> = [
@@ -101,6 +101,14 @@ describe("ModeBadge", () => {
       {
         mode: { kind: "unlocked-until", until_epoch: past },
         testid: "mode-expired",
+      },
+      {
+        mode: { kind: "unsafe-debug-until", until_epoch: future },
+        testid: "mode-unsafe-debug-until",
+      },
+      {
+        mode: { kind: "unsafe-debug-until", until_epoch: past },
+        testid: "mode-unsafe-debug-expired",
       },
     ];
     for (const v of variants) {

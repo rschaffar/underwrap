@@ -1,4 +1,10 @@
-import { ShieldCheck, ShieldOff, Hourglass, Trash2 } from "lucide-react";
+import {
+  ShieldCheck,
+  ShieldOff,
+  Hourglass,
+  AlertTriangle,
+  Trash2,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import type {
@@ -212,6 +218,31 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
           title={`Expires ${date.toString()}`}
         >
           <Hourglass className="h-3 w-3" aria-hidden /> until{" "}
+          {formatEpochShort(mode.until_epoch)}
+        </span>
+      );
+    }
+    case "unsafe-debug-until": {
+      const date = epochToDate(mode.until_epoch);
+      const expired = date.getTime() <= Date.now();
+      if (expired) {
+        return (
+          <span
+            data-testid="mode-unsafe-debug-expired"
+            className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 text-xs text-rose-200"
+            title={`Unsafe-debug expired ${date.toString()}`}
+          >
+            <ShieldOff className="h-3 w-3" aria-hidden /> unsafe-debug expired
+          </span>
+        );
+      }
+      return (
+        <span
+          data-testid="mode-unsafe-debug-until"
+          className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/20 px-1.5 py-0.5 text-xs font-medium text-amber-100"
+          title={`Unsafe-debug until ${date.toString()}`}
+        >
+          <AlertTriangle className="h-3 w-3" aria-hidden /> unsafe-debug until{" "}
           {formatEpochShort(mode.until_epoch)}
         </span>
       );

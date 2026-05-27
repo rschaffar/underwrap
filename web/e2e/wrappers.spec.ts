@@ -8,45 +8,93 @@
  */
 import { test, expect, loginViaUi } from "./fixtures";
 
-/** Fetch the live `X-CSRF-Token` cookie so admin API requests we drive
- *  directly carry the same double-submit token the SPA would. */
-async function csrfFromPage(page: import("@playwright/test").Page): Promise<string> {
-  const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "__Host-uw-csrf");
-  if (!csrf) throw new Error("__Host-uw-csrf cookie missing — login first");
-  return csrf.value;
+// Admin mutations are driven from inside the page via `fetch(...,
+// { credentials: "include" })` so they share the SPA's exact session.
+// The CSRF cookie is HttpOnly, so the synchronizer token can't be read
+// from `document.cookie`; instead — exactly like the SPA's client — we
+// capture the `X-CSRF-Token` response header from a priming admin GET and
+// replay it on the mutating request. (Playwright's `page.request` uses a
+// separate cookie jar and trips the CSRF check, hence the in-page fetch.)
+
+type AdminFetch = {
+  method: "POST" | "PUT";
+  path: string;
+  body: unknown;
+};
+
+async function adminFetchJson<T>(
+  page: import("@playwright/test").Page,
+  req: AdminFetch,
+): Promise<T> {
+  return page.evaluate(async ({ method, path, body }) => {
+    const prime = await fetch("/v1/admin/stores", { credentials: "include" });
+    if (!prime.ok) {
+      throw new Error(`csrf prime GET failed ${prime.status} — login first`);
+    }
+    const csrf = prime.headers.get("X-CSRF-Token");
+    if (!csrf) throw new Error("no X-CSRF-Token header on admin response");
+    const res = await fetch(path, {
+      method,
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      throw new Error(`${method} ${path} failed ${res.status}: ${await res.text()}`);
+    }
+    return (await res.json()) as T;
+  }, req);
 }
 
+/** Create a resource (random backend id) and return that id. */
+async function createResource(
+  page: import("@playwright/test").Page,
+  store: string,
+  name: string,
+): Promise<string> {
+  const body = await adminFetchJson<{ resource: { id: string } }>(page, {
+    method: "POST",
+    path: `/v1/admin/stores/${store}/resources`,
+    body: { name },
+  });
+  return body.resource.id;
+}
+
+/**
+ * Create a resource and a wrapper/resource pair against it. Returns the
+ * resource id, which addresses the table cells
+ * (`wrappers-cell-<wrapper>-<resource_id>-<client>`).
+ */
 async function seedPair(
   page: import("@playwright/test").Page,
-  baseUrl: string,
   store: string,
   wrapper: string,
-  resource: string,
-): Promise<void> {
-  const csrf = await csrfFromPage(page);
-  // The admin pair-create requires the resource to exist first.
-  const r = await page.request.post(
-    `${baseUrl}/v1/admin/resources/create`,
-    {
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRF-Token": csrf,
-        Origin: baseUrl,
-      },
-      data: { store, name: resource },
-    },
-  );
-  expect([200, 409], `seed resource: ${await r.text()}`).toContain(r.status());
-  const p = await page.request.post(`${baseUrl}/v1/admin/pairs/create`, {
-    headers: {
-      "Content-Type": "application/json",
-      "X-CSRF-Token": csrf,
-      Origin: baseUrl,
-    },
-    data: { store, wrapper, resource },
+  resourceName: string,
+): Promise<string> {
+  const resourceId = await createResource(page, store, resourceName);
+  await adminFetchJson(page, {
+    method: "POST",
+    path: `/v1/admin/stores/${store}/pairs`,
+    body: { wrapper, resource_id: resourceId },
   });
-  expect([200, 409], `seed pair: ${await p.text()}`).toContain(p.status());
+  return resourceId;
+}
+
+/** Upsert a wrapper permission via the REST endpoint. */
+async function upsertPermission(
+  page: import("@playwright/test").Page,
+  store: string,
+  clientInstance: string,
+  wrapper: string,
+  resourceId: string,
+  mode: { kind: string; until_epoch?: number },
+  writable: boolean,
+): Promise<void> {
+  await adminFetchJson(page, {
+    method: "PUT",
+    path: `/v1/admin/stores/${store}/wrapper-permissions/${clientInstance}/${wrapper}/${resourceId}`,
+    body: { mode, writable },
+  });
 }
 
 test("wrappers page loads and shows the empty-pairs message on a fresh store", async ({
@@ -56,73 +104,60 @@ test("wrappers page loads and shows the empty-pairs message on a fresh store", a
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/wrappers`);
 
-  await expect(page.getByRole("heading", { name: /^wrappers$/i })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: /wrapper permissions/i }),
+  ).toBeVisible();
 
   await expect(
     page.getByText(/no wrapper\/resource pairs are registered/i),
   ).toBeVisible();
 });
 
-test("cell editor cycles a permission through all four modes and then removes it", async ({
+test("cell editor cycles a permission through every mode (incl. unsafe-debug confirm) and then removes it", async ({
   page,
   backendWithAdmin,
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
 
   // Seed a pair record so the table has a row to drive permissions against.
-  await seedPair(
+  const resourceId = await seedPair(
     page,
-    backendWithAdmin.baseUrl,
     "default",
     "gh-authorized",
     "github/token",
   );
   // Seed an initial permission so the cell starts non-empty.
-  const csrf = await csrfFromPage(page);
-  const seed = await page.request.post(
-    `${backendWithAdmin.baseUrl}/v1/admin/wrapper-permissions/upsert`,
-    {
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRF-Token": csrf,
-        Origin: backendWithAdmin.baseUrl,
-      },
-      data: {
-        store: "default",
-        permission: {
-          client_instance: "dev-laptop",
-          wrapper: "gh-authorized",
-          resource: "github/token",
-          mode: { kind: "locked" },
-          writable: false,
-        },
-      },
-    },
+  await upsertPermission(
+    page,
+    "default",
+    "dev-laptop",
+    "gh-authorized",
+    resourceId,
+    { kind: "locked" },
+    false,
   );
-  expect(seed.status(), `seed: ${await seed.text()}`).toBe(200);
 
   await page.goto(`${backendWithAdmin.baseUrl}/wrappers?store=default`);
 
   const cell = page.getByTestId(
-    "wrappers-cell-gh-authorized-github/token-dev-laptop",
+    `wrappers-cell-gh-authorized-${resourceId}-dev-laptop`,
   );
   await expect(cell).toBeVisible();
   await expect(cell.getByTestId("mode-locked")).toBeVisible();
 
   async function setMode(mode: string) {
     await cell.click();
-    const dlg = page.getByRole("dialog");
-    await expect(dlg).toBeVisible();
+    await expect(page.getByTestId("mode-radio-group")).toBeVisible();
     await page
       .getByTestId(`mode-radio-${mode}`)
       .click({ force: true });
-    if (mode === "per-call-approval") {
-      await dlg
-        .getByLabel(/ssh public key/i)
-        .fill("ssh-ed25519 AAAAAAAA test@example");
+    if (mode === "unsafe-debug-until") {
+      // Picking unsafe-debug-until opens a danger-confirm gate; the edit
+      // dialog only switches into the mode once it is confirmed.
+      await page.getByTestId("confirm-danger-confirm").click();
     }
-    await dlg.getByTestId("permission-save").click();
-    await expect(dlg).toBeHidden();
+    await page.getByTestId("permission-save").click();
+    await expect(page.getByTestId("permission-save")).toBeHidden();
   }
 
   await setMode("unlocked");
@@ -131,8 +166,8 @@ test("cell editor cycles a permission through all four modes and then removes it
   await setMode("unlocked-until");
   await expect(cell.getByTestId("mode-unlocked-until")).toBeVisible();
 
-  await setMode("per-call-approval");
-  await expect(cell.getByTestId("mode-per-call-approval")).toBeVisible();
+  await setMode("unsafe-debug-until");
+  await expect(cell.getByTestId("mode-unsafe-debug-until")).toBeVisible();
 
   await setMode("locked");
   await expect(cell.getByTestId("mode-locked")).toBeVisible();
@@ -160,9 +195,13 @@ test("admin can create a wrapper/resource pair through the dialog", async ({
   await dlg.getByRole("button", { name: /^create$/i }).click();
   await expect(dlg).toBeHidden();
 
-  // The pair row is now visible in the table.
-  await expect(page.getByRole("cell", { name: "gh-authorized" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "github/token" })).toBeVisible();
+  // The pair row is now visible in the table. Match on text content with
+  // exact:true so the delete button's "Delete pair gh-authorized /
+  // github/token" aria-label (not text content) doesn't interfere.
+  await expect(
+    page.getByText("gh-authorized", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("github/token", { exact: true })).toBeVisible();
 });
 
 test("raw policy viewer surfaces the live PolicyDocument and writable-permission count", async ({
@@ -170,47 +209,42 @@ test("raw policy viewer surfaces the live PolicyDocument and writable-permission
   backendWithAdmin,
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
-  await page.goto(`${backendWithAdmin.baseUrl}/wrappers`);
+  await page.goto(`${backendWithAdmin.baseUrl}/wrappers?store=default`);
+
+  // The writable-permission count badge lives in the page header now
+  // (always visible), not inside the raw-policy dialog.
+  await expect(page.getByTestId("writable-permissions-badge")).toHaveText(
+    /0 writable of 0/i,
+  );
 
   await page.getByRole("button", { name: /view raw policy/i }).click();
   const dlg = page.getByRole("dialog", { name: /raw policy: default/i });
   await expect(dlg).toBeVisible();
-
-  await expect(dlg.getByTestId("writable-permissions-badge")).toHaveText(/0 of 0/i);
-  const json = dlg.getByTestId("policy-json");
-  await expect(json).toContainText('"permissions"');
+  await expect(dlg.getByTestId("policy-json")).toContainText('"permissions"');
 
   await dlg.getByText("Close", { exact: true }).click();
   await expect(dlg).toBeHidden();
 
-  const csrf = await csrfFromPage(page);
-  // Pair must exist before a permission can render on the wrapper
-  // permissions page, but the raw policy viewer reads
-  // policy.permissions directly so the upsert below is sufficient to
-  // bump the writable count.
-  const setResp = await page.request.post(
-    `${backendWithAdmin.baseUrl}/v1/admin/wrapper-permissions/upsert`,
-    {
-      data: {
-        store: "default",
-        permission: {
-          client_instance: "dev-laptop",
-          wrapper: "gh-authorized",
-          resource: "github/token",
-          mode: { kind: "unlocked" },
-          writable: true,
-        },
-      },
-      headers: {
-        "X-CSRF-Token": csrf,
-        Origin: backendWithAdmin.baseUrl,
-      },
-    },
+  // Seed a writable permission. The raw policy reads policy.permissions
+  // directly and the header badge counts them, so a resource + writable
+  // permission is enough to bump the count to 1.
+  const resourceId = await createResource(page, "default", "github/token");
+  await upsertPermission(
+    page,
+    "default",
+    "dev-laptop",
+    "gh-authorized",
+    resourceId,
+    { kind: "unlocked" },
+    true,
   );
-  expect(setResp.status()).toBe(200);
+
+  await page.reload();
+  await expect(page.getByTestId("writable-permissions-badge")).toHaveText(
+    /1 writable of 1/i,
+  );
 
   await page.getByRole("button", { name: /view raw policy/i }).click();
   const dlg2 = page.getByRole("dialog", { name: /raw policy: default/i });
-  await expect(dlg2.getByTestId("writable-permissions-badge")).toHaveText(/1 of 1/i);
   await expect(dlg2.getByTestId("policy-json")).toContainText('"writable": true');
 });

@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { AdminDialog } from "@/components/admin-dialog";
+import { ConfirmDangerDialog } from "@/components/ConfirmDangerDialog";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
@@ -40,7 +42,10 @@ export function EditCellDialog({
     existing?.mode?.kind ?? "locked",
   );
   const [untilLocal, setUntilLocal] = useState<string>(() => {
-    if (existing?.mode?.kind === "unlocked-until") {
+    if (
+      existing?.mode?.kind === "unlocked-until" ||
+      existing?.mode?.kind === "unsafe-debug-until"
+    ) {
       return toDatetimeLocal(epochToDate(existing.mode.until_epoch));
     }
     return toDatetimeLocal(new Date(Date.now() + 30 * 60 * 1000));
@@ -48,6 +53,30 @@ export function EditCellDialog({
   const [writable, setWritable] = useState<boolean>(existing?.writable ?? false);
   const [reason, setReason] = useState<string>(existing?.reason ?? "");
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // When the operator picks `unsafe-debug-until` from any other mode we
+  // gate the switch behind an explicit confirmation rather than committing
+  // it immediately. Adjusting the TTL while already in the mode does not
+  // re-prompt.
+  const [confirmUnsafeDebug, setConfirmUnsafeDebug] = useState(false);
+
+  // `unsafe-debug-until` shares the deadline picker with `unlocked-until`.
+  const showDeadline = kind === "unlocked-until" || kind === "unsafe-debug-until";
+
+  function onKindChange(next: WrapperApprovalMode["kind"]) {
+    if (next === "unsafe-debug-until" && kind !== "unsafe-debug-until") {
+      setConfirmUnsafeDebug(true);
+      return;
+    }
+    setKind(next);
+  }
+
+  function armUnsafeDebug() {
+    setKind("unsafe-debug-until");
+    // Fresh entry into unsafe-debug gets a deliberately short default
+    // window (15 min vs. the 30-min unlocked-until default).
+    setUntilLocal(toDatetimeLocal(new Date(Date.now() + 15 * 60 * 1000)));
+    setConfirmUnsafeDebug(false);
+  }
 
   const upsert = useMutation({
     mutationFn: (mode: WrapperApprovalMode) =>
@@ -104,11 +133,24 @@ export function EditCellDialog({
         };
         break;
       }
+      case "unsafe-debug-until": {
+        const until = new Date(untilLocal).getTime();
+        if (Number.isNaN(until)) {
+          setSubmitError("Pick a valid deadline.");
+          return;
+        }
+        mode = {
+          kind: "unsafe-debug-until",
+          until_epoch: Math.floor(until / 1000),
+        };
+        break;
+      }
     }
     upsert.mutate(mode);
   }
 
   return (
+    <>
     <AdminDialog
       open
       onClose={onClose}
@@ -137,14 +179,25 @@ export function EditCellDialog({
             className="flex flex-wrap gap-2"
             data-testid="mode-radio-group"
           >
-            {(["locked", "unlocked", "unlocked-until"] as const).map(
-              (k) => (
+            {(
+              [
+                "locked",
+                "unlocked",
+                "unlocked-until",
+                "unsafe-debug-until",
+              ] as const
+            ).map((k) => {
+              const danger = k === "unsafe-debug-until";
+              const selectedClass = danger
+                ? "border-amber-500/50 bg-amber-500/10 text-amber-200"
+                : "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+              return (
                 <label
                   key={k}
                   className={
                     "inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm " +
                     (kind === k
-                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                      ? selectedClass
                       : "border-(--color-line) bg-(--color-surface-1) text-(--color-fg)")
                   }
                 >
@@ -155,14 +208,21 @@ export function EditCellDialog({
                     data-testid={`mode-radio-${k}`}
                     className="sr-only"
                     checked={kind === k}
-                    onChange={() => setKind(k)}
+                    onChange={() => onKindChange(k)}
                   />
-                  {k}
+                  {danger ? (
+                    <span className="inline-flex items-center gap-1">
+                      <AlertTriangle className="h-3 w-3" aria-hidden />
+                      unsafe-debug
+                    </span>
+                  ) : (
+                    k
+                  )}
                 </label>
-              ),
-            )}
+              );
+            })}
           </fieldset>
-          {kind === "unlocked-until" ? (
+          {showDeadline ? (
             <div className="space-y-1.5">
               <Label htmlFor="until-local">Deadline (local time)</Label>
               <Input
@@ -222,5 +282,22 @@ export function EditCellDialog({
           </div>
         </DialogFooter>
     </AdminDialog>
+    <ConfirmDangerDialog
+      open={confirmUnsafeDebug}
+      title="Enable unsafe debug?"
+      confirmLabel="Yes, enable unsafe debug"
+      onConfirm={armUnsafeDebug}
+      onCancel={() => setConfirmUnsafeDebug(false)}
+      description={
+        <>
+          This unlocks the debug tool (
+          <code>uw-&lt;instance&gt; debug {wrapper}</code>), which prints
+          this wrapper's projected secret material to the operator's
+          terminal, until the deadline you set expires. Only use it for
+          local, supervised debugging.
+        </>
+      }
+    />
+    </>
   );
 }
