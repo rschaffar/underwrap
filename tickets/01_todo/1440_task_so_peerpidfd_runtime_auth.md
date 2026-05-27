@@ -2,6 +2,34 @@
 
 Part of: `epic_frontend_security_hardening_2026-05`.
 
+## Redesign interaction (read first)
+
+This ticket edits the **same code** that
+`epic_single_instance_wrapper_redesign_2026-05` rewrites
+(`frontend-underwrapd` peer auth / intake — see ticket `1530`).
+Sequence this **after** the redesign bundle (1500–1540), not before,
+or 1530 will rewrite your work.
+
+Two adaptations once the redesign has landed:
+
+- The problem statement below frames the socket as `0660`
+  group=`underwrap-<inst>-<wrapper>` (per-wrapper). After the
+  redesign there is **one** group per instance,
+  `underwrap-<instance>`. Update the framing accordingly.
+- The redesign makes this check **more** load-bearing, not less.
+  Once the wrapper-name is a client-supplied, validated-against-config
+  selector (no longer kernel-bound) and the daemon chooses the
+  target, the peer egid check is the *sole* kernel-enforced factor in
+  the identity story. Grounding it in a race-free `SO_PEERPIDFD`
+  syscall stops being nice-to-have and becomes the thing the whole
+  model rests on. Treat this ticket as part of the redesign's
+  follow-through, not optional polish.
+
+**Docs:** the `docs/security.md` edit below (§"Why effective GID
+instead of real GID?") lands in a section the redesign's `1580`
+rewrites. Fold this doc change into the consolidated `security.md`
+pass (see the execution plan) rather than editing the file twice.
+
 ## Problem
 
 `crates/frontend-underwrapd/src/peer_auth.rs:33-49` reads the peer

@@ -2,6 +2,30 @@
 
 Part of: `epic_frontend_security_hardening_2026-05`.
 
+## Redesign interaction (read first)
+
+`epic_single_instance_wrapper_redesign_2026-05` rewrites the
+**identity / trust-model** sections of `docs/security.md` (setgid +
+effective GID, wrapper-group identity, the "never trust
+client-supplied wrapper names" rule) in ticket `1580`. This ticket
+does **not** own those sections — keep it scoped to:
+
+- §"Environment sanitization" passthrough trade-offs (`TMPDIR`,
+  `SSH_AUTH_SOCK`, `DISPLAY`/`WAYLAND_DISPLAY`) — fully
+  redesign-independent;
+- §"Guarantee under the hardened posture" narrow-helper precondition
+  — fully redesign-independent;
+- §"What the PID namespace contributes" — **overlaps ticket `1420`**
+  (which makes the `/proc` remount unconditional). If 1420 has
+  landed, this is the one-paragraph cleanup described below.
+
+Because `1420`, `1440`, `1470`, `1580`, and this ticket all edit
+`docs/security.md`, do them as **one coherent documentation pass at
+the end** (see the execution plan's Phase 4) rather than five
+separate, conflicting edits to the same file. The passthrough and
+narrow-helper content here is redesign-independent and could be
+drafted early, but commit it as part of that final pass.
+
 ## Problem
 
 `docs/security.md` is unusually honest, but two sections are framed
