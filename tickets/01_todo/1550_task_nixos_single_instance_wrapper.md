@@ -51,16 +51,42 @@ detection, and keep them consistent.
 ### 4. PATH integration
 
 `userBareEntries` / `mkUserBin`: each authorized user gets `uw`
-(default instance) and/or `uw-<instance>` on PATH. Drop the
-per-wrapper bare-name symlinks and the `debug-<wrapper>` symlinks —
-wrappers are now invoked as `uw[-<instance>] <wrapper> ...` and
-debug as `uw[-<instance>] debug <wrapper> ...`.
+(default instance) and/or `uw-<instance>` on PATH as the real
+entrypoint. The per-wrapper setgid binaries and the
+`debug-<wrapper>` setgid binaries are gone.
 
-(Decision point: do we still want bare per-wrapper command names for
-ergonomics, e.g. a `gh-authorized` shim that execs `uw <wrapper>`?
-Default to **no** for the first cut — one `uw` entrypoint — and
-revisit if operators want the shims. Note the decision in the
-module comment.)
+**DECIDED (operator request): keep the per-tool command names via
+plain convenience shims.** For every declared wrapper, generate two
+unprivileged POSIX shell scripts on PATH that just forward to the
+real binary, so the day-to-day UX matches the old per-wrapper
+binaries:
+
+- `<wrapper>`        → `exec uw-<instance> <wrapper> "$@"`
+- `debug-<wrapper>`  → `exec uw-<instance> debug <wrapper> "$@"`
+
+(Use `uw` instead of `uw-<instance>` inside the shims for the default
+instance if that reads cleaner — but `uw-<instance>` is always
+correct and unambiguous, so prefer it.)
+
+Critical properties of these shims:
+
+- They are **plain shell scripts, NOT security.wrappers** — no
+  setgid, no file capabilities. All privilege and policy still live
+  exclusively in `uw-<instance>` (setgid) and the daemon. The shim is
+  pure ergonomics: it saves the user from typing the
+  `uw-<instance> <wrapper>` form.
+- `exec "$@"`-style forwarding so argv, exit status, and signals pass
+  through unchanged.
+- Generated per authorized user the same way the bare `uw` entry is
+  (reuse `mkUserBin` / the same PATH dir), so they land next to `uw`.
+
+**Naming collisions are the operator's responsibility, same as
+before.** The old design already produced a binary literally named
+`<wrapper>` per wrapper; two instances declaring the same wrapper
+name collided on PATH then too. The module does **not** add
+collision-avoidance logic for the shims — document this in a module
+comment and move on. (The `debug-` prefix likewise mirrors the old
+`debug-<wrapper>` binary names.)
 
 ### 5. Reserved name
 
@@ -87,5 +113,9 @@ Confirm `nix flake check` evaluates.
   with no per-wrapper `socket`/`group`.
 - `grep -RIn "addUnsafeDebugTool\|fullDebugWrapperName\|wrapperGroupName" nix/`
   returns nothing.
+- Each authorized user has, on PATH: `uw` / `uw-<instance>` (the real
+  setgid entrypoint) plus, per wrapper, a plain `<wrapper>` shim and a
+  `debug-<wrapper>` shim that `exec uw-<instance> [debug] <wrapper>
+  "$@"`. The shims are unprivileged (no setgid / caps).
 - `nix build .#checks.x86_64-linux.vm-test` builds (assertions
   reworked in ticket 1570).

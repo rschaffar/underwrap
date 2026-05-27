@@ -29,6 +29,14 @@ Rework / add:
    runs the configured target normally and the secret is projected.
    Replace the old bare-name invocations.
 
+   Also exercise the **per-wrapper convenience shims** from ticket
+   1550: run the bare `<wrapper> <args>` shim and assert it behaves
+   identically to `uw-<inst> <wrapper> <args>` (argv + exit status
+   forwarded), and run `debug-<wrapper>` and assert it behaves like
+   `uw-<inst> debug <wrapper>` (i.e. denied under `Unlocked`, allowed
+   under `UnsafeDebugUntil`). Confirm the shims are plain scripts, not
+   setgid (`stat -c '%a' $(command -v <wrapper>)` has no setgid bit).
+
 2. **Debug denied by default.** With the wrapper's permission in
    `Unlocked`, run `uw-<inst> debug <wrapper>`. Assert non-zero exit
    and the daemon log shows the backend's
