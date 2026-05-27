@@ -82,6 +82,37 @@ shape and will fail until 1550 lands. Run the VM test as part of Phase 3.
 SO_PEERPIDFD, 1570 VM test. Phase 4 = consolidated docs incl. 1580 +
 the deferred doc bits.)
 
+### Phase 3 — IN PROGRESS (updated 2026-05-27)
+
+Done and committed:
+
+- **1550** (NixOS module rewrite) — single `uw-<instance>` setgid binary,
+  single `underwrap-<instance>` gate group (= daemon group), one socket,
+  full `DaemonConfig` at `/etc/underwrap/daemon/<instance>.yaml`, minimal
+  frontend-exec sidecar at `/etc/underwrap/instances/<instance>.yaml`,
+  per-user `<wrapper>`/`debug-<wrapper>` shims + bare `uw` for the
+  `default` instance, reserved-`debug` assertion, `addUnsafeDebugTool`
+  removed. The NixOS system **evaluates** and the underwrap package
+  **builds**. Ticket file still in `02_inprogress` because its VM-build
+  acceptance is gated on 1570 (test.py still references the old shape).
+- **1560** (admin SPA unsafe-debug-until) — DONE, in `03_done`.
+  `ConfirmDangerDialog`, edit-cell confirm-gate, badge, vitest (68),
+  `npm run build`, and the **full** Playwright suite (30) all green.
+  Doing this also unblocked the package/VM build (the regenerated
+  `schema.ts` had made the edit-cell switch non-exhaustive).
+- **Full e2e modernization** — the whole Playwright suite was red from
+  cross-cutting changes predating this epic (synchronizer-token CSRF +
+  HttpOnly cookie, admin REST refactor, dashboard removed → `/`→`/secrets`,
+  operator roles/grants removed, page renames). All specs updated; 30/30
+  green. Shared `adminMutate` helper added to `web/e2e/fixtures.ts`.
+
+Remaining in Phase 3: **1470** (systemd unit hardening on the rewritten
+module + cert/key startup mode check), **1440** (`SO_PEERPIDFD` peer auth
+in the daemon intake — security-critical), **1570** (VM test rework:
+`uw-<inst> [debug] <wrapper>`, shims, one group/socket, target authority,
+expiry, spoofing). After 1570, run `nix build
+.#checks.x86_64-linux.vm-test` to close 1550 + 1570.
+
 ---
 
 ## Guiding constraints
