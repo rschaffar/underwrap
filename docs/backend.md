@@ -172,8 +172,20 @@ Idempotent on repeat calls — re-registering an unchanged set returns
 ### `POST /v1/wrapper-invocations` — open
 
 ```json
-{ "wrapper_name": "gh-authorized", "resource_name": "github/token" }
+{ "wrapper_name": "gh-authorized",
+  "resource_name": "github/token",
+  "variant": "real" }
 ```
+
+`variant` is `"real"` (default, omittable) or `"debug"`. It is the
+invocation flavour the daemon relays from
+`uw-<instance> <wrapper>` vs `uw-<instance> debug <wrapper>`. The
+backend evaluates the policy for the variant; only an active
+`UnsafeDebugUntil` permission admits `"debug"` (see
+[Policy model](#policy-model)). The `variant` is trustworthy
+end-to-end because the **daemon**, not the caller, then picks the target
+binary the wrapper execs — a forged `"real"` cannot reach the debug
+tool.
 
 The backend re-evaluates the policy server-side and replies with
 either:
@@ -193,19 +205,23 @@ or a structured `Deny`:
 
 Stable kebab-case reasons: `no-permission`, `locked` (or the
 permission's free-text `reason` field verbatim, when set), `expired`,
-`unregistered-pair`. The daemon caches `blob_b64` for the lifetime of
-the wrapper-resource channel and serves the wrapper's `Checkout`
-verbatim from it; it never tries to look up the storage key itself.
+`not-unsafe-debug` (a `"debug"` variant against a non-`UnsafeDebugUntil`
+permission), `unregistered-pair`. The daemon caches `blob_b64` for the
+lifetime of the wrapper-resource channel and serves the wrapper's
+`Checkout` verbatim from it; it never tries to look up the storage key
+itself.
 
 ### `POST /v1/wrapper-invocations/finalize` — close
 
 ```json
 { "wrapper_name": "gh-authorized",
   "resource_name": "github/token",
+  "variant": "real",
   "blob_b64": "…or omitted for a usage-signal call…" }
 ```
 
-The backend re-evaluates the policy again, then:
+The backend re-evaluates the policy again (same `variant` matrix as
+open), then:
 
 - `blob_b64 = None` — usage signal. Bumps `last_used_at` on the pair
   and returns `{ "outcome": "ok" }`. Always allowed if the open
@@ -319,10 +335,9 @@ bootstrap) carry neither; read-only protected endpoints carry only
   `503 store_locked` if the store is locked (rotation needs the
   current key to read existing ciphertext) and `409 not_encrypted`
   on plain stores.
-- `POST /v1/admin/secret/{read,write,list,delete}` — direct access to any
-  store's key-value surface. `write` and `delete` gate on
-  [`writes_enabled`](#global-write-lock) and reject with
-  `403 writes_globally_disabled` when the toggle is off.
+- direct access to a store's per-secret surface (read/write/delete by
+  resource id + slot + key). Admin writes are unconditional — there is
+  no global write toggle (see [No global write lock](#no-global-write-lock)).
 - `POST /v1/admin/policy/get` — fetch the entire `PolicyDocument`
 - `POST /v1/admin/policy/put` — replace the entire document
 - `POST /v1/admin/wrapper-permissions/list` — list every wrapper
@@ -339,10 +354,6 @@ bootstrap) carry neither; read-only protected endpoints carry only
   Wrapper/Resource Pair records. `create` refuses if the referenced
   resource doesn't exist or if `(wrapper, resource)` is already taken;
   `delete` refuses when any wrapper permission references the pair.
-- `POST /v1/admin/policy/writes-enabled/get` — read the per-store
-  write toggle
-- `POST /v1/admin/policy/writes-enabled/set` — flip the per-store
-  write toggle. Admin-only; logged.
 
 Every admin write is a full atomic replacement of the stored policy
 document or of one wrapper-permission entry.
@@ -379,16 +390,31 @@ permissions:
       until_epoch: 1745092800
 ```
 
-Three modes:
+Four modes:
 
 - **`locked`** — deny every invocation through this permission. The
   free-text `reason` field is surfaced verbatim in the `Deny.reason`
   payload so operators can communicate intent without a roundtrip to
   Slack.
-- **`unlocked`** — allow every invocation through this permission.
-- **`unlocked-until`** — allow until `until_epoch`; deny after. The
-  expiry is checked lazily on each request — there is no background
-  sweeper.
+- **`unlocked`** — allow the `real` variant; deny `debug`.
+- **`unlocked-until`** — like `unlocked` until `until_epoch`; deny
+  after. The expiry is checked lazily on each request — there is no
+  background sweeper.
+- **`unsafe-debug-until`** — allow **both** the `real` wrapper and its
+  `debug` variant until `until_epoch`. The only mode under which the
+  debug tool runs; it prints the projected secret material to the
+  operator terminal, so use the shortest TTL that fits.
+
+The `(mode × variant)` matrix (evaluated by the shared `decide`):
+
+| mode | `real` | `debug` |
+|------|--------|---------|
+| `locked` | deny (`locked`/reason) | deny (`locked`/reason) |
+| `unlocked` | allow | deny (`not-unsafe-debug`) |
+| `unlocked-until` active | allow | deny (`not-unsafe-debug`) |
+| `unlocked-until` expired | deny (`expired`) | deny (`expired`) |
+| `unsafe-debug-until` active | allow | allow |
+| `unsafe-debug-until` expired | deny (`expired`) | deny (`expired`) |
 
 Per-invocation approval is intentionally out of scope. If you need
 human-in-the-loop confirmation, layer it at the OS level (sudo,
@@ -403,18 +429,12 @@ Write authorization is decided per-permission via the `writable: bool`
 flag and re-checked by the backend on every finalize. Read access
 through an active permission is unconditional.
 
-### Global write lock
+### No global write lock
 
-```yaml
-writes_enabled: false
-```
-
-`writes_enabled` is a per-store kill switch over every write path in
-the admin API (`/v1/admin/secret/{write,delete}`). When `false`, those
-endpoints reject with `403 writes_globally_disabled`. Default `false` on
-a fresh store — admins opt in deliberately before any mutation lands.
-Wrapper-side writes through the libsecret channel inherit the same
-gate via the `AccessMode::ReadWrite` projection.
+There is no per-store write toggle. The earlier `writes_enabled` kill
+switch was removed. Admin secret edits are unconditional for an
+authenticated admin; wrapper-side writes are gated solely by the
+per-permission `writable` flag, re-checked on every finalize.
 
 ### Evaluation order (backend, on both open and finalize)
 

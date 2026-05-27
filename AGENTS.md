@@ -59,7 +59,7 @@ crates/
   frontend-exec/           # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
   frontend-ns/             # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
   frontend-secretsd/       # D-Bus Secret Service provider for libsecret mode
-  debug-tool/              # Unsafe inspection CLI; can be installed as a wrapper target via `addUnsafeDebugTool`
+  debug-tool/              # Unsafe inspection CLI; the target the daemon execs for `variant = Debug` (gated by an `UnsafeDebugUntil` permission)
   backend-backendd/        # Central HTTPS service + admin API + auth + SPA hosting + policy authority
   integration-tests/       # Cargo integration tests (real daemon + backend)
 web/                       # Vite + React + shadcn admin SPA (served by backend-backendd)
@@ -147,13 +147,18 @@ prefixes.
 ### Never do
 
 - Never log secret material (values, tokens, credentials)
-- Never trust client-supplied wrapper names — identity comes from kernel egid
+- The client-supplied wrapper name is a *selector*, never an
+  authorization signal. Validate it against config (reject unknown names
+  and the reserved `debug` token); the kernel gate is the instance-group
+  egid on the 0660 socket, and the backend policy is the authorization
+  authority. The daemon — not the wrapper — chooses the target binary.
 - Never allow fallback to a less-secure mode (no "degraded" operation)
 - Never put secrets in argv, environment variables between stages, or temp files
   during the wrapper handoff (use pipe fd 3)
-- Never trust argv[0] for wrapper identity — derive wrapper name from
-  getegid() → group name → strip prefix. argv[0] is user-controlled
-  (symlinks can set it to anything).
+- Never trust argv[0] (symlinks can set it to anything). The wrapper to
+  run comes from the validated name *argument* (`uw-<instance>
+  [debug] <wrapper>`), not argv[0]; the kernel identity is the instance
+  group egid, read race-free via `SO_PEERPIDFD`.
 - Never skip return value checks on privilege-drop syscalls
 - Never store secret material in local files outside the StorageBackend — no JSON
   files, no sidecar databases, no caches. ALL secret values flow through the
@@ -169,7 +174,7 @@ prefixes.
 
 ### Always do
 
-- Verify wrapper identity from the wrapper socket that accepted the connection plus `SO_PEERCRED` effective GID (read from `/proc/pid/status`)
+- Gate the wrapper socket on the peer's effective GID == the instance group, read race-free via `SO_PEERPIDFD` (Linux 6.5+; `SO_PEERCRED` + `/proc/<pid>/status` fallback). Then validate the client-supplied wrapper name against config
 - Zeroize secret material after use (`zeroize` crate)
 - Set `PR_SET_DUMPABLE=0` on wrapper processes that hold secrets
 - Set `PR_SET_DUMPABLE=0` in secretsd as first action before reading secrets
@@ -264,7 +269,19 @@ another module, import it directly from where it lives.
 **Two-stage wrapper chain:**
 `underwrap-exec` (setgid) → pipe fd 3 → `underwrap-ns` (cap_sys_admin) → target in PID namespace
 
-**Identity model:** wrapper socket selects expected wrapper + setgid group → `SO_PEERCRED` effective GID → daemon confirms the match → daemon issues `POST /v1/wrapper-invocations { wrapper_name, resource_name }` to the backend over mTLS. The backend re-derives the principal from the cert and consults the per-store grant `(client_instance, wrapper, resource)`. The daemon itself carries no policy state.
+**Identity model:** one `uw-<instance>` setgid binary + one
+`underwrap-<instance>` group (= daemon's primary group) + one `0660`
+socket per instance. The kernel gate is the instance-group egid (read
+race-free via `SO_PEERPIDFD`); the client-supplied wrapper name + variant
+arrive in the request and the daemon validates the name against config
+(rejecting unknown names and the reserved `debug`). The daemon — not the
+wrapper — chooses the target (configured target for `Real`,
+`debug_tool_target` for `Debug`), emitted only after the backend allows
+the variant. The daemon issues `POST /v1/wrapper-invocations {
+wrapper_name, resource_name, variant }` over mTLS; the backend re-derives
+the principal from the cert and consults the per-store permission
+`(client_instance, wrapper, resource)`. The daemon carries no policy
+state.
 
 **One resource per wrapper (frontend invariant):** each `WrapperDef` in
 the frontend config projects exactly one backend resource. The resource
@@ -291,20 +308,26 @@ JSON admin API.
 **Wrapper permission model:** the per-store policy document is a flat
 list of `WrapperPermission` rows keyed by
 `(client_instance, wrapper, resource)`. Each permission carries one of
-three modes (`Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`)
-and a per-permission `writable: bool` flag. Read access through an
-active permission is unconditional; write access is decided
-per-permission and re-checked server-side on every finalize.
-Per-invocation approval is out of scope; use OS-level mechanisms
-(sudo / polkit) if you need a prompt.
+four modes (`Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`,
+`UnsafeDebugUntil { until_epoch }`) and a per-permission `writable: bool`
+flag. `UnsafeDebugUntil` is the only mode that admits the `Debug`
+variant (the debug tool, which prints projected secret material); every
+other mode denies `Debug` with `not-unsafe-debug`. The shared
+`policy::decide(permission, variant, now)` is the single authority for
+the (mode × variant) matrix. Read access through an active permission is
+unconditional; write access is decided per-permission and re-checked
+server-side on every finalize. There is no global write-lock. Per-
+invocation approval is out of scope; use OS-level mechanisms (sudo /
+polkit) if you need a prompt.
 
 **Runtime API (daemon ↔ backend, mTLS):**
 
 - `POST /v1/wrappers` — register the daemon's `(wrapper_name,
   resource_name)` pairs at startup.
-- `POST /v1/wrapper-invocations` — open one invocation. Backend
-  re-evaluates the policy and returns either `Allow { resource_id,
-  blob_b64, writable }` or `Deny { reason }`.
+- `POST /v1/wrapper-invocations` — open one invocation, carrying
+  `variant` (`real`/`debug`). Backend re-evaluates the policy for the
+  variant and returns either `Allow { resource_id, blob_b64, writable }`
+  or `Deny { reason }` (e.g. `not-unsafe-debug`).
 - `POST /v1/wrapper-invocations/finalize` — close one invocation,
   optionally with a writeback blob. Backend independently re-checks
   writability, re-canonicalizes, and rejects any change to the env

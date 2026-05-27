@@ -47,11 +47,12 @@ Depending on how you configure it, underwrap can also:
 
 - keep secrets in a central `underwrap-backendd` service on the same
   machine or on a trusted remote workstation/server
-- let operators manage stores, users, and per-`(wrapper, host, user)`
-  agent grants through a single-binary admin SPA that
+- let operators manage stores, users, and per-client wrapper
+  permissions through a single-binary admin SPA that
   `underwrap-backendd` serves directly over HTTPS
-- require a fresh SSH-agent signature for individual invocations of
-  high-privilege wrappers (per-call approval)
+- grant time-bounded access (`UnlockedUntil`) and an audited,
+  confirm-gated `UnsafeDebugUntil` mode that exposes the projected
+  secret to an operator terminal for incident debugging
 - provide a private Secret Service (`libsecret`) environment for tools
   such as `gh`
 
@@ -59,12 +60,17 @@ Depending on how you configure it, underwrap can also:
 
 underwrap is trying to combine a few things that are rarely available together:
 
-- **wrapper-first UX** — users run a command like `work-jira issue list`
-- **kernel-backed wrapper identity** — wrapper socket selection sets the expected wrapper, and the peer's setgid-derived effective GID must confirm it
-- **per-agent `(wrapper, host, user)` grants** — central policy
-  controls which agents on which hosts can use each wrapper, with
-  four modes per grant (locked, unlocked, time-limited, ssh-agent
-  per-call approval) and a single global write-lock toggle per store
+- **wrapper-first UX** — users run a command like `jira issue list`
+  (a per-user shim for `uw-<instance> jira`)
+- **kernel-backed access gate** — one setgid `uw-<instance>` binary and
+  one `0660` socket per instance; only a process holding the instance
+  group egid (read race-free via `SO_PEERPIDFD`) can reach the daemon.
+  The wrapper name is a client-supplied selector the daemon validates,
+  and the daemon — not the caller — chooses the target binary
+- **central per-client permissions** — the backend policy controls which
+  runtime client instances can use each `(wrapper, resource)`, with four
+  modes per permission (`Locked`, `Unlocked`, `UnlockedUntil`,
+  `UnsafeDebugUntil`) and a per-permission `writable` flag
 - **clean target environments** — the target does not inherit the caller's full shell environment
 - **process-isolated delivery** — under the default hardened posture
   (`services.underwrap.hardenTargetHost = true`, which pins
@@ -120,7 +126,7 @@ Imagine a NixOS machine where you want a Jira wrapper that injects `JIRA_API_TOK
 After configuration, the user experience looks like this:
 
 ```bash
-$ work-jira issue list
+$ jira issue list
 ```
 
 Instead of this:

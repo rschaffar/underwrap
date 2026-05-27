@@ -138,3 +138,13 @@ In `docs/security.md`:
   actionable list of variables they should consider trimming for
   their specific wrapper.
 - No tests change.
+
+## Resolution (2026-05-27) — done as part of the Phase 4 docs pass
+
+`docs/security.md`: added the §"Default passthrough trade-offs" paragraph
+(TMPDIR / SSH_AUTH_SOCK / DISPLAY / WAYLAND_DISPLAY), rewrote §"What the
+PID namespace contributes" for the now-unconditional /proc remount
+(containment vs. Yama confidentiality), lifted the narrow-helper
+precondition into its own emphasised paragraph (the single most
+load-bearing element of the env-mode guarantee), and added a passthrough
+pointer to §"Final perspective". No tests changed.

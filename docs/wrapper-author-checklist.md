@@ -155,21 +155,22 @@ Ask:
 
 The simpler mode is usually better unless the workflow really needs libsecret or directory-backed state.
 
-## 9. Does the wrapper need operator approval per invocation?
+## 9. How tightly should access be time-bounded?
 
-This is a backend-side question, not a local one.
+This is a backend-side question, not a local one. underwrap does not
+ship a per-invocation prompt; if you need human-in-the-loop confirmation
+on every call, layer `sudo`/polkit in front of the wrapper.
 
 Ask:
 
-- is the secret sensitive enough that every invocation should require
-  an operator-present ssh-agent signature?
-- is there a clear user workflow for signing?
-- is a time-bounded central unlock enough, or do you really want
-  per-call approval?
+- is standing `Unlocked` access acceptable, or should this wrapper be
+  `Locked` by default and flipped to `UnlockedUntil { until_epoch }` for
+  time-bounded windows?
+- if an operator needs to inspect the projected secret to debug an
+  incident, `UnsafeDebugUntil` enables the debug tool — use the shortest
+  TTL that fits, since it prints the secret to the terminal.
 
-If per-call approval is enabled, it should serve a real operational
-purpose — not just friction. Set wrapper modes in the
-[admin UI](admin-ui.md) or via `/v1/admin/wrapper/set-mode`.
+Set wrapper permission modes in the [admin UI](admin-ui.md).
 
 ## 10. Is the token itself scoped tightly enough?
 

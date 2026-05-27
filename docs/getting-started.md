@@ -25,12 +25,13 @@ operator browser ─► underwrap-backendd
                          ▲
                          │ HTTPS + runtime client certs
                          │
-user@console ─► work-jira (setgid) ─► underwrapd-work ─┘
+user@console ─► uw-work jira (setgid) ─► underwrapd-work ─┘
 ```
 
-When a user runs `work-jira`, underwrap injects `JIRA_API_TOKEN` just
-for that invocation and then executes `jira`. The secret is fetched
-from the backend the operator configured.
+When a user runs `jira` (the per-user shim) — equivalently
+`uw-work jira` — underwrap injects `JIRA_API_TOKEN` just for that
+invocation and then executes the configured `jira` target. The secret is
+fetched from the backend the operator configured.
 
 ## Prerequisites
 
@@ -115,13 +116,15 @@ sudo nixos-rebuild switch
 
 The module creates:
 
-- daemon user/group: `underwrap-work`
-- wrapper group: `underwrap-work-jira`
+- daemon user and instance group: `underwrap-work`
 - daemon service: `underwrapd-work.service`
-- wrapper socket: `/run/underwrap-work/wrapper-jira.sock`
-- setgid wrapper: `/run/wrappers/bin/work-jira`
-- wrapper sidecar config: `/etc/underwrap/wrappers/work-jira.yaml`
-- instance config: `/etc/underwrap/instances/work.yaml`
+- the single instance socket: `/run/underwrap-work/wrapper.sock` (0660,
+  group `underwrap-work`)
+- the one setgid entry point: `/run/wrappers/bin/uw-work`
+- per-user shims on the `PATH` of each `allowedUsers` member: `jira` and
+  `debug-jira`
+- daemon config: `/etc/underwrap/daemon/work.yaml`
+- frontend-exec sidecar: `/etc/underwrap/instances/work.yaml`
 - expected client credential paths: `/var/lib/underwrap-work/client-work.{pem,key}`
   (generated in the next step)
 
@@ -150,8 +153,8 @@ The backend starts empty. Open the admin UI in a browser, bootstrap the
 first admin operator, create a store named `work`, then:
 
 - add the secret `jira/api-token`
-- add a grant allowing wrapper `work-jira` on host `localhost` for the
-  user who will run it
+- add a permission allowing wrapper `jira` for the client instance that
+  will run it (mode `Unlocked`)
 
 The admin UI is now the canonical way to perform this setup.
 
@@ -167,11 +170,15 @@ jira init
 ## 6. Run the wrapper
 
 ```bash
-work-jira issue list
+jira issue list          # via the per-user shim
+# or, explicitly:
+uw-work jira issue list
 ```
 
 This should feel like running `jira issue list`, except the token came
-from underwrap.
+from underwrap. To inspect the projected environment during an incident,
+an operator can set the permission to `UnsafeDebugUntil` and run
+`uw-work debug jira` (or `debug-jira`).
 
 ## Verify the setup
 
@@ -184,8 +191,8 @@ systemctl status underwrapd-work.service
 Wrapper setgid bit?
 
 ```bash
-ls -l /run/wrappers/bin/work-jira
-# → -rwxr-sr-x ... root underwrap-work-jira ...
+ls -l /run/wrappers/bin/uw-work
+# → -rwxr-sr-x ... root underwrap-work ...
 ```
 
 Policy and secret stored?
@@ -208,11 +215,12 @@ Open the admin UI and inspect the `work` store's policy and secrets.
 
 ## Troubleshooting
 
-### `peer egid does not map to any configured wrapper`
+### `peer egid ... does not match instance group gid`
 
-The process did not reach the daemon through a valid setgid wrapper.
-Check that `/run/wrappers/bin/work-jira` exists, is setgid, and is
-group-owned by `underwrap-work-jira`.
+The process did not reach the daemon through the setgid entry point.
+Check that `/run/wrappers/bin/uw-work` exists, is setgid, and is
+group-owned by `underwrap-work` (the instance group that gates the
+socket).
 
 ### `connecting to backend at https://127.0.0.1:18443` fails
 

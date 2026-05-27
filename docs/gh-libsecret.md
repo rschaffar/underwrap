@@ -68,9 +68,9 @@ namespace reusable while separating:
 - the wrapper that may mutate the store
 - the wrappers that may only read from it
 
-Wrapper availability (locked / unlocked / per-call approval with an
-SSH key) is set on the backend side; the local wrapper config stays
-minimal. See [The underwrap backend](backend.md) and
+Wrapper availability (`Locked` / `Unlocked` / `UnlockedUntil` /
+`UnsafeDebugUntil`) is set on the backend side; the local wrapper config
+stays minimal. See [The underwrap backend](backend.md) and
 [Admin UI](admin-ui.md) for the modes and how to set them.
 
 ## Access levels

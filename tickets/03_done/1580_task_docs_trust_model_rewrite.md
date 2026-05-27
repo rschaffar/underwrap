@@ -81,3 +81,24 @@ Rewrite to the instance-level shape: one socket, one group, one
   from `docs/security.md` alone: kernel gate (instance group egid),
   daemon gate (name validation + target authority), policy gate
   (per-instance permissions incl. `UnsafeDebugUntil`).
+
+## Resolution (2026-05-27) — done
+
+`docs/security.md`: rewrote invariant #2 and §"Wrapper identity" for the
+single-binary / one-socket / instance-group-egid model + SO_PEERPIDFD,
+daemon-chosen target, the (mode × variant) matrix incl. UnsafeDebugUntil,
+the stage-1/2 flow, the socket section, the "fixed target paths" →
+daemon-chosen-target section, a "Target-host daemon hardening" subsection
+(1470), and removed the stale `writes_enabled` "Mutation gating" toggle.
+`docs/backend.md`: added `variant` to open/finalize, the four modes +
+matrix, "No global write lock". `examples/config.yaml` was already in the
+instance-level shape. `AGENTS.md`/CLAUDE.md: rewrote the
+client-supplied-name rule, Identity model, Wrapper permission model,
+runtime-API variant, debug-tool line. For end-to-end coherence also
+updated `docs/architecture.md`, `docs/getting-started.md`, `README.md`,
+`docs/agents.md`, `docs/gh-libsecret.md`, `docs/wrapper-author-checklist.md`
+(work-jira → uw-work jira / per-user shims; removed per-call-approval).
+`docs/backend-release-plan.md` left as an explicitly-historical doc.
+
+Acceptance: `grep -RIn addUnsafeDebugTool` matches only ticket text;
+no live doc claims per-wrapper-group identity or never-trust-names.

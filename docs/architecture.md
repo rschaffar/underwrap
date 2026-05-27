@@ -20,13 +20,13 @@ the layers top-down without spelunking.
 
 ## Why the wrapper chain has two stages
 
-`underwrap-exec` and `underwrap-ns` are installed as separate setgid
-binaries:
+The wrapper chain is two binaries:
 
-1. **`underwrap-exec`**
-   - installed setgid to a per-wrapper group
-   - authenticates against `underwrapd` via kernel identity and
-     receives secret material
+1. **`underwrap-exec`** — installed once per instance as the setgid
+   entry point `uw-<instance>`, setgid to the instance group
+   `underwrap-<instance>`. It parses `[debug] <wrapper> [args]`,
+   authenticates against `underwrapd` via the instance-group egid, and
+   receives secret material plus the daemon-chosen target.
 2. **`underwrap-ns`**
    - installed with `cap_sys_admin` and `cap_setpcap`
    - creates the PID/mount namespace, sets `PR_SET_NO_NEW_PRIVS`, prunes
@@ -39,16 +39,17 @@ story on one binary.
 
 ## Per-user PATH integration
 
-`security.wrappers` is system-wide, so the canonical setgid binaries live
-under instance-prefixed names like `/run/wrappers/bin/work-jira`. On top
-of those, the NixOS module installs bare-named symlinks into each
-authorized user's profile directory — `/etc/profiles/per-user/<user>/bin/jira`
-points at `/run/wrappers/bin/work-jira` for any user listed in the
-instance's `allowedUsers`. NixOS places per-user profile bins on each
-user's `PATH`, so users invoke wrappers by their bare attribute name
-without conflicting with other users on the same host. The bare-name
-layer is a pure UX shim: kernel identity, setgid group, and sidecar
-config all come from the prefixed binary the link resolves to.
+`security.wrappers` is system-wide, so the one setgid entry point per
+instance lives under `/run/wrappers/bin/uw-<instance>` (e.g.
+`uw-work`). On top of it, the NixOS module installs per-user convenience
+shims into each authorized user's profile directory —
+`/etc/profiles/per-user/<user>/bin/jira` and `.../bin/debug-jira` for any
+user in the instance's `allowedUsers`. Those shims are plain,
+unprivileged scripts that just `exec /run/wrappers/bin/uw-<instance>
+[debug] jira "$@"`; they carry no setgid bit and no config. NixOS places
+per-user profile bins on each user's `PATH`, so users invoke wrappers by
+their bare attribute name. All kernel identity and target selection
+happen in `uw-<instance>` and the daemon, never in the shim.
 
 ## End-to-end request flow
 
@@ -56,15 +57,19 @@ For a normal env-var wrapper:
 
 ```text
 user runs jira issue list
-  -> /etc/profiles/per-user/<user>/bin/jira            (per-user symlink)
-  -> /run/wrappers/bin/work-jira                       (underwrap-exec, setgid)
-  -> connect to /run/underwrap-work/wrapper-jira.sock
-  -> underwrapd verifies the peer's effective GID matches that wrapper socket
-  -> underwrapd authorizes and reads the secret from the central backend (HTTPS + mTLS)
+  -> /etc/profiles/per-user/<user>/bin/jira            (per-user shim script)
+  -> /run/wrappers/bin/uw-work jira issue list          (underwrap-exec, setgid)
+  -> connect to /run/underwrap-work/wrapper.sock        (0660, instance group)
+  -> underwrapd checks the peer's effective GID == the instance group
+     (race-free via SO_PEERPIDFD), then validates the wrapper name "jira"
+     against config and relays { wrapper_name, resource, variant } to the
+     backend
+  -> backend re-evaluates the policy for the variant and returns the blob
+  -> underwrapd returns the daemon-CHOSEN target + env + secret
   -> underwrap-exec drops privilege
-  -> secret is handed to underwrap-ns over fd 3
+  -> secret + target are handed to underwrap-ns over fd 3
   -> underwrap-ns creates the target environment
-  -> target execs with the injected secret
+  -> the daemon-chosen target execs with the injected secret
 ```
 
 Per-invocation approval is intentionally out of scope. If you need
@@ -73,18 +78,27 @@ in front of the wrapper.
 
 ## Local identity model
 
-The daemon does not trust a client-supplied wrapper name.
+Identity splits into a kernel gate and a daemon gate:
 
-Instead:
+- **Kernel gate.** One `0660` socket per instance,
+  `/run/underwrap-<instance>/wrapper.sock`, owned by the instance group
+  `underwrap-<instance>`. A process can only open it if it holds that
+  group as effective GID, and the only way to get it is to exec the
+  setgid `uw-<instance>` binary. The daemon re-confirms the peer egid
+  (race-free via `SO_PEERPIDFD`, `SO_PEERCRED` + `/proc` fallback) before
+  reading the request.
+- **Daemon gate.** The wrapper name and variant in the request are
+  client-supplied. The daemon treats the name as a *selector*: it
+  rejects unknown names and the reserved `debug` token, and then —
+  crucially — **chooses the target binary itself** (configured target
+  for `Real`, debug tool for `Debug`), only after the backend authorizes
+  the variant. A forged `variant = Real` cannot reach the debug tool,
+  and `argv[0]` is never consulted.
 
-- each wrapper binary is installed setgid to a dedicated group,
-- each wrapper gets its own wrapper socket,
-- the socket determines the *expected* wrapper,
-- the daemon reads the peer's effective GID from `/proc/<pid>/status`,
-- the peer effective GID must match the wrapper selected by the socket.
-
-This is one of the central design choices in underwrap. Nothing the
-wrapper says on the socket identifies it — the kernel does.
+The per-wrapper-group, per-socket design was collapsed to one of each
+per instance; the trust boundary is unchanged because the binaries were
+always world-executable (the group never gated *who* could invoke a
+wrapper) and the policy layer remains the authorization authority.
 
 ## Central authorization model
 
@@ -93,7 +107,9 @@ in the backend's `PolicyDocument`. The document is a flat list of
 `WrapperPermission` rows keyed by `(client_instance, wrapper, resource_id)`.
 Each row carries:
 
-- a **mode**: `Locked`, `Unlocked`, or `UnlockedUntil { until_epoch }`,
+- a **mode**: `Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`, or
+  `UnsafeDebugUntil { until_epoch }` (the only mode that admits the
+  `Debug` variant),
 - a per-row **`writable: bool`** flag deciding whether wrapper-side
   writebacks are accepted.
 
@@ -107,8 +123,9 @@ which re-evaluates the document on every open and every finalize.
 The daemon is intentionally a thin client of the backend. What it
 **CAN** do:
 
-- accept wrapper-socket connections, verify the peer's effective GID
-  against the socket's expected wrapper, and refuse otherwise;
+- accept connections on the instance socket, verify the peer's
+  effective GID == the instance group, validate the client-supplied
+  wrapper name against config, and refuse otherwise;
 - map a verified wrapper invocation to a `(wrapper_name, resource_name)`
   pair and forward it to the backend over mTLS;
 - relay an opaque resource blob from the backend to the wrapper
@@ -257,11 +274,12 @@ web/                        Vite + React + shadcn admin SPA (embedded into
 
 The NixOS module generates and manages:
 
-- instance users and groups
-- per-wrapper groups
-- setgid wrapper binaries
+- instance users and the single instance group `underwrap-<instance>`
+- the one setgid entry point per instance, `uw-<instance>`
+- per-user convenience shims (`<wrapper>` / `debug-<wrapper>`)
 - the shared `underwrap-ns` wrapper
-- daemon config files and sidecar configs
+- the daemon config (`/etc/underwrap/daemon/<instance>.yaml`) and the
+  minimal frontend-exec sidecar (`/etc/underwrap/instances/<instance>.yaml`)
 - systemd services
 - runtime and state directories
 

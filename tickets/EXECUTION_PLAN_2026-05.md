@@ -291,7 +291,22 @@ green.
 
 ---
 
-## Phase 4 — Consolidated documentation pass
+## Phase 4 — Consolidated documentation pass — DONE (2026-05-27)
+
+Both `1580` and `1460` are in `tickets/03_done/`, with the deferred doc
+bits from `1410`/`1420`/`1440`/`1470` folded in. The pass covered
+`docs/security.md`, `docs/backend.md`, `docs/architecture.md`,
+`docs/getting-started.md`, `README.md`, `AGENTS.md` (= `CLAUDE.md`),
+`docs/agents.md`, `docs/gh-libsecret.md`, and
+`docs/wrapper-author-checklist.md`. `examples/config.yaml` was already in
+the instance-level shape. `docs/backend-release-plan.md` is left as an
+explicitly-marked historical document. No live doc still claims
+per-wrapper-group identity, "never trust client-supplied names", the
+`writes_enabled` toggle, or the removed per-call-approval mode; the
+`(mode × variant)` matrix and `UnsafeDebugUntil` are documented in both
+`security.md` and `backend.md`. **Both epics are now complete.**
+
+History (the plan as written):
 
 Many tickets describe edits to `docs/security.md`; doing them
 piecemeal would have five tickets fighting over the same file. Do

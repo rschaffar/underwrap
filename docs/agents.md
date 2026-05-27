@@ -90,7 +90,10 @@ That means less risk of accidental leakage through:
 
 ### 2. The main target path is fixed by trusted configuration
 
-underwrap reads the configured target from a root-owned sidecar config in `/etc/underwrap/wrappers/`.
+The target binary is chosen by the **daemon** from its root-owned config
+(`/etc/underwrap/daemon/<instance>.yaml`) after it validates the
+client-supplied wrapper name — it is never read from anything the caller
+controls.
 
 That means the caller does not get to swap in an attacker-chosen target binary for the main wrapper hop.
 
