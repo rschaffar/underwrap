@@ -79,6 +79,14 @@ fn parse_fdinfo_pid_rejects_reaped_process() {
 }
 
 #[test]
+fn parse_fdinfo_pid_rejects_missing_pid_line() {
+    // An unexpected procfs shape with no `Pid:` line must fail closed:
+    // the caller rejects the connection rather than widening the gate.
+    let fdinfo = "pos:\t0\nflags:\t02000000\nmnt_id:\t15\n";
+    assert_eq!(parse_fdinfo_pid(fdinfo), None);
+}
+
+#[test]
 fn get_peer_cred_resolves_self_over_socketpair() {
     // End-to-end against a real socket: a socketpair's peer is this very
     // process, so the resolved ids must match our own. Exercises whichever

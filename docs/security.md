@@ -390,6 +390,15 @@ reuse, and logs once that the weaker path is in use. Under the hardened
 posture (`hardenTargetHost = true`) the NixOS module asserts kernel
 ≥ 6.5 so the race-free path is always used.
 
+On the `SO_PEERPIDFD` path the daemon resolves the peer PID by parsing
+the `Pid:` line of `/proc/self/fdinfo/<pidfd>`. An unexpected procfs
+shape — a missing or unparseable `Pid:` line — is treated as a **hard
+auth failure by design**: the connection is rejected rather than
+silently dropping to the racy `SO_PEERCRED` fallback. This cannot occur
+on a supported host, since the `hardenTargetHost` kernel floor (≥ 6.5)
+guarantees pidfd fdinfo exposes `Pid:`; the guard exists only so a
+hypothetical procfs quirk fails closed instead of weakening the gate.
+
 ### Why not trust `argv[0]`?
 
 `argv[0]` is caller-controlled — a symlink can set it to anything — so

@@ -73,10 +73,15 @@ fn get_peer_cred_for_fd(fd: RawFd) -> Option<PeerCred> {
         return match resolved {
             Some((pid, status)) => finish_peer_cred(cred, pid, &status, PeerAuthPath::PeerPidfd),
             None => {
-                // The pidfd resolved but the process vanished before we
-                // could read it. Reject rather than silently dropping to
-                // the racy fallback for a single connection.
-                warn!("SO_PEERPIDFD obtained but peer /proc read failed; rejecting");
+                // Reached when either the pidfd's `/proc/self/fdinfo` had no
+                // parseable `Pid:` line (an unexpected procfs shape) or the
+                // peer's `/proc/<pid>/status` could not be read. Both are
+                // hard auth failures *by design*: we reject rather than drop
+                // to the racy SO_PEERCRED fallback for a single connection.
+                // `hardenTargetHost` pins the kernel floor (>= 6.5) on which
+                // pidfd fdinfo is guaranteed to expose `Pid:`, so the
+                // fdinfo-shape case is not expected on a supported host.
+                warn!("SO_PEERPIDFD obtained but peer PID/proc resolution failed; rejecting");
                 None
             }
         };
@@ -165,6 +170,12 @@ fn pidfd_pid(pidfd: RawFd) -> Option<u32> {
     parse_fdinfo_pid(&fdinfo)
 }
 
+/// Returns `None` for any fdinfo we cannot interpret as a live PID: a
+/// reaped pidfd (`Pid: -1`), or a missing/unparseable `Pid:` line. The
+/// caller treats `None` as a hard auth failure rather than widening the
+/// gate — fail-closed by design. Supported kernels (>= 6.5, enforced by
+/// `hardenTargetHost`) always expose `Pid:`, so the missing-line case is
+/// an unexpected-procfs guard, not a path taken in normal operation.
 fn parse_fdinfo_pid(fdinfo: &str) -> Option<u32> {
     for line in fdinfo.lines() {
         if let Some(rest) = line.strip_prefix("Pid:") {
