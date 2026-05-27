@@ -118,7 +118,7 @@ prefixes.
   sole policy authority
 - `crates/backend-backendd/src/auth.rs` — Argon2id password hashing + AEAD session cookies
 - `crates/backend-backendd/src/web.rs` — embedded SPA hosting via `rust-embed`
-- `crates/backend-backendd/src/operators.rs` — operator records + Principal + role/store-access model
+- `crates/backend-backendd/src/users.rs` — flat user records (admin login accounts). Authorization is flat: any authenticated user can perform any admin action; a "last user" guard keeps the collection non-empty. There are no roles or per-store grants.
 - `crates/shared-protocol/src/policy.rs` — `PolicyDocument`, `WrapperPermission`, `WrapperApprovalMode`
 - `crates/shared-protocol/src/entities.rs` — `ResourceRecord`, `WrapperResourcePairRecord`, `EntityCreator` (first-class entities with provenance)
 - `crates/shared-protocol/src/service.rs` — wire types incl.
@@ -277,11 +277,14 @@ trust-boundary reason for the asymmetry.
 
 **Central backend:** the frontend daemon connects outbound to
 `underwrap-backendd` over HTTPS with mTLS. The backend holds secrets, the
-policy document, the operator collection, and the admin SPA. Operators
-interact with the backend over its HTTPS admin listener with session-cookie
-auth (Argon2id passwords + AEAD session cookies + double-submit CSRF). The
-SPA bundle ships embedded inside the backend binary and is served from
-the same listener as the JSON admin API.
+policy document, the user collection, and the admin SPA. Users interact
+with the backend over its HTTPS admin listener with session-cookie auth
+(Argon2id passwords + AEAD session cookies + synchronizer-token CSRF, via
+an HttpOnly `X-CSRF-Token` captured from admin responses and replayed).
+Authorization is flat — every authenticated user has full admin access;
+there are no roles or per-store grants. The SPA bundle ships embedded
+inside the backend binary and is served from the same listener as the
+JSON admin API.
 
 **Multi-instance:** `services.underwrap.instances.<name>` — fully isolated users, groups, sockets.
 
