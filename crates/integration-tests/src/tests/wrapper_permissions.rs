@@ -78,6 +78,74 @@ async fn deleting_permission_revokes_future_reads() {
 }
 
 #[tokio::test]
+async fn debug_variant_denied_under_unlocked_allowed_under_unsafe_debug() {
+    // End-to-end coverage of the (mode × variant) matrix over the real
+    // daemon→backend mTLS path — the wire path the VM test exercises and
+    // that unit tests of `decide` do not cover.
+    let wrappers = one_wrapper_config();
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
+
+    daemon
+        .store_secret("test", "gh-authorized", "github/token", "ghp_test123")
+        .await
+        .unwrap();
+    daemon
+        .put_policy("test", &PolicyDocument::default())
+        .await
+        .unwrap();
+
+    // Unlocked permission: Real is allowed, Debug must be denied.
+    let permission = daemon.current_permission("gh-authorized", "github/token");
+    assert!(matches!(permission.mode, WrapperApprovalMode::Unlocked));
+    daemon.upsert_permission("test", &permission).await.unwrap();
+
+    let real = daemon
+        .read_request_variant("gh-authorized", WrapperVariant::Real)
+        .await
+        .unwrap();
+    assert!(
+        matches!(real, WrapperResponse::ReadOk { .. }),
+        "Real under Unlocked must be allowed, got {real:?}"
+    );
+
+    let debug = daemon
+        .read_request_variant("gh-authorized", WrapperVariant::Debug)
+        .await
+        .unwrap();
+    match debug {
+        WrapperResponse::Error { code, message } => {
+            assert!(matches!(code, ErrorCode::Unauthorized));
+            assert!(
+                message.contains("not-unsafe-debug"),
+                "expected not-unsafe-debug deny, got: {message}"
+            );
+        }
+        other => panic!("Debug under Unlocked must be denied, got {other:?}"),
+    }
+
+    // UnsafeDebugUntil (future): both variants allowed.
+    let mut unsafe_debug = daemon.current_permission("gh-authorized", "github/token");
+    unsafe_debug.mode = WrapperApprovalMode::UnsafeDebugUntil {
+        until_epoch: u64::MAX,
+    };
+    daemon
+        .upsert_permission("test", &unsafe_debug)
+        .await
+        .unwrap();
+
+    let debug_ok = daemon
+        .read_request_variant("gh-authorized", WrapperVariant::Debug)
+        .await
+        .unwrap();
+    assert!(
+        matches!(debug_ok, WrapperResponse::ReadOk { .. }),
+        "Debug under UnsafeDebugUntil must be allowed, got {debug_ok:?}"
+    );
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn per_permission_writable_flag_roundtrips_through_admin_api() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();

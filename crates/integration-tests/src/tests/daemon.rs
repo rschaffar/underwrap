@@ -149,6 +149,18 @@ async fn underwrapd_binary_start_and_read() {
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
     std::fs::write(&client_cert, crate::harness::TEST_CLIENT_LOCAL_PEM).unwrap();
     std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
+    // The daemon refuses to start unless its mTLS credential is 0600 or
+    // tighter and its parent directory is 0700 or tighter
+    // (startup::check_credential_permissions), matching the NixOS module's
+    // 0700 stateDir + keygen's 0600 output. Both `std::fs::write` and
+    // `tempfile` honor the umask (0644 / 0755 in the Nix build sandbox),
+    // so pin them explicitly.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&client_cert, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&client_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
     let stores_dir = base.join("stores");
     let clients_dir = base.join("clients");
@@ -324,7 +336,17 @@ async fn underwrapd_binary_start_and_read() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(wrapper_sock.exists(), "wrapper socket never appeared");
+    if !wrapper_sock.exists() {
+        // Surface the daemon's own diagnostics — otherwise a startup
+        // refusal (e.g. a failed validation) is invisible in CI logs.
+        let _ = child.start_kill();
+        let out = child.wait_with_output().await.unwrap();
+        panic!(
+            "wrapper socket never appeared\n--- daemon stdout ---\n{}\n--- daemon stderr ---\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
 
     // Admin writes are unconditional now that per-resource write
     // flags only gate wrapper-side writes — drop the secret in

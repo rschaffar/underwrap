@@ -187,6 +187,20 @@ under `stateDir` at runtime; keygen writes them out-of-band).
 
 `cargo test --workspace`, clippy, and fmt are green. The module parses.
 
+**Correction during 1570 (2026-05-27):** two of the directives the
+ticket listed are unsafe *for this daemon* and were dropped/adjusted:
+
+- `ProtectProc = "invisible"` was **removed**. The daemon's wrapper
+  peer-auth reads the *connecting* process's `/proc/<pid>/status` to
+  resolve its effective GID, and that peer runs as a different
+  unprivileged user. `invisible` hides other users' `/proc` entries,
+  which would break the kernel-rooted identity check. `ProcSubset =
+  "pid"` is kept (it only hides non-process `/proc` files).
+- `SystemCallFilter` no longer removes `@resources`. The daemon calls
+  `setrlimit(RLIMIT_CORE, 0)` at startup (`main.rs`), which lives in
+  `@resources`; stripping it would SIGSYS the daemon on boot. The filter
+  is now `[ "@system-service" "~@privileged" "@chown" ]`.
+
 **Still open (folds into 1570):** VM-test assertion that the deployed
 cert/key are `0600` owned by the daemon user; capture
 `systemd-analyze security underwrapd-<inst>` before/after numbers in the

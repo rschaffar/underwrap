@@ -283,6 +283,23 @@ impl TestDaemon {
         Ok(resp)
     }
 
+    /// Send a read request with an explicit variant (Real/Debug).
+    pub async fn read_request_variant(
+        &self,
+        wrapper: &str,
+        variant: underwrap_protocol::variant::WrapperVariant,
+    ) -> Result<WrapperResponse> {
+        let mut stream = UnixStream::connect(self.wrapper_socket(wrapper)?).await?;
+        let req = WrapperRequest::Read {
+            wrapper_name: wrapper.to_string(),
+            variant,
+            scope: None,
+        };
+        write_frame_async(&mut stream, &req).await?;
+        let resp: WrapperResponse = read_frame_async(&mut stream).await?;
+        Ok(resp)
+    }
+
     /// Get a raw connection to a wrapper socket for multi-message tests.
     #[allow(dead_code)]
     pub async fn connect_wrapper(&self, wrapper: &str) -> Result<UnixStream> {

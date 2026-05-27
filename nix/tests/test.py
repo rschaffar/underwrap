@@ -496,26 +496,44 @@ def boot_and_service_checks():
 
 def local_socket_permissions():
     # ============================================================
-    # LOCAL INSTANCE: socket permissions
+    # LOCAL INSTANCE: one socket / one group / one setgid binary
     # ============================================================
+    # The single-instance redesign collapses the old per-wrapper
+    # group/socket/binary fan-out into exactly one of each per instance.
+    # The wrapper name is now a client-supplied selector validated by the
+    # daemon; the kernel gate is the single instance-group egid.
 
     perms = machine.succeed("stat -c %a /run/underwrap-local").strip()
     assert perms == "755", f"expected 755, got {perms}"
-    perms = machine.succeed("stat -c %a /run/underwrap-local/wrapper-test-echo.sock").strip()
+
+    # Exactly one wrapper socket per instance, owned by the instance group.
+    socket = "/run/underwrap-local/wrapper.sock"
+    perms = machine.succeed(f"stat -c %a {socket}").strip()
     assert perms == "660", f"expected 660, got {perms}"
-    perms = machine.succeed("stat -c %G /run/underwrap-local/wrapper-test-echo.sock").strip()
-    assert perms == "underwrap-local-test-echo", f"expected wrapper group, got {perms}"
-    # Groups exist.
-    machine.succeed("getent group underwrap-local-test-echo")
-    machine.succeed("getent group underwrap-local-test-echo2")
+    grp = machine.succeed(f"stat -c %G {socket}").strip()
+    assert grp == "underwrap-local", f"expected instance group, got {grp}"
+    count = machine.succeed(
+        "ls /run/underwrap-local/*.sock 2>/dev/null | wc -l"
+    ).strip()
+    assert count == "1", f"expected exactly one instance socket, got {count}"
 
-    # Setgid wrappers installed.
-    stat = machine.succeed("stat -c '%A %G' /run/wrappers/bin/local-test-echo").strip()
-    assert "underwrap-local-test-echo" in stat, f"wrong group: {stat}"
+    # The single instance group exists; the old per-wrapper groups do not.
+    machine.succeed("getent group underwrap-local")
+    machine.fail("getent group underwrap-local-test-echo")
+    machine.fail("getent group underwrap-local-test-echo2")
+
+    # One setgid entrypoint per instance, owned by the instance group.
+    stat = machine.succeed("stat -c '%A %G' /run/wrappers/bin/uw-local").strip()
+    assert "underwrap-local" in stat, f"wrong group: {stat}"
     assert "s" in stat.lower(), f"setgid not set: {stat}"
+    # The old per-wrapper setgid binaries are gone.
+    machine.fail("test -e /run/wrappers/bin/local-test-echo")
 
-    # Sidecar configs.
-    machine.succeed("test -f /etc/underwrap/wrappers/local-test-echo.yaml")
+    # Instance configs: full DaemonConfig + minimal frontend-exec sidecar.
+    machine.succeed("test -f /etc/underwrap/daemon/local.yaml")
+    machine.succeed("test -f /etc/underwrap/instances/local.yaml")
+    # The old per-wrapper sidecar directory is gone.
+    machine.fail("test -e /etc/underwrap/wrappers/local-test-echo.yaml")
 
     # underwrap-ns has the capabilities it needs for namespace setup and
     # attempts bounding-set cleanup where the kernel permits it.
@@ -570,11 +588,11 @@ def local_unprivileged_wrapper_invocation():
     # LOCAL INSTANCE: unprivileged user wrapper invocation
     # ============================================================
 
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
     assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN: {output}"
     machine.log("PASS: unprivileged user can use wrapper")
 
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo2 hello"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo2 hello"))
     assert "hello" in output
     machine.log("PASS: second wrapper works")
 
@@ -590,42 +608,53 @@ def local_unprivileged_wrapper_invocation():
 
 def per_user_bare_name_path():
     # ============================================================
-    # PER-USER PATH INTEGRATION: bare-named wrappers
+    # PER-USER PATH INTEGRATION: convenience shims
     # ============================================================
-    # The instance-prefixed setgid binaries in /run/wrappers/bin are the real
-    # entry points; the module additionally installs bare-named symlinks into
-    # each authorized user's profile bin via users.users.<u>.packages, so that
-    # users invoke wrappers by their bare attribute name without each
-    # operator wiring up a parallel security.wrappers list.
+    # The single `uw-<instance>` setgid binary in /run/wrappers/bin is the
+    # real entry point. The module additionally installs per-user shims
+    # (`<wrapper>` and `debug-<wrapper>`) into each authorized user's
+    # profile bin. The shims are plain, UNPRIVILEGED shell scripts that
+    # `exec` into `uw-<instance> [debug] <wrapper> "$@"` — they carry no
+    # setgid bit and no capabilities.
     profile_bin = "/etc/profiles/per-user/testuser/bin"
     machine.succeed(f"test -d {profile_bin}")
     machine.log(f"PASS: per-user profile bin exists at {profile_bin}")
 
-    target = machine.succeed(f"readlink -f {profile_bin}/test-echo").strip()
-    assert target.startswith("/run/wrappers/") and target.endswith("/local-test-echo"), \
-        f"expected local-test-echo target, got: {target}"
-    target = machine.succeed(f"readlink -f {profile_bin}/remote-echo").strip()
-    assert target.startswith("/run/wrappers/") and target.endswith("/tunnel-remote-echo"), \
-        f"expected tunnel-remote-echo target, got: {target}"
-    machine.log("PASS: per-user bin contains bare-named symlinks across both instances")
+    # A real + debug shim exists for wrappers across both instances.
+    for name in ["test-echo", "debug-test-echo", "remote-echo", "debug-remote-echo"]:
+        machine.succeed(f"test -e {profile_bin}/{name}")
+    machine.log("PASS: per-user bin contains real + debug shims across both instances")
 
-    # The per-user dir is a bare-name namespace: it must not also expose the
-    # instance-prefixed names. Those remain available through /run/wrappers/bin.
+    # The shims are unprivileged scripts (no setgid bit) that forward to
+    # the right uw-<instance> entrypoint.
+    for name, want_debug in [("test-echo", False), ("debug-test-echo", True)]:
+        shim = machine.succeed(f"readlink -f {profile_bin}/{name}").strip()
+        mode = machine.succeed(f"stat -c %A {shim}").strip()
+        assert "s" not in mode.lower(), f"shim {name} unexpectedly setgid: {mode}"
+        body = machine.succeed(f"cat {shim}")
+        assert "uw-local" in body, f"shim {name} does not forward to uw-local: {body}"
+        assert ("debug" in body) == want_debug, \
+            f"shim {name} debug-subcommand mismatch: {body}"
+    machine.log("PASS: shims are unprivileged scripts forwarding to uw-<instance>")
+
+    # The per-user dir is a bare-name namespace: it must not expose the old
+    # instance-prefixed names.
     rc = machine.execute(f"test -e {profile_bin}/local-test-echo")[0]
     assert rc != 0, "per-user bin unexpectedly contains prefixed name"
-    machine.log("PASS: per-user bin does not duplicate prefixed names")
 
-    # Login shell for testuser must resolve the bare name through this dir.
+    # Login shell for testuser resolves the bare name through this dir.
     which_out = machine.succeed("su -l testuser -c 'command -v test-echo'").strip()
     assert which_out == f"{profile_bin}/test-echo", \
         f"expected bare 'test-echo' to resolve via per-user bin, got: {which_out}"
-    machine.log(f"PASS: bare 'test-echo' resolves to {which_out} in login shell")
 
-    # And bare-name invocation actually works end-to-end.
+    # Bare-name invocation works end-to-end and agrees with the direct
+    # `uw-local <wrapper>` form.
     output = machine.succeed("su -l testuser -c 'test-echo'")
     assert "MY_TOKEN=overwrite" in output, \
         f"expected MY_TOKEN via bare-name invocation: {output}"
-    machine.log("PASS: bare-name wrapper invocation through login shell works")
+    direct = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
+    assert "MY_TOKEN=overwrite" in direct, f"expected MY_TOKEN via uw-local: {direct}"
+    machine.log("PASS: bare-name shim and uw-local entrypoint agree")
 
 
 def local_verify_capabilities_dropped():
@@ -633,7 +662,7 @@ def local_verify_capabilities_dropped():
     # LOCAL INSTANCE: verify capabilities are dropped for target
     # ============================================================
 
-    caps_output = machine.succeed(su("/run/wrappers/bin/local-test-caps")).strip()
+    caps_output = machine.succeed(su("/run/wrappers/bin/uw-local test-caps")).strip()
     machine.log(f"Target capabilities: {caps_output}")
     # Effective/permitted/inheritable/ambient caps must all be zero after
     # underwrap-ns drops privilege before exec. The bounding set may remain
@@ -660,7 +689,7 @@ def local_isolation():
     machine.log("PASS: unprivileged user cannot read secret files")
 
     # Wrapper output contains only its own secret.
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
     assert "MY_TOKEN=overwrite" in output
     assert "OTHER_SECRET" not in output
     assert "LOCKED_TOKEN" not in output
@@ -682,9 +711,9 @@ def local_daemon_restart_persistence():
     # ============================================================
 
     machine.succeed("systemctl restart underwrapd-local.service")
-    machine.wait_for_file("/run/underwrap-local/wrapper-test-echo.sock")
+    machine.wait_for_file("/run/underwrap-local/wrapper.sock")
     time.sleep(0.5)
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
     assert "MY_TOKEN=overwrite" in output
     machine.log("PASS: secrets persist across restart")
 
@@ -705,7 +734,7 @@ def local_pid_namespace_proc_isolation():
 
     machine.succeed(
         "su testuser -s /bin/sh -c '"
-        "setsid /run/wrappers/bin/local-test-sleep 300 </dev/null >/dev/null 2>&1 &"
+        "setsid /run/wrappers/bin/uw-local test-sleep 300 </dev/null >/dev/null 2>&1 &"
         "'"
     )
     time.sleep(2)
@@ -735,7 +764,7 @@ def local_pid_namespace_proc_isolation():
         # a) The process died (wrapper failed), OR
         # b) The PID namespace genuinely hides it from host /proc
         # Either way, we need to know which. Check if the wrapper parent is alive.
-        if "test-sleep" not in wrapper_procs and "sleep" not in wrapper_procs:
+        if "uw-local" not in wrapper_procs and "sleep" not in wrapper_procs:
             assert False, \
                 f"INCONCLUSIVE: no sleep-related processes found. " \
                 f"Wrapper may have failed. All testuser procs: {all_procs}"
@@ -806,7 +835,7 @@ def local_pid_namespace_proc_isolation():
 
     # Also verify the wrapper parent processes are still protected.
     wrapper_pids = machine.succeed(
-        "pgrep -u testuser -f 'local-test-sleep|underwrap' || echo none"
+        "pgrep -u testuser -f 'uw-local|underwrap' || echo none"
     ).strip()
     if wrapper_pids != "none":
         for pid_str in wrapper_pids.split("\n"):
@@ -819,7 +848,7 @@ def local_pid_namespace_proc_isolation():
             assert rc != 0, f"FAIL: same-UID read /proc/{pid_str}/environ (wrapper process)"
         machine.log("PASS: wrapper parent processes also protected")
 
-    machine.execute("pkill -u testuser -f local-test-sleep || true")
+    machine.execute("pkill -u testuser -x sleep || true")
     time.sleep(0.5)
 
 
@@ -883,7 +912,7 @@ def local_ancestor_attack():
         "CRITICAL: adversarial ancestor recovered secret from descendant target"
     machine.log("PASS: adversarial ancestor attack did not recover secret")
 
-    machine.execute("pkill -u testuser -f local-test-sleep || true")
+    machine.execute("pkill -u testuser -x sleep || true")
     time.sleep(0.5)
 
 
@@ -895,7 +924,7 @@ def local_core_dump_protection():
     machine.succeed("mkdir -p /tmp/cores")
     machine.succeed("echo '/tmp/cores/core.%e.%p' > /proc/sys/kernel/core_pattern")
 
-    machine.execute(su("/run/wrappers/bin/local-test-crash"))
+    machine.execute(su("/run/wrappers/bin/uw-local test-crash"))
 
     core_files = machine.succeed("ls /tmp/cores/ 2>/dev/null || true").strip()
     assert core_files == "", f"FAIL: core dump produced: {core_files}"
@@ -906,24 +935,25 @@ def local_symlink_confused_deputy_attack():
     # ============================================================
     # LOCAL INSTANCE: symlink confused-deputy attack must fail
     # ============================================================
-    # Create a symlink from one wrapper name to another wrapper's binary.
-    # The wrapper must still use the correct config (from its egid), not
-    # the symlink name. If it used argv[0], this would pair the wrong
-    # secret with the wrong target.
+    # Create a misleadingly-named symlink to the single instance
+    # entrypoint. In the redesigned model the wrapper is selected by the
+    # *argument* (`uw-local <wrapper>`), never by argv[0]; argv[0] is fully
+    # user-controlled and carries no authority. So invoking the symlink and
+    # passing `test-echo` must resolve test-echo's secret regardless of the
+    # symlink's name.
 
     machine.succeed(
-        "ln -sf /run/wrappers/bin/local-test-echo /tmp/local-test-echo2"
+        "ln -sf /run/wrappers/bin/uw-local /tmp/totally-not-test-echo"
     )
-    # Run via the symlink — argv[0] = local-test-echo2, but egid = test-echo's group.
-    # The wrapper should load test-echo's config and return test-echo's secret.
-    output = machine.succeed(su("/tmp/local-test-echo2")).strip()
+    # argv[0] = /tmp/totally-not-test-echo, wrapper arg = test-echo.
+    output = machine.succeed(su("/tmp/totally-not-test-echo test-echo")).strip()
     assert "MY_TOKEN=overwrite" in output, \
-        f"FAIL: symlink wrapper did not get the correct (test-echo) secret: {output}"
-    # It must NOT have loaded test-echo2's config (which would show OTHER_SECRET).
+        f"FAIL: argv[0] symlink did not resolve the named wrapper (test-echo): {output}"
+    # It must not have leaked a different wrapper's secret.
     assert "OTHER_SECRET" not in output, \
-        f"FAIL: symlink wrapper loaded the wrong config: {output}"
-    machine.succeed("rm -f /tmp/local-test-echo2")
-    machine.log("PASS: symlink confused-deputy attack prevented (egid-based identity)")
+        f"FAIL: argv[0] symlink leaked the wrong secret: {output}"
+    machine.succeed("rm -f /tmp/totally-not-test-echo")
+    machine.log("PASS: argv[0] carries no authority; wrapper selection is by name argument")
 
 
 def local_proc_isolation_env_mode():
@@ -935,7 +965,7 @@ def local_proc_isolation_env_mode():
     # files) must only see namespace-local PIDs — not host PIDs.
 
     ns_pids_output = machine.succeed(
-        su("/run/wrappers/bin/local-test-ns-pids-env")
+        su("/run/wrappers/bin/uw-local test-ns-pids-env")
     ).strip()
     visible_pids = [line.strip() for line in ns_pids_output.split("\n")
                     if line.strip().isdigit()]
@@ -958,7 +988,7 @@ def local_proc_isolation_libsecret_mode():
     # The target should only see namespace-local PIDs, not host PIDs.
 
     ns_pids_output = machine.succeed(
-        su("/run/wrappers/bin/local-test-ns-pids")
+        su("/run/wrappers/bin/uw-local test-ns-pids")
     ).strip()
     # Extract just the numeric PIDs (ignore log lines from secretsd).
     visible_pids = [line.strip() for line in ns_pids_output.split("\n")
@@ -995,7 +1025,7 @@ def local_libsecret_mode():
     machine.succeed(
         'su testuser -s /bin/sh -c "'
         'cat /tmp/.secretsd-test | '
-        '/run/wrappers/bin/local-test-libsecret store '
+        '/run/wrappers/bin/uw-local test-libsecret store '
         '--label=TestToken service gh account github.com"'
     )
     machine.succeed("rm -f /tmp/.secretsd-test")
@@ -1004,7 +1034,7 @@ def local_libsecret_mode():
     # Retrieve the secret via secret-tool through the libsecret wrapper.
     output = machine.succeed(
         'su testuser -s /bin/sh -c '
-        '"/run/wrappers/bin/local-test-libsecret lookup service gh account github.com"'
+        '"/run/wrappers/bin/uw-local test-libsecret lookup service gh account github.com"'
     ).strip()
     # The output may include secretsd log lines on stderr mixed in;
     # the actual secret is the last line.
@@ -1032,7 +1062,7 @@ def local_libsecret_mode():
     # bus socket from a host process. The socket should not exist on the host.
     machine.succeed(
         'su testuser -s /bin/sh -c "'
-        'setsid /run/wrappers/bin/local-test-libsecret lookup service gh account github.com '
+        'setsid /run/wrappers/bin/uw-local test-libsecret lookup service gh account github.com '
         '</dev/null >/dev/null 2>&1 &"'
     )
     time.sleep(1)
@@ -1052,7 +1082,7 @@ def local_libsecret_mode():
         f"FAIL: bus socket found in /tmp: {tmp_bus}"
     machine.log("PASS: no bus sockets in /tmp")
 
-    machine.execute("pkill -u testuser -f local-test-libsecret || true")
+    machine.execute("pkill -u testuser -x underwrap-ns || true")
     time.sleep(0.5)
 
     # Find ALL files on the system containing the secret, outside the backend.
@@ -1092,12 +1122,12 @@ def local_libsecret_two_slot_compatibility():
     machine.succeed(
         'su testuser -s /bin/sh -c "'
         'cat /tmp/.two-slot-secret | '
-        '/run/wrappers/bin/local-test-libsecret store '
+        '/run/wrappers/bin/uw-local test-libsecret store '
         '--label=UserSlot service gh:github.com username rschaffar"'
     )
     user_out = machine.succeed(
         'su testuser -s /bin/sh -c '
-        '"/run/wrappers/bin/local-test-libsecret lookup '
+        '"/run/wrappers/bin/uw-local test-libsecret lookup '
         'service gh:github.com username rschaffar"'
     ).strip()
     user_last = user_out.split("\n")[-1].strip()
@@ -1109,12 +1139,12 @@ def local_libsecret_two_slot_compatibility():
     machine.succeed(
         'su testuser -s /bin/sh -c "'
         'cat /tmp/.two-slot-secret | '
-        "/run/wrappers/bin/local-test-libsecret store "
+        "/run/wrappers/bin/uw-local test-libsecret store "
         "--label=ActiveSlot service gh:github.com username ''\""
     )
     active_out = machine.succeed(
         'su testuser -s /bin/sh -c "'
-        "/run/wrappers/bin/local-test-libsecret lookup "
+        "/run/wrappers/bin/uw-local test-libsecret lookup "
         "service gh:github.com username ''\""
     ).strip()
     active_last = active_out.split("\n")[-1].strip()
@@ -1145,17 +1175,17 @@ def local_directory_credentials():
         grant_local_unlocked(wrapper)
 
     # Seed a directory credential through a read-write wrapper.
-    machine.succeed(su("/run/wrappers/bin/local-test-dir-write seed"))
+    machine.succeed(su("/run/wrappers/bin/uw-local test-dir-write seed"))
     machine.log("PASS: directory credential seed wrapper succeeded")
 
     # Read the mounted directory through a read-only wrapper.
-    dir_output = machine.succeed(su("/run/wrappers/bin/local-test-dir-read")).strip().split("\n")
+    dir_output = machine.succeed(su("/run/wrappers/bin/uw-local test-dir-read")).strip().split("\n")
     assert dir_output[0].strip() == "token-seed", f"expected token-seed, got {dir_output}"
     machine.log("PASS: directory credential read-only wrapper can read the mounted directory")
 
     # Update content through the read-write wrapper.
-    machine.succeed(su("/run/wrappers/bin/local-test-dir-write update"))
-    dir_output = machine.succeed(su("/run/wrappers/bin/local-test-dir-read")).strip().split("\n")
+    machine.succeed(su("/run/wrappers/bin/uw-local test-dir-write update"))
+    dir_output = machine.succeed(su("/run/wrappers/bin/uw-local test-dir-read")).strip().split("\n")
     assert dir_output[0].strip() == "token-updated", f"expected token-updated, got {dir_output}"
     machine.log("PASS: directory read-write wrapper updates backend-managed files")
 
@@ -1180,7 +1210,7 @@ def local_directory_credentials():
     # be able to access the mounted secret files from the host namespace view.
     machine.succeed(
         "su testuser -s /bin/sh -c '"
-        "setsid /run/wrappers/bin/local-test-dir-sleep 300 </dev/null >/dev/null 2>&1 &'"
+        "setsid /run/wrappers/bin/uw-local test-dir-sleep 300 </dev/null >/dev/null 2>&1 &'"
     )
     time.sleep(1)
 
@@ -1200,7 +1230,7 @@ def local_directory_credentials():
     assert host_find == "", f"FAIL: host view exposes mounted directory files: {host_find}"
     machine.log("PASS: same-UID host processes cannot list mounted directory or access files in it")
 
-    machine.execute("pkill -u testuser -f local-test-dir-sleep || true")
+    machine.execute("pkill -u testuser -x sleep || true")
     time.sleep(0.5)
 
     # The mounted directory must disappear from normal host view after the wrapper exits.
@@ -1216,7 +1246,7 @@ def local_directory_credentials():
     # the end-of-run walk refuses to follow symlinks and drops the
     # writeback. The backend blob stays unchanged.
     before = admin_get_blob(ADMIN_LOCAL, "local", "test/dir-a")
-    machine.succeed(su("/run/wrappers/bin/local-test-dir-symlink"))
+    machine.succeed(su("/run/wrappers/bin/uw-local test-dir-symlink"))
     after = admin_get_blob(ADMIN_LOCAL, "local", "test/dir-a")
     assert after == before, (
         "symlink-creating wrapper unexpectedly mutated the backend blob"
@@ -1237,7 +1267,7 @@ def local_directory_credentials():
     # inaccessible to a same-UID host process.
     machine.succeed(
         'su testuser -s /bin/sh -c "'
-        'setsid /run/wrappers/bin/local-test-libsecret lookup service gh account github.com '
+        'setsid /run/wrappers/bin/uw-local test-libsecret lookup service gh account github.com '
         '</dev/null >/dev/null 2>&1 &"'
     )
     time.sleep(1)
@@ -1250,7 +1280,7 @@ def local_directory_credentials():
     )[0]
     assert libsecret_ls != 0, "FAIL: same-UID host process can list private libsecret bus mountpoint"
     machine.log("PASS: same-UID host process cannot list private libsecret runtime directories or see the bus socket")
-    machine.execute("pkill -u testuser -f local-test-libsecret || true")
+    machine.execute("pkill -u testuser -x underwrap-ns || true")
     time.sleep(0.5)
 
 
@@ -1272,7 +1302,7 @@ def local_atomic_writeback():
         files via the writable grant; we then re-fetch the blob bytes
         so subsequent scenarios can byte-compare against this baseline."""
         grant_local_unlocked("test-dir-write")
-        machine.succeed(su("/run/wrappers/bin/local-test-dir-write seed"))
+        machine.succeed(su("/run/wrappers/bin/uw-local test-dir-write seed"))
         return admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
 
     def journal_lines_since(boot_offset, *, units=None, grep=None):
@@ -1312,7 +1342,7 @@ def local_atomic_writeback():
     before_last_used = before_pair["last_used_at"] if before_pair else None
 
     cursor = journal_cursor()
-    machine.succeed(su("/run/wrappers/bin/local-test-dir-read"))
+    machine.succeed(su("/run/wrappers/bin/uw-local test-dir-read"))
     time.sleep(0.5)
 
     after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
@@ -1341,13 +1371,13 @@ def local_atomic_writeback():
     # the backend blob's bytes change accordingly, and a second run
     # via `test-dir-read` sees the new content.
     # ----------------------------------------------------------
-    machine.succeed(su("/run/wrappers/bin/local-test-dir-write update"))
+    machine.succeed(su("/run/wrappers/bin/uw-local test-dir-write update"))
     time.sleep(0.5)
     updated_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
     assert updated_a != baseline_a, (
         "scenario 2: dir-a blob did not change after writable update run"
     )
-    output = machine.succeed(su("/run/wrappers/bin/local-test-dir-read")).strip().split("\n")
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-dir-read")).strip().split("\n")
     assert output[0].strip() == "token-updated", (
         f"scenario 2: second run did not observe new dir-a content: {output}"
     )
@@ -1378,7 +1408,7 @@ def local_atomic_writeback():
     cursor = journal_cursor()
     stderr_capture = machine.succeed(
         su(
-            "/run/wrappers/bin/local-test-dir-readonly-write update 2>/tmp/ro-stderr.log "
+            "/run/wrappers/bin/uw-local test-dir-readonly-write update 2>/tmp/ro-stderr.log "
             "&& cat /tmp/ro-stderr.log"
         )
     )
@@ -1440,7 +1470,7 @@ def local_atomic_writeback():
     stderr_capture = machine.succeed(
         "su testuser -s /bin/sh -c '"
         "UNDERWRAP_SUPPRESS_READONLY_WARNING=1 "
-        "/run/wrappers/bin/local-test-dir-readonly-write update 2>/tmp/ro-stderr.log; "
+        "/run/wrappers/bin/uw-local test-dir-readonly-write update 2>/tmp/ro-stderr.log; "
         "cat /tmp/ro-stderr.log'"
     )
     time.sleep(0.5)
@@ -1481,7 +1511,7 @@ def local_atomic_writeback():
         "XDG_DATA_HOME=/tmp/evil-data "
         "XDG_CACHE_HOME=/tmp/evil-cache "
         "XDG_STATE_HOME=/tmp/evil-state "
-        "/run/wrappers/bin/local-test-dir-env-probe'"
+        "/run/wrappers/bin/uw-local test-dir-env-probe'"
     )
     leaked = [
         line for line in target_env.splitlines() if line.startswith("UNDERWRAP_")
@@ -1502,7 +1532,7 @@ def local_atomic_writeback():
         "HOME=/tmp/evil-home "
         "XDG_RUNTIME_DIR=/tmp/evil-run "
         "XDG_CONFIG_HOME=/tmp/evil-config "
-        "/run/wrappers/bin/local-test-dir-env-override-probe'"
+        "/run/wrappers/bin/uw-local test-dir-env-override-probe'"
     )
     assert "HOME=/tmp/underwrap-home-override" in override_env, override_env
     assert "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/1099" in override_env, override_env
@@ -1533,7 +1563,7 @@ def local_atomic_writeback():
     )
     # touch on the bound directory under a read-only grant — must
     # succeed (target sees a writable mount).
-    machine.succeed(su("/run/wrappers/bin/local-test-dir-touch"))
+    machine.succeed(su("/run/wrappers/bin/uw-local test-dir-touch"))
     after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
     assert after_a == baseline_a, (
         "scenario 5: read-only-grant touch persisted to backend"
@@ -1566,7 +1596,7 @@ def local_atomic_writeback():
     # during the sleep, then wait for the natural exit.
     machine.succeed(
         "su testuser -s /bin/sh -c '"
-        "setsid /run/wrappers/bin/local-test-dir-write-then-sleep "
+        "setsid /run/wrappers/bin/uw-local test-dir-write-then-sleep "
         ">/tmp/wts-stdout.log 2>/tmp/wts-stderr.log </dev/null &'"
     )
 
@@ -1876,7 +1906,7 @@ def remote_service_lifecycle():
     admin_write_secret(ADMIN_REMOTE, "remote", "remote-echo", "remote/token/env/REMOTE_TOKEN", "secret_via_service")
 
     # With backend service up: succeed.
-    output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/tunnel-remote-echo"))
+    output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/uw-tunnel remote-echo"))
     assert "REMOTE_TOKEN=secret_via_service" in output, f"expected REMOTE_TOKEN: {output}"
     assert "XDG_RUNTIME_DIR=/run/user/1099" in output, f"expected forced default XDG_RUNTIME_DIR: {output}"
     machine.log("PASS: remote secret via backend service")
@@ -1888,14 +1918,14 @@ def remote_service_lifecycle():
     # Stop backend service: fail.
     machine.succeed("systemctl stop underwrap-backendd.service")
     time.sleep(0.5)
-    machine.fail(su("/run/wrappers/bin/tunnel-remote-echo"))
+    machine.fail(su("/run/wrappers/bin/uw-tunnel remote-echo"))
     machine.log("PASS: wrapper fails when backend service is down")
 
     # Restart backend service: succeed again.
     machine.succeed("systemctl start underwrap-backendd.service")
     machine.wait_for_unit("underwrap-backendd.service")
     time.sleep(1)
-    output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/tunnel-remote-echo"))
+    output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/uw-tunnel remote-echo"))
     assert "REMOTE_TOKEN=secret_via_service" in output
     assert "XDG_RUNTIME_DIR=/run/user/1099" in output
     machine.log("PASS: wrapper works after backend service restart")
@@ -1914,7 +1944,7 @@ def local_backend_managed_grants():
     # Remove the seed grant from the earlier section so we can
     # exercise the "no grant" path.
     admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
-    machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
+    machine.fail(su("/run/wrappers/bin/uw-local test-echo2 hello"))
     machine.log("PASS: wrapper with no agent grant is denied")
 
     # Unlocked grant → wrapper can read.
@@ -1927,13 +1957,13 @@ def local_backend_managed_grants():
         {"kind": "unlocked"},
         reason="vm test allow",
     )
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo2 hello"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo2 hello"))
     assert "hello" in output
     machine.log("PASS: active agent grant allows wrapper action")
 
     # Deleting the grant revokes future reads.
     admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
-    machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
+    machine.fail(su("/run/wrappers/bin/uw-local test-echo2 hello"))
     machine.log("PASS: deleting agent grant revokes future wrapper action")
 
     # UnlockedUntil with a deadline guaranteed in the past
@@ -1948,7 +1978,7 @@ def local_backend_managed_grants():
         {"kind": "unlocked-until", "until_epoch": 86400},
         reason="expired allow",
     )
-    machine.fail(su("/run/wrappers/bin/local-test-echo2 hello"))
+    machine.fail(su("/run/wrappers/bin/uw-local test-echo2 hello"))
     machine.log("PASS: expired UnlockedUntil grant is not honored")
 
     # Clean up so the next test starts fresh.
@@ -1963,12 +1993,12 @@ def local_backend_policy_control_center():
 
     # Remove the seed grant so we can prove "no grant → denied".
     admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo", "test/token")
-    machine.fail(su("/run/wrappers/bin/local-test-echo"))
+    machine.fail(su("/run/wrappers/bin/uw-local test-echo"))
     machine.log("PASS: wrapper with no grant is denied")
 
     # Unlocked grant → wrapper can read.
     grant_local_unlocked("test-echo")
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
     assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after grant: {output}"
     machine.log("PASS: Unlocked grant allows wrapper read")
 
@@ -1982,12 +2012,12 @@ def local_backend_policy_control_center():
         {"kind": "locked"},
         reason="maintenance",
     )
-    machine.fail(su("/run/wrappers/bin/local-test-echo"))
+    machine.fail(su("/run/wrappers/bin/uw-local test-echo"))
     machine.log("PASS: Locked grant denies wrapper read")
 
     # Re-Unlock → wrapper allowed again.
     grant_local_unlocked("test-echo")
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
     assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after re-grant: {output}"
     machine.log("PASS: re-Unlocking the grant restores wrapper access")
 
@@ -1995,7 +2025,7 @@ def local_backend_policy_control_center():
     # that historically required a local unlock; under the grant
     # model it simply needs an Unlocked grant.
     grant_local_unlocked("test-locked")
-    output = machine.succeed(su("/run/wrappers/bin/local-test-locked"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-locked"))
     assert "LOCKED_TOKEN=locked_secret" in output, (
         f"expected formerly-locked wrapper to work via grant model: {output}"
     )
@@ -2007,12 +2037,105 @@ def instance_isolation():
     # INSTANCE ISOLATION: cross-instance access blocked
     # ============================================================
 
-    # local-test-echo wrapper cannot reach tunnel instance secrets.
-    # (The wrapper's GID maps to the local instance, not tunnel.)
+    # The local instance's `uw-local` entrypoint cannot reach tunnel
+    # instance secrets: it connects only to the local instance socket
+    # (gated by the local instance group egid) and the local daemon talks
+    # only to the local backend.
     grant_local_unlocked("test-echo")
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
     assert "REMOTE_TOKEN" not in output
     machine.log("PASS: local wrapper does not leak remote secrets")
+
+
+def local_debug_subcommand():
+    # ============================================================
+    # DEBUG SUBCOMMAND: always-present variant, policy-gated
+    # ============================================================
+    # The debug variant rides on the SAME (wrapper, resource) pair as the
+    # real wrapper. It is selected by the `debug` argv token
+    # (`uw-<inst> debug <wrapper>`), and the daemon — never the caller —
+    # chooses the target binary (the configured target for Real, the
+    # debug tool for Debug) and only after the backend authorised the
+    # variant. The single instance group egid is the only kernel gate.
+
+    DEBUG_HEADER = "underwrap-debug-tool (UNSAFE)"
+
+    def daemon_log():
+        return machine.succeed(
+            "journalctl -u underwrapd-local.service --no-pager"
+            " | sed 's/\\x1b\\[[0-9;]*m//g'"
+        )
+
+    # ---- 1. Debug DENIED under Unlocked --------------------------------
+    grant_local_unlocked("test-echo")  # mode = Unlocked
+    rc, out = machine.execute(su("/run/wrappers/bin/uw-local debug test-echo 2>&1"))
+    assert rc != 0, f"debug under Unlocked must FAIL, but rc={rc}; out={out!r}"
+    assert "not-unsafe-debug" in out, \
+        f"expected not-unsafe-debug deny under Unlocked, got: {out}"
+    assert DEBUG_HEADER not in out, f"debug tool must not have run: {out}"
+    machine.log("PASS: debug variant denied while permission is Unlocked")
+
+    # The bare convenience shim must behave identically.
+    out = machine.fail("su -l testuser -c 'debug-test-echo 2>&1'")
+    assert "not-unsafe-debug" in out, f"debug shim deny mismatch: {out}"
+    machine.log("PASS: debug-<wrapper> shim mirrors uw-local debug <wrapper>")
+
+    # ---- 2. Debug ALLOWED under UnsafeDebugUntil (future) --------------
+    until = int(time.time()) + 600
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-echo",
+        "test/token",
+        {"kind": "unsafe-debug-until", "until_epoch": until},
+        writable=True,
+    )
+    out = machine.succeed(su("/run/wrappers/bin/uw-local debug test-echo"))
+    assert DEBUG_HEADER in out, f"expected debug summary header, got: {out}"
+    assert "MY_TOKEN=overwrite" in out, \
+        f"debug summary must include the projected env, got: {out}"
+    machine.log("PASS: debug variant allowed under UnsafeDebugUntil; projects env")
+
+    # ---- 3. Real STAYS Real under UnsafeDebugUntil ---------------------
+    # The same permission allows Debug, but a Real invocation must still
+    # run the CONFIGURED target (env), not the debug tool.
+    out = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
+    assert "MY_TOKEN=overwrite" in out, f"real wrapper must still project env: {out}"
+    assert DEBUG_HEADER not in out, \
+        f"real invocation must NOT land in the debug tool: {out}"
+    machine.log("PASS: Real invocation runs the configured target even under UnsafeDebugUntil")
+
+    # ---- 4. Target authority (daemon chooses target per variant) -------
+    log = daemon_log()
+    assert "variant=Debug" in log, f"daemon must record the Debug variant: …{log[-400:]}"
+    assert "variant=Real" in log, f"daemon must record the Real variant: …{log[-400:]}"
+    machine.log("PASS: daemon records variant per invocation (target authority is server-side)")
+
+    # ---- 5. Expiry -----------------------------------------------------
+    past = int(time.time()) - 1
+    admin_upsert_grant(
+        ADMIN_LOCAL,
+        "local",
+        LOCAL_CLIENT_INSTANCE,
+        "test-echo",
+        "test/token",
+        {"kind": "unsafe-debug-until", "until_epoch": past},
+        writable=True,
+    )
+    out = machine.fail(su("/run/wrappers/bin/uw-local debug test-echo 2>&1"))
+    assert "expired" in out, f"expected expired deny, got: {out}"
+    machine.log("PASS: expired UnsafeDebugUntil denies the debug variant")
+
+    # ---- 6. Unknown / reserved names rejected --------------------------
+    out = machine.fail(su("/run/wrappers/bin/uw-local nonesuch 2>&1"))
+    machine.log("PASS: unknown wrapper name rejected")
+    # `debug` with no wrapper name following is a usage error.
+    machine.fail(su("/run/wrappers/bin/uw-local debug 2>&1"))
+    machine.log("PASS: `uw-local debug` with no wrapper name rejected")
+
+    # Restore the fixture grant so later sections see test-echo Unlocked.
+    grant_local_unlocked("test-echo")
 
 
 def runtime_api_invariants():
@@ -2034,7 +2157,7 @@ def runtime_api_invariants():
     # must keep working without restarting underwrapd-local.
     # ----------------------------------------------------------
     grant_local_unlocked("test-echo")
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
     assert "MY_TOKEN=" in output
 
     machine.succeed("systemctl restart underwrap-backendd-local.service")
@@ -2042,7 +2165,7 @@ def runtime_api_invariants():
     # Give the new listener a moment to bind before the next wrapper call.
     time.sleep(1)
 
-    output = machine.succeed(su("/run/wrappers/bin/local-test-echo"))
+    output = machine.succeed(su("/run/wrappers/bin/uw-local test-echo"))
     assert "MY_TOKEN=" in output, (
         f"wrapper must self-heal after backend restart, got: {output}"
     )
@@ -2267,6 +2390,7 @@ local_directory_credentials()
 local_atomic_writeback()
 remote_service_lifecycle()
 instance_isolation()
+local_debug_subcommand()
 local_backend_policy_control_center()
 local_backend_managed_grants()
 encrypted_store_in_memory_keys()

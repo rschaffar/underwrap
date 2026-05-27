@@ -173,7 +173,13 @@ let
         ProtectKernelLogs = true;
         ProtectClock = true;
         ProtectHostname = true;
-        ProtectProc = "invisible";
+        # NOTE: ProtectProc must NOT be "invisible"/"noaccess" here. The
+        # daemon's wrapper peer-auth reads the *connecting* process's
+        # /proc/<pid>/status to resolve its effective GID, and that peer
+        # runs as a different (unprivileged) user. Hiding other users'
+        # /proc entries would break the kernel-rooted identity check.
+        # ProcSubset=pid is safe: it only hides non-process /proc files
+        # (/proc/sys, /proc/kcore, …), which the daemon does not need.
         ProcSubset = "pid";
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
@@ -181,10 +187,13 @@ let
         RestrictRealtime = true;
         RestrictNamespaces = true;
         SystemCallArchitectures = "native";
-        # `~@privileged` strips the chown family, but the daemon chowns its
-        # wrapper socket to the instance group (startup.rs `bind_socket`) so
-        # group members can connect — re-allow @chown after the removal.
-        SystemCallFilter = [ "@system-service" "~@privileged @resources" "@chown" ];
+        # Remove the privileged syscalls, then re-allow @chown: the daemon
+        # chowns its wrapper socket to the instance group (startup.rs
+        # `bind_socket`) so group members can connect. @resources is NOT
+        # removed — the daemon calls setrlimit(RLIMIT_CORE, 0) at startup
+        # (main.rs), which lives in @resources; stripping it would SIGSYS
+        # the daemon on boot.
+        SystemCallFilter = [ "@system-service" "~@privileged" "@chown" ];
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
         NoNewPrivileges = true;
         # The daemon holds secrets and the mTLS client identity but needs

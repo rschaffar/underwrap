@@ -82,7 +82,16 @@ shape and will fail until 1550 lands. Run the VM test as part of Phase 3.
 SO_PEERPIDFD, 1570 VM test. Phase 4 = consolidated docs incl. 1580 +
 the deferred doc bits.)
 
-### Phase 3 — IN PROGRESS (updated 2026-05-27)
+### Phase 3 — DONE (updated 2026-05-27, VM test green)
+
+All Phase 3 tickets (1550, 1560, 1470, 1440, 1570) are in
+`tickets/03_done/`. `nix build .#checks.x86_64-linux.vm-test` is green
+(verified across three fresh runs), `cargo test --workspace`, clippy,
+fmt all clean, and `cd web && npm test && npm run test:e2e` were green
+in the 1560 pass. **Next: Phase 4** (consolidated docs — 1460 + 1580 +
+the deferred doc bits for 1410/1420/1440/1470).
+
+History (kept for context):
 
 Done and committed:
 
