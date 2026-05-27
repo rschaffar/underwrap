@@ -5,18 +5,13 @@
  * enough that the same layout assertions apply, and using the named
  * device keeps the user-agent + pixel ratio realistic.
  */
-import { test, expect } from "./fixtures";
+import { test, expect, loginViaUi } from "./fixtures";
 
-test("drawer nav opens on mobile and dashboard is reachable", async ({
+test("drawer nav opens on mobile and a nav destination is reachable", async ({
   page,
   backendWithAdmin,
 }) => {
-  // Sign in first.
-  await page.goto(`${backendWithAdmin.baseUrl}/login`);
-  await page.getByLabel("Username").fill("alice");
-  await page.getByLabel("Password").fill("correct-horse-battery");
-  await page.getByRole("button", { name: /sign in/i }).click();
-  await page.waitForURL(`${backendWithAdmin.baseUrl}/`);
+  await loginViaUi(page, backendWithAdmin.baseUrl);
 
   // The desktop sidebar is hidden under `md:`; the burger button is
   // visible instead and opens the drawer Sheet.
@@ -25,8 +20,12 @@ test("drawer nav opens on mobile and dashboard is reachable", async ({
     page.getByRole("dialog", { name: /navigation/i }),
   ).toBeVisible();
   // Sidebar entries inside the drawer should render — exact label
-  // doesn't matter, but at least one nav link must be visible.
-  await expect(page.getByRole("link", { name: /dashboard/i })).toBeVisible();
+  // doesn't matter, but at least one real nav link must be visible.
+  // (There is no standalone dashboard route any more; `/` lands on
+  // Secrets.)
+  await expect(
+    page.getByRole("link", { name: /secrets/i }).first(),
+  ).toBeVisible();
 });
 
 test("login form fits the mobile viewport without horizontal scroll", async ({

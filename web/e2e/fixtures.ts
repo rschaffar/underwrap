@@ -48,6 +48,41 @@ export async function loginViaUi(
   await page.getByLabel("Username").fill(username);
   await page.getByLabel("Password").fill(password);
   await page.getByRole("button", { name: /sign in/i }).click();
-  // Successful login lands on the dashboard.
-  await page.waitForURL(`${baseUrl}/`);
+  // Successful login lands on `/`, which redirects to the Secrets page.
+  await page.waitForURL(
+    (url) => url.pathname === "/" || url.pathname.startsWith("/secrets"),
+  );
+}
+
+/**
+ * Drive an admin mutation from inside the page. The CSRF cookie is
+ * HttpOnly (not JS-readable), so — exactly like the SPA client — this
+ * captures the `X-CSRF-Token` synchronizer token from a priming admin
+ * GET response and replays it. Does not throw on non-2xx; returns the
+ * status and raw body so callers can assert expected error codes.
+ */
+export async function adminMutate(
+  page: Page,
+  method: "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; body: string }> {
+  return page.evaluate(
+    async ({ method, path, body }) => {
+      const prime = await fetch("/v1/admin/stores", { credentials: "include" });
+      if (!prime.ok) {
+        throw new Error(`csrf prime GET failed ${prime.status} — login first`);
+      }
+      const csrf = prime.headers.get("X-CSRF-Token");
+      if (!csrf) throw new Error("no X-CSRF-Token header on admin response");
+      const res = await fetch(path, {
+        method,
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return { status: res.status, body: await res.text() };
+    },
+    { method, path, body },
+  );
 }

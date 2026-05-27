@@ -173,40 +173,46 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   await createDlg.getByRole("button", { name: /^create$/i }).click();
   await expect(createDlg).toBeHidden();
 
-  // Post a secret directly so we have something on disk to test the
-  // force-delete path against. Stores are addressed by their internal
-  // `id` (a generated `store_<hex>` slug); look that up from the
-  // admin listing first so the secret write hits the right backend.
+  // Put a secret in the store so the force-delete (non-empty) path is
+  // exercised. Secret writes are RESTful now — a resource must exist,
+  // then a value is written into one of its slots. All admin mutations
+  // go through the SPA's synchronizer-token CSRF scheme: capture the
+  // `X-CSRF-Token` from each admin response (the cookie is HttpOnly)
+  // and replay it on the next request, since the token rotates.
   await page.evaluate(async () => {
-    const csrf = document.cookie
-      .split(";")
-      .map((part) => part.trim())
-      .find((part) => part.startsWith("__Host-uw-csrf="))
-      ?.slice("__Host-uw-csrf=".length);
-    if (!csrf) throw new Error("no csrf cookie on page");
-    const list = await fetch("/v1/admin/stores", { credentials: "include" });
-    if (!list.ok) {
-      throw new Error(`admin/stores list failed: ${list.status}`);
-    }
-    const body = (await list.json()) as { items: Array<{ id: string; name: string }> };
-    const packed = body.items.find((s) => s.name === "packed");
+    const prime = await fetch("/v1/admin/stores", { credentials: "include" });
+    if (!prime.ok) throw new Error(`stores list failed: ${prime.status}`);
+    let csrf = prime.headers.get("X-CSRF-Token");
+    if (!csrf) throw new Error("no X-CSRF-Token header on admin response");
+    const stores = (await prime.json()) as {
+      items: Array<{ id: string; name: string }>;
+    };
+    const packed = stores.items.find((s) => s.name === "packed");
     if (!packed) throw new Error("'packed' store not found in stores list");
-    const res = await fetch("/v1/admin/secret/write", {
+
+    const resRes = await fetch(`/v1/admin/stores/${packed.id}/resources`, {
       method: "POST",
       credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRF-Token": csrf,
-      },
-      body: JSON.stringify({
-        store: packed.id,
-        wrapper: "ignored",
-        secret_id: "marker",
-        material_b64: btoa("hello"),
-      }),
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ name: "marker-res" }),
     });
-    if (!res.ok) {
-      throw new Error(`admin/secret/write failed: ${res.status}`);
+    if (!resRes.ok) {
+      throw new Error(`resource create failed: ${resRes.status} ${await resRes.text()}`);
+    }
+    csrf = resRes.headers.get("X-CSRF-Token") ?? csrf;
+    const rid = ((await resRes.json()) as { resource: { id: string } }).resource.id;
+
+    const write = await fetch(
+      `/v1/admin/stores/${packed.id}/secrets/${rid}/env/marker`,
+      {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        body: JSON.stringify({ material_b64: btoa("hello") }),
+      },
+    );
+    if (!write.ok) {
+      throw new Error(`secret write failed: ${write.status} ${await write.text()}`);
     }
   });
 

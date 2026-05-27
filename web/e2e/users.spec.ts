@@ -37,26 +37,22 @@ async function createUser(
   await expect(dlg).toBeHidden();
 }
 
-test("admin can edit an operator's username and role", async ({
-  page,
-  backendWithAdmin,
-}) => {
+test("admin can rename a user", async ({ page, backendWithAdmin }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/users`);
 
   await createUser(page, "eve", "eve-initial-pw");
   const eveRow = await rowFor(page, "eve");
 
-  // Rename eve → eve2 and promote operator → admin.
+  // Rename eve → eve2. (There are no roles or per-store restrictions
+  // any more; the edit dialog only renames.)
   await eveRow.getByRole("button", { name: /^edit$/i }).click();
   const editDlg = page.getByRole("dialog", { name: /edit user: eve/i });
   await editDlg.getByLabel("Username").fill("eve2");
-  await editDlg.getByLabel("Role").selectOption("admin");
   await editDlg.getByRole("button", { name: /^save$/i }).click();
   await expect(editDlg).toBeHidden();
 
-  const renamedRow = await rowFor(page, "eve2");
-  await expect(renamedRow).toContainText(/admin/);
+  await rowFor(page, "eve2");
   // And the old name is gone.
   await expect(page.getByRole("cell", { name: "eve", exact: true })).toHaveCount(
     0,
@@ -128,35 +124,34 @@ test("admin can delete a non-last-admin operator", async ({
   );
 });
 
-test("delete dialog refuses to arm for the last remaining admin", async ({
+test("delete dialog refuses to arm for the last remaining user", async ({
   page,
   backendWithAdmin,
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/users`);
 
-  // The bootstrap admin is the only admin on a fresh fixture. The
-  // admin's row labels the cell as `alice(you)` to mark the current
-  // session, so match by inclusion instead of exact.
-  const adminCell = page
+  // The bootstrap user is the only user on a fresh fixture. The current
+  // session's row labels the cell as `alice(you)`, so match by
+  // inclusion instead of exact.
+  const userCell = page
     .getByRole("cell")
     .filter({ hasText: new RegExp(`\\b${ADMIN_USERNAME}\\b`) })
     .first();
-  await expect(adminCell).toBeVisible();
-  const adminRow = adminCell.locator("xpath=ancestor::tr");
+  await expect(userCell).toBeVisible();
+  const userRow = userCell.locator("xpath=ancestor::tr");
 
-  await adminRow.getByRole("button", { name: /^delete$/i }).click();
+  await userRow.getByRole("button", { name: /^delete$/i }).click();
   const delDlg = page.getByRole("dialog", {
     name: new RegExp(`delete user: ${ADMIN_USERNAME}`, "i"),
   });
 
   // The warning banner appears.
   await expect(
-    delDlg.getByRole("alert").filter({ hasText: /last remaining admin/i }),
+    delDlg.getByRole("alert").filter({ hasText: /last remaining user/i }),
   ).toBeVisible();
 
-  // The destructive button stays disabled regardless of any other
-  // input.
+  // The destructive button stays disabled.
   const confirm = delDlg.getByRole("button", { name: /^delete$/i });
   await expect(confirm).toBeDisabled();
 });

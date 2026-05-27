@@ -17,10 +17,12 @@ test("operator can reach /wrappers from the drawer nav and the page has no docum
   await page.getByRole("button", { name: /open navigation/i }).click();
   const drawer = page.getByRole("dialog", { name: /navigation/i });
   await expect(drawer).toBeVisible();
-  await drawer.getByRole("link", { name: /wrappers/i }).click();
+  await drawer.getByRole("link", { name: /wrapper permissions/i }).click();
   await expect(page).toHaveURL(/\/wrappers(\?|$)/);
 
-  await expect(page.getByRole("heading", { name: /^wrappers$/i })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: /wrapper permissions/i }),
+  ).toBeVisible();
 
   const scrollDelta = await page.evaluate(() => {
     return document.documentElement.scrollWidth - window.innerWidth;

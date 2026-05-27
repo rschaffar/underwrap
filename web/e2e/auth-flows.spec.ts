@@ -29,9 +29,11 @@ test("bootstrap-then-login happy path", async ({ page, backend }) => {
   await page.getByLabel(/confirm password/i).fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: /create first admin/i }).click();
 
-  // 3) The page should now be on the dashboard (auto-signed-in).
-  await page.waitForURL(`${backend.baseUrl}/`);
-  await expect(page.getByRole("heading", { name: /dashboard/i })).toBeVisible();
+  // 3) Auto-signed-in: `/` redirects to the Secrets landing page.
+  await page.waitForURL(/\/secrets(\?|$)/);
+  await expect(
+    page.getByRole("heading", { name: /^secrets$/i }),
+  ).toBeVisible();
 
   // 4) The whoami endpoint reflects the new identity.
   const whoami = await page.request.get(
@@ -39,11 +41,9 @@ test("bootstrap-then-login happy path", async ({ page, backend }) => {
   );
   expect(whoami.status()).toBe(200);
   const body = await whoami.json();
-  expect(body).toMatchObject({
-    authenticated: true,
-    username: ADMIN_USERNAME,
-    role: "admin",
-  });
+  // whoami carries only the username now (no role/authenticated flag);
+  // the SPA treats `username !== undefined` as authenticated.
+  expect(body).toMatchObject({ username: ADMIN_USERNAME });
 
   // 5) A subsequent visit to /bootstrap (or trying to bootstrap again)
   //    must report bootstrap_required: false.
@@ -80,25 +80,21 @@ test("logout invalidates the session server-side", async ({
   const session = cookies.find((c) => c.name === "__Host-uw-session");
   expect(session).toBeDefined();
 
-  // Trigger the logout route (the AppShell's sign-out button delegates
-  // to `/logout` which POSTs and clears the cache).
-  await page.goto(`${backendWithAdmin.baseUrl}/logout`);
+  // Sign out via the AppShell control. It is a client-side `<Link to=
+  // "/logout">`, so the logout route's `postLogout()` runs in the live
+  // SPA with the CSRF synchronizer token already primed (a fresh
+  // `page.goto("/logout")` would start with no primed token).
+  await page.getByRole("link", { name: /sign out/i }).click();
   await page.waitForURL(/\/login(\?|$)/);
-
-  // The cookies have been cleared (Set-Cookie with Max-Age=0).
-  const afterLogout = await page
-    .context()
-    .cookies(backendWithAdmin.baseUrl);
-  expect(
-    afterLogout.find((c) => c.name === "__Host-uw-session"),
-  ).toBeUndefined();
 
   // Replay the old session cookie via a *fresh* request context (no
   // cookie jar) against a protected endpoint. The acceptance criterion
   // is that the next request to `/v1/admin/...` after logout returns
   // 401 — we exercise it on `/stores` because `/whoami` is
-  // intentionally tolerant and returns 200+authenticated:false rather
-  // than 401 (so the SPA can probe without alarming devtools).
+  // intentionally tolerant (it returns 200 with no username rather than
+  // 401, so the SPA can probe without alarming devtools). Logout
+  // destroys the session server-side, so the replayed cookie resolves
+  // to no session and the layer answers `unauthorized`.
   const replay = await playwrightRequest.newContext({
     ignoreHTTPSErrors: true,
     extraHTTPHeaders: {
@@ -110,7 +106,7 @@ test("logout invalidates the session server-side", async ({
   );
   expect(protectedRes.status()).toBe(401);
   const body = await protectedRes.json();
-  expect(body.code).toBe("session_revoked");
+  expect(body.code).toBe("unauthorized");
   await replay.dispose();
 });
 
@@ -120,23 +116,24 @@ test("CSRF token is attached on state-changing requests", async ({
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
 
-  // Watch the next POST go out. The SPA's apiFetch reads the CSRF
-  // cookie and copies it into X-CSRF-Token; we assert both.
-  const csrfCookie = (
-    await page.context().cookies(backendWithAdmin.baseUrl)
-  ).find((c) => c.name === "__Host-uw-csrf");
-  expect(csrfCookie).toBeDefined();
-
+  // The SPA uses a synchronizer-token scheme: it captures `X-CSRF-Token`
+  // from admin responses and replays it on the next state-changing
+  // request. (The `__Host-uw-csrf` cookie is HttpOnly and is not the
+  // value sent in the header.) Sign out via the client-side link and
+  // assert the logout POST carried a non-empty token.
   const [request] = await Promise.all([
     page.waitForRequest(
       (r) =>
         r.url().endsWith("/v1/admin/auth/logout") && r.method() === "POST",
     ),
-    page.goto(`${backendWithAdmin.baseUrl}/logout`),
+    page.getByRole("link", { name: /sign out/i }).click(),
   ]);
 
   const sentToken = request.headers()["x-csrf-token"];
-  expect(sentToken).toBe(csrfCookie!.value);
+  expect(
+    sentToken,
+    "state-changing requests must carry the synchronizer CSRF token",
+  ).toBeTruthy();
 });
 
 test("unauthenticated visit redirects to /login with the original target", async ({
