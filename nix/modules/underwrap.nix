@@ -26,81 +26,57 @@ let
 
   # Per-instance helper functions. All names are prefixed with the instance name
   # to ensure full isolation between instances.
+  #
+  # Single-instance wrapper model: ONE setgid binary (`uw-<instance>`), ONE
+  # gate group (`underwrap-<instance>`), and ONE wrapper socket per instance.
+  # The wrapper name is a client-supplied selector carried over IPC and
+  # validated by the daemon — it is no longer encoded in a per-wrapper binary,
+  # group, or socket. The debug tool is reached via the `debug` subcommand
+  # (`uw-<instance> debug <wrapper>`), gated by the backend policy, not by a
+  # separate binary or NixOS opt-in.
   mkInstance = instName: inst: let
     daemonUser = "underwrap-${instName}";
+    # The daemon's primary group doubles as the wrapper gate group: the
+    # socket (mode 0660) is group-owned by it, the daemon (member by primary
+    # group) can chown it, and authorized users acquire it transiently via
+    # setgid on `uw-<instance>`. frontend-exec derives the instance name by
+    # stripping the `underwrap-` prefix from its effective GID group, so this
+    # name is load-bearing — it must stay `underwrap-<instance>`.
     daemonGroup = "underwrap-${instName}";
+    instanceGroup = daemonGroup;
     tunnelUser = "underwrap-${instName}-tunnel";
-    fullWrapperName = name: "${instName}-${name}";
-    fullDebugWrapperName = name: "debug-${fullWrapperName name}";
-    wrapperGroupName = name: "underwrap-${instName}-${name}";
-    wrapperSocketPath = name: "${runDir}/wrapper-${name}.sock";
+    instanceBinaryName = "uw-${instName}";
+    socketPath = "${runDir}/wrapper.sock";
     runDir = "/run/underwrap-${instName}";
     stateDir = "/var/lib/underwrap-${instName}";
     # Per-instance mTLS client credential. Generated locally by
-    # `underwrap-keygen --instance-config /etc/underwrap/instances/${instName}.yaml`;
+    # `underwrap-keygen --instance-config /etc/underwrap/daemon/${instName}.yaml`;
     # never wired in via the module (so two instances on the same host can't
     # collide, and the operator can't paste a stale cert from one host into
     # another's enrollment).
     clientCertPath = "${stateDir}/client-${instName}.pem";
     clientKeyPath = "${stateDir}/client-${instName}.key";
     nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
-    debugToolTarget = "${cfg.package}/bin/underwrap-debug-tool";
 
-    mkWrapperConfig = { configName, target, wrapperName, wrapper, envSet ? wrapper.envSet }:
-      pkgs.writeText "${configName}.yaml" (builtins.toJSON ({
-        inherit target;
-        wrapper_socket = wrapperSocketPath wrapperName;
-        ns_binary = nsBinaryPath;
-        env_passthrough = wrapper.envPassthrough;
-        env_set = envSet;
-        xdg_runtime_dir_base = inst.xdgRuntimeDirBase;
-      } // lib.optionalAttrs wrapper.libsecret {
-        libsecret = true;
-        dbus_daemon_binary = "${pkgs.dbus}/bin/dbus-daemon";
-        secretsd_binary = "${cfg.package}/bin/underwrap-secretsd";
-      }));
-
-    wrapperConfigs =
-      lib.foldl' lib.recursiveUpdate {} (lib.mapAttrsToList (name: w: {
-        "${fullWrapperName name}" = mkWrapperConfig {
-          configName = fullWrapperName name;
-          target = w.target;
-          wrapperName = name;
-          wrapper = w;
-        };
-      } // lib.optionalAttrs w.addUnsafeDebugTool {
-        "${fullDebugWrapperName name}" = mkWrapperConfig {
-          configName = fullDebugWrapperName name;
-          target = debugToolTarget;
-          wrapperName = name;
-          wrapper = w;
-          envSet = w.envSet // {
-            UNDERWRAP_DEBUG_INSTANCE = instName;
-            UNDERWRAP_DEBUG_LOGICAL_WRAPPER = name;
-            UNDERWRAP_DEBUG_WRAPPER = fullWrapperName name;
-            UNDERWRAP_DEBUG_ORIGINAL_TARGET = w.target;
-            UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA = "1";
-          };
-        };
-      }) inst.wrappers);
-
-    wrapperBinaries = pkgs.runCommand "underwrap-${instName}-wrappers" {} (
-      "mkdir -p $out/bin\n" +
-      lib.concatStringsSep "\n" (lib.concatLists (lib.mapAttrsToList (name: w:
-        [
-          "cp ${cfg.package}/bin/underwrap-exec $out/bin/${fullWrapperName name}"
-        ] ++ lib.optional w.addUnsafeDebugTool
-          "cp ${cfg.package}/bin/underwrap-exec $out/bin/${fullDebugWrapperName name}"
-      ) inst.wrappers))
-    );
-
-    mkSecurityWrapper = executableName: groupName: {
-      source = "${wrapperBinaries}/bin/${executableName}";
-      owner = "root";
-      setgid = true;
-      group = groupName;
+    # Minimal trusted sidecar read by `underwrap-exec` (frontend-exec) from
+    # the fixed path `/etc/underwrap/instances/<instance>.yaml`. It carries
+    # only the socket and helper-binary paths — never the backend section or
+    # wrapper definitions — and frontend-exec parses it with
+    # `deny_unknown_fields`, so it must stay a strict subset.
+    instanceSidecar = {
+      socket = socketPath;
+      ns_binary = nsBinaryPath;
+      dbus_daemon_binary = "${pkgs.dbus}/bin/dbus-daemon";
+      secretsd_binary = "${cfg.package}/bin/underwrap-secretsd";
     };
+    instanceSidecarFile = pkgs.writeText "underwrap-${instName}-sidecar.yaml"
+      (builtins.toJSON instanceSidecar);
 
+    # Full `DaemonConfig` consumed by `underwrapd --config` (and by
+    # `underwrap-keygen --instance-config`, which extracts only the `backend`
+    # section). Wrappers are keyed by their bare name — the daemon registers
+    # those names with the backend and validates the client-supplied selector
+    # against this map.
     runtimeConfig = {
       backend = {
         url = inst.backend.url;
@@ -109,19 +85,22 @@ let
       } // lib.optionalAttrs (inst.backend.caFile != null) {
         ca_file = inst.backend.caFile;
       };
-      wrappers = lib.mapAttrs' (name: w:
-        lib.nameValuePair (fullWrapperName name) ({
-          target = w.target;
-          logical_name = name;
-          resource = w.resource;
-          env = w.env;
-          libsecret = w.libsecret;
-          socket = wrapperSocketPath name;
-          group = wrapperGroupName name;
-        } // lib.optionalAttrs (w.files != null) {
-          files = { inherit (w.files) paths; };
-        })
-      ) inst.wrappers;
+      instance = instName;
+      socket = socketPath;
+      group = instanceGroup;
+      ns_binary = nsBinaryPath;
+      debug_tool_target = "${cfg.package}/bin/underwrap-debug-tool";
+      xdg_runtime_dir_base = inst.xdgRuntimeDirBase;
+      wrappers = lib.mapAttrs (_name: w: ({
+        target = w.target;
+        resource = w.resource;
+        env = w.env;
+        libsecret = w.libsecret;
+        env_passthrough = w.envPassthrough;
+        env_set = w.envSet;
+      } // lib.optionalAttrs (w.files != null) {
+        files = { inherit (w.files) paths; };
+      })) inst.wrappers;
     };
 
     configFile = pkgs.writeText "underwrap-${instName}-config.yaml"
@@ -132,7 +111,6 @@ let
       "${daemonUser}" = {
         isSystemUser = true;
         group = daemonGroup;
-        extraGroups = lib.mapAttrsToList (name: _w: wrapperGroupName name) inst.wrappers;
         home = stateDir;
         description = "underwrap daemon (${instName})";
       };
@@ -145,28 +123,27 @@ let
       };
     };
 
-    groups = { "${daemonGroup}" = {}; } // lib.mapAttrs' (name: _w:
-      lib.nameValuePair (wrapperGroupName name) {}
-    ) inst.wrappers;
+    # One group per instance, doubling as the daemon group and the wrapper
+    # gate group. No per-wrapper groups any more.
+    groups = { "${instanceGroup}" = {}; };
 
-    securityWrappers =
-      lib.mapAttrs' (name: _w:
-        lib.nameValuePair (fullWrapperName name)
-          (mkSecurityWrapper (fullWrapperName name) (wrapperGroupName name))
-      ) inst.wrappers
-      // lib.foldl' lib.recursiveUpdate {} (lib.mapAttrsToList (name: w:
-        lib.optionalAttrs w.addUnsafeDebugTool {
-          "${fullDebugWrapperName name}" =
-            mkSecurityWrapper (fullDebugWrapperName name) (wrapperGroupName name);
-        }
-      ) inst.wrappers);
+    # One setgid entrypoint per instance. Identity comes from this group's
+    # egid, not from argv[0] or the binary name, so the source can be the
+    # plain `underwrap-exec` binary (no per-wrapper renamed copies).
+    securityWrappers = {
+      "${instanceBinaryName}" = {
+        source = "${cfg.package}/bin/underwrap-exec";
+        owner = "root";
+        setgid = true;
+        group = instanceGroup;
+      };
+    };
 
-    etcFiles = (lib.mapAttrs' (configName: source:
-      lib.nameValuePair "underwrap/wrappers/${configName}.yaml" {
-        inherit source;
-      }
-    ) wrapperConfigs) // {
-      "underwrap/instances/${instName}.yaml".source = configFile;
+    etcFiles = {
+      # Minimal sidecar read by frontend-exec (fixed path, deny_unknown_fields).
+      "underwrap/instances/${instName}.yaml".source = instanceSidecarFile;
+      # Full DaemonConfig consumed by underwrapd and underwrap-keygen.
+      "underwrap/daemon/${instName}.yaml".source = configFile;
     };
 
     tmpfiles = [
@@ -217,47 +194,65 @@ let
 
   # Per-user wrapper namespace.
   #
-  # `security.wrappers` is system-wide: every entry lands in /run/wrappers/bin
-  # with a globally-unique name. We keep the instance-prefixed entries for
-  # isolation, then layer per-user PATH integration on top so authorized users
-  # can invoke wrappers by their bare attribute name without each operator
-  # wiring up a parallel security.wrappers alias list.
+  # `security.wrappers` is system-wide: the single `uw-<instance>` setgid
+  # entrypoint lands in /run/wrappers/bin, which is already on every user's
+  # PATH. On top of that we layer per-user PATH integration so authorized
+  # users get (a) a bare `uw` alias for the default instance and (b) the
+  # familiar per-tool command names (`<wrapper>` / `debug-<wrapper>`) without
+  # having to type the `uw-<instance> <wrapper>` form.
+  #
+  # The default instance is the one literally named `default`; only its
+  # authorized users get the bare `uw` alias.
   #
   # Each authorized user gets a derivation in their `users.users.<u>.packages`
-  # whose `bin/` contains bare-named symlinks pointing at the prefixed setgid
-  # binaries. NixOS's standard per-user profile machinery puts
-  # /etc/profiles/per-user/<u>/bin on that user's PATH automatically.
+  # whose `bin/` holds these aliases. NixOS's standard per-user profile
+  # machinery puts /etc/profiles/per-user/<u>/bin on that user's PATH.
   allAuthorizedUsers =
     lib.unique (lib.concatMap (i: i.allowedUsers) (lib.attrValues cfg.instances));
 
-  # For each authorized user: the list of commands that should appear on
-  # their PATH. Normal wrappers are exposed as `<wrapper>` and opted-in unsafe
-  # debug wrappers as `debug-<wrapper>`.
-  userBareEntries = lib.genAttrs allAuthorizedUsers (user:
+  defaultInstanceName = "default";
+
+  # Convenience shim: a plain, UNPRIVILEGED POSIX shell script that just
+  # forwards to the real `uw-<instance>` setgid entrypoint. It carries no
+  # setgid bit and no file capabilities — all privilege and policy live
+  # exclusively in `uw-<instance>` and the daemon. `exec` preserves argv,
+  # exit status, and signals. The absolute path keeps the shim immune to the
+  # caller's PATH (a moot point for an unprivileged script, but unambiguous).
+  mkShim = instName: wname: isDebug:
+    pkgs.writeShellScript "uw-shim-${instName}-${lib.optionalString isDebug "debug-"}${wname}"
+      (if isDebug
+       then ''exec /run/wrappers/bin/uw-${instName} debug ${lib.escapeShellArg wname} "$@"''
+       else ''exec /run/wrappers/bin/uw-${instName} ${lib.escapeShellArg wname} "$@"'');
+
+  # linkFarm entries ({ name = "bin/<alias>"; path = <store path or
+  # /run/wrappers/bin link>; }) for one user across every instance they are
+  # authorized in.
+  #
+  # Naming collisions across instances (two instances declaring the same
+  # wrapper name, or a `debug-`-prefixed name clashing with another wrapper)
+  # are the OPERATOR's responsibility — exactly as in the previous design,
+  # where each wrapper already produced a binary literally named `<wrapper>`
+  # on PATH. The module adds no collision-avoidance logic; a genuine clash
+  # surfaces as a linkFarm build error, which the operator resolves by
+  # renaming a wrapper or splitting the user across instances.
+  userBinEntries = lib.genAttrs allAuthorizedUsers (user:
     lib.concatMap (instName:
       let inst = cfg.instances.${instName}; in
-      if lib.elem user inst.allowedUsers
-      then lib.concatLists (lib.mapAttrsToList (wn: w:
-        [
-          {
-            alias = wn;
-            fullName = "${instName}-${wn}";
-            instance = instName;
-          }
-        ] ++ lib.optional w.addUnsafeDebugTool {
-          alias = "debug-${wn}";
-          fullName = "debug-${instName}-${wn}";
-          instance = instName;
-        }
-      ) inst.wrappers)
-      else []
+      if !(lib.elem user inst.allowedUsers)
+      then []
+      else
+        (lib.optional (instName == defaultInstanceName) {
+          name = "bin/uw";
+          path = "/run/wrappers/bin/uw-${instName}";
+        })
+        ++ lib.concatLists (lib.mapAttrsToList (wname: _w: [
+          { name = "bin/${wname}"; path = "${mkShim instName wname false}"; }
+          { name = "bin/debug-${wname}"; path = "${mkShim instName wname true}"; }
+        ]) inst.wrappers)
     ) (builtins.attrNames cfg.instances));
 
   mkUserBin = user: entries:
-    pkgs.linkFarm "underwrap-userbin-${user}" (map (e: {
-      name = "bin/${e.alias}";
-      path = "/run/wrappers/bin/${e.fullName}";
-    }) entries);
+    pkgs.linkFarm "underwrap-userbin-${user}" entries;
 
   # Submodule types.
   filesUseSubmodule = lib.types.submodule {
@@ -340,18 +335,6 @@ let
         '';
         example = { NO_COLOR = "1"; };
       };
-      addUnsafeDebugTool = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Install an additional wrapper named `debug-<instance>-<wrapper>`
-          plus a per-user `debug-<wrapper>` PATH alias. It reuses the real
-          wrapper's GID and resource projections but replaces the target with
-          `underwrap-debug-tool`, which can print secrets, spawn shells, and
-          otherwise inspect the wrapped environment. Use only for local
-          development.
-        '';
-      };
     };
   };
 
@@ -380,12 +363,15 @@ let
         type = lib.types.listOf lib.types.str;
         default = [];
         description = ''
-          Local users who get bare-name wrapper aliases (`<wrapper>`,
-          `debug-<wrapper>`) on their PATH for this instance. This is a
-          NixOS-side convenience only — wrapper execution itself is
-          gated by the setgid group on `/run/wrappers/bin/<instance>-<wrapper>`,
-          and authorization happens entirely on the backend via grants
-          keyed on the mTLS-bound runtime client instance.
+          Local users who get this instance's convenience aliases on their
+          PATH: per declared wrapper a plain `<wrapper>` and `debug-<wrapper>`
+          shim, plus a bare `uw` for the instance named `default`. The shims
+          are unprivileged scripts that forward to the `uw-<instance>` setgid
+          entrypoint; this is a NixOS-side convenience only. The kernel gate
+          is acquiring the single `underwrap-<instance>` group via setgid on
+          `/run/wrappers/bin/uw-<instance>`, and authorization happens
+          entirely on the backend via grants keyed on the mTLS-bound runtime
+          client instance.
         '';
       };
       backend = lib.mkOption {
@@ -532,23 +518,14 @@ in {
             message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, and XDG_STATE_HOME must be absolute paths when set";
           }
         ) inst.wrappers)
+        ++ (lib.mapAttrsToList (wrapperName: _wrapper: {
+          # `debug` is the subcommand token (`uw-<instance> debug <wrapper>`),
+          # so a wrapper may not be named `debug`. The daemon rejects this at
+          # load time too; this surfaces it at eval time with a clear message.
+          assertion = wrapperName != "debug";
+          message = "services.underwrap.instances.${instName}.wrappers: a wrapper may not be named 'debug' — it is the reserved debug subcommand token (uw-${instName} debug <wrapper>)";
+        }) inst.wrappers)
       ) cfg.instances))
-      ++ (lib.mapAttrsToList (user: entries:
-        let
-          byAlias = lib.foldl' (acc: e:
-            acc // { ${e.alias} = (acc.${e.alias} or []) ++ [ e.instance ]; }
-          ) {} entries;
-          collisions = lib.filterAttrs (_: insts: lib.length insts > 1) byAlias;
-        in {
-          assertion = collisions == {};
-          message = "services.underwrap: user '${user}' is authorized in multiple "
-            + "instances that expose the same command name: "
-            + lib.concatStringsSep "; " (lib.mapAttrsToList (alias: insts:
-                "'${alias}' (in ${lib.concatStringsSep ", " insts})"
-              ) collisions)
-            + ". Rename one of the wrappers, disable one debug alias, or remove the user from one of the instances.";
-        }
-      ) userBareEntries)
       ++ lib.optionals cfg.hardenTargetHost [
         {
           assertion = swapDevicesAreHardened;
@@ -562,7 +539,7 @@ in {
       ++ (lib.mapAttrsToList (user: entries:
         if entries == [] then {}
         else { ${user}.packages = [ (mkUserBin user entries) ]; }
-      ) userBareEntries)
+      ) userBinEntries)
     );
     users.groups = lib.mkMerge (lib.mapAttrsToList (_: i: i.groups) instances);
 
