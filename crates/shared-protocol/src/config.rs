@@ -68,8 +68,16 @@ impl DaemonConfig {
     /// bind time). Rejects a wrapper named `debug` (reserved subcommand
     /// token) and a wrapper with no projection slot enabled.
     pub fn validate(&self) -> Result<(), String> {
+        use crate::target_env::{CONFIGURABLE_FORCED_TARGET_ENV_NAMES, is_forced_target_env_name};
+
         if self.instance.is_empty() {
             return Err("instance name must not be empty".to_string());
+        }
+        if !std::path::Path::new(&self.xdg_runtime_dir_base).is_absolute() {
+            return Err(format!(
+                "xdg_runtime_dir_base must be an absolute path, got '{}'",
+                self.xdg_runtime_dir_base
+            ));
         }
         for (name, wrapper) in &self.wrappers {
             if name == RESERVED_WRAPPER_NAME_DEBUG {
@@ -83,6 +91,41 @@ impl DaemonConfig {
                     "wrapper '{name}' enables no projection slot \
                      (set at least one of env/files/libsecret)"
                 ));
+            }
+            // The target inherits `env_passthrough` from the caller's
+            // environment, so it must never carry an env name that steers
+            // where the target finds config/cache/runtime dirs. Those are
+            // forced by the wrapper chain; allowing passthrough would let a
+            // caller redirect the target's view of its own state.
+            for passthrough in &wrapper.env_passthrough {
+                if is_forced_target_env_name(passthrough) {
+                    if passthrough == "XDG_RUNTIME_DIR" {
+                        return Err(format!(
+                            "wrapper '{name}' env_passthrough must not include \
+                             XDG_RUNTIME_DIR; use xdg_runtime_dir_base instead"
+                        ));
+                    }
+                    return Err(format!(
+                        "wrapper '{name}' env_passthrough must not include \
+                         {passthrough}; use env_set for trusted HOME/XDG overrides"
+                    ));
+                }
+            }
+            if wrapper.env_set.contains_key("XDG_RUNTIME_DIR") {
+                return Err(format!(
+                    "wrapper '{name}' env_set must not include XDG_RUNTIME_DIR; \
+                     use xdg_runtime_dir_base instead"
+                ));
+            }
+            for forced in CONFIGURABLE_FORCED_TARGET_ENV_NAMES {
+                if let Some(value) = wrapper.env_set.get(*forced)
+                    && !std::path::Path::new(value).is_absolute()
+                {
+                    return Err(format!(
+                        "wrapper '{name}' env_set {forced} must be an absolute \
+                         path, got '{value}'"
+                    ));
+                }
             }
         }
         Ok(())

@@ -32,6 +32,7 @@ use underwrap_protocol::service::{
     RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
     RuntimeWrapperRegisterRequest, RuntimeWrapperRegisterResponse, ServiceErrorResponse,
 };
+use underwrap_protocol::variant::WrapperVariant;
 
 /// Typed error variant that the daemon downcasts to translate the
 /// backend's `store_locked` HTTP error into the appropriate wrapper
@@ -183,6 +184,7 @@ impl BackendClient {
         &self,
         wrapper_name: &str,
         resource_name: &str,
+        variant: WrapperVariant,
     ) -> Result<RuntimeWrapperInvocationOpenResponse> {
         let (tx, rx) = mpsc::channel();
         self.sender
@@ -190,6 +192,7 @@ impl BackendClient {
                 request: RuntimeWrapperInvocationOpenRequest {
                     wrapper_name: wrapper_name.to_string(),
                     resource_name: resource_name.to_string(),
+                    variant,
                 },
                 reply: tx,
             })
@@ -202,6 +205,7 @@ impl BackendClient {
         &self,
         wrapper_name: &str,
         resource_name: &str,
+        variant: WrapperVariant,
         blob_bytes: Option<&[u8]>,
     ) -> Result<RuntimeWrapperInvocationFinalizeResponse> {
         let (tx, rx) = mpsc::channel();
@@ -210,6 +214,7 @@ impl BackendClient {
                 request: RuntimeWrapperInvocationFinalizeRequest {
                     wrapper_name: wrapper_name.to_string(),
                     resource_name: resource_name.to_string(),
+                    variant,
                     blob_b64: blob_bytes
                         .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
                 },

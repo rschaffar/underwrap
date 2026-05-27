@@ -16,7 +16,7 @@ pub(super) async fn establish_scoped_channels(
     wrapper_name: &str,
     opened: OpenedInvocation,
 ) {
-    match setup_wrapper_resource_channel(stream, wrapper_name, opened).await {
+    match setup_wrapper_resource_channel(stream, opened).await {
         Ok(()) => info!(wrapper = %wrapper_name, "wrapper-resource channel established"),
         Err(e) => error!(
             wrapper = %wrapper_name,
@@ -51,12 +51,11 @@ async fn setup_scoped_channel(
 
 async fn setup_wrapper_resource_channel(
     stream: &UnixStream,
-    wrapper_name: &str,
     opened: OpenedInvocation,
 ) -> Result<()> {
     let ctx = ChannelContext {
-        wrapper_name: wrapper_name.to_string(),
-        logical_wrapper_name: opened.logical_wrapper_name,
+        wrapper_name: opened.wrapper_name,
+        variant: opened.variant,
         resource_name: opened.resource_name,
         resource_id: opened.resource_id,
         access: opened.access,

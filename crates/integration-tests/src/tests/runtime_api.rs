@@ -22,6 +22,7 @@ use underwrap_protocol::service::{
     RuntimeWrapperInvocationOpenResponse, RuntimeWrapperRegisterPair,
     RuntimeWrapperRegisterRequest, RuntimeWrapperRegisterResponse,
 };
+use underwrap_protocol::variant::WrapperVariant;
 
 // ---------------------------------------------------------------------------
 // Direct-call helpers
@@ -66,6 +67,7 @@ async fn direct_open(
         .json(&RuntimeWrapperInvocationOpenRequest {
             wrapper_name: wrapper.to_string(),
             resource_name: resource.to_string(),
+            variant: WrapperVariant::Real,
         })
         .send()
         .await
@@ -94,6 +96,7 @@ async fn direct_finalize(
         .json(&RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: wrapper.to_string(),
             resource_name: resource.to_string(),
+            variant: WrapperVariant::Real,
             blob_b64,
         })
         .send()
@@ -402,6 +405,7 @@ async fn open_rejects_empty_wrapper_or_resource_name() {
             .json(&RuntimeWrapperInvocationOpenRequest {
                 wrapper_name: w.to_string(),
                 resource_name: r.to_string(),
+                variant: WrapperVariant::Real,
             })
             .send()
             .await

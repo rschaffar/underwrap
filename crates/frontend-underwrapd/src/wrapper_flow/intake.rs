@@ -14,7 +14,6 @@ const WRAPPER_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) async fn authorize_wrapper_peer(
     stream: &mut UnixStream,
-    wrapper_name: &str,
     expected_gid: u32,
 ) -> Result<Option<(Option<PeerCred>, u32)>> {
     let peer = get_peer_cred(stream);
@@ -34,14 +33,16 @@ pub(super) async fn authorize_wrapper_peer(
         }
     };
 
+    // Acquiring the instance setgid group is the sole kernel-enforced
+    // gate. The wrapper name carried in the request frame selects which
+    // wrapper config to use but grants no privilege on its own.
     if peer.as_ref().and_then(|p| p.egid) != Some(expected_gid) {
         let reason = format!(
-            "peer egid {:?} does not match wrapper '{}' gid {}",
+            "peer egid {:?} does not match instance group gid {}",
             peer.as_ref().and_then(|p| p.egid),
-            wrapper_name,
             expected_gid,
         );
-        warn!(wrapper = %wrapper_name, peer = ?peer, "wrapper identity rejected");
+        warn!(peer = ?peer, "wrapper identity rejected");
         audit::auth_denied(
             "wrapper",
             &reason,
@@ -65,7 +66,6 @@ pub(super) async fn authorize_wrapper_peer(
 
 pub(super) async fn read_initial_wrapper_request(
     stream: &mut UnixStream,
-    wrapper_name: &str,
     peer: Option<&PeerCred>,
     peer_uid: u32,
 ) -> Result<Option<WrapperRequest>> {
@@ -73,7 +73,7 @@ pub(super) async fn read_initial_wrapper_request(
         Ok(Ok(request)) => Ok(Some(request)),
         Ok(Err(e)) => Err(e),
         Err(_) => {
-            warn!(wrapper = %wrapper_name, peer = ?peer, "wrapper socket first-frame timeout");
+            warn!(peer = ?peer, "wrapper socket first-frame timeout");
             audit::auth_denied(
                 "wrapper",
                 "timed out waiting for first wrapper request frame",

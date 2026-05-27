@@ -4,8 +4,10 @@ use std::path::PathBuf;
 
 use underwrap_protocol::config::{FilesUse, WrapperDef};
 
-/// Get the current process's primary group name (for test wrappers).
-fn current_group_name() -> String {
+/// Get the current process's primary group name. The harness uses this
+/// as the single instance group so the daemon's `egid == instance gid`
+/// gate passes for the in-process test connections.
+pub(crate) fn current_group_name() -> String {
     let gid = unsafe { libc::getegid() };
     let grp = unsafe { libc::getgrgid(gid) };
     if grp.is_null() {
@@ -19,13 +21,12 @@ fn current_group_name() -> String {
 pub fn wrapper(target: &str, resource_id: &str, _env_var: &str) -> WrapperDef {
     WrapperDef {
         target: PathBuf::from(target),
-        logical_name: None,
         resource: resource_id.to_string(),
         env: true,
         files: None,
         libsecret: false,
-        socket: PathBuf::new(),
-        group: current_group_name(),
+        env_passthrough: Vec::new(),
+        env_set: std::collections::HashMap::new(),
     }
 }
 
@@ -40,15 +41,14 @@ pub fn files_wrapper(target: &str, resource_id: &str, path: &str) -> WrapperDef 
 pub fn files_wrapper_paths(target: &str, resource_id: &str, paths: &[&str]) -> WrapperDef {
     WrapperDef {
         target: PathBuf::from(target),
-        logical_name: None,
         resource: resource_id.to_string(),
         env: false,
         files: Some(FilesUse {
             paths: paths.iter().map(|p| (*p).to_string()).collect(),
         }),
         libsecret: false,
-        socket: PathBuf::new(),
-        group: current_group_name(),
+        env_passthrough: Vec::new(),
+        env_set: std::collections::HashMap::new(),
     }
 }
 

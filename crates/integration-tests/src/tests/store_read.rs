@@ -42,7 +42,7 @@ async fn read_before_store_returns_empty_env() {
 }
 
 #[tokio::test]
-async fn read_uses_wrapper_socket_without_client_supplied_name() {
+async fn read_validates_client_supplied_wrapper_name() {
     let wrappers = one_wrapper_config();
     let daemon = TestDaemon::start(wrappers).await.unwrap();
 
@@ -51,8 +51,33 @@ async fn read_uses_wrapper_socket_without_client_supplied_name() {
         .await
         .unwrap();
 
+    // A known wrapper name resolves and reads.
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     assert_eq!(expect_single_env_string(resp), "real_token");
+
+    // An unknown client-supplied wrapper name is rejected by the daemon
+    // (the name is now a client-supplied selector validated against the
+    // instance config, not bound to a per-wrapper socket). Connect to
+    // the shared instance socket and send a bogus name.
+    let sock = daemon.wrapper_sockets["gh-authorized"].clone();
+    let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+    underwrap_protocol::ipc::write_frame_async(
+        &mut stream,
+        &WrapperRequest::Read {
+            wrapper_name: "ghost-wrapper".to_string(),
+            variant: underwrap_protocol::variant::WrapperVariant::Real,
+            scope: None,
+        },
+    )
+    .await
+    .unwrap();
+    let resp: WrapperResponse = underwrap_protocol::ipc::read_frame_async(&mut stream)
+        .await
+        .unwrap();
+    assert!(
+        matches!(resp, WrapperResponse::Error { ref message, .. } if message.contains("unknown wrapper")),
+        "expected unknown-wrapper error, got {resp:?}",
+    );
 
     daemon.stop().await.unwrap();
 }
@@ -92,7 +117,11 @@ async fn concurrent_reads() {
         let sock = daemon.wrapper_sockets["gh-authorized"].clone();
         handles.push(tokio::spawn(async move {
             let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
-            let req = WrapperRequest::Read { scope: None };
+            let req = WrapperRequest::Read {
+                wrapper_name: "gh-authorized".to_string(),
+                variant: underwrap_protocol::variant::WrapperVariant::Real,
+                scope: None,
+            };
             underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
                 .await
                 .unwrap();

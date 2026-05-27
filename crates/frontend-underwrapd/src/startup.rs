@@ -5,28 +5,16 @@ use tracing::info;
 
 use underwrap_protocol::config::DaemonConfig;
 
-/// Build a wrapper-name → GID lookup table.
-/// Resolves group names to GIDs via libc getgrnam at startup.
-pub(crate) fn build_wrapper_gid_map(
-    config: &DaemonConfig,
-) -> Result<std::collections::HashMap<String, u32>> {
-    let mut gids = std::collections::HashSet::new();
-    let mut map = std::collections::HashMap::new();
-    for (name, wrapper) in &config.wrappers {
-        let group_name = &wrapper.group;
-        let gid = resolve_group_gid(group_name)
-            .with_context(|| format!("resolving group '{group_name}' for wrapper '{name}'"))?;
-        anyhow::ensure!(
-            gids.insert(gid),
-            "wrapper '{}' resolves to duplicate GID {} (group '{}'). Wrapper identity requires unique GIDs.",
-            name,
-            gid,
-            group_name,
-        );
-        info!(wrapper = %name, group = %group_name, gid = gid, "resolved wrapper group");
-        map.insert(name.clone(), gid);
-    }
-    Ok(map)
+/// Resolve the single instance group to a GID via libc getgrnam at
+/// startup. Acquiring this group (setgid on the `uw-<instance>` binary)
+/// is the sole kernel-enforced gate for the instance's wrapper socket;
+/// the wrapper name is a client-supplied selector validated by the
+/// daemon, not a second kernel identity.
+pub(crate) fn resolve_instance_gid(config: &DaemonConfig) -> Result<u32> {
+    let gid = resolve_group_gid(&config.group)
+        .with_context(|| format!("resolving instance group '{}'", config.group))?;
+    info!(instance = %config.instance, group = %config.group, gid, "resolved instance group");
+    Ok(gid)
 }
 
 /// Resolve a Unix group name to a GID.
@@ -48,20 +36,18 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
         "backend.client_cert_file and backend.client_key_file must either both be set or both be omitted"
     );
 
-    let mut sockets = std::collections::HashSet::new();
+    // Instance-level invariants (reserved `debug` name, projection slot
+    // presence, non-empty instance name) shared with the backend.
+    config.validate().map_err(|e| anyhow::anyhow!(e))?;
+
+    anyhow::ensure!(
+        config.socket.is_absolute(),
+        "instance socket must be an absolute path, got '{}'",
+        config.socket.display(),
+    );
+    anyhow::ensure!(!config.group.is_empty(), "instance group must be set");
+
     for (name, wrapper) in &config.wrappers {
-        anyhow::ensure!(
-            wrapper.socket.is_absolute(),
-            "wrapper '{}' socket must be an absolute path, got '{}'",
-            name,
-            wrapper.socket.display(),
-        );
-        anyhow::ensure!(
-            sockets.insert(wrapper.socket.clone()),
-            "wrapper '{}' reuses socket path '{}'",
-            name,
-            wrapper.socket.display(),
-        );
         anyhow::ensure!(
             !wrapper.resource.is_empty(),
             "wrapper '{}' must declare a resource",

@@ -28,17 +28,18 @@ use underwrap_protocol::message::{
     ResourceErrorCode, WrapperResourceRequest, WrapperResourceResponse,
 };
 use underwrap_protocol::service::RuntimeWrapperInvocationFinalizeResponse;
+use underwrap_protocol::variant::WrapperVariant;
 
 use crate::backend_client::BackendClient;
 
 /// State carried for the lifetime of one channel.
 pub struct ChannelContext {
-    /// Wrapper name as configured locally (used in logs/audit).
+    /// Client-supplied (and validated) wrapper name used both in
+    /// logs/audit and in backend API calls.
     pub wrapper_name: String,
-    /// Logical wrapper name used in backend API calls. May differ
-    /// from `wrapper_name` when the operator overrode it via
-    /// `logical_name` in the wrapper config.
-    pub logical_wrapper_name: String,
+    /// Invocation variant; re-sent on every finalize so the backend
+    /// re-evaluates the same policy branch it allowed on open.
+    pub variant: WrapperVariant,
     /// Resource name used in backend API calls.
     pub resource_name: String,
     /// Backend-supplied resource id, threaded through for diagnostic
@@ -96,7 +97,7 @@ async fn channel_loop(
         };
         let backend = Arc::clone(&backend);
         let ctx_wrapper = ctx.wrapper_name.clone();
-        let ctx_logical = ctx.logical_wrapper_name.clone();
+        let ctx_variant = ctx.variant;
         let ctx_resource_name = ctx.resource_name.clone();
         let ctx_resource_id = ctx.resource_id.clone();
         let ctx_access = ctx.access;
@@ -109,7 +110,7 @@ async fn channel_loop(
                 req,
                 &backend,
                 &ctx_wrapper,
-                &ctx_logical,
+                ctx_variant,
                 &ctx_resource_name,
                 &ctx_resource_id,
                 ctx_access,
@@ -130,7 +131,7 @@ fn handle_request(
     request: WrapperResourceRequest,
     backend: &BackendClient,
     wrapper_name: &str,
-    logical_wrapper_name: &str,
+    variant: WrapperVariant,
     resource_name: &str,
     resource_id: &str,
     access: AccessMode,
@@ -144,17 +145,13 @@ fn handle_request(
             blob,
             backend,
             wrapper_name,
-            logical_wrapper_name,
+            variant,
             resource_name,
             resource_id,
         ),
-        WrapperResourceRequest::UsageSignal => handle_usage_signal(
-            backend,
-            wrapper_name,
-            logical_wrapper_name,
-            resource_name,
-            resource_id,
-        ),
+        WrapperResourceRequest::UsageSignal => {
+            handle_usage_signal(backend, wrapper_name, variant, resource_name, resource_id)
+        }
     }
 }
 
@@ -181,11 +178,11 @@ fn handle_checkin(
     blob: Vec<u8>,
     backend: &BackendClient,
     wrapper_name: &str,
-    logical_wrapper_name: &str,
+    variant: WrapperVariant,
     resource_name: &str,
     resource_id: &str,
 ) -> WrapperResourceResponse {
-    match backend.finalize_invocation(logical_wrapper_name, resource_name, Some(&blob)) {
+    match backend.finalize_invocation(wrapper_name, resource_name, variant, Some(&blob)) {
         Ok(RuntimeWrapperInvocationFinalizeResponse::Ok) => {
             debug!(
                 wrapper = %wrapper_name,
@@ -238,11 +235,11 @@ fn handle_checkin(
 fn handle_usage_signal(
     backend: &BackendClient,
     wrapper_name: &str,
-    logical_wrapper_name: &str,
+    variant: WrapperVariant,
     resource_name: &str,
     resource_id: &str,
 ) -> WrapperResourceResponse {
-    match backend.finalize_invocation(logical_wrapper_name, resource_name, None) {
+    match backend.finalize_invocation(wrapper_name, resource_name, variant, None) {
         Ok(RuntimeWrapperInvocationFinalizeResponse::Ok) => {
             debug!(
                 wrapper = %wrapper_name,

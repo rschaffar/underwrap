@@ -5,13 +5,12 @@ use underwrap_protocol::config::FilesUse;
 fn base() -> WrapperDef {
     WrapperDef {
         target: PathBuf::from("/usr/bin/true"),
-        logical_name: None,
         resource: "x/y".to_string(),
         env: false,
         files: None,
         libsecret: false,
-        socket: PathBuf::new(),
-        group: "g".to_string(),
+        env_passthrough: Vec::new(),
+        env_set: std::collections::HashMap::new(),
     }
 }
 

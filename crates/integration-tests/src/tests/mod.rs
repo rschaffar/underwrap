@@ -143,6 +143,12 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
             client_cert_file: Some(base.join("client.pem")),
             client_key_file: Some(base.join("client.key")),
         },
+        instance: "local".to_string(),
+        socket: base.join("instance.sock"),
+        group: crate::harness::current_group_name(),
+        ns_binary: base.join("underwrap-ns"),
+        debug_tool_target: base.join("underwrap-debug-tool"),
+        xdg_runtime_dir_base: "/run/user".to_string(),
         wrappers: HashMap::from([("dir-wrapper".to_string(), wrapper_def)]),
     };
 

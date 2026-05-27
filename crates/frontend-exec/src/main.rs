@@ -1,18 +1,29 @@
-//! underwrap-exec — the wrapper binary (stage 1).
+//! underwrap-exec — the per-instance wrapper binary (stage 1).
 //!
-//! Installed via NixOS security.wrappers with setgid for GID-based identity.
+//! One setgid binary serves a whole instance. It is installed (via NixOS
+//! `security.wrappers`) as `uw-<instance>` with setgid to the single
+//! `underwrap-<instance>` group, and invoked as:
 //!
-//! 1. Verifies wrapper identity from effective GID (not argv[0])
-//! 2. Loads sidecar config by trusted executable basename
-//! 3. Connects to the wrapper socket, gets env bindings and one
-//!    wrapper-resource channel fd per resource via SCM_RIGHTS
-//! 4. Drops all elevated privileges
-//! 5. Forks: parent writes ExecBundle to fd 3 pipe, child execs underwrap-ns
-//! 6. underwrap-ns drives Checkout on each channel, sets up libsecret/files
-//!    staging, then creates a fresh PID namespace and execs the target
+//! ```text
+//! uw-<instance> <wrapper> [args...]          # normal invocation
+//! uw-<instance> debug <wrapper> [args...]    # debug variant
+//! ```
 //!
-//! Secret material flows through the pipe on fd 3 — never argv, env,
-//! or filesystem between the two stages.
+//! 1. Verifies instance identity from the effective GID group
+//!    (`underwrap-<instance>`), never from argv[0]
+//! 2. Parses the wrapper name + variant from argv; the daemon validates
+//!    the name and the backend authorises the variant
+//! 3. Loads the trusted instance sidecar (socket + helper binary paths)
+//! 4. Connects to the instance socket and sends `Read { wrapper_name,
+//!    variant, scope }`; receives the env bindings, the daemon-chosen
+//!    target binary, and one wrapper-resource channel fd via SCM_RIGHTS
+//! 5. Drops all elevated privileges
+//! 6. Forks: parent writes the `ExecBundle` to fd 3; child execs
+//!    `underwrap-ns`, which sets up the namespace and execs the target
+//!
+//! The wrapper never chooses the target binary: it execs whatever path
+//! the daemon returned in `ReadOk`. Secret material flows through the
+//! pipe on fd 3 — never argv, env, or filesystem between the two stages.
 
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
@@ -21,21 +32,46 @@ use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::exec::{ExecBundle, ExecResourceBinding};
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
-use underwrap_protocol::target_env::{
-    CONFIGURABLE_FORCED_TARGET_ENV_NAMES, is_forced_target_env_name,
-};
+use underwrap_protocol::variant::WrapperVariant;
 
-/// Fixed config directory used when running with elevated privileges.
-const TRUSTED_CONFIG_DIR: &str = "/etc/underwrap/wrappers";
+/// Fixed directory holding one trusted sidecar per instance. No
+/// environment override — that would allow config redirection when the
+/// binary is run without the setgid wrapper.
+const TRUSTED_INSTANCE_CONFIG_DIR: &str = "/etc/underwrap/instances";
 
-/// Path to the underwrap-ns binary. Set by the NixOS module via sidecar config.
+/// Path to the underwrap-ns binary when the instance sidecar omits one.
 const DEFAULT_NS_BINARY: &str = "/run/wrappers/bin/underwrap-ns";
+
+/// The prefix used by the NixOS module for the per-instance group name.
+const GROUP_PREFIX: &str = "underwrap-";
+
+/// Debug subcommand token: `uw-<instance> debug <wrapper>`.
+const DEBUG_SUBCOMMAND: &str = "debug";
 
 /// Fd used to pass the wrapper-resource channel into underwrap-ns.
 /// The exec bundle pipe takes fd 3; the channel is mapped to fd 20.
 const RESOURCE_CHANNEL_FD: i32 = 20;
 
-const DEFAULT_XDG_RUNTIME_DIR_BASE: &str = "/run/user";
+/// One parsed invocation: which wrapper, which variant, and the residual
+/// argv to hand the target.
+#[derive(Debug)]
+struct Invocation {
+    variant: WrapperVariant,
+    wrapper_name: String,
+    target_args: Vec<String>,
+}
+
+/// Everything the daemon returned for this invocation, plus the received
+/// channel fd. `target` is the daemon-chosen binary — the wrapper never
+/// picks it.
+struct ReadResult {
+    env: std::collections::HashMap<String, SecretBytes>,
+    target: String,
+    env_passthrough: Vec<String>,
+    env_set: std::collections::HashMap<String, String>,
+    xdg_runtime_dir_base: String,
+    resource_binding: ReceivedResourceBinding,
+}
 
 struct ReceivedResourceBinding {
     resource_id: String,
@@ -46,52 +82,238 @@ struct ReceivedResourceBinding {
     channel_fd: i32,
 }
 
-type ReadSecretResult = (
-    std::collections::HashMap<String, SecretBytes>,
-    ReceivedResourceBinding,
-);
-
 fn main() -> Result<()> {
-    // Wrapper identity still comes exclusively from the kernel-assigned
-    // effective GID, never from argv[0]. The executable basename is used
-    // only to select the trusted sidecar config, which allows distinct
-    // root-managed wrapper filenames (for example unsafe debug variants)
-    // to share the same wrapper GID and daemon-facing identity.
-    ensure_underwrap_group_from_egid()?;
-    let config_name = detect_wrapper_config_name_from_executable()?;
-    let all_args: Vec<String> = std::env::args().skip(1).collect();
+    // Instance identity comes exclusively from the kernel-assigned
+    // effective GID group (`underwrap-<instance>`), never from argv[0].
+    let instance = instance_from_egid()?;
+    let invocation = parse_invocation(&std::env::args().skip(1).collect::<Vec<_>>())?;
+    let instance_config = load_instance_config(&instance)?;
 
-    let wrapper_config = load_wrapper_config(&config_name)?;
+    let read = request_secret(
+        &instance_config.socket,
+        &invocation.wrapper_name,
+        invocation.variant,
+    )?;
 
-    let (env_bindings, resource_binding) = request_secret(&wrapper_config.wrapper_socket)?;
-
-    // Drop all elevated privileges.
+    // Drop all elevated privileges before touching the target binary.
     drop_privilege()?;
 
-    let ns_binary = wrapper_config
+    let ns_binary = instance_config
         .ns_binary
         .as_deref()
         .unwrap_or(DEFAULT_NS_BINARY);
     if !ns_binary.starts_with('/') {
         bail!("ns_binary must be an absolute path, got: {ns_binary:?}");
     }
+    if !std::path::Path::new(&read.target).is_absolute() {
+        bail!(
+            "daemon returned a non-absolute target path: {:?}",
+            read.target
+        );
+    }
 
-    exec_via_ns(
-        ns_binary,
-        &wrapper_config,
-        &all_args,
-        env_bindings,
-        resource_binding,
-    )
+    exec_via_ns(ns_binary, &instance_config, &invocation.target_args, read)
+}
+
+/// Parse `[debug] <wrapper> [args...]`. The leading `debug` token selects
+/// the debug variant; otherwise the first argument is the wrapper name.
+fn parse_invocation(args: &[String]) -> Result<Invocation> {
+    let mut iter = args.iter();
+    let first = iter.next().context(
+        "usage: uw-<instance> [debug] <wrapper> [args...]\n\
+         missing wrapper name",
+    )?;
+
+    let (variant, wrapper_name) = if first == DEBUG_SUBCOMMAND {
+        let wrapper = iter.next().context(
+            "usage: uw-<instance> debug <wrapper> [args...]\n\
+             missing wrapper name after 'debug'",
+        )?;
+        (WrapperVariant::Debug, wrapper.clone())
+    } else {
+        (WrapperVariant::Real, first.clone())
+    };
+
+    Ok(Invocation {
+        variant,
+        wrapper_name,
+        target_args: iter.cloned().collect(),
+    })
+}
+
+/// Derive the instance name from the effective GID group. The group is
+/// `underwrap-<instance>`; acquiring it (via setgid) is the sole
+/// kernel-enforced gate, so it is the only trusted identity source.
+fn instance_from_egid() -> Result<String> {
+    let egid = unsafe { libc::getegid() };
+    let group_name = resolve_gid_name(egid)
+        .with_context(|| format!("cannot resolve effective GID {egid} to a group name"))?;
+
+    let instance = group_name.strip_prefix(GROUP_PREFIX).with_context(|| {
+        format!(
+            "effective GID group '{group_name}' does not start with '{GROUP_PREFIX}' — \
+             not an underwrap instance group"
+        )
+    })?;
+    if instance.is_empty() {
+        bail!("effective GID group '{group_name}' has an empty instance suffix");
+    }
+    Ok(instance.to_string())
+}
+
+/// Resolve a GID to a group name via getgrgid.
+fn resolve_gid_name(gid: u32) -> Result<String> {
+    let grp = unsafe { libc::getgrgid(gid) };
+    if grp.is_null() {
+        bail!("getgrgid({gid}) returned null");
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr((*grp).gr_name) };
+    Ok(name
+        .to_str()
+        .context("group name is not valid UTF-8")?
+        .to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct InstanceConfig {
+    /// Instance wrapper socket the daemon listens on.
+    socket: String,
+    /// underwrap-ns binary path; falls back to [`DEFAULT_NS_BINARY`].
+    ns_binary: Option<String>,
+    /// dbus-daemon binary path (libsecret mode).
+    dbus_daemon_binary: Option<String>,
+    /// underwrap-secretsd binary path (libsecret mode).
+    secretsd_binary: Option<String>,
+}
+
+fn parse_instance_config_text(text: &str) -> Result<InstanceConfig> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct InstanceFile {
+        socket: String,
+        #[serde(default)]
+        ns_binary: Option<String>,
+        #[serde(default)]
+        dbus_daemon_binary: Option<String>,
+        #[serde(default)]
+        secretsd_binary: Option<String>,
+    }
+
+    let f: InstanceFile = serde_yaml::from_str(text)?;
+    if !std::path::Path::new(&f.socket).is_absolute() {
+        bail!(
+            "instance socket must be an absolute path, got: {:?}",
+            f.socket
+        );
+    }
+    Ok(InstanceConfig {
+        socket: f.socket,
+        ns_binary: f.ns_binary,
+        dbus_daemon_binary: f.dbus_daemon_binary,
+        secretsd_binary: f.secretsd_binary,
+    })
+}
+
+fn load_instance_config(instance: &str) -> Result<InstanceConfig> {
+    let path = format!("{TRUSTED_INSTANCE_CONFIG_DIR}/{instance}.yaml");
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading instance config {path}"))?;
+    parse_instance_config_text(&text)
+}
+
+/// Request credentials from the daemon. Sends the client-supplied
+/// wrapper name + variant; the daemon validates the name, the backend
+/// authorises the variant, and the daemon returns the exec plan.
+fn request_secret(
+    socket_path: &str,
+    wrapper_name: &str,
+    variant: WrapperVariant,
+) -> Result<ReadResult> {
+    let mut stream = UnixStream::connect(socket_path)
+        .with_context(|| format!("connecting to daemon at {socket_path}"))?;
+
+    let scope = std::env::var("UNDERWRAP_SCOPE").ok();
+    let req = WrapperRequest::Read {
+        wrapper_name: wrapper_name.to_string(),
+        variant,
+        scope,
+    };
+    write_frame_sync(&mut stream, &req)?;
+
+    let response: WrapperResponse = read_frame_sync(&mut stream)?;
+
+    let (
+        env,
+        resource_id,
+        resource_name,
+        access,
+        libsecret,
+        files_target_paths,
+        target,
+        env_passthrough,
+        env_set,
+        xdg_runtime_dir_base,
+    ) = match response {
+        WrapperResponse::ReadOk {
+            env,
+            resource_id,
+            resource_name,
+            access,
+            libsecret,
+            files_target_paths,
+            target,
+            env_passthrough,
+            env_set,
+            xdg_runtime_dir_base,
+        } => (
+            env,
+            resource_id,
+            resource_name,
+            access,
+            libsecret,
+            files_target_paths,
+            target,
+            env_passthrough,
+            env_set,
+            xdg_runtime_dir_base,
+        ),
+        WrapperResponse::Error { code, message } => {
+            if matches!(code, underwrap_protocol::message::ErrorCode::StoreLocked) {
+                bail!(
+                    "underwrap: backing store is locked; ask an administrator to unlock it ({message})"
+                );
+            }
+            bail!("daemon denied request ({code:?}): {message}");
+        }
+    };
+
+    let fd = underwrap_protocol::scm_rights::recv_fd(&stream).with_context(|| {
+        format!("failed to receive wrapper-resource channel fd for '{resource_id}'")
+    })?;
+
+    Ok(ReadResult {
+        env,
+        target: target.to_string_lossy().into_owned(),
+        env_passthrough,
+        env_set,
+        xdg_runtime_dir_base,
+        resource_binding: ReceivedResourceBinding {
+            resource_id,
+            resource_name,
+            access,
+            libsecret,
+            files_target_paths,
+            channel_fd: fd,
+        },
+    })
 }
 
 /// Fork, pipe ExecBundle to the child, child execs underwrap-ns.
 fn exec_via_ns(
     ns_binary: &str,
-    config: &WrapperExecConfig,
+    config: &InstanceConfig,
     args: &[String],
-    env_bindings: std::collections::HashMap<String, SecretBytes>,
-    resource_binding: ReceivedResourceBinding,
+    read: ReadResult,
 ) -> Result<()> {
     if !std::path::Path::new(ns_binary).exists() {
         bail!(
@@ -120,6 +342,7 @@ fn exec_via_ns(
     }
     let (pipe_read, pipe_write) = (pipe_fds[0], pipe_fds[1]);
 
+    let resource_binding = read.resource_binding;
     let exec_resource = ExecResourceBinding {
         resource_id: resource_binding.resource_id.clone(),
         resource_name: resource_binding.resource_name.clone(),
@@ -130,6 +353,7 @@ fn exec_via_ns(
     };
 
     let libsecret_in_scope = exec_resource.libsecret;
+    let target = read.target;
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -166,21 +390,17 @@ fn exec_via_ns(
             unsafe { libc::close(resource_binding.channel_fd) };
         }
 
-        // Build argv for underwrap-ns: <ns_binary> <target> [args...]
+        // Build argv for underwrap-ns: <ns_binary> <target> [args...].
+        // The target is the daemon-chosen path, never a local choice.
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new(ns_binary);
-        cmd.arg(&config.target);
+        cmd.arg(&target);
 
         // ALWAYS strip internal env vars from the child — a malicious user
         // could set these to inject code into the PID namespace.
         cmd.env_remove("UNDERWRAP_LIBSECRET");
         cmd.env_remove("UNDERWRAP_DBUS_DAEMON");
         cmd.env_remove("UNDERWRAP_SECRETSD");
-        cmd.env_remove("UNDERWRAP_DEBUG_INSTANCE");
-        cmd.env_remove("UNDERWRAP_DEBUG_LOGICAL_WRAPPER");
-        cmd.env_remove("UNDERWRAP_DEBUG_WRAPPER");
-        cmd.env_remove("UNDERWRAP_DEBUG_ORIGINAL_TARGET");
-        cmd.env_remove("UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA");
         if libsecret_in_scope {
             cmd.env("UNDERWRAP_LIBSECRET", "1");
             if let Some(ref bin) = config.dbus_daemon_binary {
@@ -188,18 +408,6 @@ fn exec_via_ns(
             }
             if let Some(ref bin) = config.secretsd_binary {
                 cmd.env("UNDERWRAP_SECRETSD", bin);
-            }
-        }
-
-        for key in [
-            "UNDERWRAP_DEBUG_INSTANCE",
-            "UNDERWRAP_DEBUG_LOGICAL_WRAPPER",
-            "UNDERWRAP_DEBUG_WRAPPER",
-            "UNDERWRAP_DEBUG_ORIGINAL_TARGET",
-            "UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA",
-        ] {
-            if let Some(value) = config.env_set.get(key) {
-                cmd.env(key, value);
             }
         }
 
@@ -220,10 +428,10 @@ fn exec_via_ns(
         use std::os::unix::io::FromRawFd;
         let mut pipe = unsafe { std::fs::File::from_raw_fd(pipe_write) };
         let payload = ExecBundle {
-            env: env_bindings,
-            env_passthrough: config.env_passthrough.clone(),
-            env_set: config.env_set.clone(),
-            xdg_runtime_dir_base: config.xdg_runtime_dir_base.clone(),
+            env: read.env,
+            env_passthrough: read.env_passthrough,
+            env_set: read.env_set,
+            xdg_runtime_dir_base: read.xdg_runtime_dir_base,
             resource: exec_resource,
         };
         write_frame_sync(&mut pipe, &payload).context("writing exec bundle to pipe")?;
@@ -248,238 +456,6 @@ fn exec_via_ns(
         std::process::exit(128 + sig);
     }
     std::process::exit(1);
-}
-
-// ---------------------------------------------------------------------------
-
-/// The prefix used by the NixOS module for wrapper group names.
-const GROUP_PREFIX: &str = "underwrap-";
-
-/// Verify that the kernel-assigned effective GID belongs to an underwrap
-/// wrapper group. This is the ONLY trusted source of wrapper identity.
-fn ensure_underwrap_group_from_egid() -> Result<()> {
-    let egid = unsafe { libc::getegid() };
-    let group_name = resolve_gid_name(egid)
-        .with_context(|| format!("cannot resolve effective GID {egid} to a group name"))?;
-
-    group_name.strip_prefix(GROUP_PREFIX).with_context(|| {
-        format!(
-            "effective GID group '{group_name}' does not start with '{GROUP_PREFIX}' — \
-             not an underwrap wrapper group"
-        )
-    })?;
-
-    Ok(())
-}
-
-/// Derive the sidecar config name from the actual executed wrapper binary.
-/// `/proc/self/exe` is kernel-provided and refers to the real file that was
-/// executed, unlike argv[0] which is user-controlled.
-fn detect_wrapper_config_name_from_executable() -> Result<String> {
-    let exe_path = std::fs::read_link("/proc/self/exe")
-        .context("reading /proc/self/exe for wrapper config")?;
-    config_name_from_exe_path(&exe_path)
-}
-
-fn config_name_from_exe_path(path: &std::path::Path) -> Result<String> {
-    let file_name = path.file_name().with_context(|| {
-        format!(
-            "wrapper executable path '{}' has no final path component",
-            path.display()
-        )
-    })?;
-    let file_name = file_name
-        .to_str()
-        .context("wrapper executable name is not valid UTF-8")?;
-    if file_name.is_empty() {
-        bail!("wrapper executable name must not be empty");
-    }
-    Ok(file_name.to_string())
-}
-
-/// Resolve a GID to a group name via getgrgid.
-fn resolve_gid_name(gid: u32) -> Result<String> {
-    let grp = unsafe { libc::getgrgid(gid) };
-    if grp.is_null() {
-        bail!("getgrgid({gid}) returned null");
-    }
-    let name = unsafe { std::ffi::CStr::from_ptr((*grp).gr_name) };
-    Ok(name
-        .to_str()
-        .context("group name is not valid UTF-8")?
-        .to_string())
-}
-
-#[derive(Debug)]
-struct WrapperExecConfig {
-    target: String,
-    wrapper_socket: String,
-    ns_binary: Option<String>,
-    /// Path to the dbus-daemon binary (for libsecret mode).
-    dbus_daemon_binary: Option<String>,
-    /// Path to the underwrap-secretsd binary (for libsecret mode).
-    secretsd_binary: Option<String>,
-    /// Env vars to pass through from the user's environment to the target.
-    env_passthrough: Vec<String>,
-    /// Fixed env vars to set on the target (from trusted config).
-    env_set: std::collections::HashMap<String, String>,
-    /// Instance-level base directory from which ns derives the final
-    /// `XDG_RUNTIME_DIR` as `<xdg_runtime_dir_base>/<uid>`.
-    xdg_runtime_dir_base: String,
-}
-
-fn config_dir() -> String {
-    // Always use the trusted config directory. No environment variable
-    // override — that would allow config redirection attacks when the
-    // binary is run without the setgid wrapper.
-    TRUSTED_CONFIG_DIR.to_string()
-}
-
-fn default_xdg_runtime_dir_base() -> String {
-    DEFAULT_XDG_RUNTIME_DIR_BASE.to_string()
-}
-
-fn validate_wrapper_config(config: &WrapperExecConfig) -> Result<()> {
-    if !std::path::Path::new(&config.target).is_absolute() {
-        bail!(
-            "wrapper target must be an absolute path, got: {:?}",
-            config.target
-        );
-    }
-    if !std::path::Path::new(&config.xdg_runtime_dir_base).is_absolute() {
-        bail!(
-            "xdg_runtime_dir_base must be an absolute path, got: {:?}",
-            config.xdg_runtime_dir_base
-        );
-    }
-    for name in &config.env_passthrough {
-        if is_forced_target_env_name(name) {
-            if name == "XDG_RUNTIME_DIR" {
-                bail!(
-                    "env_passthrough must not include XDG_RUNTIME_DIR; use xdg_runtime_dir_base instead"
-                );
-            }
-            bail!(
-                "env_passthrough must not include {name}; use env_set for trusted HOME/XDG overrides"
-            );
-        }
-    }
-    if config.env_set.contains_key("XDG_RUNTIME_DIR") {
-        bail!("env_set must not include XDG_RUNTIME_DIR; use xdg_runtime_dir_base instead");
-    }
-    for name in CONFIGURABLE_FORCED_TARGET_ENV_NAMES {
-        if let Some(value) = config.env_set.get(*name)
-            && !std::path::Path::new(value).is_absolute()
-        {
-            bail!("env_set {name} must be an absolute path, got: {value:?}");
-        }
-    }
-    Ok(())
-}
-
-fn parse_wrapper_config_text(text: &str) -> Result<WrapperExecConfig> {
-    #[derive(serde::Deserialize)]
-    struct WrapperFile {
-        target: String,
-        wrapper_socket: String,
-        #[serde(default)]
-        ns_binary: Option<String>,
-        // libsecret flag is left in the sidecar schema for backward
-        // compatibility with the existing NixOS module output, but the
-        // wrapper now determines libsecret-in-scope from the daemon's
-        // resource list, not from this flag.
-        #[serde(default)]
-        #[allow(dead_code)]
-        libsecret: bool,
-        #[serde(default)]
-        dbus_daemon_binary: Option<String>,
-        #[serde(default)]
-        secretsd_binary: Option<String>,
-        #[serde(default)]
-        env_passthrough: Vec<String>,
-        #[serde(default)]
-        env_set: std::collections::HashMap<String, String>,
-        #[serde(default = "default_xdg_runtime_dir_base")]
-        xdg_runtime_dir_base: String,
-    }
-
-    let wf: WrapperFile = serde_yaml::from_str(text)?;
-    let config = WrapperExecConfig {
-        target: wf.target,
-        wrapper_socket: wf.wrapper_socket,
-        ns_binary: wf.ns_binary,
-        dbus_daemon_binary: wf.dbus_daemon_binary,
-        secretsd_binary: wf.secretsd_binary,
-        env_passthrough: wf.env_passthrough,
-        env_set: wf.env_set,
-        xdg_runtime_dir_base: wf.xdg_runtime_dir_base,
-    };
-    validate_wrapper_config(&config)?;
-    Ok(config)
-}
-
-fn load_wrapper_config(config_name: &str) -> Result<WrapperExecConfig> {
-    let dir = config_dir();
-    let path = format!("{dir}/{config_name}.yaml");
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading wrapper config {path}"))?;
-    parse_wrapper_config_text(&text)
-}
-
-/// Request credentials from the daemon. Returns env bindings plus the
-/// single wrapper-resource channel fd the daemon authorized.
-fn request_secret(socket_path: &str) -> Result<ReadSecretResult> {
-    let mut stream = UnixStream::connect(socket_path)
-        .with_context(|| format!("connecting to daemon at {socket_path}"))?;
-
-    let scope = std::env::var("UNDERWRAP_SCOPE").ok();
-    let req = WrapperRequest::Read { scope };
-    write_frame_sync(&mut stream, &req)?;
-
-    let response: WrapperResponse = read_frame_sync(&mut stream)?;
-
-    let (env_bindings, resource_id, resource_name, access, libsecret, files_target_paths) =
-        match response {
-            WrapperResponse::ReadOk {
-                env,
-                resource_id,
-                resource_name,
-                access,
-                libsecret,
-                files_target_paths,
-            } => (
-                env,
-                resource_id,
-                resource_name,
-                access,
-                libsecret,
-                files_target_paths,
-            ),
-            WrapperResponse::Error { code, message } => {
-                if matches!(code, underwrap_protocol::message::ErrorCode::StoreLocked) {
-                    bail!(
-                        "underwrap: backing store is locked; ask an administrator to unlock it ({message})"
-                    );
-                }
-                bail!("daemon denied request ({code:?}): {message}");
-            }
-        };
-
-    let fd = underwrap_protocol::scm_rights::recv_fd(&stream).with_context(|| {
-        format!("failed to receive wrapper-resource channel fd for '{resource_id}'")
-    })?;
-
-    Ok((
-        env_bindings,
-        ReceivedResourceBinding {
-            resource_id,
-            resource_name,
-            access,
-            libsecret,
-            files_target_paths,
-            channel_fd: fd,
-        },
-    ))
 }
 
 fn drop_privilege() -> Result<()> {

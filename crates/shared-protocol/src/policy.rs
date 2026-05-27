@@ -169,19 +169,15 @@ pub fn decide(
     variant: WrapperVariant,
     now_epoch: u64,
 ) -> PolicyDecision {
-    let expired = |until_epoch: u64| -> PolicyDecision {
-        PolicyDecision::Deny {
-            reason: format!(
-                "permission for '{}'/'{}' expired at epoch {until_epoch}, now {now_epoch}",
-                permission.wrapper, permission.resource_id
-            ),
-        }
+    // Deny reasons are stable kebab-case discriminators (see the
+    // `RuntimeWrapperInvocationOpenResponse::Deny` contract): `locked`,
+    // `expired`, `not-unsafe-debug`. A `Locked` permission with an
+    // operator-supplied reason surfaces that reason verbatim instead.
+    let expired = || PolicyDecision::Deny {
+        reason: "expired".to_string(),
     };
     let not_debug_mode = || PolicyDecision::Deny {
-        reason: format!(
-            "permission for '{}'/'{}' is not in unsafe-debug mode",
-            permission.wrapper, permission.resource_id
-        ),
+        reason: "not-unsafe-debug".to_string(),
     };
 
     match permission.mode.clone() {
@@ -189,7 +185,7 @@ pub fn decide(
             reason: permission
                 .reason
                 .clone()
-                .unwrap_or_else(|| format!("permission for '{}' is locked", permission.wrapper)),
+                .unwrap_or_else(|| "locked".to_string()),
         },
         WrapperApprovalMode::Unlocked => match variant {
             WrapperVariant::Real => PolicyDecision::Allow,
@@ -197,7 +193,7 @@ pub fn decide(
         },
         WrapperApprovalMode::UnlockedUntil { until_epoch } => {
             if now_epoch > until_epoch {
-                expired(until_epoch)
+                expired()
             } else {
                 match variant {
                     WrapperVariant::Real => PolicyDecision::Allow,
@@ -207,7 +203,7 @@ pub fn decide(
         }
         WrapperApprovalMode::UnsafeDebugUntil { until_epoch } => {
             if now_epoch > until_epoch {
-                expired(until_epoch)
+                expired()
             } else {
                 // Both variants are allowed under an active unsafe-debug
                 // permission.

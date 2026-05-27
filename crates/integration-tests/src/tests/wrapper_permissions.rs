@@ -6,6 +6,7 @@ use underwrap_protocol::service::{
     RuntimeWrapperInvocationFinalizeRequest, RuntimeWrapperInvocationFinalizeResponse,
     RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
 };
+use underwrap_protocol::variant::WrapperVariant;
 
 #[tokio::test]
 async fn upsert_permission_allows_read_against_fresh_store() {
@@ -197,6 +198,7 @@ async fn backend_rejects_writes_on_readonly_permission_when_daemon_is_bypassed()
         .json(&RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh-authorized".to_string(),
             resource_name: "github/token".to_string(),
+            variant: WrapperVariant::Real,
             blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&blob)),
         })
         .send()
@@ -244,6 +246,7 @@ async fn backend_allows_writes_on_writable_permission_via_direct_call() {
         .json(&RuntimeWrapperInvocationOpenRequest {
             wrapper_name: "gh-authorized".to_string(),
             resource_name: "github/token".to_string(),
+            variant: WrapperVariant::Real,
         })
         .send()
         .await
@@ -265,6 +268,7 @@ async fn backend_allows_writes_on_writable_permission_via_direct_call() {
         .json(&RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh-authorized".to_string(),
             resource_name: "github/token".to_string(),
+            variant: WrapperVariant::Real,
             blob_b64: Some(current_blob_b64),
         })
         .send()

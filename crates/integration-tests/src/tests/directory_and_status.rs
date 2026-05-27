@@ -2,16 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn overlapping_directory_paths_rejected_at_startup() {
-    let tempdir = tempfile::TempDir::new().unwrap();
-    let base = tempdir.path();
-    let wrapper_socket = base.join("wrapper.sock");
-
-    let mut wrapper_def = files_wrapper_paths(
+    let wrapper_def = files_wrapper_paths(
         "/usr/bin/true",
         "gws/state",
         &[".config/gws", ".config/gws/session"],
     );
-    wrapper_def.socket = wrapper_socket;
 
     let err = daemon_config_error(wrapper_def).await;
     assert!(err.contains("overlapping files paths"));
@@ -19,16 +14,11 @@ async fn overlapping_directory_paths_rejected_at_startup() {
 
 #[tokio::test]
 async fn duplicate_directory_paths_rejected_at_startup() {
-    let tempdir = tempfile::TempDir::new().unwrap();
-    let base = tempdir.path();
-    let wrapper_socket = base.join("wrapper.sock");
-
-    let mut wrapper_def = files_wrapper_paths(
+    let wrapper_def = files_wrapper_paths(
         "/usr/bin/true",
         "gws/state",
         &[".config/gws", ".config/gws"],
     );
-    wrapper_def.socket = wrapper_socket;
 
     let err = daemon_config_error(wrapper_def).await;
     assert!(err.contains("overlapping files paths"));
@@ -36,12 +26,7 @@ async fn duplicate_directory_paths_rejected_at_startup() {
 
 #[tokio::test]
 async fn absolute_directory_path_rejected_at_startup() {
-    let tempdir = tempfile::TempDir::new().unwrap();
-    let base = tempdir.path();
-    let wrapper_socket = base.join("wrapper.sock");
-
-    let mut wrapper_def = files_wrapper("/usr/bin/true", "gws/state", "/etc/gws");
-    wrapper_def.socket = wrapper_socket;
+    let wrapper_def = files_wrapper("/usr/bin/true", "gws/state", "/etc/gws");
 
     let err = daemon_config_error(wrapper_def).await;
     assert!(err.contains("invalid path") || err.contains("path must be relative"));
@@ -49,12 +34,7 @@ async fn absolute_directory_path_rejected_at_startup() {
 
 #[tokio::test]
 async fn traversal_directory_path_rejected_at_startup() {
-    let tempdir = tempfile::TempDir::new().unwrap();
-    let base = tempdir.path();
-    let wrapper_socket = base.join("wrapper.sock");
-
-    let mut wrapper_def = files_wrapper("/usr/bin/true", "gws/state", ".config/../gws");
-    wrapper_def.socket = wrapper_socket;
+    let wrapper_def = files_wrapper("/usr/bin/true", "gws/state", ".config/../gws");
 
     let err = daemon_config_error(wrapper_def).await;
     assert!(err.contains("invalid path") || err.contains("path must be clean"));
@@ -62,12 +42,7 @@ async fn traversal_directory_path_rejected_at_startup() {
 
 #[tokio::test]
 async fn empty_segment_directory_path_rejected_at_startup() {
-    let tempdir = tempfile::TempDir::new().unwrap();
-    let base = tempdir.path();
-    let wrapper_socket = base.join("wrapper.sock");
-
-    let mut wrapper_def = files_wrapper("/usr/bin/true", "gws/state", ".config//gws");
-    wrapper_def.socket = wrapper_socket;
+    let wrapper_def = files_wrapper("/usr/bin/true", "gws/state", ".config//gws");
 
     let err = daemon_config_error(wrapper_def).await;
     assert!(err.contains("invalid path") || err.contains("empty segments"));

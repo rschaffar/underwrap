@@ -3,6 +3,7 @@ use crate::storage::documents::{load_pairs_document, save_pairs_document};
 use crate::test_support::{
     entity_test_state_with_store, make_runtime_api_fixture, response_body_json,
 };
+use underwrap_protocol::variant::WrapperVariant;
 
 #[test]
 fn bump_pair_last_used_sets_timestamp_only_on_matching_pair() {
@@ -80,6 +81,7 @@ fn runtime_wrapper_invocation_open_allows_unlocked_permission() {
         &RuntimeWrapperInvocationOpenRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
+            variant: WrapperVariant::Real,
         },
     );
     let parsed: RuntimeWrapperInvocationOpenResponse =
@@ -120,6 +122,7 @@ fn runtime_wrapper_invocation_open_denies_locked_permission() {
         &RuntimeWrapperInvocationOpenRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
+            variant: WrapperVariant::Real,
         },
     );
     let parsed: RuntimeWrapperInvocationOpenResponse =
@@ -145,6 +148,7 @@ fn runtime_wrapper_invocation_open_denies_unregistered_pair() {
         &RuntimeWrapperInvocationOpenRequest {
             wrapper_name: "ghost".into(),
             resource_name: "alpha".into(),
+            variant: WrapperVariant::Real,
         },
     );
     let parsed: RuntimeWrapperInvocationOpenResponse =
@@ -168,6 +172,7 @@ fn runtime_wrapper_invocation_finalize_bumps_last_used_without_blob() {
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
+            variant: WrapperVariant::Real,
             blob_b64: None,
         },
     );
@@ -210,6 +215,7 @@ fn runtime_wrapper_invocation_finalize_persists_libsecret_change() {
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
+            variant: WrapperVariant::Real,
             blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
         },
     );
@@ -249,6 +255,7 @@ fn runtime_wrapper_invocation_finalize_rejects_env_mutation() {
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
+            variant: WrapperVariant::Real,
             blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
         },
     );
@@ -285,6 +292,7 @@ fn runtime_wrapper_invocation_finalize_rejects_noncanonical_blob() {
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
+            variant: WrapperVariant::Real,
             blob_b64: Some(
                 base64::engine::general_purpose::STANDARD.encode(noncanonical.as_slice()),
             ),
@@ -319,6 +327,7 @@ fn runtime_wrapper_invocation_finalize_rejects_writeback_when_not_writable() {
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
+            variant: WrapperVariant::Real,
             blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
         },
     );
@@ -327,5 +336,93 @@ fn runtime_wrapper_invocation_finalize_rejects_writeback_when_not_writable() {
     assert!(matches!(
         parsed,
         RuntimeWrapperInvocationFinalizeResponse::Deny { reason } if reason == "not-writable"
+    ));
+}
+
+#[test]
+fn runtime_wrapper_invocation_open_denies_debug_variant_under_unlocked() {
+    use underwrap_protocol::service::{
+        RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
+    };
+
+    // The fixture seeds an `Unlocked` permission; a `Debug` invocation
+    // must be refused because only `UnsafeDebugUntil` admits Debug.
+    let fx = make_runtime_api_fixture();
+    let resp = handle_runtime_wrapper_invocation_open(
+        fx.store().as_ref(),
+        &fx.instance_id,
+        &RuntimeWrapperInvocationOpenRequest {
+            wrapper_name: "gh".into(),
+            resource_name: "alpha".into(),
+            variant: WrapperVariant::Debug,
+        },
+    );
+    let parsed: RuntimeWrapperInvocationOpenResponse =
+        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    assert!(matches!(
+        parsed,
+        RuntimeWrapperInvocationOpenResponse::Deny { reason } if reason == "not-unsafe-debug"
+    ));
+}
+
+#[test]
+fn runtime_wrapper_invocation_open_allows_both_variants_under_unsafe_debug() {
+    use underwrap_protocol::policy::WrapperApprovalMode;
+    use underwrap_protocol::service::{
+        RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
+    };
+
+    let fx = make_runtime_api_fixture();
+    let mut policy = fx.policy();
+    policy.permissions[0].mode = WrapperApprovalMode::UnsafeDebugUntil {
+        until_epoch: u64::MAX,
+    };
+    fx.save_policy(&policy);
+
+    for variant in [WrapperVariant::Real, WrapperVariant::Debug] {
+        let resp = handle_runtime_wrapper_invocation_open(
+            fx.store().as_ref(),
+            &fx.instance_id,
+            &RuntimeWrapperInvocationOpenRequest {
+                wrapper_name: "gh".into(),
+                resource_name: "alpha".into(),
+                variant,
+            },
+        );
+        let parsed: RuntimeWrapperInvocationOpenResponse =
+            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        assert!(
+            matches!(parsed, RuntimeWrapperInvocationOpenResponse::Allow { .. }),
+            "variant {variant:?} should be allowed under unsafe-debug",
+        );
+    }
+}
+
+#[test]
+fn runtime_wrapper_invocation_open_denies_expired_unsafe_debug() {
+    use underwrap_protocol::policy::WrapperApprovalMode;
+    use underwrap_protocol::service::{
+        RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
+    };
+
+    let fx = make_runtime_api_fixture();
+    let mut policy = fx.policy();
+    policy.permissions[0].mode = WrapperApprovalMode::UnsafeDebugUntil { until_epoch: 1 };
+    fx.save_policy(&policy);
+
+    let resp = handle_runtime_wrapper_invocation_open(
+        fx.store().as_ref(),
+        &fx.instance_id,
+        &RuntimeWrapperInvocationOpenRequest {
+            wrapper_name: "gh".into(),
+            resource_name: "alpha".into(),
+            variant: WrapperVariant::Debug,
+        },
+    );
+    let parsed: RuntimeWrapperInvocationOpenResponse =
+        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    assert!(matches!(
+        parsed,
+        RuntimeWrapperInvocationOpenResponse::Deny { reason } if reason == "expired"
     ));
 }

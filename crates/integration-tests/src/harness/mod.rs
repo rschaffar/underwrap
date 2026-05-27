@@ -40,6 +40,7 @@ mod builders;
 mod pki;
 mod readiness;
 
+pub(crate) use builders::current_group_name;
 pub use builders::{files_wrapper, files_wrapper_paths, wrapper};
 pub(crate) use pki::{
     TEST_CA_PEM, TEST_CLIENT_LOCAL_KEY, TEST_CLIENT_LOCAL_PEM, TEST_SERVER_KEY, TEST_SERVER_PEM,
@@ -106,7 +107,7 @@ impl TestDaemon {
     /// `auto_create_wrapper_assets` already flipped on so the startup
     /// register call creates resource/pair records on first contact.
     pub async fn start_service_mode_with(
-        mut wrappers: HashMap<String, WrapperDef>,
+        wrappers: HashMap<String, WrapperDef>,
         client_name: &str,
         accepted_principal: &str,
         auto_create_wrapper_assets: bool,
@@ -115,12 +116,16 @@ impl TestDaemon {
         let base = tempdir.path();
 
         let storage_dir = base.join("secrets");
-        let mut wrapper_sockets = HashMap::new();
 
+        // One socket per instance now. Every wrapper name maps to the
+        // same instance socket; the wrapper name travels in the IPC
+        // request, not the socket path. The map is kept so existing
+        // test call sites (`daemon.wrapper_sockets["name"]`) resolve to
+        // the instance socket unchanged.
+        let instance_socket = base.join("instance.sock");
+        let mut wrapper_sockets = HashMap::new();
         for name in wrappers.keys().cloned().collect::<Vec<_>>() {
-            let socket = base.join(format!("wrapper-{name}.sock"));
-            wrappers.get_mut(&name).expect("wrapper must exist").socket = socket.clone();
-            wrapper_sockets.insert(name, socket);
+            wrapper_sockets.insert(name, instance_socket.clone());
         }
 
         let https_port = pick_unused_port()?;
@@ -213,6 +218,15 @@ impl TestDaemon {
                 client_cert_file: Some(pki.client_cert.clone()),
                 client_key_file: Some(pki.client_key.clone()),
             },
+            instance: "local".to_string(),
+            socket: instance_socket.clone(),
+            // The instance group is the test user's primary group so the
+            // daemon's `egid == instance gid` gate passes for in-process
+            // connections.
+            group: builders::current_group_name(),
+            ns_binary: base.join("underwrap-ns"),
+            debug_tool_target: base.join("underwrap-debug-tool"),
+            xdg_runtime_dir_base: "/run/user".to_string(),
             wrappers,
         };
         let client_instance = format!("inst_{accepted_principal}");
@@ -259,7 +273,11 @@ impl TestDaemon {
     /// Send a read request and return the response.
     pub async fn read_request(&self, wrapper: &str) -> Result<WrapperResponse> {
         let mut stream = UnixStream::connect(self.wrapper_socket(wrapper)?).await?;
-        let req = WrapperRequest::Read { scope: None };
+        let req = WrapperRequest::Read {
+            wrapper_name: wrapper.to_string(),
+            variant: underwrap_protocol::variant::WrapperVariant::Real,
+            scope: None,
+        };
         write_frame_async(&mut stream, &req).await?;
         let resp: WrapperResponse = read_frame_async(&mut stream).await?;
         Ok(resp)
@@ -280,6 +298,8 @@ impl TestDaemon {
     ) -> Result<WrapperResponse> {
         let mut stream = UnixStream::connect(self.wrapper_socket(wrapper)?).await?;
         let req = WrapperRequest::Read {
+            wrapper_name: wrapper.to_string(),
+            variant: underwrap_protocol::variant::WrapperVariant::Real,
             scope: Some(scope.to_string()),
         };
         write_frame_async(&mut stream, &req).await?;

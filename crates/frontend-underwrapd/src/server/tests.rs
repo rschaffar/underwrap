@@ -1,17 +1,29 @@
 use super::*;
 use underwrap_protocol::config::BackendServiceConfig;
 
-#[test]
-fn ensure_backend_reports_missing_credential_when_files_absent() {
-    let config = DaemonConfig {
+fn config_with_backend_url(url: &str) -> DaemonConfig {
+    DaemonConfig {
         backend: BackendServiceConfig {
-            url: "https://backend.example.invalid".into(),
+            url: url.into(),
             ca_file: None,
             client_cert_file: None,
             client_key_file: None,
         },
+        instance: "local".into(),
+        socket: std::path::PathBuf::from("/run/underwrap/local.sock"),
+        group: "underwrap-local".into(),
+        ns_binary: std::path::PathBuf::from("/run/wrappers/bin/underwrap-ns"),
+        debug_tool_target: std::path::PathBuf::from(
+            "/run/current-system/sw/bin/underwrap-debug-tool",
+        ),
+        xdg_runtime_dir_base: "/run/user".into(),
         wrappers: Default::default(),
-    };
+    }
+}
+
+#[test]
+fn ensure_backend_reports_missing_credential_when_files_absent() {
+    let config = config_with_backend_url("https://backend.example.invalid");
     let state = State::new(config);
     assert!(matches!(
         state.ensure_backend(),
@@ -26,15 +38,7 @@ fn ensure_backend_reports_missing_credential_when_files_absent() {
 
 #[test]
 fn enrollment_url_points_at_client_instances_page() {
-    let config = DaemonConfig {
-        backend: BackendServiceConfig {
-            url: "https://backend.example.invalid/".into(),
-            ca_file: None,
-            client_cert_file: None,
-            client_key_file: None,
-        },
-        wrappers: Default::default(),
-    };
+    let config = config_with_backend_url("https://backend.example.invalid/");
     let state = State::new(config);
     assert_eq!(
         state.enrollment_url(),

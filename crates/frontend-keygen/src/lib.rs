@@ -3,7 +3,7 @@ use clap::Parser;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use underwrap_protocol::config::DaemonConfig;
+use underwrap_protocol::config::BackendServiceConfig;
 use zeroize::Zeroizing;
 
 #[derive(Debug, Parser, Clone)]
@@ -49,15 +49,33 @@ impl Cli {
         if let Some(path) = self.instance_config.as_deref() {
             let yaml = std::fs::read_to_string(path)
                 .with_context(|| format!("reading instance config '{}'", path.display()))?;
-            let cfg: DaemonConfig = serde_yaml::from_str(&yaml)
+            // keygen only needs the backend credential paths, so it
+            // pulls out just the `backend` section rather than the full
+            // `DaemonConfig` (whose daemon-only fields are irrelevant
+            // here and would otherwise force every keygen config to
+            // carry them).
+            let doc: serde_yaml::Value = serde_yaml::from_str(&yaml)
                 .with_context(|| format!("parsing instance config '{}'", path.display()))?;
-            let client_cert_out = cfg.backend.client_cert_file.with_context(|| {
+            let backend_value = doc.get("backend").cloned().with_context(|| {
+                format!(
+                    "instance config '{}' has no backend section",
+                    path.display()
+                )
+            })?;
+            let backend: BackendServiceConfig = serde_yaml::from_value(backend_value)
+                .with_context(|| {
+                    format!(
+                        "parsing backend section of instance config '{}'",
+                        path.display()
+                    )
+                })?;
+            let client_cert_out = backend.client_cert_file.with_context(|| {
                 format!(
                     "instance config '{}' has no backend.client_cert_file",
                     path.display()
                 )
             })?;
-            let client_key_out = cfg.backend.client_key_file.with_context(|| {
+            let client_key_out = backend.client_key_file.with_context(|| {
                 format!(
                     "instance config '{}' has no backend.client_key_file",
                     path.display()

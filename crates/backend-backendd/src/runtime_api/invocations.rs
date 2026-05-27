@@ -9,7 +9,8 @@ use anyhow::Result;
 use axum::Json;
 use tracing::warn;
 
-use underwrap_protocol::policy::{PolicyDocument, WrapperPermission};
+use underwrap_protocol::policy::{PolicyDecision, PolicyDocument, WrapperPermission, decide};
+use underwrap_protocol::variant::WrapperVariant;
 use underwrap_store::{StorageBackend, load_resource_blob, save_resource_blob};
 
 use crate::runtime_api::error::{IntoInternal, RuntimeError};
@@ -41,10 +42,9 @@ pub(crate) fn resolve_invocation<'a>(
     principal: &str,
     wrapper_name: &str,
     resource_name: &str,
+    variant: WrapperVariant,
     policy: &'a PolicyDocument,
 ) -> Result<InvocationLookup<'a>> {
-    use underwrap_protocol::policy::WrapperApprovalMode;
-
     let resources = load_resources_document(store)?;
     let Some(resource) = resources.find_by_name(resource_name) else {
         return Ok(InvocationLookup::UnregisteredPair);
@@ -56,27 +56,16 @@ pub(crate) fn resolve_invocation<'a>(
     let Some(permission) = policy.find_permission(principal, wrapper_name, &resource.id) else {
         return Ok(InvocationLookup::NoPermission);
     };
-    match &permission.mode {
-        WrapperApprovalMode::Locked => Ok(InvocationLookup::Denied(
-            permission
-                .reason
-                .clone()
-                .unwrap_or_else(|| "locked".to_string()),
-        )),
-        WrapperApprovalMode::Unlocked => Ok(InvocationLookup::Allowed {
+    // The shared `decide` is the single authority for the (mode × variant)
+    // matrix; the daemon-side evaluator and this backend handler must
+    // reach identical conclusions. A `Debug` variant is only ever allowed
+    // under an active `UnsafeDebugUntil` permission.
+    match decide(permission, variant, crate::time::now_epoch_secs()) {
+        PolicyDecision::Allow => Ok(InvocationLookup::Allowed {
             resource_id: resource.id.clone(),
             permission,
         }),
-        WrapperApprovalMode::UnlockedUntil { until_epoch } => {
-            if crate::time::now_epoch_secs() > *until_epoch {
-                Ok(InvocationLookup::Denied("expired".to_string()))
-            } else {
-                Ok(InvocationLookup::Allowed {
-                    resource_id: resource.id.clone(),
-                    permission,
-                })
-            }
-        }
+        PolicyDecision::Deny { reason } => Ok(InvocationLookup::Denied(reason)),
     }
 }
 
@@ -97,10 +86,18 @@ pub(crate) fn resolve_invocation_or_deny(
     principal: &str,
     wrapper_name: &str,
     resource_name: &str,
+    variant: WrapperVariant,
 ) -> Result<InvocationResolution, RuntimeError> {
     let policy = load_policy_document(store).into_internal("loading policy document")?;
-    let lookup = resolve_invocation(store, principal, wrapper_name, resource_name, &policy)
-        .into_internal("policy lookup failed")?;
+    let lookup = resolve_invocation(
+        store,
+        principal,
+        wrapper_name,
+        resource_name,
+        variant,
+        &policy,
+    )
+    .into_internal("policy lookup failed")?;
     Ok(match lookup {
         InvocationLookup::UnregisteredPair => {
             InvocationResolution::Deny("unregistered-pair".into())
@@ -166,6 +163,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_open(
         principal,
         &body.wrapper_name,
         &body.resource_name,
+        body.variant,
     )? {
         InvocationResolution::Allow {
             resource_id,
@@ -223,6 +221,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
         principal,
         &body.wrapper_name,
         &body.resource_name,
+        body.variant,
     )? {
         InvocationResolution::Allow {
             resource_id,

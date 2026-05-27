@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use underwrap_protocol::ipc::write_frame_async;
 use underwrap_protocol::message::{ErrorCode, WrapperRequest, WrapperResponse};
+use underwrap_protocol::variant::WrapperVariant;
 
 use crate::peer_auth::PeerCred;
 use crate::server::{BackendOpenError, State};
@@ -21,30 +22,36 @@ use read::open_invocation;
 pub(crate) async fn handle_wrapper(
     mut stream: UnixStream,
     state: Arc<State>,
-    wrapper_name: &str,
     expected_gid: u32,
 ) -> Result<()> {
-    let (peer, peer_uid) =
-        match authorize_wrapper_peer(&mut stream, wrapper_name, expected_gid).await? {
-            Some(auth) => auth,
-            None => return Ok(()),
-        };
+    let (peer, peer_uid) = match authorize_wrapper_peer(&mut stream, expected_gid).await? {
+        Some(auth) => auth,
+        None => return Ok(()),
+    };
 
-    let request =
-        match read_initial_wrapper_request(&mut stream, wrapper_name, peer.as_ref(), peer_uid)
-            .await?
-        {
-            Some(request) => request,
-            None => return Ok(()),
-        };
+    let request = match read_initial_wrapper_request(&mut stream, peer.as_ref(), peer_uid).await? {
+        Some(request) => request,
+        None => return Ok(()),
+    };
 
-    let scope = match &request {
-        WrapperRequest::Read { scope } => scope.clone(),
+    // The wrapper name is client-supplied now that one socket serves the
+    // whole instance; it is validated against the daemon config in
+    // `open_invocation`. The variant (Real/Debug) likewise comes from the
+    // client, but the daemon — not the client — chooses the target binary
+    // and the backend re-evaluates the policy for the variant, so a
+    // forged `variant` cannot escalate.
+    let (wrapper_name, variant, scope) = match request {
+        WrapperRequest::Read {
+            wrapper_name,
+            variant,
+            scope,
+        } => (wrapper_name, variant, scope),
     };
 
     let outcome = open_one_invocation(
         scope.as_deref(),
-        wrapper_name,
+        &wrapper_name,
+        variant,
         peer.as_ref(),
         peer_uid,
         &state,
@@ -53,7 +60,7 @@ pub(crate) async fn handle_wrapper(
     write_frame_async(&mut stream, &outcome.response).await?;
 
     if let Some(opened) = outcome.opened {
-        establish_scoped_channels(&stream, wrapper_name, opened).await;
+        establish_scoped_channels(&stream, &wrapper_name, opened).await;
     }
 
     stream.shutdown().await?;
@@ -71,11 +78,12 @@ pub(in crate::wrapper_flow) struct ReadOutcome {
 async fn open_one_invocation(
     scope: Option<&str>,
     wrapper_name: &str,
+    variant: WrapperVariant,
     peer: Option<&PeerCred>,
     peer_uid: u32,
     state: &State,
 ) -> ReadOutcome {
-    info!(wrapper = %wrapper_name, peer = ?peer, "wrapper read request");
+    info!(wrapper = %wrapper_name, ?variant, peer = ?peer, "wrapper read request");
 
     let backend = match state.ensure_backend() {
         Ok(b) => b,
@@ -102,5 +110,5 @@ async fn open_one_invocation(
         }
     };
 
-    open_invocation(scope, wrapper_name, peer_uid, state, backend)
+    open_invocation(scope, wrapper_name, variant, peer_uid, state, backend)
 }

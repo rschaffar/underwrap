@@ -12,23 +12,23 @@ backend:
   ca_file: /etc/underwrap/ca.pem
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
+instance: local
+socket: /run/underwrap/local.sock
+group: underwrap-local
+ns_binary: /run/wrappers/bin/underwrap-ns
+debug_tool_target: /run/current-system/sw/bin/underwrap-debug-tool
+xdg_runtime_dir_base: /run/user
 wrappers:
   gh-authorized:
     target: /usr/bin/gh
-    socket: /run/underwrap/gh-authorized.sock
-    group: underwrap-gh-authorized
     resource: github/token
     env: true
   agent-slack:
     target: /usr/bin/slack-cli
-    socket: /run/underwrap/agent-slack.sock
-    group: underwrap-agent-slack
     resource: slack/xoxp
     env: true
   gh-libsecret:
     target: /usr/bin/gh
-    socket: /run/underwrap/gh-libsecret.sock
-    group: underwrap-gh-libsecret
     resource: github/gh
     libsecret: true
 "#;
@@ -292,12 +292,16 @@ async fn underwrapd_binary_start_and_read() {
             client_cert_file: Some(client_cert.clone()),
             client_key_file: Some(client_key.clone()),
         },
+        instance: "local".to_string(),
+        socket: wrapper_sock.clone(),
+        group: crate::harness::current_group_name(),
+        ns_binary: base.join("underwrap-ns"),
+        debug_tool_target: base.join("underwrap-debug-tool"),
+        xdg_runtime_dir_base: "/run/user".to_string(),
         wrappers: {
             let mut m = HashMap::new();
             let echo = which_echo().unwrap_or_else(|| "/bin/true".to_string());
-            let mut w = wrapper(&echo, "s/t", "T");
-            w.socket = wrapper_sock.clone();
-            m.insert("w".to_string(), w);
+            m.insert("w".to_string(), wrapper(&echo, "s/t", "T"));
             m
         },
     })
@@ -369,7 +373,11 @@ async fn underwrapd_binary_start_and_read() {
     let mut stream = tokio::net::UnixStream::connect(&wrapper_sock)
         .await
         .unwrap();
-    let req = WrapperRequest::Read { scope: None };
+    let req = WrapperRequest::Read {
+        wrapper_name: "w".to_string(),
+        variant: underwrap_protocol::variant::WrapperVariant::Real,
+        scope: None,
+    };
     underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
         .await
         .unwrap();

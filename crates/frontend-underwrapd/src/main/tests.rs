@@ -16,6 +16,12 @@ backend:
   ca_file: /etc/underwrap/ca.pem
   client_cert_file: /etc/underwrap/client.pem
   client_key_file: /etc/underwrap/client.key
+instance: local
+socket: /run/underwrap/local.sock
+group: underwrap-local
+ns_binary: /run/wrappers/bin/underwrap-ns
+debug_tool_target: /run/current-system/sw/bin/underwrap-debug-tool
+xdg_runtime_dir_base: /run/user
 wrappers: {}
 "#,
     )

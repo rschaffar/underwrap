@@ -19,7 +19,7 @@ use underwrap_protocol::service::{
 };
 
 use crate::backend_client::BackendClient;
-use crate::startup::{bind_socket, build_wrapper_gid_map, next_listener_result, validate_config};
+use crate::startup::{bind_socket, next_listener_result, resolve_instance_gid, validate_config};
 use crate::wrapper_flow::handle_wrapper;
 
 /// Maximum concurrent connections per socket.
@@ -103,12 +103,8 @@ impl State {
 fn register_wrapper_assets(backend: &BackendClient, config: &DaemonConfig) -> Result<()> {
     let mut wrappers = Vec::with_capacity(config.wrappers.len());
     for (wrapper_name, wrapper) in &config.wrappers {
-        let logical_name = wrapper
-            .logical_name
-            .clone()
-            .unwrap_or_else(|| wrapper_name.clone());
         wrappers.push(RuntimeWrapperRegisterPair {
-            wrapper_name: logical_name,
+            wrapper_name: wrapper_name.clone(),
             resource_name: wrapper.resource.clone(),
         });
     }
@@ -158,7 +154,7 @@ pub(crate) fn unenrolled_message(url: &str) -> String {
 pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<()> {
     validate_config(&config)?;
 
-    let wrapper_to_gid = build_wrapper_gid_map(&config)?;
+    let instance_gid = resolve_instance_gid(&config)?;
     let state = Arc::new(State::new(config.clone()));
 
     // Best-effort startup register. Failure is just informational —
@@ -186,23 +182,17 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
 
     let mut tasks = JoinSet::new();
 
-    for (name, wrapper) in &config.wrappers {
-        let gid = *wrapper_to_gid
-            .get(name)
-            .expect("wrapper gid must exist after startup validation");
-        let listener = bind_socket(
-            &wrapper.socket,
-            0o660,
-            &format!("wrapper '{name}'"),
-            Some(gid),
-        )?;
-        tasks.spawn(accept_wrapper_loop(
-            listener,
-            Arc::clone(&state),
-            name.clone(),
-            gid,
-        ));
-    }
+    let listener = bind_socket(
+        &config.socket,
+        0o660,
+        &format!("instance '{}'", config.instance),
+        Some(instance_gid),
+    )?;
+    tasks.spawn(accept_wrapper_loop(
+        listener,
+        Arc::clone(&state),
+        instance_gid,
+    ));
 
     info!("daemon ready");
 
@@ -225,7 +215,6 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
 async fn accept_wrapper_loop(
     listener: UnixListener,
     state: Arc<State>,
-    wrapper_name: String,
     expected_gid: u32,
 ) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -233,7 +222,6 @@ async fn accept_wrapper_loop(
     loop {
         let (stream, _addr) = listener.accept().await?;
         let state = Arc::clone(&state);
-        let wrapper_name = wrapper_name.clone();
         let permit = semaphore
             .clone()
             .acquire_owned()
@@ -241,8 +229,8 @@ async fn accept_wrapper_loop(
             .expect("semaphore closed");
 
         tokio::spawn(async move {
-            if let Err(e) = handle_wrapper(stream, state, &wrapper_name, expected_gid).await {
-                error!(wrapper = %wrapper_name, "connection error: {e:#}");
+            if let Err(e) = handle_wrapper(stream, state, expected_gid).await {
+                error!("connection error: {e:#}");
             }
             drop(permit);
         });

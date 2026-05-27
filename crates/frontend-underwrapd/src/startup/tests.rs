@@ -8,6 +8,14 @@ fn minimal_config() -> DaemonConfig {
             client_cert_file: None,
             client_key_file: None,
         },
+        instance: "local".into(),
+        socket: std::path::PathBuf::from("/run/underwrap/local.sock"),
+        group: "underwrap-local".into(),
+        ns_binary: std::path::PathBuf::from("/run/wrappers/bin/underwrap-ns"),
+        debug_tool_target: std::path::PathBuf::from(
+            "/run/current-system/sw/bin/underwrap-debug-tool",
+        ),
+        xdg_runtime_dir_base: "/run/user".into(),
         wrappers: std::collections::HashMap::new(),
     }
 }

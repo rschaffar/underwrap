@@ -4722,6 +4722,27 @@
                 "minimum": 0
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "Allow **both** the real wrapper and its debug variant until\n`until_epoch`; deny afterwards. This is the only mode under which a\n`variant = Debug` invocation is allowed — it exposes the projected\nsecret material to the debug tool, so it is gated behind an explicit\noperator opt-in with a TTL. Expiry is checked lazily per request.",
+            "required": [
+              "until_epoch",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unsafe-debug-until"
+                ]
+              },
+              "until_epoch": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
           }
         ],
         "description": "Runtime mode for one [`WrapperPermission`]."

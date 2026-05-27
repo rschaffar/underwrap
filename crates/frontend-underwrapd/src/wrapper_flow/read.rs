@@ -15,11 +15,12 @@ use std::sync::Arc;
 use base64::Engine;
 use tracing::{error, warn};
 
-use underwrap_protocol::config::AccessMode;
+use underwrap_protocol::config::{AccessMode, RESERVED_WRAPPER_NAME_DEBUG};
 use underwrap_protocol::message::{ErrorCode, SecretBytes, WrapperResponse};
 use underwrap_protocol::resource::validate_env_name;
 use underwrap_protocol::resource_blob::ResourceBlob;
 use underwrap_protocol::service::RuntimeWrapperInvocationOpenResponse;
+use underwrap_protocol::variant::WrapperVariant;
 
 use crate::audit;
 use crate::backend_client::{BackendClient, StoreLockedError, UnauthorizedError};
@@ -32,10 +33,12 @@ use super::ReadOutcome;
 /// `ReadOk` has been written to the wrapper socket.
 pub(super) struct OpenedInvocation {
     pub backend: Arc<BackendClient>,
-    /// Logical name used in `POST /v1/wrapper-invocations` calls.
-    /// Often equal to `wrapper_name` but the wrapper config may
-    /// override it via `logical_name`.
-    pub logical_wrapper_name: String,
+    /// Wrapper name used in `POST /v1/wrapper-invocations` calls. This is
+    /// the client-supplied name validated against the daemon config.
+    pub wrapper_name: String,
+    /// Invocation variant (Real/Debug); re-sent on finalize so the
+    /// backend re-evaluates the same policy branch it allowed on open.
+    pub variant: WrapperVariant,
     /// Resource name (operator-facing) used in `POST /v1/wrapper-invocations`.
     pub resource_name: String,
     /// Canonical resource blob bytes returned by the backend on open.
@@ -53,10 +56,22 @@ pub(super) struct OpenedInvocation {
 pub(super) fn open_invocation(
     _scope: Option<&str>,
     wrapper_name: &str,
+    variant: WrapperVariant,
     peer_uid: u32,
     state: &State,
     backend: Arc<BackendClient>,
 ) -> ReadOutcome {
+    // The reserved `debug` token is the frontend-exec subcommand keyword,
+    // never a wrapper name. A config can't define it (rejected at load),
+    // but reject it explicitly here too so a hand-crafted client gets a
+    // clear error rather than a generic "unknown wrapper".
+    if wrapper_name == RESERVED_WRAPPER_NAME_DEBUG {
+        warn!(wrapper = %wrapper_name, "rejected reserved wrapper name");
+        return error_outcome(
+            ErrorCode::NotFound,
+            format!("'{RESERVED_WRAPPER_NAME_DEBUG}' is a reserved subcommand, not a wrapper"),
+        );
+    }
     let wrapper_def = match state.config.wrappers.get(wrapper_name) {
         Some(w) => w,
         None => {
@@ -67,13 +82,9 @@ pub(super) fn open_invocation(
             );
         }
     };
-    let logical_name = wrapper_def
-        .logical_name
-        .clone()
-        .unwrap_or_else(|| wrapper_name.to_string());
     let resource_name = wrapper_def.resource.clone();
 
-    let response = match backend.open_invocation(&logical_name, &resource_name) {
+    let response = match backend.open_invocation(wrapper_name, &resource_name, variant) {
         Ok(r) => r,
         Err(e) => {
             if let Some(locked) = e.downcast_ref::<StoreLockedError>() {
@@ -163,6 +174,18 @@ pub(super) fn open_invocation(
     let files_target_paths = wrapper_file_paths(wrapper_def);
     let libsecret = wrapper_def.libsecret;
 
+    // The daemon — not the wrapper — chooses the binary to exec. For a
+    // `Real` invocation it is the wrapper's configured target; for a
+    // `Debug` invocation (only reachable after the backend allowed it
+    // above) it is the instance's debug tool. A client that forges
+    // `variant = Real` can never reach the debug tool, and one that
+    // forges `variant = Debug` is rejected by the backend policy unless
+    // the permission is in `UnsafeDebugUntil` mode.
+    let target = match variant {
+        WrapperVariant::Real => wrapper_def.target.clone(),
+        WrapperVariant::Debug => state.config.debug_tool_target.clone(),
+    };
+
     let response = WrapperResponse::ReadOk {
         env,
         resource_id: resource_id.clone(),
@@ -170,12 +193,17 @@ pub(super) fn open_invocation(
         access,
         libsecret,
         files_target_paths,
+        target,
+        env_passthrough: wrapper_def.env_passthrough.clone(),
+        env_set: wrapper_def.env_set.clone(),
+        xdg_runtime_dir_base: state.config.xdg_runtime_dir_base.clone(),
     };
     ReadOutcome {
         response,
         opened: Some(OpenedInvocation {
             backend,
-            logical_wrapper_name: logical_name,
+            wrapper_name: wrapper_name.to_string(),
+            variant,
             resource_name,
             blob_bytes,
             access,

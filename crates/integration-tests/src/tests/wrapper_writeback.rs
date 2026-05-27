@@ -58,19 +58,27 @@ struct OpenedRun {
 
 /// Connect a sync wrapper-side `StdUnixStream`, send `Read`, parse
 /// `ReadOk`, and receive the one channel fd via SCM_RIGHTS.
-fn open_run(socket_path: &Path) -> OpenedRun {
+fn open_run(socket_path: &Path, wrapper_name: &str) -> OpenedRun {
     let mut stream = StdUnixStream::connect(socket_path)
         .unwrap_or_else(|e| panic!("connect {}: {e}", socket_path.display()));
-    write_frame_sync(&mut stream, &WrapperRequest::Read { scope: None }).unwrap();
+    write_frame_sync(
+        &mut stream,
+        &WrapperRequest::Read {
+            wrapper_name: wrapper_name.to_string(),
+            variant: underwrap_protocol::variant::WrapperVariant::Real,
+            scope: None,
+        },
+    )
+    .unwrap();
     let resp: WrapperResponse = read_frame_sync(&mut stream).unwrap();
     let (env, resource_id, access, libsecret, files_target_paths) = match resp {
         WrapperResponse::ReadOk {
             env,
             resource_id,
-            resource_name: _,
             access,
             libsecret,
             files_target_paths,
+            ..
         } => (env, resource_id, access, libsecret, files_target_paths),
         other => panic!("expected ReadOk, got {other:?}"),
     };
@@ -204,7 +212,7 @@ async fn clean_run_only_sends_usage_signal() {
     // doesn't block the current-thread tokio runtime the daemon
     // tasks are running on.
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket);
+        let run = open_run(&socket, "gh-writeback");
         let mut channel = run.channel;
         let (blob, writable) = send_checkout(&mut channel);
         assert_eq!(blob, initial_bytes);
@@ -249,7 +257,7 @@ async fn writable_grant_persists_checkin() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     let result = tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket);
+        let run = open_run(&socket, "gh-writeback");
         let mut channel = run.channel;
         let (blob, writable) = send_checkout(&mut channel);
         assert!(writable);
@@ -293,7 +301,7 @@ async fn readonly_grant_rejects_checkin() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket);
+        let run = open_run(&socket, "gh-writeback");
         let mut channel = run.channel;
         let (_blob, writable) = send_checkout(&mut channel);
         assert!(!writable, "grant is read-only at Checkout");
@@ -351,7 +359,7 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
     let mutated = blob_with_env("GH_TOKEN", b"ghp_flipped");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let blocking = tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket);
+        let run = open_run(&socket, "gh-writeback");
         let mut channel = run.channel;
         let (_blob, writable) = send_checkout(&mut channel);
         assert!(writable, "Checkout must observe the still-writable grant");
@@ -425,7 +433,7 @@ async fn noncanonical_checkin_rejected() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket);
+        let run = open_run(&socket, "gh-writeback");
         let mut channel = run.channel;
         let (_blob, _writable) = send_checkout(&mut channel);
         let resp = send_checkin(&mut channel, &noncanonical);
@@ -512,7 +520,7 @@ async fn checkout_bumps_last_used() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket);
+        let run = open_run(&socket, "gh-writeback");
         let mut channel = run.channel;
         let _ = send_checkout(&mut channel);
     })
@@ -539,7 +547,7 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket);
+        let run = open_run(&socket, "gh-writeback");
         let mut channel = run.channel;
         let _ = send_checkout(&mut channel);
         let resp = send_checkin(&mut channel, &mutated_bytes);
@@ -565,7 +573,7 @@ async fn usage_signal_bumps_last_used() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket);
+        let run = open_run(&socket, "gh-writeback");
         let mut channel = run.channel;
         // Skip Checkout — drive UsageSignal directly to isolate the
         // bump from any other backend read.
@@ -597,7 +605,7 @@ async fn rejected_checkin_still_bumps_last_used() {
     let mutated = blob_with_env("GH_TOKEN", b"ghp_rejected_mutation");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let blocking = tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket);
+        let run = open_run(&socket, "gh-writeback");
         let mut channel = run.channel;
         let _ = send_checkout(&mut channel);
         checkout_done_tx.send(()).unwrap();
