@@ -415,7 +415,6 @@ dependencies = [
  "axum-login",
  "axum_csrf",
  "base64",
- "bytes",
  "clap",
  "hex",
  "http-body-util",
@@ -425,7 +424,6 @@ dependencies = [
  "mime_guess",
  "rand 0.8.5",
  "rcgen",
- "reqwest",
  "rust-embed",
  "rustls",
  "rustls-pemfile",
@@ -435,19 +433,16 @@ dependencies = [
  "sha2",
  "shared-protocol",
  "shared-store",
- "subtle",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-rustls",
  "tower",
- "tower-http",
  "tower-sessions",
  "tracing",
  "tracing-subscriber",
  "utoipa",
  "utoipa-axum",
- "x509-parser",
 ]
 
 [[package]]
@@ -889,7 +884,6 @@ dependencies = [
  "serde",
  "serde_yaml",
  "shared-protocol",
- "zeroize",
 ]
 
 [[package]]
@@ -903,7 +897,6 @@ dependencies = [
  "serde_yaml",
  "shared-protocol",
  "tempfile",
- "tracing",
  "tracing-subscriber",
  "zeroize",
 ]
@@ -922,10 +915,8 @@ name = "frontend-secretsd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64",
  "libc",
  "serde",
- "serde_json",
  "shared-protocol",
  "shared-secretsd-store",
  "tempfile",
@@ -946,16 +937,13 @@ dependencies = [
  "libc",
  "reqwest",
  "rustls",
- "serde",
  "serde_json",
  "serde_yaml",
  "shared-protocol",
- "shared-store",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "zeroize",
 ]
 
 [[package]]
@@ -1418,11 +1406,8 @@ dependencies = [
  "backend-backendd",
  "base64",
  "frontend-underwrapd",
- "hex",
  "libc",
  "percent-encoding",
- "rand 0.8.5",
- "rcgen",
  "reqwest",
  "rustls",
  "serde_json",
@@ -2429,7 +2414,6 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "serde_yaml",
- "thiserror",
  "tokio",
  "utoipa",
  "zeroize",
@@ -2450,16 +2434,10 @@ name = "shared-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64",
  "chacha20poly1305",
  "rand 0.8.5",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
  "shared-protocol",
  "tempfile",
- "tokio",
  "zeroize",
 ]
 
@@ -2793,7 +2771,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]

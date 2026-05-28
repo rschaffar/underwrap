@@ -15,4 +15,3 @@ anyhow = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
-zeroize = { workspace = true }

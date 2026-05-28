@@ -14,11 +14,8 @@ name = "underwrapd"
 path = "src/main.rs"
 
 [dependencies]
-zeroize = { workspace = true }
 shared-protocol = { workspace = true }
-shared-store = { workspace = true }
 tokio = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 anyhow = { workspace = true }
