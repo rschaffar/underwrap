@@ -1,180 +1,158 @@
 # Configuration
 
-underwrap has two main layers of configuration:
+underwrap has two configuration surfaces:
 
-- **NixOS module** (`services.underwrap`) — generates target-host runtime
-  configuration, wrapper binaries, users/groups, sockets, and policy
-  fragments
+- **NixOS module** (`services.underwrap`) — defines frontend instances,
+  wrappers, the daemon's backend connection, and the wrapper chain. The
+  module generates the setgid binary, the instance user/group, the
+  socket, the systemd service, and per-user shims.
 - **Backend config** (`underwrap-backendd`) — central secret storage,
-  service clients, admin tokens, and the operator-facing admin API
+  the HTTPS admin/runtime listener, and the operator-facing admin API.
 
-## NixOS module highlights
+## NixOS module
 
-The NixOS module lives at `nix/modules/underwrap.nix`.
+The module lives at `nix/modules/underwrap.nix`. See
+[`examples/config.yaml`](../examples/config.yaml) for an annotated
+daemon-config equivalent, and the module file itself for the full
+option schema.
 
 ### Top-level options
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `enable` | bool | `false` | Enable the underwrap target-host service stack |
-| `package` | package | flake package | Which underwrap package set to use |
-| `backendUrl` | str | — | HTTPS URL of the remote backend service API |
-| `caFile` | path | — | CA bundle used to verify the backend certificate |
-| `instanceNamePrefix` | str | `"underwrap"` | Prefix for generated users/groups/socket paths |
-| `hardenTargetHost` | bool | `true` | Pins `kernel.yama.ptrace_scope=2` on the target host (via `mkDefault`) and asserts that every configured swap device is encrypted. This is the posture the strong same-UID protection claim depends on. Lower at your own risk. |
+| `enable` | bool | `false` | Enable the frontend service stack on this host |
+| `package` | package | flake package | Which underwrap package to install |
+| `hardenTargetHost` | bool | `true` | Pin `kernel.yama.ptrace_scope=2` (via `mkDefault`), require encrypted swap, and assert kernel ≥ 6.5 so the daemon's race-free `SO_PEERPIDFD` peer-auth path is always available. This is the posture the same-UID protection claim in `docs/security.md` depends on. |
+| `instances.<name>` | submodule | — | One frontend instance per attribute key (see below) |
 
-`hardenTargetHost = true` is the recommended first-release posture. It
-keeps the host aligned with the security claims in `docs/security.md`.
+`hardenTargetHost = true` is the recommended first-release posture.
+Lowering it weakens the security claims in `docs/security.md`.
 
-The mTLS client credential is **not** an operator-configurable option. The
-module places it at a per-instance path under the per-instance state dir:
-
-- cert: `/var/lib/underwrap-<instance>/client-<instance>.pem`
-- key:  `/var/lib/underwrap-<instance>/client-<instance>.key`
-
-Populate it with `underwrap-keygen --instance-config /etc/underwrap/instances/<instance>.yaml`
-and paste the resulting cert PEM into the admin UI. This forecloses the
-class of "two instances share the same cert path" / "stale cert was wired
-in via deploy" mistakes that fingerprint-pinning can't otherwise detect.
-
-### Why the module clears the target environment
-
-The wrapper chain launches the final target with `env_clear()` and then
-reconstructs only an allowlisted environment. This blocks caller-driven:
-
-- `LD_PRELOAD`
-- `LD_LIBRARY_PATH`
-- shell helper injection
-- home/config/runtime-dir steering through `HOME`, `XDG_RUNTIME_DIR`, or
-  `XDG_*`
-- incidental secret leakage from the caller environment
-
-The target process should only receive the variables explicitly declared
-in wrapper configuration.
-
-Under the default policy:
-
-- `HOME` is forced to the trusted passwd home
-- `XDG_RUNTIME_DIR` is forced to `<xdgRuntimeDirBase>/<uid>`
-- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
-  `XDG_STATE_HOME` are derived from the effective `HOME`
-- `envSet` may intentionally override `HOME` and the base `XDG_*` dirs,
-  but those values must be absolute paths
-- `envPassthrough` may not name any of those variables
-- `envSet.XDG_RUNTIME_DIR` is rejected; use the instance-level
-  `xdgRuntimeDirBase` knob instead
-
-One intentional distinction remains: files-slot mount targets are still
-anchored to the passwd home resolved by `underwrap-ns`, not to an
-`envSet.HOME` override. If you set `HOME` away from the passwd home for a
-wrapper that also uses `files.paths`, you are choosing that divergence
-explicitly.
-
-Likewise, `xdgRuntimeDirBase` controls only the exported
-`XDG_RUNTIME_DIR` value. With the default `/run/user`, the host session
-usually provides the directory tree already. If you choose a custom base,
-ensure that the resulting `<base>/<uid>` path exists and is usable by the
-target user.
-
-## Example wrapper configuration
+### Per-instance options
 
 ```nix
-services.underwrap.wrappers = {
-  gh-work = {
-    resource = "gh/work";
-    wrapperGroup = "underwrap-gh-work";
-    target = "${pkgs.gh}/bin/gh";
-    env = {
-      GH_TOKEN = {
-        slot = "env";
-        entry = "GH_TOKEN";
-      };
-    };
+services.underwrap.instances.work = {
+  allowedUsers = [ "alice" ];
+  backend = {
+    url = "https://backend.example.internal:18443";
+    caFile = "/etc/underwrap/ca.pem";
   };
-
-  gh-personal = {
-    resource = "gh/personal";
-    wrapperGroup = "underwrap-gh-personal";
-    target = "${pkgs.gh}/bin/gh";
-    env = {
-      GH_TOKEN = {
-        slot = "env";
-        entry = "GH_TOKEN";
-      };
-    };
-  };
-
-  gws-project = {
-    resource = "google/projektbuero";
-    wrapperGroup = "underwrap-gws-project";
-    target = "${pkgs.gws}/bin/gws";
-    libsecret = true;
+  # xdgRuntimeDirBase = "/run/user";  # default
+  wrappers = {
+    # …
   };
 };
 ```
 
-## Debug / override helper
+| Option | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `allowedUsers` | list of str | `[]` | Local users that get per-user shims (`<wrapper>` and `debug-<wrapper>`) on `PATH` |
+| `backend.url` | str | — | HTTPS URL of `underwrap-backendd` |
+| `backend.caFile` | path | — | CA bundle the daemon uses to verify the backend's server cert |
+| `xdgRuntimeDirBase` | str | `/run/user` | Base for the target's `XDG_RUNTIME_DIR` (`<base>/<uid>`) |
+| `wrappers` | attrset | — | One entry per wrapper (see below) |
 
-The module can also generate a debug wrapper that keeps the real
-wrapper's GID and resource projections but swaps the target for a helper
-command. This is useful for inspecting the environment and projection
-shape without exposing raw secret values in logs.
+The mTLS client credential is **not** a module option. The module
+provisions a per-instance state directory and expects the credential at:
 
-## Wrapper option reference
+- cert: `/var/lib/underwrap-<instance>/client-<instance>.pem`
+- key:  `/var/lib/underwrap-<instance>/client-<instance>.key`
+
+Populate it once with:
+
+```bash
+sudo underwrap-keygen --instance-config /etc/underwrap/instances/<instance>.yaml
+```
+
+then paste the printed cert PEM into the admin UI on the backend.
+
+### Per-wrapper options
+
+```nix
+wrappers.gh = {
+  target = "${pkgs.gh}/bin/gh";
+  resource = "gh/main";
+  env = true;
+  files.paths = [ ".config/gh" ".config/git" ];
+  libsecret = true;
+  envSet.PATH = lib.makeBinPath [ pkgs.git pkgs.openssh ];
+};
+```
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `resource` | str | — | Backend resource id |
-| `wrapperGroup` | str | — | Group used for wrapper identity via `getegid()` |
-| `target` | str | — | Absolute path to the binary to exec |
-| `targetArgs` | list of str | `[]` | Fixed arguments passed to the target |
-| `libsecret` | bool | `false` | Launch the target in private Secret Service mode |
-| `env` | attrset | `{}` | Env-slot projections for secret material |
-| `files` | attrset | `{}` | File-slot projections into the target view |
-| `allowedEnv` | list of str | minimal allowlist | Non-secret environment variables that may be preserved |
+| `target` | str | — | Absolute path to the binary the daemon execs for `Real` invocations |
+| `resource` | str | — | Backend resource id this wrapper projects (one resource per wrapper) |
+| `env` | bool | `false` | Inject the resource's env-slot keys as environment variables |
+| `files` | nullable submodule | `null` | Mount the resource's files slot at one or more home-relative paths via `files.paths = [ ... ]` |
+| `libsecret` | bool | `false` | Run the target inside a private Secret Service session bus backed by the resource's libsecret slot |
+| `envPassthrough` | list of str | minimal allowlist | Caller-environment variables to preserve verbatim (does not name `HOME`, `XDG_*`, `LD_*`, or other dynamic-linker variables) |
+| `envSet` | attrset | `{}` | Fixed environment variables to set on the target (absolute paths only for `HOME` and base `XDG_*` overrides) |
 
-`target` must always be an absolute trusted path. underwrap does not use
-`PATH` lookup for the main exec target.
+`target` must always be an absolute trusted path; underwrap does not use
+`PATH` lookup for the main exec target. Every wrapper must enable at
+least one projection slot (`env`, `files`, or `libsecret`).
 
-## Backend admin tokens
+The debug tool is **always** built alongside every wrapper. Whether an
+operator can actually invoke it is a runtime decision: set the
+`(client_instance, wrapper, resource)` permission to `UnsafeDebugUntil`
+in the admin UI, then run `debug-<wrapper>` (or `uw-<instance> debug
+<wrapper>`).
 
-`underwrap-backendd` exposes a bearer-token protected admin API for the
-operator UI. Each configured token is loaded from a file and matched
-constant-time on every request.
+### Target-environment policy
 
-## Admin UI runtime YAML
+The wrapper chain launches the target with `env_clear()` and then
+restores only the allowlisted variables. The module enforces:
 
-The Next.js admin UI reads its runtime config from the file pointed to by
-`UNDERWRAP_ADMIN_UI_CONFIG`.
+- `HOME` is set to the trusted passwd home unless `envSet.HOME` overrides
+  it with an absolute path
+- `XDG_RUNTIME_DIR` is set to `<xdgRuntimeDirBase>/<uid>` (an
+  `envSet.XDG_RUNTIME_DIR` override is rejected)
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
+  `XDG_STATE_HOME` are derived from the effective `HOME`
+- `envPassthrough` may not name `HOME`, any `XDG_*` variable, or any
+  dynamic-linker variable (`LD_*`)
+
+Files-slot mount targets are always anchored to the passwd home resolved
+by `underwrap-ns`, not to an `envSet.HOME` override. Choosing a non-passwd
+`HOME` while also using `files.paths` is an explicit divergence.
+
+## Backend configuration
+
+`underwrap-backendd` reads a YAML config (path passed via `--config`).
+Minimal shape:
 
 ```yaml
+stores_dir:    /var/lib/underwrap-backend/stores
+clients_dir:   /var/lib/underwrap-backend/clients
+users_dir:     /var/lib/underwrap-backend/users
+bootstrap_file: /var/lib/underwrap-backend/bootstrap.json
 
-operators:
-  alice:
-    password_hash_file: /etc/underwrap-admin-ui/alice.phc
+https:
+  listen: 0.0.0.0:18443
+  tls:
+    cert_file: /etc/underwrap-backend/server.pem
+    key_file:  /etc/underwrap-backend/server.key
 
-backend:
-  label: shame01
-  admin_url: http://127.0.0.1:19443
-  token_file: /run/keys/underwrap-admin-backend
+admin:
+  # allowed_origins: [ "https://underwrap.example.internal" ]
+  # stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-- `operators` may be empty or omitted. In that case the admin UI exposes
-  the first-use bootstrap flow and stores the created operator hash in
-  local state under `UNDERWRAP_ADMIN_UI_STATE_DIR`.
-- Each configured `password_hash_file` is an Argon2 PHC-encoded string
-  (starts with `$argon2`). See [Admin UI](admin-ui.md).
-- `backend.token_file` is the matching bearer token declared on the
-  backend host.
-- `backend.label` is only the UI's backend/host label. It is not part of
-  backend authn/authz.
-- Listener address and port are not part of this YAML; the packaged
-  Next.js server binds through `HOSTNAME` and `PORT`.
+Admin sessions are held in memory (`tower_sessions::MemoryStore`); they
+do not survive a restart and there is no signing-key file to provision.
+Operators re-authenticate after every backend restart.
 
-## Where to look next
+The admin SPA ships embedded inside the backend binary and is served
+from the same HTTPS listener as the JSON admin API at `/v1/admin/*`.
+Browser sessions use Argon2id passwords, opaque `__Host-uw-session`
+cookies, and synchronizer-token CSRF — see [Admin UI](admin-ui.md). There
+is no separate admin process and no bearer-token mode.
 
-- [The underwrap backend](backend.md) — the full admin + runtime API.
-- [Admin UI](admin-ui.md) — operator-facing deployment.
+## See also
+
+- [The underwrap backend](backend.md) — admin and runtime API surface.
+- [Admin UI](admin-ui.md) — operator-facing deployment and auth model.
 - [Deploying the central backend](remote-backend.md) — step-by-step.
 - [Getting started](getting-started.md) — first successful wrapper
   invocation.

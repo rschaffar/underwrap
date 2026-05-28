@@ -28,8 +28,10 @@ The strongest pattern is usually:
 
 ```text
 agent
-  -> /run/wrappers/bin/agent-gh-comment     # setgid underwrap entry wrapper
-  -> /nix/store/.../bin/agent-gh-comment    # your narrow helper
+  -> agent-gh-comment <args>                # per-user shim on $PATH
+  -> /run/wrappers/bin/uw-<instance>        # setgid underwrap entry point
+       agent-gh-comment <args>
+  -> /nix/store/.../bin/agent-gh-comment    # your narrow helper (daemon-chosen target)
   -> /nix/store/.../bin/gh                  # real CLI
 ```
 
@@ -111,13 +113,13 @@ That helps reduce:
 
 ### 4. Wrapper identity is kernel-backed
 
-The daemon does not trust a caller-supplied wrapper name. Instead, the wrapper socket selects the expected wrapper and the peer's effective GID must match it.
+The caller cannot bypass the setgid step: only a process whose effective GID is the instance group can connect to the wrapper socket, and the only way to acquire that GID is to exec the setgid `uw-<instance>` binary. The daemon then validates the client-supplied wrapper name against its root-owned config and picks the target binary itself.
 
 That is important when multiple wrappers exist with different secrets and different intended targets.
 
 ### 5. Secrets can stay off the target host
 
-With the remote backend, you can keep the real secrets on your workstation and expose them to the target machine only through an SSH-tunneled backend socket.
+With the central backend, you can keep the real secrets on your workstation and expose them to the target machine only over authenticated mTLS-HTTPS — the wrapper sees the secret in memory for one invocation; the disk image of the target host never carries it.
 
 ## What underwrap does **not** solve for you
 

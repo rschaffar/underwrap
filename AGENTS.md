@@ -2,13 +2,14 @@
 
 ## Project overview
 
-underwrap is a secret brokerage system for NixOS. A daemon holds secrets and
+underwrap is a secret brokerage system. A daemon holds secrets and
 serves them to setgid wrapper binaries over Unix sockets. Targets run inside
 PID namespaces for process isolation. Rust workspace + Nix flake.
 
-**NixOS only.** The security model depends on `security.wrappers`, declarative
-user/group management, and file capabilities. The only non-NixOS component
-is `underwrap-backendd` (the remote backend daemon).
+**Target platform: NixOS.** The wrapper chain and daemon are deployed
+through a NixOS module that wires `security.wrappers`, declarative
+user/group management, and file capabilities. `underwrap-backendd` is
+deployable on any Linux host.
 
 ## Release posture
 

@@ -1,12 +1,10 @@
 # Example underwrap daemon configuration.
-# Copy to /etc/underwrap/config.yaml or point underwrapd --config at it.
-#
-# On NixOS, the module generates this automatically and forces the client
-# credential paths to a per-instance location under the instance state
-# dir (/var/lib/underwrap-<instance>/client-<instance>.{pem,key}). The
-# operator never wires those paths by hand. On other systems, write this
-# by hand and run `underwrap-keygen --instance-config <this file>` to
-# populate the credential paths below.
+# On NixOS the module generates this automatically at
+# /etc/underwrap/daemon/<instance>.yaml and pins the client credential
+# paths under the per-instance state dir
+# (/var/lib/underwrap-<instance>/client-<instance>.{pem,key}). Operators
+# do not wire those paths by hand. This file documents the shape the
+# daemon reads.
 
 backend:
   url: https://backend.example.internal:8443

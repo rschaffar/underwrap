@@ -1,9 +1,9 @@
 # Deploying the central backend
 
-underwrap splits its storage from its local enforcement. On any NixOS
-machine that runs wrappers, `underwrapd` brokers wrapper identity
-locally; it reads and writes secrets by talking to a central
-`underwrap-backendd` over HTTPS with mutual TLS.
+underwrap splits its storage from its local enforcement. On the target
+host, `underwrapd` brokers wrapper identity locally; it reads and writes
+secrets by talking to a central `underwrap-backendd` over HTTPS with
+mutual TLS.
 
 This page walks through a two-machine deployment:
 
@@ -70,17 +70,10 @@ https:
 admin:
 ```
 
-Provision the admin session key:
-
-```bash
-head -c 32 /dev/urandom > /run/keys/underwrap-admin-session-key
-chmod 0400 /run/keys/underwrap-admin-session-key
-```
-
 Start the daemon with whichever init system suits you. A minimal systemd
-unit is in the VM test
-(`nix/tests/node.nix`) — copy its `ProtectSystem`, `PrivateTmp`,
-`RestrictAddressFamilies`, and `NoNewPrivileges` flags.
+unit is in the VM test (`nix/tests/node.nix`) — copy its
+`ProtectSystem`, `PrivateTmp`, `RestrictAddressFamilies`, and
+`NoNewPrivileges` flags.
 
 ## Generating a client credential with `underwrap-keygen`
 
@@ -110,12 +103,13 @@ sudo underwrap-keygen \
 ```
 
 The helper writes the key file with mode `0400` and the cert file with
-`0440`, and chowns both to the `underwrap-<instance>` user/group when it
-can resolve them. Copy the PEM that lands on stdout into the admin UI's
-**Create client instance** form on the backend; the backend stores the
-SHA-256 fingerprint and authorises later mTLS connections by it.
+`0600`, and chowns both to the `underwrap-<instance>` user/group when it
+can resolve them.
+Copy the PEM that lands on stdout into the admin UI's **Create client
+instance** form on the backend; the backend stores the SHA-256
+fingerprint and authorises later mTLS connections by it.
 
-## Target host (NixOS)
+## Target host
 
 Configure `services.underwrap` to connect outbound to the backend:
 
@@ -129,11 +123,9 @@ services.underwrap = {
     backend = {
       url = "https://backend.example.internal:18443";
       caFile = "/etc/underwrap/ca.pem";
-      clientCertFile = "/etc/underwrap/client-work.pem";
-      clientKeyFile = "/etc/underwrap/client-work.key";
     };
 
-    wrappers.work-gh = {
+    wrappers.gh = {
       target = "${pkgs.gh}/bin/gh";
       resource = "github/token";
       env = true;
@@ -142,10 +134,13 @@ services.underwrap = {
 };
 ```
 
-The wrapper appears at `/run/wrappers/bin/work-gh`. Its GID maps to the
-`underwrap-work-work-gh` group the module generates; `underwrapd`
-derives the wrapper name from `SO_PEERCRED` + the `/proc/<pid>/status`
-effective GID.
+The module installs the single setgid entry point at
+`/run/wrappers/bin/uw-work`, group-owned by `underwrap-work`, and a
+per-user `gh` shim on each authorized user's `PATH`. The user invokes
+`gh` (or `uw-work gh`); `underwrapd` verifies the peer's effective GID
+against the instance group (race-free via `SO_PEERPIDFD`), validates the
+wrapper name against config, and forwards the invocation to the
+backend.
 
 Restart the frontend instance service:
 
@@ -173,32 +168,24 @@ The short way is now the admin UI in the browser:
 Permissions default to `Locked` when the backend auto-seeds them on
 register. Operators flip them centrally any time:
 
-- **`locked`** — deny everything. Use this for wrappers under
-  maintenance or compromise investigation; the operator-supplied
-  `reason` field is surfaced verbatim to the caller.
-- **`unlocked`** — allow every invocation through this permission.
-- **`unlocked-until { until_epoch }`** — allow until the given epoch
-  (unix seconds); the deadline is checked lazily on each request,
-  there is no background sweeper.
+- **`locked`** — deny everything. Use for wrappers under maintenance or
+  compromise investigation; the operator-supplied `reason` field is
+  surfaced verbatim to the caller.
+- **`unlocked`** — allow every `Real` invocation through this permission.
+- **`unlocked-until { until_epoch }`** — allow `Real` invocations until
+  the given epoch (unix seconds); the deadline is checked lazily on each
+  request, there is no background sweeper.
+- **`unsafe-debug-until { until_epoch }`** — allow both `Real` and
+  `Debug` invocations until the given epoch. `Debug` runs the debug tool
+  instead of the configured target and prints the projected secret
+  material to the operator's terminal. Every other mode denies `Debug`
+  with `not-unsafe-debug`.
 
-Per-invocation approval is intentionally not a feature of this
-product — use `sudo` or polkit in front of the wrapper for
-human-in-the-loop confirmation.
+Per-invocation approval is intentionally not a feature of this product —
+use `sudo` or polkit in front of the wrapper for human-in-the-loop
+confirmation.
 
 The wrapper-side behavior is identical across modes; only the backend
 policy changes. Read access through an active permission is
 unconditional; write access is decided per-permission via the
 `writable: bool` flag and re-checked on every finalize.
-
-## What this is not
-
-This page does **not** describe:
-
-- The retired SSH-forwarded Unix socket + `underwrap-backend-ctl export`
-  model.
-- The retired local `underwrapctl` control socket.
-- The retired local timed-unlock flow (`underwrap-exec --approve`
-  `--seconds`).
-
-Those shapes no longer exist in the codebase. Any reference in older
-commits or old configs will fail at startup today.

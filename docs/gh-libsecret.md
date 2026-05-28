@@ -22,10 +22,10 @@ underwrap provides a private Secret Service namespace for that workflow.
 
 ## What happens in libsecret mode
 
-When a wrapper uses a credential declared with:
+When a wrapper enables libsecret projection:
 
 ```nix
-mode = "libsecret";
+libsecret = true;
 ```
 
 underwrap:
@@ -73,14 +73,15 @@ Wrapper availability (`Locked` / `Unlocked` / `UnlockedUntil` /
 stays minimal. See [The underwrap backend](backend.md) and
 [Admin UI](admin-ui.md) for the modes and how to set them.
 
-## Access levels
+## Read vs write
 
-For a `libsecret` credential binding:
-
-- `access = "read-write"` allows Secret Service writes/deletes/updates
-- `access = "read-only"` allows reads only
-
-That means you can give `gh auth login` one wrapper and normal operational actions another wrapper, both sharing the same stored credentials.
+Write authority is **not** declared in the NixOS module. It is decided
+per `(client_instance, wrapper, resource)` permission in the backend
+policy via the per-row `writable` flag, re-checked on every finalize.
+That means you can give `gh-auth` a writable permission so `gh auth
+login` can store credentials, and give `gh-pr` a non-writable
+permission on the same `github/gh` resource — both wrappers see the
+same Secret Service contents, but only one can mutate it.
 
 ## Why this is cleaner than a bootstrap secret
 

@@ -70,7 +70,7 @@ It boots a NixOS VM with real underwrap services and then checks properties such
 - directory credential staging and sync
 - same-UID host-namespace inability to list mounted directory credential paths or read files from them
 - same-UID host-namespace inability to list private libsecret runtime mountpoints or reach private sockets
-- remote backend tunnel lifecycle
+- remote-style instance lifecycle (a second daemon talking to the backend over mTLS)
 - absence of secret values in logs
 
 That is much closer to the actual security story underwrap is trying to tell.
@@ -111,7 +111,7 @@ If your change touches any of these, the VM test should be considered mandatory:
 - users / groups / wrapper generation
 - socket locations or permissions
 - systemd services
-- remote tunnel layout
+- the daemon's outbound mTLS connection layout
 - anything related to the wrapper chain
 
 ## If you change security-sensitive wrapper behavior

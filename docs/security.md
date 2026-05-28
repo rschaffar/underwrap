@@ -196,19 +196,16 @@ target for a `Real` invocation, the debug tool for a `Debug`
 invocation, and only after the backend's policy has authorized that
 `(wrapper, resource, variant)`. The caller never names a target.
 
-This is a deliberate change from the earlier per-wrapper-group,
-per-socket design. There was never per-user access control on the
-wrapper binaries — they are world-executable; any local user could
-already invoke any wrapper. The per-wrapper group only disambiguated
-*which* socket a connection landed on in the multi-socket layout.
-Collapsing to one socket per instance leaves the trust boundary
-unchanged in strength, and these attacks remain ruled out:
+The wrapper binaries are world-executable; any local user can invoke
+any wrapper. Access control lives in the policy layer, not the
+filesystem. The kernel gate (instance group egid) plus the daemon's
+name validation plus per-instance backend permissions rule out:
 
 - connecting without the instance group egid (kernel rejects it at
   `connect()`),
 - selecting a wrapper the config does not declare (daemon rejects it),
 - running the debug tool without an active `UnsafeDebugUntil`
-  permission (the daemon picks the target, only after the backend
+  permission (the daemon picks the target only after the backend
   allows the `Debug` variant — a forged `variant = Real` cannot reach
   the debug tool),
 - forging identity via a symlink's `argv[0]` (the daemon never
@@ -316,11 +313,9 @@ audit record as one JSON line on stderr. The fallback is *not* gated
 by the suppression env var: the audit trail must exist somewhere, and
 losing it silently would be worse than the extra terminal noise.
 
-The change in attack surface is small: a malicious target inside the
-namespace could already attempt writes to its bound directory under
-the old design; the only difference is whether the kernel rejects
-with EROFS at the syscall layer or the backend rejects at the IPC
-layer with an audit trail.
+A malicious target inside the namespace can attempt writes against
+its bound directory regardless; the backend rejects unauthorized ones
+at the IPC layer and leaves an audit trail.
 
 ---
 
@@ -406,22 +401,13 @@ the daemon never consults it. Identity is the instance group egid
 (kernel-enforced); wrapper selection is the validated name argument
 (daemon-enforced).
 
-### Why one socket per instance?
+### Why the NixOS module is load-bearing
 
-The earlier design gave each wrapper its own group and socket. That
-bought nothing the policy layer doesn't already provide: the binaries
-were world-executable, so the per-wrapper group never gated *who* could
-invoke a wrapper, only *which socket* a connection used. One socket per
-instance is simpler, and the trust boundary is intact across three
-layers — kernel gate (instance egid), daemon gate (name validation +
-target authority), policy gate (per-instance permissions, re-evaluated
-server-side on every request).
-
-### Why this is NixOS-shaped
-
-The design leans on `security.wrappers` to install the setgid entry
-point correctly and consistently. That is one major reason the project
-is explicitly NixOS-first.
+The design relies on `security.wrappers` to install the setgid entry
+point with the correct ownership, mode, and capability environment.
+Doing the same on an ad-hoc system would mean reimplementing what the
+NixOS module already does correctly. That is why NixOS is the
+supported target platform.
 
 ---
 
@@ -948,12 +934,10 @@ mechanisms tighten it:
   a fixed dummy hash on unknown usernames close the enumeration /
   brute-force oracles.
 
-The CSR-signing model from earlier iterations has been removed: the
-backend no longer holds a private CA key, no `issuer_cert_file` /
-`issuer_key_file` / `client_ca_file` configuration is required, and the
-attack surface around CSR scrubbing is gone. Identity comes from
-fingerprint membership in the per-instance `clients/<id>.json`
-registry, full stop.
+The backend holds no CA private key. Runtime client identity is purely
+a SHA-256 fingerprint lookup against the per-instance
+`clients/<id>.json` registry — there is no enrollment CA, no CSR signing
+path, and no `client_ca_file` to manage.
 
 ---
 
@@ -961,12 +945,12 @@ registry, full stop.
 
 Each named instance gets isolated:
 
-- daemon user and group
-- wrapper groups
+- daemon user
+- instance group (one per instance — the kernel gate)
+- wrapper socket
 - runtime directory
 - state directory
-- service instance
-- optional tunnel user
+- systemd service unit
 
 The goal is to make separate instances structurally separate by default rather than relying only on policy checks inside one giant shared namespace.
 
@@ -1203,38 +1187,6 @@ the open and the finalize handler. Specifically:
 
 The daemon carries no policy state and never makes a security
 decision — it forwards calls and relays outcomes.
-
-### What's no longer in the model
-
-The pre-245 model carried a per-`(wrapper, resource, operation)`
-allow/deny ACL on top of the mode gate. That layer is gone. Once
-the permission's mode says "allow", the daemon serves whatever
-resources the wrapper's declaration lists — no per-resource filter.
-To revoke a runtime client's access to a resource, edit the wrapper
-definition or delete the permission.
-
-The earlier model also carried per-invocation SSH-agent approval
-(a `PerCallApproval { approval_key }` mode that demanded a fresh
-ssh-agent signature on every call). That feature is removed — the
-attack surface (an SSH agent in the path, signature verification on
-the daemon side, a forwarded nonce flow) was not justified by what
-it bought over `Locked` + admin-toggled `Unlocked` + sudo/polkit.
-
----
-
-## Dependency advisory note
-
-The project currently carries `RUSTSEC-2023-0071` through the `rsa` crate used by `ssh-key`.
-
-The relevant context is:
-
-- the advisory concerns RSA decryption timing behavior
-- underwrap uses the dependency chain for SSH signature verification during unlock flows
-- the daemon does not hold RSA private keys and does not perform RSA decryption
-
-So this is currently understood as a dependency-tree advisory rather than an exploitable path in the intended underwrap code path.
-
-That said, dependency advisories should not be waved away casually; they should be tracked and revisited.
 
 ---
 

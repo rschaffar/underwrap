@@ -7,11 +7,10 @@ surface in depth, see [The underwrap backend](backend.md).
 
 | Component | Role | Typical location |
 |---|---|---|
-| `underwrapd` | Frontend daemon on the target host | NixOS machine running wrappers |
-| `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/<instance>-<wrapper>` |
+| `underwrapd` | Frontend daemon on the target host | target machine running wrappers |
+| `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/uw-<instance>` |
 | `underwrap-ns` | Stage 2 wrapper: create namespace, exec target | `/run/wrappers/bin/underwrap-ns` |
-| `underwrap-backendd` | Central service: holds secrets + policy, authenticates `underwrapd` instances over mTLS | operator workstation or central server |
-| `underwrap-admin-ui` | Operator web UI in front of the backend admin API (Next.js server/BFF) | next to `underwrap-backendd` or on a jump host |
+| `underwrap-backendd` | Central service: holds secrets + policy, authenticates `underwrapd` instances over mTLS, serves the embedded admin SPA | operator workstation or central server |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
 
 The implementation deliberately splits process flow, authorization,
@@ -33,9 +32,9 @@ The wrapper chain is two binaries:
      the capability bounding set where the kernel permits it, and
      execs the final target
 
-The split exists because NixOS `security.wrappers` cannot cleanly carry
-both the setgid identity story and the capability-based namespace
-story on one binary.
+The split exists because the setgid identity story and the
+capability-based namespace story do not cleanly coexist on a single
+binary.
 
 ## Per-user PATH integration
 
@@ -94,11 +93,6 @@ Identity splits into a kernel gate and a daemon gate:
   for `Real`, debug tool for `Debug`), only after the backend authorizes
   the variant. A forged `variant = Real` cannot reach the debug tool,
   and `argv[0]` is never consulted.
-
-The per-wrapper-group, per-socket design was collapsed to one of each
-per instance; the trust boundary is unchanged because the binaries were
-always world-executable (the group never gated *who* could invoke a
-wrapper) and the policy layer remains the authorization authority.
 
 ## Central authorization model
 
@@ -246,7 +240,9 @@ web/                        Vite + React + shadcn admin SPA (embedded into
   endpoints; sync-callable from the wrapper-socket loop via a
   dedicated tokio worker thread
 - `startup.rs` — config validation, UID/GID resolution, socket binding
-- `peer_auth.rs` — `SO_PEERCRED` and effective-GID checks
+- `peer_auth.rs` — peer credential resolution (race-free via
+  `SO_PEERPIDFD` where available, with a `SO_PEERCRED` + `/proc`
+  fallback) and the effective-GID check against the instance group
 - `wrapper_flow/` — the wrapper request flow (peer auth → open
   invocation on the backend → relay `ReadOk` + scoped channel)
 - `wrapper_resource_channel.rs` — serves Checkout from the cached
@@ -283,8 +279,10 @@ The NixOS module generates and manages:
 - systemd services
 - runtime and state directories
 
-This is why underwrap is NixOS-first: the module is load-bearing for
-the identity model, not packaging sugar.
+The NixOS module is load-bearing for the identity model, not just
+packaging sugar — it provisions the privileged pieces (setgid binary,
+file capabilities, declarative user/group, systemd units) the wrapper
+chain depends on.
 
 ## Further reading
 

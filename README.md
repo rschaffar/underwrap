@@ -9,7 +9,7 @@ Run local CLI tools with secrets injected just in time — without handing those
 >
 > If you spot a weakness, questionable assumption, or misleading claim, feedback is very welcome.
 
-**NixOS only.** underwrap relies on NixOS features such as `security.wrappers`, declarative users and groups, file capabilities, and a NixOS module that generates the wrapper chain and daemon configuration. `underwrap-backendd` is the backend service for both local and remote deployments; in remote setups it can also run on other Linux machines.
+**Supported target: NixOS.** The wrapper chain and daemon are deployed through a NixOS module that wires `security.wrappers`, the instance user/group, sockets, services, and per-user shims. `underwrap-backendd` is the backend service for both local and remote deployments; in remote setups it runs on any Linux host.
 
 ## Why this exists
 
@@ -36,10 +36,10 @@ underwrap can inject the token only for that wrapper invocation, while the targe
 
 At a high level:
 
-1. a setgid wrapper connects to its dedicated wrapper socket
-2. the daemon selects the expected wrapper from that socket
-3. the daemon confirms the peer's effective GID matches that wrapper
-4. the daemon fetches or derives the secret
+1. a setgid wrapper connects to its instance's wrapper socket
+2. the daemon confirms the peer's effective GID matches the instance group
+3. the daemon validates the client-supplied wrapper name against config and chooses the target binary
+4. the daemon fetches the secret from the backend
 5. the wrapper drops privilege
 6. the target runs with the secret injected just for that invocation
 
@@ -97,7 +97,7 @@ Important boundaries:
 - If the target program itself can reveal the secret, underwrap cannot magically prevent that.
 - If the target resolves broad helper behavior that you did not review, underwrap does not sandbox that descendant behavior for you.
 - If the machine is compromised as `root`, the game is over.
-- The current design leans on Linux and NixOS behavior, especially Yama and the wrapper/capability setup.
+- The current design leans on Linux behavior, especially Yama and the NixOS `security.wrappers` + capability setup.
 
 A good short way to think about underwrap is:
 
@@ -121,7 +121,7 @@ See [Agent-facing wrappers](docs/agents.md).
 
 ## A quick example
 
-Imagine a NixOS machine where you want a Jira wrapper that injects `JIRA_API_TOKEN` only when `jira` runs.
+Imagine a machine where you want a Jira wrapper that injects `JIRA_API_TOKEN` only when `jira` runs.
 
 After configuration, the user experience looks like this:
 
@@ -163,7 +163,7 @@ underwrap is most useful when you want one of these patterns:
 
 underwrap is a good fit when:
 
-- you are on NixOS
+- you deploy on NixOS
 - you want to keep using existing CLIs instead of writing a broker service
 - you care about not spraying secrets into shell environments and dotfiles
 - you want a strong story for agent-facing wrappers
@@ -174,7 +174,6 @@ It is probably **not** the right tool when:
 - plain environment variables are already good enough
 - a static secret file is acceptable
 - you mostly need behavior restriction, not hardened secret delivery
-- you are not on NixOS
 
 For a short decision guide, see [Choosing underwrap](docs/comparison.md).
 
@@ -210,11 +209,10 @@ Then start with [Getting started](docs/getting-started.md).
 - [Security](docs/security.md)
 - [Testing](docs/testing.md)
 - [Choosing underwrap](docs/comparison.md)
-- [TODO](TODO.md)
 
 ## Status
 
-The implementation covers the core wrapper chain, multi-instance NixOS
+The implementation covers the core wrapper chain, multi-instance
 deployment, the central HTTPS backend with mTLS, the operator admin UI,
 libsecret mode, and directory credential mode.
 

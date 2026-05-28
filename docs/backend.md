@@ -291,72 +291,141 @@ bootstrap) carry neither; read-only protected endpoints carry only
 `session_cookie`; state-changing protected endpoints carry both.
 
 
-- `GET /v1/admin/client-instances` — list runtime client instances.
-- `POST /v1/admin/client-instances` — register a new runtime client
-  instance from an operator-pasted self-signed cert PEM. The backend
-  stores the leaf's SHA-256 fingerprint and never consults the cert's
-  subject, SAN, KU, EKU, or validity window — later mTLS connections
-  are authorized purely by fingerprint match.
-- `GET /v1/admin/client-instances/{id}`, `PUT`, `DELETE` — detail,
-  update (including replacing `cert_pem` to rotate the credential), and
-  delete.
-- `GET /v1/admin/stores` — list of backend-managed stores. Each item
-  carries a `locked: bool` field; encrypted stores boot locked after
-  every backend restart and stay locked until an admin unlocks them.
-- `POST /v1/admin/stores` — create a store. For
-  `backend = "encrypted"` the backend mints a fresh 32-byte master
-  key in memory, writes a small unlock canary into the data
-  directory (encrypted under that key), and returns the key value
-  **exactly once** in the response as `key_hex`. Subsequent reads
-  never include the key. The key never touches disk; operators are
-  solely responsible for storing it.
-- `GET /v1/admin/stores/{name}`, `PUT`, `DELETE` — store detail /
-  update / delete. Locked stores can only be deleted with
-  `?force=true` (the backend cannot inspect their contents to verify
-  emptiness while locked).
-- `POST /v1/admin/stores/{id}/unlock` — body `{key_hex}`. Decrypts
-  the unlock canary with the supplied key to verify it; on success
-  installs the backend in the registry's `Unlocked` state. Returns
-  `200 {ok: true}`. Failure cases:
-  - `400 invalid_key_hex` — value is not 64 hex characters.
-  - `400 store_not_encrypted` — store is plain; nothing to unlock.
-  - `403 key_mismatch` — key did not decrypt the canary; the
-    registry stays locked.
-  - `409 already_unlocked` — call is racing with another unlock.
-- `POST /v1/admin/stores/{id}/lock` — drops the in-memory backend so
-  subsequent runtime requests fail with `store_locked`. Idempotent:
-  re-locking an already-locked store is a noop success.
-- `POST /v1/admin/stores/{name}/rotate-key` — generate a fresh
-  master key for an encrypted store, decrypt every resource under
-  the current key and re-encrypt it under the new one, swap the
-  data directory atomically, and return the new key value **exactly
-  once**. Writes against the store are briefly serialized behind a
-  per-store rotation mutex; reads continue throughout. Refuses with
-  `503 store_locked` if the store is locked (rotation needs the
-  current key to read existing ciphertext) and `409 not_encrypted`
-  on plain stores.
-- direct access to a store's per-secret surface (read/write/delete by
-  resource id + slot + key). Admin writes are unconditional — there is
-  no global write toggle (see [No global write lock](#no-global-write-lock)).
-- `POST /v1/admin/policy/get` — fetch the entire `PolicyDocument`
-- `POST /v1/admin/policy/put` — replace the entire document
-- `POST /v1/admin/wrapper-permissions/list` — list every wrapper
-  permission in a store
-- `POST /v1/admin/wrapper-permissions/upsert` — create or update one
-  wrapper permission by `(client_instance, wrapper, resource)`
-- `POST /v1/admin/wrapper-permissions/delete` — remove a wrapper
-  permission by tuple
-- `POST /v1/admin/resources/{list,create,delete}` — manage the
-  Resource records that own provenance for resource names. `delete`
-  refuses with structured `blocked_by` counts when secrets, pairs, or
-  wrapper permissions still reference the resource.
-- `POST /v1/admin/pairs/{list,create,delete}` — manage the
-  Wrapper/Resource Pair records. `create` refuses if the referenced
-  resource doesn't exist or if `(wrapper, resource)` is already taken;
-  `delete` refuses when any wrapper permission references the pair.
+The full route table follows, grouped by resource and using the real
+HTTP verbs. `openapi.json` (and the handler annotations it is generated
+from) is the source of truth; this list is a human-readable index. Path
+parameters: `{id}`/`{sid}` is a store, `{rid}` a resource, `{cid}` a
+libsecret collection, `{iid}` a libsecret item.
 
-Every admin write is a full atomic replacement of the stored policy
-document or of one wrapper-permission entry.
+### Authentication and session
+
+- `GET  /v1/admin/auth/bootstrap/status` — *public*; reports whether the
+  first operator account still needs to be created.
+- `POST /v1/admin/auth/bootstrap` — *public*; creates the very first
+  operator account (only succeeds while the user collection is empty).
+- `POST /v1/admin/auth/login` — *public*; establishes the session cookie.
+- `POST /v1/admin/auth/logout` — end the current session.
+- `GET  /v1/admin/auth/whoami` — current principal.
+- `POST /v1/admin/auth/password` — self-service password change.
+
+### Users (operator login accounts)
+
+- `GET    /v1/admin/users` — list.
+- `POST   /v1/admin/users` — create.
+- `PUT    /v1/admin/users/{id}` — rename / update.
+- `DELETE /v1/admin/users/{id}` — delete (a "last user" guard keeps the
+  collection non-empty).
+- `POST   /v1/admin/users/{id}/password` — admin reset of another user's
+  password.
+
+### Runtime client instances
+
+- `GET    /v1/admin/client-instances` — list.
+- `POST   /v1/admin/client-instances` — register from an operator-pasted
+  self-signed cert PEM. The backend stores the leaf's SHA-256
+  fingerprint and never consults the cert's subject, SAN, KU, EKU, or
+  validity window — later mTLS connections are authorized purely by
+  fingerprint match.
+- `PUT    /v1/admin/client-instances/{id}` — update (including replacing
+  `cert_pem` to rotate the credential).
+- `DELETE /v1/admin/client-instances/{id}` — delete.
+
+### Stores
+
+- `GET    /v1/admin/stores` — list. Each item carries `locked: bool`;
+  encrypted stores boot locked after every restart and stay locked until
+  an admin unlocks them.
+- `POST   /v1/admin/stores` — create. For `backend = "encrypted"` the
+  backend mints a fresh 32-byte master key in memory, writes an
+  encrypted unlock canary, and returns the key value **exactly once** as
+  `key_hex`. The key never touches disk; operators are solely
+  responsible for storing it.
+- `PUT    /v1/admin/stores/{id}` — update.
+- `DELETE /v1/admin/stores/{id}` — delete. Locked stores require
+  `?force=true` (contents can't be verified empty while locked).
+- `POST   /v1/admin/stores/{id}/unlock` — body `{key_hex}`; decrypts the
+  canary to verify the key, then installs the `Unlocked` backend.
+  Failure cases: `400 invalid_key_hex`, `400 store_not_encrypted`,
+  `403 key_mismatch`, `409 already_unlocked`.
+- `POST   /v1/admin/stores/{id}/lock` — drop the in-memory backend so
+  subsequent runtime requests fail `store_locked`. Idempotent.
+- `POST   /v1/admin/stores/{id}/rotate-key` — re-encrypt every resource
+  under a fresh master key, swap the data directory atomically, and
+  return the new `key_hex` **exactly once**. Writes serialize behind a
+  per-store rotation mutex; reads continue throughout. `503 store_locked`
+  if locked, `409 not_encrypted` on plain stores.
+
+### Resources
+
+First-class `ResourceRecord`s that own name provenance.
+
+- `GET    /v1/admin/stores/{id}/resources` — list.
+- `POST   /v1/admin/stores/{id}/resources` — create.
+- `PUT    /v1/admin/stores/{id}/resources/{rid}` — update.
+- `DELETE /v1/admin/stores/{id}/resources/{rid}` — delete; refuses with
+  structured `blocked_by` counts when secrets, pairs, or wrapper
+  permissions still reference the resource.
+
+### Wrapper/Resource pairs
+
+- `GET    /v1/admin/stores/{id}/pairs` — list.
+- `POST   /v1/admin/stores/{id}/pairs` — create against an existing
+  resource; refuses if the resource doesn't exist or `(wrapper,
+  resource)` is already taken.
+- `POST   /v1/admin/stores/{id}/pairs/with-new-resource` — create a pair
+  and its resource in one atomic call.
+- `DELETE /v1/admin/stores/{id}/pairs/{wrapper}/{rid}` — delete; refuses
+  while any wrapper permission references the pair.
+
+### Secrets (per-slot entries inside a resource blob)
+
+Direct access to a store's per-secret surface, addressed by resource id
++ slot + key. Admin writes are unconditional — there is no global write
+toggle (see [No global write lock](#no-global-write-lock)).
+
+- `GET    /v1/admin/stores/{id}/secrets` — list entries (keys, never
+  values).
+- `GET    /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}` — read one
+  entry.
+- `PUT    /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}` — create or
+  overwrite one entry.
+- `DELETE /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}` — delete.
+- `POST   /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename` —
+  atomically rename one entry.
+
+### Libsecret slot (Secret Service data model)
+
+Scoped under `/v1/admin/stores/{sid}/resources/{rid}/libsecret`:
+
+- `GET    …/libsecret` — full collection/item tree for the slot.
+- `POST   …/libsecret/collections` — create a collection.
+- `DELETE …/libsecret/collections/{cid}` — delete a collection.
+- `POST   …/libsecret/collections/{cid}/items` — create an item.
+- `DELETE …/libsecret/collections/{cid}/items/{iid}` — delete an item.
+- `GET    …/libsecret/collections/{cid}/items/{iid}/secret` — reveal one
+  item's secret value.
+- `PUT    …/libsecret/aliases/{name}` / `DELETE …/libsecret/aliases/{name}`
+  — set or clear a collection alias (e.g. `default`).
+
+### Wrapper permissions (the policy surface)
+
+- `GET    /v1/admin/stores/{id}/wrapper-permissions` — list every
+  permission row in the store.
+- `PUT    /v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}`
+  — create or update one permission by
+  `(client_instance, wrapper, resource)` tuple.
+- `DELETE /v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}`
+  — remove one permission by tuple.
+
+### Denormalized views (SPA convenience reads)
+
+- `GET /v1/admin/stores/{id}/secrets-view` — secrets joined with their
+  resource/pair provenance.
+- `GET /v1/admin/stores/{id}/wrapper-permissions-view` — permissions
+  joined with resolved wrapper / resource / client-instance names.
+
+Every admin write is an atomic replacement of the affected document or of
+the single addressed entry.
 
 ## Policy model
 
@@ -552,9 +621,9 @@ ns aborts the invocation if any blob key has no matching mount.
 
 `PlainBackend` stores the blob as one file per resource;
 `EncryptedBackend` AEAD-encrypts the blob as one ciphertext with one
-nonce per resource. Operator-facing admin endpoints
-(`/v1/admin/secret/{read,write,list,delete}`) keep the
-`<resource>/<slot>/<inner>` address space but route through the blob
+nonce per resource. The operator-facing per-secret admin endpoints
+(`/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}`) keep the
+`<resource>/<slot>/<key>` address space but route through the blob
 via a load-modify-save shim. **No runtime endpoint accepts a storage
 key on the wire.**
 
@@ -564,12 +633,3 @@ principal's behalf. The flag defaults off; an admin must flip it on
 per instance before its wrappers can register new resources or pairs
 on startup.
 
-## What this replaces
-
-The earlier design (SSH-forwarded Unix socket between `underwrapd` and
-`underwrap-backendd`, local control socket, `underwrapctl`,
-`underwrap-backendctl`, local timed-unlock flow) is gone. The codebase
-supports exactly one shape — a single central HTTPS listener with
-runtime client certificates for data and session-cookie auth for
-administration. Documentation that
-describes those retired components is historical only.

@@ -10,7 +10,7 @@ If that is your problem, underwrap may be a good fit. If it is not, simpler tool
 
 underwrap is a strong candidate when most of these are true:
 
-- you are on **NixOS**
+- you deploy on **NixOS**
 - you want to keep using existing CLIs such as `jira`, `gh`, or `gws`
 - you care about not exporting secrets broadly into shell sessions
 - you want a cleaner story for **agent-facing wrappers**
@@ -23,7 +23,6 @@ underwrap is probably the wrong tool when:
 - a normal environment variable is already good enough
 - a plain secret file is acceptable
 - you mostly need to restrict behavior, not improve secret delivery
-- you are not on NixOS
 - you would be better served by a small purpose-built broker service
 
 A particularly important case is this:
@@ -62,7 +61,7 @@ underwrap is different because it is centered on **wrappers and target processes
 
 Those are broader systems with stronger central-management stories.
 
-underwrap is much narrower: local CLI workflows, NixOS deployment, and process-oriented secret delivery. Sometimes that narrowness is a feature.
+underwrap is much narrower: local CLI workflows and process-oriented secret delivery. Sometimes that narrowness is a feature.
 
 ## The most opinionated reason to use underwrap
 
@@ -80,7 +79,7 @@ See [Agent-facing wrappers](agents.md).
 
 underwrap gives you a more deliberate secret-delivery path, but it also asks more of you:
 
-- NixOS-specific deployment
+- deployment via the NixOS module
 - wrapper design discipline
 - a willingness to understand at least some of the security model
 

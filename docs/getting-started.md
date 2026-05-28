@@ -4,7 +4,7 @@ This guide walks through the simplest useful underwrap setup:
 
 - a central `underwrap-backendd` (here on the same machine, for
   simplicity — the same steps work when it lives on a separate host),
-- one NixOS instance with one wrapper,
+- one frontend instance with one wrapper,
 - one static secret,
 - one familiar CLI: [`jira-cli`](https://github.com/ankitpokhrel/jira-cli).
 
@@ -35,7 +35,7 @@ fetched from the backend the operator configured.
 
 ## Prerequisites
 
-- NixOS with a flake-based system configuration.
+- A flake-based NixOS system configuration on the target host.
 - The underwrap flake added as an input:
 
   ```nix
@@ -70,11 +70,9 @@ admin:
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-Provision the admin session key and start the daemon:
+Start the daemon:
 
 ```bash
-head -c 32 /dev/urandom > /run/keys/underwrap-admin-session-key
-chmod 0400 /run/keys/underwrap-admin-session-key
 underwrap-backendd --config /etc/underwrap-backend/config.yaml
 ```
 
