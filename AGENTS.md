@@ -117,7 +117,7 @@ prefixes.
   API + the three runtime handlers (`/v1/wrappers`,
   `/v1/wrapper-invocations`, `/v1/wrapper-invocations/finalize`) +
   sole policy authority
-- `crates/backend-backendd/src/auth.rs` — Argon2id password hashing + AEAD session cookies
+- `crates/backend-backendd/src/auth.rs` — Argon2id password hashing + opaque session cookies (tower-sessions `MemoryStore` — sessions do not survive a restart)
 - `crates/backend-backendd/src/web.rs` — embedded SPA hosting via `rust-embed`
 - `crates/backend-backendd/src/users.rs` — flat user records (admin login accounts). Authorization is flat: any authenticated user can perform any admin action; a "last user" guard keeps the collection non-empty. There are no roles or per-store grants.
 - `crates/shared-protocol/src/policy.rs` — `PolicyDocument`, `WrapperPermission`, `WrapperApprovalMode`
@@ -161,9 +161,11 @@ prefixes.
   [debug] <wrapper>`), not argv[0]; the kernel identity is the instance
   group egid, read race-free via `SO_PEERPIDFD`.
 - Never skip return value checks on privilege-drop syscalls
-- Never store secret material in local files outside the StorageBackend — no JSON
-  files, no sidecar databases, no caches. ALL secret values flow through the
-  daemon's StorageBackend (see `docs/security.md` "Design invariants")
+- Never persist secret material outside the central backend's `StorageBackend`
+  — no JSON files, sidecar databases, or on-disk caches in the daemon, wrapper,
+  or namespace. The daemon caches the backend's opaque blob bytes in process
+  memory for the lifetime of the wrapper channel; nothing else stays on disk
+  (see `docs/security.md` "Design invariants")
 - Never pass the secretsd channel fd (fd 4) to the target process — close it
   before exec'ing the target
 - Never remove security test assertions to make tests pass — find and fix the
@@ -208,7 +210,7 @@ on backward compatibility concerns.
 - VM test: `nix build .#checks.x86_64-linux.vm-test` — boots a real NixOS VM, tests
   local and remote-style instances against real `underwrap-backendd` processes,
   unprivileged user, spoofing resistance, PID namespace isolation, memory
-  protection, core dump prevention, grant-driven wrapper locking
+  protection, core dump prevention, permission-driven wrapper locking
 
 ### Test file layout (Rust crates)
 
@@ -297,8 +299,9 @@ trust-boundary reason for the asymmetry.
 `underwrap-backendd` over HTTPS with mTLS. The backend holds secrets, the
 policy document, the user collection, and the admin SPA. Users interact
 with the backend over its HTTPS admin listener with session-cookie auth
-(Argon2id passwords + AEAD session cookies + synchronizer-token CSRF, via
-an HttpOnly `X-CSRF-Token` captured from admin responses and replayed).
+(Argon2id passwords + opaque tower-sessions cookies backed by `MemoryStore`
++ synchronizer-token CSRF, via an HttpOnly `X-CSRF-Token` captured from
+admin responses and replayed). Sessions do not survive a backend restart.
 Authorization is flat — every authenticated user has full admin access;
 there are no roles or per-store grants. The SPA bundle ships embedded
 inside the backend binary and is served from the same listener as the

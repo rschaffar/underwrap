@@ -143,7 +143,7 @@ wrapper or target state; an ancestor process (the caller) can."
 
 These invariants are the backbone of the current design. New features should not quietly violate them.
 
-### 1. All secret material flows through `StorageBackend`
+### 1. All secret material flows through the central backend's `StorageBackend`
 
 Every byte of secret material — whether it is:
 
@@ -153,13 +153,18 @@ Every byte of secret material — whether it is:
 - directory-credential file contents
 - derived access-token source material
 
-must be read from or written to the daemon's `StorageBackend` path.
+is persisted only in `underwrap-backendd`'s `StorageBackend` (`PlainBackend`
+or `EncryptedBackend`). The daemon, the wrapper chain, and the namespace
+never write secret material to disk: the daemon caches the backend's
+opaque resource blob in process memory for the lifetime of the wrapper
+channel, the wrapper hands the blob bytes through fd 3 / `SCM_RIGHTS` to
+the namespace, and writebacks travel back to the backend over mTLS.
 
 That means:
 
 - no ad-hoc JSON files containing secret values
 - no temp files holding secret values
-- no sidecar caches holding secret values
+- no sidecar caches on the target host
 - no alternate persistence path that bypasses backend policy
 
 Why this matters:
@@ -168,7 +173,8 @@ Why this matters:
 - the backend is where remote-storage behavior lives
 - the backend is where the storage model stays auditable and conceptually centralized
 
-A feature that bypasses `StorageBackend` is not a convenience shortcut; it changes the security model.
+A feature that bypasses the backend's `StorageBackend` is not a convenience
+shortcut; it changes the security model.
 
 ### 2. The kernel gates access; the daemon gates which wrapper
 
