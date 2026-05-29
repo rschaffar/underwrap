@@ -166,7 +166,7 @@ prefixes.
   or namespace. The daemon caches the backend's opaque blob bytes in process
   memory for the lifetime of the wrapper channel; nothing else stays on disk
   (see `docs/security.md` "Design invariants")
-- Never pass the secretsd channel fd (fd 4) to the target process — close it
+- Never pass the wrapper-resource channel fd (fd 20) to the target process — close it
   before exec'ing the target
 - Never remove security test assertions to make tests pass — find and fix the
   root cause instead
@@ -188,8 +188,11 @@ prefixes.
 - Run the VM test for NixOS module changes: `nix build .#checks.x86_64-linux.vm-test`
 - When synchronizing with dbus-daemon, use `--print-address=<fd>` and read from
   the pipe (NOT socket file polling — the file appears before accept is ready)
-- Target process /proc protection depends on Yama LSM (ptrace_scope=1, NixOS
-  default). If ptrace_scope=0, env-mode secrets are exposed. See security.md.
+- Target process /proc protection depends on Yama LSM. Under
+  `hardenTargetHost = true` the NixOS module pins
+  `kernel.yama.ptrace_scope = 2` (`mkDefault`). Lowering it to 1 or 0
+  weakens the same-UID protection claim; at 0, env-mode secrets are
+  exposed to any same-UID process. See security.md.
 
 ### Ask first
 
@@ -350,7 +353,7 @@ PID + mount namespace (created by underwrap-ns)
 ┌─────────────────────────────────────────────────────┐
 │  dbus-daemon (private session bus)                  │
 │  underwrap-secretsd (org.freedesktop.secrets)       │
-│    └── reads/writes via daemon channel (fd 4)        │
+│    └── reads/writes via daemon channel (fd 20)       │
 │  target (e.g. gh)                                   │
 │    └── DBUS_SESSION_BUS_ADDRESS → private bus        │
 └─────────────────────────────────────────────────────┘
@@ -364,10 +367,10 @@ PID + mount namespace (created by underwrap-ns)
 5. secretsd claims `org.freedesktop.secrets` on the private bus
 6. Target sees `DBUS_SESSION_BUS_ADDRESS` pointing to private bus
 7. All libsecret read/write: secretsd → daemon channel → daemon's central backend
-8. fd 4 (channel) is CLOSED before exec'ing the target
+8. fd 20 (channel) is CLOSED before exec'ing the target
 9. On namespace exit: kernel SIGKILL kills dbus-daemon + secretsd
 
-See `docs/security.md` "Design invariants" and "Secretsd channel" for security analysis.
+See `docs/security.md` "Design invariants" and "Libsecret mode" for security analysis.
 
 ## Resource storage and writeback model
 

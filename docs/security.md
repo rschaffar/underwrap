@@ -581,14 +581,19 @@ Those privilege-affecting exec transitions matter for ptrace
 eligibility and help prevent straightforward tracing from the
 original ancestor process even when scope is lowered.
 
-`underwrap-ns` also carries `cap_setpcap` and prunes the capability
-bounding set before the target execs. It sets `PR_SET_NO_NEW_PRIVS=1`
-before the final target exec so the target and its descendants cannot
-gain privilege later through setuid/setgid binaries or file
-capabilities. The target should therefore run with zero effective,
-permitted, inheritable, and ambient capabilities and cannot acquire
-new ones on later execs even if the kernel refuses bounding-set
-pruning.
+Before exec'ing the target, `underwrap-ns` sets `PR_SET_NO_NEW_PRIVS=1`,
+clears the ambient capability set, attempts to prune the capability
+bounding set, and uses `capset` to zero the permitted, effective, and
+inheritable sets. The bounding-set prune is best-effort: the NixOS
+module lists `cap_setpcap` on the wrapper binary, but `nixpkgs`
+`security.wrappers` deliberately strips `CAP_SETPCAP` from the ambient
+set it grants the wrapped binary, so `underwrap-ns` runs without it and
+`PR_CAPBSET_DROP` returns `EPERM`. That is intentional — the bounding
+set is not the security boundary. The boundary is the `capset` call
+that clears permitted/effective/inheritable to empty plus
+`PR_SET_NO_NEW_PRIVS`, which together mean the target launches with no
+capabilities and cannot regain any across later execs even if the
+bounding set is still populated.
 
 #### 3. Caller-controlled environment is cleared
 

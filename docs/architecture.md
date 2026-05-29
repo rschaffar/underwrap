@@ -27,10 +27,12 @@ The wrapper chain is two binaries:
    authenticates against `underwrapd` via the instance-group egid, and
    receives secret material plus the daemon-chosen target.
 2. **`underwrap-ns`**
-   - installed with `cap_sys_admin` and `cap_setpcap`
-   - creates the PID/mount namespace, sets `PR_SET_NO_NEW_PRIVS`, prunes
-     the capability bounding set where the kernel permits it, and
-     execs the final target
+   - installed with `cap_sys_admin` (the module also lists `cap_setpcap`
+     on the binary, but `nixpkgs` `security.wrappers` strips it from
+     the ambient set at exec — see `docs/security.md`)
+   - creates the PID/mount namespace, sets `PR_SET_NO_NEW_PRIVS`, clears
+     the permitted/effective/inheritable cap sets via `capset`, attempts
+     bounding-set pruning best-effort, and execs the final target
 
 The split exists because the setgid identity story and the
 capability-based namespace story do not cleanly coexist on a single
