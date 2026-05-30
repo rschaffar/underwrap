@@ -37,14 +37,15 @@ let
   mkInstance = instName: inst: let
     daemonUser = "underwrap-${instName}";
     # The daemon's primary group doubles as the wrapper gate group: the
-    # socket (mode 0660) is group-owned by it, the daemon (member by primary
-    # group) can chown it, and authorized users acquire it transiently via
-    # setgid on `uw-<instance>`. frontend-exec derives the instance name by
-    # stripping the `underwrap-` prefix from its effective GID group, so this
-    # name is load-bearing — it must stay `underwrap-<instance>`.
+    # socket (mode 0660) inherits this group from the daemon's egid at bind
+    # time (the daemon does not chown — startup.rs verifies the kernel-
+    # assigned gid instead), and authorized users acquire it transiently
+    # via setgid on `uw-<instance>`. frontend-exec derives the instance
+    # name by stripping the `underwrap-` prefix from its effective GID
+    # group, so this name is load-bearing — it must stay
+    # `underwrap-<instance>`.
     daemonGroup = "underwrap-${instName}";
     instanceGroup = daemonGroup;
-    tunnelUser = "underwrap-${instName}-tunnel";
     instanceBinaryName = "uw-${instName}";
     socketPath = "${runDir}/wrapper.sock";
     runDir = "/run/underwrap-${instName}";
@@ -113,13 +114,6 @@ let
         group = daemonGroup;
         home = stateDir;
         description = "underwrap daemon (${instName})";
-      };
-      "${tunnelUser}" = {
-        isSystemUser = true;
-        group = daemonGroup;
-        home = "/var/lib/${tunnelUser}";
-        createHome = true;
-        description = "underwrap tunnel (${instName})";
       };
     };
 

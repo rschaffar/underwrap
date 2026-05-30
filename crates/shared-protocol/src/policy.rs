@@ -8,8 +8,9 @@
 //!
 //! Each permission carries:
 //!
-//! - a [`WrapperApprovalMode`] (`Locked`, `Unlocked`, `UnlockedUntil`)
-//!   deciding *if* the permission is usable right now;
+//! - a [`WrapperApprovalMode`] (`Locked`, `Unlocked`, `UnlockedUntil`,
+//!   `UnsafeDebugUntil`) deciding *if* the permission is usable right
+//!   now;
 //! - a `writable` flag controlling wrapper-side writes through the
 //!   secretsd channel for the `files` and `libsecret` slots (`env`
 //!   has no write path);
