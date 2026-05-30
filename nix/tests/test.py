@@ -1095,13 +1095,22 @@ def local_libsecret_mode():
     # Find ALL files on the system containing the secret, outside the backend.
     # Exclude: backend dir (correct storage), /nix/ (test script literals),
     # /proc, /sys, /dev.
+    #
+    # These are real `-prune`s, not `-not -path` filters: pruning stops find
+    # from descending into the tree at all. The Nix store in particular holds
+    # the vast majority of inodes on the VM disk, and `-not -path '/nix/*'`
+    # would still stat every one of them (only the grep -exec was skipped),
+    # which made this single assertion take many minutes. Pruning makes the
+    # leak scan dramatically faster and lower-I/O without changing what it
+    # asserts.
     leak_files = machine.succeed(
-        "find / -type f "
+        "find / "
+        "-path '/nix' -prune -o "
+        "-path '/proc' -prune -o "
+        "-path '/sys' -prune -o "
+        "-path '/dev' -prune -o "
+        "-type f "
         "-not -path '/var/lib/underwrap-backend-local/secrets/*' "
-        "-not -path '/proc/*' "
-        "-not -path '/sys/*' "
-        "-not -path '/nix/*' "
-        "-not -path '/dev/*' "
         "-exec grep -l 'my_gh_token_value' {} + 2>/dev/null || echo NONE"
     ).strip()
     machine.log(f"SECRET LEAK CHECK: files containing secret outside backend: {leak_files}")
@@ -2120,7 +2129,16 @@ def local_debug_subcommand():
     machine.log("PASS: daemon records variant per invocation (target authority is server-side)")
 
     # ---- 5. Expiry -----------------------------------------------------
-    past = int(time.time()) - 1
+    # The margin must comfortably exceed both whole-second truncation and any
+    # host/VM clock skew. `policy::decide` compares `now.as_secs() > until_epoch`
+    # and `until_epoch` is itself a whole second, so a deadline only ~1s in the
+    # past collapses to zero effective margin: if the debug request lands in the
+    # same integer second as `int(time.time()) - 1`, `decide` reads the
+    # permission as not-yet-expired and (wrongly, for the test's intent) allows
+    # the Debug variant. That is the non-deterministic "debug allowed when it
+    # should be denied" flake investigated in ticket 1610 — a too-tight fixture
+    # boundary, not a policy bug. Two minutes is far outside any plausible skew.
+    past = int(time.time()) - 120
     admin_upsert_grant(
         ADMIN_LOCAL,
         "local",
