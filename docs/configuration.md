@@ -61,7 +61,7 @@ provisions a per-instance state directory and expects the credential at:
 Populate it once with:
 
 ```bash
-sudo underwrap-keygen --instance-config /etc/underwrap/instances/<instance>.yaml
+sudo underwrap-keygen --instance-config /etc/underwrap/daemon/<instance>.yaml
 ```
 
 then paste the printed cert PEM into the admin UI on the backend.

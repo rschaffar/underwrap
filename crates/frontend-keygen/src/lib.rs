@@ -20,11 +20,13 @@ pub struct Cli {
     /// Required unless `--instance-config` is given.
     #[arg(long, conflicts_with = "instance_config")]
     pub client_key_out: Option<PathBuf>,
-    /// Path to an underwrapd instance config (typically
-    /// `/etc/underwrap/instances/<instance>.yaml`). When given, the
-    /// helper reads `backend.client_cert_file` and
-    /// `backend.client_key_file` from that file and refuses any
-    /// duplicate explicit `--client-cert-out` / `--client-key-out`.
+    /// Path to an underwrapd daemon config (typically
+    /// `/etc/underwrap/daemon/<instance>.yaml` — the file that carries
+    /// the `backend` section, not the `/etc/underwrap/instances/`
+    /// frontend-exec sidecar). When given, the helper reads
+    /// `backend.client_cert_file` and `backend.client_key_file` from
+    /// that file and refuses any duplicate explicit
+    /// `--client-cert-out` / `--client-key-out`.
     #[arg(long)]
     pub instance_config: Option<PathBuf>,
 }
@@ -82,7 +84,7 @@ impl Cli {
                 )
             })?;
             // The instance name is the config file's stem
-            // (`/etc/underwrap/instances/work.yaml` → `work`). The
+            // (`/etc/underwrap/daemon/work.yaml` → `work`). The
             // NixOS module names the daemon user `underwrap-<instance>`
             // by the same convention, so this preserves chown without
             // needing a redundant field inside the config.

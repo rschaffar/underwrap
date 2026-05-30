@@ -68,7 +68,13 @@ https:
     key_file: /etc/underwrap-backend/server.key
 
 admin:
+  stores_data_root: /var/lib/underwrap-backend/data
 ```
+
+The `admin:` block must be present (even if otherwise empty) for the
+admin API and embedded SPA to be mounted — with no `admin:` key the
+backend serves only the mTLS runtime API. `stores_data_root` is required
+for the "create store" admin action used below.
 
 Start the daemon with whichever init system suits you. A minimal systemd
 unit is in the VM test (`nix/tests/node.nix`) — copy its
@@ -83,14 +89,15 @@ self-signed certificate to disk under the daemon user, and prints the
 certificate PEM to stdout. The operator pastes that PEM into the admin
 UI on the backend to register the runtime client instance.
 
-On NixOS, the `services.underwrap` module symlinks each instance's
-generated config to `/etc/underwrap/instances/<instance>.yaml`. Point
-`underwrap-keygen` at it and the helper reads the client cert/key
-output paths plus the daemon user from that file:
+On NixOS, the `services.underwrap` module writes each instance's daemon
+config to `/etc/underwrap/daemon/<instance>.yaml` — the file that carries
+the `backend` section with the client cert/key paths. Point
+`underwrap-keygen` at it and the helper reads those output paths plus the
+daemon user from that file:
 
 ```bash
 sudo underwrap-keygen \
-  --instance-config /etc/underwrap/instances/work.yaml
+  --instance-config /etc/underwrap/daemon/work.yaml
 ```
 
 Off NixOS (or if you want to override the paths), pass the targets

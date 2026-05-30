@@ -133,7 +133,7 @@ the daemon comes up in "unenrolled" mode and prints an enrollment URL on
 every wrapper invocation. Generate the credential and register it once:
 
 ```bash
-sudo underwrap-keygen --instance-config /etc/underwrap/instances/work.yaml
+sudo underwrap-keygen --instance-config /etc/underwrap/daemon/work.yaml
 ```
 
 The helper writes `/var/lib/underwrap-work/client-work.pem` and
@@ -229,8 +229,8 @@ Check:
 systemctl status underwrap-backendd.service
 openssl s_client -connect 127.0.0.1:18443 \
   -CAfile /etc/underwrap/ca.pem \
-  -cert   /etc/underwrap/client-work.pem \
-  -key    /etc/underwrap/client-work.key
+  -cert   /var/lib/underwrap-work/client-work.pem \
+  -key    /var/lib/underwrap-work/client-work.key
 ```
 
 ### The wrapper runs but Jira still fails to authenticate

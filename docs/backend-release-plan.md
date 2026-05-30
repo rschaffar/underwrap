@@ -8,7 +8,11 @@
 > (policy model + invariants), and [`docs/architecture.md`](architecture.md)
 > (component layout). In particular: there is no `PerCallApproval` mode
 > any more, the runtime wire does not carry `secret_id`, and policy
-> evaluation is server-side only.
+> evaluation is server-side only. Two "frozen decisions" below were also
+> superseded: admin auth is **not** bearer tokens (`admin.tokens`) but
+> Argon2id passwords + opaque `tower-sessions` cookies + CSRF, and the
+> admin UI is **not** a separate Next.js `apps/admin-ui` service but a
+> Vite/React SPA in `web/` embedded into and served by `underwrap-backendd`.
 
 This is the consolidated plan for getting underwrap to a coherent first release
 around the **central backend** architecture. It supersedes the three

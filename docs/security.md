@@ -98,7 +98,8 @@ The guarantee below applies when all of the following hold:
     cause it to write the token anywhere the caller can read.
 - The mTLS client cert and key are mode `0600` or tighter, owned by
   the daemon user, in a `0700`-or-tighter directory. This is not left
-  to operator discipline: `underwrap-keygen` writes them `0600`, and
+  to operator discipline: `underwrap-keygen` writes the key `0400` and
+  the cert `0600`, and
   the daemon refuses to start if a present credential is over-permissive
   or wrongly owned (see "Target-host daemon hardening").
 
@@ -902,7 +903,7 @@ mechanisms tighten it:
   egid check, and that peer runs as a different user, so
   `ProtectProc=invisible` would break authentication.
 - **Credential mode check at startup.** `underwrap-keygen` writes the
-  cert and key `0600`. The daemon `stat`s them on boot and refuses to
+  key `0400` and the cert `0600`. The daemon `stat`s them on boot and refuses to
   start if either is wider than `0600`, owned by another uid, or sits in
   a directory wider than `0700`. A key-leak misconfiguration fails loud
   rather than relying on operator discipline.
