@@ -98,20 +98,17 @@ not duplicated inside the body. Each file is a `StoreRecord` carrying
 the operator-facing `name`, optional `description`, optional
 `created_at`, and the storage backend itself.
 
-Example dynamic store record:
+Example dynamic store record at `stores/store_scratch.json` — one file
+per store, no wrapper array, and no `id` inside the body (the id is the
+file stem):
 
 ```json
 {
-  "stores": [
-    {
-      "id": "store_scratch",
-      "name": "scratch",
-      "description": "Ad-hoc operator scratchpad.",
-      "created_at": 1729123456,
-      "backend": "plain",
-      "dir": "/var/lib/underwrap-backend/data/store_a1b2c3d4e5f6"
-    }
-  ]
+  "name": "scratch",
+  "description": "Ad-hoc operator scratchpad.",
+  "created_at": 1729123456,
+  "backend": "plain",
+  "dir": "/var/lib/underwrap-backend/data/store_a1b2c3d4e5f6"
 }
 ```
 
@@ -442,22 +439,30 @@ decides whether the runtime client may use it *right now*:
 permissions:
   - client_instance: dev-laptop
     wrapper: gh-authorized
-    resource: github/token
+    resource_id: res_a1b2c3d4e5f6
     mode:
       kind: unlocked
+    writable: false
   - client_instance: dev-laptop
     wrapper: aws-prod
-    resource: aws/prod
+    resource_id: res_aaa222bbb333
     mode:
       kind: locked
+    writable: false
     reason: "ops approval required"
   - client_instance: ci
     wrapper: jira-readonly
-    resource: jira/api
+    resource_id: res_ccc444ddd555
     mode:
       kind: unlocked-until
       until_epoch: 1745092800
+    writable: false
 ```
+
+`resource_id` is the stable `res_<hex>` from the resources document, not the
+operator-facing name; renaming a resource therefore does not invalidate any
+permission. The tuple `(client_instance, wrapper, resource_id)` is the
+unique key.
 
 Four modes:
 
@@ -490,9 +495,10 @@ human-in-the-loop confirmation, layer it at the OS level (sudo,
 polkit) in front of the wrapper.
 
 There is **no per-secret read filter**. Once the mode allows the
-invocation, the daemon hands the wrapper every resource the wrapper's
-declaration lists. To remove a runtime client's access to a resource,
-edit the wrapper definition, not the policy.
+invocation, the daemon hands the wrapper the resource the wrapper
+declares (one per wrapper). To remove a runtime client's access to a
+resource, either change the wrapper's `resource` to point elsewhere
+or delete the permission.
 
 Write authorization is decided per-permission via the `writable: bool`
 flag and re-checked by the backend on every finalize. Read access
@@ -500,10 +506,10 @@ through an active permission is unconditional.
 
 ### No global write lock
 
-There is no per-store write toggle. The earlier `writes_enabled` kill
-switch was removed. Admin secret edits are unconditional for an
-authenticated admin; wrapper-side writes are gated solely by the
-per-permission `writable` flag, re-checked on every finalize.
+There is no per-store write toggle. Admin secret edits are
+unconditional for an authenticated admin; wrapper-side writes are gated
+solely by the per-permission `writable` flag, re-checked on every
+finalize.
 
 ### Evaluation order (backend, on both open and finalize)
 
@@ -514,12 +520,15 @@ per-permission `writable` flag, re-checked on every finalize.
 3. Look up the wrapper permission for
    `(authenticated principal, wrapper_name, resource_id)`. No
    permission → deny `no-permission`.
-4. Consult the permission's mode:
+4. Consult the permission's mode + the request's `variant` via the
+   shared `policy::decide` matrix:
    - `locked` → deny with the operator-supplied `reason`, or
-     `"locked"` if none was set.
-   - `unlocked` → allow.
-   - `unlocked-until { until_epoch }` → allow if
-     `now <= until_epoch`, else deny `expired`.
+     `"locked"` if none was set (both variants).
+   - `unlocked` → allow `real`, deny `debug` with `not-unsafe-debug`.
+   - `unlocked-until { until_epoch }` not expired → allow `real`,
+     deny `debug` with `not-unsafe-debug`; expired → deny `expired`.
+   - `unsafe-debug-until { until_epoch }` not expired → allow both
+     `real` and `debug`; expired → deny `expired`.
 5. On finalize with a writeback blob, additionally:
    - deny `not-writable` if the permission's `writable` flag is
      false (independent of the open's allow);
@@ -539,22 +548,22 @@ carries write-once provenance:
 
 ```yaml
 # __underwrap/resources/document
-version: 1
 resources:
-  - name: github/token
+  - id: res_a1b2c3d4e5f6
+    name: github/token
     created_by: { kind: operator, id: op-1, username: alice }
     created_at: 1735689600
-  - name: gws/state
+  - id: res_0123456789ab
+    name: gws/state
     created_by: { kind: client-instance, id: inst_dev_laptop }
     created_at: 1735690500
 ```
 
 ```yaml
 # __underwrap/pairs/document
-version: 1
 pairs:
   - wrapper: gh-authorized
-    resource: github/token
+    resource_id: res_a1b2c3d4e5f6
     created_by: { kind: client-instance, id: inst_dev_laptop }
     created_at: 1735690500
     last_used_at: 1735770100

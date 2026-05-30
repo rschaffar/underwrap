@@ -285,11 +285,11 @@ who need to change an env binding go through the admin API.
 ### 8. The backend is the sole write-authorization authority
 
 The namespace-side tmpfs staging dirs and bind mounts are always
-read-write to the target, even when the grant is read-only. This
-deliberately diverges from the previous "bind read-only into the
-namespace" design, which surfaced EROFS to target processes and broke
-tools that test-write before falling back (cache directories, git
-credential helpers, etc.).
+read-write to the target, even when the grant is read-only. Surfacing
+EROFS to the target would break common test-write-then-fall-back paths
+(cache directories, git credential helpers, etc.), so the backend
+remains the sole write-authorization point and the namespace lets the
+target attempt the write.
 
 The backend remains the only authority that decides whether a change
 persists. The `writable` flag is re-checked on every
@@ -800,10 +800,8 @@ host only needs outbound mTLS access to the backend.
 
 ## Mutation gating
 
-There is no global write-lock. The earlier per-store `writes_enabled`
-toggle was removed: it conflated "an operator is editing a secret" with
-"wrappers may write back", and those now have separate, narrower
-mechanisms.
+There is no global write-lock. Admin secret edits and wrapper-side
+writes are gated through separate, narrower mechanisms:
 
 - **Admin secret edits** go through the RESTful per-secret endpoint
   (`PUT /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}`) and are
@@ -1153,8 +1151,7 @@ stable kebab tokens (`locked`, `expired`, `not-unsafe-debug`):
 
 Read access through an active permission is unconditional; write access
 is the per-permission `writable` flag, re-checked server-side on every
-finalize. There is no global write-lock (the old per-store
-`writes_enabled` toggle was removed).
+finalize. There is no global write-lock.
 
 **Debug variant.** `UnsafeDebugUntil` unlocks `underwrap-debug-tool`,
 which runs against the same projected resource and **prints the
