@@ -22,25 +22,12 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Exec the wrapper's original target inside the wrapped environment.
-    Target {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
     /// Exec an arbitrary command inside the wrapped environment.
     Exec {
         command: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-}
-
-#[derive(Debug, Default)]
-struct DebugMetadata {
-    instance: Option<String>,
-    logical_wrapper: Option<String>,
-    wrapper: Option<String>,
-    original_target: Option<String>,
 }
 
 fn main() {
@@ -55,30 +42,16 @@ fn run() -> Result<()> {
     match cli.command.unwrap_or(Command::Summary) {
         Command::Summary => print_summary(),
         Command::Shell { args } => exec_shell(&args),
-        Command::Target { args } => exec_original_target(&args),
         Command::Exec { command, args } => exec_command(&command, &args),
     }
 }
 
 fn print_summary() -> Result<()> {
-    let meta = debug_metadata();
     let cwd = std::env::current_dir().context("resolving current working directory")?;
     let exe = std::fs::read_link("/proc/self/exe").context("reading /proc/self/exe")?;
 
     println!("underwrap-debug-tool (UNSAFE)");
     println!("=============================");
-    if let Some(wrapper) = meta.wrapper.as_deref() {
-        println!("wrapper: {wrapper}");
-    }
-    if let Some(logical_wrapper) = meta.logical_wrapper.as_deref() {
-        println!("logical wrapper: {logical_wrapper}");
-    }
-    if let Some(instance) = meta.instance.as_deref() {
-        println!("instance: {instance}");
-    }
-    if let Some(original_target) = meta.original_target.as_deref() {
-        println!("original target: {original_target}");
-    }
     println!("debug tool exe: {}", exe.display());
     println!("cwd: {}", cwd.display());
     println!("uid: {}", unsafe { libc::getuid() });
@@ -104,9 +77,6 @@ fn print_summary() -> Result<()> {
     println!("commands:");
     println!("  underwrap-debug-tool shell");
     println!("  underwrap-debug-tool exec <cmd> [args...]");
-    if meta.original_target.is_some() {
-        println!("  underwrap-debug-tool target [args...]");
-    }
 
     Ok(())
 }
@@ -153,15 +123,6 @@ fn preferred_shell() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/bin/sh"))
 }
 
-fn exec_original_target(args: &[String]) -> Result<()> {
-    let meta = debug_metadata();
-    let target = meta
-        .original_target
-        .as_deref()
-        .context("UNDERWRAP_DEBUG_ORIGINAL_TARGET is not set")?;
-    exec_command(target, args)
-}
-
 fn exec_command(command: &str, args: &[String]) -> Result<()> {
     if !Path::new(command).is_absolute() {
         bail!("command must be an absolute path inside the wrapped environment: {command}");
@@ -169,13 +130,4 @@ fn exec_command(command: &str, args: &[String]) -> Result<()> {
 
     let err = std::process::Command::new(command).args(args).exec();
     Err(anyhow::Error::new(err).context(format!("execing {command}")))
-}
-
-fn debug_metadata() -> DebugMetadata {
-    DebugMetadata {
-        instance: std::env::var("UNDERWRAP_DEBUG_INSTANCE").ok(),
-        logical_wrapper: std::env::var("UNDERWRAP_DEBUG_LOGICAL_WRAPPER").ok(),
-        wrapper: std::env::var("UNDERWRAP_DEBUG_WRAPPER").ok(),
-        original_target: std::env::var("UNDERWRAP_DEBUG_ORIGINAL_TARGET").ok(),
-    }
 }
