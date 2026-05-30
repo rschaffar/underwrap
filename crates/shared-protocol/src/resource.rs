@@ -134,7 +134,7 @@ pub struct ParsedSecretId<'a> {
 /// Parse a secret id like `<resource>/env/<VAR>`, `<resource>/files/<path>`,
 /// or `<resource>/libsecret/<id>` into resource + slot + inner. Returns
 /// `None` for ids that don't match — including the reserved
-/// `__underwrap/*` system ids the daemon doesn't gate on.
+/// `control/*` system ids the daemon doesn't gate on.
 pub fn parse_secret_id(secret_id: &str) -> Option<ParsedSecretId<'_>> {
     let mut best: Option<(ResourceSlot, usize)> = None;
     for slot in [

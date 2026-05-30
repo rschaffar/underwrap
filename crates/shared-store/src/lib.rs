@@ -114,14 +114,16 @@ pub fn parse_hex_key(s: &str) -> Result<[u8; 32]> {
     Ok(key)
 }
 
-/// Reserved secret id used by encrypted stores as an unlock canary. On
+/// Reserved key used by encrypted stores as an unlock canary. On
 /// store creation the backend writes [`ENCRYPTED_CANARY_PLAINTEXT`] at
 /// this id under the chosen master key. Unlock verifies the operator's
 /// key by attempting to decrypt this entry — wrong key fails the
 /// AEAD tag check, so the operator cannot install an invalid key by
-/// accident. The canary is filtered from `list("")` results so it
-/// doesn't show up as a stray resource in the admin browser.
-pub const ENCRYPTED_CANARY_ID: &str = "__underwrap__/canary";
+/// accident. It lives under the reserved control-plane namespace
+/// (`underwrap_protocol::control::CONTROL_PREFIX`), so the single
+/// `is_control_key` rule hides it from the operator's secret browser
+/// alongside the policy / resources / pairs documents.
+pub const ENCRYPTED_CANARY_ID: &str = "control/canary";
 
 /// Fixed plaintext written to [`ENCRYPTED_CANARY_ID`]. Decrypting it
 /// to exactly this byte string is what makes an unlock successful.

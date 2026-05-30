@@ -12,23 +12,26 @@
 //! first creation. Provenance fields are write-once.
 //!
 //! Storage shape mirrors `PolicyDocument` (see `policy.rs`): a JSON
-//! document keyed at a reserved `__underwrap/...` secret id.
+//! document keyed under the reserved [`crate::control::CONTROL_PREFIX`]
+//! namespace.
 //!
 //! The wrapper-permission model (`WrapperPermission`, keyed on
 //! `(client_instance, wrapper, resource)`) is intentionally untouched
 //! — it still references wrappers and resources by name, and now
 //! those names are anchored to records here.
 //!
-//! `RESERVED_PREFIX` filtering in the admin SPA already hides
-//! `__underwrap/...` secret ids from operators, so these documents
-//! never appear in the secret browser even though they live in the
-//! same store backend.
+//! These keys live under [`crate::control::CONTROL_PREFIX`], so the
+//! single [`crate::control::is_control_key`] rule hides them from the
+//! operator-facing secret browser even though they share the store
+//! backend with user secrets.
 use serde::{Deserialize, Serialize};
 
-/// Reserved secret id used to persist the [`ResourcesDocument`].
-pub const RESOURCES_DOCUMENT_SECRET_ID: &str = "__underwrap/resources/document";
-/// Reserved secret id used to persist the [`PairsDocument`].
-pub const PAIRS_DOCUMENT_SECRET_ID: &str = "__underwrap/pairs/document";
+/// Reserved key used to persist the [`ResourcesDocument`]. Under
+/// [`crate::control::CONTROL_PREFIX`].
+pub const RESOURCES_DOCUMENT_SECRET_ID: &str = "control/resources";
+/// Reserved key used to persist the [`PairsDocument`]. Under
+/// [`crate::control::CONTROL_PREFIX`].
+pub const PAIRS_DOCUMENT_SECRET_ID: &str = "control/pairs";
 
 /// Who created an entity record. Distinguishes admin operators (who
 /// register resources/pairs by hand through the admin API) from

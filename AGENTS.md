@@ -344,7 +344,7 @@ polkit) if you need a prompt.
 The runtime client never names a storage key, never identifies
 itself by id, never evaluates policy, and never holds a
 `StorageBackend`. There is no wire shape that lets a runtime mTLS
-client address `__underwrap/*` or `<resource>/<slot>/<key>`.
+client address `control/*` or `<resource>/<slot>/<key>`.
 
 **Libsecret mode:** When `libsecret = true` on a wrapper:
 

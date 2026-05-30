@@ -127,7 +127,7 @@ operator-state file plus the session cookie.
 The HTTPS service exposes exactly three endpoints to `underwrapd`,
 all `POST`. The wire speaks `(wrapper_name, resource_name)` only —
 there is **no** way for a runtime client to address a backend
-storage key (`__underwrap/*` or `<resource>/<slot>/<inner>`) directly.
+storage key (`control/*` or `<resource>/<slot>/<inner>`) directly.
 
 ### `POST /v1/wrappers` — register
 
@@ -430,7 +430,7 @@ the single addressed entry.
 ## Policy model
 
 The backend persists one policy document per store under a reserved
-secret id (`__underwrap/policy/document`).
+control-plane key (`control/policy`).
 
 ### Wrapper permissions
 
@@ -550,7 +550,7 @@ entities, one persisted collection of each per store. Each record
 carries write-once provenance:
 
 ```yaml
-# __underwrap/resources/document
+# control/resources
 resources:
   - id: res_a1b2c3d4e5f6
     name: github/token
@@ -563,7 +563,7 @@ resources:
 ```
 
 ```yaml
-# __underwrap/pairs/document
+# control/pairs
 pairs:
   - wrapper: gh-authorized
     resource_id: res_a1b2c3d4e5f6
@@ -638,6 +638,26 @@ nonce per resource. The operator-facing per-secret admin endpoints
 `<resource>/<slot>/<key>` address space but route through the blob
 via a load-modify-save shim. **No runtime endpoint accepts a storage
 key on the wire.**
+
+Alongside the resource blobs, each store holds a small reserved
+**control-plane** namespace. Resource ids are server-generated `res_*`
+tokens, so user blobs always sit under `resources/`; everything that is
+*not* user secret material lives under a single sibling `control/`
+prefix:
+
+```text
+<store>/
+  resources/<res_id>     # one JCS resource blob per resource (the secrets)
+  control/policy         # PolicyDocument   (wrapper-permission rows)
+  control/resources      # ResourcesDocument (resource registry + provenance)
+  control/pairs          # PairsDocument    ((wrapper, resource) + last_used_at)
+  control/canary         # encrypted stores only: unlock canary
+```
+
+A key is internal iff it starts with `control/`
+(`underwrap_protocol::control::is_control_key`) — the one rule behind
+the secret browser's filtering, the "has secrets" probe, and the
+delete-empty guard.
 
 The `auto_create_wrapper_assets` flag on each client-instance record
 gates whether `POST /v1/wrappers` may insert new records on that

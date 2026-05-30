@@ -21,8 +21,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::variant::WrapperVariant;
 
-/// Reserved secret id used to persist the policy document inside a backend store.
-pub const POLICY_DOCUMENT_SECRET_ID: &str = "__underwrap/policy/document";
+/// Reserved key used to persist the policy document inside a backend
+/// store. Lives under [`crate::control::CONTROL_PREFIX`] so it is never
+/// mistaken for user secret material.
+pub const POLICY_DOCUMENT_SECRET_ID: &str = "control/policy";
 
 /// Result of checking a permission's mode.
 #[derive(Debug, Clone, PartialEq, Eq)]

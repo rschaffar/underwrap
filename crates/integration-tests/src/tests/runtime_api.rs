@@ -650,23 +650,24 @@ async fn finalize_denies_with_unregistered_pair_for_unknown_resource() {
 // Trust-boundary regressions
 // ===========================================================================
 
-/// The redesign deleted the per-key write path that addressed
-/// `__underwrap/...` storage keys directly. A runtime mTLS client must
+/// The redesign deleted the per-key write path that addressed reserved
+/// `control/...` storage keys directly. A runtime mTLS client must
 /// have no shape it can put on the wire that reaches an internal key.
 /// We try the obvious shapes — passing internal storage keys as
 /// `resource_name` — and assert every one is rejected by the resource
 /// lookup as "unregistered-pair", which is exactly the structured deny
 /// the backend gives for any name not in the resources document.
 #[tokio::test]
-async fn runtime_client_cannot_address_underwrap_internal_keys_via_resource_name() {
+async fn runtime_client_cannot_address_control_internal_keys_via_resource_name() {
     let daemon = TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local")
         .await
         .unwrap();
     let attempted = [
-        "__underwrap/policy/document",
-        "__underwrap/resources/document",
-        "__underwrap/pairs/document",
-        "../__underwrap/policy/document",
+        "control/policy",
+        "control/resources",
+        "control/pairs",
+        "control/canary",
+        "../control/policy",
         "../policy/document",
         // Legacy `<resource>/<slot>/<key>` shape — must also dead-end
         // at the same unregistered-pair gate.

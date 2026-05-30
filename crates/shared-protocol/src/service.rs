@@ -627,7 +627,7 @@ pub struct AdminSecretsView {
 //
 // The runtime client addresses wrappers and resources by **name** only.
 // There is no `secret_id` field anywhere on this surface and no way to
-// address `__underwrap/*` or `<resource>/<slot>/<key>` storage keys.
+// address `control/*` or `<resource>/<slot>/<key>` storage keys.
 // The backend re-derives the principal from the mTLS cert and
 // re-evaluates the policy document on every call; there are no
 // sessions or open-call state between open and finalize.

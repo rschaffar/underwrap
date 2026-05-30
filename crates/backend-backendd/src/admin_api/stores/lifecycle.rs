@@ -270,9 +270,11 @@ pub(crate) async fn handle_admin_store_rotate_key(
     }))
 }
 
-/// Copy every resource (and the canary) from `from` to `to`,
-/// transparently decrypting under the old key and re-encrypting under
-/// the new one. On any failure the staged data directory is removed
+/// Copy every key — resource blobs and control-plane documents — from
+/// `from` to `to`, transparently decrypting under the old key and
+/// re-encrypting under the new one. The canary is the one key skipped
+/// in the loop because it is written fresh up front (see below). On any
+/// failure the staged data directory is removed
 /// and a structured `AdminError` is returned for the rotate handler
 /// to surface to the operator.
 fn reencrypt_into(

@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use underwrap_protocol::control::is_control_key;
 use underwrap_protocol::entities::{
     PAIRS_DOCUMENT_SECRET_ID, PairsDocument, RESOURCES_DOCUMENT_SECRET_ID, ResourcesDocument,
 };
@@ -24,8 +25,6 @@ use crate::storage::secret_entries::resource_blob_entries;
 /// responses across resource / pair / wrapper-permission admin
 /// handlers.
 pub(crate) const ENTITY_DEPENDENT_SAMPLE_LIMIT: usize = 5;
-
-const RESERVED_PREFIX: &str = "__underwrap/";
 
 /// One of the three per-store control-plane documents (policy /
 /// resources / pairs). The trait pins the on-disk secret id and a
@@ -99,7 +98,7 @@ pub(crate) fn resource_secret_dependents(
     resource_name: &str,
 ) -> Result<(u32, Vec<String>)> {
     let mut ids = resource_blob_entries(store, resource_name)?;
-    ids.retain(|id| !id.starts_with(RESERVED_PREFIX));
+    ids.retain(|id| !is_control_key(id));
     ids.sort();
     ids.dedup();
     let count = crate::admin_api::util::saturating_u32(ids.len());

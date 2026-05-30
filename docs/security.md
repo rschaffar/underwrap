@@ -269,12 +269,12 @@ speaks **only** `(wrapper_name, resource_name)`. There is no
 `secret_id` field, no `prefix` field, no path. The three endpoints
 are `POST /v1/wrappers`, `POST /v1/wrapper-invocations`, and
 `POST /v1/wrapper-invocations/finalize`. A runtime client cannot
-address `__underwrap/policy/document`, `__underwrap/resources/document`,
+address `control/policy`, `control/resources`,
 or any other backend-internal key, because no wire shape exists that
 would route a storage key to a write path. The earlier per-key
 `/v1/{read,write,list,delete}` surface was deleted in the runtime-API
 redesign for exactly this reason: a misbehaving runtime client used
-to be able to `POST /v1/write` against `__underwrap/policy/document`
+to be able to `POST /v1/write` against `control/policy`
 with a hand-crafted policy doc and grant itself everything.
 
 The env section of a resource blob is admin-only on writeback. The
@@ -828,10 +828,18 @@ itself is operator-mutable.
 
 ### Reserved keys
 
-The admin secret endpoints refuse to address the backend-internal
-`__underwrap/*` documents (policy, resources, pairs); those are edited
-only through their dedicated admin endpoints. The runtime wire has no
-shape that can name them at all (see invariant 7).
+Everything in a store that is not user secret material lives under a
+single reserved `control/` namespace: the policy / resources / pairs
+control-plane documents (`control/policy`, `control/resources`,
+`control/pairs`) and, for encrypted stores, the unlock canary
+(`control/canary`). User secrets are the resource blobs under
+`resources/<id>`; a key is internal iff it starts with `control/`
+(`underwrap_protocol::control::is_control_key`). That one rule drives
+the secret browser's filtering, the "has secrets" probe, and the
+delete-empty guard. The admin secret endpoints refuse to address the
+`control/*` documents (they are edited only through their dedicated
+admin endpoints), and the runtime wire has no shape that can name them
+at all (see invariant 7).
 
 ---
 
@@ -986,9 +994,10 @@ Concretely:
   copy on the filesystem. `find /var/lib/underwrap-backend -name
   '*.key'` should return nothing.
 - On store creation the backend writes a small **unlock canary**
-  (`__underwrap__/canary` containing a fixed plaintext) into the data
-  directory under the freshly generated key. The canary is filtered
-  from the admin "has secrets" probe and from runtime `list("")`.
+  (`control/canary` containing a fixed plaintext) into the data
+  directory under the freshly generated key. The canary lives under the
+  reserved `control/` namespace, so the same `is_control_key` rule
+  filters it from the admin "has secrets" probe and the secret browser.
 - After every backend restart, every encrypted store boots in the
   `Locked` state. Until an operator calls `POST
   /v1/admin/stores/{id}/unlock` and supplies the hex master key, all

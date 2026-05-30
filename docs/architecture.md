@@ -131,7 +131,7 @@ What the daemon **CANNOT** do:
 
 - evaluate the policy document (it never has it);
 - name a backend storage key on the wire (the runtime API speaks
-  `(wrapper_name, resource_name)` only — `__underwrap/*` is
+  `(wrapper_name, resource_name)` only — `control/*` is
   unreachable);
 - decide whether a writeback is allowed (the backend re-checks the
   `writable` flag on every finalize);

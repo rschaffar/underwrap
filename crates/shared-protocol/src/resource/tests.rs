@@ -24,7 +24,7 @@ fn parse_secret_id_handles_all_slots() {
     assert_eq!(p.inner, "oauth");
 
     // System keys (no slot in the canonical position) → None.
-    assert!(parse_secret_id("__underwrap/policy/document").is_none());
+    assert!(parse_secret_id("control/policy").is_none());
     assert!(parse_secret_id("no-slot-here").is_none());
 }
 

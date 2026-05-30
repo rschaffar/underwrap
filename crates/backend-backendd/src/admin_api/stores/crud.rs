@@ -388,7 +388,7 @@ pub(crate) async fn handle_admin_store_delete(
                 )
             })?
             .iter()
-            .any(|id| id != underwrap_store::ENCRYPTED_CANARY_ID),
+            .any(|id| !underwrap_protocol::control::is_control_key(id)),
         // Locked encrypted store: we cannot inspect contents. Refuse
         // unless the caller passed `force=true`, since deleting a
         // store without confirming it's empty risks orphaning data

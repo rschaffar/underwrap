@@ -197,10 +197,16 @@ async fn underwrapd_binary_start_and_read() {
     // these documents in the same plain directory.
     let secrets_dir = base.join("secrets");
     std::fs::create_dir_all(&secrets_dir).unwrap();
-    let resources_dir = secrets_dir.join("__underwrap/resources");
-    std::fs::create_dir_all(&resources_dir).unwrap();
-    std::fs::write(
-        resources_dir.join("document"),
+    // Seed the control-plane documents directly on disk. PlainBackend
+    // maps a key 1:1 onto a relative file path, so the reserved
+    // `control/<doc>` keys land at `<secrets_dir>/control/<doc>`.
+    let write_document = |secret_id: &str, json: Vec<u8>| {
+        let path = secrets_dir.join(secret_id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, json).unwrap();
+    };
+    write_document(
+        underwrap_protocol::entities::RESOURCES_DOCUMENT_SECRET_ID,
         serde_json::to_vec_pretty(&underwrap_protocol::entities::ResourcesDocument {
             resources: vec![underwrap_protocol::entities::ResourceRecord {
                 id: "s/t".into(),
@@ -213,12 +219,9 @@ async fn underwrapd_binary_start_and_read() {
             }],
         })
         .unwrap(),
-    )
-    .unwrap();
-    let pairs_dir = secrets_dir.join("__underwrap/pairs");
-    std::fs::create_dir_all(&pairs_dir).unwrap();
-    std::fs::write(
-        pairs_dir.join("document"),
+    );
+    write_document(
+        underwrap_protocol::entities::PAIRS_DOCUMENT_SECRET_ID,
         serde_json::to_vec_pretty(&underwrap_protocol::entities::PairsDocument {
             pairs: vec![underwrap_protocol::entities::WrapperResourcePairRecord {
                 wrapper: "w".into(),
@@ -232,8 +235,7 @@ async fn underwrapd_binary_start_and_read() {
             }],
         })
         .unwrap(),
-    )
-    .unwrap();
+    );
     let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
         stores_dir,
         clients_dir,

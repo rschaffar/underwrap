@@ -85,7 +85,7 @@ pub(super) fn admin_store_usage(
             )
         })?
         .iter()
-        .any(|id| id != underwrap_store::ENCRYPTED_CANARY_ID);
+        .any(|id| !underwrap_protocol::control::is_control_key(id));
     Ok(AdminStoreUsageSummary {
         mapped_client_instance_count,
         has_secrets,
