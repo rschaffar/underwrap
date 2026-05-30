@@ -47,15 +47,18 @@ management.
 
 ## Surface today
 
-| Page                | Path        | Visible to    |
-| ------------------- | ----------- | ------------- |
-| Dashboard           | `/`         | any user      |
-| Wrapper permissions | `/wrappers` | any user      |
-| Stores              | `/stores`   | any user      |
-| Users               | `/users`    | any user      |
-| Profile             | `/profile`  | any user      |
-| Login               | `/login`    | unauthenticated |
-| Bootstrap           | `/bootstrap`| empty backend |
+| Page                | Path               | Visible to      |
+| ------------------- | ------------------ | --------------- |
+| Wrapper permissions | `/wrappers`        | any user        |
+| Secrets             | `/secrets`         | any user        |
+| Stores              | `/stores`          | any user        |
+| Client instances    | `/client-instances`| any user        |
+| Users               | `/users`           | any user        |
+| Profile             | `/profile`         | any user        |
+| Login               | `/login`           | unauthenticated |
+| Bootstrap           | `/bootstrap`       | empty backend   |
+
+`/` is not a page of its own — it redirects to `/secrets`.
 
 Authorisation is flat: any authenticated user can perform any admin
 action. The Wrapper permissions tab sets the

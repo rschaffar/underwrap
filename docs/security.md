@@ -440,7 +440,7 @@ Responsibilities:
 - load the minimal instance sidecar (socket + helper binary paths)
 - connect to the instance socket (the setgid instance-group egid is the
   kernel gate)
-- send `Read { wrapper_name, variant }`; the daemon validates the name,
+- send `Read { wrapper_name, variant, scope }`; the daemon validates the name,
   consults the backend policy, and returns the **daemon-chosen** target
   path and environment plus the secret material
 - drop elevated privilege
@@ -842,7 +842,7 @@ The daemon emits structured log events for security-relevant operations such as:
   `expired` deny reasons)
 - stores and denied stores
 - authentication denials at the socket layer (with the peer-auth path:
-  `peerpidfd` or `peercred-fallback`)
+  `PeerPidfd` or `PeerCredFallback`)
 - libsecret channel reads, writes, and deletes
 
 The design goal is:
@@ -890,8 +890,12 @@ mechanisms tighten it:
   `ProtectSystem=strict`, an empty `CapabilityBoundingSet` /
   `AmbientCapabilities` (the daemon needs no capabilities),
   `MemoryDenyWriteExecute`, `RestrictNamespaces`, `ProcSubset=pid`, and a
-  `@system-service` syscall filter minus `@privileged` (with `@chown`
-  re-allowed so the daemon can group-own its socket). `/etc/underwrap`
+  `@system-service` syscall filter minus `@privileged`. `@chown` is **not**
+  re-allowed: the daemon does not chown its socket. The daemon's primary
+  group already *is* the instance group, so the freshly bound `0660` socket
+  inherits that group from the daemon's egid; the daemon only sets the mode
+  and then verifies the kernel-assigned gid, failing closed if it is wrong
+  (`startup.rs`). `/etc/underwrap`
   and the state dir are read-only; `ReadWritePaths` is limited to the
   runtime dir. `ProtectProc` is deliberately left at default — the
   daemon must read the *connecting* peer's `/proc/<pid>/status` for the

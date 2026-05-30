@@ -19,8 +19,8 @@ Operators manage the backend through the admin UI served directly by
 │  (e.g. gh, jira)    │       │  (login + session cookie)│
 └─────────┬───────────┘       └────────────┬─────────────┘
           │                                │
-          │  wrapper socket (setgid,       │ HTTPS
-          │  SO_PEERCRED verified)         │
+          │  wrapper socket (0660,         │ HTTPS
+          │  egid via SO_PEERPIDFD)        │
           ▼                                ▼
 ┌─────────────────────┐      ┌─────────────────────────────┐
 │  underwrapd         │ HTTPS│  underwrap-backendd         │
@@ -35,9 +35,11 @@ Operators manage the backend through the admin UI served directly by
 
 ## Trust boundaries
 
-- **Wrapper ↔ `underwrapd`**: local, kernel-backed. The wrapper socket's
-  `SO_PEERCRED` + effective GID (read from `/proc/<pid>/status`) select the
-  wrapper name. Nothing the wrapper sends is trusted for identity.
+- **Wrapper ↔ `underwrapd`**: local, kernel-backed. The peer's effective
+  GID gates the `0660` socket and is read race-free via `SO_PEERPIDFD`
+  (Linux 6.5+; `SO_PEERCRED` + `/proc/<pid>/status` fallback on older
+  kernels). The client-supplied wrapper name is only a selector, validated
+  against config — nothing the wrapper sends is trusted for identity.
 - **`underwrapd` ↔ `underwrap-backendd`**: HTTPS with mTLS. The client
   certificate is a self-signed leaf generated locally by the
   `underwrap-keygen` helper on the target host and registered with the
@@ -49,8 +51,9 @@ Operators manage the backend through the admin UI served directly by
   store's view.
 - **operator browser ↔ `underwrap-backendd`**: the same HTTPS listener,
   but without a client certificate. Admin routes authenticate via username +
-  argon2id password hash + signed session cookie (HMAC-SHA256) + per-session
-  CSRF token on every POST.
+  argon2id password hash + an opaque `tower-sessions` session cookie (session
+  state held server-side in a `MemoryStore`) + a synchronizer-token CSRF
+  check on every POST.
 
 The wrapped target process is outside every trust boundary. It receives
 only the secret material that the authorized read flow exposes.

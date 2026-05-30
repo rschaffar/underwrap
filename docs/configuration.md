@@ -136,6 +136,7 @@ https:
 
 admin:
   # allowed_origins: [ "https://underwrap.example.internal" ]
+  # session_lifetime_secs: 43200   # default 12h
   # stores_data_root: /var/lib/underwrap-backend/data
 ```
 

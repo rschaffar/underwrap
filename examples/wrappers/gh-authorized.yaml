@@ -1,6 +1,0 @@
-# Per-wrapper config loaded by underwrap-exec.
-# Placed at /etc/underwrap/wrappers/gh-authorized.yaml
-
-target: /usr/bin/gh
-env_variable: GH_TOKEN
-wrapper_socket: /run/underwrap/gh-authorized.sock

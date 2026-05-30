@@ -1,18 +1,50 @@
 # Example underwrap-backendd configuration.
 #
-# This file is separate from the frontend underwrap NixOS module. It defines
-# backend-owned stores plus the privileged management socket used by
-# underwrap-backend-ctl.
+# `underwrap-backendd` reads this YAML file (path passed via `--config`).
+# It is wholly separate from the frontend `underwrap` NixOS module: the
+# backend holds the secrets, the policy document, the user collection, and
+# the admin SPA, and frontend daemons connect to it over HTTPS with mTLS.
+#
+# Stores, client instances, and users are *dynamic* JSON records managed
+# through the admin API — they are NOT declared here. This file only points
+# the backend at the directories that hold those records, the bootstrap
+# sentinel, the HTTPS listener, and the admin settings.
 
-management:
-  socket: /run/underwrap-backend/mgmt.sock
+# Directory holding the per-store JSON registry (`<stores_dir>/<id>.json`).
+# A missing directory is treated as an empty registry.
+stores_dir: /var/lib/underwrap-backend/stores
 
-stores:
-  work:
-    backend: encrypted
-    dir: /var/lib/underwrap-backend/work
-    key_file: /var/lib/underwrap-backend/work.key
+# Directory holding the per-instance runtime client-instance registry
+# (`<clients_dir>/<client_instance_id>.json`).
+clients_dir: /var/lib/underwrap-backend/clients
 
-  personal:
-    backend: plain
-    dir: /var/lib/underwrap-backend/personal
+# Directory holding the admin operator collection (`<users_dir>/<id>.json`).
+users_dir: /var/lib/underwrap-backend/users
+
+# Persistent "bootstrap has run" sentinel. Its absence makes the backend
+# serve the one-time bootstrap page that creates the first admin user.
+bootstrap_file: /var/lib/underwrap-backend/bootstrap.json
+
+# HTTPS listener. Serves both the mTLS runtime API (daemon-facing) and the
+# session-cookie admin API + embedded SPA (browser-facing) on one port.
+https:
+  listen: 0.0.0.0:18443
+  tls:
+    cert_file: /etc/underwrap-backend/server.pem
+    key_file:  /etc/underwrap-backend/server.key
+
+admin:
+  # Allowlist of `Origin`/`Referer` values for state-changing admin
+  # requests (same-origin CSRF defence). Empty disables the check.
+  # allowed_origins:
+  #   - https://underwrap.example.internal
+
+  # Admin session lifetime in seconds. Defaults to 12 hours. Sessions are
+  # held in memory (tower-sessions MemoryStore) and do not survive a
+  # backend restart — there is no signing-key file to provision.
+  # session_lifetime_secs: 43200
+
+  # Directory under which the "create store" admin API places the data
+  # directories of newly-created dynamic stores
+  # (`<stores_data_root>/<store_id>/`). Unset disables store creation.
+  # stores_data_root: /var/lib/underwrap-backend/data

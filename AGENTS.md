@@ -60,13 +60,14 @@ crates/
   frontend-exec/           # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
   frontend-ns/             # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
   frontend-secretsd/       # D-Bus Secret Service provider for libsecret mode
+  frontend-keygen/         # `underwrap-keygen`: client mTLS credential / key generation
   debug-tool/              # Unsafe inspection CLI; the target the daemon execs for `variant = Debug` (gated by an `UnsafeDebugUntil` permission)
   backend-backendd/        # Central HTTPS service + admin API + auth + SPA hosting + policy authority
   integration-tests/       # Cargo integration tests (real daemon + backend)
 web/                       # Vite + React + shadcn admin SPA (served by backend-backendd)
 nix/
   modules/underwrap.nix         # Multi-instance frontend NixOS module
-  modules/underwrap-backend.nix # Backend declarative-stores module
+  modules/underwrap-backend.nix # Retired placeholder (stores are now backend-managed dynamic records)
   tests/node.nix                # VM test node configuration
   tests/test.py                 # VM test script (Python)
   tests/spoof.py                # Socket spoofing test helper
@@ -127,7 +128,6 @@ prefixes.
   WrapperInvocationFinalize}{Request,Response}`
 - `web/src/router.tsx` — TanStack Router setup; the SPA's auth/bootstrap guard lives here
 - `nix/modules/underwrap.nix` — frontend NixOS module (generates wrappers, sockets, services)
-- `nix/modules/underwrap-backend.nix` — backend NixOS module (declarative stores)
 - `docs/backend.md` — backend data model + API surface
 - `docs/security.md` — every security mechanism explained
 

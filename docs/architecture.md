@@ -199,8 +199,11 @@ underwrap-exec
 
 For each directory binding, `underwrap-ns` materializes current backend
 files into a namespace-private staging directory, bind-mounts it into
-the target's home view (read-only when the binding is read-only), and
-syncs changes back to the backend after exit for read-write bindings.
+the target's home view (always read-write to the target — the backend,
+not a kernel mount flag, is the sole write authority), and syncs changes
+back to the backend after exit. When the wrapper permission is read-only
+the end-of-run writeback is rejected server-side and the change is
+dropped (with one journal event + stderr line per affected resource).
 
 The same backend resource can be projected at multiple paths within one
 wrapper by configuring `files.paths` as a list. Each configured path
@@ -227,6 +230,9 @@ crates/
   frontend-exec             stage 1 wrapper (setgid)
   frontend-ns               stage 2 wrapper (namespace setup)
   frontend-secretsd         Secret Service implementation for libsecret mode
+  frontend-keygen           underwrap-keygen: client-credential / key generation
+  debug-tool                underwrap-debug-tool: the target the daemon execs
+                            for variant = Debug (prints projected secret material)
   backend-backendd          central authenticated HTTPS service +
                             sole policy authority + embedded admin SPA
   integration-tests         cross-component tests
@@ -249,7 +255,7 @@ web/                        Vite + React + shadcn admin SPA (embedded into
   invocation on the backend → relay `ReadOk` + scoped channel)
 - `wrapper_resource_channel.rs` — serves Checkout from the cached
   blob and turns Checkin / UsageSignal into finalize calls
-- `status.rs` — wrapper/credential status for the admin API
+- `audit.rs` — structured audit-event emission (secret IDs, never values)
 - `wrapper_bindings.rs` — env/libsecret/directory binding selection
 
 ### `underwrap-ns` internals
