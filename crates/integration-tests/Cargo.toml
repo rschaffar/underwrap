@@ -17,10 +17,10 @@ name = "integration_tests"
 path = "src/lib.rs"
 
 [dependencies]
-shared-protocol = { workspace = true }
-backend-store = { workspace = true }
-frontend-underwrapd = { path = "../frontend-underwrapd" }
-backend-backendd = { path = "../backend-backendd" }
+underwrap-protocol = { workspace = true }
+underwrap-backend-store = { workspace = true }
+underwrapd = { path = "../underwrapd" }
+underwrap-backend = { path = "../underwrap-backend" }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

@@ -1,7 +1,7 @@
 /**
  * Playwright fixtures. The `backend` fixture spawns a fresh
- * `underwrap-backendd` per test, against a temp store with a random
- * TLS port (see `./backendd.ts`). Tests reach the SPA at
+ * `underwrap-backend` per test, against a temp store with a random
+ * TLS port (see `./backend.ts`). Tests reach the SPA at
  * `backend.baseUrl`.
  *
  * Two variants:
@@ -10,7 +10,7 @@
  *                       hit `/login` to exercise the login UI.
  */
 import { test as base, type Page } from "@playwright/test";
-import { startBackend, type BackendInstance } from "./backendd";
+import { startBackend, type BackendInstance } from "./backend";
 
 export const ADMIN_USERNAME = "alice";
 export const ADMIN_PASSWORD = "correct-horse-battery";

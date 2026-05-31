@@ -12,7 +12,7 @@
 > superseded: admin auth is **not** bearer tokens (`admin.tokens`) but
 > Argon2id passwords + opaque `tower-sessions` cookies + CSRF, and the
 > admin UI is **not** a separate Next.js `apps/admin-ui` service but a
-> Vite/React SPA in `web/` embedded into and served by `underwrap-backendd`.
+> Vite/React SPA in `web/` embedded into and served by `underwrap-backend`.
 
 This is the consolidated plan for getting underwrap to a coherent first release
 around the **central backend** architecture. It supersedes the three
@@ -26,7 +26,7 @@ useful during development.
 
 Shipped as of this plan:
 
-- `underwrap-backendd` is an authenticated HTTPS service (mTLS client certs).
+- `underwrap-backend` is an authenticated HTTPS service (mTLS client certs).
   Admin operations ride a sibling HTTP listener.
 - `underwrapd` talks to the backend via `ServiceBackend` using reqwest + mTLS.
 - Backend policy is modeled as `(instance, wrapper, resource, operation)`
@@ -64,11 +64,11 @@ Shipped as of this plan:
   proactively by a background task in the backend that transitions expired
   entries back to `Locked` so that the admin UI reflects truth.
 - **Backend transport**: service-only. Unix-socket mode is removed outright.
-- **Admin API auth**: bearer tokens declared in backendd config.
+- **Admin API auth**: bearer tokens declared in backend config.
   `Authorization: Bearer <token>` on every `/v1/admin/*` request. mTLS for
   admin is a later step.
 - **UI**: separate `underwrap-admin-ui` service, not colocated in
-  `underwrap-backendd`. Operator login via password + session cookie.
+  `underwrap-backend`. Operator login via password + session cookie.
   Internally, the UI holds an admin API bearer token and acts as the backend's
   admin client.
 - **UI stack**: the shipped operator console is the separate Next.js app in
@@ -123,7 +123,7 @@ Daemon:
 
 Backend expiry timer:
 
-- `underwrap-backendd` spawns a periodic task that walks every store's
+- `underwrap-backend` spawns a periodic task that walks every store's
   `PolicyDocument`, transitions expired `Unlocked { until }` wrapper modes to
   `Locked` (leaving an operator-visible audit reason), and prunes stale
   pending nonces.
@@ -131,7 +131,7 @@ Backend expiry timer:
 Tests:
 
 - Unit tests in `underwrap-protocol::policy` for the new mode evaluation.
-- Unit tests in `underwrap-backendd::server` for nonce storage, signature
+- Unit tests in `underwrap-backend::server` for nonce storage, signature
   verification (ed25519 and rsa happy paths, mismatched key, bad signature,
   expired nonce), and the expiry sweeper.
 - Integration tests in
@@ -181,12 +181,12 @@ SSR crate.
 
 Delivered scope:
 
-- server-side BFF architecture in front of `underwrap-backendd`
+- server-side BFF architecture in front of `underwrap-backend`
 - username/password operator auth with signed `HttpOnly` sessions
 - resource explorer with reveal, upload/download, write, delete, and mutation
   flows
 - wrapper permissions console
-- systemd + NixOS module wiring for deployment alongside backendd
+- systemd + NixOS module wiring for deployment alongside backend
 
 Tests:
 
@@ -216,7 +216,7 @@ Testing is part of each milestone, not a trailing phase:
 
 - Unit tests live next to the code they cover.
 - Integration tests extend `crates/integration-tests` so they share the
-  backendd + underwrapd harness.
+  backend + underwrapd harness.
 - browser/UI tests live under `apps/admin-ui/tests/e2e` and use Playwright
   against a local test stack.
 - Full gate on every milestone:

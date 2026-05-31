@@ -10,7 +10,7 @@ surface in depth, see [The underwrap backend](backend.md).
 | `underwrapd` | Frontend daemon on the target host | target machine running wrappers |
 | `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/underwrap-<instance>` |
 | `underwrap-ns` | Stage 2 wrapper: create namespace, exec target | `/run/wrappers/bin/underwrap-ns` |
-| `underwrap-backendd` | Central service: holds secrets + policy, authenticates `underwrapd` instances over mTLS, serves the embedded admin SPA | operator workstation or central server |
+| `underwrap-backend` | Central service: holds secrets + policy, authenticates `underwrapd` instances over mTLS, serves the embedded admin SPA | operator workstation or central server |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
 
 The implementation deliberately splits process flow, authorization,
@@ -145,7 +145,7 @@ rows for.
 
 ## Backend storage
 
-`underwrap-backendd` persists everything under one of:
+`underwrap-backend` persists everything under one of:
 
 - **plain** — files owned by the backend daemon user,
 - **encrypted** — ChaCha20-Poly1305 files keyed by a 32-byte master key
@@ -221,24 +221,24 @@ this.
 
 ```text
 crates/
-  shared-protocol           shared config, message families, IPC framing, fd passing,
-                            runtime wire types, policy + resource models
-  backend-store             storage trait + plain/encrypted backend implementations
-                            (backend-internal — nothing else implements it)
-  frontend-secretsd-store   in-memory Secret Service data model
-  frontend-underwrapd       frontend daemon on the target host
-  frontend-exec             stage 1 wrapper (setgid)
-  frontend-ns               stage 2 wrapper (namespace setup)
-  frontend-secretsd         Secret Service implementation for libsecret mode
-  frontend-keygen           underwrap-keygen: client-credential / key generation
-  debug-tool                underwrap-debug-tool: the target the daemon execs
-                            for variant = Debug (summary / shell / exec, with
-                            read-write access to the projected secret)
-  backend-backendd          central authenticated HTTPS service +
-                            sole policy authority + embedded admin SPA
-  integration-tests         cross-component tests
-web/                        Vite + React + shadcn admin SPA (embedded into
-                            backend-backendd via rust-embed)
+  underwrap-protocol       shared config, message families, IPC framing, fd passing,
+                           runtime wire types, policy + resource models
+  underwrap-backend-store  storage trait + plain/encrypted backend implementations
+                           (backend-internal — nothing else implements it)
+  underwrap-secretsd-store in-memory Secret Service data model
+  underwrapd               frontend daemon on the target host
+  underwrap-exec           stage 1 wrapper (setgid)
+  underwrap-ns             stage 2 wrapper (namespace setup)
+  underwrap-secretsd       Secret Service implementation for libsecret mode
+  underwrap-keygen         underwrap-keygen: client-credential / key generation
+  underwrap-debug-tool     underwrap-debug-tool: the target the daemon execs
+                           for variant = Debug (summary / shell / exec, with
+                           read-write access to the projected secret)
+  underwrap-backend        central authenticated HTTPS service +
+                           sole policy authority + embedded admin SPA
+  integration-tests        cross-component tests
+web/                       Vite + React + shadcn admin SPA (embedded into
+                           underwrap-backend via rust-embed)
 ```
 
 ### `underwrapd` internals
@@ -284,7 +284,7 @@ The NixOS module generates and manages:
 - per-user convenience shims (`<wrapper>` / `debug-<wrapper>`)
 - the shared `underwrap-ns` wrapper
 - the daemon config (`/etc/underwrap/daemon/<instance>.yaml`) and the
-  minimal frontend-exec sidecar (`/etc/underwrap/instances/<instance>.yaml`)
+  minimal underwrap-exec sidecar (`/etc/underwrap/instances/<instance>.yaml`)
 - systemd services
 - runtime and state directories
 

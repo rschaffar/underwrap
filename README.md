@@ -9,7 +9,7 @@ Run local CLI tools with secrets injected just in time — without handing those
 >
 > If you spot a weakness, questionable assumption, or misleading claim, feedback is very welcome.
 
-**Supported target: NixOS.** The wrapper chain and daemon are deployed through a NixOS module that wires `security.wrappers`, the instance user/group, sockets, services, and per-user shims. `underwrap-backendd` is the backend service for both local and remote deployments; in remote setups it runs on any Linux host.
+**Supported target: NixOS.** The wrapper chain and daemon are deployed through a NixOS module that wires `security.wrappers`, the instance user/group, sockets, services, and per-user shims. `underwrap-backend` is the backend service for both local and remote deployments; in remote setups it runs on any Linux host.
 
 ## Why this exists
 
@@ -45,11 +45,11 @@ At a high level:
 
 Depending on how you configure it, underwrap can also:
 
-- keep secrets in a central `underwrap-backendd` service on the same
+- keep secrets in a central `underwrap-backend` service on the same
   machine or on a trusted remote workstation/server
 - let operators manage stores, users, and per-client wrapper
   permissions through a single-binary admin SPA that
-  `underwrap-backendd` serves directly over HTTPS
+  `underwrap-backend` serves directly over HTTPS
 - grant time-bounded access (`UnlockedUntil`) and an audited,
   confirm-gated `UnsafeDebugUntil` mode that exposes the projected
   secret to an operator terminal for incident debugging

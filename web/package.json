@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "generate:api": "openapi-typescript ../crates/backend-backendd/openapi.json -o src/api/schema.ts",
+    "generate:api": "openapi-typescript ../crates/underwrap-backend/openapi.json -o src/api/schema.ts",
     "predev": "npm run generate:api",
     "prebuild": "npm run generate:api",
     "pretest": "npm run generate:api",

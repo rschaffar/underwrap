@@ -1,0 +1,4871 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "underwrap admin API",
+    "description": "Operator-facing JSON API exposed by `underwrap-backend` under `/v1/admin/*`. Authentication is session-cookie based (`__Host-underwrap-session`); state-changing requests must also carry the synchronizer CSRF header `X-CSRF-Token`. The mTLS runtime API is not part of this contract.",
+    "license": {
+      "name": "MIT OR Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/v1/admin/auth/bootstrap": {
+      "post": {
+        "tags": [
+          "bootstrap"
+        ],
+        "summary": "`POST /v1/admin/auth/bootstrap`. Public endpoint: creates the very\nfirst admin operator, marks the persistent sentinel, and issues a\nsession in one round trip. After this succeeds, the endpoint\nrefuses further calls even if every operator is later deleted.",
+        "operationId": "handle_admin_bootstrap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "First operator created; session issued in the same response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed (e.g. password too short).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bootstrap already completed; further attempts are refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Backend could not write the operator collection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/bootstrap/status": {
+      "get": {
+        "tags": [
+          "bootstrap"
+        ],
+        "summary": "`GET /v1/admin/auth/bootstrap/status`. Public endpoint: returns\n`{ bootstrap_required: true }` only when the operator collection is\nempty AND the bootstrap-completed sentinel is unset. Anything else\n(operators exist, sentinel set, store error) yields `false` — the\nSPA's response is to show the login page.",
+        "operationId": "handle_admin_bootstrap_status",
+        "responses": {
+          "200": {
+            "description": "True only when the operator collection is empty and the bootstrap-completed sentinel is unset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "handle_admin_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Login succeeded; session cookie set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid username or password.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate-limited; too many login attempts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Backend could not read user collection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "handle_admin_logout",
+        "responses": {
+          "204": {
+            "description": "Session destroyed and cookie cleared."
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/auth/password` — self-service password change for\nthe currently authenticated user. Requires the current password as\nproof-of-possession.",
+        "operationId": "handle_admin_password_change",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPasswordChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Password changed; new session issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed (e.g. new password too short).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Current password is incorrect.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Backend could not persist the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/auth/whoami": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "handle_admin_whoami",
+        "responses": {
+          "200": {
+            "description": "Returns the current operator, or an empty object if no session is present. Never 401 — designed for the SPA's bootstrap-redirect dance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhoamiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/client-instances": {
+      "get": {
+        "tags": [
+          "client_instances"
+        ],
+        "operationId": "handle_admin_client_instances_list",
+        "responses": {
+          "200": {
+            "description": "All client instances with action state and store mapping.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminClientInstancesListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "client_instances"
+        ],
+        "operationId": "handle_admin_client_instance_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminClientInstanceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Client instance registered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminClientInstanceListItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Instance id already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/client-instances/{id}": {
+      "put": {
+        "tags": [
+          "client_instances"
+        ],
+        "operationId": "handle_admin_client_instance_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Client instance id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminClientInstanceUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Instance updated. Remapping to a new store drops the prior store's wrapper permissions for this instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminClientInstanceListItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Instance / target store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "client_instances"
+        ],
+        "operationId": "handle_admin_client_instance_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Client instance id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Instance removed; its wrapper permissions are dropped from the mapped store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Instance not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores": {
+      "get": {
+        "tags": [
+          "stores"
+        ],
+        "operationId": "handle_admin_stores_list",
+        "responses": {
+          "200": {
+            "description": "Every store in the registry plus per-store usage projections.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStoresListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "stores"
+        ],
+        "operationId": "handle_admin_store_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminStoreCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Store created and added to the registry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStoreCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Store name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Backend could not persist the registry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}": {
+      "put": {
+        "tags": [
+          "stores"
+        ],
+        "operationId": "handle_admin_store_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminStoreUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Store updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStoreListItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "stores"
+        ],
+        "operationId": "handle_admin_store_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "description": "Pass `?force=true` to bypass the empty-store guard.",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Store removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStoreDeleteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Store is non-empty and `force` was not set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/lock": {
+      "post": {
+        "tags": [
+          "stores"
+        ],
+        "summary": "`POST /v1/admin/stores/{id}/lock` — drop the in-memory backend for\n`name`, transitioning the registry to [`StoreState::Locked`]. The\nheld `MasterKey` zeroes on drop. Plain stores reject the\noperation; already-locked stores succeed as a no-op so the admin\nSPA can call this without racing the current state.",
+        "operationId": "handle_admin_store_lock",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Store locked; in-memory key material wiped.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStoreLockResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/pairs": {
+      "get": {
+        "tags": [
+          "pairs"
+        ],
+        "operationId": "handle_admin_pairs_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Wrapper / resource pairs in the store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPairsListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "pairs"
+        ],
+        "operationId": "handle_admin_pair_create",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPairCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pair created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPairCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / wrapper / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Pair already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/pairs/with-new-resource": {
+      "post": {
+        "tags": [
+          "pairs"
+        ],
+        "operationId": "handle_admin_pair_with_new_resource",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPairWithNewResourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Resource created and paired with the wrapper in one step.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPairWithNewResourceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/pairs/{wrapper}/{rid}": {
+      "delete": {
+        "tags": [
+          "pairs"
+        ],
+        "operationId": "handle_admin_pair_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wrapper",
+            "in": "path",
+            "description": "Wrapper name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pair removed, or `ok: false` with structured blockers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPairDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / pair not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/resources": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "handle_admin_resources_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resources in the store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResourcesListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "handle_admin_resource_create",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminResourceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Resource created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResourceCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/resources/{rid}": {
+      "put": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "handle_admin_resource_rename",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminResourceRenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Resource renamed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResourceRenameResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Target name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "handle_admin_resource_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resource deleted, or `ok: false` with structured blockers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResourceDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/rotate-key": {
+      "post": {
+        "tags": [
+          "stores"
+        ],
+        "summary": "`POST /v1/admin/stores/{id}/rotate-key` — mint a fresh 32-byte\nmaster key in memory, re-encrypt every resource in the store under\nit, atomically swap the data directory, install the new backend in\nthe registry, and return the new key **exactly once**. Plain stores\nreject the operation; locked encrypted stores must be unlocked\nfirst.",
+        "operationId": "handle_admin_store_rotate_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key rotated; old material persisted alongside the new one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStoreRotateKeyResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Rotation failed mid-flight.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/secrets": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secrets_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_id",
+            "in": "query",
+            "description": "Restrict listing to a single resource.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-slot entries in the store (optionally filtered by resource id).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSecretListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/secrets-view": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secrets_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret entries and resources for the store, in one round trip.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSecretsView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secret_read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "Slot name: env, files, libsecret.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Per-slot entry key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret value, base64-encoded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSecretReadResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource / key not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secret_write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "Slot name: env, files, libsecret.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Per-slot entry key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSecretWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Secret written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "handle_admin_secret_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "Slot name: env, files, libsecret.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Per-slot entry key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSecretDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource / key not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename": {
+      "post": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Atomically rename a per-slot entry inside a resource blob.\nOne load-modify-save of the resource blob: the previous key is\nremoved and the new key is inserted in the same in-memory pass,\nso disk never holds both entries (or neither) — `atomic_write`\nin the storage layer guarantees the file flip is a single rename.\nOptionally overwrites material in the same step.",
+        "operationId": "handle_admin_secret_rename",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slot",
+            "in": "path",
+            "description": "Slot name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Source key (`from_key`).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSecretRenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Secret renamed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / resource / key not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Target key already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/unlock": {
+      "post": {
+        "tags": [
+          "stores"
+        ],
+        "summary": "`POST /v1/admin/stores/{id}/unlock` — accept a 64-character hex\nmaster key from the operator, build a fresh `EncryptedBackend`\nagainst the store's data directory, verify the key by decrypting\nthe unlock canary written at creation, and install the backend in\nthe registry. Wrong keys never transition the registry to\n`Unlocked`; the registry stays `Locked` and the response surfaces a\nstructured `key_mismatch` code.",
+        "operationId": "handle_admin_store_unlock",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminStoreUnlockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Store unlocked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong key / passphrase.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/wrapper-permissions": {
+      "get": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "handle_admin_wrapper_permissions_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of wrapper permissions for the store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminWrapperPermissionsListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/wrapper-permissions-view": {
+      "get": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "handle_admin_wrapper_permissions_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Permissions, pairs, and resources for the store, in one round trip.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminWrapperPermissionsView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}": {
+      "put": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "handle_admin_wrapper_permission_upsert",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client_instance",
+            "in": "path",
+            "description": "Client instance id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wrapper",
+            "in": "path",
+            "description": "Wrapper name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminWrapperPermissionUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Permission upserted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / wrapper / resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "policy"
+        ],
+        "operationId": "handle_admin_wrapper_permission_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client_instance",
+            "in": "path",
+            "description": "Client instance id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wrapper",
+            "in": "path",
+            "description": "Wrapper name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Permission removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store / permission not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret": {
+      "get": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_get_tree",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whole libsecret tree (item secrets omitted).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretTreeResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/aliases/{name}": {
+      "put": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_put_alias",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Alias name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLibsecretAliasUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Alias set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_delete_alias",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Alias name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Alias removed (existed flag in body).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretAliasDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections": {
+      "post": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_post_collection",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLibsecretCollectionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Collection created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretCollectionCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Collection id already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}": {
+      "delete": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_delete_collection",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Collection deleted; any aliases pointing at it are scrubbed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretCollectionDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items": {
+      "post": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_post_item",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLibsecretItemCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Item created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretItemCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Item id already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}": {
+      "delete": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_delete_item",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "iid",
+            "in": "path",
+            "description": "Item id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Item removed (existed flag in body).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretItemDeleteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}/secret": {
+      "get": {
+        "tags": [
+          "libsecret"
+        ],
+        "operationId": "handle_get_item_secret",
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "description": "Resource id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "description": "Collection id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "iid",
+            "in": "path",
+            "description": "Item id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Item secret material, base64-encoded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLibsecretItemSecretResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection or item not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Store is locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "handle_admin_users_list",
+        "responses": {
+          "200": {
+            "description": "List of every operator in the collection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUsersListResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Backend could not read the operator collection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "handle_admin_user_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Operator created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserListItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Username already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users/{id}": {
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "handle_admin_user_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Operator id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Operator updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserListItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Username collision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "handle_admin_user_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Operator id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Operator deleted; all sessions held by the deleted user are invalidated automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Cannot delete the last operator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users/{id}/password": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "operationId": "handle_admin_user_reset_password",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Operator id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserResetPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Password reset; the target user's sessions are invalidated automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOkUserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "csrf_header": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AdminClientInstanceActionState": {
+        "type": "object",
+        "required": [
+          "can_disable",
+          "can_enable"
+        ],
+        "properties": {
+          "can_disable": {
+            "type": "boolean",
+            "description": "Whether this principal may transition the instance into the\ndisabled state."
+          },
+          "can_enable": {
+            "type": "boolean",
+            "description": "Whether this principal may transition the instance back to the\nactive state."
+          }
+        }
+      },
+      "AdminClientInstanceCreateRequest": {
+        "type": "object",
+        "required": [
+          "display_name",
+          "current_store_id",
+          "status",
+          "cert_pem"
+        ],
+        "properties": {
+          "auto_create_wrapper_assets": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Initial value for `auto_create_wrapper_assets`. Defaults to\n`false` when omitted."
+          },
+          "cert_pem": {
+            "type": "string"
+          },
+          "current_store_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AdminClientInstanceStatus"
+          }
+        }
+      },
+      "AdminClientInstanceListItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "display_name",
+          "current_store_id",
+          "current_store_name",
+          "status",
+          "current_credential_fingerprint",
+          "actions"
+        ],
+        "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/AdminClientInstanceActionState"
+          },
+          "auto_create_wrapper_assets": {
+            "type": "boolean",
+            "description": "Whether this instance is allowed to auto-create resource and\nwrapper/resource-pair records when its wrappers register on\nstartup. Defaults to `false` for newly-created instances."
+          },
+          "current_credential_fingerprint": {
+            "type": "string"
+          },
+          "current_store_id": {
+            "type": "string"
+          },
+          "current_store_name": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_seen_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/AdminClientInstanceStatus"
+          }
+        }
+      },
+      "AdminClientInstanceStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "disabled"
+        ]
+      },
+      "AdminClientInstanceUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "auto_create_wrapper_assets": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "New value for `auto_create_wrapper_assets`. Omit to leave\nunchanged."
+          },
+          "cert_pem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional replacement client cert PEM. When set, the backend\nparses it, validates it as a fresh client cert, replaces\n`current_credential`, and updates the stored fingerprint."
+          },
+          "current_store_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdminClientInstanceStatus"
+              }
+            ]
+          }
+        }
+      },
+      "AdminClientInstancesListResponse": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminClientInstanceListItem"
+            }
+          }
+        }
+      },
+      "AdminLibsecretAliasDeleteResponse": {
+        "type": "object",
+        "required": [
+          "existed"
+        ],
+        "properties": {
+          "existed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminLibsecretAliasUpsertRequest": {
+        "type": "object",
+        "description": "`PUT .../libsecret/aliases/{name}`. `collection_id` must name an\nexisting collection; the handler returns 404 otherwise.",
+        "required": [
+          "collection_id"
+        ],
+        "properties": {
+          "collection_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretCollectionCreateRequest": {
+        "type": "object",
+        "description": "`POST .../libsecret/collections`. `id` is optional; when absent the\nserver derives one from the label.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretCollectionCreateResponse": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretCollectionDeleteResponse": {
+        "type": "object",
+        "description": "`DELETE .../libsecret/collections/{cid}`. The deletion cascades to\nthe collection's items in one save. Any aliases pointing at the\ndeleted collection are scrubbed atomically and their names\nreported in `aliases_scrubbed`.",
+        "required": [
+          "existed"
+        ],
+        "properties": {
+          "aliases_scrubbed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "existed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminLibsecretCollectionView": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "created",
+          "modified",
+          "items"
+        ],
+        "properties": {
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminLibsecretItemView"
+            }
+          },
+          "label": {
+            "type": "string"
+          },
+          "modified": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminLibsecretItemCreateRequest": {
+        "type": "object",
+        "description": "`POST .../libsecret/collections/{cid}/items`. `id` is optional; when\nabsent the server derives one from the label.",
+        "required": [
+          "label",
+          "content_type",
+          "secret_b64"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "secret_b64": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretItemCreateResponse": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretItemDeleteResponse": {
+        "type": "object",
+        "required": [
+          "existed"
+        ],
+        "properties": {
+          "existed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminLibsecretItemSecretResponse": {
+        "type": "object",
+        "description": "`GET .../libsecret/collections/{cid}/items/{iid}/secret`.",
+        "required": [
+          "secret_b64"
+        ],
+        "properties": {
+          "secret_b64": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminLibsecretItemView": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "content_type",
+          "created",
+          "modified",
+          "attributes"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "modified": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminLibsecretTreeResponse": {
+        "type": "object",
+        "description": "Whole-tree view of one resource's libsecret section. The shape\nthe admin SPA renders top-level.",
+        "required": [
+          "aliases",
+          "collections"
+        ],
+        "properties": {
+          "aliases": {
+            "type": "object",
+            "description": "Alias name → collection id. Free-form name space at the\nService level; aliases pointing at non-existent collections\nare not produced by this endpoint (the alias-PUT handler\nenforces target existence).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "collections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminLibsecretCollectionView"
+            },
+            "description": "Collections in id order. Item secret bytes are omitted; the\nSPA fetches them on demand via the reveal endpoint."
+          }
+        }
+      },
+      "AdminOkResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminOkUserResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminPairCreateRequest": {
+        "type": "object",
+        "required": [
+          "wrapper",
+          "resource_id"
+        ],
+        "properties": {
+          "resource_id": {
+            "type": "string"
+          },
+          "wrapper": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminPairCreateResponse": {
+        "type": "object",
+        "required": [
+          "pair"
+        ],
+        "properties": {
+          "pair": {
+            "$ref": "#/components/schemas/WrapperResourcePairRecord"
+          }
+        }
+      },
+      "AdminPairDeleteBlockers": {
+        "type": "object",
+        "required": [
+          "permission_count"
+        ],
+        "properties": {
+          "permission_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "sample_permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminWrapperPermissionKey"
+            }
+          }
+        }
+      },
+      "AdminPairDeleteResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "blocked_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdminPairDeleteBlockers"
+              }
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminPairWithNewResourceRequest": {
+        "type": "object",
+        "description": "Body of `POST /v1/admin/stores/{id}/pairs/with-new-resource` —\ncreate a fresh resource and pair it with `wrapper` in one\ntransactional step, removing the orphan-resource window the SPA\notherwise has when sequencing two calls.",
+        "required": [
+          "wrapper",
+          "resource_name"
+        ],
+        "properties": {
+          "resource_name": {
+            "type": "string"
+          },
+          "wrapper": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminPairWithNewResourceResponse": {
+        "type": "object",
+        "required": [
+          "resource",
+          "pair"
+        ],
+        "properties": {
+          "pair": {
+            "$ref": "#/components/schemas/WrapperResourcePairRecord"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceRecord"
+          }
+        }
+      },
+      "AdminPairsListResponse": {
+        "type": "object",
+        "required": [
+          "pairs"
+        ],
+        "properties": {
+          "pairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WrapperResourcePairRecord"
+            }
+          }
+        }
+      },
+      "AdminPasswordChangeRequest": {
+        "type": "object",
+        "description": "Self-service password change for the currently authenticated user.\nRequires the current password as proof-of-possession of the\nsession. Distinct from `POST /v1/admin/users/{id}/password`, which\nis the admin reset path and doesn't require the target's old\npassword.",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminResourceCreateRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminResourceCreateResponse": {
+        "type": "object",
+        "required": [
+          "resource"
+        ],
+        "properties": {
+          "resource": {
+            "$ref": "#/components/schemas/ResourceRecord"
+          }
+        }
+      },
+      "AdminResourceDeleteBlockers": {
+        "type": "object",
+        "description": "Counts plus a short sample of names per dependent kind. The sample\nis capped server-side so a heavily-used resource doesn't return\nthousands of strings.",
+        "required": [
+          "secret_count",
+          "pair_count",
+          "permission_count"
+        ],
+        "properties": {
+          "pair_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "permission_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "sample_pairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceWrapperResourcePair"
+            }
+          },
+          "sample_permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminWrapperPermissionKey"
+            }
+          },
+          "sample_secret_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "secret_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminResourceDeleteResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "blocked_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdminResourceDeleteBlockers"
+              }
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminResourceRenameRequest": {
+        "type": "object",
+        "description": "Body of `PUT /v1/admin/stores/{id}/resources/{rid}` — rename an\nexisting resource by id. The id stays stable; the name changes.",
+        "required": [
+          "new_name"
+        ],
+        "properties": {
+          "new_name": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminResourceRenameResponse": {
+        "type": "object",
+        "required": [
+          "resource"
+        ],
+        "properties": {
+          "resource": {
+            "$ref": "#/components/schemas/ResourceRecord"
+          }
+        }
+      },
+      "AdminResourcesListResponse": {
+        "type": "object",
+        "required": [
+          "resources"
+        ],
+        "properties": {
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceRecord"
+            }
+          }
+        }
+      },
+      "AdminSecretDeleteResponse": {
+        "type": "object",
+        "required": [
+          "existed"
+        ],
+        "properties": {
+          "existed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminSecretEntry": {
+        "type": "object",
+        "description": "One per-slot entry as listed by the admin surface. The flat-KV\nadmin endpoints (`env`, `files`) emit these; the `libsecret` slot\nis structurally a tree and is addressed by its own endpoints, so\nit never appears here.",
+        "required": [
+          "resource_id",
+          "slot",
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "slot": {
+            "$ref": "#/components/schemas/KvSecretSlot"
+          }
+        }
+      },
+      "AdminSecretListResponse": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminSecretEntry"
+            }
+          }
+        }
+      },
+      "AdminSecretReadResponse": {
+        "type": "object",
+        "properties": {
+          "material_b64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AdminSecretRenameRequest": {
+        "type": "object",
+        "description": "Move an entry within a resource blob from the URL-addressed\n`(resource_id, slot, from_key)` to `to_key` under the same slot,\noptionally overwriting its material. The whole operation is one\natomic load-modify-save of the resource blob — there is no\nintermediate \"both entries exist\" window.\n\n`material_b64 = None` means \"keep the existing material\"; `Some(_)`\noverwrites in the same step. Rename refuses when `to_key` already\nexists (callers must delete it explicitly).",
+        "required": [
+          "to_key"
+        ],
+        "properties": {
+          "material_b64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to_key": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminSecretWriteRequest": {
+        "type": "object",
+        "required": [
+          "material_b64"
+        ],
+        "properties": {
+          "material_b64": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminSecretsView": {
+        "type": "object",
+        "required": [
+          "entries",
+          "resources"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminSecretEntry"
+            }
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceRecord"
+            }
+          }
+        }
+      },
+      "AdminStoreActionState": {
+        "type": "object",
+        "required": [
+          "can_rotate_key",
+          "can_unlock",
+          "can_lock",
+          "can_delete_now",
+          "can_force_delete"
+        ],
+        "properties": {
+          "can_delete_now": {
+            "type": "boolean",
+            "description": "Whether a plain DELETE is currently allowed."
+          },
+          "can_force_delete": {
+            "type": "boolean",
+            "description": "Whether a force delete is currently allowed."
+          },
+          "can_lock": {
+            "type": "boolean",
+            "description": "Whether this principal may lock the store. True only for\nencrypted stores that are currently unlocked."
+          },
+          "can_rotate_key": {
+            "type": "boolean",
+            "description": "Whether this principal may rotate the store's master key.\nRotation requires the store to be encrypted **and** currently\nunlocked."
+          },
+          "can_unlock": {
+            "type": "boolean",
+            "description": "Whether this principal may unlock the store. True only for\nencrypted stores that are currently locked."
+          }
+        }
+      },
+      "AdminStoreBackendKind": {
+        "type": "string",
+        "description": "Storage backend kind a store uses. Kept as a flat enum so the\nadmin UI can switch on it without having to mirror the full\n`StorageConfig` discriminant logic; per-kind details (currently\nonly `dir`) live on the detail response.",
+        "enum": [
+          "plain",
+          "encrypted"
+        ]
+      },
+      "AdminStoreCreateRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "backend"
+        ],
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/AdminStoreBackendKind"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminStoreCreateResponse": {
+        "type": "object",
+        "description": "Response from `POST /v1/admin/stores`. When the new store is\nencrypted, `key_hex` carries the freshly generated 32-byte master\nkey (hex-encoded) and is returned **exactly once** — subsequent GETs\nof the store never expose the key value. Plain stores have\n`key_hex == None`.",
+        "required": [
+          "store"
+        ],
+        "properties": {
+          "key_hex": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "store": {
+            "$ref": "#/components/schemas/AdminStoreListItem"
+          }
+        }
+      },
+      "AdminStoreDeleteCleanupHint": {
+        "type": "object",
+        "description": "Structured hint for the manual cleanup the operator still has to\nperform after a force-delete: the data dir was left in place so\nthe operator can decide whether to back it up, and the command\nthey would run to remove it.",
+        "required": [
+          "data_dir",
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "data_dir": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminStoreDeleteResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "cleanup_hint": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdminStoreDeleteCleanupHint",
+                "description": "Filesystem cleanup the operator still has to do by hand. Set\nwhen `force=true` deleted a store whose data dir is non-empty;\nthe server intentionally never `rm -rf`s secret material."
+              }
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminStoreListItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "backend",
+          "locked",
+          "usage",
+          "actions"
+        ],
+        "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/AdminStoreActionState"
+          },
+          "backend": {
+            "$ref": "#/components/schemas/AdminStoreBackendKind"
+          },
+          "created_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable internal identifier used for routing and runtime mapping."
+          },
+          "locked": {
+            "type": "boolean",
+            "description": "`true` if this is an encrypted store with no master key loaded.\nPlain stores are never locked."
+          },
+          "name": {
+            "type": "string",
+            "description": "Editable operator-facing display name."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AdminStoreUsageSummary"
+          }
+        }
+      },
+      "AdminStoreLockResponse": {
+        "type": "object",
+        "description": "Response of `POST /v1/admin/stores/{id}/lock`. Carries the\nidempotence flag so the SPA can distinguish \"we just locked the\nstore\" from \"store was already locked when we got here\".",
+        "required": [
+          "ok",
+          "was_locked"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "was_locked": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminStoreRotateKeyResponse": {
+        "type": "object",
+        "description": "Response from `POST /v1/admin/stores/{name}/rotate-key`. The new\nkey is returned exactly once. Every resource in the store has\nbeen transparently re-encrypted under the new key before the\nresponse is sent; `warning` carries a one-line reminder that the\noperator is solely responsible for saving the new value (the\nbackend does not store it on disk).",
+        "required": [
+          "key_hex",
+          "warning"
+        ],
+        "properties": {
+          "key_hex": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminStoreUnlockRequest": {
+        "type": "object",
+        "description": "Body of `POST /v1/admin/stores/{id}/unlock`. The operator pastes\nin the 64-character hex master key that was issued at store\ncreation (or rotation). Whitespace around the value is tolerated.",
+        "required": [
+          "key_hex"
+        ],
+        "properties": {
+          "key_hex": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminStoreUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New description. Pass an empty string to clear it; omit to\nleave it unchanged."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New display name. Pass an empty string to clear it (invalid);\nomit to leave it unchanged."
+          }
+        }
+      },
+      "AdminStoreUsageSummary": {
+        "type": "object",
+        "required": [
+          "mapped_client_instance_count",
+          "has_secrets"
+        ],
+        "properties": {
+          "has_secrets": {
+            "type": "boolean",
+            "description": "Whether the store currently contains at least one secret."
+          },
+          "mapped_client_instance_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many runtime client instances currently map to this store.",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminStoresListResponse": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminStoreListItem"
+            }
+          }
+        }
+      },
+      "AdminUserCreateRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "Plaintext on the wire (over TLS). Hashed server-side with\nArgon2id before any storage step. Never echoed back."
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUserListItem": {
+        "type": "object",
+        "description": "One user record as visible to the admin UI. Mirrors\n`crate::users::UserRecord` minus the password hash, which the API\nnever returns.",
+        "required": [
+          "id",
+          "username",
+          "created_at",
+          "password_changed_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "password_changed_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUserResetPasswordRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUserUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New username. Omit to keep the existing one."
+          }
+        }
+      },
+      "AdminUsersListResponse": {
+        "type": "object",
+        "required": [
+          "users"
+        ],
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminUserListItem"
+            }
+          }
+        }
+      },
+      "AdminWrapperPermissionKey": {
+        "type": "object",
+        "description": "The composite key for a wrapper permission. Used in delete-refusal\nresponses so the SPA can render a \"you must clear these wrapper\npermissions first\" list.",
+        "required": [
+          "client_instance",
+          "wrapper",
+          "resource_id"
+        ],
+        "properties": {
+          "client_instance": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "wrapper": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminWrapperPermissionUpsertRequest": {
+        "type": "object",
+        "description": "Body of `PUT /v1/admin/stores/{id}/wrapper-permissions/...`. The\n`(client_instance, wrapper, resource_id)` tuple comes from the URL\npath; the body holds the mutable parts of a `WrapperPermission`.",
+        "required": [
+          "mode",
+          "writable"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/WrapperApprovalMode"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "writable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminWrapperPermissionsListResponse": {
+        "type": "object",
+        "required": [
+          "permissions"
+        ],
+        "properties": {
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WrapperPermission"
+            }
+          }
+        }
+      },
+      "AdminWrapperPermissionsView": {
+        "type": "object",
+        "required": [
+          "permissions",
+          "pairs",
+          "resources"
+        ],
+        "properties": {
+          "pairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WrapperResourcePairRecord"
+            }
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WrapperPermission"
+            }
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceRecord"
+            }
+          }
+        }
+      },
+      "BootstrapRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "BootstrapResponse": {
+        "type": "object",
+        "required": [
+          "username"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "BootstrapStatusResponse": {
+        "type": "object",
+        "required": [
+          "bootstrap_required"
+        ],
+        "properties": {
+          "bootstrap_required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "EntityCreator": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "An admin operator created this entity through the admin API.",
+            "required": [
+              "id",
+              "username",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The operator's stable id at creation time."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "operator"
+                ]
+              },
+              "username": {
+                "type": "string",
+                "description": "The operator's username at creation time. Kept as a\ndenormalised copy so the field stays meaningful even if\nthe operator is later renamed or deleted."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A runtime client instance auto-created this entity via the\nruntime register endpoint.",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The instance's stable id at creation time."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "client-instance"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Who created an entity record. Distinguishes admin operators (who\nregister resources/pairs by hand through the admin API) from\nruntime client instances (which auto-create on startup when their\n`auto_create_wrapper_assets` flag is on)."
+      },
+      "KvSecretSlot": {
+        "type": "string",
+        "description": "Subset of [`ResourceSlot`] that the flat-KV admin surface emits.\nThe `libsecret` slot is structurally a tree and is addressed by\nits own admin endpoints, so it never appears in flat-entry listings.",
+        "enum": [
+          "env",
+          "files"
+        ]
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "required": [
+          "username"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "ResourceRecord": {
+        "type": "object",
+        "description": "A resource record, one per store.\n\n`id` is a stable, opaque, write-once identifier (`res_<hex>`). It\naddresses the resource on disk (`resources/<id>` blob), in pair\nrecords, and in wrapper permissions — so renaming a resource\npreserves every existing reference.\n\n`name` is the operator-facing label. Mutable via the admin rename\nendpoint; what wrapper configs reference (operator-friendly); what\nthe SPA shows. Duplicates rejected on insert and on rename.",
+        "required": [
+          "id",
+          "name",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/EntityCreator"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "ServiceErrorResponse": {
+        "type": "object",
+        "description": "Generic structured error body returned by both the admin and runtime\nsurfaces. `code` is a stable machine token; `message` is human-facing.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ServiceWrapperResourcePair": {
+        "type": "object",
+        "description": "One `(wrapper, resource)` pair on the admin wire. Used in\nresource-delete blocker payloads to name the dependent pairs that\nwould have to be cleaned up before the delete can proceed. The\npersisted record (`WrapperResourcePairRecord`) adds provenance.",
+        "required": [
+          "wrapper",
+          "resource"
+        ],
+        "properties": {
+          "resource": {
+            "type": "string"
+          },
+          "wrapper": {
+            "type": "string"
+          }
+        }
+      },
+      "WhoamiResponse": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present when a session is attached; absent when the request is\nunauthenticated. The SPA treats `username !== undefined` as\nthe authenticated check."
+          }
+        }
+      },
+      "WrapperApprovalMode": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Deny every invocation through this permission.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "locked"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Allow every invocation through this permission.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unlocked"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Allow invocations until `until_epoch`; deny afterwards. The expiry is\nchecked lazily on each request — no server-side sweeper.",
+            "required": [
+              "until_epoch",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unlocked-until"
+                ]
+              },
+              "until_epoch": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Allow **both** the real wrapper and its debug variant until\n`until_epoch`; deny afterwards. This is the only mode under which a\n`variant = Debug` invocation is allowed — the debug tool can drop an\ninteractive shell or exec arbitrary commands with **read-write**\naccess to the projected secret (writebacks are accepted on the same\nterms as `Real`, gated by `writable`), so it is gated behind an\nexplicit operator opt-in with a TTL. Expiry is checked lazily per\nrequest.",
+            "required": [
+              "until_epoch",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unsafe-debug-until"
+                ]
+              },
+              "until_epoch": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "Runtime mode for one [`WrapperPermission`]."
+      },
+      "WrapperPermission": {
+        "type": "object",
+        "description": "One per-store wrapper permission.\n\nThe tuple `(client_instance, wrapper, resource_id)` is the unique\nkey; persistence layers MUST reject duplicates with the stable\nerror code `duplicate_permission`. `resource_id` is the stable\nbackend id, so renaming a resource preserves every permission\nthat references it.",
+        "required": [
+          "client_instance",
+          "wrapper",
+          "resource_id"
+        ],
+        "properties": {
+          "client_instance": {
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/WrapperApprovalMode"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Operator-facing free-form note. Surfaced in the wrapper\npermissions UI tooltip."
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "wrapper": {
+            "type": "string"
+          },
+          "writable": {
+            "type": "boolean",
+            "description": "Whether the wrapper may write to this resource through the\nsecretsd channel. Applies to the `files` and `libsecret` slots;\n`env` has no wrapper-side write path. Defaults to `false`."
+          }
+        }
+      },
+      "WrapperResourcePairRecord": {
+        "type": "object",
+        "description": "A `(wrapper, resource)` pair record, one per store.\n\n`resource_id` references a [`ResourceRecord`] by its stable id;\nthe admin create endpoint refuses to create a pair whose resource\nis not already present, and resource rename does not invalidate\nthe reference.\n\n`last_used_at` is bumped server-side on every successful runtime\nopen and finalize against the pair. `None` means the pair has\nnever been used since the record was created.",
+        "required": [
+          "wrapper",
+          "resource_id",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/EntityCreator"
+          },
+          "last_used_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "wrapper": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "csrf_header": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRF-Token"
+      },
+      "session_cookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-underwrap-session"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "auth",
+      "description": "Login, logout, whoami, password change."
+    },
+    {
+      "name": "bootstrap",
+      "description": "First-time operator setup."
+    },
+    {
+      "name": "users",
+      "description": "Operator collection CRUD."
+    },
+    {
+      "name": "stores",
+      "description": "Store registry CRUD + lifecycle."
+    },
+    {
+      "name": "client_instances",
+      "description": "Runtime client-instance registry."
+    },
+    {
+      "name": "resources",
+      "description": "Per-store resource records."
+    },
+    {
+      "name": "pairs",
+      "description": "Wrapper ↔ resource pairs."
+    },
+    {
+      "name": "secrets",
+      "description": "Encrypted resource blob slots."
+    },
+    {
+      "name": "policy",
+      "description": "Per-store policy document."
+    }
+  ]
+}

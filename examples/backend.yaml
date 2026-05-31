@@ -1,6 +1,6 @@
-# Example underwrap-backendd configuration.
+# Example underwrap-backend configuration.
 #
-# `underwrap-backendd` reads this YAML file (path passed via `--config`).
+# `underwrap-backend` reads this YAML file (path passed via `--config`).
 # It is wholly separate from the frontend `underwrap` NixOS module: the
 # backend holds the secrets, the policy document, the user collection, and
 # the admin SPA, and frontend daemons connect to it over HTTPS with mTLS.

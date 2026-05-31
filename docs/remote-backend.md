@@ -2,12 +2,12 @@
 
 underwrap splits its storage from its local enforcement. On the target
 host, `underwrapd` brokers wrapper identity locally; it reads and writes
-secrets by talking to a central `underwrap-backendd` over HTTPS with
+secrets by talking to a central `underwrap-backend` over HTTPS with
 mutual TLS.
 
 This page walks through a two-machine deployment:
 
-- **backend host** — runs `underwrap-backendd`. Holds the real secret
+- **backend host** — runs `underwrap-backend`. Holds the real secret
   state and the policy document.
 - **target host** — runs `underwrapd` and the wrappers. Connects
   outbound to the backend host.
@@ -51,8 +51,8 @@ server cert.
 
 ## Backend host
 
-Install `underwrap-backendd` (it builds with plain `cargo build -p
-underwrap-backendd`, no NixOS wrapper machinery required) and write
+Install `underwrap-backend` (it builds with plain `cargo build -p
+underwrap-backend`, no NixOS wrapper machinery required) and write
 `/etc/underwrap-backend/config.yaml`:
 
 ```yaml

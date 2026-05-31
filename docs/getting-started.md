@@ -2,7 +2,7 @@
 
 This guide walks through the simplest useful underwrap setup:
 
-- a central `underwrap-backendd` (here on the same machine, for
+- a central `underwrap-backend` (here on the same machine, for
   simplicity — the same steps work when it lives on a separate host),
 - one frontend instance with one wrapper,
 - one static secret,
@@ -21,7 +21,7 @@ After this, move on to:
 ## What you will build
 
 ```text
-operator browser ─► underwrap-backendd
+operator browser ─► underwrap-backend
                          ▲
                          │ HTTPS + runtime client certs
                          │
@@ -73,7 +73,7 @@ admin:
 Start the daemon:
 
 ```bash
-underwrap-backendd --config /etc/underwrap-backend/config.yaml
+underwrap-backend --config /etc/underwrap-backend/config.yaml
 ```
 
 ## 2. Define the frontend instance
@@ -122,7 +122,7 @@ The module creates:
 - per-user shims on the `PATH` of each `allowedUsers` member: `jira` and
   `debug-jira`
 - daemon config: `/etc/underwrap/daemon/work.yaml`
-- frontend-exec sidecar: `/etc/underwrap/instances/work.yaml`
+- underwrap-exec sidecar: `/etc/underwrap/instances/work.yaml`
 - expected client credential paths: `/var/lib/underwrap-work/client-work.{pem,key}`
   (generated in the next step)
 
@@ -226,7 +226,7 @@ The daemon cannot reach the backend, or the mTLS material is wrong.
 Check:
 
 ```bash
-systemctl status underwrap-backendd.service
+systemctl status underwrap-backend.service
 openssl s_client -connect 127.0.0.1:18443 \
   -CAfile /etc/underwrap/ca.pem \
   -cert   /var/lib/underwrap-work/client-work.pem \

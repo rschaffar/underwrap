@@ -14,7 +14,7 @@ let
   # `cert_fingerprint` that the backend's mTLS layer matches against
   # `ClientInstanceRecord.current_credential.cert_fingerprint` to
   # identify a runtime client (see
-  # `crates/backend-backendd/src/runtime_clients.rs::cert_fingerprint_from_pem`).
+  # `crates/underwrap-backend/src/runtime_clients.rs::cert_fingerprint_from_pem`).
   certFingerprint = name: pem:
     builtins.replaceStrings [ " " "\n" "-" ] [ "" "" "" ] (
       builtins.readFile (
@@ -177,7 +177,7 @@ in {
   users.groups.underwrap-backend = {};
 
   # Backend daemon service (for remote test).
-  systemd.services.underwrap-backendd = {
+  systemd.services.underwrap-backend = {
     description = "underwrap backend daemon";
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
@@ -202,7 +202,7 @@ in {
             stores_data_root = "/var/lib/underwrap-backend/data-root";
           };
         });
-      in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
+      in "${underwrapPackage}/bin/underwrap-backend --config ${cfg}";
       Restart = "on-failure";
       UMask = "0077";
       ProtectSystem = "strict";
@@ -265,7 +265,7 @@ in {
   };
 
   # Local backend daemon serving the local frontend instance.
-  systemd.services.underwrap-backendd-local = {
+  systemd.services.underwrap-backend-local = {
     description = "underwrap backend daemon (local)";
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
@@ -290,7 +290,7 @@ in {
             stores_data_root = "/var/lib/underwrap-backend-local/data-root";
           };
         });
-      in "${underwrapPackage}/bin/underwrap-backendd --config ${cfg}";
+      in "${underwrapPackage}/bin/underwrap-backend --config ${cfg}";
       Restart = "on-failure";
       UMask = "0077";
       ProtectSystem = "strict";

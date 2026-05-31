@@ -1,7 +1,7 @@
 # Admin UI
 
 The underwrap admin UI is a Vite + React + shadcn single-page app that
-ships embedded inside `underwrap-backendd`. There is no separate Node
+ships embedded inside `underwrap-backend`. There is no separate Node
 or Next.js process — the SPA bundle is statically compiled into the
 backend binary via `rust-embed` and served from the same HTTPS admin
 listener that exposes the JSON admin API.
@@ -9,7 +9,7 @@ listener that exposes the JSON admin API.
 ## Deployment shape
 
 ```text
-browser ──HTTPS──► underwrap-backendd admin listener
+browser ──HTTPS──► underwrap-backend admin listener
                        │
                        ├── / and /assets/...      → SPA (embedded)
                        └── /v1/admin/...          → JSON admin API
@@ -71,10 +71,10 @@ underlying model.
 Inside `nix develop`:
 
 ```bash
-cargo build -p backend-backendd   # build the backend binary
+cargo build -p underwrap-backend   # build the backend binary
 cd web
 npm install                       # first time only
-npm run dev                       # Vite dev server with HMR (proxies to backendd)
+npm run dev                       # Vite dev server with HMR (proxies to backend)
 ```
 
 For a production build:
@@ -82,7 +82,7 @@ For a production build:
 ```bash
 cd web
 npm run build                     # writes web/dist/
-cargo build -p backend-backendd   # the embedded SPA picks up web/dist/
+cargo build -p underwrap-backend   # the embedded SPA picks up web/dist/
 ```
 
 The dev server proxies `/v1/admin/*` to the backend, so the same

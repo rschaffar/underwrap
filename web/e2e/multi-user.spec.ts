@@ -3,7 +3,7 @@
  *
  * The product no longer has operator roles or per-store grants — every
  * user has full access (see the Users page note). What remains worth
- * covering end-to-end against a real backendd:
+ * covering end-to-end against a real backend:
  *
  *   1. An admin-created user can sign in and change their own password
  *      from /profile, and the rotation takes effect.

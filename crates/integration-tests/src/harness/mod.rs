@@ -147,35 +147,35 @@ impl TestDaemon {
                 dir: storage_dir.clone(),
             },
         };
-        underwrap_backendd::store_registry::save_store_record(&stores_dir, &test_store)?;
+        underwrap_backend::store_registry::save_store_record(&stores_dir, &test_store)?;
         let ready_cert_pem = std::fs::read_to_string(&ready_pki.client_cert)?;
-        let runtime_client = underwrap_backendd::runtime_clients::ClientInstanceRecord {
+        let runtime_client = underwrap_backend::runtime_clients::ClientInstanceRecord {
             id: format!("inst_{accepted_principal}"),
             display_name: accepted_principal.to_string(),
             current_store_id: "test".to_string(),
-            status: underwrap_backendd::runtime_clients::ClientInstanceStatus::Active,
+            status: underwrap_backend::runtime_clients::ClientInstanceStatus::Active,
             last_seen_at: None,
-            current_credential: underwrap_backendd::runtime_clients::current_credential_from_pem(
+            current_credential: underwrap_backend::runtime_clients::current_credential_from_pem(
                 ready_cert_pem,
             )?,
             auto_create_wrapper_assets,
         };
-        underwrap_backendd::runtime_clients::save_client_instance(&clients_dir, &runtime_client)?;
-        let backend_config = underwrap_backendd::BackendConfig {
+        underwrap_backend::runtime_clients::save_client_instance(&clients_dir, &runtime_client)?;
+        let backend_config = underwrap_backend::BackendConfig {
             stores_dir,
             clients_dir,
             users_dir: base.join("users"),
             bootstrap_file: base.join("bootstrap.json"),
-            https: Some(underwrap_backendd::HttpsConfig {
+            https: Some(underwrap_backend::HttpsConfig {
                 listen: format!("127.0.0.1:{https_port}"),
-                tls: underwrap_backendd::HttpsTlsConfig {
+                tls: underwrap_backend::HttpsTlsConfig {
                     cert_file: pki.server_cert.clone(),
                     key_file: pki.server_key.clone(),
                 },
             }),
-            admin: Some(underwrap_backendd::AdminConfig {
+            admin: Some(underwrap_backend::AdminConfig {
                 allowed_origins: Vec::new(),
-                session_lifetime_secs: underwrap_backendd::DEFAULT_SESSION_LIFETIME_SECS,
+                session_lifetime_secs: underwrap_backend::DEFAULT_SESSION_LIFETIME_SECS,
                 stores_data_root: Some(stores_data_root.clone()),
             }),
         };
@@ -187,7 +187,7 @@ impl TestDaemon {
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                underwrap_backendd::server::run(backend_config, Some(backend_shutdown_clone)).await
+                underwrap_backend::server::run(backend_config, Some(backend_shutdown_clone)).await
             })
         });
 
@@ -448,14 +448,14 @@ impl TestDaemon {
         wrapper: &str,
         resource_id: &str,
     ) -> Result<()> {
+        use underwrap_backend_store::StorageBackend;
         use underwrap_protocol::entities::{
             EntityCreator, PAIRS_DOCUMENT_SECRET_ID, PairsDocument, RESOURCES_DOCUMENT_SECRET_ID,
             ResourceRecord, ResourcesDocument, WrapperResourcePairRecord,
         };
-        use underwrap_store::StorageBackend;
 
         let dir = self.store_dir_for(store_id);
-        let store = underwrap_store::PlainBackend::open(&dir)?;
+        let store = underwrap_backend_store::PlainBackend::open(&dir)?;
         let mut resources: ResourcesDocument = match store
             .read(RESOURCES_DOCUMENT_SECRET_ID)
             .context("read resources")?
@@ -738,8 +738,8 @@ impl TestDaemon {
         id: &str,
     ) -> Result<underwrap_protocol::resource_blob::ResourceBlob> {
         let dir = self.store_dir_for(store);
-        let backend = underwrap_store::PlainBackend::open(&dir)?;
-        underwrap_store::load_resource_blob(&backend, id)
+        let backend = underwrap_backend_store::PlainBackend::open(&dir)?;
+        underwrap_backend_store::load_resource_blob(&backend, id)
     }
 
     /// Persist a resource blob directly to the on-disk store. See
@@ -751,8 +751,8 @@ impl TestDaemon {
         blob: &underwrap_protocol::resource_blob::ResourceBlob,
     ) -> Result<()> {
         let dir = self.store_dir_for(store);
-        let backend = underwrap_store::PlainBackend::open(&dir)?;
-        underwrap_store::save_resource_blob(&backend, id, blob)?;
+        let backend = underwrap_backend_store::PlainBackend::open(&dir)?;
+        underwrap_backend_store::save_resource_blob(&backend, id, blob)?;
         Ok(())
     }
 

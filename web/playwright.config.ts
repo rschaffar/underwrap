@@ -4,13 +4,13 @@ import { defineConfig, devices } from "@playwright/test";
  * Playwright config for the underwrap admin SPA.
  *
  * Tests live in `web/e2e/`. Each spec gets its own `backend` fixture
- * (see `e2e/fixtures.ts`) that spawns a real `underwrap-backendd`
+ * (see `e2e/fixtures.ts`) that spawns a real `underwrap-backend`
  * binary on a random TLS port, against a temp store. The base URL is
  * per-test and exposed via `backend.baseUrl` rather than a global
  * `use.baseURL`, because there isn't a single shared server.
  *
  * Prerequisites (run inside `nix develop`):
- *   - `cargo build -p backend-backendd`  (writes target/debug/underwrap-backendd)
+ *   - `cargo build -p underwrap-backend`  (writes target/debug/underwrap-backend)
  *   - `npm run build`                    (writes web/dist/)
  *
  * `npm run test:e2e` does the SPA build for you; the backend binary is

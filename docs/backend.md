@@ -2,14 +2,14 @@
 
 underwrap splits its secret-handling responsibilities across two processes:
 
-- **`underwrap-backendd`** — a central authenticated service that holds the
+- **`underwrap-backend`** — a central authenticated service that holds the
   real secret storage and the policy document, accessible over HTTPS.
 - **`underwrapd`** — the local broker on the hardened NixOS machine. It
   authenticates wrappers from kernel identity and proxies authorized
   requests to the backend.
 
 Operators manage the backend through the admin UI served directly by
-`underwrap-backendd` on the same HTTPS listener as the runtime API.
+`underwrap-backend` on the same HTTPS listener as the runtime API.
 
 ## Architecture
 
@@ -23,7 +23,7 @@ Operators manage the backend through the admin UI served directly by
           │  egid via SO_PEERPIDFD)        │
           ▼                                ▼
 ┌─────────────────────┐      ┌─────────────────────────────┐
-│  underwrapd         │ HTTPS│  underwrap-backendd         │
+│  underwrapd         │ HTTPS│  underwrap-backend          │
 │  (per-instance,     ├─────▶│  one HTTPS listener         │
 │   Unix-socket IPC)  │ mTLS │  - /v1/wrappers             │
 │                     │      │  - /v1/wrapper-invocations  │
@@ -40,7 +40,7 @@ Operators manage the backend through the admin UI served directly by
   (Linux 6.5+; `SO_PEERCRED` + `/proc/<pid>/status` fallback on older
   kernels). The client-supplied wrapper name is only a selector, validated
   against config — nothing the wrapper sends is trusted for identity.
-- **`underwrapd` ↔ `underwrap-backendd`**: HTTPS with mTLS. The client
+- **`underwrapd` ↔ `underwrap-backend`**: HTTPS with mTLS. The client
   certificate is a self-signed leaf generated locally by the
   `underwrap-keygen` helper on the target host and registered with the
   backend manually by an admin pasting the cert PEM into the admin UI.
@@ -49,7 +49,7 @@ Operators manage the backend through the admin UI served directly by
   verified by the daemon against a pinned CA. The backend maps each
   authenticated client instance to one store and only serves that
   store's view.
-- **operator browser ↔ `underwrap-backendd`**: the same HTTPS listener,
+- **operator browser ↔ `underwrap-backend`**: the same HTTPS listener,
   but without a client certificate. Admin routes authenticate via username +
   argon2id password hash + an opaque `tower-sessions` session cookie (session
   state held server-side in a `MemoryStore`) + a synchronizer-token CSRF
@@ -60,7 +60,7 @@ only the secret material that the authorized read flow exposes.
 
 ## Backend configuration
 
-`underwrap-backendd` takes a single YAML config. Store definitions
+`underwrap-backend` takes a single YAML config. Store definitions
 live in the backend-managed store registry (`stores_dir`), *not*
 inline in this config. All paths are absolute.
 
@@ -263,7 +263,7 @@ session cookies; state-changing requests must also satisfy the CSRF and
 `allowed_origins` checks.
 
 The complete admin API contract is described by the OpenAPI 3.1 document
-at `crates/backend-backendd/openapi.json`, derived from
+at `crates/underwrap-backend/openapi.json`, derived from
 `#[utoipa::path(...)]` annotations on each handler plus
 `#[derive(utoipa::ToSchema)]` on each DTO. The mTLS runtime API
 (`/v1/wrappers`, `/v1/wrapper-invocations*`) is deliberately *not* in

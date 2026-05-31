@@ -7,7 +7,7 @@
 //! daemon-bypass trust-boundary tests.
 //!
 //! Higher-level flow coverage (via the wrapper socket, the daemon, and
-//! frontend-exec) lives in `wrapper_permissions.rs`,
+//! underwrap-exec) lives in `wrapper_permissions.rs`,
 //! `wrapper_writeback.rs`, `last_used.rs`, and the rest of the suite.
 //! The split keeps this file readable: every test here is one request
 //! and one response assertion.

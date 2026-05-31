@@ -406,58 +406,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "backend-backendd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "axum",
- "axum-login",
- "axum_csrf",
- "backend-store",
- "base64",
- "clap",
- "hex",
- "http-body-util",
- "hyper",
- "hyper-util",
- "libc",
- "mime_guess",
- "rand 0.8.5",
- "rcgen",
- "rust-embed",
- "rustls",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "shared-protocol",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-rustls",
- "tower",
- "tower-sessions",
- "tracing",
- "tracing-subscriber",
- "utoipa",
- "utoipa-axum",
-]
-
-[[package]]
-name = "backend-store"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chacha20poly1305",
- "rand 0.8.5",
- "shared-protocol",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -709,15 +657,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 
 [[package]]
-name = "debug-tool"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "libc",
-]
-
-[[package]]
 name = "der-parser"
 version = "10.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -885,87 +824,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "frontend-exec"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libc",
- "serde",
- "serde_yaml",
- "shared-protocol",
-]
-
-[[package]]
-name = "frontend-keygen"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "libc",
- "rcgen",
- "serde_yaml",
- "shared-protocol",
- "tempfile",
- "tracing-subscriber",
- "zeroize",
-]
-
-[[package]]
-name = "frontend-ns"
-version = "0.1.0"
-dependencies = [
- "libc",
- "shared-protocol",
- "tempfile",
-]
-
-[[package]]
-name = "frontend-secretsd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "frontend-secretsd-store",
- "libc",
- "serde",
- "shared-protocol",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
- "zeroize",
-]
-
-[[package]]
-name = "frontend-secretsd-store"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "frontend-underwrapd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "clap",
- "libc",
- "reqwest",
- "rustls",
- "serde_json",
- "serde_yaml",
- "shared-protocol",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1425,19 +1283,19 @@ name = "integration-tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "backend-backendd",
- "backend-store",
  "base64",
- "frontend-underwrapd",
  "libc",
  "percent-encoding",
  "reqwest",
  "rustls",
  "serde_json",
  "serde_yaml",
- "shared-protocol",
  "tempfile",
  "tokio",
+ "underwrap-backend",
+ "underwrap-backend-store",
+ "underwrap-protocol",
+ "underwrapd",
 ]
 
 [[package]]
@@ -2426,22 +2284,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shared-protocol"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "libc",
- "serde",
- "serde_jcs",
- "serde_json",
- "serde_yaml",
- "tokio",
- "utoipa",
- "zeroize",
-]
-
-[[package]]
 name = "shellexpand"
 version = "3.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2932,6 +2774,164 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "underwrap-backend"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "axum-login",
+ "axum_csrf",
+ "base64",
+ "clap",
+ "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "mime_guess",
+ "rand 0.8.5",
+ "rcgen",
+ "rust-embed",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tower-sessions",
+ "tracing",
+ "tracing-subscriber",
+ "underwrap-backend-store",
+ "underwrap-protocol",
+ "utoipa",
+ "utoipa-axum",
+]
+
+[[package]]
+name = "underwrap-backend-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chacha20poly1305",
+ "rand 0.8.5",
+ "tempfile",
+ "underwrap-protocol",
+ "zeroize",
+]
+
+[[package]]
+name = "underwrap-debug-tool"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+]
+
+[[package]]
+name = "underwrap-exec"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_yaml",
+ "underwrap-protocol",
+]
+
+[[package]]
+name = "underwrap-keygen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "rcgen",
+ "serde_yaml",
+ "tempfile",
+ "tracing-subscriber",
+ "underwrap-protocol",
+ "zeroize",
+]
+
+[[package]]
+name = "underwrap-ns"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "underwrap-protocol",
+]
+
+[[package]]
+name = "underwrap-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "libc",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "utoipa",
+ "zeroize",
+]
+
+[[package]]
+name = "underwrap-secretsd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "underwrap-protocol",
+ "underwrap-secretsd-store",
+ "zbus",
+ "zeroize",
+]
+
+[[package]]
+name = "underwrap-secretsd-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "underwrapd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "libc",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "underwrap-protocol",
 ]
 
 [[package]]

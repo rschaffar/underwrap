@@ -52,7 +52,7 @@ wrappers:
 
 #[tokio::test]
 async fn backend_admin_starts_from_empty_dynamic_state() {
-    let backend_bin = cargo_bin("underwrap-backendd");
+    let backend_bin = cargo_bin("underwrap-backend");
     let https_port = pick_unused_port().unwrap();
     let admin_url = format!("https://127.0.0.1:{https_port}");
 
@@ -64,21 +64,21 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
     std::fs::write(&server_cert, crate::harness::TEST_SERVER_PEM).unwrap();
     std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
-    let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
+    let backend_config = serde_yaml::to_string(&underwrap_backend::BackendConfig {
         stores_dir: base.join("stores"),
         clients_dir: base.join("clients"),
         users_dir: base.join("users"),
         bootstrap_file: base.join("bootstrap.json"),
-        https: Some(underwrap_backendd::HttpsConfig {
+        https: Some(underwrap_backend::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),
-            tls: underwrap_backendd::HttpsTlsConfig {
+            tls: underwrap_backend::HttpsTlsConfig {
                 cert_file: server_cert,
                 key_file: server_key,
             },
         }),
-        admin: Some(underwrap_backendd::AdminConfig {
+        admin: Some(underwrap_backend::AdminConfig {
             allowed_origins: Vec::new(),
-            session_lifetime_secs: underwrap_backendd::DEFAULT_SESSION_LIFETIME_SECS,
+            session_lifetime_secs: underwrap_backend::DEFAULT_SESSION_LIFETIME_SECS,
             stores_data_root: Some(base.join("stores-data-root")),
         }),
     })
@@ -130,7 +130,7 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
 #[tokio::test]
 async fn underwrapd_binary_start_and_read() {
     let daemon_bin = cargo_bin("underwrapd");
-    let backend_bin = cargo_bin("underwrap-backendd");
+    let backend_bin = cargo_bin("underwrap-backend");
     let https_port = pick_unused_port().unwrap();
     let service_url = format!("https://127.0.0.1:{https_port}");
     let admin_url = service_url.clone();
@@ -173,21 +173,21 @@ async fn underwrapd_binary_start_and_read() {
             dir: base.join("secrets"),
         },
     };
-    underwrap_backendd::store_registry::save_store_record(&stores_dir, &test_store).unwrap();
+    underwrap_backend::store_registry::save_store_record(&stores_dir, &test_store).unwrap();
     let client_cert_pem = std::fs::read_to_string(&client_cert).unwrap();
-    let client_instance = underwrap_backendd::runtime_clients::ClientInstanceRecord {
+    let client_instance = underwrap_backend::runtime_clients::ClientInstanceRecord {
         id: "inst_underwrap_local".to_string(),
         display_name: "underwrap-local".to_string(),
         current_store_id: "test".to_string(),
-        status: underwrap_backendd::runtime_clients::ClientInstanceStatus::Active,
+        status: underwrap_backend::runtime_clients::ClientInstanceStatus::Active,
         last_seen_at: None,
-        current_credential: underwrap_backendd::runtime_clients::current_credential_from_pem(
+        current_credential: underwrap_backend::runtime_clients::current_credential_from_pem(
             client_cert_pem,
         )
         .unwrap(),
         auto_create_wrapper_assets: false,
     };
-    underwrap_backendd::runtime_clients::save_client_instance(&clients_dir, &client_instance)
+    underwrap_backend::runtime_clients::save_client_instance(&clients_dir, &client_instance)
         .unwrap();
 
     // Seed the resource + pair documents directly in the store. The
@@ -236,21 +236,21 @@ async fn underwrapd_binary_start_and_read() {
         })
         .unwrap(),
     );
-    let backend_config = serde_yaml::to_string(&underwrap_backendd::BackendConfig {
+    let backend_config = serde_yaml::to_string(&underwrap_backend::BackendConfig {
         stores_dir,
         clients_dir,
         users_dir: base.join("users"),
         bootstrap_file: base.join("bootstrap.json"),
-        https: Some(underwrap_backendd::HttpsConfig {
+        https: Some(underwrap_backend::HttpsConfig {
             listen: format!("127.0.0.1:{https_port}"),
-            tls: underwrap_backendd::HttpsTlsConfig {
+            tls: underwrap_backend::HttpsTlsConfig {
                 cert_file: server_cert.clone(),
                 key_file: server_key.clone(),
             },
         }),
-        admin: Some(underwrap_backendd::AdminConfig {
+        admin: Some(underwrap_backend::AdminConfig {
             allowed_origins: Vec::new(),
-            session_lifetime_secs: underwrap_backendd::DEFAULT_SESSION_LIFETIME_SECS,
+            session_lifetime_secs: underwrap_backend::DEFAULT_SESSION_LIFETIME_SECS,
             stores_data_root: None,
         }),
     })

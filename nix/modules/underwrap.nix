@@ -40,7 +40,7 @@ let
     # socket (mode 0660) inherits this group from the daemon's egid at bind
     # time (the daemon does not chown — startup.rs verifies the kernel-
     # assigned gid instead), and authorized users acquire it transiently
-    # via setgid on `underwrap-<instance>`. frontend-exec derives the instance
+    # via setgid on `underwrap-<instance>`. underwrap-exec derives the instance
     # name by stripping the `underwrap-` prefix from its effective GID
     # group, so this name is load-bearing — it must stay
     # `underwrap-<instance>`.
@@ -59,10 +59,10 @@ let
     clientKeyPath = "${stateDir}/client-${instName}.key";
     nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
 
-    # Minimal trusted sidecar read by `underwrap-exec` (frontend-exec) from
+    # Minimal trusted sidecar read by `underwrap-exec` (underwrap-exec) from
     # the fixed path `/etc/underwrap/instances/<instance>.yaml`. It carries
     # only the socket and helper-binary paths — never the backend section or
-    # wrapper definitions — and frontend-exec parses it with
+    # wrapper definitions — and underwrap-exec parses it with
     # `deny_unknown_fields`, so it must stay a strict subset.
     instanceSidecar = {
       socket = socketPath;
@@ -134,7 +134,7 @@ let
     };
 
     etcFiles = {
-      # Minimal sidecar read by frontend-exec (fixed path, deny_unknown_fields).
+      # Minimal sidecar read by underwrap-exec (fixed path, deny_unknown_fields).
       "underwrap/instances/${instName}.yaml".source = instanceSidecarFile;
       # Full DaemonConfig consumed by underwrapd and underwrap-keygen.
       "underwrap/daemon/${instName}.yaml".source = configFile;
@@ -588,7 +588,7 @@ in {
     # self-signed client credential locally; an admin then pastes the
     # cert PEM into the backend admin UI. Exposed as a small symlink
     # derivation so the operator gets the keygen helper without also
-    # pulling underwrap-debug-tool / underwrap-backendd onto every
+    # pulling underwrap-debug-tool / underwrap-backend onto every
     # user's PATH.
     environment.systemPackages = [
       (pkgs.runCommandLocal "underwrap-keygen-bin" { } ''

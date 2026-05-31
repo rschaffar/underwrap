@@ -6,7 +6,7 @@ underwrap has two configuration surfaces:
   wrappers, the daemon's backend connection, and the wrapper chain. The
   module generates the setgid binary, the instance user/group, the
   socket, the systemd service, and per-user shims.
-- **Backend config** (`underwrap-backendd`) — central secret storage,
+- **Backend config** (`underwrap-backend`) — central secret storage,
   the HTTPS admin/runtime listener, and the operator-facing admin API.
 
 ## NixOS module
@@ -47,7 +47,7 @@ services.underwrap.instances.work = {
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `allowedUsers` | list of str | `[]` | Local users that get per-user shims (`<wrapper>` and `debug-<wrapper>`) on `PATH` |
-| `backend.url` | str | — | HTTPS URL of `underwrap-backendd` |
+| `backend.url` | str | — | HTTPS URL of `underwrap-backend` |
 | `backend.caFile` | path | — | CA bundle the daemon uses to verify the backend's server cert |
 | `xdgRuntimeDirBase` | str | `/run/user` | Base for the target's `XDG_RUNTIME_DIR` (`<base>/<uid>`) |
 | `wrappers` | attrset | — | One entry per wrapper (see below) |
@@ -119,7 +119,7 @@ by `underwrap-ns`, not to an `envSet.HOME` override. Choosing a non-passwd
 
 ## Backend configuration
 
-`underwrap-backendd` reads a YAML config (path passed via `--config`).
+`underwrap-backend` reads a YAML config (path passed via `--config`).
 Minimal shape:
 
 ```yaml

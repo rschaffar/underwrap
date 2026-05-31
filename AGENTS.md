@@ -8,7 +8,7 @@ PID namespaces for process isolation. Rust workspace + Nix flake.
 
 **Target platform: NixOS.** The wrapper chain and daemon are deployed
 through a NixOS module that wires `security.wrappers`, declarative
-user/group management, and file capabilities. `underwrap-backendd` is
+user/group management, and file capabilities. `underwrap-backend` is
 deployable on any Linux host.
 
 ## Release posture
@@ -53,21 +53,20 @@ nix build .#checks.x86_64-linux.vm-test              # NixOS VM test (60+ assert
 
 ```
 crates/
-  shared-protocol/         # IPC framing, config schema, messages, SCM_RIGHTS, policy types
-  backend-store/           # StorageBackend trait used by the backend (PlainBackend, EncryptedBackend)
-  frontend-secretsd-store/ # In-memory Secret Service data model + JSON serialization
-  frontend-underwrapd/     # Daemon: thin client of the backend; relays wrapper IPC to /v1/wrapper-invocations
-  frontend-exec/           # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
-  frontend-ns/             # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
-  frontend-secretsd/       # D-Bus Secret Service provider for libsecret mode
-  frontend-keygen/         # `underwrap-keygen`: client mTLS credential / key generation
-  debug-tool/              # Unsafe debug CLI (env summary / interactive shell / exec, with read-write access to the projected secret); the target the daemon execs for `variant = Debug` (gated by an `UnsafeDebugUntil` permission)
-  backend-backendd/        # Central HTTPS service + admin API + auth + SPA hosting + policy authority
-  integration-tests/       # Cargo integration tests (real daemon + backend)
-web/                       # Vite + React + shadcn admin SPA (served by backend-backendd)
+  underwrap-protocol/        # IPC framing, config schema, messages, SCM_RIGHTS, policy types
+  underwrap-backend-store/   # StorageBackend trait used by the backend (PlainBackend, EncryptedBackend)
+  underwrap-secretsd-store/  # In-memory Secret Service data model + JSON serialization
+  underwrapd/                # Daemon: thin client of the backend; relays wrapper IPC to /v1/wrapper-invocations
+  underwrap-exec/            # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
+  underwrap-ns/              # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
+  underwrap-secretsd/        # D-Bus Secret Service provider for libsecret mode
+  underwrap-keygen/          # `underwrap-keygen`: client mTLS credential / key generation
+  underwrap-debug-tool/      # Unsafe debug CLI (env summary / interactive shell / exec, with read-write access to the projected secret); the target the daemon execs for `variant = Debug` (gated by an `UnsafeDebugUntil` permission)
+  underwrap-backend/         # Central HTTPS service + admin API + auth + SPA hosting + policy authority
+  integration-tests/         # Cargo integration tests (real daemon + backend)
+web/                       # Vite + React + shadcn admin SPA (served by underwrap-backend)
 nix/
   modules/underwrap.nix         # Multi-instance frontend NixOS module
-  modules/underwrap-backend.nix # Retired placeholder (stores are now backend-managed dynamic records)
   tests/node.nix                # VM test node configuration
   tests/test.py                 # VM test script (Python)
   tests/spoof.py                # Socket spoofing test helper
@@ -100,30 +99,30 @@ prefixes.
 
 ## Key files to understand first
 
-- `crates/frontend-exec/src/main.rs` — two-stage wrapper entry point;
+- `crates/underwrap-exec/src/main.rs` — two-stage wrapper entry point;
   authenticates against the daemon, receives env + a scoped resource
   channel fd, then re-execs into `underwrap-ns`
-- `crates/frontend-ns/src/main.rs` — PID namespace + hardening + libsecret mode
-- `crates/frontend-underwrapd/src/server.rs` — daemon: lazy
+- `crates/underwrap-ns/src/main.rs` — PID namespace + hardening + libsecret mode
+- `crates/underwrapd/src/server.rs` — daemon: lazy
   [`BackendClient`] open, wrapper-socket dispatch
-- `crates/frontend-underwrapd/src/backend_client.rs` — typed mTLS
+- `crates/underwrapd/src/backend_client.rs` — typed mTLS
   client for the three runtime endpoints
-- `crates/frontend-underwrapd/src/wrapper_flow/` — wrapper socket
+- `crates/underwrapd/src/wrapper_flow/` — wrapper socket
   request flow (peer auth → open invocation on backend → relay
   ReadOk + scoped channel)
-- `crates/frontend-underwrapd/src/wrapper_resource_channel.rs` —
+- `crates/underwrapd/src/wrapper_resource_channel.rs` —
   serves Checkout from the cached blob; turns Checkin / UsageSignal
   into finalize calls
-- `crates/backend-backendd/src/server.rs` — HTTPS service + admin
+- `crates/underwrap-backend/src/server.rs` — HTTPS service + admin
   API + the three runtime handlers (`/v1/wrappers`,
   `/v1/wrapper-invocations`, `/v1/wrapper-invocations/finalize`) +
   sole policy authority
-- `crates/backend-backendd/src/auth.rs` — Argon2id password hashing + opaque session cookies (tower-sessions `MemoryStore` — sessions do not survive a restart)
-- `crates/backend-backendd/src/web.rs` — embedded SPA hosting via `rust-embed`
-- `crates/backend-backendd/src/users.rs` — flat user records (admin login accounts). Authorization is flat: any authenticated user can perform any admin action; a "last user" guard keeps the collection non-empty. There are no roles or per-store grants.
-- `crates/shared-protocol/src/policy.rs` — `PolicyDocument`, `WrapperPermission`, `WrapperApprovalMode`
-- `crates/shared-protocol/src/entities.rs` — `ResourceRecord`, `WrapperResourcePairRecord`, `EntityCreator` (first-class entities with provenance)
-- `crates/shared-protocol/src/service.rs` — wire types incl.
+- `crates/underwrap-backend/src/auth.rs` — Argon2id password hashing + opaque session cookies (tower-sessions `MemoryStore` — sessions do not survive a restart)
+- `crates/underwrap-backend/src/web.rs` — embedded SPA hosting via `rust-embed`
+- `crates/underwrap-backend/src/users.rs` — flat user records (admin login accounts). Authorization is flat: any authenticated user can perform any admin action; a "last user" guard keeps the collection non-empty. There are no roles or per-store grants.
+- `crates/underwrap-protocol/src/policy.rs` — `PolicyDocument`, `WrapperPermission`, `WrapperApprovalMode`
+- `crates/underwrap-protocol/src/entities.rs` — `ResourceRecord`, `WrapperResourcePairRecord`, `EntityCreator` (first-class entities with provenance)
+- `crates/underwrap-protocol/src/service.rs` — wire types incl.
   `Runtime{WrapperRegister, WrapperInvocationOpen,
   WrapperInvocationFinalize}{Request,Response}`
 - `web/src/router.tsx` — TanStack Router setup; the SPA's auth/bootstrap guard lives here
@@ -211,7 +210,7 @@ on backward compatibility concerns.
 - Admin SPA Vitest: `cd web && npm test`
 - Admin SPA Playwright (run inside `nix develop`): `cd web && npm run test:e2e`
 - VM test: `nix build .#checks.x86_64-linux.vm-test` — boots a real NixOS VM, tests
-  local and remote-style instances against real `underwrap-backendd` processes,
+  local and remote-style instances against real `underwrap-backend` processes,
   unprivileged user, spoofing resistance, PID namespace isolation, memory
   protection, core dump prevention, permission-driven wrapper locking
 
@@ -299,7 +298,7 @@ redirect an existing authorization to a different secret, which is the
 trust-boundary reason for the asymmetry.
 
 **Central backend:** the frontend daemon connects outbound to
-`underwrap-backendd` over HTTPS with mTLS. The backend holds secrets, the
+`underwrap-backend` over HTTPS with mTLS. The backend holds secrets, the
 policy document, the user collection, and the admin SPA. Users interact
 with the backend over its HTTPS admin listener with session-cookie auth
 (Argon2id passwords + opaque tower-sessions cookies backed by `MemoryStore`
@@ -386,7 +385,7 @@ the canonical blob bytes from `POST /v1/wrapper-invocations` and
 caches them for the lifetime of the channel; on Checkout it serves
 those bytes verbatim; on Checkin / UsageSignal it issues
 `POST /v1/wrapper-invocations/finalize` (with or without a blob).
-Mount paths are a daemon-local concern — `frontend-ns` derives them
+Mount paths are a daemon-local concern — `underwrap-ns` derives them
 from the wrapper config — and never travel on the wire.
 
 `WrapperResourcePairRecord` carries `last_used_at` (bumped on every
@@ -402,7 +401,7 @@ resource (suppressible via `UNDERWRAP_SUPPRESS_READONLY_WARNING=1`).
 secretsd applies the same warning UX to libsecret writes; the D-Bus
 client sees its `SetSecret` as succeeding.
 
-`UNDERWRAP_SUPPRESS_READONLY_WARNING` is honored by `frontend-ns` and
-`frontend-secretsd`. It is **never** propagated into the target
+`UNDERWRAP_SUPPRESS_READONLY_WARNING` is honored by `underwrap-ns` and
+`underwrap-secretsd`. It is **never** propagated into the target
 process's environment.
 

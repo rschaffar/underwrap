@@ -1,0 +1,31 @@
+[package]
+name = "underwrapd"
+description = "The underwrap daemon — secret broker with Unix socket IPC"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "underwrapd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "underwrapd"
+path = "src/main.rs"
+
+[dependencies]
+underwrap-protocol = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

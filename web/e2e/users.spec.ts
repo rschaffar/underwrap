@@ -6,7 +6,7 @@
  * Users-page UI surface that the multi-user spec treats as setup:
  * edit, reset-password, delete, and the last-admin protection guard.
  *
- * Each test runs against a fresh backendd with the bootstrap admin
+ * Each test runs against a fresh backend with the bootstrap admin
  * already created (the `backendWithAdmin` fixture).
  */
 import { test, expect, loginViaUi, ADMIN_USERNAME } from "./fixtures";

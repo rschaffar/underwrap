@@ -35,7 +35,7 @@
               (craneLib.filterCargoSources path type)
               || (pkgs.lib.hasInfix "/src/assets/" path)
               # The committed OpenAPI spec at
-              # `crates/backend-backendd/openapi.json` is read off disk
+              # `crates/underwrap-backend/openapi.json` is read off disk
               # by the `openapi_export` drift test and rewritten +
               # panicked on any mismatch; without it in the sandbox
               # source the test sees "expected … actual <empty>".
@@ -74,7 +74,7 @@
           # Build the admin SPA via npm. The resulting `dist/`
           # directory is what `rust_embed` reads via the
           # `$UNDERWRAP_WEB_DIST` interpolation in
-          # `crates/backend-backendd/src/web.rs`. The Rust build
+          # `crates/underwrap-backend/src/web.rs`. The Rust build
           # itself doesn't depend on `nodejs`; only this derivation
           # does, so the resulting binary closure stays node-free.
           underwrapWebDist = pkgs.buildNpmPackage {
@@ -85,14 +85,14 @@
             # offending hash printed; copy it back into this file.
             npmDepsHash = "sha256-953WYvZOCLf2OEvkZftxMMHz73aTuBrq+qtMI8B2HtU=";
             # The npm `prebuild` hook runs `openapi-typescript` against
-            # `../crates/backend-backendd/openapi.json`, which lives
+            # `../crates/underwrap-backend/openapi.json`, which lives
             # outside the `./web` source root. Stage it at the
             # expected relative path before the build phase so the
             # generator can find it.
             preBuild = ''
-              mkdir -p ../crates/backend-backendd
-              cp ${./crates/backend-backendd/openapi.json} \
-                ../crates/backend-backendd/openapi.json
+              mkdir -p ../crates/underwrap-backend
+              cp ${./crates/underwrap-backend/openapi.json} \
+                ../crates/underwrap-backend/openapi.json
             '';
             npmBuildScript = "build";
             installPhase = ''
@@ -106,7 +106,7 @@
           # Common args extended with the env-var pointer to the
           # built SPA — every Rust derivation in the workspace gets
           # the same `UNDERWRAP_WEB_DIST` value, which only
-          # `backend-backendd`'s build.rs / rust-embed actually
+          # `underwrap-backend`'s build.rs / rust-embed actually
           # consults.
           commonArgsWithWeb = commonArgs // {
             UNDERWRAP_WEB_DIST = "${underwrapWebDist}";
@@ -127,12 +127,12 @@
         in {
           packages = {
             default = workspace;
-            underwrapd = mkCrate "frontend-underwrapd";
-            underwrap-exec = mkCrate "frontend-exec";
-            underwrap-ns = mkCrate "frontend-ns";
-            underwrap-debug-tool = mkCrate "debug-tool";
-            underwrap-backendd = mkCrate "backend-backendd";
-            underwrap-secretsd = mkCrate "frontend-secretsd";
+            underwrapd = mkCrate "underwrapd";
+            underwrap-exec = mkCrate "underwrap-exec";
+            underwrap-ns = mkCrate "underwrap-ns";
+            underwrap-debug-tool = mkCrate "underwrap-debug-tool";
+            underwrap-backend = mkCrate "underwrap-backend";
+            underwrap-secretsd = mkCrate "underwrap-secretsd";
             # Expose the SPA build separately so the VM test (and any
             # external consumer) can grab the static bundle without
             # rebuilding the workspace.

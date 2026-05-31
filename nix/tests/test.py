@@ -318,7 +318,7 @@ REMOTE_WRAPPER_RESOURCES = {
 
 # Resolved at boot from `GET /v1/admin/client-instances`. The backend
 # assigns runtime-client ids dynamically (see
-# `crates/backend-backendd/src/runtime_clients.rs`), so we look them
+# `crates/underwrap-backend/src/runtime_clients.rs`), so we look them
 # up by their `current_store_name`.
 LOCAL_CLIENT_INSTANCE = None
 REMOTE_CLIENT_INSTANCE = None
@@ -370,8 +370,8 @@ def boot_and_service_checks():
     # ============================================================
 
     machine.wait_for_unit("multi-user.target")
-    machine.wait_for_unit("underwrap-backendd.service")
-    machine.wait_for_unit("underwrap-backendd-local.service")
+    machine.wait_for_unit("underwrap-backend.service")
+    machine.wait_for_unit("underwrap-backend-local.service")
 
     # Wait for the unified HTTPS listeners to start accepting before
     # bootstrapping. The bootstrap-status endpoint is the cheapest GET
@@ -536,7 +536,7 @@ def local_socket_permissions():
     # The old per-wrapper setgid binaries are gone.
     machine.fail("test -e /run/wrappers/bin/local-test-echo")
 
-    # Instance configs: full DaemonConfig + minimal frontend-exec sidecar.
+    # Instance configs: full DaemonConfig + minimal underwrap-exec sidecar.
     machine.succeed("test -f /etc/underwrap/daemon/local.yaml")
     machine.succeed("test -f /etc/underwrap/instances/local.yaml")
     # The old per-wrapper sidecar directory is gone.
@@ -1690,7 +1690,7 @@ def encrypted_store_in_memory_keys():
          state directory.
       2. Seed a known plaintext through the admin secret-write
          endpoint and verify it round-trips through admin secret-read.
-      3. Restart `underwrap-backendd-local`. After the restart the
+      3. Restart `underwrap-backend-local`. After the restart the
          store boots locked — admin secret-read must return
          `store_locked`.
       4. Unlock with the wrong hex — refused with `key_mismatch`,
@@ -1752,8 +1752,8 @@ def encrypted_store_in_memory_keys():
     )
 
     # ---- 3. restart → boots locked --------------------------------
-    machine.succeed("systemctl restart underwrap-backendd-local")
-    machine.wait_for_unit("underwrap-backendd-local.service")
+    machine.succeed("systemctl restart underwrap-backend-local")
+    machine.wait_for_unit("underwrap-backend-local.service")
     # The admin listener takes a moment to come back up.
     machine.wait_until_succeeds(
         f"curl -fsS --cacert {CA_CERT} "
@@ -1821,8 +1821,8 @@ def encrypted_store_in_memory_keys():
     )
 
     # ---- 7. restart → locked, old key refused, new key unlocks ----
-    machine.succeed("systemctl restart underwrap-backendd-local")
-    machine.wait_for_unit("underwrap-backendd-local.service")
+    machine.succeed("systemctl restart underwrap-backend-local")
+    machine.wait_for_unit("underwrap-backend-local.service")
     machine.wait_until_succeeds(
         f"curl -fsS --cacert {CA_CERT} "
         f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
@@ -1932,14 +1932,14 @@ def remote_service_lifecycle():
     machine.log("PASS: no remote secret on local frontend disk")
 
     # Stop backend service: fail.
-    machine.succeed("systemctl stop underwrap-backendd.service")
+    machine.succeed("systemctl stop underwrap-backend.service")
     time.sleep(0.5)
     machine.fail(su("/run/wrappers/bin/underwrap-tunnel remote-echo"))
     machine.log("PASS: wrapper fails when backend service is down")
 
     # Restart backend service: succeed again.
-    machine.succeed("systemctl start underwrap-backendd.service")
-    machine.wait_for_unit("underwrap-backendd.service")
+    machine.succeed("systemctl start underwrap-backend.service")
+    machine.wait_for_unit("underwrap-backend.service")
     time.sleep(1)
     output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/underwrap-tunnel remote-echo"))
     assert "REMOTE_TOKEN=secret_via_service" in output
@@ -2185,8 +2185,8 @@ def runtime_api_invariants():
     output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo"))
     assert "MY_TOKEN=" in output
 
-    machine.succeed("systemctl restart underwrap-backendd-local.service")
-    machine.wait_for_unit("underwrap-backendd-local.service")
+    machine.succeed("systemctl restart underwrap-backend-local.service")
+    machine.wait_for_unit("underwrap-backend-local.service")
     # Give the new listener a moment to bind before the next wrapper call.
     time.sleep(1)
 
@@ -2356,8 +2356,8 @@ def runtime_api_invariants():
     # run the integration tests.
     # ----------------------------------------------------------
     forbidden = ("approval_key", "ApprovalProof", "ApprovalRequired", "PerCallApproval")
-    for unit in ("underwrapd-local.service", "underwrap-backendd-local.service",
-                 "underwrap-backendd.service"):
+    for unit in ("underwrapd-local.service", "underwrap-backend-local.service",
+                 "underwrap-backend.service"):
         pid = machine.succeed(
             f"systemctl show {unit} -p MainPID --value"
         ).strip()

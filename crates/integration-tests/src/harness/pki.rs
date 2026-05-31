@@ -233,7 +233,7 @@ pub(super) fn test_pki_paths(base: &Path, client_name: &str) -> Result<TestPkiPa
     std::fs::write(&client_cert, client_cert_bytes)?;
     std::fs::write(&client_key, client_key_bytes)?;
     // The daemon refuses to start unless its mTLS credential is 0600 or
-    // tighter (see frontend-underwrapd startup::check_credential_permissions),
+    // tighter (see underwrapd startup::check_credential_permissions),
     // matching what underwrap-keygen writes. `std::fs::write` honors the
     // umask (typically 0644), so tighten explicitly here.
     {

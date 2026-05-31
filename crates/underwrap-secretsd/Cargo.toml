@@ -1,0 +1,25 @@
+[package]
+name = "underwrap-secretsd"
+description = "D-Bus Secret Service provider for underwrap libsecret mode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "underwrap-secretsd"
+path = "src/main.rs"
+
+[dependencies]
+underwrap-protocol = { workspace = true }
+underwrap-secretsd-store = { path = "../underwrap-secretsd-store" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libc = { workspace = true }
+zeroize = { workspace = true }
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

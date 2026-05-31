@@ -1,0 +1,20 @@
+[package]
+name = "underwrap-backend-store"
+description = "Storage backend trait and built-in implementations for underwrap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "underwrap_backend_store"
+path = "src/lib.rs"
+
+[dependencies]
+underwrap-protocol = { workspace = true }
+anyhow = { workspace = true }
+chacha20poly1305 = { workspace = true }
+zeroize = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

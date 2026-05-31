@@ -154,7 +154,7 @@ Every byte of secret material — whether it is:
 - directory-credential file contents
 - derived access-token source material
 
-is persisted only in `underwrap-backendd`'s `StorageBackend` (`PlainBackend`
+is persisted only in `underwrap-backend`'s `StorageBackend` (`PlainBackend`
 or `EncryptedBackend`). The daemon, the wrapper chain, and the namespace
 never write secret material to disk: the daemon caches the backend's
 opaque resource blob in process memory for the lifetime of the wrapper
@@ -264,7 +264,7 @@ This principle matters most in:
 
 ### 7. The runtime wire never names a storage key
 
-The runtime mTLS API between `underwrapd` and `underwrap-backendd`
+The runtime mTLS API between `underwrapd` and `underwrap-backend`
 speaks **only** `(wrapper_name, resource_name)`. There is no
 `secret_id` field, no `prefix` field, no path. The three endpoints
 are `POST /v1/wrappers`, `POST /v1/wrapper-invocations`, and
@@ -692,7 +692,7 @@ are involved, both at fixed paths the NixOS module writes:
 - the **daemon config**, `/etc/underwrap/daemon/<instance>.yaml`, holds
   each wrapper's target mapping and the backend connection. Only the
   daemon (and `underwrap-keygen`, for the `backend` section) read it.
-- the **frontend-exec sidecar**, `/etc/underwrap/instances/<instance>.yaml`,
+- the **underwrap-exec sidecar**, `/etc/underwrap/instances/<instance>.yaml`,
   is deliberately minimal: the socket path plus the helper-binary paths
   (`underwrap-ns`, the dbus/secretsd binaries). It carries no target
   paths.
@@ -741,7 +741,7 @@ This is one of the least glamorous but most important parts of the design. A lot
 
 ### Default passthrough trade-offs
 
-The default passthrough list (`crates/frontend-ns/src/env.rs`) keeps a
+The default passthrough list (`crates/underwrap-ns/src/env.rs`) keeps a
 handful of caller-controlled variables for usability. None is wrong by
 default, but each is *caller-chosen* and inherited by the **target**, so
 they constrain what "narrow helper" can promise. Operators should trim
@@ -792,7 +792,7 @@ This is a deliberate layering:
 ### Backend-managed administration
 
 The admin surface is not a Unix socket on the target host. Operators
-manage wrapper permissions through the central `underwrap-backendd`'s
+manage wrapper permissions through the central `underwrap-backend`'s
 admin HTTP API (session-cookie authenticated, with synchronizer-token
 CSRF) or through the browser-based admin UI in front of it. The target
 host only needs outbound mTLS access to the backend.
@@ -865,7 +865,7 @@ Logging does not make a system secure, but in systems that are trying to be secu
 
 ## Central backend security model
 
-Running `underwrap-backendd` centrally changes **where** secrets live,
+Running `underwrap-backend` centrally changes **where** secrets live,
 but not the basic wrapper flow on the target host.
 
 ### What the central backend is trying to buy you
@@ -918,7 +918,7 @@ mechanisms tighten it:
 
 ### Backend trust model
 
-`underwrap-backendd` authenticates two distinct surfaces:
+`underwrap-backend` authenticates two distinct surfaces:
 
 - **Runtime** (`/v1/*`) — mutual TLS. Every `underwrapd` instance gets
   one client certificate, generated locally as a **self-signed leaf** by

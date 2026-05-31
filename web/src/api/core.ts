@@ -2,7 +2,7 @@
  * Typed admin-API client.
  *
  * Built on top of `openapi-fetch` against the schema generated from
- * `crates/backend-backendd/openapi.json` (see `npm run generate:api`).
+ * `crates/underwrap-backend/openapi.json` (see `npm run generate:api`).
  * The schema is the source of truth — every request body, response
  * shape, and path is inferred from it.
  *

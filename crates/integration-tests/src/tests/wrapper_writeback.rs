@@ -2,7 +2,7 @@
 //! protocol: `Checkout` / `Checkin` / `UsageSignal`.
 //!
 //! These tests act as the wrapper-side of the IPC, driving the channel
-//! against a real `underwrapd` connected to a real `underwrap-backendd`.
+//! against a real `underwrapd` connected to a real `underwrap-backend`.
 //! They cover the daemon-observable surface of the writeback decision
 //! tree. The wrapper-side journal/stderr UX (the "drop+warn" arms) and
 //! the env-clear regression are exercised by the VM test (task 432).
@@ -472,7 +472,7 @@ async fn noncanonical_checkin_rejected() {
 //
 // These tests pin down that every verb's success-path bumps the pair,
 // including the "rejected Checkin → drop+UsageSignal" path that the
-// frontend-ns decision tree synthesizes.
+// underwrap-ns decision tree synthesizes.
 
 async fn find_pair_last_used(daemon: &TestDaemon, wrapper: &str, resource: &str) -> Option<u64> {
     let pairs = daemon.list_pairs("test").await.unwrap();

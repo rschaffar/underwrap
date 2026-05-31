@@ -73,9 +73,9 @@ Judgement calls follow from that:
 
 The user names a **component**. A component is one of:
 
-- a single crate (e.g. `crates/frontend-exec`)
+- a single crate (e.g. `crates/underwrap-exec`)
 - a module subtree inside a crate (e.g.
-  `crates/frontend-underwrapd/src/wrapper_flow/`)
+  `crates/underwrapd/src/wrapper_flow/`)
 - a named subsystem that spans a few files but is clearly bounded (e.g.
   "the libsecret channel", "the admin auth gate")
 - one of the named architectural seams from `CLAUDE.md`
