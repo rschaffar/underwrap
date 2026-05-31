@@ -40,7 +40,10 @@ tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
 http-body-util = "0.1"
-rustls = "0.23"
+# The workspace explicitly uses the `ring` crypto provider
+# (`rustls::crypto::ring::default_provider()`), so enable the feature here
+# rather than relying on a transitive crate to turn it on via unification.
+rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
 sha2 = "0.10"
