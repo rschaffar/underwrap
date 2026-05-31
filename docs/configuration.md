@@ -96,7 +96,7 @@ least one projection slot (`env`, `files`, or `libsecret`).
 The debug tool is **always** built alongside every wrapper. Whether an
 operator can actually invoke it is a runtime decision: set the
 `(client_instance, wrapper, resource)` permission to `UnsafeDebugUntil`
-in the admin UI, then run `debug-<wrapper>` (or `uw-<instance> debug
+in the admin UI, then run `debug-<wrapper>` (or `underwrap-<instance> debug
 <wrapper>`).
 
 ### Target-environment policy
@@ -146,7 +146,7 @@ Operators re-authenticate after every backend restart.
 
 The admin SPA ships embedded inside the backend binary and is served
 from the same HTTPS listener as the JSON admin API at `/v1/admin/*`.
-Browser sessions use Argon2id passwords, opaque `__Host-uw-session`
+Browser sessions use Argon2id passwords, opaque `__Host-underwrap-session`
 cookies, and synchronizer-token CSRF — see [Admin UI](admin-ui.md). There
 is no separate admin process and no bearer-token mode.
 

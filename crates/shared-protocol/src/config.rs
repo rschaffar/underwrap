@@ -25,7 +25,7 @@ pub struct DaemonConfig {
     pub backend: BackendServiceConfig,
 
     /// Instance name. Used for debug metadata and (in the NixOS module)
-    /// the `uw-<instance>` binary / `underwrap-<instance>` group naming.
+    /// the `underwrap-<instance>` binary and same-named instance group.
     pub instance: String,
 
     /// The single wrapper socket for this instance. One socket per
@@ -58,7 +58,7 @@ pub struct DaemonConfig {
     pub wrappers: HashMap<String, WrapperDef>,
 }
 
-/// Reserved wrapper-name token: `uw-<instance> debug <wrapper>` selects
+/// Reserved wrapper-name token: `underwrap-<instance> debug <wrapper>` selects
 /// the debug variant, so a wrapper may not itself be named `debug`.
 pub const RESERVED_WRAPPER_NAME_DEBUG: &str = "debug";
 

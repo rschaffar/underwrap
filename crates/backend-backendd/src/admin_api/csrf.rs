@@ -53,7 +53,7 @@ pub(crate) struct Principal {
 /// CSRF cookie name. The `__Host-` prefix requires `Secure; Path=/`
 /// and forbids a `Domain` attribute, which closes off cookie-write
 /// attacks from related subdomains.
-pub(crate) const CSRF_COOKIE_NAME: &str = "__Host-uw-csrf";
+pub(crate) const CSRF_COOKIE_NAME: &str = "__Host-underwrap-csrf";
 
 /// HTTP header the SPA sends carrying the HMAC-authenticity token for
 /// the request's CSRF cookie.

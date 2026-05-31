@@ -157,7 +157,7 @@ prefixes.
 - Never put secrets in argv, environment variables between stages, or temp files
   during the wrapper handoff (use pipe fd 3)
 - Never trust argv[0] (symlinks can set it to anything). The wrapper to
-  run comes from the validated name *argument* (`uw-<instance>
+  run comes from the validated name *argument* (`underwrap-<instance>
   [debug] <wrapper>`), not argv[0]; the kernel identity is the instance
   group egid, read race-free via `SO_PEERPIDFD`.
 - Never skip return value checks on privilege-drop syscalls
@@ -275,9 +275,9 @@ another module, import it directly from where it lives.
 **Two-stage wrapper chain:**
 `underwrap-exec` (setgid) → pipe fd 3 → `underwrap-ns` (cap_sys_admin) → target in PID namespace
 
-**Identity model:** one `uw-<instance>` setgid binary + one
-`underwrap-<instance>` group (= daemon's primary group) + one `0660`
-socket per instance. The kernel gate is the instance-group egid (read
+**Identity model:** one setgid binary and one group, both named
+`underwrap-<instance>` (the group is the daemon's primary group), plus
+one `0660` socket per instance. The kernel gate is the instance-group egid (read
 race-free via `SO_PEERPIDFD`); the client-supplied wrapper name + variant
 arrive in the request and the daemon validates the name against config
 (rejecting unknown names and the reserved `debug`). The daemon — not the

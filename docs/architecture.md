@@ -8,7 +8,7 @@ surface in depth, see [The underwrap backend](backend.md).
 | Component | Role | Typical location |
 |---|---|---|
 | `underwrapd` | Frontend daemon on the target host | target machine running wrappers |
-| `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/uw-<instance>` |
+| `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/underwrap-<instance>` |
 | `underwrap-ns` | Stage 2 wrapper: create namespace, exec target | `/run/wrappers/bin/underwrap-ns` |
 | `underwrap-backendd` | Central service: holds secrets + policy, authenticates `underwrapd` instances over mTLS, serves the embedded admin SPA | operator workstation or central server |
 | `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
@@ -22,7 +22,7 @@ the layers top-down without spelunking.
 The wrapper chain is two binaries:
 
 1. **`underwrap-exec`** — installed once per instance as the setgid
-   entry point `uw-<instance>`, setgid to the instance group
+   entry point `underwrap-<instance>`, setgid to the instance group
    `underwrap-<instance>`. It parses `[debug] <wrapper> [args]`,
    authenticates against `underwrapd` via the instance-group egid, and
    receives secret material plus the daemon-chosen target.
@@ -41,16 +41,16 @@ binary.
 ## Per-user PATH integration
 
 `security.wrappers` is system-wide, so the one setgid entry point per
-instance lives under `/run/wrappers/bin/uw-<instance>` (e.g.
-`uw-work`). On top of it, the NixOS module installs per-user convenience
+instance lives under `/run/wrappers/bin/underwrap-<instance>` (e.g.
+`underwrap-work`). On top of it, the NixOS module installs per-user convenience
 shims into each authorized user's profile directory —
 `/etc/profiles/per-user/<user>/bin/jira` and `.../bin/debug-jira` for any
 user in the instance's `allowedUsers`. Those shims are plain,
-unprivileged scripts that just `exec /run/wrappers/bin/uw-<instance>
+unprivileged scripts that just `exec /run/wrappers/bin/underwrap-<instance>
 [debug] jira "$@"`; they carry no setgid bit and no config. NixOS places
 per-user profile bins on each user's `PATH`, so users invoke wrappers by
 their bare attribute name. All kernel identity and target selection
-happen in `uw-<instance>` and the daemon, never in the shim.
+happen in `underwrap-<instance>` and the daemon, never in the shim.
 
 ## End-to-end request flow
 
@@ -59,7 +59,7 @@ For a normal env-var wrapper:
 ```text
 user runs jira issue list
   -> /etc/profiles/per-user/<user>/bin/jira            (per-user shim script)
-  -> /run/wrappers/bin/uw-work jira issue list          (underwrap-exec, setgid)
+  -> /run/wrappers/bin/underwrap-work jira issue list          (underwrap-exec, setgid)
   -> connect to /run/underwrap-work/wrapper.sock        (0660, instance group)
   -> underwrapd checks the peer's effective GID == the instance group
      (race-free via SO_PEERPIDFD), then validates the wrapper name "jira"
@@ -85,7 +85,7 @@ Identity splits into a kernel gate and a daemon gate:
   `/run/underwrap-<instance>/wrapper.sock`, owned by the instance group
   `underwrap-<instance>`. A process can only open it if it holds that
   group as effective GID, and the only way to get it is to exec the
-  setgid `uw-<instance>` binary. The daemon re-confirms the peer egid
+  setgid `underwrap-<instance>` binary. The daemon re-confirms the peer egid
   (race-free via `SO_PEERPIDFD`, `SO_PEERCRED` + `/proc` fallback) before
   reading the request.
 - **Daemon gate.** The wrapper name and variant in the request are
@@ -280,7 +280,7 @@ web/                        Vite + React + shadcn admin SPA (embedded into
 The NixOS module generates and manages:
 
 - instance users and the single instance group `underwrap-<instance>`
-- the one setgid entry point per instance, `uw-<instance>`
+- the one setgid entry point per instance, `underwrap-<instance>`
 - per-user convenience shims (`<wrapper>` / `debug-<wrapper>`)
 - the shared `underwrap-ns` wrapper
 - the daemon config (`/etc/underwrap/daemon/<instance>.yaml`) and the

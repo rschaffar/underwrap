@@ -282,7 +282,7 @@ export function EditCellDialog({
         description={
           <>
             This unlocks the debug tool (
-            <code>uw-&lt;instance&gt; debug {wrapper}</code>), which prints
+            <code>underwrap-&lt;instance&gt; debug {wrapper}</code>), which prints
             this wrapper's projected secret material to the operator's
             terminal, until the deadline you set expires. Only use it for
             local, supervised debugging.

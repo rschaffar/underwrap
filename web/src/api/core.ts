@@ -8,8 +8,8 @@
  *
  * Cross-cutting behaviour layered on top:
  *
- * - `credentials: "include"` so the `__Host-uw-session` and
- *   `__Host-uw-csrf` cookies set by the backend are visible on every
+ * - `credentials: "include"` so the `__Host-underwrap-session` and
+ *   `__Host-underwrap-csrf` cookies set by the backend are visible on every
  *   request.
  * - `X-CSRF-Token` synchronizer-token capture+replay. The token is
  *   served by `axum_csrf` on every admin response's `X-CSRF-Token`

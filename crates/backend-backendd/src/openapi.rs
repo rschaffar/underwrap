@@ -22,7 +22,7 @@ use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
     info(
         title = "underwrap admin API",
         description = "Operator-facing JSON API exposed by `underwrap-backendd` under `/v1/admin/*`. \
-                       Authentication is session-cookie based (`__Host-uw-session`); \
+                       Authentication is session-cookie based (`__Host-underwrap-session`); \
                        state-changing requests must also carry the synchronizer CSRF \
                        header `X-CSRF-Token`. The mTLS runtime API is not part of this \
                        contract.",
@@ -58,7 +58,7 @@ impl Modify for SecurityAddon {
             .expect("derive should populate components");
         components.add_security_scheme(
             "session_cookie",
-            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("__Host-uw-session"))),
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("__Host-underwrap-session"))),
         );
         components.add_security_scheme(
             "csrf_header",

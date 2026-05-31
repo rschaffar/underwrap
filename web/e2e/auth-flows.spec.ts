@@ -77,7 +77,7 @@ test("logout invalidates the session server-side", async ({
   // Capture the session cookie so we can replay it after logout and
   // see the server reject it.
   const cookies = await page.context().cookies(backendWithAdmin.baseUrl);
-  const session = cookies.find((c) => c.name === "__Host-uw-session");
+  const session = cookies.find((c) => c.name === "__Host-underwrap-session");
   expect(session).toBeDefined();
 
   // Sign out via the AppShell control. It is a client-side `<Link to=
@@ -118,7 +118,7 @@ test("CSRF token is attached on state-changing requests", async ({
 
   // The SPA uses a synchronizer-token scheme: it captures `X-CSRF-Token`
   // from admin responses and replays it on the next state-changing
-  // request. (The `__Host-uw-csrf` cookie is HttpOnly and is not the
+  // request. (The `__Host-underwrap-csrf` cookie is HttpOnly and is not the
   // value sent in the header.) Sign out via the client-side link and
   // assert the logout POST carried a non-empty token.
   const [request] = await Promise.all([

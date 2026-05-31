@@ -28,7 +28,7 @@ fn parse_cookie_value(set_cookie: &str, name: &str) -> Option<String> {
 /// `X-CSRF-Token` request header carries the HMAC authenticity token
 /// derived from it.
 pub(crate) fn csrf_cookie_header(session_cookie: &str, csrf_cookie: &str) -> String {
-    format!("__Host-uw-session={session_cookie}; __Host-uw-csrf={csrf_cookie}")
+    format!("__Host-underwrap-session={session_cookie}; __Host-underwrap-csrf={csrf_cookie}")
 }
 
 /// Material the harness needs to authenticate subsequent admin
@@ -72,10 +72,10 @@ pub(crate) async fn bootstrap_admin(
     let mut csrf_cookie = None;
     for value in cookies.iter().filter_map(|v| v.to_str().ok()) {
         if session_cookie.is_none() {
-            session_cookie = parse_cookie_value(value, "__Host-uw-session");
+            session_cookie = parse_cookie_value(value, "__Host-underwrap-session");
         }
         if csrf_cookie.is_none() {
-            csrf_cookie = parse_cookie_value(value, "__Host-uw-csrf");
+            csrf_cookie = parse_cookie_value(value, "__Host-underwrap-csrf");
         }
     }
     let session_cookie = session_cookie.context("bootstrap response missing session cookie")?;

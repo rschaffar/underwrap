@@ -61,8 +61,8 @@ Depending on how you configure it, underwrap can also:
 underwrap is trying to combine a few things that are rarely available together:
 
 - **wrapper-first UX** — users run a command like `jira issue list`
-  (a per-user shim for `uw-<instance> jira`)
-- **kernel-backed access gate** — one setgid `uw-<instance>` binary and
+  (a per-user shim for `underwrap-<instance> jira`)
+- **kernel-backed access gate** — one setgid `underwrap-<instance>` binary and
   one `0660` socket per instance; only a process holding the instance
   group egid (read race-free via `SO_PEERPIDFD`) can reach the daemon.
   The wrapper name is a client-supplied selector the daemon validates,

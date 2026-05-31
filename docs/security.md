@@ -186,7 +186,7 @@ separate mechanisms.
 call. The daemon serves one Unix socket per instance, mode `0660`,
 owned by the instance group `underwrap-<instance>`. Opening it requires
 holding that group as effective GID, and the only way to acquire it is
-to exec the root-installed setgid entry point `uw-<instance>` (via NixOS
+to exec the root-installed setgid entry point `underwrap-<instance>` (via NixOS
 `security.wrappers`). A process that did not go through the blessed
 binary is refused at `connect()`, before the daemon reads a byte. The
 daemon then confirms the gate by reading the peer's effective GID —
@@ -333,7 +333,7 @@ at the IPC layer and leaves an audit trail.
 Each instance installs exactly one setgid entry point and serves one
 socket:
 
-- **binary:** `uw-<instance>` (e.g. `uw-work`), installed via NixOS
+- **binary:** `underwrap-<instance>` (e.g. `underwrap-work`), installed via NixOS
   `security.wrappers`, setgid to the instance group
   `underwrap-<instance>`;
 - **socket:** `/run/underwrap-<instance>/wrapper.sock`, mode `0660`,
@@ -344,20 +344,20 @@ socket:
 Invocation selects the wrapper by argument, not by binary name:
 
 ```text
-uw-<instance> <wrapper-name> [args...]        # run the configured target
-uw-<instance> debug <wrapper-name> [args...]  # run the debug tool
+underwrap-<instance> <wrapper-name> [args...]        # run the configured target
+underwrap-<instance> debug <wrapper-name> [args...]  # run the debug tool
 ```
 
 The NixOS module additionally installs per-user PATH shims (`<wrapper>`
 and `debug-<wrapper>`) that simply `exec` into the forms above. The
 shims are plain, unprivileged scripts — no setgid bit, no capabilities;
-all privilege lives in `uw-<instance>` and the daemon.
+all privilege lives in `underwrap-<instance>` and the daemon.
 
 ### What the kernel enforces
 
 To open the `0660` socket a process must hold `underwrap-<instance>` as
 its effective GID, and that egid is only obtainable by exec'ing the
-root-installed setgid `uw-<instance>` binary. So raw access to the
+root-installed setgid `underwrap-<instance>` binary. So raw access to the
 daemon — and therefore to any secret — still requires going through the
 blessed binary; a same-UID process that does not is refused at
 `connect()`.
@@ -432,7 +432,7 @@ On NixOS, those concerns are easier to express as two stages:
 - **`underwrap-exec`**: setgid entry wrapper
 - **`underwrap-ns`**: capability-bearing namespace helper
 
-### Stage 1: `underwrap-exec` (installed as `uw-<instance>`)
+### Stage 1: `underwrap-exec` (installed as `underwrap-<instance>`)
 
 Responsibilities:
 
@@ -685,7 +685,7 @@ This is a simple mechanism, but it matters. Secret-handling systems should be op
 
 ## Configuration trust and the daemon-chosen target
 
-`uw-<instance>` does not let the caller choose the target binary, and it
+`underwrap-<instance>` does not let the caller choose the target binary, and it
 never reads the target path from a caller-reachable file. Two configs
 are involved, both at fixed paths the NixOS module writes:
 
@@ -697,7 +697,7 @@ are involved, both at fixed paths the NixOS module writes:
   (`underwrap-ns`, the dbus/secretsd binaries). It carries no target
   paths.
 
-So `uw-<instance>` learns which binary to exec only from the daemon's
+So `underwrap-<instance>` learns which binary to exec only from the daemon's
 reply — after the daemon validated the client-supplied wrapper name
 against config and the backend authorized the variant. Every target
 path in the daemon config is absolute. A caller cannot redirect the
@@ -777,7 +777,7 @@ directory.
 It is not world-connectable: mode `0660`, owned by the instance group
 `underwrap-<instance>`. Local code must hold that group as its effective
 GID before it can even `connect()`, and the only way to get it is to
-exec the setgid `uw-<instance>` binary. The daemon then re-confirms the
+exec the setgid `underwrap-<instance>` binary. The daemon then re-confirms the
 peer's effective GID (race-free via `SO_PEERPIDFD`) before reading the
 first frame.
 
@@ -935,7 +935,7 @@ mechanisms tighten it:
   signing key on the backend.
 - **Admin** (`/v1/admin/*`) — same HTTPS listener, no client certificate.
   Operators authenticate with username + Argon2id password hash. Sessions
-  use [`tower-sessions`] with an in-memory store: the `__Host-uw-session`
+  use [`tower-sessions`] with an in-memory store: the `__Host-underwrap-session`
   cookie carries only an opaque session id, the server-side store
   carries the operator id and a copy of the operator's
   password-hash bytes via `axum-login`'s `session_auth_hash()`
@@ -946,7 +946,7 @@ mechanisms tighten it:
   restart — operators re-authenticate on reboot.
 
   CSRF protection uses [`axum_csrf`]'s synchronizer-token pattern:
-  the backend issues a random token bound to the `__Host-uw-csrf`
+  the backend issues a random token bound to the `__Host-underwrap-csrf`
   cookie and an HMAC-derived authenticity token in the
   `X-CSRF-Token` response header. The SPA captures that token from
   responses and echoes it back as `X-CSRF-Token` on every
@@ -1149,7 +1149,7 @@ four modes and a per-permission `writable: bool` flag:
   mode under which the debug tool runs.
 
 `Real` vs `Debug` is the invocation variant the daemon relays
-(`uw-<instance> <wrapper>` vs `uw-<instance> debug <wrapper>`). The
+(`underwrap-<instance> <wrapper>` vs `underwrap-<instance> debug <wrapper>`). The
 daemon — not the caller — picks the target binary, and the backend is
 the sole authority for the (mode × variant) matrix; deny reasons are
 stable kebab tokens (`locked`, `expired`, `not-unsafe-debug`):

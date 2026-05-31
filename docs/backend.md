@@ -179,7 +179,7 @@ Idempotent on repeat calls — re-registering an unchanged set returns
 
 `variant` is `"real"` (default, omittable) or `"debug"`. It is the
 invocation flavour the daemon relays from
-`uw-<instance> <wrapper>` vs `uw-<instance> debug <wrapper>`. The
+`underwrap-<instance> <wrapper>` vs `underwrap-<instance> debug <wrapper>`. The
 backend evaluates the policy for the variant; only an active
 `UnsafeDebugUntil` permission admits `"debug"` (see
 [Policy model](#policy-model)). The `variant` is trustworthy
@@ -284,7 +284,7 @@ separate ts-rs binding step — the OpenAPI schema is the single source
 of typed truth.
 
 Two SecuritySchemes are referenced from individual operations:
-`session_cookie` (the opaque `__Host-uw-session` cookie issued by
+`session_cookie` (the opaque `__Host-underwrap-session` cookie issued by
 tower-sessions) and `csrf_header` (the synchronizer `X-CSRF-Token`
 header issued by `axum_csrf`). Public endpoints (login, whoami,
 bootstrap) carry neither; read-only protected endpoints carry only

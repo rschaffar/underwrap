@@ -142,9 +142,9 @@ services.underwrap = {
 ```
 
 The module installs the single setgid entry point at
-`/run/wrappers/bin/uw-work`, group-owned by `underwrap-work`, and a
+`/run/wrappers/bin/underwrap-work`, group-owned by `underwrap-work`, and a
 per-user `gh` shim on each authorized user's `PATH`. The user invokes
-`gh` (or `uw-work gh`); `underwrapd` verifies the peer's effective GID
+`gh` (or `underwrap-work gh`); `underwrapd` verifies the peer's effective GID
 against the instance group (race-free via `SO_PEERPIDFD`), validates the
 wrapper name against config, and forwards the invocation to the
 backend.

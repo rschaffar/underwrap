@@ -4,7 +4,7 @@
 //! Sessions are issued via [`tower_sessions`] / [`axum_login`]: on a
 //! successful password check the handler calls
 //! [`AuthSession::login`], which writes an opaque session id to the
-//! `__Host-uw-session` cookie and persists the user id + password-hash
+//! `__Host-underwrap-session` cookie and persists the user id + password-hash
 //! bytes in the in-memory store. Logout calls
 //! [`AuthSession::logout`], which flushes the store entry and clears
 //! the cookie. Whoami is tolerant of missing auth so the SPA can use

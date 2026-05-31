@@ -25,11 +25,11 @@ operator browser ─► underwrap-backendd
                          ▲
                          │ HTTPS + runtime client certs
                          │
-user@console ─► uw-work jira (setgid) ─► underwrapd-work ─┘
+user@console ─► underwrap-work jira (setgid) ─► underwrapd-work ─┘
 ```
 
 When a user runs `jira` (the per-user shim) — equivalently
-`uw-work jira` — underwrap injects `JIRA_API_TOKEN` just for that
+`underwrap-work jira` — underwrap injects `JIRA_API_TOKEN` just for that
 invocation and then executes the configured `jira` target. The secret is
 fetched from the backend the operator configured.
 
@@ -118,7 +118,7 @@ The module creates:
 - daemon service: `underwrapd-work.service`
 - the single instance socket: `/run/underwrap-work/wrapper.sock` (0660,
   group `underwrap-work`)
-- the one setgid entry point: `/run/wrappers/bin/uw-work`
+- the one setgid entry point: `/run/wrappers/bin/underwrap-work`
 - per-user shims on the `PATH` of each `allowedUsers` member: `jira` and
   `debug-jira`
 - daemon config: `/etc/underwrap/daemon/work.yaml`
@@ -170,13 +170,13 @@ jira init
 ```bash
 jira issue list          # via the per-user shim
 # or, explicitly:
-uw-work jira issue list
+underwrap-work jira issue list
 ```
 
 This should feel like running `jira issue list`, except the token came
 from underwrap. To inspect the projected environment during an incident,
 an operator can set the permission to `UnsafeDebugUntil` and run
-`uw-work debug jira` (or `debug-jira`).
+`underwrap-work debug jira` (or `debug-jira`).
 
 ## Verify the setup
 
@@ -189,7 +189,7 @@ systemctl status underwrapd-work.service
 Wrapper setgid bit?
 
 ```bash
-ls -l /run/wrappers/bin/uw-work
+ls -l /run/wrappers/bin/underwrap-work
 # → -rwxr-sr-x ... root underwrap-work ...
 ```
 
@@ -216,7 +216,7 @@ Open the admin UI and inspect the `work` store's policy and secrets.
 ### `peer egid ... does not match instance group gid`
 
 The process did not reach the daemon through the setgid entry point.
-Check that `/run/wrappers/bin/uw-work` exists, is setgid, and is
+Check that `/run/wrappers/bin/underwrap-work` exists, is setgid, and is
 group-owned by `underwrap-work` (the instance group that gates the
 socket).
 

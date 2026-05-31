@@ -15,10 +15,10 @@ backend:
   client_cert_file: /var/lib/underwrap/client.pem
   client_key_file: /var/lib/underwrap/client.key
 
-# One instance = one setgid wrapper binary (`uw-<instance>`), one setgid
+# One instance = one setgid wrapper binary (`underwrap-<instance>`), one setgid
 # group, and one socket. The wrapper is invoked as
-# `uw-<instance> <wrapper-name> [args...]` for a normal run, or
-# `uw-<instance> debug <wrapper-name> [...]` for the unsafe debug tool.
+# `underwrap-<instance> <wrapper-name> [args...]` for a normal run, or
+# `underwrap-<instance> debug <wrapper-name> [...]` for the unsafe debug tool.
 # The wrapper name is a client-supplied selector validated against the
 # `wrappers` map below; the instance group (which gates the 0660 socket)
 # is the sole kernel-enforced gate, and the backend policy is the

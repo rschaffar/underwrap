@@ -27,12 +27,12 @@ let
   # Per-instance helper functions. All names are prefixed with the instance name
   # to ensure full isolation between instances.
   #
-  # Single-instance wrapper model: ONE setgid binary (`uw-<instance>`), ONE
+  # Single-instance wrapper model: ONE setgid binary (`underwrap-<instance>`), ONE
   # gate group (`underwrap-<instance>`), and ONE wrapper socket per instance.
   # The wrapper name is a client-supplied selector carried over IPC and
   # validated by the daemon — it is no longer encoded in a per-wrapper binary,
   # group, or socket. The debug tool is reached via the `debug` subcommand
-  # (`uw-<instance> debug <wrapper>`), gated by the backend policy, not by a
+  # (`underwrap-<instance> debug <wrapper>`), gated by the backend policy, not by a
   # separate binary or NixOS opt-in.
   mkInstance = instName: inst: let
     daemonUser = "underwrap-${instName}";
@@ -40,13 +40,13 @@ let
     # socket (mode 0660) inherits this group from the daemon's egid at bind
     # time (the daemon does not chown — startup.rs verifies the kernel-
     # assigned gid instead), and authorized users acquire it transiently
-    # via setgid on `uw-<instance>`. frontend-exec derives the instance
+    # via setgid on `underwrap-<instance>`. frontend-exec derives the instance
     # name by stripping the `underwrap-` prefix from its effective GID
     # group, so this name is load-bearing — it must stay
     # `underwrap-<instance>`.
     daemonGroup = "underwrap-${instName}";
     instanceGroup = daemonGroup;
-    instanceBinaryName = "uw-${instName}";
+    instanceBinaryName = "underwrap-${instName}";
     socketPath = "${runDir}/wrapper.sock";
     runDir = "/run/underwrap-${instName}";
     stateDir = "/var/lib/underwrap-${instName}";
@@ -216,15 +216,15 @@ let
 
   # Per-user wrapper namespace.
   #
-  # `security.wrappers` is system-wide: the single `uw-<instance>` setgid
+  # `security.wrappers` is system-wide: the single `underwrap-<instance>` setgid
   # entrypoint lands in /run/wrappers/bin, which is already on every user's
   # PATH. On top of that we layer per-user PATH integration so authorized
-  # users get (a) a bare `uw` alias for the default instance and (b) the
+  # users get (a) a bare `underwrap` alias for the default instance and (b) the
   # familiar per-tool command names (`<wrapper>` / `debug-<wrapper>`) without
-  # having to type the `uw-<instance> <wrapper>` form.
+  # having to type the `underwrap-<instance> <wrapper>` form.
   #
   # The default instance is the one literally named `default`; only its
-  # authorized users get the bare `uw` alias.
+  # authorized users get the bare `underwrap` alias.
   #
   # Each authorized user gets a derivation in their `users.users.<u>.packages`
   # whose `bin/` holds these aliases. NixOS's standard per-user profile
@@ -235,16 +235,16 @@ let
   defaultInstanceName = "default";
 
   # Convenience shim: a plain, UNPRIVILEGED POSIX shell script that just
-  # forwards to the real `uw-<instance>` setgid entrypoint. It carries no
+  # forwards to the real `underwrap-<instance>` setgid entrypoint. It carries no
   # setgid bit and no file capabilities — all privilege and policy live
-  # exclusively in `uw-<instance>` and the daemon. `exec` preserves argv,
+  # exclusively in `underwrap-<instance>` and the daemon. `exec` preserves argv,
   # exit status, and signals. The absolute path keeps the shim immune to the
   # caller's PATH (a moot point for an unprivileged script, but unambiguous).
   mkShim = instName: wname: isDebug:
-    pkgs.writeShellScript "uw-shim-${instName}-${lib.optionalString isDebug "debug-"}${wname}"
+    pkgs.writeShellScript "underwrap-shim-${instName}-${lib.optionalString isDebug "debug-"}${wname}"
       (if isDebug
-       then ''exec /run/wrappers/bin/uw-${instName} debug ${lib.escapeShellArg wname} "$@"''
-       else ''exec /run/wrappers/bin/uw-${instName} ${lib.escapeShellArg wname} "$@"'');
+       then ''exec /run/wrappers/bin/underwrap-${instName} debug ${lib.escapeShellArg wname} "$@"''
+       else ''exec /run/wrappers/bin/underwrap-${instName} ${lib.escapeShellArg wname} "$@"'');
 
   # linkFarm entries ({ name = "bin/<alias>"; path = <store path or
   # /run/wrappers/bin link>; }) for one user across every instance they are
@@ -264,8 +264,8 @@ let
       then []
       else
         (lib.optional (instName == defaultInstanceName) {
-          name = "bin/uw";
-          path = "/run/wrappers/bin/uw-${instName}";
+          name = "bin/underwrap";
+          path = "/run/wrappers/bin/underwrap-${instName}";
         })
         ++ lib.concatLists (lib.mapAttrsToList (wname: _w: [
           { name = "bin/${wname}"; path = "${mkShim instName wname false}"; }
@@ -387,11 +387,11 @@ let
         description = ''
           Local users who get this instance's convenience aliases on their
           PATH: per declared wrapper a plain `<wrapper>` and `debug-<wrapper>`
-          shim, plus a bare `uw` for the instance named `default`. The shims
-          are unprivileged scripts that forward to the `uw-<instance>` setgid
+          shim, plus a bare `underwrap` for the instance named `default`. The shims
+          are unprivileged scripts that forward to the `underwrap-<instance>` setgid
           entrypoint; this is a NixOS-side convenience only. The kernel gate
           is acquiring the single `underwrap-<instance>` group via setgid on
-          `/run/wrappers/bin/uw-<instance>`, and authorization happens
+          `/run/wrappers/bin/underwrap-<instance>`, and authorization happens
           entirely on the backend via grants keyed on the mTLS-bound runtime
           client instance.
         '';
@@ -541,11 +541,11 @@ in {
           }
         ) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: _wrapper: {
-          # `debug` is the subcommand token (`uw-<instance> debug <wrapper>`),
+          # `debug` is the subcommand token (`underwrap-<instance> debug <wrapper>`),
           # so a wrapper may not be named `debug`. The daemon rejects this at
           # load time too; this surfaces it at eval time with a clear message.
           assertion = wrapperName != "debug";
-          message = "services.underwrap.instances.${instName}.wrappers: a wrapper may not be named 'debug' — it is the reserved debug subcommand token (uw-${instName} debug <wrapper>)";
+          message = "services.underwrap.instances.${instName}.wrappers: a wrapper may not be named 'debug' — it is the reserved debug subcommand token (underwrap-${instName} debug <wrapper>)";
         }) inst.wrappers)
       ) cfg.instances))
       ++ lib.optionals cfg.hardenTargetHost [

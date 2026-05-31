@@ -6,7 +6,7 @@ use tracing::info;
 use underwrap_protocol::config::DaemonConfig;
 
 /// Resolve the single instance group to a GID via libc getgrnam at
-/// startup. Acquiring this group (setgid on the `uw-<instance>` binary)
+/// startup. Acquiring this group (setgid on the `underwrap-<instance>` binary)
 /// is the sole kernel-enforced gate for the instance's wrapper socket;
 /// the wrapper name is a client-supplied selector validated by the
 /// daemon, not a second kernel identity.

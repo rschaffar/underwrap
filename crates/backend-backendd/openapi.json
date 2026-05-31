@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "underwrap admin API",
-    "description": "Operator-facing JSON API exposed by `underwrap-backendd` under `/v1/admin/*`. Authentication is session-cookie based (`__Host-uw-session`); state-changing requests must also carry the synchronizer CSRF header `X-CSRF-Token`. The mTLS runtime API is not part of this contract.",
+    "description": "Operator-facing JSON API exposed by `underwrap-backendd` under `/v1/admin/*`. Authentication is session-cookie based (`__Host-underwrap-session`); state-changing requests must also carry the synchronizer CSRF header `X-CSRF-Token`. The mTLS runtime API is not part of this contract.",
     "license": {
       "name": "MIT OR Apache-2.0"
     },
@@ -4826,7 +4826,7 @@
       "session_cookie": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "__Host-uw-session"
+        "name": "__Host-underwrap-session"
       }
     }
   },

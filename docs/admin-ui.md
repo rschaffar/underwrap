@@ -22,12 +22,12 @@ management.
 ## Authentication
 
 - **Argon2id** password hashing.
-- **Opaque session cookies** issued by `tower-sessions` (`__Host-uw-session`,
+- **Opaque session cookies** issued by `tower-sessions` (`__Host-underwrap-session`,
   `Secure; HttpOnly; SameSite=Strict; Path=/`) backed by an in-memory
   store. Sessions do not survive a daemon restart — operators
   re-authenticate on reboot.
 - **Synchronizer-token CSRF** via `axum_csrf`: the backend issues an
-  HMAC-bound token in the `__Host-uw-csrf` cookie and the matching
+  HMAC-bound token in the `__Host-underwrap-csrf` cookie and the matching
   `X-CSRF-Token` response header. The SPA picks the token off the
   response header and echoes it back as `X-CSRF-Token` on every
   state-changing request.

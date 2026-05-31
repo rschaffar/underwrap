@@ -12,7 +12,7 @@ import subprocess, time, os, sys, ctypes
 
 # Spawn the wrapper as our child.
 wrapper = subprocess.Popen(
-    ["/run/wrappers/bin/uw-local", "test-sleep", "300"],
+    ["/run/wrappers/bin/underwrap-local", "test-sleep", "300"],
     stdout=subprocess.DEVNULL,
     stderr=subprocess.DEVNULL,
 )

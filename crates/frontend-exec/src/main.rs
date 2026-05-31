@@ -1,12 +1,12 @@
 //! underwrap-exec — the per-instance wrapper binary (stage 1).
 //!
 //! One setgid binary serves a whole instance. It is installed (via NixOS
-//! `security.wrappers`) as `uw-<instance>` with setgid to the single
+//! `security.wrappers`) as `underwrap-<instance>` with setgid to the single
 //! `underwrap-<instance>` group, and invoked as:
 //!
 //! ```text
-//! uw-<instance> <wrapper> [args...]          # normal invocation
-//! uw-<instance> debug <wrapper> [args...]    # debug variant
+//! underwrap-<instance> <wrapper> [args...]          # normal invocation
+//! underwrap-<instance> debug <wrapper> [args...]    # debug variant
 //! ```
 //!
 //! 1. Verifies instance identity from the effective GID group
@@ -45,7 +45,7 @@ const DEFAULT_NS_BINARY: &str = "/run/wrappers/bin/underwrap-ns";
 /// The prefix used by the NixOS module for the per-instance group name.
 const GROUP_PREFIX: &str = "underwrap-";
 
-/// Debug subcommand token: `uw-<instance> debug <wrapper>`.
+/// Debug subcommand token: `underwrap-<instance> debug <wrapper>`.
 const DEBUG_SUBCOMMAND: &str = "debug";
 
 /// Fd used to pass the wrapper-resource channel into underwrap-ns.
@@ -120,13 +120,13 @@ fn main() -> Result<()> {
 fn parse_invocation(args: &[String]) -> Result<Invocation> {
     let mut iter = args.iter();
     let first = iter.next().context(
-        "usage: uw-<instance> [debug] <wrapper> [args...]\n\
+        "usage: underwrap-<instance> [debug] <wrapper> [args...]\n\
          missing wrapper name",
     )?;
 
     let (variant, wrapper_name) = if first == DEBUG_SUBCOMMAND {
         let wrapper = iter.next().context(
-            "usage: uw-<instance> debug <wrapper> [args...]\n\
+            "usage: underwrap-<instance> debug <wrapper> [args...]\n\
              missing wrapper name after 'debug'",
         )?;
         (WrapperVariant::Debug, wrapper.clone())

@@ -72,7 +72,7 @@ use self::csrf::{
 
 /// Cookie name for the `tower-sessions` session id. `__Host-` forces
 /// `Secure; Path=/; no Domain`, which closes subdomain confusion.
-pub(crate) const SESSION_COOKIE_NAME: &str = "__Host-uw-session";
+pub(crate) const SESSION_COOKIE_NAME: &str = "__Host-underwrap-session";
 
 /// Public sub-router (login, whoami, bootstrap). Shared between the
 /// live HTTPS listener and the OpenAPI export drift test. Bootstrap
