@@ -100,6 +100,10 @@ That means the config stays honest:
 Use it when the target genuinely expects Secret Service behavior, such as:
 
 - `gh auth login`
+- tools using the C `libsecret` library directly (`secret-tool`, GNOME apps)
+- tools using Go's `99designs/keyring` Secret Service backend (`gog`,
+  `aws-sso`, `aws-vault`, `chamber`) — these locate their collection by
+  object path, which underwrap derives from the collection name
 - tools that already integrate with libsecret/keyring APIs
 
 Do not use it for simple token injection. If the target only needs a fixed token in an env var, env mode is simpler and easier to reason about.

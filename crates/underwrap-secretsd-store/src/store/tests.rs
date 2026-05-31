@@ -53,12 +53,36 @@ fn json_roundtrip_with_items() {
 }
 
 #[test]
-fn create_collection() {
+fn create_collection_id_is_the_name() {
     let mut store = SecretStore::new_default();
-    let id = store.create_collection(Some("My Collection"), Some("mine"));
+    let id = store.create_collection(Some("gogcli"), Some("mine"));
+    // The id is the requested name, not an opaque counter, so clients
+    // that locate the collection by object path find it.
+    assert_eq!(id, "gogcli");
+    assert!(store.collections.contains_key("gogcli"));
+    assert_eq!(store.get_alias("mine"), Some("gogcli"));
+    assert_eq!(store.get_collection_label("gogcli"), Some("gogcli"));
+}
+
+#[test]
+fn create_collection_is_idempotent_by_name() {
+    let mut store = SecretStore::new_default();
+    let id1 = store.create_collection(Some("gogcli"), None);
+    let id2 = store.create_collection(Some("gogcli"), None);
+    assert_eq!(id1, "gogcli");
+    assert_eq!(id1, id2, "a second create with the same name is a no-op");
+    // Exactly one gogcli collection — no `col_N` litter.
+    assert_eq!(store.collections.len(), 2); // default + gogcli
+}
+
+#[test]
+fn create_collection_anonymous_falls_back_to_counter() {
+    let mut store = SecretStore::new_default();
+    // The D-Bus handler rejects empty names, but the store layer keeps a
+    // synthetic-id fallback for the anonymous case.
+    let id = store.create_collection(None, None);
+    assert!(id.starts_with("col_"));
     assert!(store.collections.contains_key(&id));
-    assert_eq!(store.get_alias("mine"), Some(id.as_str()));
-    assert_eq!(store.get_collection_label(&id), Some("My Collection"));
 }
 
 #[test]

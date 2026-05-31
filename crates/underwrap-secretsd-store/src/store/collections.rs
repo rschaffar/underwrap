@@ -32,7 +32,21 @@ impl SecretStore {
         id
     }
 
-    /// Create a new collection. Returns the collection ID.
+    /// Create a collection, returning its ID.
+    ///
+    /// The collection's object-path segment (its id) is its **name**
+    /// (the requested Label), not an opaque counter. Secret Service
+    /// clients backed by `99designs/keyring` (gog, aws-sso, aws-vault,
+    /// …) locate their collection by exact object path rather than by
+    /// the `Label` property or an alias, so the path segment has to be
+    /// the name they ask for or they never find what they wrote.
+    ///
+    /// Creation is **idempotent by id**: a client's create-if-missing
+    /// becomes a clean no-op on every run after the first, instead of
+    /// minting a fresh `col_N` each time. The D-Bus handler validates
+    /// the name before calling us; `next_collection_id()` is kept only
+    /// as a fallback for the anonymous (empty/missing label) case the
+    /// handler does not forward.
     pub fn create_collection(&mut self, label: Option<&str>, alias: Option<&str>) -> String {
         let now = now_secs();
 
@@ -43,14 +57,22 @@ impl SecretStore {
             return existing_id.clone();
         }
 
-        let id = self.next_collection_id();
-        let collection = Collection {
-            label: label.unwrap_or("Unnamed").to_string(),
-            items: HashMap::new(),
-            created: now,
-            modified: now,
+        let id = match label {
+            Some(name) if !name.is_empty() => name.to_string(),
+            _ => self.next_collection_id(),
         };
-        self.collections.insert(id.clone(), collection);
+
+        if !self.collections.contains_key(&id) {
+            self.collections.insert(
+                id.clone(),
+                Collection {
+                    label: label.unwrap_or("Unnamed").to_string(),
+                    items: HashMap::new(),
+                    created: now,
+                    modified: now,
+                },
+            );
+        }
 
         if let Some(alias) = alias
             && !alias.is_empty()

@@ -40,6 +40,41 @@ fn round_trip_via_store_preserves_data() {
 }
 
 #[test]
+fn client_named_collection_survives_checkout_roundtrip() {
+    // Mirrors the ns lifecycle: a wrapper checks out an empty libsecret
+    // section, the target (e.g. gog) creates a name-keyed collection and
+    // writes a secret, we dump the section back at teardown, and a later
+    // invocation re-checks-out. The secret must come back at the same
+    // name-derived collection path the client will look for.
+    let mut store = store_from_section(&LibsecretSection::default());
+    let col_id = store.create_collection(Some("gogcli"), None);
+    assert_eq!(col_id, "gogcli");
+    let (item_id, _) = store
+        .create_item(
+            "gogcli",
+            "client-secret",
+            &std::collections::HashMap::new(),
+            b"refresh-token",
+            "text/plain",
+            false,
+        )
+        .unwrap();
+
+    // Dump to a section (state file / teardown blob) and re-load it.
+    let section = section_from_store(&store);
+    let reloaded = store_from_section(&section);
+
+    assert!(
+        reloaded.collections.contains_key("gogcli"),
+        "collection is keyed by its name across the round-trip"
+    );
+    assert_eq!(
+        reloaded.get_secret("gogcli", &item_id),
+        Some(b"refresh-token".as_slice())
+    );
+}
+
+#[test]
 fn store_from_empty_section_seeds_default_collection() {
     let store = store_from_section(&LibsecretSection::default());
     assert!(store.collections.contains_key("default"));

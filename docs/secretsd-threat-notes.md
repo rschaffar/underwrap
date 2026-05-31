@@ -50,6 +50,16 @@ in place. It is the written output of the adversarial review in ticket
   illegal D-Bus paths; failures are logged and the registration is skipped
   rather than panicking. Item ids are server-assigned (`next_item_id`),
   not target-chosen, so a target cannot inject path separators via an id.
+- **Collection-name validation** (`service.rs` `validate_collection_name`):
+  a collection's object-path segment **is** its target-chosen name (see
+  "CreateCollection" below for why), so the name is the one piece of
+  target input that flows directly into a path. `CreateCollection`
+  validates it *before* touching the store and rejects with `InvalidArgs`
+  anything that is empty, longer than 128 bytes, or outside `[A-Za-z0-9_]`
+  — the D-Bus path-element charset. Reject, never sanitize: this closes
+  path-element injection (`foo/bar` colliding with
+  `/collection/<col>/<item>` item paths), empty/over-long paths, and the
+  D-Bus 255-byte path cap. An invalid name persists nothing.
 
 ## Per-handler assumptions
 
@@ -59,9 +69,23 @@ in place. It is the written output of the adversarial review in ticket
   algorithm returns `NotSupported`. The client-supplied `input` variant is
   ignored (no DH key exchange), so there is no client-controlled buffer to
   size-attack here.
-- **CreateCollection** — label/alias are read from client properties;
-  missing/ill-typed values default to empty. Persists via the size-capped
-  `dump`. A new collection id is server-assigned.
+- **CreateCollection** — label/alias are read from client properties. The
+  Label is the collection **name**, and its validated form becomes the
+  collection's object-path segment (its id) — *not* a server-assigned
+  `col_N` counter. This is deliberate: Secret Service clients backed by Go's
+  `99designs/keyring` (gog, aws-sso, aws-vault, chamber, …) locate their
+  collection by exact object path rather than by the `Label` property or an
+  alias. That is technically non-conformant with the Secret Service spec
+  (which treats paths as opaque), but it matches how gnome-keyring behaves
+  in practice (paths derived from stable keyring names), so honouring the
+  name is what lets those clients read back what they wrote. The name is
+  validated first (see "Collection-name validation"); creation is
+  idempotent by id, so a client's create-if-missing is a clean no-op after
+  the first run instead of minting fresh `col_N` litter. Persists via the
+  size-capped `dump`. The seeded `default` collection and alias are
+  untouched; spec-conformant clients (libsecret-C: `gh`, `secret-tool`,
+  GNOME apps) discover by `Label`/`ReadAlias`/attribute search and are
+  unaffected by the path segment.
 - **SearchItems** — read-only; matches attributes against the in-memory
   store and returns object paths. No mutation, no allocation proportional to
   attacker input beyond the result vector.

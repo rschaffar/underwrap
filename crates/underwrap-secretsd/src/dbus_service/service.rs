@@ -65,6 +65,15 @@ impl SecretService {
             .get("org.freedesktop.Secret.Collection.Label")
             .and_then(|v| v.downcast_ref().ok());
 
+        // The Label is the collection name and becomes its object-path
+        // segment (see `SecretStore::create_collection`). It is untrusted
+        // input from the wrapped target flowing into a D-Bus object path,
+        // so it must already be a valid path element — reject, never
+        // sanitize, and reject *before* touching the store so an illegal
+        // name cannot persist an unreachable collection.
+        let name = label.as_deref().unwrap_or("");
+        validate_collection_name(name).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+
         let alias = if alias.is_empty() { None } else { Some(alias) };
 
         if metadata_trace_enabled() {
@@ -219,6 +228,33 @@ impl SecretService {
             .filter_map(|id| collection_path(id).ok())
             .collect()
     }
+}
+
+/// Upper bound on a collection name's length. A D-Bus path element must
+/// fit, with room left for the fixed prefix and a trailing item segment.
+/// Matches the backend admin id cap.
+const MAX_COLLECTION_NAME_LEN: usize = 128;
+
+/// Validate a client-requested collection name before it is used as a
+/// D-Bus object-path segment. A path element may contain only
+/// `[A-Za-z0-9_]` and must be non-empty (a leading digit is legal for
+/// object paths). We reject anything else rather than sanitizing it:
+/// the name is untrusted input from the wrapped target, and silently
+/// mapping `foo/bar` or `""` into a path would invite element injection
+/// (collision with `/collection/<col>/<item>` item paths) or an invalid
+/// path. All real clients already use valid names (`gogcli`,
+/// `awsssocli`, `login`, `default`), so this never rejects a real one.
+fn validate_collection_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("collection name must not be empty");
+    }
+    if name.len() > MAX_COLLECTION_NAME_LEN {
+        return Err("collection name too long");
+    }
+    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err("collection name must match [A-Za-z0-9_]");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
