@@ -45,3 +45,26 @@ fn enrollment_url_points_at_client_instances_page() {
         "https://backend.example.invalid/client-instances",
     );
 }
+
+#[test]
+fn format_register_pairs_renders_wrapper_arrow_resource_csv() {
+    let pairs = vec![
+        RuntimeWrapperRegisterPair {
+            wrapper_name: "gh".into(),
+            resource_name: "github/token".into(),
+        },
+        RuntimeWrapperRegisterPair {
+            wrapper_name: "jira".into(),
+            resource_name: "atlassian/api".into(),
+        },
+    ];
+    assert_eq!(
+        format_register_pairs(&pairs),
+        "gh=>github/token, jira=>atlassian/api",
+    );
+}
+
+#[test]
+fn format_register_pairs_empty_is_empty_string() {
+    assert_eq!(format_register_pairs(&[]), "");
+}

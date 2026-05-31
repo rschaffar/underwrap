@@ -98,11 +98,23 @@ impl State {
     }
 }
 
+/// Render `(wrapper, resource)` pairs as a stable, comma-separated
+/// `wrapper=>resource` list for a log field. Empty input renders as the
+/// empty string.
+fn format_register_pairs(pairs: &[RuntimeWrapperRegisterPair]) -> String {
+    pairs
+        .iter()
+        .map(|p| format!("{}=>{}", p.wrapper_name, p.resource_name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Register every configured wrapper's `(wrapper, resource)` pair
-/// with the backend. Logs a warning when the backend refused to
-/// auto-create missing entities. Best-effort: a failure here does not
-/// stop the daemon — the open call for each invocation will re-issue
-/// the appropriate error.
+/// with the backend. Logs the names of any resources/pairs the backend
+/// auto-created, or a warning naming what it refused to create when
+/// auto-create is disabled for this client instance. Best-effort: a
+/// failure here does not stop the daemon — the open call for each
+/// invocation will re-issue the appropriate error.
 fn register_wrapper_assets(backend: &BackendClient, config: &DaemonConfig) -> Result<()> {
     let mut wrappers = Vec::with_capacity(config.wrappers.len());
     for (wrapper_name, wrapper) in &config.wrappers {
@@ -119,8 +131,10 @@ fn register_wrapper_assets(backend: &BackendClient, config: &DaemonConfig) -> Re
         } => {
             if !auto_created_resources.is_empty() || !auto_created_pairs.is_empty() {
                 info!(
-                    created_resources = auto_created_resources.len(),
-                    created_pairs = auto_created_pairs.len(),
+                    created_resource_count = auto_created_resources.len(),
+                    created_pair_count = auto_created_pairs.len(),
+                    created_resources = %auto_created_resources.join(", "),
+                    created_pairs = %format_register_pairs(&auto_created_pairs),
                     "backend auto-created wrapper assets on register",
                 );
             }
@@ -130,11 +144,13 @@ fn register_wrapper_assets(backend: &BackendClient, config: &DaemonConfig) -> Re
             missing_pairs,
         } => {
             warn!(
-                missing_resources = missing_resources.len(),
-                missing_pairs = missing_pairs.len(),
+                missing_resource_count = missing_resources.len(),
+                missing_pair_count = missing_pairs.len(),
+                missing_resources = %missing_resources.join(", "),
+                missing_pairs = %format_register_pairs(&missing_pairs),
                 "backend refused wrapper register: auto-create disabled for this client instance — \
                  an admin must enable `auto_create_wrapper_assets` on this instance, or create the \
-                 missing resources and pairs manually",
+                 missing resources and pairs (named above) manually",
             );
         }
     }
