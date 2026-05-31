@@ -116,9 +116,12 @@ impl PolicyDocument {
         })
     }
 
-    /// Evaluate a permission tuple at a given wall-clock time. Returns
-    /// `None` when no matching permission exists, `Some(Allow)` when
-    /// the caller may proceed, or `Some(Deny)` otherwise.
+    /// Evaluate a permission tuple at a given wall-clock time. Mirrors
+    /// the live runtime authorization path (`find_permission` then
+    /// [`decide`]) as one call — used by tests; the backend handlers
+    /// compose the two directly. Returns `None` when no matching
+    /// permission exists, `Some(Allow)` when the caller may proceed, or
+    /// `Some(Deny)` otherwise.
     pub fn evaluate_permission_at(
         &self,
         client_instance: &str,
@@ -129,22 +132,6 @@ impl PolicyDocument {
     ) -> Option<PolicyDecision> {
         let permission = self.find_permission(client_instance, wrapper, resource_id)?;
         Some(decide(permission, variant, now_epoch))
-    }
-
-    pub fn evaluate_permission(
-        &self,
-        client_instance: &str,
-        wrapper: &str,
-        resource_id: &str,
-        variant: WrapperVariant,
-    ) -> Option<PolicyDecision> {
-        self.evaluate_permission_at(
-            client_instance,
-            wrapper,
-            resource_id,
-            variant,
-            now_epoch_secs(),
-        )
     }
 
     /// True when the wrapper is permitted to write to `resource_id`
@@ -215,13 +202,6 @@ pub fn decide(
             }
         }
     }
-}
-
-fn now_epoch_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
