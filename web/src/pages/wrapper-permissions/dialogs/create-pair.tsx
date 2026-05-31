@@ -21,8 +21,8 @@ const schema = z
   .object({
     wrapper: z.string().trim().min(1, "Wrapper name is required."),
     mode: z.enum(["existing", "new"]),
-    resource_id: z.string().optional(),
-    new_resource_name: z.string().trim().optional(),
+    resource_id: z.string().default(""),
+    new_resource_name: z.string().trim().default(""),
   })
   .refine((v) => v.mode !== "existing" || !!v.resource_id, {
     path: ["resource_id"],
@@ -52,18 +52,17 @@ export function CreatePairDialog({
       resource_id: existingResources[0]?.id ?? "",
       new_resource_name: "",
     },
-    submit: (v) => {
-      const values = v as Values;
+    submit: (values) => {
       const wrapper = values.wrapper.trim();
       if (values.mode === "new") {
         return postPairWithNewResource(storeId, {
           wrapper,
-          resource_name: (values.new_resource_name ?? "").trim(),
+          resource_name: values.new_resource_name,
         });
       }
       return postPairCreate(storeId, {
         wrapper,
-        resource_id: values.resource_id ?? "",
+        resource_id: values.resource_id,
       });
     },
     invalidate: [["admin", "wrapper-permissions-view", storeId]],
@@ -110,7 +109,7 @@ export function CreatePairDialog({
                     <label className="inline-flex items-center gap-1.5">
                       <input
                         type="radio"
-                        name="resource-mode"
+                        name="mode"
                         checked={field.value === "existing"}
                         onChange={() => field.onChange("existing")}
                       />
@@ -119,14 +118,19 @@ export function CreatePairDialog({
                     <label className="inline-flex items-center gap-1.5">
                       <input
                         type="radio"
-                        name="resource-mode"
+                        name="mode"
                         checked={field.value === "new"}
                         onChange={() => field.onChange("new")}
                       />
                       Create new
                     </label>
                   </div>
-                ) : null}
+                ) : (
+                  <p className="text-xs text-(--color-muted)">
+                    No resources exist in this store yet — a new one will be
+                    created from the name below.
+                  </p>
+                )}
               </FormItem>
             )}
           />

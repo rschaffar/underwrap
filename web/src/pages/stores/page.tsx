@@ -67,10 +67,7 @@ export function StoresPage() {
       )}
 
       {createOpen ? (
-        <CreateStoreDialog
-          open={createOpen}
-          onClose={() => setCreateOpen(false)}
-        />
+        <CreateStoreDialog onClose={() => setCreateOpen(false)} />
       ) : null}
       {editing ? (
         <EditStoreDialog

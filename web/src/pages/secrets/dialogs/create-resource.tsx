@@ -33,16 +33,20 @@ export function CreateResourceDialog({
   onClose: () => void;
 }) {
   const known = useMemo(() => new Set(existingResources), [existingResources]);
+  // Duplicate detection is a field-level validation so the operator sees
+  // an inline message under the input, not a generic submit-error Alert.
+  const schema = useMemo(
+    () =>
+      resourceSchema.refine((v) => !known.has(v.resource), {
+        path: ["resource"],
+        message: "A resource with that name already exists.",
+      }),
+    [known],
+  );
   const { form, onSubmit, pending, submitError } = useFormDialog<ResourceValues>({
-    schema: resourceSchema,
+    schema,
     defaultValues: { resource: "" },
-    submit: (v) => {
-      const name = (v as ResourceValues).resource;
-      if (known.has(name)) {
-        throw new Error("A resource with that name already exists.");
-      }
-      return postResourceCreate(storeId, { name });
-    },
+    submit: (v) => postResourceCreate(storeId, { name: v.resource }),
     invalidate: [
       ["admin", "secrets-view", storeId],
       ["admin", "wrapper-permissions-view", storeId],

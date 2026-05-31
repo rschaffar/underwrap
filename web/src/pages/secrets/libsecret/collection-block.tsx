@@ -129,9 +129,8 @@ function ItemAttributes({
 }: {
   attributes: AdminLibsecretItemView["attributes"];
 }) {
-  // Render attributes inline, compact. The list is normally short
-  // (xdg:schema + a couple of lookup keys), so a single line is fine
-  // for the typical case.
+  // The list is normally short (xdg:schema + a couple of lookup keys),
+  // so a single inline line suffices.
   const entries = Object.entries(attributes);
   return (
     <span

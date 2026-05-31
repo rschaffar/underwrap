@@ -22,9 +22,11 @@ export function AliasesPanel({
   const danglingTargets = useMemo(() => {
     const known = new Set(collections.map((c) => c.id));
     return new Set(
-      entries.filter(([, target]) => !known.has(target)).map(([name]) => name),
+      Object.entries(aliases)
+        .filter(([, target]) => !known.has(target))
+        .map(([name]) => name),
     );
-  }, [entries, collections]);
+  }, [aliases, collections]);
 
   return (
     <section

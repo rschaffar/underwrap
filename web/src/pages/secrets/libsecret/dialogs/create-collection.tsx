@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { z } from "zod";
 
 import { AdminDialog } from "@/components/admin-dialog";
@@ -36,19 +37,27 @@ export function CreateCollectionDialog({
   existingIds: string[];
   onClose: () => void;
 }) {
+  // Duplicate-id detection is a field-level validation so the operator
+  // sees an inline message under the input, not a generic Alert.
+  const schema = useMemo(
+    () =>
+      collectionSchema.refine(
+        (v) => !v.id || !existingIds.includes(v.id),
+        {
+          path: ["id"],
+          message: "A collection with that id already exists.",
+        },
+      ),
+    [existingIds],
+  );
   const { form, onSubmit, pending, submitError } = useFormDialog<CollectionValues>({
-    schema: collectionSchema,
+    schema,
     defaultValues: { id: "", label: "" },
-    submit: (v) => {
-      const values = v as CollectionValues;
-      if (values.id && existingIds.includes(values.id)) {
-        throw new Error("Id already exists.");
-      }
-      return postLibsecretCollection(storeId, resourceId, {
-        id: values.id || undefined,
-        label: values.label,
-      });
-    },
+    submit: (v) =>
+      postLibsecretCollection(storeId, resourceId, {
+        id: v.id || undefined,
+        label: v.label,
+      }),
     invalidate: [libsecretTreeKey(storeId, resourceId)],
     onSuccess: onClose,
   });

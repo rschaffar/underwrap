@@ -20,7 +20,6 @@ import { useResourceCatalog } from "@/hooks/use-resource-catalog";
 import {
   type SecretAddress,
   type SecretResourceGroup,
-  type SecretSlot,
   groupSecretEntries,
 } from "./grouping";
 import { ResourceBlock } from "./resource-block";
@@ -78,9 +77,9 @@ export function SecretsPage() {
 
   const [revealing, setRevealing] = useState<SecretAddress | null>(null);
   const [editing, setEditing] = useState<SecretAddress | null>(null);
-  const [creating, setCreating] = useState<
-    { resource_id: string; slot: SecretSlot } | null
-  >(null);
+  const [creating, setCreating] = useState<Omit<SecretAddress, "key"> | null>(
+    null,
+  );
   const [creatingResource, setCreatingResource] = useState(false);
   const [deleting, setDeleting] = useState<SecretAddress | null>(null);
   const [deletingResource, setDeletingResource] = useState<string | null>(null);

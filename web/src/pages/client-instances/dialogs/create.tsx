@@ -7,7 +7,6 @@ import { DialogFooter } from "@/components/ui/dialog";
 import {
   Form,
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -15,12 +14,15 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   type AdminClientInstanceCreateRequest,
   type AdminStoresListResponse,
   postClientInstanceCreate,
 } from "@/api/client";
 import { useFormDialog } from "@/hooks/use-form-dialog";
+
+import { AutoCreateField } from "./auto-create-field";
 
 const schema = z.object({
   display_name: z.string().trim().min(1, "Display name is required."),
@@ -55,7 +57,7 @@ export function CreateClientInstanceDialog({
       current_store_id: v.current_store_id,
       status: v.status,
       cert_pem: v.cert_pem.trim(),
-      auto_create_wrapper_assets: v.auto_create_wrapper_assets ? true : undefined,
+      auto_create_wrapper_assets: v.auto_create_wrapper_assets,
     }),
     submit: (req) => postClientInstanceCreate(req),
     invalidate: [["admin", "client-instances"]],
@@ -133,11 +135,11 @@ export function CreateClientInstanceDialog({
               <FormItem>
                 <FormLabel>Certificate PEM</FormLabel>
                 <FormControl>
-                  <textarea
+                  <Textarea
                     rows={8}
                     spellCheck={false}
                     placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"}
-                    className="flex w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
+                    className="font-mono text-xs"
                     {...field}
                   />
                 </FormControl>
@@ -149,31 +151,12 @@ export function CreateClientInstanceDialog({
             control={form.control}
             name="auto_create_wrapper_assets"
             render={({ field }) => (
-              <FormItem>
-                <label className="flex items-start gap-2 text-xs text-(--color-muted)">
-                  <FormControl>
-                    <input
-                      type="checkbox"
-                      data-testid="create-auto-create"
-                      checked={field.value}
-                      onChange={(e) => field.onChange(e.target.checked)}
-                      className="mt-0.5"
-                    />
-                  </FormControl>
-                  <span>
-                    <strong className="text-(--color-fg)">
-                      Auto-create wrapper assets on register
-                    </strong>
-                    <br />
-                    <FormDescription>
-                      When on, this instance's wrappers may add new
-                      resources and wrapper/resource pairs on startup.
-                      When off, the backend refuses to create them and
-                      logs which entries it expected.
-                    </FormDescription>
-                  </span>
-                </label>
-              </FormItem>
+              <AutoCreateField
+                checked={field.value}
+                onChange={field.onChange}
+                testId="create-auto-create"
+                extended
+              />
             )}
           />
           {submitError ? <Alert>{submitError}</Alert> : null}

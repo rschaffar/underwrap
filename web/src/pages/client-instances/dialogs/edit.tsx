@@ -15,12 +15,15 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   type AdminClientInstanceListItem,
   type AdminStoresListResponse,
   putClientInstanceUpdate,
 } from "@/api/client";
 import { useFormDialog } from "@/hooks/use-form-dialog";
+
+import { AutoCreateField } from "./auto-create-field";
 
 const schema = z.object({
   display_name: z.string().trim().min(1, "Display name is required."),
@@ -136,11 +139,11 @@ export function EditClientInstanceDialog({
               <FormItem>
                 <FormLabel>New certificate PEM (optional)</FormLabel>
                 <FormControl>
-                  <textarea
+                  <Textarea
                     rows={8}
                     spellCheck={false}
                     placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"}
-                    className="flex w-full rounded-md border border-(--color-line) bg-(--color-surface-0) px-3 py-2 font-mono text-xs text-(--color-fg)"
+                    className="font-mono text-xs"
                     {...field}
                   />
                 </FormControl>
@@ -157,29 +160,11 @@ export function EditClientInstanceDialog({
             control={form.control}
             name="auto_create_wrapper_assets"
             render={({ field }) => (
-              <FormItem>
-                <label className="flex items-start gap-2 text-xs text-(--color-muted)">
-                  <FormControl>
-                    <input
-                      type="checkbox"
-                      data-testid="edit-auto-create"
-                      checked={field.value}
-                      onChange={(e) => field.onChange(e.target.checked)}
-                      className="mt-0.5"
-                    />
-                  </FormControl>
-                  <span>
-                    <strong className="text-(--color-fg)">
-                      Auto-create wrapper assets on register
-                    </strong>
-                    <br />
-                    <FormDescription>
-                      When on, this instance's wrappers may add new
-                      resources and wrapper/resource pairs on startup.
-                    </FormDescription>
-                  </span>
-                </label>
-              </FormItem>
+              <AutoCreateField
+                checked={field.value}
+                onChange={field.onChange}
+                testId="edit-auto-create"
+              />
             )}
           />
           {submitError ? <Alert>{submitError}</Alert> : null}

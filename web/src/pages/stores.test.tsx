@@ -87,9 +87,12 @@ describe("StoresPage", () => {
       ),
     );
     const workRow = (await screen.findByText("work")).closest("tr")!;
-    const buttons = workRow.querySelectorAll("button");
-    expect(buttons[0]!).toBeEnabled();
-    expect(buttons[1]!).toBeEnabled();
+    expect(
+      within(workRow as HTMLElement).getByRole("button", { name: /^edit$/i }),
+    ).toBeEnabled();
+    expect(
+      within(workRow as HTMLElement).getByRole("button", { name: /^delete$/i }),
+    ).toBeEnabled();
   });
 
   it("admin can open the create dialog", async () => {
@@ -121,8 +124,11 @@ describe("StoresPage", () => {
     );
     await screen.findByText("scratch");
     const scratchRow = screen.getByText("scratch").closest("tr")!;
-    const buttons = scratchRow.querySelectorAll("button");
-    await user.click(buttons[1]!);
+    await user.click(
+      within(scratchRow as HTMLElement).getByRole("button", {
+        name: /^delete$/i,
+      }),
+    );
     const dlg = await screen.findByRole("dialog", { name: /delete store/i });
     const deleteBtn = within(dlg).getByRole("button", { name: /force delete/i });
     // Force-delete button stays disabled until the operator ticks the
@@ -218,6 +224,143 @@ describe("StoresPage", () => {
       "title",
       expect.stringMatching(/mapped to 2 client instances/i),
     );
+  });
+
+  function reqInfo(input: RequestInfo | URL): { url: string; method: string } {
+    if (typeof input === "string") return { url: input, method: "GET" };
+    if (input instanceof URL) return { url: input.toString(), method: "GET" };
+    const req = input as Request;
+    return { url: req.url, method: req.method.toUpperCase() };
+  }
+
+  it("reveals the master key once after creating an encrypted store, gated by the ack checkbox", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const { url, method } = reqInfo(input);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.endsWith("/v1/admin/stores") && method === "POST") {
+        return mockJson(200, {
+          store: { ...sampleList.items[0], id: "store_new", name: "vault" },
+          key_hex: "a".repeat(64),
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    await screen.findByText("work");
+    await user.click(screen.getByRole("button", { name: /create store/i }));
+    const dialog = await screen.findByRole("dialog", { name: /create store/i });
+    await user.type(within(dialog).getByLabelText(/name/i), "vault");
+    await user.selectOptions(
+      within(dialog).getByLabelText(/backend/i),
+      "encrypted",
+    );
+    await user.click(within(dialog).getByRole("button", { name: /^create$/i }));
+
+    const reveal = await screen.findByTestId("key-reveal-dialog");
+    expect(within(reveal).getByTestId("key-reveal-value")).toHaveTextContent(
+      "a".repeat(64),
+    );
+    // The key must stay until the operator confirms they saved it.
+    expect(screen.getByTestId("key-reveal-confirm")).toBeDisabled();
+    await user.click(screen.getByTestId("key-reveal-ack"));
+    expect(screen.getByTestId("key-reveal-confirm")).toBeEnabled();
+  });
+
+  it("reveals the new key after rotating an encrypted store's key", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const { url, method } = reqInfo(input);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.includes("/rotate-key") && method === "POST") {
+        return mockJson(200, {
+          key_hex: "b".repeat(64),
+          warning: "Re-encrypted 3 resources.",
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    const workRow = (await screen.findByText("work")).closest("tr")!;
+    await user.click(
+      within(workRow as HTMLElement).getByRole("button", {
+        name: /rotate key/i,
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: /rotate master key/i,
+    });
+    await user.click(within(dialog).getByRole("checkbox"));
+    await user.click(
+      within(dialog).getByRole("button", { name: /^rotate key$/i }),
+    );
+
+    const reveal = await screen.findByTestId("key-reveal-dialog");
+    expect(within(reveal).getByTestId("key-reveal-value")).toHaveTextContent(
+      "b".repeat(64),
+    );
+    expect(screen.getByTestId("key-reveal-confirm")).toBeDisabled();
+  });
+
+  it("shows the cleanup hint after a force-delete leaves data on disk", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const { url, method } = reqInfo(input);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.includes("/v1/admin/stores/store_scratch") && method === "DELETE") {
+        return mockJson(200, {
+          ok: true,
+          cleanup_hint: { data_dir: "/var/lib/uw/scratch", command: "rm -rf /var/lib/uw/scratch" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    const scratchRow = (await screen.findByText("scratch")).closest("tr")!;
+    await user.click(
+      within(scratchRow as HTMLElement).getByRole("button", { name: /^delete$/i }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: /delete store/i });
+    await user.click(
+      within(dialog).getByLabelText(
+        /force delete even if the store contains secrets/i,
+      ),
+    );
+    await user.click(within(dialog).getByRole("button", { name: /force delete/i }));
+
+    const hint = await screen.findByRole("dialog", { name: /store deleted/i });
+    expect(within(hint).getByText("/var/lib/uw/scratch")).toBeInTheDocument();
+    expect(within(hint).getByText("rm -rf /var/lib/uw/scratch")).toBeInTheDocument();
+  });
+
+  it("locks an unlocked encrypted store via the lock dialog", async () => {
+    const user = userEvent.setup();
+    let locked = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const { url, method } = reqInfo(input);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.includes("/v1/admin/stores/store_work/lock") && method === "POST") {
+        locked = true;
+        return mockJson(200, { ok: true });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    const workRow = (await screen.findByText("work")).closest("tr")!;
+    await user.click(
+      within(workRow as HTMLElement).getByRole("button", { name: /^lock$/i }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: /lock store: work/i });
+    await user.click(within(dialog).getByRole("button", { name: /^lock$/i }));
+    expect(locked).toBe(true);
   });
 });
 

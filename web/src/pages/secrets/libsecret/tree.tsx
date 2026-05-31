@@ -21,7 +21,7 @@ import { libsecretTreeKey } from "./helpers";
 export function LibsecretTree({
   storeId,
   resourceId,
-  enabled = true,
+  enabled,
 }: {
   storeId: string;
   resourceId: string;
@@ -29,9 +29,10 @@ export function LibsecretTree({
    * Gate the libsecret round-trip on a parent's expand state. The
    * tree mounts inside a `<details>` per resource block; expanding
    * one resource shouldn't pull the libsecret payload for the
-   * other N-1.
+   * other N-1. Required — pass the parent's open state explicitly so
+   * no caller silently auto-fetches for every visible resource.
    */
-  enabled?: boolean;
+  enabled: boolean;
 }) {
   const tree = useQuery<AdminLibsecretTreeResponse>({
     queryKey: libsecretTreeKey(storeId, resourceId),

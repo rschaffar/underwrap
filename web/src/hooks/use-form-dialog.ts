@@ -8,8 +8,13 @@ import {
 import { zodResolver } from "@hookform/resolvers/zod";
 
 import { describeApiError } from "@/lib/error-message";
+import { invalidateAll } from "@/lib/query";
 
-export interface UseFormDialogOptions<TValues extends FieldValues, TRequest> {
+export interface UseFormDialogOptions<
+  TValues extends FieldValues,
+  TRequest,
+  TResult,
+> {
   // We can't constrain this tightly without bumping into zod-resolver's
   // generic awkwardness; the caller picks the schema and the hook just
   // hands it to `zodResolver` as-is.
@@ -21,7 +26,7 @@ export interface UseFormDialogOptions<TValues extends FieldValues, TRequest> {
    */
   toRequest?: (values: TValues) => TRequest;
   /** The actual network call. Throws on failure. */
-  submit: (request: TRequest) => Promise<unknown>;
+  submit: (request: TRequest) => Promise<TResult>;
   /** Query keys to invalidate after a successful mutation. */
   invalidate?: ReadonlyArray<readonly unknown[]>;
   /**
@@ -29,7 +34,7 @@ export interface UseFormDialogOptions<TValues extends FieldValues, TRequest> {
    * mutation's return value so multi-step flows (e.g. create-then-
    * reveal-key) can route off the response without redoing the call.
    */
-  onSuccess: (result: unknown) => void;
+  onSuccess: (result: TResult) => void;
 }
 
 export interface UseFormDialogResult<TValues extends FieldValues> {
@@ -49,8 +54,12 @@ export interface UseFormDialogResult<TValues extends FieldValues> {
  * form's "root" error so a single `<Alert>` driven by
  * `form.formState.errors.root` renders the submit failure.
  */
-export function useFormDialog<TValues extends FieldValues, TRequest = TValues>(
-  opts: UseFormDialogOptions<TValues, TRequest>,
+export function useFormDialog<
+  TValues extends FieldValues,
+  TRequest = TValues,
+  TResult = unknown,
+>(
+  opts: UseFormDialogOptions<TValues, TRequest, TResult>,
 ): UseFormDialogResult<TValues> {
   const qc = useQueryClient();
   const form = useForm<TValues>({
@@ -62,9 +71,7 @@ export function useFormDialog<TValues extends FieldValues, TRequest = TValues>(
     mutationFn: (request: TRequest) => opts.submit(request),
     onSuccess: async (result) => {
       if (opts.invalidate) {
-        await Promise.all(
-          opts.invalidate.map((key) => qc.invalidateQueries({ queryKey: key })),
-        );
+        await invalidateAll(qc, opts.invalidate);
       }
       opts.onSuccess(result);
     },

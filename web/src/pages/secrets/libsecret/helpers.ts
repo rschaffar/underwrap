@@ -6,6 +6,8 @@ import { z } from "zod";
 // remain authoritative.
 const ID_PATTERN = /^(?!_)[A-Za-z0-9._-]+$/;
 const ID_MESSAGE = "Id must match [A-Za-z0-9._-]+ and not start with '_'.";
+const ID_MAX = 128;
+const ID_MAX_MESSAGE = "Id must be at most 128 characters.";
 
 /**
  * Zod refinement for libsecret-style ids and alias names. Non-empty,
@@ -15,6 +17,7 @@ export function libsecretIdField() {
   return z
     .string()
     .min(1, "Id is required.")
+    .max(ID_MAX, ID_MAX_MESSAGE)
     .refine((s) => ID_PATTERN.test(s), ID_MESSAGE);
 }
 
@@ -26,6 +29,7 @@ export function libsecretIdField() {
 export function optionalLibsecretIdField() {
   return z
     .string()
+    .max(ID_MAX, ID_MAX_MESSAGE)
     .optional()
     .refine((s) => !s || ID_PATTERN.test(s), ID_MESSAGE);
 }

@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   _resetCsrfTokenForTesting,
-  client,
   fetchSecret,
   fetchWhoami,
   postLogin,
@@ -136,10 +135,5 @@ describe("typed admin client", () => {
         expect(stringified).not.toContain("sensitive-key");
       }
     }
-  });
-
-  it("exposes the raw openapi-fetch client for advanced usage", () => {
-    expect(typeof client.GET).toBe("function");
-    expect(typeof client.POST).toBe("function");
   });
 });

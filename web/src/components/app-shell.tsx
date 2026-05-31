@@ -24,7 +24,6 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { useTheme } from "@/hooks/use-theme";
-import { cn } from "@/lib/utils";
 
 interface NavItem {
   label: string;
@@ -35,7 +34,7 @@ interface NavItem {
   href: Parameters<typeof Link>[0]["to"];
 }
 
-export const NAV: NavItem[] = [
+const NAV: NavItem[] = [
   { label: "Wrapper permissions", icon: Grid3x3, href: "/wrappers" },
   { label: "Secrets", icon: KeyRound, href: "/secrets" },
   { label: "Stores", icon: Lock, href: "/stores" },
@@ -75,11 +74,7 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="min-h-screen text-(--color-fg)">
-      <header
-        className={cn(
-          "sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-(--color-line) bg-(--color-surface-0)/80 px-4 backdrop-blur",
-        )}
-      >
+      <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-(--color-line) bg-(--color-surface-0)/80 px-4 backdrop-blur">
         <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
           <SheetTrigger asChild>
             <Button

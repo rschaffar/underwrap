@@ -21,15 +21,18 @@ export function useClientInstanceDirectory(): {
     queryFn: fetchClientInstances,
   });
 
-  const clientInstances = query.data?.items ?? [];
+  const clientInstances = useMemo(
+    () => query.data?.items ?? [],
+    [query.data],
+  );
 
   const displayNameById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const i of query.data?.items ?? []) {
+    for (const i of clientInstances) {
       map.set(i.id, i.display_name);
     }
     return map;
-  }, [query.data]);
+  }, [clientInstances]);
 
   return {
     clientInstances,

@@ -40,12 +40,8 @@ export function ResourceBlock({
   onRenameResource: () => void;
 } & RowActions) {
   const total = resourceCount(group);
-  // The summary line shows which slots have content. It avoids
-  // overpromising an empty slot section before the operator
-  // expands.
-  // libsecret content is fetched and rendered structurally by
-  // `LibsecretTree`, so we summarize only the flat env/files counts
-  // here. The tree component carries its own counts inline.
+  // libsecret content is summarized by `LibsecretTree` itself, so this
+  // line counts only the flat env/files slots.
   const summary = SECRET_SLOTS.filter((slot) => group[slot].length > 0)
     .map((slot) => `${slot} (${group[slot].length})`)
     .join(" · ");
@@ -55,8 +51,6 @@ export function ResourceBlock({
   const provenanceEpoch = normalizeEpoch(provenance?.created_at);
   const provenanceDate =
     provenanceEpoch === null ? null : epochToDate(provenanceEpoch);
-  // Display the operator-facing name when the catalog knows about
-  // this resource; orphan groups fall back to the id.
   const displayLabel = provenance?.name ?? group.resource_id;
   const [open, setOpen] = useState(false);
   return (

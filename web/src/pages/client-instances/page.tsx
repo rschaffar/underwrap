@@ -87,12 +87,28 @@ export function ClientInstancesPage() {
           </div>
           <Button
             type="button"
+            disabled={storesQuery.isPending || storesQuery.isError}
+            title={
+              storesQuery.isError
+                ? "The store list failed to load — reload to create instances."
+                : storesQuery.isPending
+                  ? "Loading stores…"
+                  : undefined
+            }
             onClick={() => setCreating(true)}
           >
             Create client instance
           </Button>
         </div>
       </header>
+
+      {storesQuery.isError ? (
+        <Alert>
+          The store list could not be loaded (
+          {describeApiError(storesQuery.error)}). Creating or editing client
+          instances is unavailable until it loads.
+        </Alert>
+      ) : null}
 
       {instancesQuery.isLoading ? (
         <p className="text-sm text-(--color-muted)">Loading…</p>
@@ -139,6 +155,14 @@ export function ClientInstancesPage() {
                         <Button
                           variant="ghost"
                           size="sm"
+                          disabled={storesQuery.isPending || storesQuery.isError}
+                          title={
+                            storesQuery.isError
+                              ? "The store list failed to load — reload to edit instances."
+                              : storesQuery.isPending
+                                ? "Loading stores…"
+                                : undefined
+                          }
                           onClick={() => setEditing(item)}
                         >
                           Edit

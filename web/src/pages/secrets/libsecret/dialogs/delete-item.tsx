@@ -35,7 +35,7 @@ export function DeleteItemDialog({
       destructive
       confirmLabel="Delete"
       pendingLabel="Deleting…"
-      onConfirm={() => confirm()}
+      onConfirm={confirm}
       onClose={onClose}
       pending={pending}
       submitError={submitError}

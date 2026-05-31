@@ -31,13 +31,10 @@ export function RotateStoreKeyDialog({
   const { confirm, pending, submitError } = useConfirmMutation({
     mutationFn: () => postStoreRotateKey(store.id),
     invalidate: [["admin", "stores"]],
-    onSuccess: () => {
-      // The result is captured via the override below.
-    },
   });
 
   async function handleRotate() {
-    const result = (await confirm()) as { key_hex: string; warning: string };
+    const result = await confirm();
     setRevealKey({ keyHex: result.key_hex, warning: result.warning });
   }
 

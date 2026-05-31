@@ -49,7 +49,11 @@ export function RevealSecretView<T>({
     queryFn,
     enabled: confirmed,
     // Don't cache the secret material in the React Query store any
-    // longer than necessary.
+    // longer than necessary: gcTime: 0 collects the entry as soon as
+    // this dialog unmounts. There is no explicit zero-fill — the value
+    // lives in the JS heap (query result + cache object) until the next
+    // GC cycle. Acceptable for a browser admin SPA; documented so the
+    // boundary is clear to future maintainers.
     staleTime: 0,
     gcTime: 0,
     refetchOnMount: "always",
@@ -70,7 +74,7 @@ export function RevealSecretView<T>({
     try {
       await navigator.clipboard.writeText(decoded);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      setTimeout(() => setCopied(false), 1500);
     } catch {
       // Non-secure-context fallback: do nothing; the textarea is
       // selectable for manual copy.
@@ -106,7 +110,7 @@ export function RevealSecretView<T>({
         <Alert variant="warning">
           {b64 == null
             ? "The secret does not exist (or was removed)."
-            : "The secret material could not be decoded as UTF-8 text."}
+            : "The server returned a value that could not be base64-decoded. This is likely a server-side bug."}
         </Alert>
       );
     } else {

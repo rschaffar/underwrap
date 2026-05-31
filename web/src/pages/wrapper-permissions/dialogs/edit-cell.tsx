@@ -3,7 +3,7 @@ import { AlertTriangle } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { AdminDialog } from "@/components/admin-dialog";
-import { ConfirmDangerDialog } from "@/components/ConfirmDangerDialog";
+import { ConfirmDangerDialog } from "@/components/confirm-danger-dialog";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
@@ -121,28 +121,18 @@ export function EditCellDialog({
       case "unlocked":
         mode = { kind: "unlocked" };
         break;
-      case "unlocked-until": {
-        const until = new Date(untilLocal).getTime();
-        if (Number.isNaN(until)) {
-          setSubmitError("Pick a valid deadline.");
-          return;
-        }
-        mode = {
-          kind: "unlocked-until",
-          until_epoch: Math.floor(until / 1000),
-        };
-        break;
-      }
+      case "unlocked-until":
       case "unsafe-debug-until": {
         const until = new Date(untilLocal).getTime();
         if (Number.isNaN(until)) {
           setSubmitError("Pick a valid deadline.");
           return;
         }
-        mode = {
-          kind: "unsafe-debug-until",
-          until_epoch: Math.floor(until / 1000),
-        };
+        const until_epoch = Math.floor(until / 1000);
+        mode =
+          kind === "unlocked-until"
+            ? { kind: "unlocked-until", until_epoch }
+            : { kind: "unsafe-debug-until", until_epoch };
         break;
       }
     }
@@ -179,6 +169,7 @@ export function EditCellDialog({
             className="flex flex-wrap gap-2"
             data-testid="mode-radio-group"
           >
+            <legend className="sr-only">Mode</legend>
             {(
               [
                 "locked",
@@ -282,22 +273,23 @@ export function EditCellDialog({
           </div>
         </DialogFooter>
     </AdminDialog>
-    <ConfirmDangerDialog
-      open={confirmUnsafeDebug}
-      title="Enable unsafe debug?"
-      confirmLabel="Yes, enable unsafe debug"
-      onConfirm={armUnsafeDebug}
-      onCancel={() => setConfirmUnsafeDebug(false)}
-      description={
-        <>
-          This unlocks the debug tool (
-          <code>uw-&lt;instance&gt; debug {wrapper}</code>), which prints
-          this wrapper's projected secret material to the operator's
-          terminal, until the deadline you set expires. Only use it for
-          local, supervised debugging.
-        </>
-      }
-    />
+    {confirmUnsafeDebug ? (
+      <ConfirmDangerDialog
+        title="Enable unsafe debug?"
+        confirmLabel="Yes, enable unsafe debug"
+        onConfirm={armUnsafeDebug}
+        onCancel={() => setConfirmUnsafeDebug(false)}
+        description={
+          <>
+            This unlocks the debug tool (
+            <code>uw-&lt;instance&gt; debug {wrapper}</code>), which prints
+            this wrapper's projected secret material to the operator's
+            terminal, until the deadline you set expires. Only use it for
+            local, supervised debugging.
+          </>
+        }
+      />
+    ) : null}
     </>
   );
 }

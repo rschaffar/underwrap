@@ -51,7 +51,7 @@ describe("LibsecretTree", () => {
 
   it("renders collections + items + aliases from the structured endpoint", async () => {
     vi.mocked(fetchLibsecretTree).mockResolvedValue(baseTree);
-    renderTree(<LibsecretTree storeId="test" resourceId="github/gh" />);
+    renderTree(<LibsecretTree storeId="test" resourceId="github/gh" enabled />);
 
     const tree = await screen.findByTestId("libsecret-tree");
     expect(tree).toBeInTheDocument();
@@ -80,8 +80,16 @@ describe("LibsecretTree", () => {
       aliases: {},
       collections: [],
     });
-    renderTree(<LibsecretTree storeId="test" resourceId="empty" />);
+    renderTree(<LibsecretTree storeId="test" resourceId="empty" enabled />);
     const tree = await screen.findByTestId("libsecret-tree");
     expect(tree).toHaveTextContent(/none/i);
+  });
+
+  it("does not fetch while disabled (the parent block is collapsed)", () => {
+    vi.mocked(fetchLibsecretTree).mockResolvedValue(baseTree);
+    renderTree(
+      <LibsecretTree storeId="test" resourceId="github/gh" enabled={false} />,
+    );
+    expect(fetchLibsecretTree).not.toHaveBeenCalled();
   });
 });

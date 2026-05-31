@@ -51,7 +51,7 @@ export function RenameResourceDialog({
     schema: renameResourceSchema,
     defaultValues: { new_name: currentName },
     submit: (v) => {
-      const next = (v as RenameResourceValues).new_name.trim();
+      const next = v.new_name.trim();
       if (next === currentName) {
         // No-op rename; resolve without hitting the backend.
         return Promise.resolve(undefined);

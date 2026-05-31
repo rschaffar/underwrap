@@ -36,7 +36,7 @@ export function EditStoreDialog({
     submit: (v) =>
       putStoreUpdate(store.id, {
         name: undefined,
-        description: (v as EditValues).description,
+        description: v.description,
       }),
     invalidate: [["admin", "stores"]],
     onSuccess: onClose,

@@ -2,13 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ConfirmDangerDialog } from "./ConfirmDangerDialog";
+import { ConfirmDangerDialog } from "./confirm-danger-dialog";
 
 describe("ConfirmDangerDialog", () => {
-  it("renders title, description, and confirm label when open", async () => {
+  it("renders title, description, and confirm label", async () => {
     render(
       <ConfirmDangerDialog
-        open
         title="Enable unsafe debug?"
         description={<>This prints secret material.</>}
         confirmLabel="Yes, enable"
@@ -25,24 +24,9 @@ describe("ConfirmDangerDialog", () => {
     );
   });
 
-  it("renders nothing when closed", () => {
-    render(
-      <ConfirmDangerDialog
-        open={false}
-        title="Enable unsafe debug?"
-        description="x"
-        confirmLabel="Yes"
-        onConfirm={() => {}}
-        onCancel={() => {}}
-      />,
-    );
-    expect(screen.queryByTestId("confirm-danger-confirm")).toBeNull();
-  });
-
   it("focuses the cancel button by default so a stray Enter does not arm the dangerous action", async () => {
     render(
       <ConfirmDangerDialog
-        open
         title="t"
         description="d"
         confirmLabel="Yes"
@@ -60,7 +44,6 @@ describe("ConfirmDangerDialog", () => {
     const onCancel = vi.fn();
     render(
       <ConfirmDangerDialog
-        open
         title="t"
         description="d"
         confirmLabel="Yes"

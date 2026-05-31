@@ -13,8 +13,8 @@ function readInitial(): Theme {
 
 /**
  * Tiny theme controller: toggles the `dark` class on `<html>` and
- * persists the choice. No system-preference detection (yet) — the
- * shell defaults to dark, which is the app's primary look.
+ * persists the choice. No system-preference detection — the shell
+ * defaults to dark, which is the app's primary look.
  */
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(readInitial);

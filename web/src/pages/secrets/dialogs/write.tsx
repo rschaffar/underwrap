@@ -54,7 +54,7 @@ export function WriteSecretDialog({
     schema: writeSchema,
     defaultValues: { key: address.key, material: "" },
     submit: (v) => {
-      const { key, material } = v as WriteValues;
+      const { key, material } = v;
       if (mode === "edit" && key !== address.key) {
         return postSecretRename(
           storeId,
@@ -109,9 +109,7 @@ export function WriteSecretDialog({
                     placeholder={
                       address.slot === "env"
                         ? "e.g. GH_TOKEN"
-                        : address.slot === "files"
-                          ? "e.g. config.yaml or nested/dir/file"
-                          : "e.g. default/gh-cli.secret"
+                        : "e.g. config.yaml or nested/dir/file"
                     }
                     {...field}
                   />

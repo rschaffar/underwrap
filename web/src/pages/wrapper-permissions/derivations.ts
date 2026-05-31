@@ -49,17 +49,6 @@ export function clientInstancesForStore(
   return [...set].sort();
 }
 
-/** Sort pair records into the (wrapper, resource_id) order the table renders. */
-export function sortPairs(
-  pairs: WrapperResourcePairRecord[],
-): WrapperResourcePairRecord[] {
-  return [...pairs].sort((a, b) =>
-    a.wrapper === b.wrapper
-      ? a.resource_id.localeCompare(b.resource_id)
-      : a.wrapper.localeCompare(b.wrapper),
-  );
-}
-
 /**
  * Group pair records by resource, sorted by resource name, with each
  * group's wrappers sorted by wrapper name. The page renders one table

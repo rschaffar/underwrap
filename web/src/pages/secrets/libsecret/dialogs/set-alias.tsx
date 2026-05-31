@@ -45,7 +45,7 @@ export function SetAliasDialog({
       collection_id: collections[0]?.id ?? "",
     },
     submit: (v) => {
-      const values = v as AliasValues;
+      const values = v;
       return putLibsecretAlias(storeId, resourceId, values.name, {
         collection_id: values.collection_id,
       });

@@ -33,7 +33,7 @@ export function KeyRevealDialog({
 
   async function onCopy() {
     try {
-      if (typeof navigator !== "undefined" && navigator.clipboard) {
+      if (navigator.clipboard) {
         await navigator.clipboard.writeText(keyHex);
         setCopyStatus("copied");
       } else {

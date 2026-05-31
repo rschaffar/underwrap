@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { z } from "zod";
 
 import { AdminDialog } from "@/components/admin-dialog";
@@ -46,8 +47,18 @@ export function CreateItemDialog({
   existingIds: string[];
   onClose: () => void;
 }) {
+  // Duplicate-id detection is a field-level validation so the operator
+  // sees an inline message under the input, not a generic Alert.
+  const schema = useMemo(
+    () =>
+      itemSchema.refine((v) => !v.id || !existingIds.includes(v.id), {
+        path: ["id"],
+        message: "An item with that id already exists in this collection.",
+      }),
+    [existingIds],
+  );
   const { form, onSubmit, pending, submitError } = useFormDialog<ItemValues>({
-    schema: itemSchema,
+    schema,
     defaultValues: {
       id: "",
       label: "",
@@ -55,19 +66,14 @@ export function CreateItemDialog({
       attributes: "",
       secret: "",
     },
-    submit: (v) => {
-      const values = v as ItemValues;
-      if (values.id && existingIds.includes(values.id)) {
-        throw new Error("Id already exists in this collection.");
-      }
-      return postLibsecretItem(storeId, resourceId, collectionId, {
-        id: values.id || undefined,
-        label: values.label,
-        content_type: values.content_type,
-        attributes: parseAttributes(values.attributes),
-        secret_b64: btoa(values.secret),
-      });
-    },
+    submit: (v) =>
+      postLibsecretItem(storeId, resourceId, collectionId, {
+        id: v.id || undefined,
+        label: v.label,
+        content_type: v.content_type,
+        attributes: parseAttributes(v.attributes),
+        secret_b64: btoa(v.secret),
+      }),
     invalidate: [libsecretTreeKey(storeId, resourceId)],
     onSuccess: onClose,
   });

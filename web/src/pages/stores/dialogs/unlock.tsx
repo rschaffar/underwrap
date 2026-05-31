@@ -40,21 +40,14 @@ export function UnlockStoreDialog({
   const { form, onSubmit, pending, submitError } = useFormDialog<UnlockValues>({
     schema: unlockSchema,
     defaultValues: { key_hex: "" },
-    submit: (v) =>
-      postStoreUnlock(store.id, { key_hex: (v as UnlockValues).key_hex.trim() }),
+    submit: (v) => postStoreUnlock(store.id, { key_hex: v.key_hex.trim() }),
     invalidate: [["admin", "stores"]],
-    onSuccess: () => {
-      form.reset({ key_hex: "" });
-      onClose();
-    },
+    onSuccess: onClose,
   });
   return (
     <AdminDialog
       open
-      onClose={() => {
-        form.reset({ key_hex: "" });
-        onClose();
-      }}
+      onClose={onClose}
       title={`Unlock store: ${store.name}`}
       description={
         <>
@@ -99,14 +92,7 @@ export function UnlockStoreDialog({
             <Alert data-testid="store-unlock-error">{submitError}</Alert>
           ) : null}
           <DialogFooter>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                form.reset({ key_hex: "" });
-                onClose();
-              }}
-            >
+            <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
             </Button>
             <Button

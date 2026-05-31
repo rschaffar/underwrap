@@ -6,7 +6,7 @@ import type { WrapperPermission } from "@/api/client";
 import { PolicyViewerDialog } from "./policy-viewer-dialog";
 
 describe("PolicyViewerDialog", () => {
-  it("renders the formatted JSON, the writable-permissions badge, and a copy button for a non-trivial policy", async () => {
+  it("renders the formatted JSON and a copy button for a non-trivial policy", async () => {
     const permissions: WrapperPermission[] = [
       {
         client_instance: "dev-laptop",

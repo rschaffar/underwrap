@@ -1,9 +1,9 @@
 import {
   Outlet,
-  RootRoute,
-  Route,
-  Router,
   RouterProvider,
+  createRootRoute,
+  createRoute,
+  createRouter,
   redirect,
 } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -46,7 +46,7 @@ export const queryClient = new QueryClient({
   },
 });
 
-const rootRoute = new RootRoute({
+const rootRoute = createRootRoute({
   component: RootLayout,
   notFoundComponent: NotFound,
   errorComponent: ErrorScreen,
@@ -94,13 +94,13 @@ function NotFound() {
 
 // ----- Protected app routes -----
 
-const appLayoutRoute = new Route({
+const appLayoutRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "app",
   beforeLoad: async ({ location }) => {
     try {
       const principal = await fetchWhoami();
-      if (principal.username !== undefined) {
+      if (principal.username != null) {
         return { principal };
       }
     } catch (err) {
@@ -132,7 +132,7 @@ function AppLayoutComponent() {
   );
 }
 
-const indexRoute = new Route({
+const indexRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/",
   beforeLoad: () => {
@@ -140,19 +140,19 @@ const indexRoute = new Route({
   },
 });
 
-const storesRoute = new Route({
+const storesRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/stores",
   component: StoresPage,
 });
 
-const clientInstancesRoute = new Route({
+const clientInstancesRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/client-instances",
   component: ClientInstancesPage,
 });
 
-const usersRoute = new Route({
+const usersRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/users",
   component: function UsersRouteComponent() {
@@ -161,7 +161,7 @@ const usersRoute = new Route({
   },
 });
 
-const profileRoute = new Route({
+const profileRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/profile",
   component: function ProfileRouteComponent() {
@@ -170,13 +170,13 @@ const profileRoute = new Route({
   },
 });
 
-const wrapperPermissionsRoute = new Route({
+const wrapperPermissionsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/wrappers",
   component: WrapperPermissionsPage,
 });
 
-const secretsRoute = new Route({
+const secretsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/secrets",
   component: SecretsPage,
@@ -188,7 +188,7 @@ interface LoginSearch {
   next?: string;
 }
 
-const loginRoute = new Route({
+const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
   validateSearch: (search): LoginSearch => {
@@ -211,7 +211,7 @@ const loginRoute = new Route({
   },
 });
 
-const bootstrapRoute = new Route({
+const bootstrapRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/bootstrap",
   component: function BootstrapRouteComponent() {
@@ -227,7 +227,7 @@ const bootstrapRoute = new Route({
   },
 });
 
-const logoutRoute = new Route({
+const logoutRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/logout",
   beforeLoad: async () => {
@@ -282,7 +282,7 @@ const routeTree = rootRoute.addChildren([
   logoutRoute,
 ]);
 
-const router = new Router({
+const router = createRouter({
   routeTree,
   context: { queryClient, principal: null } as RouterContext,
 });

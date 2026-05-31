@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { StatusChip } from "@/components/ui/status-chip";
 import type { AdminStoresListResponse } from "@/api/client";
 
 function storeDeleteTitle(
@@ -71,19 +72,19 @@ export function StoresTable({
                 </td>
                 <td className="px-4 py-3">
                   {item.locked ? (
-                    <span
+                    <StatusChip
+                      tone="amber"
                       data-testid={`store-status-${item.id}`}
-                      className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-200"
                     >
                       locked
-                    </span>
+                    </StatusChip>
                   ) : item.backend === "encrypted" ? (
-                    <span
+                    <StatusChip
+                      tone="emerald"
                       data-testid={`store-status-${item.id}`}
-                      className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-200"
                     >
                       unlocked
-                    </span>
+                    </StatusChip>
                   ) : (
                     <span
                       data-testid={`store-status-${item.id}`}

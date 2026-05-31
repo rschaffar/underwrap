@@ -15,10 +15,11 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { type AdminStoreCreateRequest, postStoreCreate } from "@/api/client";
-import type { components } from "@/api/schema";
-
-type AdminStoreCreateResponse = components["schemas"]["AdminStoreCreateResponse"];
+import {
+  type AdminStoreCreateRequest,
+  type AdminStoreCreateResponse,
+  postStoreCreate,
+} from "@/api/client";
 import { useFormDialog } from "@/hooks/use-form-dialog";
 
 import { KeyRevealDialog } from "./key-reveal";
@@ -31,10 +32,8 @@ const createSchema = z.object({
 type CreateValues = z.infer<typeof createSchema>;
 
 export function CreateStoreDialog({
-  open,
   onClose,
 }: {
-  open: boolean;
   onClose: () => void;
 }) {
   // Held only while the reveal modal is up; cleared when the operator
@@ -47,7 +46,8 @@ export function CreateStoreDialog({
 
   const { form, onSubmit, pending, submitError } = useFormDialog<
     CreateValues,
-    AdminStoreCreateRequest
+    AdminStoreCreateRequest,
+    AdminStoreCreateResponse
   >({
     schema: createSchema,
     defaultValues: { name: "", backend: "plain", description: "" },
@@ -59,12 +59,11 @@ export function CreateStoreDialog({
     submit: (req) => postStoreCreate(req),
     invalidate: [["admin", "stores"]],
     onSuccess: (result) => {
-      const res = result as AdminStoreCreateResponse;
-      if (res.key_hex) {
+      if (result.key_hex) {
         // Encrypted store: surface the master key once. We keep the
         // create dialog mounted underneath so onClose isn't called
         // until the operator finishes the reveal flow.
-        setRevealKey({ name: res.store.name, keyHex: res.key_hex });
+        setRevealKey({ name: result.store.name, keyHex: result.key_hex });
       } else {
         onClose();
       }
@@ -95,7 +94,7 @@ export function CreateStoreDialog({
 
   return (
     <AdminDialog
-      open={open}
+      open
       onClose={onClose}
       title="Create store"
       description={

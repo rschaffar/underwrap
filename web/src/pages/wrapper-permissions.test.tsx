@@ -3,13 +3,13 @@ import { render } from "@testing-library/react";
 
 import { ModeBadge } from "./wrapper-permissions/table";
 import {
+  clientInstancesForStore,
   groupPairsByResource,
-  sortPairs,
-  wrapperResourceKey,
 } from "./wrapper-permissions/derivations";
 import { formatEpochRelative } from "@/lib/epoch";
 import type {
   WrapperApprovalMode,
+  WrapperPermission,
   WrapperResourcePairRecord,
 } from "@/api/client";
 
@@ -37,15 +37,6 @@ describe("derivation helpers", () => {
       last_used_at: null,
     },
   ];
-
-  it("sortPairs orders by (wrapper, resource)", () => {
-    const ordered = sortPairs(pairs);
-    expect(ordered.map((p) => wrapperResourceKey(p))).toEqual([
-      "aws-prod|aws/prod",
-      "gh-authorized|github/token",
-      "jira-readonly|jira/api",
-    ]);
-  });
 
   it("groupPairsByResource buckets by resource and sorts both axes", () => {
     const shared: WrapperResourcePairRecord[] = [
@@ -116,5 +107,41 @@ describe("ModeBadge", () => {
       expect(getByTestId(v.testid)).toBeTruthy();
       unmount();
     }
+  });
+});
+
+describe("clientInstancesForStore", () => {
+  const perm = (client_instance: string): WrapperPermission => ({
+    client_instance,
+    wrapper: "gh",
+    resource_id: "r",
+    mode: { kind: "unlocked" },
+    writable: false,
+  });
+
+  it("returns instances currently mapped to the store", () => {
+    const instances = [
+      { id: "ci-a", current_store_id: "prod" },
+      { id: "ci-b", current_store_id: "other" },
+    ];
+    expect(clientInstancesForStore("prod", instances, [])).toEqual(["ci-a"]);
+  });
+
+  it("includes stale instances that only appear in existing permissions", () => {
+    // ci-old was remapped away but still has a permission row in this store.
+    expect(
+      clientInstancesForStore("prod", [], [perm("ci-old")]),
+    ).toEqual(["ci-old"]);
+  });
+
+  it("unions active and stale columns and sorts them", () => {
+    const instances = [{ id: "ci-b", current_store_id: "prod" }];
+    expect(
+      clientInstancesForStore("prod", instances, [perm("ci-a")]),
+    ).toEqual(["ci-a", "ci-b"]);
+  });
+
+  it("returns an empty list for a store with no instances or permissions", () => {
+    expect(clientInstancesForStore("prod", [], [])).toEqual([]);
   });
 });

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import {
+  deleteClientInstance,
   fetchClientInstances,
   fetchStores,
   postClientInstanceCreate,
@@ -20,6 +21,7 @@ vi.mock("@/api/client", async () => {
     fetchStores: vi.fn(),
     putClientInstanceUpdate: vi.fn(),
     postClientInstanceCreate: vi.fn(),
+    deleteClientInstance: vi.fn(),
   };
 });
 
@@ -104,6 +106,8 @@ describe("ClientInstancesPage", () => {
     vi.mocked(fetchStores).mockReset();
     vi.mocked(putClientInstanceUpdate).mockReset();
     vi.mocked(postClientInstanceCreate).mockReset();
+    vi.mocked(deleteClientInstance).mockReset();
+    vi.mocked(deleteClientInstance).mockResolvedValue(undefined as never);
     vi.mocked(fetchClientInstances).mockResolvedValue(instances);
     vi.mocked(fetchStores).mockResolvedValue(stores);
     vi.mocked(postClientInstanceCreate).mockResolvedValue({
@@ -218,6 +222,7 @@ describe("ClientInstancesPage", () => {
       current_store_id: "store_work",
       status: "active",
       cert_pem: pem.trim(),
+      auto_create_wrapper_assets: false,
     });
   });
 
@@ -276,6 +281,55 @@ describe("ClientInstancesPage", () => {
 
     expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
       auto_create_wrapper_assets: true,
+    });
+  });
+
+  it("surfaces a stores-load failure and disables the Create button", async () => {
+    vi.mocked(fetchStores).mockRejectedValue(new Error("boom"));
+    renderWithQuery(<ClientInstancesPage />);
+
+    // The instances themselves still render; only store-dependent actions
+    // are blocked.
+    await screen.findByTestId("client-instance-row-client_work");
+    expect(
+      screen.getByText(/store list could not be loaded/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /create client instance/i }),
+    ).toBeDisabled();
+  });
+
+  it("deletes a client instance via the confirmation dialog", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ClientInstancesPage />);
+
+    const row = await screen.findByTestId("client-instance-row-client_work");
+    await user.click(within(row).getByRole("button", { name: /^delete$/i }));
+    const dialog = await screen.findByRole("dialog", {
+      name: /delete client instance: work laptop/i,
+    });
+    await user.click(within(dialog).getByRole("button", { name: /^delete$/i }));
+
+    expect(deleteClientInstance).toHaveBeenCalledWith("client_work");
+  });
+
+  it("re-enables a disabled instance via the confirmation dialog", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ClientInstancesPage />);
+
+    const row = await screen.findByTestId(
+      "client-instance-row-client_disabled",
+    );
+    await user.click(within(row).getByRole("button", { name: /re-enable/i }));
+    const dialog = await screen.findByRole("dialog", {
+      name: /re-enable: retired workstation/i,
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: /re-enable/i }),
+    );
+
+    expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_disabled", {
+      status: "active",
     });
   });
 });

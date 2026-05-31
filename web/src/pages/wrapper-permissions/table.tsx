@@ -170,10 +170,7 @@ export function ResourceGroupedPairsTable({
  * to a different mode.
  */
 function CellContent({ permission }: { permission: WrapperPermission | null }) {
-  if (!permission) {
-    return <ModeBadge mode={{ kind: "locked" }} />;
-  }
-  return <ModeBadge mode={permission.mode ?? { kind: "locked" }} />;
+  return <ModeBadge mode={permission?.mode ?? { kind: "locked" }} />;
 }
 
 export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {

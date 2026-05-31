@@ -24,7 +24,6 @@ import {
   clientInstancesForStore,
   groupPairsByResource,
   permissionKey,
-  sortPairs,
 } from "./derivations";
 import { ResourceGroupedPairsTable } from "./table";
 import { CreatePairDialog } from "./dialogs/create-pair";
@@ -54,8 +53,8 @@ export function WrapperPermissionsPage() {
   const resources = view.data?.resources ?? [];
   const { nameById: resourceNameById } = useResourceCatalog(resources);
 
-  const pairRecords = useMemo(
-    () => sortPairs(view.data?.pairs ?? []),
+  const groups = useMemo(
+    () => groupPairsByResource(view.data?.pairs ?? []),
     [view.data],
   );
   const permissions = view.data?.permissions ?? [];
@@ -175,14 +174,14 @@ export function WrapperPermissionsPage() {
         </p>
       ) : view.error ? (
         <Alert>{describeApiError(view.error)}</Alert>
-      ) : pairRecords.length === 0 ? (
+      ) : groups.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
           No wrapper/resource pairs are registered for this store yet.
           {" "}Use Create pair to add one, or enable auto-create on a client instance so its wrappers register on startup.
         </p>
       ) : (
         <ResourceGroupedPairsTable
-          groups={groupPairsByResource(pairRecords)}
+          groups={groups}
           clientInstances={clientInstances}
           displayNameById={displayNameById}
           resourceNameById={resourceNameById}

@@ -18,7 +18,7 @@ interface PolicyViewerDialogProps {
  * permissions page shows a derived
  * `(wrapper, resource, client_instance)` grid that hides the
  * underlying document shape; this dialog renders the raw JSON the
- * backend stores, plus a quick count of writable permissions.
+ * backend stores.
  *
  * Permissions arrive as a prop from the parent's wrapper-permissions
  * view query, so opening the dialog doesn't fire a second
@@ -30,10 +30,9 @@ export function PolicyViewerDialog({
   permissions,
   onClose,
 }: PolicyViewerDialogProps) {
-  // Render a `PolicyDocument`-shaped blob even though the wire format
-  // is just a permissions array; operators paste this into docs and
-  // tickets, so the on-screen shape stays stable across the
-  // policy/get → wrapper-permissions/list switch.
+  // Wrap the permissions array in `{ permissions }` so the displayed
+  // JSON matches the `PolicyDocument` shape operators recognise when
+  // pasting it into docs and tickets.
   const formatted = useMemo(
     () => JSON.stringify({ permissions }, null, 2),
     [permissions],
@@ -44,7 +43,7 @@ export function PolicyViewerDialog({
     try {
       await navigator.clipboard.writeText(formatted);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      setTimeout(() => setCopied(false), 1500);
     } catch {
       // Older browsers / non-secure contexts: leave the badge as-is.
       // The pre block is selectable so the operator can still copy

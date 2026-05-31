@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
 
 export interface ConfirmDangerDialogProps {
-  open: boolean;
   title: string;
   description: React.ReactNode;
   confirmLabel: string;
@@ -18,10 +17,10 @@ export interface ConfirmDangerDialogProps {
  * Confirmation gate for an irreversible-feeling or security-sensitive
  * choice. Warning palette (amber/rose), cancel focused by default so a
  * stray Enter does not arm the dangerous option. Escape / outside-click
- * count as cancel.
+ * count as cancel. Mount conditionally (`{open ? <…/> : null}`) like the
+ * other admin dialogs rather than toggling an `open` prop.
  */
 export function ConfirmDangerDialog({
-  open,
   title,
   description,
   confirmLabel,
@@ -30,7 +29,7 @@ export function ConfirmDangerDialog({
 }: ConfirmDangerDialogProps) {
   return (
     <AdminDialog
-      open={open}
+      open
       onClose={onCancel}
       title={
         <span className="inline-flex items-center gap-2 text-amber-200">

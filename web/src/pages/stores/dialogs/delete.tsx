@@ -26,19 +26,13 @@ export function DeleteStoreDialog({
     !store.actions.can_force_delete &&
     store.usage.mapped_client_instance_count > 0;
 
-  const { confirm, pending, submitError } = useConfirmMutation<{ force: boolean }>({
-    mutationFn: (opts) => deleteStore(store.id, opts),
+  const { confirm, pending, submitError } = useConfirmMutation({
+    mutationFn: (opts: { force: boolean }) => deleteStore(store.id, opts),
     invalidate: [["admin", "stores"]],
-    onSuccess: () => {
-      // Result is interpreted via the override below.
-    },
   });
 
   async function onDelete() {
-    const result = (await confirm({ force: requiresForce || force })) as {
-      ok: boolean;
-      cleanup_hint?: CleanupHint;
-    };
+    const result = await confirm({ force: requiresForce || force });
     if (result.cleanup_hint) {
       setCleanupHint(result.cleanup_hint);
     } else {
