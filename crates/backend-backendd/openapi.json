@@ -4629,6 +4629,7 @@
       },
       "ServiceErrorResponse": {
         "type": "object",
+        "description": "Generic structured error body returned by both the admin and runtime\nsurfaces. `code` is a stable machine token; `message` is human-facing.",
         "required": [
           "code",
           "message"
@@ -4725,7 +4726,7 @@
           },
           {
             "type": "object",
-            "description": "Allow **both** the real wrapper and its debug variant until\n`until_epoch`; deny afterwards. This is the only mode under which a\n`variant = Debug` invocation is allowed — it exposes the projected\nsecret material to the debug tool, so it is gated behind an explicit\noperator opt-in with a TTL. Expiry is checked lazily per request.",
+            "description": "Allow **both** the real wrapper and its debug variant until\n`until_epoch`; deny afterwards. This is the only mode under which a\n`variant = Debug` invocation is allowed — the debug tool can drop an\ninteractive shell or exec arbitrary commands with **read-write**\naccess to the projected secret (writebacks are accepted on the same\nterms as `Real`, gated by `writable`), so it is gated behind an\nexplicit operator opt-in with a TTL. Expiry is checked lazily per\nrequest.",
             "required": [
               "until_epoch",
               "kind"
