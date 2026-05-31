@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::service::RuntimeDenyReason;
 use crate::variant::WrapperVariant;
 
 /// Reserved key used to persist the policy document inside a backend
@@ -172,15 +173,15 @@ pub fn decide(
     variant: WrapperVariant,
     now_epoch: u64,
 ) -> PolicyDecision {
-    // Deny reasons are stable kebab-case discriminators (see the
-    // `RuntimeWrapperInvocationOpenResponse::Deny` contract): `locked`,
+    // Deny reasons are the canonical [`RuntimeDenyReason`] discriminators
+    // (the single source of truth for these wire strings): `locked`,
     // `expired`, `not-unsafe-debug`. A `Locked` permission with an
     // operator-supplied reason surfaces that reason verbatim instead.
     let expired = || PolicyDecision::Deny {
-        reason: "expired".to_string(),
+        reason: RuntimeDenyReason::Expired.to_string(),
     };
     let not_debug_mode = || PolicyDecision::Deny {
-        reason: "not-unsafe-debug".to_string(),
+        reason: RuntimeDenyReason::NotUnsafeDebug.to_string(),
     };
 
     match permission.mode.clone() {
@@ -188,7 +189,7 @@ pub fn decide(
             reason: permission
                 .reason
                 .clone()
-                .unwrap_or_else(|| "locked".to_string()),
+                .unwrap_or_else(|| RuntimeDenyReason::Locked.to_string()),
         },
         WrapperApprovalMode::Unlocked => match variant {
             WrapperVariant::Real => PolicyDecision::Allow,

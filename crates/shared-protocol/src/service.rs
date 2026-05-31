@@ -632,6 +632,96 @@ pub struct AdminSecretsView {
 // re-evaluates the policy document on every call; there are no
 // sessions or open-call state between open and finalize.
 
+/// Canonical, stable reason discriminators for a runtime invocation
+/// `Deny`. These variants are the **single source of truth** for the
+/// kebab-case strings emitted in `RuntimeWrapperInvocation*Response::Deny`
+/// — the emitters (`policy::decide`, the invocation handlers) construct
+/// them through this enum so the wire vocabulary cannot drift.
+///
+/// The `Deny.reason` field stays a plain `String` on the wire because it
+/// is **human-facing**: for most denials it is exactly one of these
+/// discriminators, but a `Locked` permission carrying an operator-supplied
+/// reason surfaces that free text verbatim *instead of* `locked` (it
+/// reaches the end user as the wrapper's error message). The daemon does
+/// not branch on it today; it forwards it as the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeDenyReason {
+    /// No permission row matched `(client_instance, wrapper, resource)`.
+    NoPermission,
+    /// The `(wrapper, resource)` pair is not registered in this store.
+    UnregisteredPair,
+    /// The matched permission is `Locked` and carries no operator reason.
+    Locked,
+    /// The matched permission's TTL has elapsed.
+    Expired,
+    /// A `Debug` variant against a non-`UnsafeDebugUntil` permission.
+    NotUnsafeDebug,
+    /// A writeback against a permission whose `writable` flag is false.
+    NotWritable,
+}
+
+impl RuntimeDenyReason {
+    /// The stable kebab-case wire string for this reason.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoPermission => "no-permission",
+            Self::UnregisteredPair => "unregistered-pair",
+            Self::Locked => "locked",
+            Self::Expired => "expired",
+            Self::NotUnsafeDebug => "not-unsafe-debug",
+            Self::NotWritable => "not-writable",
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeDenyReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Canonical, stable reason discriminators for a finalize `InvalidBlob`
+/// rejection — writeback validation failures that are a client bug and
+/// won't change on retry (unlike a policy `Deny`). Single source of truth
+/// for these wire strings, same rationale as [`RuntimeDenyReason`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeInvalidBlobReason {
+    /// The base64 envelope failed to decode.
+    DecodeFailed,
+    /// The blob's `schema_version` is not one this backend supports.
+    SchemaUnknown,
+    /// The decoded blob is not byte-for-byte JCS-canonical.
+    NoncanonicalBlob,
+    /// The writeback tried to change the immutable `env` section.
+    EnvSectionImmutable,
+}
+
+impl RuntimeInvalidBlobReason {
+    /// The stable kebab-case wire string for this reason.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DecodeFailed => "decode-failed",
+            Self::SchemaUnknown => "schema-unknown",
+            Self::NoncanonicalBlob => "noncanonical-blob",
+            Self::EnvSectionImmutable => "env-section-immutable",
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeInvalidBlobReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Stable `ServiceErrorResponse.code` value the runtime API emits when a
+/// request lands on a locked (encrypted, no master key) store. Single
+/// source of truth shared by the backend emitter
+/// (`runtime_api::error::RuntimeError::store_locked`) and the daemon's
+/// error classifier (`frontend-underwrapd`'s `parse_error`) so the two
+/// sides cannot drift on the magic string.
+pub const ERROR_CODE_STORE_LOCKED: &str = "store_locked";
+
 /// `POST /v1/wrappers` — one `(wrapper, resource)` pair on the wire.
 /// Mount paths are intentionally absent: they are a daemon-local fact
 /// used to wire bind mounts and never need to reach the backend.
@@ -685,8 +775,14 @@ pub struct RuntimeWrapperInvocationOpenRequest {
 
 /// Response to `POST /v1/wrapper-invocations`.
 ///
-/// `Deny.reason` is a stable kebab-case discriminator (`no-permission`,
-/// `locked`, `expired`, `unregistered-pair`) the daemon can switch on.
+/// `Deny.reason` is a human-facing string. For the canonical denials it
+/// is exactly one of the [`RuntimeDenyReason`] kebab-case discriminators
+/// (`no-permission`, `unregistered-pair`, `locked`, `expired`,
+/// `not-unsafe-debug`); for a `Locked` permission with an operator
+/// reason, that free text replaces `locked` and is shown to the user.
+/// `not-writable` is finalize-only and never appears here. The daemon
+/// forwards the string as the wrapper error message rather than
+/// branching on it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "outcome", rename_all = "kebab-case")]
 pub enum RuntimeWrapperInvocationOpenResponse {
@@ -726,11 +822,14 @@ pub struct RuntimeWrapperInvocationFinalizeRequest {
 
 /// Response to `POST /v1/wrapper-invocations/finalize`.
 ///
-/// `Deny` covers policy denials. `InvalidBlob` covers writeback
-/// validation failures (`env-section-immutable`, `noncanonical-blob`,
-/// `schema-unknown`, `decode-failed`). They are split apart because a
-/// `Deny` may flip to `Allow` after an operator edits the policy,
-/// whereas `InvalidBlob` is a client bug that won't change on retry.
+/// `Deny` covers policy denials (`Deny.reason` is a [`RuntimeDenyReason`]
+/// discriminator — `not-writable` in addition to the open-time set, or a
+/// `Locked` operator reason). `InvalidBlob` covers writeback validation
+/// failures (`InvalidBlob.reason` is a [`RuntimeInvalidBlobReason`]
+/// discriminator: `decode-failed`, `schema-unknown`, `noncanonical-blob`,
+/// `env-section-immutable`). They are split apart because a `Deny` may
+/// flip to `Allow` after an operator edits the policy, whereas
+/// `InvalidBlob` is a client bug that won't change on retry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "outcome", rename_all = "kebab-case")]
 pub enum RuntimeWrapperInvocationFinalizeResponse {

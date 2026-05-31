@@ -10,6 +10,7 @@ use axum::Json;
 use tracing::warn;
 
 use underwrap_protocol::policy::{PolicyDecision, PolicyDocument, WrapperPermission, decide};
+use underwrap_protocol::service::{RuntimeDenyReason, RuntimeInvalidBlobReason};
 use underwrap_protocol::variant::WrapperVariant;
 use underwrap_store::{StorageBackend, load_resource_blob, save_resource_blob};
 
@@ -100,9 +101,11 @@ pub(crate) fn resolve_invocation_or_deny(
     .into_internal("policy lookup failed")?;
     Ok(match lookup {
         InvocationLookup::UnregisteredPair => {
-            InvocationResolution::Deny("unregistered-pair".into())
+            InvocationResolution::Deny(RuntimeDenyReason::UnregisteredPair.to_string())
         }
-        InvocationLookup::NoPermission => InvocationResolution::Deny("no-permission".into()),
+        InvocationLookup::NoPermission => {
+            InvocationResolution::Deny(RuntimeDenyReason::NoPermission.to_string())
+        }
         InvocationLookup::Denied(reason) => InvocationResolution::Deny(reason),
         InvocationLookup::Allowed {
             resource_id,
@@ -237,13 +240,13 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
     if let Some(blob_b64) = &body.blob_b64 {
         if !writable {
             return Ok(Json(RuntimeWrapperInvocationFinalizeResponse::Deny {
-                reason: "not-writable".to_string(),
+                reason: RuntimeDenyReason::NotWritable.to_string(),
             }));
         }
         let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(blob_b64) else {
             return Ok(Json(
                 RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
-                    reason: "decode-failed".to_string(),
+                    reason: RuntimeInvalidBlobReason::DecodeFailed.to_string(),
                 },
             ));
         };
@@ -257,9 +260,9 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
                 // decode failure. The wire reason distinguishes them
                 // so the daemon can give the operator a useful error.
                 let reason = if msg.contains("schema_version") {
-                    "schema-unknown"
+                    RuntimeInvalidBlobReason::SchemaUnknown
                 } else {
-                    "decode-failed"
+                    RuntimeInvalidBlobReason::DecodeFailed
                 };
                 return Ok(Json(
                     RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
@@ -274,7 +277,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
         if canonical != bytes {
             return Ok(Json(
                 RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
-                    reason: "noncanonical-blob".to_string(),
+                    reason: RuntimeInvalidBlobReason::NoncanonicalBlob.to_string(),
                 },
             ));
         }
@@ -283,7 +286,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
         if new_blob.env != current.env {
             return Ok(Json(
                 RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
-                    reason: "env-section-immutable".to_string(),
+                    reason: RuntimeInvalidBlobReason::EnvSectionImmutable.to_string(),
                 },
             ));
         }

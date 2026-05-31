@@ -301,7 +301,7 @@ async fn parse_error(response: reqwest::Response) -> anyhow::Error {
     let status = response.status();
     let text = response.text().await.unwrap_or_else(|_| String::new());
     if let Ok(error) = serde_json::from_str::<ServiceErrorResponse>(&text) {
-        if error.code == "store_locked" {
+        if error.code == underwrap_protocol::service::ERROR_CODE_STORE_LOCKED {
             return anyhow::Error::new(StoreLockedError {
                 message: error.message,
             });

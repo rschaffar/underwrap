@@ -48,7 +48,7 @@ impl RuntimeError {
     pub(crate) fn store_locked(store_id: &str) -> Self {
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "store_locked",
+            underwrap_protocol::service::ERROR_CODE_STORE_LOCKED,
             format!(
                 "store '{store_id}' is locked; an administrator must unlock it before requests can land",
             ),
