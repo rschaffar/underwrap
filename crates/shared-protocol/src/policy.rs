@@ -51,9 +51,12 @@ pub enum WrapperApprovalMode {
     UnlockedUntil { until_epoch: u64 },
     /// Allow **both** the real wrapper and its debug variant until
     /// `until_epoch`; deny afterwards. This is the only mode under which a
-    /// `variant = Debug` invocation is allowed — it exposes the projected
-    /// secret material to the debug tool, so it is gated behind an explicit
-    /// operator opt-in with a TTL. Expiry is checked lazily per request.
+    /// `variant = Debug` invocation is allowed — the debug tool can drop an
+    /// interactive shell or exec arbitrary commands with **read-write**
+    /// access to the projected secret (writebacks are accepted on the same
+    /// terms as `Real`, gated by `writable`), so it is gated behind an
+    /// explicit operator opt-in with a TTL. Expiry is checked lazily per
+    /// request.
     UnsafeDebugUntil { until_epoch: u64 },
 }
 

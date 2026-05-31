@@ -479,8 +479,11 @@ Four modes:
   background sweeper.
 - **`unsafe-debug-until`** — allow **both** the `real` wrapper and its
   `debug` variant until `until_epoch`. The only mode under which the
-  debug tool runs; it prints the projected secret material to the
-  operator terminal, so use the shortest TTL that fits.
+  debug tool runs; it gives the operator an env summary, an interactive
+  shell, or an exec inside the wrapped namespace with **read-write**
+  access to the projected secret (a `debug` run can write the secret
+  back on the same terms as `real`, gated only by `writable`), so use
+  the shortest TTL that fits.
 
 The `(mode × variant)` matrix (evaluated by the shared `decide`):
 

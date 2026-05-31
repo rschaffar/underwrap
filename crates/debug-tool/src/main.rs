@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
 #[command(
     name = "underwrap-debug-tool",
-    about = "Unsafe developer inspection tool for wrapped environments"
+    about = "Unsafe developer tool for wrapped environments: env summary, \
+             interactive shell, or exec — with read-write access to the projected secret"
 )]
 struct Cli {
     #[command(subcommand)]

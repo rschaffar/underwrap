@@ -61,7 +61,7 @@ crates/
   frontend-ns/             # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target
   frontend-secretsd/       # D-Bus Secret Service provider for libsecret mode
   frontend-keygen/         # `underwrap-keygen`: client mTLS credential / key generation
-  debug-tool/              # Unsafe inspection CLI; the target the daemon execs for `variant = Debug` (gated by an `UnsafeDebugUntil` permission)
+  debug-tool/              # Unsafe debug CLI (env summary / interactive shell / exec, with read-write access to the projected secret); the target the daemon execs for `variant = Debug` (gated by an `UnsafeDebugUntil` permission)
   backend-backendd/        # Central HTTPS service + admin API + auth + SPA hosting + policy authority
   integration-tests/       # Cargo integration tests (real daemon + backend)
 web/                       # Vite + React + shadcn admin SPA (served by backend-backendd)
@@ -318,8 +318,10 @@ list of `WrapperPermission` rows keyed by
 four modes (`Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`,
 `UnsafeDebugUntil { until_epoch }`) and a per-permission `writable: bool`
 flag. `UnsafeDebugUntil` is the only mode that admits the `Debug`
-variant (the debug tool, which prints projected secret material); every
-other mode denies `Debug` with `not-unsafe-debug`. The shared
+variant (the debug tool — an env summary / interactive shell / exec
+session with read-write access to the projected secret, so writebacks
+from `Debug` are accepted exactly like `Real`, gated only by `writable`);
+every other mode denies `Debug` with `not-unsafe-debug`. The shared
 `policy::decide(permission, variant, now)` is the single authority for
 the (mode × variant) matrix. Read access through an active permission is
 unconditional; write access is decided per-permission and re-checked

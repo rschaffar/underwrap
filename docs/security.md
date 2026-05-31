@@ -1168,12 +1168,19 @@ is the per-permission `writable` flag, re-checked server-side on every
 finalize. There is no global write-lock.
 
 **Debug variant.** `UnsafeDebugUntil` unlocks `underwrap-debug-tool`,
-which runs against the same projected resource and **prints the
-projected secret material to the operator's terminal**. It exists for
-incident debugging, not routine use; pick the shortest TTL that fits the
-task. The admin UI requires an explicit confirmation before arming this
-mode. Switching the permission back to any other mode denies the debug
-variant again on the next invocation.
+which runs against the same projected resource and gives the operator an
+env summary, an **interactive shell**, or an **exec** of an arbitrary
+command inside the wrapped namespace — with **read-write** access to the
+projected secret. It is not a read-only viewer: a `debug` run can write
+the secret back on the same terms as a `real` run (the writeback path is
+variant-blind; it is gated only by the permission's `writable` flag).
+That is intended — a writable debug grant that repairs a secret
+interactively is legitimate — but it is why `UnsafeDebugUntil` is the
+most powerful grant and exists for incident debugging, not routine use.
+Pick the shortest TTL that fits the task. The admin UI requires an
+explicit confirmation before arming this mode. Switching the permission
+back to any other mode denies the debug variant again on the next
+invocation.
 
 If no permission exists for `(client_instance, wrapper, resource)`
 the request is rejected with the structured reason `no-permission`.

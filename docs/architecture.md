@@ -232,7 +232,8 @@ crates/
   frontend-secretsd         Secret Service implementation for libsecret mode
   frontend-keygen           underwrap-keygen: client-credential / key generation
   debug-tool                underwrap-debug-tool: the target the daemon execs
-                            for variant = Debug (prints projected secret material)
+                            for variant = Debug (summary / shell / exec, with
+                            read-write access to the projected secret)
   backend-backendd          central authenticated HTTPS service +
                             sole policy authority + embedded admin SPA
   integration-tests         cross-component tests

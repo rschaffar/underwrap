@@ -166,9 +166,11 @@ Ask:
 - is standing `Unlocked` access acceptable, or should this wrapper be
   `Locked` by default and flipped to `UnlockedUntil { until_epoch }` for
   time-bounded windows?
-- if an operator needs to inspect the projected secret to debug an
-  incident, `UnsafeDebugUntil` enables the debug tool — use the shortest
-  TTL that fits, since it prints the secret to the terminal.
+- if an operator needs to dig into the projected secret to debug an
+  incident, `UnsafeDebugUntil` enables the debug tool — a full
+  interactive shell/exec session with **read-write** access to the
+  secret (not a read-only viewer: a `debug` run can write the secret
+  back, gated only by `writable`). Use the shortest TTL that fits.
 
 Set wrapper permission modes in the [admin UI](admin-ui.md).
 
