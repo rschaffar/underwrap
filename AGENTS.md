@@ -54,8 +54,8 @@ nix build .#checks.x86_64-linux.vm-test              # NixOS VM test (60+ assert
 ```
 crates/
   shared-protocol/         # IPC framing, config schema, messages, SCM_RIGHTS, policy types
-  shared-store/            # StorageBackend trait used by the backend (PlainBackend, EncryptedBackend)
-  shared-secretsd-store/   # In-memory Secret Service data model + JSON serialization
+  backend-store/           # StorageBackend trait used by the backend (PlainBackend, EncryptedBackend)
+  frontend-secretsd-store/ # In-memory Secret Service data model + JSON serialization
   frontend-underwrapd/     # Daemon: thin client of the backend; relays wrapper IPC to /v1/wrapper-invocations
   frontend-exec/           # Wrapper stage 1 (setgid): authenticate, fetch secret, pipe to stage 2
   frontend-ns/             # Wrapper stage 2 (cap_sys_admin): PID namespace, exec target

@@ -1,5 +1,5 @@
 [package]
-name = "shared-secretsd-store"
+name = "frontend-secretsd-store"
 description = "In-memory Secret Service state with JSON envelope serialization for underwrap"
 version.workspace = true
 edition.workspace = true

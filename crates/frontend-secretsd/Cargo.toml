@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 shared-protocol = { workspace = true }
-shared-secretsd-store = { path = "../shared-secretsd-store" }
+frontend-secretsd-store = { path = "../frontend-secretsd-store" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }

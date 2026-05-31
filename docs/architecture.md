@@ -223,9 +223,9 @@ this.
 crates/
   shared-protocol           shared config, message families, IPC framing, fd passing,
                             runtime wire types, policy + resource models
-  shared-store              storage trait + plain/encrypted backend implementations
+  backend-store             storage trait + plain/encrypted backend implementations
                             (backend-internal — nothing else implements it)
-  shared-secretsd-store     in-memory Secret Service data model
+  frontend-secretsd-store   in-memory Secret Service data model
   frontend-underwrapd       frontend daemon on the target host
   frontend-exec             stage 1 wrapper (setgid)
   frontend-ns               stage 2 wrapper (namespace setup)

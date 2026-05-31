@@ -1,5 +1,5 @@
 [package]
-name = "shared-store"
+name = "backend-store"
 description = "Storage backend trait and built-in implementations for underwrap"
 version.workspace = true
 edition.workspace = true
