@@ -164,10 +164,11 @@ pub struct RuntimeWrapperInvocationOpenRequest {
 #[serde(tag = "outcome", rename_all = "kebab-case")]
 pub enum RuntimeWrapperInvocationOpenResponse {
     Allow {
-        /// Stable backend resource id (e.g. `res_<hex>`). The daemon
-        /// relays this to the wrapper inside `WrapperResponse::ReadOk`
-        /// as an opaque identifier; the daemon itself never has to
-        /// look it up.
+        /// Stable backend resource id (e.g. `res_<hex>`). Opaque to the
+        /// daemon — it never addresses storage by it — but not unused:
+        /// the daemon relays it to the wrapper inside
+        /// `WrapperResponse::ReadOk`, and `frontend-ns` surfaces it in
+        /// audit events and the user-facing writeback-rejected message.
         resource_id: String,
         /// Canonical resource blob, base64-encoded.
         blob_b64: String,

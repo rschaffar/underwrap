@@ -48,8 +48,10 @@ pub(super) struct OpenedInvocation {
     /// `CheckoutOk { writable }` field; the backend re-checks on
     /// finalize regardless.
     pub access: AccessMode,
-    /// Stable backend resource id, threaded through to the channel
-    /// purely for diagnostic logging.
+    /// Opaque backend resource id, threaded through to the channel. The
+    /// daemon never addresses storage by it, but it is surfaced to the
+    /// wrapper (and onward into `frontend-ns` audit events and the
+    /// user-facing writeback-rejected message), not just logged.
     pub resource_id: String,
 }
 

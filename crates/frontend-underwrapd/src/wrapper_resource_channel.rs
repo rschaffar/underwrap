@@ -42,8 +42,10 @@ pub struct ChannelContext {
     pub variant: WrapperVariant,
     /// Resource name used in backend API calls.
     pub resource_name: String,
-    /// Backend-supplied resource id, threaded through for diagnostic
-    /// logging only.
+    /// Opaque backend-supplied resource id. The daemon never addresses
+    /// storage by it; it is used in channel logs and relayed to the
+    /// wrapper, where `frontend-ns` surfaces it in audit events and the
+    /// user-facing writeback-rejected message.
     pub resource_id: String,
     /// Backend-supplied writable hint captured at open time. Surfaced
     /// to the wrapper on `Checkout` so it can fail closed early; the
