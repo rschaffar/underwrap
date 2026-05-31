@@ -86,7 +86,7 @@ impl SecretService {
 
         let col_id = {
             let mut store = self.store.write().await;
-            let id = store.create_collection(label.as_deref(), alias);
+            let id = store.create_collection(name, alias);
             state::dump_or_log(&store, &self.state_path)?;
             id
         };

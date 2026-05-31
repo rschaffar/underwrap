@@ -9,9 +9,6 @@ pub struct SecretStore {
     pub collections: HashMap<String, Collection>,
     /// Map of alias name → collection ID.
     pub aliases: HashMap<String, String>,
-    /// Counter for generating unique IDs.
-    #[serde(default)]
-    pub(crate) next_id: u64,
 }
 
 /// A Secret Service collection containing items.

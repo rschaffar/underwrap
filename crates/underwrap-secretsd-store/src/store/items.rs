@@ -5,13 +5,26 @@ use anyhow::{Context, Result};
 use super::helpers::{attrs_match, now_secs};
 use super::{Item, SecretStore};
 
-impl SecretStore {
-    pub(crate) fn next_item_id(&mut self) -> String {
-        let id = format!("item_{}", self.next_id);
-        self.next_id += 1;
-        id
-    }
+/// Generate a fresh, collision-proof item id.
+///
+/// Item ids carry no meaning and are only ever resolved by attribute
+/// search (`Collection.SearchItems`), never by path or sort order, so a
+/// random id is safe. It must remain a valid D-Bus object-path segment
+/// (`[A-Za-z0-9_]`), so we hex-encode 16 random bytes (32 chars) — a
+/// hyphenated UUID would be an illegal segment. Randomness replaces the
+/// old reset-on-startup counter, which could re-mint an id that already
+/// existed in the reloaded state and **silently overwrite** that item.
+///
+/// Fails loudly if the OS RNG is unavailable rather than falling back to
+/// a predictable id.
+fn random_item_id() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| anyhow::anyhow!("obtaining random bytes for a Secret Service item id: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
 
+impl SecretStore {
     /// List all item IDs in a collection.
     pub fn list_items(&self, collection: &str) -> Vec<&str> {
         self.collections
@@ -48,7 +61,7 @@ impl SecretStore {
             return Ok((existing_id.clone(), true));
         }
 
-        let id = self.next_item_id();
+        let id = random_item_id()?;
         let col = self
             .collections
             .get_mut(collection)

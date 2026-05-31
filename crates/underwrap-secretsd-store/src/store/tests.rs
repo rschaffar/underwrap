@@ -55,7 +55,7 @@ fn json_roundtrip_with_items() {
 #[test]
 fn create_collection_id_is_the_name() {
     let mut store = SecretStore::new_default();
-    let id = store.create_collection(Some("gogcli"), Some("mine"));
+    let id = store.create_collection("gogcli", Some("mine"));
     // The id is the requested name, not an opaque counter, so clients
     // that locate the collection by object path find it.
     assert_eq!(id, "gogcli");
@@ -67,36 +67,26 @@ fn create_collection_id_is_the_name() {
 #[test]
 fn create_collection_is_idempotent_by_name() {
     let mut store = SecretStore::new_default();
-    let id1 = store.create_collection(Some("gogcli"), None);
-    let id2 = store.create_collection(Some("gogcli"), None);
+    let id1 = store.create_collection("gogcli", None);
+    let id2 = store.create_collection("gogcli", None);
     assert_eq!(id1, "gogcli");
     assert_eq!(id1, id2, "a second create with the same name is a no-op");
-    // Exactly one gogcli collection — no `col_N` litter.
+    // Exactly one gogcli collection — no per-call litter.
     assert_eq!(store.collections.len(), 2); // default + gogcli
-}
-
-#[test]
-fn create_collection_anonymous_falls_back_to_counter() {
-    let mut store = SecretStore::new_default();
-    // The D-Bus handler rejects empty names, but the store layer keeps a
-    // synthetic-id fallback for the anonymous case.
-    let id = store.create_collection(None, None);
-    assert!(id.starts_with("col_"));
-    assert!(store.collections.contains_key(&id));
 }
 
 #[test]
 fn create_collection_existing_alias_returns_existing() {
     let mut store = SecretStore::new_default();
-    let id1 = store.create_collection(Some("First"), Some("myalias"));
-    let id2 = store.create_collection(Some("Second"), Some("myalias"));
+    let id1 = store.create_collection("First", Some("myalias"));
+    let id2 = store.create_collection("Second", Some("myalias"));
     assert_eq!(id1, id2, "existing alias should return existing collection");
 }
 
 #[test]
 fn delete_collection_removes_aliases() {
     let mut store = SecretStore::new_default();
-    let id = store.create_collection(Some("Temp"), Some("tempalias"));
+    let id = store.create_collection("Temp", Some("tempalias"));
     assert!(store.delete_collection(&id));
     assert_eq!(store.get_alias("tempalias"), None);
     assert!(!store.collections.contains_key(&id));
@@ -123,6 +113,30 @@ fn create_and_get_item() {
     assert_eq!(store.get_content_type("default", &id), Some("text/plain"));
     assert!(store.get_created("default", &id).is_some());
     assert!(store.get_modified("default", &id).is_some());
+}
+
+#[test]
+fn item_ids_are_random_hex() {
+    let mut store = SecretStore::new_default();
+    let (id1, _) = store
+        .create_item("default", "A", &HashMap::new(), b"a", "text/plain", false)
+        .unwrap();
+    let (id2, _) = store
+        .create_item("default", "B", &HashMap::new(), b"b", "text/plain", false)
+        .unwrap();
+
+    // 32 lowercase hex chars (16 random bytes), a valid D-Bus path segment.
+    for id in [&id1, &id2] {
+        assert_eq!(id.len(), 32, "id should be 16 bytes hex-encoded: {id}");
+        assert!(
+            id.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "id should be lowercase hex: {id}"
+        );
+    }
+    // Two creates with the same (empty) attributes still get distinct ids —
+    // the old counter would have collided after a reload.
+    assert_ne!(id1, id2);
 }
 
 #[test]
@@ -269,7 +283,7 @@ fn search_empty_attributes_matches_all() {
 #[test]
 fn search_all_collections() {
     let mut store = SecretStore::new_default();
-    let col2 = store.create_collection(Some("Second"), None);
+    let col2 = store.create_collection("Second", None);
 
     let mut attrs = HashMap::new();
     attrs.insert("service".to_string(), "gh".to_string());
@@ -344,7 +358,7 @@ fn set_and_get_label() {
 #[test]
 fn alias_operations() {
     let mut store = SecretStore::new_default();
-    let col = store.create_collection(Some("Test"), None);
+    let col = store.create_collection("Test", None);
 
     store.set_alias("myalias", Some(&col));
     assert_eq!(store.get_alias("myalias"), Some(col.as_str()));

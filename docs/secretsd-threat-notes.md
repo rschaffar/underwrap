@@ -48,8 +48,13 @@ in place. It is the written output of the adversarial review in ticket
 - **Object-path construction** (`main.rs`, `service.rs`): collection / item
   / alias object paths are built with `ObjectPath::try_from`, which rejects
   illegal D-Bus paths; failures are logged and the registration is skipped
-  rather than panicking. Item ids are server-assigned (`next_item_id`),
-  not target-chosen, so a target cannot inject path separators via an id.
+  rather than panicking. Item ids are **server-generated** (16 random bytes,
+  lowercase-hex via `random_item_id`), never target-chosen, so a target
+  cannot inject path separators via an id. Random ids also replace an
+  earlier reset-on-startup counter that could re-mint an id already present
+  in the reloaded state and silently overwrite that item (the gog
+  client-secret data-loss bug); 128 bits makes a collision negligible, and
+  the `create_item` `replace`-by-attributes path is unaffected.
 - **Collection-name validation** (`service.rs` `validate_collection_name`):
   a collection's object-path segment **is** its target-chosen name (see
   "CreateCollection" below for why), so the name is the one piece of
@@ -71,8 +76,8 @@ in place. It is the written output of the adversarial review in ticket
   size-attack here.
 - **CreateCollection** — label/alias are read from client properties. The
   Label is the collection **name**, and its validated form becomes the
-  collection's object-path segment (its id) — *not* a server-assigned
-  `col_N` counter. This is deliberate: Secret Service clients backed by Go's
+  collection's object-path segment (its id) — *not* an opaque
+  counter. This is deliberate: Secret Service clients backed by Go's
   `99designs/keyring` (gog, aws-sso, aws-vault, chamber, …) locate their
   collection by exact object path rather than by the `Label` property or an
   alias. That is technically non-conformant with the Secret Service spec
@@ -81,7 +86,7 @@ in place. It is the written output of the adversarial review in ticket
   name is what lets those clients read back what they wrote. The name is
   validated first (see "Collection-name validation"); creation is
   idempotent by id, so a client's create-if-missing is a clean no-op after
-  the first run instead of minting fresh `col_N` litter. Persists via the
+  the first run instead of minting a fresh collection each run. Persists via the
   size-capped `dump`. The seeded `default` collection and alias are
   untouched; spec-conformant clients (libsecret-C: `gh`, `secret-tool`,
   GNOME apps) discover by `Label`/`ReadAlias`/attribute search and are

@@ -47,7 +47,7 @@ fn client_named_collection_survives_checkout_roundtrip() {
     // invocation re-checks-out. The secret must come back at the same
     // name-derived collection path the client will look for.
     let mut store = store_from_section(&LibsecretSection::default());
-    let col_id = store.create_collection(Some("gogcli"), None);
+    let col_id = store.create_collection("gogcli", None);
     assert_eq!(col_id, "gogcli");
     let (item_id, _) = store
         .create_item(
@@ -71,6 +71,58 @@ fn client_named_collection_survives_checkout_roundtrip() {
     assert_eq!(
         reloaded.get_secret("gogcli", &item_id),
         Some(b"refresh-token".as_slice())
+    );
+}
+
+#[test]
+fn reload_then_create_item_does_not_overwrite_existing() {
+    // The exact scenario that destroyed the gog OAuth client secret:
+    // invocation A stores item X; invocation B reloads that state and
+    // writes a *different* item Y. With the old reset-on-startup counter,
+    // Y was minted the same id as X and silently clobbered it. Random ids
+    // make a collision impossible, so X must survive.
+    let mut store_a = store_from_section(&LibsecretSection::default());
+    store_a.create_collection("gogcli", None);
+    let mut x_attrs = std::collections::HashMap::new();
+    x_attrs.insert("kind".to_string(), "client-secret".to_string());
+    let (x_id, _) = store_a
+        .create_item(
+            "gogcli",
+            "client-secret",
+            &x_attrs,
+            b"the-secret",
+            "text/plain",
+            false,
+        )
+        .unwrap();
+
+    // Invocation B: fresh secretsd reloads A's persisted state...
+    let section = section_from_store(&store_a);
+    let mut store_b = store_from_section(&section);
+    // ...and writes a different item (different attributes → no replace).
+    let mut y_attrs = std::collections::HashMap::new();
+    y_attrs.insert("kind".to_string(), "access-token".to_string());
+    let (y_id, replaced) = store_b
+        .create_item(
+            "gogcli",
+            "access-token",
+            &y_attrs,
+            b"a-token",
+            "text/plain",
+            false,
+        )
+        .unwrap();
+
+    assert!(!replaced, "different attributes must not replace");
+    assert_ne!(x_id, y_id, "the new item must get a distinct id");
+    assert_eq!(
+        store_b.get_secret("gogcli", &x_id),
+        Some(b"the-secret".as_slice()),
+        "the pre-existing item must survive the new write"
+    );
+    assert_eq!(
+        store_b.get_secret("gogcli", &y_id),
+        Some(b"a-token".as_slice())
     );
 }
 

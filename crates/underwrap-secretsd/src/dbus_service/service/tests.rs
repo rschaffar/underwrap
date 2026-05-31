@@ -5,7 +5,7 @@ use underwrap_protocol::resource_blob::LibsecretSection;
 #[tokio::test]
 async fn read_and_set_alias_roundtrip() {
     let mut store = SecretStore::new_default();
-    let work_id = store.create_collection(Some("Work"), None);
+    let work_id = store.create_collection("Work", None);
     let (service, store, _tempdir) = service_with_state(store);
 
     let path = service.read_alias("default").await.unwrap();
@@ -32,7 +32,7 @@ async fn read_and_set_alias_roundtrip() {
 // the name → path behaviour without standing up a real D-Bus object server.
 fn try_create(store: &mut SecretStore, label: &str) -> Result<String, &'static str> {
     validate_collection_name(label)?;
-    Ok(store.create_collection(Some(label), None))
+    Ok(store.create_collection(label, None))
 }
 
 #[test]

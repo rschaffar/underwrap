@@ -4,7 +4,7 @@ use underwrap_protocol::resource_blob::LibsecretSection;
 
 fn store_with_collection() -> (String, SecretStore) {
     let mut store = SecretStore::new_default();
-    let col_id = store.create_collection(Some("Test"), None);
+    let col_id = store.create_collection("Test", None);
     (col_id, store)
 }
 

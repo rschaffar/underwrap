@@ -22,14 +22,7 @@ impl SecretStore {
         Self {
             collections,
             aliases,
-            next_id: 1,
         }
-    }
-
-    pub(crate) fn next_collection_id(&mut self) -> String {
-        let id = format!("col_{}", self.next_id);
-        self.next_id += 1;
-        id
     }
 
     /// Create a collection, returning its ID.
@@ -43,11 +36,11 @@ impl SecretStore {
     ///
     /// Creation is **idempotent by id**: a client's create-if-missing
     /// becomes a clean no-op on every run after the first, instead of
-    /// minting a fresh `col_N` each time. The D-Bus handler validates
-    /// the name before calling us; `next_collection_id()` is kept only
-    /// as a fallback for the anonymous (empty/missing label) case the
-    /// handler does not forward.
-    pub fn create_collection(&mut self, label: Option<&str>, alias: Option<&str>) -> String {
+    /// minting a fresh collection each time. The D-Bus handler validates
+    /// the name (non-empty, valid path segment) before calling us, so
+    /// there is no anonymous fallback — the name is always usable as the
+    /// id.
+    pub fn create_collection(&mut self, name: &str, alias: Option<&str>) -> String {
         let now = now_secs();
 
         if let Some(alias) = alias
@@ -57,16 +50,11 @@ impl SecretStore {
             return existing_id.clone();
         }
 
-        let id = match label {
-            Some(name) if !name.is_empty() => name.to_string(),
-            _ => self.next_collection_id(),
-        };
-
-        if !self.collections.contains_key(&id) {
+        if !self.collections.contains_key(name) {
             self.collections.insert(
-                id.clone(),
+                name.to_string(),
                 Collection {
-                    label: label.unwrap_or("Unnamed").to_string(),
+                    label: name.to_string(),
                     items: HashMap::new(),
                     created: now,
                     modified: now,
@@ -77,10 +65,10 @@ impl SecretStore {
         if let Some(alias) = alias
             && !alias.is_empty()
         {
-            self.aliases.insert(alias.to_string(), id.clone());
+            self.aliases.insert(alias.to_string(), name.to_string());
         }
 
-        id
+        name.to_string()
     }
 
     /// Delete a collection and all its items. Returns true if it existed.
