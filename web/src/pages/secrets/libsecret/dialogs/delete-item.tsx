@@ -9,12 +9,14 @@ export function DeleteItemDialog({
   resourceId,
   collectionId,
   itemId,
+  itemLabel,
   onClose,
 }: {
   storeId: string;
   resourceId: string;
   collectionId: string;
   itemId: string;
+  itemLabel: string;
   onClose: () => void;
 }) {
   const { confirm, pending, submitError } = useConfirmMutation({
@@ -28,7 +30,7 @@ export function DeleteItemDialog({
       title="Delete item"
       description={
         <>
-          Removes <code>{collectionId} · {itemId}</code> from resource{" "}
+          Removes <code>{collectionId} · {itemLabel}</code> from resource{" "}
           <code>{resourceId}</code>. This cannot be undone.
         </>
       }

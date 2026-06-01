@@ -16,8 +16,8 @@ export function CollectionBlock({
   collection: AdminLibsecretCollectionView;
   onAddItem: () => void;
   onDelete: () => void;
-  onRevealItem: (itemId: string) => void;
-  onDeleteItem: (itemId: string) => void;
+  onRevealItem: (itemId: string, itemLabel: string) => void;
+  onDeleteItem: (itemId: string, itemLabel: string) => void;
 }) {
   return (
     <details
@@ -90,9 +90,9 @@ export function CollectionBlock({
                 </span>
                 <span
                   className="font-mono text-[0.65rem] text-(--color-muted)/70"
-                  title={`content-type: ${item.content_type}`}
+                  title={`id: ${item.id}`}
                 >
-                  {item.id} · {item.content_type}
+                  {item.content_type}
                 </span>
                 {Object.keys(item.attributes).length > 0 ? (
                   <ItemAttributes attributes={item.attributes} />
@@ -101,7 +101,7 @@ export function CollectionBlock({
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => onRevealItem(item.id)}
+                    onClick={() => onRevealItem(item.id, item.label)}
                   >
                     <Eye className="mr-1.5 h-4 w-4" aria-hidden />
                     Reveal
@@ -109,7 +109,7 @@ export function CollectionBlock({
                   <Button
                     variant="destructive"
                     size="sm"
-                    onClick={() => onDeleteItem(item.id)}
+                    onClick={() => onDeleteItem(item.id, item.label)}
                   >
                     <Trash2 className="mr-1.5 h-4 w-4" aria-hidden />
                     Delete

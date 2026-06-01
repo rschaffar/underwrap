@@ -7,12 +7,14 @@ export function RevealItemSecretDialog({
   resourceId,
   collectionId,
   itemId,
+  itemLabel,
   onClose,
 }: {
   storeId: string;
   resourceId: string;
   collectionId: string;
   itemId: string;
+  itemLabel: string;
   onClose: () => void;
 }) {
   return (
@@ -21,7 +23,7 @@ export function RevealItemSecretDialog({
       description={
         <>
           <code>
-            {collectionId} · {itemId}
+            {collectionId} · {itemLabel}
           </code>{" "}
           in resource <code>{resourceId}</code>.
         </>

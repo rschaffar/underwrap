@@ -45,11 +45,11 @@ export function LibsecretTree({
     null,
   );
   const [revealing, setRevealing] = useState<
-    { collectionId: string; itemId: string } | null
+    { collectionId: string; itemId: string; itemLabel: string } | null
   >(null);
   const [deletingCollection, setDeletingCollection] = useState<string | null>(null);
   const [deletingItem, setDeletingItem] = useState<
-    { collectionId: string; itemId: string } | null
+    { collectionId: string; itemId: string; itemLabel: string } | null
   >(null);
   const [creatingAlias, setCreatingAlias] = useState(false);
   const [deletingAlias, setDeletingAlias] = useState<string | null>(null);
@@ -102,11 +102,11 @@ export function LibsecretTree({
             setCreatingItem({ collectionId: collection.id })
           }
           onDelete={() => setDeletingCollection(collection.id)}
-          onRevealItem={(itemId) =>
-            setRevealing({ collectionId: collection.id, itemId })
+          onRevealItem={(itemId, itemLabel) =>
+            setRevealing({ collectionId: collection.id, itemId, itemLabel })
           }
-          onDeleteItem={(itemId) =>
-            setDeletingItem({ collectionId: collection.id, itemId })
+          onDeleteItem={(itemId, itemLabel) =>
+            setDeletingItem({ collectionId: collection.id, itemId, itemLabel })
           }
         />
       ))}
@@ -144,6 +144,7 @@ export function LibsecretTree({
           resourceId={resourceId}
           collectionId={revealing.collectionId}
           itemId={revealing.itemId}
+          itemLabel={revealing.itemLabel}
           onClose={() => setRevealing(null)}
         />
       ) : null}
@@ -161,6 +162,7 @@ export function LibsecretTree({
           resourceId={resourceId}
           collectionId={deletingItem.collectionId}
           itemId={deletingItem.itemId}
+          itemLabel={deletingItem.itemLabel}
           onClose={() => setDeletingItem(null)}
         />
       ) : null}
