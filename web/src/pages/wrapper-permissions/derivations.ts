@@ -53,9 +53,14 @@ export function clientInstancesForStore(
  * Group pair records by resource, sorted by resource name, with each
  * group's wrappers sorted by wrapper name. The page renders one table
  * per group, with the resource shown as the section heading.
+ *
+ * Sort order is the displayed resource **name** (resolved via
+ * `resourceNameById`, falling back to the opaque id), so the visible
+ * order is alphabetical by what the operator actually reads.
  */
 export function groupPairsByResource(
   pairs: WrapperResourcePairRecord[],
+  resourceNameById?: ReadonlyMap<string, string>,
 ): { resource: string; pairs: WrapperResourcePairRecord[] }[] {
   const buckets = new Map<string, WrapperResourcePairRecord[]>();
   for (const p of pairs) {
@@ -63,10 +68,12 @@ export function groupPairsByResource(
     if (arr) arr.push(p);
     else buckets.set(p.resource_id, [p]);
   }
+  const nameOf = (resourceId: string) =>
+    resourceNameById?.get(resourceId) ?? resourceId;
   return [...buckets.entries()]
     .map(([resource, group]) => ({
       resource,
       pairs: [...group].sort((a, b) => a.wrapper.localeCompare(b.wrapper)),
     }))
-    .sort((a, b) => a.resource.localeCompare(b.resource));
+    .sort((a, b) => nameOf(a.resource).localeCompare(nameOf(b.resource)));
 }

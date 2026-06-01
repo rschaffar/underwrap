@@ -54,8 +54,8 @@ export function WrapperPermissionsPage() {
   const { nameById: resourceNameById } = useResourceCatalog(resources);
 
   const groups = useMemo(
-    () => groupPairsByResource(view.data?.pairs ?? []),
-    [view.data],
+    () => groupPairsByResource(view.data?.pairs ?? [], resourceNameById),
+    [view.data, resourceNameById],
   );
   const permissions = view.data?.permissions ?? [];
   const totalPermissionCount = permissions.length;
