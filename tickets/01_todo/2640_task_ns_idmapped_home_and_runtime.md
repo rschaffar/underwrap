@@ -77,11 +77,19 @@ and `fs/mnt_idmapping.c` on v7.1-rc6.
    returns `EINVAL`. The working sequence (what crun/bwrap actually do):
    - `open_tree(AT_FDCWD, src, OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC)` → a detached
      clone of the subtree at `src` (this *is* the bind; do **not** `mount(MS_BIND)`).
-   - `mount_setattr(fd, "", AT_EMPTY_PATH, &{ attr_set: MOUNT_ATTR_IDMAP,
-     userns_fd }, size)` on the **detached** fd (add `AT_RECURSIVE` if you cloned
-     recursively).
+   - `mount_setattr(fd, "", AT_EMPTY_PATH, &{ attr_set: MOUNT_ATTR_IDMAP |
+     **MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV**, userns_fd }, size)` on the
+     **detached** fd (add `AT_RECURSIVE` if you cloned recursively). The
+     `NOSUID|NODEV` is **mandatory**, not cosmetic — see the setuid note below.
    - `move_mount(fd, "", AT_FDCWD, dst, MOVE_MOUNT_F_EMPTY_PATH)` to attach it at
      the target path.
+   - **Resolve the bind *source* race-safely** (runc CVE-2025-31133 / 52565
+     class): `open_tree` the source via an `openat2(RESOLVE_NO_SYMLINKS |
+     RESOLVE_NO_MAGICLINKS)` fd (or verify the resolved inode), so a symlink at
+     `$HOME`/`$XDG_RUNTIME_DIR` cannot redirect the clone to an unintended tree.
+   - **Close the idmap `userns_fd` (and reap the helper) before the target exec**
+     — it is needed only for `mount_setattr`; leaking it into the target is a
+     Leaky-Vessels-class fd leak (see 2645's `close_range` sweep).
 3. **Capabilities.** `mount_setattr(MOUNT_ATTR_IDMAP)` needs `CAP_SYS_ADMIN` over
    the **filesystem's** userns (= init for a host fs — `fs/namespace.c:4819`) and
    over the idmap userns (held as its creator/ancestor — `:5030`); the idmap
@@ -99,6 +107,31 @@ and `fs/mnt_idmapping.c` on v7.1-rc6.
    dbus peer-cred (the real bus rejects a uid-X peer), but to keep the hide,
    either re-apply the `/dev/null` bind **after** the idmapped `move_mount`, or
    idmap a narrower path. Call this out where the two orderings meet.
+
+### setuid / device safety on the idmapped mount (`MOUNT_ATTR_NOSUID|NODEV`)
+
+The idmapped mount is a **privilege-translation boundary** (target-created files
+become caller-owned, caller-owned files appear target-owned), and such boundaries
+are a classic escalation primitive — see overlayfs copy-up **CVE-2023-0386**,
+where a setuid bit / `security.capability` surviving a cross-mount move yielded
+root. Concretely here:
+
+- *Inbound:* a pre-existing setuid file (or fscap'd binary) in the user's `$HOME`
+  is presented to the uid-X target as owner-X with the setuid bit intact — the
+  target could exec it.
+- *Outbound:* the target can `chmod u+s` a file it creates (no capability needed
+  to set the bit); via the idmap that file lands on disk **owned by the caller
+  (1700) with the setuid bit** — a setuid-1700 binary planted in the user's home.
+
+`MOUNT_ATTR_NOSUID` makes setuid/setgid/fscaps **inert when executed via the
+idmapped mount**, neutralizing the inbound vector cleanly. `MOUNT_ATTR_NODEV`
+blocks device-node honoring (the target has no `CAP_MKNOD`, but free hygiene).
+**Residual, documented:** `NOSUID` on *our* mount does not stop the user from
+later executing a target-planted setuid-1700 file via their *own* (non-nosuid)
+view of `$HOME` — that requires the user to run an attacker-planted binary
+(social), and fully closing it would mean stripping mode bits on writeback
+(out of scope). Note it in `docs/security.md`. Do **not** add `MOUNT_ATTR_NOEXEC`
+— targets legitimately run binaries from `~/.local/bin` etc.
 
 ### Filesystem support — verify per host
 
@@ -152,6 +185,13 @@ test:** the NixOS test framework backs the host store share with 9p, so pin
   EACCES becomes success). (SSH-agent-style; D-Bus peer-cred is out of scope.)
 - The 2630 protection assertions still hold (caller still can't read the target's
   `environ`/`mem`).
+- **`NOSUID` enforced:** a fixture writes a `chmod u+s` binary into `$HOME` via
+  the idmapped mount; assert (a) on disk it is owned by `testuser` with the setuid
+  bit, and (b) exec'ing it *through the idmapped mount* does **not** confer the
+  set-user-id (the process euid stays the caller's) — proving `MOUNT_ATTR_NOSUID`
+  is in effect. Also assert no device node honoring (`NODEV`).
+- The idmap `userns_fd` is **not** present in the target's `/proc/<pid>/fd`
+  (closed before exec; cross-checked by 2645's fd-hygiene assertion).
 - Graceful, explicit failure when `$HOME`'s filesystem lacks idmapped-mount
   support.
 - `cargo test -p underwrap-ns`, `cargo fmt --check`, `nix build .#<vm test attr>`

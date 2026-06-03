@@ -71,7 +71,19 @@ Implementation notes:
   Unit-test the rejection paths (incl. a sidecar that somehow specifies `0`).
 - Use `setresuid`/`setresgid` (not `setuid`) and check return values; on failure
   `bail!` — never exec a target that failed to drop to X (that would run it as
-  the caller with secrets in a readable env).
+  the caller with secrets in a readable env). Note the kernel does **not**
+  auto-clear caps here (neither old uid 1700 nor new uid X is 0, so the setuid
+  cap-fixup never fires — `capabilities(7)`); the explicit `drop_caps` is
+  therefore load-bearing, and a retained `CAP_SETUID` would let the target
+  `setresuid(0,0,0)` back. RLIMIT_NPROC-style `EAGAIN` (CVE-2011-1146 class) is
+  not weaponizable here (the attacker isn't uid X so can't saturate its nproc),
+  but `bail!`-on-error covers it regardless.
+- **Verify the drop before exec (Setuid Demystified discipline).** After
+  `drop_caps`, read `/proc/self/status` and assert: `Uid:`/`Gid:` show X/Xgid in
+  **all four** columns, `Groups:` is exactly `[Xgid]`, and
+  `Cap{Prm,Eff,Inh,Amb}` are empty; and assert a regain attempt
+  `setresuid(0,0,0)` **fails**. `bail!` if any check fails — fail closed, never
+  exec. Unit-test plus a VM `/proc/<pid>/status` assertion.
 - `set_no_new_privs` and `drop_caps` move to **after** the id switch (we need
   `CAP_SETUID`/`CAP_SETGID` to perform it). Confirm the bounding-set/`capset`
   logic in `caps.rs` still zeroes everything post-switch.
@@ -126,6 +138,17 @@ Implementation notes:
   cannot see these mounts at all; concurrent invocations get their own mount
   namespace) plus dbus peer-cred for the bus. Add a VM assertion that the caller
   cannot see/enter these paths from the host namespace.
+
+- **Symlink-TOCTOU on the writeback walk.** At checkin the uid-1700 supervisor
+  walks target-controlled staging directories; a target-planted symlink there
+  (e.g. `staging/x → /home/robert/.ssh/authorized_keys`) could redirect a
+  supervisor read/write to a 1700-owned path the uid-X target cannot reach itself
+  — a target→caller escalation. Two compounding defenses: (a) the preferred
+  `setfsuid(X)` walk above already bounds the supervisor's authority *to X* during
+  the traversal, so a redirected access only ever has uid-X power; and (b) resolve
+  every walked path with `openat2(RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH)` rooted
+  at the staging dir (kernel ≥5.6) so resolution cannot leave the staging tree at
+  all. Do **not** rely on userspace `realpath` checks (racy).
 - `build_target_env` (`env.rs`): keep `HOME` and `XDG_RUNTIME_DIR` pointing at
   the caller's real values (the idmapped mounts in 2640 make them accessible).
   No change needed here yet; note that until 2640 lands, a target that touches

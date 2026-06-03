@@ -10,9 +10,16 @@ Depends on: `2640_task_ns_idmapped_home_and_runtime`
 > `getuid()==X`, `st_uid == getuid()` ownership checks (e.g. ssh's `~/.ssh`
 > check) already pass without it. Defer for `$HOME`-env-driven targets (e.g.
 > `aws-sso`); enable it only for targets that branch on `getuid()` or resolve
-> `$HOME` via `getpwuid(getuid())->pw_dir` rather than the `HOME` env var. It
-> also adds a process user namespace (marginal kernel attack surface, the same
-> as any unprivileged `unshare -U`).
+> `$HOME` via `getpwuid(getuid())->pw_dir` rather than the `HOME` env var.
+>
+> **Cost — this is a real security trade-off, not free fidelity.** A user
+> namespace is the dominant *enabling* primitive for the 2020–2025 local-privesc
+> CVE class (CVE-2022-0185 fs-context, CVE-2023-0386 overlayfs, CVE-2023-32233
+> nf_tables, …): merely *having* one reachable arms those bugs, because the
+> target becomes "root in its own userns" and unlocks kernel code paths an
+> unprivileged process can't otherwise reach. We hand that surface to a
+> *deliberately sandboxed, possibly-malicious* target. Weigh that against a
+> cosmetic `getuid()`. Default off, per-wrapper opt-in.
 
 ## Problem
 
@@ -72,6 +79,28 @@ Interactions to get right (reference crun/bwrap ordering):
 - PID namespace: the target is already PID 1 of its PID namespace (existing
   behavior). Owning a new userns + being PID-ns init is fine; keep the fresh
   `/proc` remount (done before, in the original mount ns view).
+- **The host may forbid the target's `unshare(CLONE_NEWUSER)`.** Ubuntu 24.04+
+  ships `kernel.apparmor_restrict_unprivileged_userns=1`; Debian/others expose
+  `kernel.unprivileged_userns_clone=0`. After 2630 the target is an *unprivileged*
+  uid X, so its own `unshare(CLONE_NEWUSER)` can `EPERM` on exactly the hardened
+  hosts users deploy on purpose. Two consequences: (a) **fail closed** — if the
+  userns can't be created, abort the run (no insecure fallback, per project rule),
+  do **not** silently drop to the 2640-only path; and (b) prefer creating the
+  userns from the **cap-holding stage** (which is not subject to the unprivileged
+  restriction) before the final `setresuid`, rather than from the dropped target —
+  mirrors 2640's "privileged stage builds the artifact" rule. Because 2650 is
+  opt-in, an instance that needs it on a restricting host must be a conscious
+  choice.
+- **Single-extent map only.** Use exactly one uid extent (`1700 X 1`) and one gid
+  extent. This both keeps in-userns authority near-zero (only X is mapped;
+  everything else is overflow/`nobody`, immune to the target's in-ns "root") and
+  sidesteps **CVE-2018-18955** (the kernel mis-translated nested maps with >5
+  extents, making ownership/capability checks return wrong answers). Never nest
+  this userns inside another large-map userns.
+- **Map consistency / `EOVERFLOW`.** The process-userns map and the 2640 mount
+  idmap must agree on X (the target's fsuid must be the mapped id). A mismatch
+  makes idmapped-mount writes fail `EOVERFLOW` rather than silently mis-own —
+  treat that as a hard configuration error, not a fallback.
 
 ## Acceptance
 

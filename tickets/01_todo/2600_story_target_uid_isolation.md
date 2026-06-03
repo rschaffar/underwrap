@@ -97,6 +97,34 @@ a compromised `underwrap-exec` cannot make the privileged stage switch to root,
 another service, or another instance, because it can neither forge the egid nor
 write `/etc`. (See 2620/2630.)
 
+### The boundary cuts both ways — defend target → caller too
+
+Giving the target a distinct uid X is what *creates* a privilege boundary between
+the target and the caller (uid 1700). Until now the threat was one-directional
+(caller reading the target). But a boundary has two sides: because the caller is
+now the *more-privileged* peer, any channel from the uid-X target back to the
+caller becomes an **escalation** (X → 1700) that did **not** exist when the target
+ran as the caller. The epic must close these or the isolation is a half-boundary.
+Enumerated (with the ticket that closes each):
+
+- **Controlling-terminal injection (TIOCSTI/TIOCLINUX).** The target inherits the
+  caller's controlling tty and can inject input that runs in the caller's shell as
+  uid 1700. `underwrap-ns` does no `setsid()` today. → **2645** (setsid + seccomp).
+- **Runtime fd leaks (Leaky Vessels, CVE-2024-21626).** A privileged fd inherited
+  by the target (the idmap-userns fd from 2640, the ExecBundle pipe, helper fds)
+  is reachable via `/proc/self/fd` and escapes the sandbox. Only fd 20 is closed
+  today. → **2645** (`close_range` sweep + `O_CLOEXEC`).
+- **setuid-bit planting via idmapped writeback (CVE-2023-0386 class).** The target
+  can create a file that, via the idmap, lands owned by the caller (1700) with the
+  setuid bit, then relies on the user running it → runs as 1700. → **2640**
+  (`MOUNT_ATTR_NOSUID|NODEV` on the idmapped mounts; residual social vector
+  documented).
+- **Symlink-TOCTOU against the supervisor's writeback walk.** The uid-1700
+  supervisor walks target-controlled staging at checkin; a target-planted symlink
+  could redirect it to a 1700-owned path the target itself can't reach. → **2630**
+  (walk under `setfsuid(X)` so the walk has only X authority, plus
+  `openat2(RESOLVE_NO_SYMLINKS|RESOLVE_BENEATH)`).
+
 ## What this does NOT defend against (document, don't pretend)
 
 - **root.** A caller who can `sudo` gets `CAP_SYS_PTRACE` and bypasses the uid
@@ -117,6 +145,20 @@ write `/etc`. (See 2620/2630.)
   recursively, which is invasive and fragile (every submount, procfs/sysfs
   restrictions) and is **not** done. Targets that roam the filesystem must list
   the extra paths in `idmapPaths`.
+- **World-readable `/proc/<pid>` metadata.** The uid gate (`ptrace_may_access`)
+  protects only the secret-bearing files — `environ`, `mem`, `maps`, `smaps`,
+  `auxv`, `pagemap`, and the `fd`/`fdinfo`/`cwd`/`root`/`exe` links (so the caller
+  **cannot** re-open the target's secret file or unix socket via
+  `/proc/<pid>/fd` — verified `fs/proc/base.c:1853→718`, a *positive* property of
+  the boundary). But `cmdline`, `comm`, `stat`, `status`, `mounts`, `mountinfo`,
+  `cgroup`, `limits` are **world-readable** (`cmdline` has no ptrace check —
+  `fs/proc/base.c:393`) and remain visible to the caller via the host `/proc`,
+  regardless of uid. This is **not** a secret leak: underwrap secrets live in
+  env/files/libsecret (all gated) and **never** in argv (existing invariant), and
+  mount-path names are not secret. Hiding even this metadata would require host
+  `hidepid` (out of underwrap's scope). State the guarantee precisely: the
+  boundary hides *secret-bearing* `/proc` files and fd re-opens, not world-readable
+  process metadata.
 
 Note on `kernel.yama.ptrace_scope=2`: after this story lands it is **no longer
 load-bearing** for an isolated target — the uid gate denies READ and ATTACH
@@ -150,10 +192,15 @@ guarantee now rests on dumpable=0 (stages) + uid X (target).
    `$XDG_RUNTIME_DIR` (via `open_tree`+`mount_setattr`+`move_mount`) so the uid-X
    target reads/writes the user's files as the user; on-disk ownership stays the
    user. Plus the optional `idmapPaths` for extra user-private paths.
-5. *(optional)* `2650_task_ns_userns_identity_relabel` — process user namespace
+5. `2645_task_harden_exec_boundary_tty_and_fds` — close the **target → caller**
+   escalations the uid boundary creates: `setsid()` + seccomp-deny
+   `TIOCSTI`/`TIOCLINUX` (terminal injection), and a `close_range` fd sweep +
+   `O_CLOEXEC` (Leaky Vessels fd leaks, incl. the new idmap-userns fd). Required,
+   not optional.
+6. *(optional)* `2650_task_ns_userns_identity_relabel` — process user namespace
    so `getuid()==caller` inside; cosmetic "believes it is robert" fidelity. Not
    required for protection or file access; defer for `$HOME`-env-driven targets.
-6. `2660_task_comprehensive_isolation_vm_test` — the decisive end-to-end matrix:
+7. `2660_task_comprehensive_isolation_vm_test` — the decisive end-to-end matrix:
    caller (and descendant-spawned)
    `environ`/`maps`/`auxv`/`mem`/ptrace/`process_vm_readv` all denied; root still
    can read; home rw + on-disk ownership; files-slot + libsecret + writeback
@@ -164,10 +211,14 @@ guarantee now rests on dumpable=0 (stages) + uid X (target).
 - 2610 is independent and lands first (turns the spurious VM-test PASS into a
   real signal).
 - 2620 must precede 2630 (the uid must exist + reach `underwrap-ns`).
-- 2630 delivers protection; 2640 restores home; 2650 (optional) adds cosmetic
-  fidelity. Each is independently testable, and the `isolateTargetUid` flag keeps
-  every existing wrapper on the current path until its instance opts in. A target
-  is fully functional after 2640 even if 2650 is never done.
+- 2630 delivers protection; 2640 restores home; 2645 closes the target→caller
+  escalations the boundary opens; 2650 (optional) adds cosmetic fidelity. Each is
+  independently testable, and the `isolateTargetUid` flag keeps every existing
+  wrapper on the current path until its instance opts in. A target is fully
+  functional after 2640 even if 2650 is never done.
+- **2645 is not optional and must land before any production flip:** an isolated
+  instance without it has a real X→caller escalation (TIOCSTI, leaked fds). Treat
+  2630+2640+2645 as the minimum coherent isolation set.
 - Roll out: enable `isolateTargetUid` for new VM fixture wrappers per ticket;
   flip the real instances (e.g. `aws-sso`) only after 2660 is green.
 

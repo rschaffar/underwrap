@@ -56,6 +56,15 @@ tickets have a test that actually moves from RED→GREEN.
   (setgid-induced for `underwrap-exec`, explicit `PR_SET_DUMPABLE=0` for the
   supervisor and secretsd) — not ptrace_scope. Exec targets are not protected
   until 2630+.
+- While correcting the doc, also state the **world-readable `/proc` residue** that
+  *no* mechanism here hides (neither ptrace_scope, dumpable, nor the 2600 uid
+  boundary): `cmdline`, `comm`, `stat`, `status`, `mounts`, `mountinfo`, `cgroup`,
+  `limits` are world-readable (`cmdline` has no ptrace gate — `fs/proc/base.c:393`).
+  None carry secret values — secrets live in env/files/libsecret and never in
+  argv (existing invariant) — so this is a scope statement, not a hole. Conversely
+  note the *positive*: the `fd`/`fdinfo`/`cwd`/`root`/`exe` links **are**
+  ptrace-gated, so a same-UID caller cannot re-open a wrapper/target's open secret
+  file or socket. This keeps the security doc from over- or under-claiming.
 
 ### VM test harness
 

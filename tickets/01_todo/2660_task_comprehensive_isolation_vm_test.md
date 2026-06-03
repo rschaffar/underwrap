@@ -1,8 +1,8 @@
 # Task: Comprehensive VM test proving target + descendant isolation end to end
 
 Parent: `2600_story_target_uid_isolation`
-Depends on: `2630`, `2640` (hard); `2650` (optional — gate #10 on whether the
-userns relabel was actually implemented)
+Depends on: `2630`, `2640`, `2645` (hard); `2650` (optional — gate #10 on whether
+the userns relabel was actually implemented)
 
 ## Goal
 
@@ -102,11 +102,35 @@ Signal semantics (note, light assertion):
     `testuser`, and that **root** (or tty SIGINT) can still terminate it. Keep
     this informational if it proves flaky for interactive vs. plain targets.
 
+fd-reopen vector and world-readable `/proc` scope (precision, not pretense):
+
+17. **fd re-open denied:** as `testuser`, `readlink`/open of the isolated
+    target's `/proc/<pid>/fd/*` and `/proc/<pid>/{cwd,root,exe}` returns EPERM
+    (ptrace-gated, `fs/proc/base.c:1853→718`) — i.e. the caller cannot re-open the
+    target's open secret file or unix socket. This is a *positive* property of the
+    boundary; assert it explicitly.
+18. **World-readable residue is in-scope-but-secret-free:** as `testuser`,
+    `cat /proc/<pid>/{cmdline,status,mounts,mountinfo,cgroup}` of the isolated
+    target **succeeds** (these are world-readable regardless of uid) — assert the
+    reads succeed **and** that the secret marker `iso_secret_val` appears in
+    **none** of them. Encodes the honest scope: the boundary hides secret-bearing
+    files, not process metadata; secrets never live in argv/mount-paths.
+
+target → caller escalation closed (the boundary's second direction, 2645):
+
+19. **TIOCSTI:** the isolated target's attempt to inject into the caller's
+    controlling terminal returns EPERM/EIO and the injected sentinel never runs in
+    the launching shell (per 2645). Contrast against a fixture without `setsid`
+    to prove the test would otherwise catch it.
+20. **No leaked fds:** the isolated target's `/proc/<pid>/fd` (read as root)
+    contains only stdio — no idmap `ns/user` fd, ExecBundle pipe, channel socket,
+    or dbus/secretsd fd (per 2645).
+
 ## Acceptance
 
 - `local_target_uid_isolation()` is wired into the test run and asserts the full
-  matrix above (hard asserts on 1–7, 9–15; 8 asserts root-success; 16 best-effort
-  with clear logging).
+  matrix above (hard asserts on 1–7, 9–15, 17–20; 8 asserts root-success; 16
+  best-effort with clear logging).
 - No escape-hatch PASS paths: if a target/descendant can't be located by root,
   the test fails (not "invisible ⇒ pass").
 - The old `local_pid_namespace_proc_isolation` env-readability masking is gone
