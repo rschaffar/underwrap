@@ -3,6 +3,17 @@
 Parent: `2600_story_target_uid_isolation`
 Depends on: `2640_task_ns_idmapped_home_and_runtime`
 
+> **Optional / opt-in.** This ticket is **not** required for protection or for
+> file access — both are fully delivered by 2630 (uid X) + 2640 (idmapped
+> mounts). It only changes `getuid()`/displayed-name cosmetics. Because the
+> idmapped home already presents files to the target as owned by X *and*
+> `getuid()==X`, `st_uid == getuid()` ownership checks (e.g. ssh's `~/.ssh`
+> check) already pass without it. Defer for `$HOME`-env-driven targets (e.g.
+> `aws-sso`); enable it only for targets that branch on `getuid()` or resolve
+> `$HOME` via `getpwuid(getuid())->pw_dir` rather than the `HOME` env var. It
+> also adds a process user namespace (marginal kernel attack surface, the same
+> as any unprivileged `unshare -U`).
+
 ## Problem
 
 After 2630/2640 the target is protected (real uid X) and can use the caller's
@@ -42,11 +53,22 @@ Interactions to get right (reference crun/bwrap ordering):
   access). This userns only changes display/`getuid()` (kuid X →
   `from_kuid(process_userns) = 1700`). Verify the two compose: inside, home files
   show as owned by **1700**, fully accessible.
-- Capabilities: entering a userns grants full caps *inside it*, but
-  `no_new_privs` + the empty bounding/permitted sets from `drop_caps` (run after
-  the userns is set up) must still leave the target with **zero** effective caps
-  in the init userns. Re-confirm `caps.rs` behavior after a userns is present
-  (the existing `test-caps` fixture must still report all-zero Eff/Prm/Inh/Amb).
+- Capabilities: `unshare(CLONE_NEWUSER)` grants the process a full capability set
+  *in the new userns* (and those caps mean nothing against init-userns-owned
+  resources — the target's kuid stays X, so it has no authority over real files
+  or other-uid processes). `drop_caps` runs **after** the userns is set up and
+  must still leave the target with **zero** effective caps. Note `drop_caps`
+  zeroes Eff/Prm/Inh/Amb via `capset`; the **bounding** set is a separate matter
+  — today `PR_CAPBSET_DROP` EPERMs pre-userns (no `cap_setpcap`), but *after* the
+  userns unshare the process holds `cap_setpcap` in the new ns, so the bounding
+  set can now be fully dropped too. Either way the `test-caps` fixture asserts
+  zero **Eff/Prm/Inh/Amb** (not Bnd), and `no_new_privs` prevents regaining caps
+  across exec. Re-confirm `caps.rs` behavior with a userns present.
+- The userns does **not** weaken the protection: the host kuid is fixed at X by
+  the 2630 `setresuid` and is unchanged by entering a userns, so a uid-1700
+  caller still mismatches the uid gate; and the caller has no `CAP_SYS_PTRACE` in
+  the target's userns (`ns_capable(tcred->user_ns, …)` is false for an
+  unprivileged ancestor — `kernel/ptrace.c:337`), so `environ`/`mem` stay EPERM.
 - PID namespace: the target is already PID 1 of its PID namespace (existing
   behavior). Owning a new userns + being PID-ns init is fine; keep the fresh
   `/proc` remount (done before, in the original mount ns view).

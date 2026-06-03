@@ -33,35 +33,101 @@ caller's on-disk uid/gid (1700) ⇄ the target's kernel uid/gid (X).
 
 ### Mechanics (the intricate part — crib from crun/bwrap)
 
-1. Build the idmap **userns object**: fork a short-lived helper that
-   `unshare(CLONE_NEWUSER)`, write its `uid_map`/`gid_map` describing the
-   `1700 ⇄ X` translation, and keep its `/proc/<pid>/ns/user` fd. This userns
-   exists **only** to carry the mapping for `mount_setattr`; it is distinct from
-   the process userns added in 2650.
-2. For each path (`$HOME`, `$XDG_RUNTIME_DIR`): create a bind mount
-   (`mount(src, dst, NULL, MS_BIND|MS_REC, NULL)`), then
-   `mount_setattr(dst, AT_..., &{ attr_set: MOUNT_ATTR_IDMAP, userns_fd })`.
-3. Requires `CAP_SYS_ADMIN` **in the init userns** to idmap a host filesystem —
-   `underwrap-ns` has it (file cap). Do this **before** the `setresuid`/`drop_caps`
-   in 2630 (insert at the marked point in 2630's ordering), then drop caps.
-4. Mounts must be set up before `setresuid` to X and before entering the process
-   userns (2650). The bind targets can be the real paths (we're in a private
-   mount ns, so re-binding `/home/robert` over itself is invisible to the host).
+**The map direction (one map does read + writeback).** The idmap userns map
+written is `uid_map = "1700 X 1"` (inside-id `1700`, outside-id `X`, count `1`)
+and `gid_map = "<callergid> Xgid 1"`. A mount idmap built from this does
+`map_id_down(1700) = X`, so an on-disk-1700 file is presented to the fsuid-X
+target as **owner X** → owner-rwx → full read/write (`fs/mnt_idmapping.c:96`,
+`make_vfsuid`); and `map_id_up(X) = 1700`, so files the target creates are written
+back **owned by 1700** (`:159`, `from_vfsuid`). The permission check is
+kuid-based, so this composes with 2650's process userns unchanged (target fsuid
+kuid X == file's presented kuid X → owner). Verified against `kernel/ptrace.c`
+and `fs/mnt_idmapping.c` on v7.1-rc6.
+
+1. **Build the idmap userns object carrying `1700 ⇄ X`.** Note `"1700 X 1"` is
+   **not** a single self-map for a writer whose euid is 1700: the kernel's
+   unprivileged self-map requires the mapped parent id to equal the *writer's own*
+   euid (`new_idmap_permitted`, `kernel/user_namespace.c:1184-1196`), and a
+   process that has already `unshare`d `CLONE_NEWUSER` has **lost** its caps over
+   the parent (init) userns, so it cannot write this map itself (`:1207` fails).
+   Two correct options:
+   - **(a) parent-writes-child (preferred, matches crun):** the cap-holding
+     `underwrap-ns` child (still `CAP_SETUID`/`CAP_SETGID` in init) forks a helper
+     that `unshare`s `CLONE_NEWUSER` and blocks; the **parent** writes
+     `/proc/<helper>/{uid,gid}_map` (it has the caps over init → `:1207` passes),
+     then opens `/proc/<helper>/ns/user`. Set `/proc/<helper>/setgroups` to `deny`
+     before writing gid_map. The open `ns/user` fd pins the userns alive, so kill
+     and `waitpid`-reap the helper afterward — otherwise it lingers in the PID
+     namespace. (The whole idmap-userns + `open_tree`/`mount_setattr`/`move_mount`
+     dance may equivalently run in `run_parent` *before* `fork_into_namespace` —
+     the mount ns is already shared and caps are held there too — which avoids a
+     nested fork inside the new PID namespace; implementer's choice.)
+   - **(b) helper-becomes-X-first:** the helper `setresgid`/`setresuid` to X
+     first, *then* `unshare`s, *then* self-writes `"1700 X 1"` — now a genuine
+     self-map (mapped parent id X == helper euid X), permitted unprivileged
+     (gid_map still needs `setgroups`=`deny` first, `:1193`).
+
+   Keep the resulting `/proc/<pid>/ns/user` fd. This userns exists **only** to
+   carry the mapping for `mount_setattr`; it is distinct from the process userns
+   in 2650.
+2. **For each path, idmap a *detached* mount and move it into place — you cannot
+   idmap an attached bind mount.** `can_idmap_mount` requires the target mount be
+   anonymous (`is_anon_ns`, `fs/namespace.c:4823`); a plain
+   `mount(src, dst, MS_BIND)` produces an *attached* mount, so `mount_setattr`
+   returns `EINVAL`. The working sequence (what crun/bwrap actually do):
+   - `open_tree(AT_FDCWD, src, OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC)` → a detached
+     clone of the subtree at `src` (this *is* the bind; do **not** `mount(MS_BIND)`).
+   - `mount_setattr(fd, "", AT_EMPTY_PATH, &{ attr_set: MOUNT_ATTR_IDMAP,
+     userns_fd }, size)` on the **detached** fd (add `AT_RECURSIVE` if you cloned
+     recursively).
+   - `move_mount(fd, "", AT_FDCWD, dst, MOVE_MOUNT_F_EMPTY_PATH)` to attach it at
+     the target path.
+3. **Capabilities.** `mount_setattr(MOUNT_ATTR_IDMAP)` needs `CAP_SYS_ADMIN` over
+   the **filesystem's** userns (= init for a host fs — `fs/namespace.c:4819`) and
+   over the idmap userns (held as its creator/ancestor — `:5030`); the idmap
+   userns must not be init itself (`:5026`). `underwrap-ns` has `CAP_SYS_ADMIN` in
+   init (file cap). Do all of this **before** the `setresuid`/`drop_caps` in 2630
+   (at the marked insertion point), then drop caps.
+4. **Ordering.** Idmapped mounts are set up before `setresuid` to X and before
+   the process userns (2650). Targets are the real paths — we're in the private
+   mount ns, so `move_mount`-ing an idmapped clone over `/home/robert` is
+   invisible to the host.
+5. **Interaction with the libsecret real-bus hide.** `$XDG_RUNTIME_DIR` is
+   `/run/user/<uid>`, and `setup_mount_namespace` hides the real session bus by
+   bind-mounting `/dev/null` over `/run/user/<uid>/bus` (`mounts.rs`). An idmapped
+   `move_mount` of the whole runtime dir would re-expose that bus. It is mooted by
+   dbus peer-cred (the real bus rejects a uid-X peer), but to keep the hide,
+   either re-apply the `/dev/null` bind **after** the idmapped `move_mount`, or
+   idmap a narrower path. Call this out where the two orderings meet.
 
 ### Filesystem support — verify per host
 
-idmapped mounts need fs support: ext4/xfs/btrfs/tmpfs/f2fs/overlayfs/FAT yes;
-**ZFS only ≥ OpenZFS 2.2.0**. Detect at setup and fail with a clear error if the
-backing fs of `$HOME` doesn't support `MOUNT_ATTR_IDMAP` (don't silently fall
-back to an inaccessible home). `$XDG_RUNTIME_DIR` is tmpfs (supported).
+idmapped mounts need fs support (`FS_ALLOW_IDMAP`, `fs/namespace.c:4811`):
+ext4/xfs/btrfs/tmpfs/f2fs/overlayfs/FAT yes; **ZFS only ≥ OpenZFS 2.2.0**;
+**9p/NFS no**. Detect at setup and fail with a clear error if the backing fs of
+`$HOME` doesn't support `MOUNT_ATTR_IDMAP` (don't silently fall back to an
+inaccessible home). `$XDG_RUNTIME_DIR` is tmpfs (supported). **Note for the VM
+test:** the NixOS test framework backs the host store share with 9p, so pin
+`testuser`'s `$HOME` onto an idmap-capable fs (tmpfs or an ext4 image) for the
+2660 home-rw assertions to be deterministic.
 
 ### Scope of mapping
 
 - Map the caller's primary uid (1700) and primary gid. Supplementary-group
   access is out of scope (note it).
 - Only `$HOME` and `$XDG_RUNTIME_DIR` are idmapped. Other paths the target needs
-  (extra drives, separate mounts) are not covered — document this; add more
-  idmapped binds later if a real wrapper needs them.
+  (extra drives, separate mounts, user-private files outside `$HOME`) are not
+  covered — document this; the target gets only "other" perms on a user-private
+  file outside an idmapped path. Add more entries via `idmapPaths`. **Blanket
+  access (idmapping `/` recursively) is deliberately not done** — it is invasive
+  and fragile (every submount, procfs/sysfs restrictions); per-path is the model.
+- The **files-slot staging tmpfs/binds and the libsecret bus tmpfs are handled in
+  2630, not here** — they are target-facing scratch surfaces created by
+  `underwrap-ns` itself, made usable by uid X via 2630's staging-access mechanism
+  (supervisor borrows fsuid X with `CAP_SETUID`, or an idmap-with-separate-view).
+  Do **not** idmap them *in place* over their own path: that would flip the 1700
+  supervisor's writeback walk to an X-owned view. Only the **caller's own** files
+  (`$HOME`, `$XDG_RUNTIME_DIR`) are idmapped here.
 
 ### Module surface
 
