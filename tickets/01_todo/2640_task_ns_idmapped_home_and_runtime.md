@@ -18,8 +18,13 @@ This is exactly the kernel's "portable home directory" idmapped-mount use case
 
 ## Design
 
-In the child's private mount namespace (already created via
-`unshare(CLONE_NEWNS)` in `prepare_namespace`), set up **idmapped bind mounts**
+> **Placement:** the idmap setup + the files-slot-overlay ordering slot into the
+> **canonical ordering in 2630** ("the SPINE") at the `[2640]` tags (in the
+> *parent, pre-fork* phase — doing it there, before `prepare_files_mounts`, is how
+> the files-slot binds end up overlaying the idmapped home rather than being
+> shadowed; see the ⚠ ordering section below).
+
+Set up **idmapped bind mounts**
 of the caller's `$HOME` and `$XDG_RUNTIME_DIR` whose idmap translates the
 caller's on-disk uid/gid (1700) ⇄ the target's kernel uid/gid (X).
 
@@ -58,10 +63,15 @@ and `fs/mnt_idmapping.c` on v7.1-rc6.
      then opens `/proc/<helper>/ns/user`. Set `/proc/<helper>/setgroups` to `deny`
      before writing gid_map. The open `ns/user` fd pins the userns alive, so kill
      and `waitpid`-reap the helper afterward — otherwise it lingers in the PID
-     namespace. (The whole idmap-userns + `open_tree`/`mount_setattr`/`move_mount`
-     dance may equivalently run in `run_parent` *before* `fork_into_namespace` —
-     the mount ns is already shared and caps are held there too — which avoids a
-     nested fork inside the new PID namespace; implementer's choice.)
+     namespace. (Per the canonical
+     spine in 2630, this whole idmap-userns + `open_tree`/`mount_setattr`/
+     `move_mount` dance runs in the **parent, pre-fork** — the mount ns is already
+     shared, caps are held there, `open_tree` traverses the real on-disk-1700 home
+     as its owner (fsuid 1700), and it avoids a nested fork inside the new PID
+     namespace. The files-slot binds are then layered on top of this idmapped home
+     **from the child**, after its `setresuid` to X (2630) — later in time, so they
+     overlay the idmapped home rather than being shadowed by it. Do the idmap in the
+     parent, not in `run_child`; do the binds in `run_child`, not the parent.)
    - **(b) helper-becomes-X-first:** the helper `setresgid`/`setresuid` to X
      first, *then* `unshare`s, *then* self-writes `"1700 X 1"` — now a genuine
      self-map (mapped parent id X == helper euid X), permitted unprivileged
@@ -142,7 +152,9 @@ ext4/xfs/btrfs/tmpfs/f2fs/overlayfs/FAT yes; **ZFS only ≥ OpenZFS 2.2.0**;
 inaccessible home). `$XDG_RUNTIME_DIR` is tmpfs (supported). **Note for the VM
 test:** the NixOS test framework backs the host store share with 9p, so pin
 `testuser`'s `$HOME` onto an idmap-capable fs (tmpfs or an ext4 image) for the
-2660 home-rw assertions to be deterministic.
+2660 home-rw assertions to be deterministic. (Syscall floor: `mount_setattr` /
+idmapped mounts need kernel ≥5.12, `openat2(RESOLVE_*)` ≥5.6 — both well under
+underwrap's existing ≥6.5 floor pinned by `hardenTargetHost`; no new minimum.)
 
 ### Scope of mapping
 
@@ -156,22 +168,62 @@ test:** the NixOS test framework backs the host store share with 9p, so pin
   and fragile (every submount, procfs/sysfs restrictions); per-path is the model.
 - The **files-slot staging tmpfs/binds and the libsecret bus tmpfs are handled in
   2630, not here** — they are target-facing scratch surfaces created by
-  `underwrap-ns` itself, made usable by uid X via 2630's staging-access mechanism
-  (supervisor borrows fsuid X with `CAP_SETUID`, or an idmap-with-separate-view).
-  Do **not** idmap them *in place* over their own path: that would flip the 1700
-  supervisor's writeback walk to an X-owned view. Only the **caller's own** files
+  `underwrap-ns` itself, made usable by uid X via 2630's *decided* staging-access
+  design: created `uid=X` and mounted/materialized/bound **in the child after the
+  `setresuid`, at natural fsuid X** (retained `CAP_SYS_ADMIN`); the supervisor
+  reads them only inside its single writeback `setfsuid(X)` window. Do **not**
+  idmap them — they are simply owned by X. Only the **caller's own** files
   (`$HOME`, `$XDG_RUNTIME_DIR`) are idmapped here.
+
+### ⚠ Ordering vs. files-slot projections under `$HOME` (correctness bug if missed)
+
+Files-slot binds target `<target_home>/<mount_path>` — i.e. paths **under `$HOME`**
+(`directory_credential.rs:33,95`: `~/.aws`, `~/.config/gh`, …) — and *today*
+(unisolated) they are established in the **parent** before the fork (`main.rs:75`).
+If the home is idmapped by `move_mount`-ing an idmapped clone of `/home/robert`
+over `/home/robert` *after* those binds exist, that clone is taken from the **real**
+home and **shadows the files-slot binds** — the target would silently see the
+*real* `~/.aws` instead of the brokered secret. This breaks exactly the common
+wrapper shape (a files-slot projecting under `$HOME`).
+
+**Required ordering: idmap `$HOME` *first*, then overlay the files-slot binds on
+top of the idmapped home.** The decided placement (2630 spine) achieves this in
+time: the parent idmaps `$HOME` **pre-fork**, and the child establishes the
+files-slot binds **post-`setresuid`** — strictly later, so they overlay the
+idmapped home. Do **not** `open_tree` the home clone with `AT_RECURSIVE` across a
+subtree that already contains the X-owned files-slot staging (that would re-map the
+staging through the 1700⇄X idmap and corrupt its ownership) — and since the binds
+are layered *after* the home idmap, the home clone is taken before any staging
+exists under it. Same caveat for any files-slot path under `$XDG_RUNTIME_DIR`. Add
+a VM fixture that projects a files-slot secret to a path under `$HOME` for an
+isolated wrapper and asserts the target reads the **brokered** content, not the
+real home file.
+
+**And the bind setup runs in the *child*, at its natural fsuid X (see 2630's
+spine — DECIDED).** Once the home is idmapped it presents as **X-owned 0700**, and
+the files-slot staging *source* tmpfs is **X-owned 0700**, so
+`ensure_mount_target`'s mountpoint `create_dir` and the bind's source/target
+traversal would **EACCES** for any *fsuid-1700* actor. The decided design
+therefore does **not** do this in the parent pre-fork; it moves the staging tmpfs
+create + materialize + files-slot mountpoints/binds into `run_child` **after**
+`setresuid(X,X,X)`, where fsuid is already X (and `CAP_SYS_ADMIN` is retained
+across the switch — `security/commoncap.c:1120-1146` — for the `mount`/`bind`
+calls). **No `setfsuid` is used on this path**; the supervisor's only `setfsuid(X)`
+window is the post-`waitpid` writeback walk. (The idmap of
+`$HOME`/`$XDG_RUNTIME_DIR` itself stays in the parent pre-fork: `open_tree` must
+traverse the real on-disk-1700 home as its owner, fsuid 1700; the child then
+overlays the binds on top of the inherited idmapped home.)
 
 ### Module surface
 
 - The set of idmapped paths is derivable (`$HOME` from the resolved target
   identity, `$XDG_RUNTIME_DIR` from `xdg_runtime_dir_base`/uid). Add an optional
-  per-instance/per-wrapper `idmapPaths` list for extra paths, default
+  per-wrapper `idmapPaths` list for extra paths, default
   `[ "$HOME", "$XDG_RUNTIME_DIR" ]`. Keep it minimal.
 
 ## Acceptance
 
-- New VM fixture `test-iso-home`: a script (run via the isolated instance) that
+- New VM fixture `test-iso-home`: a script (run via an isolated wrapper) that
   (a) reads a pre-seeded file in `$HOME` owned by `testuser`, (b) writes a new
   file under `$HOME`, (c) prints `id -u` and the `stat` owner of what it sees.
   Assertions in `test.py`:

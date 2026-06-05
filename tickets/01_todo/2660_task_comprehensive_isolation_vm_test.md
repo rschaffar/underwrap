@@ -11,10 +11,10 @@ a same-UID caller (and processes it spawns) cannot inspect an isolated target or
 any of its descendants, root still can, and the target remains fully functional
 (home rw, sockets, libsecret, writeback). This replaces the old
 `local_pid_namespace_proc_isolation` + `local_ancestor_attack` confidence with a
-real matrix, and is the gate before flipping production instances (e.g.
-`aws-sso`) to `isolateTargetUid = true`.
+real matrix, and is the gate before flipping production wrappers (e.g.
+`aws-sso`) to `isolate = true`.
 
-## Fixtures (in `nix/tests/node.nix`, on the isolated instance)
+## Fixtures (in `nix/tests/node.nix`, as isolated wrappers — `isolate = true`)
 
 - `test-iso-sleep` — `sleep 300`, `env = true`, secret
   `ISO_SECRET=iso_secret_val` in its env. Long-lived target for `/proc` probing.
@@ -63,7 +63,7 @@ Root-can-still-read (document the boundary, don't pretend otherwise):
 Identity + functionality (ties in 2640/2650):
 
 9. Read as root: isolated target's real uid == the configured
-   `underwrap-target-<instance>` uid X — **and never `0`/caller/service id**
+   configured `underwrap-target-<n>` uid X — **and never `0`/caller/service id**
    (this doubles as the confused-deputy guard assertion from 2620/2630).
 10. **(only if 2650 implemented)** Inside the target:
     `getuid()==geteuid()==1099` (the caller). If 2650 was deferred, assert the
@@ -75,7 +75,7 @@ Identity + functionality (ties in 2640/2650):
 12. Socket: target `connect()`s a `testuser`-owned `0700` socket in
     `$XDG_RUNTIME_DIR` (2640).
 13. libsecret still works: the existing `test-libsecret` store/lookup scenario
-    passes when its instance has `isolateTargetUid = true` (dbus-daemon +
+    passes when the wrapper has `isolate = true` (dbus-daemon +
     secretsd run as X on the bus tmpfs handled per 2630's staging-access
     mechanism; private bus still reachable by the target, still invisible to the
     host — re-assert the "no bus socket on host" check, and that the caller cannot
@@ -140,14 +140,21 @@ target → caller escalation closed (the boundary's second direction, 2645):
   same-uid callers; root can read; persisted files are the user's") and to point
   at this test as the proof. The docs must also state the **target-uid authority
   rule** (mirroring "the daemon, not the wrapper, chooses the target binary"):
-  the target uid/gid come from the trusted instance sidecar, selected by
-  `underwrap-ns` via its kernel-pinned instance-group egid, and never travel on
-  the wire (`ExecBundle` carries no target id) — so a compromised `underwrap-exec`
-  cannot redirect the `cap_setuid` switch to root/another service/another
-  instance.
+  the target uid/gid come from the **root-owned `target-path → uid` table**, read
+  directly by `underwrap-ns` and keyed on the daemon-chosen target path; they never
+  travel on the wire (`ExecBundle` carries no target id) — so a compromised
+  `underwrap-exec` cannot redirect the `cap_setuid` switch to root or another
+  service.
 - `nix build .#<vm test attr>` green end to end.
 
 ## Out of scope
 
 - Per-invocation transient uids (future `2670`); supplementary groups; real
   session D-Bus.
+- **Network/session containment of an untrusted target** (X11 keylogging, session
+  D-Bus, abstract sockets reachable via the shared net ns). This matrix proves
+  *secret confidentiality against same-uid inspection* + the cheap boundary
+  hardening (2645); it does **not** prove the target is sandboxed from the user's
+  GUI/session, which is an explicit non-goal (2600) requiring net-ns + pasta +
+  X11/D-Bus proxying. Do not add assertions implying otherwise — and do not let a
+  green run be read as "the target is contained."

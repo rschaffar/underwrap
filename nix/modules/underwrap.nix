@@ -458,21 +458,30 @@ in {
       type = lib.types.bool;
       default = true;
       description = ''
-        Apply the target-host hardening posture that underwrap's strong
-        non-caller-inspection claim depends on. When enabled:
+        Apply the target-host hardening posture underwrap relies on. When
+        enabled:
 
-        - `kernel.yama.ptrace_scope` is set to `2`, so only processes with
-          `CAP_SYS_PTRACE` can ptrace or read `/proc/<pid>/{environ,mem}`.
-          This blocks a same-UID caller from inspecting the wrapper chain
-          or the target, at the cost of breaking `strace`/`gdb` from
-          normal users.
-        - The build asserts that every configured swap device is
-          encrypted (random-key or LUKS), so a token paged out of the
-          target's memory cannot later surface as plaintext on disk. If
-          you deliberately run without swap, this is satisfied trivially.
+        - `kernel.yama.ptrace_scope` is pinned to `2`. This gates only the
+          **ATTACH-mode** inspection vectors — `/proc/<pid>/mem`,
+          `ptrace(PTRACE_ATTACH)`, and `process_vm_readv` — behind
+          `CAP_SYS_PTRACE`, blocking `strace`/`gdb`/`perf` and direct memory
+          reads from same-UID callers. It does **not** gate the **READ-mode**
+          files `/proc/<pid>/{environ,maps,smaps,auxv}`: Yama acts only on
+          `PTRACE_MODE_ATTACH`, never on `PTRACE_MODE_READ`, so those files are
+          gated solely by the target's *dumpable* flag. `ptrace_scope = 2` is
+          therefore **defense-in-depth for the ATTACH vectors**, not the control
+          that protects a target's `environ`. A normal `execve` resets the
+          target to dumpable, so without a UID boundary an exec'd target's
+          `environ`/`maps`/`auxv` are readable by any same-UID process
+          regardless of `ptrace_scope`. Protecting those requires the dedicated
+          per-target UID added by the per-wrapper `isolate` option (story 2600).
+        - The build asserts that every configured swap device is encrypted
+          (random-key or LUKS), so a token paged out of the target's memory
+          cannot later surface as plaintext on disk. If you deliberately run
+          without swap, this is satisfied trivially.
 
-        Leave enabled unless you are certain the deployment does not
-        need this posture.
+        Leave enabled unless you are certain the deployment does not need this
+        posture.
       '';
     };
 
@@ -611,11 +620,17 @@ in {
     # SSH settings.
     services.openssh.settings = lib.mkMerge (lib.mapAttrsToList (_: i: i.sshSettings) instances);
 
-    # Target-host hardening: pin kernel.yama.ptrace_scope=2 so that a
-    # same-UID caller cannot ptrace, strace, or read /proc/<pid>/{environ,mem}
-    # on any process in the wrapper chain. mkDefault so operators who
-    # genuinely need scope=1 for debugging workflows can lower it
-    # explicitly, but every underwrap deployment defaults to 2.
+    # Target-host hardening: pin kernel.yama.ptrace_scope=2. NOTE this gates
+    # only the ATTACH-mode vectors (/proc/<pid>/mem, ptrace, process_vm_readv);
+    # Yama never consults PTRACE_MODE_READ, so it does NOT gate the READ-mode
+    # files /proc/<pid>/{environ,maps,smaps,auxv} — those are gated by the
+    # target's dumpable flag, and a normal exec resets the target to dumpable.
+    # So this is defense-in-depth for the ATTACH vectors; environ confidentiality
+    # for an exec'd target comes from the dedicated per-target UID (the per-wrapper
+    # `isolate` option), not from here. The pin stays: it is still the ATTACH-mode
+    # protection (mem/ptrace) for UNISOLATED targets, and defense-in-depth for
+    # isolated ones. mkDefault so operators who genuinely need scope=1 for
+    # debugging workflows can lower it explicitly.
     boot.kernel.sysctl = lib.mkIf cfg.hardenTargetHost {
       "kernel.yama.ptrace_scope" = lib.mkDefault 2;
     };

@@ -78,17 +78,18 @@ In `local_pid_namespace_proc_isolation`:
   that is `INCONCLUSIVE`/fail, not PASS. Root sees all PID namespaces; failure to
   find the `sleep` target means the wrapper didn't start, which must fail loudly.
   Delete the `"PASS: target process invisible from parent namespace"` branch.
-- Introduce a module-level switch keyed off the new `isolateTargetUid` flag
-  (added in 2620) so this one test asserts:
-  - `isolateTargetUid = false` (current default): READ class
+- Parameterize the assertion by whether the probed fixture's wrapper has
+  `isolate = true` (a `_assert_target_proc_access(host_pid, isolated=...)` helper),
+  so this one test asserts:
+  - unisolated wrapper (current default, e.g. `test-sleep`): READ class
     (`environ`/`maps`/`smaps`/`auxv`) **readable**, ATTACH class
     (`mem`/`process_vm_readv`/ptrace) **denied** — encode today's true behavior so
     a regression in the ptrace_scope ATTACH protection is still caught. **Note:
     this means the existing `assert rc_maps != 0` at `test.py:837` must flip to
     asserting `maps` is *readable*** — it is, and the current "pass" is an
     artifact of the escape hatch.
-  - `isolateTargetUid = true` (after 2630): READ class **and** ATTACH class
-    **all denied** (the uid gate). (This branch is exercised by the fixtures
+  - isolated wrapper (`isolate = true`, after 2630): READ class **and** ATTACH
+    class **all denied** (the uid gate). (This branch is exercised by the fixtures
     2630/2660 enable.)
 
 In `local_ancestor_attack`: hard-fail on `ENVIRON_READABLE_NO_SECRET` **when the

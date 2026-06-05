@@ -725,19 +725,78 @@ def local_daemon_restart_persistence():
     machine.log("PASS: secrets persist across restart")
 
 
+def _assert_target_proc_access(host_pid, *, isolated):
+    # Assert same-UID (testuser) /proc access to the target, split by the
+    # kernel access class each file goes through:
+    #   READ-mode  (environ, maps, smaps, auxv): ptrace_may_access(MODE_READ),
+    #     gated by the target's dumpable flag. A normal exec'd target is
+    #     dumpable, so on an UNISOLATED instance a same-UID caller CAN read
+    #     these. Yama/ptrace_scope never gates them (it acts only on ATTACH).
+    #   ATTACH-mode (mem; also ptrace-attach / process_vm_readv): MODE_ATTACH,
+    #     gated by Yama ptrace_scope=2, so denied regardless of isolation.
+    # With per-target isolation (the `isolate` option) the caller's UID != the
+    # target's, so the UID gate in ptrace_may_access fails for BOTH classes ->
+    # everything denied.
+    read_files = ["environ", "maps", "smaps", "auxv"]
+    read_rcs = {
+        f: machine.execute(
+            f"su testuser -s /bin/sh -c 'cat /proc/{host_pid}/{f} >/dev/null 2>&1'"
+        )[0]
+        for f in read_files
+    }
+    rc_mem = machine.execute(
+        f"su testuser -s /bin/sh -c 'dd if=/proc/{host_pid}/mem bs=1 count=1 >/dev/null 2>&1'"
+    )[0]
+    machine.log(
+        f"same-UID access to target PID {host_pid} (isolated={isolated}): "
+        f"READ={read_rcs} mem(ATTACH)={rc_mem}"
+    )
+
+    # ATTACH-mode must be denied in both cases (ptrace_scope=2; and, when
+    # isolated, additionally the UID gate).
+    assert rc_mem != 0, (
+        f"FAIL: same-UID can read /proc/{host_pid}/mem — the ATTACH-mode class "
+        f"must be denied by ptrace_scope=2"
+    )
+
+    if isolated:
+        for f in read_files:
+            assert read_rcs[f] != 0, (
+                f"FAIL: isolated target's /proc/{host_pid}/{f} is readable by a "
+                f"same-UID caller (rc={read_rcs[f]}); the UID boundary must deny "
+                f"every READ-mode file"
+            )
+        machine.log(
+            f"PASS: isolated target PID {host_pid} — READ and ATTACH classes "
+            f"both denied to the same-UID caller"
+        )
+    else:
+        # Honest baseline: the READ-mode class is READABLE. A non-zero rc here
+        # means the harness is masking the exposure story 2600 exists to close.
+        for f in read_files:
+            assert read_rcs[f] == 0, (
+                f"FAIL: unisolated dumpable target's /proc/{host_pid}/{f} should "
+                f"be readable by a same-UID caller (it is a READ-mode file; "
+                f"ptrace_scope does not gate it) but rc={read_rcs[f]} — the "
+                f"harness is masking the real exposure"
+            )
+        machine.log(
+            f"PASS: unisolated target PID {host_pid} — READ class readable "
+            f"(the baseline exposure story 2600 closes), ATTACH class denied by "
+            f"ptrace_scope=2"
+        )
+
+
 def local_pid_namespace_proc_isolation():
     # ============================================================
     # LOCAL INSTANCE: PID namespace and /proc isolation (DECISIVE TEST)
     # ============================================================
-    # This test answers: can a same-UID host-namespace process read
-    # /proc/<host_pid>/environ of the final target process?
-    #
-    # Design:
-    # 1. Launch a long-lived wrapped target (sleep 300) as testuser
-    # 2. As ROOT (test instrumentation only), find the host-visible PID
-    #    of the actual "sleep" process inside the namespace
-    # 3. As TESTUSER (same-UID attacker), attempt to read its /proc entries
-    # 4. Hard assertion on the result
+    # Asserts the HONEST baseline for the unisolated `local` instance: the
+    # exec'd target is dumpable, so the READ-mode files (environ/maps/smaps/
+    # auxv) ARE readable by a same-UID caller, while the ATTACH-mode vectors
+    # (mem/ptrace/process_vm_readv) are denied by ptrace_scope=2. story 2600's
+    # per-target isolation (the `isolate` option) is what flips the READ class to
+    # denied; the isolated fixtures exercise that branch (2630/2660).
 
     machine.succeed(
         "su testuser -s /bin/sh -c '"
@@ -746,101 +805,39 @@ def local_pid_namespace_proc_isolation():
     )
     time.sleep(2)
 
-    # Step 2: As root, find the host PID of the final "sleep" target.
-    # Root can always see all processes regardless of namespaces.
-    # Try multiple methods since process naming may vary.
+    # As root (test instrumentation only), find the host-visible PID of the
+    # final `sleep` target. Root sees every PID namespace, so if the target is
+    # not found the wrapper failed to start — a HARD failure, never a pass.
+    # (The old "invisible from parent namespace -> PASS" branch turned a broken
+    # wrapper into a green check; it is removed.)
     host_pid = machine.succeed(
         "pgrep -u testuser -x sleep || "
         "pgrep -u testuser -f 'sleep 300' || "
         "echo NONE"
     ).strip().split("\n")[0]
 
-    if host_pid == "NONE" or host_pid == "":
-        # Debug: show ALL testuser processes.
-        all_procs = machine.succeed(
+    if host_pid in ("NONE", ""):
+        diag = machine.succeed(
             "ps -u testuser -o pid,comm,args 2>/dev/null || echo 'no processes'"
         ).strip()
-        machine.log(f"DEBUG: all testuser processes: {all_procs}")
-        # Also check if the wrapper chain is still running.
-        wrapper_procs = machine.succeed(
-            "pgrep -u testuser -a || echo 'no pgrep results'"
-        ).strip()
-        machine.log(f"DEBUG: pgrep -u testuser -a: {wrapper_procs}")
+        assert False, (
+            "FAIL: root could not locate the test-sleep target. Root sees all PID "
+            "namespaces, so a missing target means the wrapper did not start — not "
+            f"isolation. testuser processes:\n{diag}"
+        )
 
-        # If root truly can't find the sleep process, this means either:
-        # a) The process died (wrapper failed), OR
-        # b) The PID namespace genuinely hides it from host /proc
-        # Either way, we need to know which. Check if the wrapper parent is alive.
-        if "underwrap-local" not in wrapper_procs and "sleep" not in wrapper_procs:
-            assert False, \
-                f"INCONCLUSIVE: no sleep-related processes found. " \
-                f"Wrapper may have failed. All testuser procs: {all_procs}"
-        else:
-            # Wrapper chain exists but sleep itself not found by pgrep.
-            # This could mean the target's comm doesn't match "sleep".
-            # Accept this as "root can see wrapper but not target".
-            machine.log("NOTE: root found wrapper processes but not the final target")
-            # Try to find any process in a child PID namespace.
-            ns_pids = machine.succeed(
-                "find /proc -maxdepth 2 -name 'NSpid' -exec grep -l . {} + 2>/dev/null | head -5 || echo NONE"
-            ).strip()
-            machine.log(f"DEBUG: processes with NSpid: {ns_pids}")
-            host_pid = "NONE"
+    machine.log(f"Found target sleep process at host PID {host_pid}")
+    cmdline = machine.succeed(
+        f"tr '\\0' ' ' < /proc/{host_pid}/cmdline 2>/dev/null || echo UNKNOWN"
+    ).strip()
+    assert "sleep" in cmdline, f"Host PID {host_pid} is not a sleep process: {cmdline}"
 
-    if host_pid != "NONE" and host_pid != "":
-        machine.log(f"Found target sleep process at host PID {host_pid}")
+    # The decisive, de-masked assertion: read each file and split by class.
+    _assert_target_proc_access(host_pid, isolated=False)
 
-        # Verify it's actually the right process (running sleep, owned by testuser).
-        cmdline = machine.succeed(f"cat /proc/{host_pid}/cmdline 2>/dev/null || echo UNKNOWN").strip()
-        machine.log(f"Target cmdline: {cmdline}")
-        assert "sleep" in cmdline, f"Host PID {host_pid} is not a sleep process: {cmdline}"
-
-        # Step 3: As testuser (same-UID), attempt to read the target's environ.
-        # This is THE decisive test. If this succeeds, the secret is exposed.
-        rc_environ = machine.execute(
-            f"su testuser -s /bin/sh -c 'cat /proc/{host_pid}/environ 2>/dev/null'"
-        )[0]
-
-        rc_mem = machine.execute(
-            f"su testuser -s /bin/sh -c 'dd if=/proc/{host_pid}/mem bs=1 count=1 2>/dev/null'"
-        )[0]
-
-        rc_maps = machine.execute(
-            f"su testuser -s /bin/sh -c 'cat /proc/{host_pid}/maps 2>/dev/null'"
-        )[0]
-
-        machine.log(f"Same-UID access to target PID {host_pid}: "
-                    f"environ={rc_environ} mem={rc_mem} maps={rc_maps}")
-
-        # Record what actually happened, then assert.
-        if rc_environ == 0:
-            # Same-UID CAN read the target's environ.
-            leaked_env = machine.succeed(
-                f"cat /proc/{host_pid}/environ 2>/dev/null | tr '\\0' '\\n' | head -5"
-            ).strip()
-            machine.log(f"LEAKED environ (first 5 vars): {leaked_env}")
-            full_env = machine.succeed(
-                f"cat /proc/{host_pid}/environ 2>/dev/null | tr '\\0' '\\n' || true"
-            )
-            if "dumpable_test_secret" in full_env:
-                assert False, \
-                    f"CRITICAL: same-UID host process CAN read target's environ " \
-                    f"AND the secret is visible! PID {host_pid}"
-            else:
-                assert False, \
-                    f"EXPOSED: same-UID host process CAN read target's environ " \
-                    f"(secret not found in first read, but access is open). PID {host_pid}"
-        else:
-            machine.log(f"PASS: same-UID host process CANNOT read target environ (PID {host_pid})")
-
-        assert rc_mem != 0, f"FAIL: same-UID can read /proc/{host_pid}/mem"
-        assert rc_maps != 0, f"FAIL: same-UID can read /proc/{host_pid}/maps"
-        machine.log("PASS: final target process is protected from same-UID /proc inspection")
-    else:
-        machine.log("INFO: target process not visible to root via pgrep — PID namespace hides it")
-        machine.log("PASS: target process invisible from parent namespace")
-
-    # Also verify the wrapper parent processes are still protected.
+    # The non-exec'ing wrapper supervisor stays non-dumpable (PR_SET_DUMPABLE=0
+    # and never re-execs), so its environ is denied to same-UID callers
+    # regardless of the target's exposure.
     wrapper_pids = machine.succeed(
         "pgrep -u testuser -f 'underwrap-local|underwrap' || echo none"
     ).strip()
@@ -850,10 +847,13 @@ def local_pid_namespace_proc_isolation():
             if not pid_str or pid_str == host_pid:
                 continue
             rc = machine.execute(
-                f"su testuser -s /bin/sh -c 'cat /proc/{pid_str}/environ 2>/dev/null'"
+                f"su testuser -s /bin/sh -c 'cat /proc/{pid_str}/environ >/dev/null 2>&1'"
             )[0]
-            assert rc != 0, f"FAIL: same-UID read /proc/{pid_str}/environ (wrapper process)"
-        machine.log("PASS: wrapper parent processes also protected")
+            assert rc != 0, (
+                f"FAIL: same-UID read /proc/{pid_str}/environ (a non-dumpable "
+                f"wrapper supervisor must stay protected)"
+            )
+        machine.log("PASS: wrapper supervisor processes also protected (dumpable=0)")
 
     machine.execute("pkill -u testuser -x sleep || true")
     time.sleep(0.5)
@@ -895,8 +895,14 @@ def local_ancestor_attack():
             "CRITICAL: ancestor process CAN read descendant target's secret via /proc/environ!"
 
     if "ENVIRON_READABLE_NO_SECRET" in results:
+        # On this UNPROTECTED baseline (test-sleep, unisolated env mode) the
+        # ancestor IS expected to be able to read the dumpable target's environ
+        # — it is a READ-mode file the ancestor passes as same-UID. So this is a
+        # warning, not a failure, here. The decisive "must NOT be readable"
+        # matrix runs against the PROTECTED (isolated) fixture in 2660,
+        # where a readable environ is a hard failure.
         machine.log("WARNING: ancestor can read /proc/environ but secret not found in output")
-        machine.log("This may indicate a partial leak or timing issue")
+        machine.log("(expected for the unprotected baseline; 2660 asserts the protected case)")
 
     if "PTRACE_ALLOWED" in results:
         machine.log("WARNING: ancestor can ptrace-attach to descendant target")

@@ -105,19 +105,34 @@ The guarantee below applies when all of the following hold:
 
 The "narrow helper" precondition is the single most load-bearing element
 of the env-mode guarantee, and deserves more weight than its place in
-the list suggests. Yama and the cleared host environment protect the
-*target's environ* from same-UID observers; **nothing in the design
-protects the secret from the target itself.** A helper that prints,
-logs, or persists the token defeats env-mode confidentiality regardless
-of how well the kernel isolates it. Use libsecret or files mode wherever
-the target supports it; reserve env mode for helpers you have audited
-against the three sub-bullets above.
+the list suggests. The cleared host environment stops the target from
+*inheriting* the caller's secrets, but note what does **not** protect the
+target's own `environ` from a same-UID observer: Yama `ptrace_scope` gates
+only ATTACH-mode access (`/proc/<pid>/mem`, ptrace), **not** the READ-mode
+file `/proc/<pid>/environ`, and a normal exec leaves the target dumpable —
+so for an unisolated wrapper a same-UID process can read
+the exec'd target's `environ` directly. This is exactly the gap story 2600
+closes with a dedicated target UID. And **nothing in the design protects
+the secret from the target itself.** A helper that prints, logs, or
+persists the token defeats env-mode confidentiality regardless of how well
+the kernel isolates it. Use libsecret or files mode wherever the target
+supports it; reserve env mode for helpers you have audited against the
+three sub-bullets above, on a wrapper with `isolate` enabled.
 
 ### Guarantee
 
-Under those preconditions, there is no known kernel-mediated path by
-which a non-root local attacker — including the caller itself — can
-read the raw token value on the target host.
+Under those preconditions — **and, for env mode, with `isolate`
+enabled on the wrapper** — there is no known kernel-mediated path by which
+a non-root local attacker can read the raw token value on the target host.
+
+Without `isolate`, the qualifier "including the caller itself"
+does **not** hold for env mode: `ptrace_scope = 2` stops the caller from
+attaching to or reading the target's memory (`mem`/ptrace), but the exec'd
+target is dumpable and the caller can read its `/proc/<pid>/environ` — a
+READ-mode file Yama never gates. files/libsecret mode (the raw value never
+enters the target's `environ`) and `isolate` (a UID boundary that
+fails the `ptrace_may_access` check for both access classes) each close that
+path; see "Protecting the final target process".
 
 ### Residual risk
 
@@ -135,8 +150,10 @@ require these tools for normal operation can lower
 `kernel.yama.ptrace_scope` explicitly; the module sets the value with
 `mkDefault`, so an overriding entry in
 `boot.kernel.sysctl` takes precedence. Lowering the value weakens the
-guarantee above to "non-ancestor same-UID processes cannot read the
-wrapper or target state; an ancestor process (the caller) can."
+**ATTACH-mode** protection only — at `scope=1` ancestors regain `mem`/ptrace
+on their descendants, at `scope=0` any same-UID process does. It does not
+change the **READ-mode** exposure (`environ`/`maps`/`auxv`), which
+`ptrace_scope` never governed; that is addressed by `isolate`.
 
 ---
 
@@ -543,33 +560,69 @@ So the final target process needs protection from a different combination of mec
 
 Three mechanisms together cover the same-UID inspection surface.
 
-#### 1. Yama LSM, pinned to `ptrace_scope=2`
+#### 1. Yama LSM, pinned to `ptrace_scope=2` (ATTACH vectors only)
 
 `services.underwrap.hardenTargetHost` defaults to `true`. The module
-sets `kernel.yama.ptrace_scope=2` on the target host. At that level,
-`ptrace_may_access()` rejects every tracer that does not hold
-`CAP_SYS_PTRACE`, which in turn blocks every same-UID access path
-that goes through that check:
+sets `kernel.yama.ptrace_scope=2` on the target host. Yama's
+`yama_ptrace_access_check()` acts **only on `PTRACE_MODE_ATTACH`**
+(`security/yama/yama_lsm.c`), so at `scope=2` it rejects every tracer
+without `CAP_SYS_PTRACE` for the **ATTACH-mode** access paths — and only
+those:
+
+- `/proc/<pid>/mem`
+- `ptrace(PTRACE_ATTACH)`, `strace`, `gdb`, `perf`
+- `process_vm_readv()`
+
+It does **not** gate the **READ-mode** files, which are opened
+`PTRACE_MODE_READ` and never reach Yama:
 
 - `/proc/<pid>/environ`
-- `/proc/<pid>/mem`
-- `/proc/<pid>/fd/*` content
-- `ptrace(PTRACE_ATTACH)`, `strace`, `gdb`, `perf`
+- `/proc/<pid>/maps`, `/proc/<pid>/smaps`
+- `/proc/<pid>/auxv`
 
-Under `scope=2` the check does not distinguish between an ancestor of
-the target and an unrelated same-UID process. Neither holds
-`CAP_SYS_PTRACE` and neither passes. This is the difference from the
-distribution default `scope=1`, where ancestors are exempted and a
-caller process can therefore read `/proc/<pid>/environ` on its own
-wrapper descendants.
+Those are gated solely by the target's *dumpable* flag, and a normal exec
+resets an exec'd target to dumpable (see "The awkward fact" above). Under
+`scope=2` the ATTACH check does not distinguish an ancestor of the target
+from an unrelated same-UID process — neither holds `CAP_SYS_PTRACE`, so
+neither can attach or read `mem`. That is the difference from the
+distribution default `scope=1`, where ancestors are exempted. But
+`ptrace_scope` of **any** value leaves the READ-mode files exposed for a
+dumpable target; an earlier version of this document wrongly listed
+`environ` (and `/proc/<pid>/fd/*`) as protected by `ptrace_scope`. Closing
+the READ-mode exposure requires the dedicated target UID
+(`isolate`, story 2600), which makes the caller's UID differ from
+the target's so the `ptrace_may_access` UID gate fails for **both** access
+classes before Yama or the dumpable flag is even consulted.
 
-Unprivileged use of `strace`, `gdb`, and `perf` against user
-processes is disabled by `scope=2`. Deployments that require these
-tools can lower the value explicitly; the sysctl is declared with
-`mkDefault`, so an overriding entry takes precedence. With
-`scope=1`, the protection narrows to non-ancestor same-UID processes;
-a caller process remains able to read its descendant target's
-environment.
+Unprivileged use of `strace`, `gdb`, and `perf` against user processes is
+disabled by `scope=2`. Deployments that require these tools can lower the
+value explicitly; the sysctl is declared with `mkDefault`, so an overriding
+entry takes precedence. Lowering it re-opens the ATTACH vectors but does
+not change the READ-mode exposure either way.
+
+#### What the `/proc` boundary hides — by access class
+
+It helps to classify `/proc/<pid>` entries by the check they pass through:
+
+- **READ-mode** (`environ`, `maps`, `smaps`, `auxv`, `pagemap`) and the
+  **ptrace-gated links** (`fd/`, `fdinfo/`, `cwd`, `root`, `exe` — all
+  `PTRACE_MODE_READ`, `fs/proc/base.c`) go through
+  `ptrace_may_access(PTRACE_MODE_READ)`. A same-UID caller **passes** this
+  for a *dumpable* target — so on an unisolated instance the caller can both
+  read the target's `environ`/`maps`/`auxv` and re-open the target's open
+  files/sockets through `/proc/<pid>/fd/*`. The dedicated target UID
+  (`isolate`) makes the caller's UID differ from the target's, so
+  this check fails: it hides the READ-mode files **and** stops the fd-link
+  re-open (a positive property of the UID boundary).
+- **ATTACH-mode** (`mem`, `ptrace`, `process_vm_readv`) goes through
+  `PTRACE_MODE_ATTACH` — the only class Yama `ptrace_scope` gates.
+- **World-readable** metadata (`cmdline`, `comm`, `stat`, `status`,
+  `mounts`, `mountinfo`, `cgroup`, `limits`) has no ptrace check at all and
+  stays visible to any UID, **including after `isolate`**. None of
+  it carries secret values: underwrap secrets live in env/files/libsecret and
+  never in argv (a standing invariant), and mount-path names are not secret.
+  Hiding even this would require host `hidepid`, which is out of underwrap's
+  scope.
 
 #### 2. Credential transitions in the wrapper chain
 
@@ -633,8 +686,11 @@ libsecret-only):
 What the PID namespace does **not** give you is confidentiality of the
 target's `/proc/<pid>/environ` against a same-UID observer *outside* the
 namespace — the namespace contributes containment, not env
-confidentiality. That confidentiality comes from Yama
-`ptrace_scope = 2` (see below), not from the namespace.
+confidentiality. Nor does Yama `ptrace_scope` provide it: that gates only
+ATTACH-mode access, while `environ` is a READ-mode file. Env
+confidentiality against a same-UID caller comes from the dedicated target
+UID (`isolate`, story 2600); for an unisolated wrapper, the exec'd
+target's `environ` is readable by same-UID processes.
 
 ### Important caveats
 
@@ -643,7 +699,13 @@ target's lifetime. Env-injection requires this. The guarantee stated
 in [Guarantee under the hardened posture](#guarantee-under-the-hardened-posture)
 therefore rests on three preconditions:
 
-1. **`ptrace_scope=2`.** Pinned by the module.
+1. **`isolate` on the wrapper.** The dedicated target UID is what
+   actually denies same-UID `environ`/`maps`/`auxv` reads (story 2600), with
+   **`ptrace_scope=2`** pinned by the module as defense-in-depth for the
+   ATTACH vectors (`mem`/ptrace). For a wrapper *without* `isolate`,
+   the env-mode secret in the target's `environ` is readable by same-UID
+   processes and `ptrace_scope` does not change that — use files/libsecret
+   mode there.
 2. **Encrypted or absent swap.** Asserted by the module when
    `hardenTargetHost = true` so that a token paged out of the
    target's memory cannot surface as plaintext on disk.

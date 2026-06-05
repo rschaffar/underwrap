@@ -38,6 +38,10 @@ userns is purely the inside-relabel layer.
 
 ## Design
 
+> **Placement:** this is the `[2650]` step in the **canonical ordering in 2630**
+> ("the SPINE") — immediately after `setresuid` to X and before
+> `set_no_new_privs`/`drop_caps`/exec.
+
 In `run_child`, after the idmapped mounts (2640) and the `setresuid`/`setresgid`
 to X (2630), and before `set_no_new_privs`/`drop_caps`/exec:
 
@@ -104,7 +108,7 @@ Interactions to get right (reference crun/bwrap ordering):
 
 ## Acceptance
 
-- VM fixture `test-iso-id` (isolated instance) prints `getuid()`, `geteuid()`,
+- VM fixture `test-iso-id` (isolated) prints `getuid()`, `geteuid()`,
   and the `stat` owner-name of a `$HOME` file. Assertions:
   - inside, `getuid() == geteuid() == 1099` (the caller `testuser`), **not** X;
   - the `$HOME` file displays as owned by `testuser`;

@@ -1,125 +1,108 @@
-# Task: Allocate a dedicated target uid/gid per instance and plumb it to `underwrap-ns`
+# Task: Per-target sandbox users + root-owned target→uid table + capset
 
 Parent: `2600_story_target_uid_isolation`
 Blocks: `2630_task_ns_setresuid_target_uid`
 
 ## Problem
 
-To make a wrapped target unreadable by same-UID callers, it must run under a
-**different real uid X** (story 2600). That uid must (a) exist with a passwd
-entry so `getpwuid(X)` doesn't return NULL, (b) be otherwise unused, and (c) be
-communicated to `underwrap-ns`, which currently has no idea such a uid exists.
-`underwrap-ns` also needs `CAP_SETUID` to switch to it (it has `cap_sys_admin`
-and `cap_setpcap` today — `nix/modules/underwrap.nix:583` — but not setuid).
+To make a wrapped target's secret unreadable by same-UID callers, each isolated
+target must run under its **own dedicated uid X** (story 2600). That uid must
+(a) exist with a passwd entry so `getpwuid(X)` works, (b) be otherwise unused, and
+(c) be communicated to `underwrap-ns` via a path the *unprivileged* stages cannot
+forge — because the uid is the one value whose attacker-control means privilege
+**escalation** (`X = 0` → a root-owned target). `underwrap-ns` also needs
+`CAP_SETUID`/`CAP_SETGID` to perform the switch (it has `cap_sys_admin` +
+`cap_setpcap` today — `nix/modules/underwrap.nix` — but not setuid/setgid).
 
-## Fix (this ticket = wiring only; the actual setresuid is 2630)
-
-### Module option + uid allocation (`nix/modules/underwrap.nix`)
-
-- Add a per-instance option `isolateTargetUid` (bool, `mkDefault false`). When
-  true, the instance runs its wrapped targets under a dedicated uid/gid.
-- Add per-instance `targetUid` / `targetGid` options. Default: auto-create a
-  system user/group `underwrap-target-<instance>` (NixOS `isSystemUser = true`,
-  matching group) and use its uid/gid. Allow an operator override.
-  - The dedicated user gets a passwd entry (kills the NULL-`getpwuid` failure
-    path), `/sbin/nologin` shell, no home, no extra groups.
-- Grant `underwrap-ns` **`cap_setuid` and `cap_setgid`** **only when at least one
-  instance sets `isolateTargetUid = true`** (keep the cap surface minimal
-  otherwise): `capabilities = "cap_sys_admin,cap_setpcap,cap_setuid,cap_setgid+ep"`.
-  Both are needed transiently and dropped before the target exec (2630):
-  `setresuid(X,X,X)` needs `CAP_SETUID` (`kernel/sys.c:745-747`), and
-  `setresgid(Xgid,…)` **plus** `setgroups([Xgid])` need `CAP_SETGID`
-  (`kernel/sys.c:846`, `kernel/groups.c:189`). `cap_setgid` is also required to
-  write the idmap userns gid_map in 2640. Document in `docs/security.md` (why
-  needed, that both are dropped pre-exec, **and the egid-anchored trust path
-  below** — add it as a design invariant alongside "the daemon, not the wrapper,
-  chooses the target binary": *the target uid/gid are chosen by trusted config
-  located via the kernel-pinned instance-group egid, and never travel on the wire
-  or come from the wrapper*).
-  - Verified the NixOS `security.wrappers` setcap-wrapper actually delivers these
-    to the effective set: it raises every file cap into the ambient set and only
-    special-cases/skips `cap_setpcap` (nixpkgs `wrapper.c:131-136`), so
-    `cap_setuid`/`cap_setgid` land effective exactly like the existing
-    `cap_sys_admin`. (This is also why `drop_caps` must clear the ambient set —
-    it already does — so the caps do not leak across the target exec.)
-
-### Sidecar plumbing — the target uid is **never relayed**, never on the wire
-
-The target uid/gid are a privileged decision, so they must come from an authority
-the *unprivileged* `underwrap-exec` cannot influence — **not** relayed through the
-`ExecBundle`. The authority is the kernel-pinned instance identity + trusted
-`/etc`:
-
-- **`underwrap-ns` runs with `egid` = the instance group** (`underwrap-exec` is
-  setgid `underwrap-<instance>` — `nix/modules/underwrap.nix:131` — and
-  `underwrap-ns` is a file-cap wrapper, not setgid, so the egid propagates across
-  the exec; `underwrap-exec` has no `cap_setgid` to forge a different one). This
-  is the *same* kernel identity the daemon already authenticates via
-  `SO_PEERPIDFD`.
-- The instance sidecar `/etc/underwrap/instances/<i>.yaml` is root-written (NixOS
-  module is the sole writer); `underwrap-exec` can read but not forge it.
-
-So:
-
-- **Sidecar (`nix/modules/underwrap.nix`)** — when `isolateTargetUid` is set,
-  write `target_uid` / `target_gid` into the per-instance sidecar, **plus the
-  instance group's gid** so the file is self-identifying.
-- **`underwrap-ns` reads the sidecar itself, keyed by its own `getegid()`** — it
-  selects the sidecar whose recorded instance gid `== getegid()` (e.g. scan
-  `/etc/underwrap/instances/*.yaml`, or resolve `getgrgid(getegid())` →
-  `underwrap-<i>`), and takes `target_uid`/`target_gid` from there. The parser
-  (`parse_instance_config_text`) is shared with/duplicated from `underwrap-exec`
-  (move it to `underwrap-protocol` if cleaner). This is the authoritative — and
-  only — source of the target id.
-- **Do NOT add `target_uid`/`target_gid` to `ExecBundle`.** The id never travels
-  on fd 3, env, or argv. `underwrap-exec` is unchanged for this feature (it does
-  not read, validate, or relay the target id — it doesn't need to). If
-  `parse_instance_config_text`'s struct gains the fields, `underwrap-exec` simply
-  ignores them.
-
-**Why anchored, not relayed (this is the design rule, mirroring "the daemon — not
-the wrapper — chooses the target binary").** If `underwrap-ns` trusted a relayed
-uid, a compromised/buggy `underwrap-exec` could hand it `target_uid=0`; with
-`cap_setuid`, `setresuid(0,0,0)` succeeds unconditionally (`kernel/sys.c:745-747`
-— no uid floor) and a uid-0 target *owns* root-owned files (owner-write on
-`/etc/passwd`) even after caps are dropped → full root escalation, defeating the
-whole reason the exec→ns split exists. By deriving the id from `getegid()` →
-trusted `/etc`, the only uid `underwrap-ns` will ever switch to is the one trusted
-config assigns to the kernel-authenticated instance — root / another service /
-another instance's uid are structurally impossible, not merely blocklisted. The
-actual `setresuid` + a defense-in-depth sanity bound (reject `0`/sub-floor) land
+This ticket is the **wiring** (users, table, caps). The actual `setresuid` lands
 in 2630.
 
-No behavior change in `underwrap-exec`; current instances and the `ExecBundle`
-round-trip tests are unaffected (no new wire field). Scope split: **this ticket**
-writes the sidecar fields (+ instance gid), grants the caps, and creates the
-dedicated user; the egid-keyed **read + `setresuid`** land in **2630** (until
-then `underwrap-ns` ignores the new sidecar fields and the fixture still execs as
-the caller).
+## Fix — all in `nix/modules/underwrap.nix`
+
+### Per-wrapper opt-in
+
+- Add a per-wrapper `isolate` option (bool, `mkDefault false`). When true, the
+  wrapper's target runs under a dedicated uid (the protection lands in 2630).
+  Off-by-default keeps every existing wrapper on the current path until it opts
+  in. (A convenience instance/global default may set it for many wrappers at once;
+  the unit of isolation is the **target binary path** — see below.)
+
+### Per-target sandbox users
+
+- For each **distinct target binary path** used by an isolated wrapper (across all
+  instances), create one dedicated system user/group, e.g.
+  `underwrap-target-<n>` (`isSystemUser = true`, matching group). The exact name
+  is implementation-defined; what matters is a **stable, unique uid per target
+  path**.
+  - Passwd entry (kills the NULL-`getpwuid` path), `/sbin/nologin`, no home.
+  - **Security property — the dedicated user must NOT be a member of any instance
+    group `underwrap-<instance>`** (nor any other privileged group). Otherwise the
+    uid-X target could satisfy the wrapper-socket egid gate and re-invoke wrappers
+    to pull further secrets. Assert in the eval/VM test that
+    `id underwrap-target-<n>` shows only its own primary group.
+  - Wrappers that share the same target binary path share its uid (same tool, same
+    trust domain — story 2600). Document this; finer granularity is `2670`.
+  - Allow an operator override of the uid/gid per target if needed.
+
+### The root-owned target→uid table (the authority)
+
+- Write a **root-owned** table (e.g. `/etc/underwrap/target-uids.json`, mode
+  `0644`, root:root — the content is non-secret: absolute paths + uid/gid numbers)
+  mapping each isolated target's **absolute binary path → `{ uid, gid }`**. The
+  NixOS module is the sole writer; `underwrap-ns` reads it (2630).
+  - This file is the **single source of truth** for which uid a target runs as.
+    It is read directly by the privileged stage and never travels on the wire,
+    never comes from the wrapper, the daemon response, or the `ExecBundle`. Because
+    it is root-owned, a compromised/buggy `underwrap-exec` cannot influence it.
+  - Document in `docs/security.md` as a design invariant alongside *"the daemon —
+    not the wrapper — chooses the target binary"*: **the target uid is chosen by
+    trusted root config keyed on the target binary path, read directly by the
+    privileged stage; it is never relayed.**
+  - `ExecBundle` carries **no** target uid (no new wire field). `underwrap-exec`
+    is unchanged for this feature.
+
+### Capabilities
+
+- Grant `underwrap-ns` **`cap_setuid` and `cap_setgid`** **only when at least one
+  wrapper sets `isolate = true`** (keep the cap surface minimal otherwise):
+  `capabilities = "cap_sys_admin,cap_setpcap,cap_setuid,cap_setgid+ep"`. Both are
+  needed transiently and dropped before the target exec (2630): `setresuid(X,…)`
+  needs `CAP_SETUID` (`kernel/sys.c`); `setresgid(Xgid,…)` + `setgroups` need
+  `CAP_SETGID` (`kernel/sys.c`, `kernel/groups.c`); `cap_setgid` is also required
+  for the idmap gid_map write in 2640.
+  - The NixOS `security.wrappers` setcap-wrapper raises file caps into the ambient
+    set and only skips `cap_setpcap` (nixpkgs `wrapper.c`), so `cap_setuid`/
+    `cap_setgid` land effective exactly like `cap_sys_admin`. (This is why
+    `drop_caps` must clear the ambient set — it already does — so the caps don't
+    leak across the target exec.)
+  - **No egid relocation, no privilege-drop surgery.** `underwrap-ns` runs as the
+    caller's uid with these file caps, which is sufficient to `setresuid` to X —
+    the authority for *which* uid comes from the root-owned table, not from any
+    credential `underwrap-ns` holds. (This is the simplification over the abandoned
+    egid-badge design — see 2600 "What we abandoned and why.")
 
 ## Acceptance
 
-- New per-instance options `isolateTargetUid`, `targetUid`, `targetGid` exist
-  and are documented; with `isolateTargetUid = true` and defaults, the eval
-  produces a system user `underwrap-target-<instance>` with a passwd entry.
+- New per-wrapper `isolate` option exists and is documented; with `isolate = true`
+  the eval produces a dedicated `underwrap-target-<n>` system user (passwd entry)
+  for that target path, a member of **only** its own group.
+- The root-owned `/etc/underwrap/target-uids.*` table is generated, lists the
+  isolated targets' absolute paths → uid/gid, and is `root:root` and not
+  world-writable.
 - `getcap /run/wrappers/bin/underwrap-ns` includes `cap_setuid` **and**
-  `cap_setgid` **iff** some instance enables isolation; otherwise unchanged.
-- `ExecBundle` does **not** carry `target_uid`/`target_gid` (no new wire field);
-  `underwrap-exec` is unchanged for this feature. The per-instance sidecar carries
-  `target_uid`/`target_gid` plus the instance group gid, and `underwrap-ns`
-  selects the sidecar matching its own `getegid()`. A `underwrap-protocol`
-  round-trip test confirms `ExecBundle` has no target-id field.
-- VM node (`nix/tests/node.nix`): add a new local fixture wrapper
-  `test-iso-env` (target = `${pkgs.coreutils}/bin/env`, `env = true`,
-  resource `test/iso-tok`) on an instance configuration with
-  `isolateTargetUid = true`, plus the matching grant + secret in `test.py`
-  (`DUMPABLE`-style marker, e.g. `ISO_SECRET=iso_secret_val`). At this ticket the
-  wrapper still execs as the caller (2630 flips it); assert only that it runs and
-  prints its env (no isolation assertions yet).
+  `cap_setgid` **iff** some wrapper enables isolation; otherwise unchanged.
+- `ExecBundle` carries **no** target-uid field (a `underwrap-protocol` round-trip
+  test confirms this); `underwrap-exec` is unchanged for this feature.
+- VM node (`nix/tests/node.nix`): add an isolated fixture wrapper `test-iso-env`
+  (target = `${pkgs.coreutils}/bin/env`, `env = true`, `isolate = true`, resource
+  `test/iso-tok`) plus a matching grant + secret in `test.py`
+  (`ISO_SECRET=iso_secret_val`). Keep an **unisolated** `test-sleep` for the
+  2610/2660 contrast. At this ticket the target still execs as the caller (2630
+  flips it); assert only that it runs and that the user/table/caps were produced.
 - `cargo test -p underwrap-protocol -p underwrap-exec`, `cargo fmt --check`,
   `nix build .#<vm test attr>` green.
 
 ## Out of scope
 
 - The `setresuid` itself and the `environ`-denied assertions (2630).
-- Per-invocation transient uids (future `2670`).
+- Per-wrapper / per-invocation uids finer than per-target-path (future `2670`).

@@ -7,6 +7,11 @@ Blocks: `2660_task_comprehensive_isolation_vm_test`
 (Inserted between 2640 and 2650 in processing order — number `2645` so it sorts
 correctly; it must land with the uid switch, before production flips.)
 
+> **Placement:** every step below (`setsid`, `close_range`, `keyctl`,
+> `CLONE_NEWIPC`/`UTS`) slots into the **canonical ordering in 2630** ("the SPINE")
+> at its `[2645]` tag — consult that for exact position relative to the id switch,
+> `drop_caps`, and exec. This ticket details *what* each step does and *why*.
+
 ## Why this is *required* by the epic, not optional
 
 Until 2630 the target runs as the caller's uid, so the caller and target are the
@@ -43,10 +48,14 @@ is virtual-console-only (`/dev/ttyN`, not `/dev/pts/N`) and on ≥6.7 also needs
 - **`setsid()` in the target child before exec** (sever the controlling
   terminal). Baseline, portable, uid-independent. This is exactly bubblewrap's
   CVE-2017-5226 fix.
-- **seccomp-deny `TIOCSTI` and `TIOCLINUX`** ioctls in the target's filter as
-  defense-in-depth (covers legacy kernels / any CAP_SYS_ADMIN edge; the cmd
-  number is in a register so it filters cleanly). The target already runs under
-  `no_new_privs`, so installing a seccomp filter right before exec is clean.
+- *(optional, deferrable)* **seccomp-deny `TIOCSTI`/`TIOCLINUX`** as
+  defense-in-depth (covers legacy kernels / any CAP_SYS_ADMIN edge). **`setsid()`
+  above is the load-bearing fix** (kernel-verified); seccomp is belt-and-braces.
+  The codebase has **no seccomp infrastructure today**, so this is a **dependency
+  decision** (CLAUDE.md "ask first") — `seccompiler` is pure-Rust (no C dep) if we
+  want it. Ship `setsid()` first; add seccomp only if we also want it for the
+  broader syscall-surface reduction the 2650 userns invites. Do not block this
+  ticket on it.
 - **Interactive targets:** `setsid()` leaves the target with *no* controlling
   tty, so programs that open `/dev/tty` for a prompt (sudo-style) get `ENXIO`.
   Most CLI tools (incl. `aws-sso`, `gh`) read/write fd 0/1/2 fine without a
@@ -82,9 +91,38 @@ work and 2640 add **new** privileged fds that must not leak:
 - The idmap-userns fd (2640) must be closed before the target exec specifically;
   it is needed only for `mount_setattr` in the cap stage.
 
+## Threat 3 — shared IPC namespace and session keyring (cheap, in-scope)
+
+The target also shares the caller's **IPC namespace** and **session keyring**
+(the session keyring is inherited across `fork`/`execve`, even for setuid
+binaries — `session-keyring(7)`). So a uid-X target can enumerate host SysV
+IPC / POSIX message queues (and read any world-permissive segment), and can
+read/inject keys in the caller's session keyring (cached Kerberos tickets,
+`request_key` creds) — a caller↔target leak the uid boundary does **not** close
+(keyring access is by *possession*, and the session keyring is possessed). Both
+are closed almost for free:
+
+- Add **`CLONE_NEWIPC`** (and, cosmetically, **`CLONE_NEWUTS`**) to the existing
+  `unshare(CLONE_NEWPID | CLONE_NEWNS)` in `prepare_namespace` — one flag each,
+  what bubblewrap/podman do by default. (Note `CLONE_NEWIPC` does **not** isolate
+  `/dev/shm` — that is the mount ns's job; a fresh `/dev/shm` tmpfs is a separate,
+  optional step.)
+- Call **`keyctl(KEYCTL_JOIN_SESSION_KEYRING, NULL)`** in the target child before
+  exec — gives it a fresh anonymous session keyring, detaching it from the
+  caller's. (The per-uid user keyring is already X's own, distinct from the
+  caller's, so only the *session* keyring needs detaching. If 2650's userns is
+  used, keys are isolated by the userns too — `user_namespaces(7)` — but the join
+  is the cheap fix for the common 2650-off case.)
+
+**Not in scope here (explicit):** the **network** namespace and the host X11 /
+session-D-Bus / audio sockets it exposes. Those are abstract-socket-scoped to the
+net ns, and closing them needs net isolation + userspace networking — see 2600's
+"untrusted target" non-goal. This ticket does *not* claim to sandbox a hostile
+target from the user's GUI/session; it closes the *cheap* boundary leaks.
+
 ## Acceptance
 
-- **TIOCSTI (VM test, `test.py`):** a fixture target on the isolated instance
+- **TIOCSTI (VM test, `test.py`):** an isolated fixture target
   attempts `ioctl(0, TIOCSTI, ...)` to inject a sentinel command; assert the
   ioctl returns `EPERM` (or `EIO`) **and** that the sentinel never executes in
   the launching shell (run the wrapper from a shell whose history/marker file is
@@ -95,6 +133,12 @@ work and 2640 add **new** privileged fds that must not leak:
   target** has no leaked helper fds.
 - `setsid()` confirmed (target is a session leader with no controlling tty:
   `/proc/<pid>/stat` session field == its own pid, tty_nr == 0).
+- **IPC + keyring (VM test):** the target's `/proc/<pid>/status` shows a fresh IPC
+  namespace (different `ipc` ns id from the caller via `/proc/<pid>/ns/ipc`), a
+  pre-created host SysV segment is **not** visible to the target (`ipcs`), and
+  `keyctl_join_session_keyring` gave it a session keyring distinct from the
+  caller's (`/proc/<pid>/ns/...` n/a for keyrings — assert via `keyctl show` that
+  the target's `_ses` keyring is empty/anonymous, not the caller's).
 - Existing interactive/non-interactive wrapper scenarios still run; libsecret +
   files-slot flows still pass.
 - `cargo test -p underwrap-ns`, `cargo fmt --check`, `nix build .#<vm test attr>`
