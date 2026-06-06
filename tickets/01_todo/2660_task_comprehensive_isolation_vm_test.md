@@ -45,14 +45,19 @@ the caller's uid):
 5. `ptrace(PTRACE_ATTACH)` → **EPERM** (reuse the `ancestor-attack.py` harness as
    both same-uid peer and ancestor).
 6. `process_vm_readv` of the target → **EPERM** (small C/python helper).
-7. **Contrast:** the same probes against unisolated `test-sleep` must show the
-   **READ-class files (`environ`, `maps`, `auxv`) readable** and the
-   **ATTACH-class (`mem`, `process_vm_readv`, ptrace) denied** (the latter only by
-   ptrace_scope=2). This is the honest baseline established in 2610 — assert it
-   exactly, so a regression that silently disables isolation is caught and so the
-   test never re-introduces the false "maps denied at baseline" claim. The test
-   must see the difference between isolated (all denied) and unisolated, not a
-   uniform "denied".
+7. **Contrast (this is what proves the epic does something):** run the same probes
+   against the **unisolated** baseline (per the corrected 2610 baseline — read it).
+   The *direct* `test-sleep` target is **already non-dumpable**, so its READ **and**
+   ATTACH classes are **all denied even when unisolated** (an incidental side-effect
+   of the wrapper chain, not the uid boundary). So the direct target alone cannot
+   prove anything. The meaningful difference is the **descendant**: an unisolated
+   env-mode target's spawned child has its `environ` **readable** (dumpable,
+   caller-uid) with the secret recoverable, whereas the **isolated** descendant's
+   `environ` is **denied** (uid boundary). Assert that descendant readable→denied
+   transition exactly — it is the core proof — and assert the direct target stays
+   denied in both cases, so a regression that silently disables isolation still
+   surfaces via the descendant probe. Do **not** re-introduce the false "direct
+   target READ-class readable at baseline" claim.
 
 Root-can-still-read (document the boundary, don't pretend otherwise):
 

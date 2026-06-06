@@ -63,6 +63,18 @@ in 2630.
 
 ### Capabilities
 
+**Decision to record here: `cap_setuid` vs. a per-target setuid-X launcher.**
+The uid switch needs an unrestricted `CAP_SETUID` (become *any* uid, incl. 0) on
+`underwrap-ns`, OR a per-target setuid-X launcher (bounded to X, no capability).
+The rationale for why `cap_setuid` is acceptable — `underwrap-ns` already holds
+`CAP_SYS_ADMIN` in the caller's process under a mandatory drop-before-exec
+discipline; the root-owned table + a floor check (not a cap limit) defend against
+`X=0` — and the bounded setuid-X alternative (with its `NO_NEW_PRIVS` ordering
+wrinkle) are written up in **2600 "Why `cap_setuid` is acceptable here (and the
+bounded alternative)"**. **Make the choice explicitly and record it here before
+implementing 2630.** The default below is `cap_setuid`; switch to setuid-X if we
+decide to shrink `underwrap-ns`'s privilege rather than grow it.
+
 - Grant `underwrap-ns` **`cap_setuid` and `cap_setgid`** **only when at least one
   wrapper sets `isolate = true`** (keep the cap surface minimal otherwise):
   `capabilities = "cap_sys_admin,cap_setpcap,cap_setuid,cap_setgid+ep"`. Both are

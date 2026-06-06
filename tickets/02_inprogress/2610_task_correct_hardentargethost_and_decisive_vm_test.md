@@ -1,114 +1,134 @@
-# Task: Correct the `hardenTargetHost` claim and stop the VM test masking the env exposure
+# Task: Correct the env-exposure claims and land an honest, non-masking VM baseline
 
 Parent: `2600_story_target_uid_isolation`
 
 ## Problem
 
-Two artifacts assert a protection that does not exist, and the test is
-structured so it can pass without ever checking the thing that's broken.
+Several artifacts assert protections that don't exist *and* describe an exposure
+that — as we actually build it — isn't where the docs say it is. The VM test is
+also structured so it can pass without checking the thing that matters. Three
+distinct errors:
 
-1. **`nix/modules/underwrap.nix:457-472` and `:614-621`** — the
-   `hardenTargetHost` option doc claims `kernel.yama.ptrace_scope=2` means "only
-   processes with CAP_SYS_PTRACE can ptrace or read `/proc/<pid>/{environ,mem}`".
-   That is true for `mem` (opened `PTRACE_MODE_ATTACH`) but **false for
-   `environ`** (opened `PTRACE_MODE_READ`; Yama only gates `PTRACE_MODE_ATTACH`,
-   `security/yama/yama_lsm.c:355`). The same is true for `maps`, `smaps` and
-   `auxv` — all `PTRACE_MODE_READ` (`fs/proc/task_mmu.c:352`, `fs/proc/base.c:1078`).
-   So `/proc/<pid>/{environ,maps,smaps,auxv}` of a same-UID dumpable target are
-   **all** readable regardless of `ptrace_scope`; only `mem`, ptrace-attach and
-   `process_vm_readv` are ATTACH-mode and thus gated.
+1. **`hardenTargetHost` doc + module comments claim `ptrace_scope=2` protects
+   `environ`.** It does not. Yama acts only on `PTRACE_MODE_ATTACH`
+   (`security/yama/yama_lsm.c`), so `ptrace_scope` gates `mem` /
+   `ptrace(ATTACH)` / `process_vm_readv` but **never** the `PTRACE_MODE_READ`
+   files `/proc/<pid>/{environ,maps,smaps,auxv}`.
 
-2. **`nix/tests/test.py:728` `local_pid_namespace_proc_isolation`** — the
-   "decisive" test asserts the caller cannot read the target's `environ`, but:
-   - it lumps the READ-mode files (`environ`/`maps`) together with `mem` and
-     even asserts `maps` **denied** (`test.py:837`) — which is a *false*
-     assertion that only "passes" because of the escape hatch below; and
-   - if root's `pgrep` doesn't locate the target it logs
-     `"PASS: target process invisible from parent namespace"` and **never reads
-     `environ`** — turning "couldn't find it" into a green check. (The rationale
-     in that branch — "PID namespace hides it" — is itself wrong: root sees all
-     PID namespaces; a not-found target means the wrapper failed to start.)
+2. **The tickets/docs claim an exec'd env-mode target's `environ` is same-UID
+   readable today.** **It is not** (VM-verified, kernel 6.18.20): the wrapper
+   cap + namespace chain makes the **direct target non-dumpable** — `environ` is
+   `root:root 0400`, and a same-UID caller is denied the whole READ class
+   (`environ`/`maps`/`smaps`/`auxv`) **and** the ATTACH class (`mem`). This is an
+   **incidental** side-effect (a secure-exec that forces `dumpable =
+   suid_dumpable`), not a designed control. The genuine, durable exposure is the
+   target's **descendant processes**: a clean child `execve` resets `dumpable` to
+   `1`, and the child still runs as the **caller's uid**, so a same-UID attacker
+   can read the child's `environ` (which inherited the secret). See 2600 "Why
+   this is needed" for the full, kernel-pinned rationale — this ticket exists to
+   get that rationale into the docs and the test.
 
-3. **`nix/tests/test.py:862` `local_ancestor_attack`** only *hard*-fails on
-   `SECRET_LEAKED` and merely *warns* on `ENVIRON_READABLE_NO_SECRET`, even though
-   the `test-sleep` fixture injects `DUMPABLE_SECRET` into the target env
-   (`:583`) — so a real leak can pass as a warning.
+3. **`nix/tests/test.py` `local_pid_namespace_proc_isolation` masks the reality.**
+   It (a) asserts the *wrong* baseline (target `environ` readable), (b) lumps the
+   READ-mode files with `mem`, and (c) if root's `pgrep` doesn't find the target
+   it logs `"PASS: target process invisible from parent namespace"` and never
+   reads anything — turning "couldn't find it" into a green check. Root sees all
+   PID namespaces; a missing target means the wrapper failed to start.
 
 ## Fix
 
-Make the docs accurate and the test honest. This ticket does **not** add the new
-protection — it establishes the correct, non-masking baseline so the later
-tickets have a test that actually moves from RED→GREEN.
+Make the docs accurate and the test honest. This ticket does **not** add the UID
+boundary (2620–2650) — it establishes the correct, non-masking baseline so the
+later tickets move the test from RED→GREEN for the *right* reason (the descendant
+case and the explicit-vs-incidental upgrade).
 
-### Docs / module
+### Docs / `docs/security.md` — carry the whole rationale (this is the point)
 
-- Rewrite the `hardenTargetHost` description: `ptrace_scope=2` protects only the
-  **ATTACH-mode** vectors — `/proc/<pid>/mem`, ptrace-attach, and
-  `process_vm_readv` — **not** the **READ-mode** files
-  `/proc/<pid>/{environ,maps,smaps,auxv}`, which are gated only by the target's
-  dumpable flag. State that protecting a target's *environ* (and `maps`/`auxv`)
-  from same-UID callers requires the UID boundary added in story 2600, and that
-  ptrace_scope is therefore **defense-in-depth**, not the load-bearing control
-  for environ.
-- Update `docs/security.md` (and any "strong non-caller-inspection claim"
-  wording) to match: today, only the non-exec'ing wrapper stages are protected
-  from same-UID `environ` reads, and that protection is the **dumpable flag**
-  (setgid-induced for `underwrap-exec`, explicit `PR_SET_DUMPABLE=0` for the
-  supervisor and secretsd) — not ptrace_scope. Exec targets are not protected
-  until 2630+.
-- While correcting the doc, also state the **world-readable `/proc` residue** that
-  *no* mechanism here hides (neither ptrace_scope, dumpable, nor the 2600 uid
-  boundary): `cmdline`, `comm`, `stat`, `status`, `mounts`, `mountinfo`, `cgroup`,
-  `limits` are world-readable (`cmdline` has no ptrace gate — `fs/proc/base.c:393`).
-  None carry secret values — secrets live in env/files/libsecret and never in
-  argv (existing invariant) — so this is a scope statement, not a hole. Conversely
-  note the *positive*: the `fd`/`fdinfo`/`cwd`/`root`/`exe` links **are**
-  ptrace-gated, so a same-UID caller cannot re-open a wrapper/target's open secret
-  file or socket. This keeps the security doc from over- or under-claiming.
+`docs/security.md` (and the `hardenTargetHost` option doc + the module's
+`ptrace_scope` comment) MUST state the corrected picture in full, so nobody —
+human or agent — re-derives the wrong version. Mirror 2600 "Why this is needed":
 
-### VM test harness
+- **`ptrace_scope=2` is defense-in-depth for the ATTACH vectors only**
+  (`mem`/ptrace/`process_vm_readv`); it never gates the READ-mode files
+  `/proc/<pid>/{environ,maps,smaps,auxv}`, which are gated solely by the target's
+  *dumpable* flag.
+- **The direct env-mode target is already non-dumpable today** through the
+  wrapper cap/namespace chain, so its `environ` is denied to same-UID callers —
+  but this is an **incidental, fragile, undocumented side-effect**, not a control
+  to rely on. State the kernel facts that pin it down:
+  - `execve` forces `dumpable = suid_dumpable` (same-UID-denied) iff the binary
+    is unreadable **or** `euid != ruid` **or** `egid != rgid`; otherwise it
+    resets `dumpable` to `1`. So `PR_SET_DUMPABLE(0)` does **not** survive a clean
+    exec.
+  - `ptrace_may_access` admits a reader only if its uid equals **all** of the
+    target's real/effective/saved uids (or it has `CAP_SYS_PTRACE`).
+- **The real exposure is the target's descendants:** a clean child exec resets to
+  dumpable and runs as the caller's uid → its `environ` (inherited secret) is
+  same-UID readable. Today only the *direct* non-exec'ing wrapper stages
+  (`underwrap-exec`, the `underwrap-ns` supervisor, secretsd) are *intentionally*
+  protected — by the **dumpable flag** (setgid-induced / explicit
+  `PR_SET_DUMPABLE=0`), not by `ptrace_scope`.
+- **Why the per-target UID is the fix and dumpable hardening is not:** `dumpable`
+  is per-exec and resets; a distinct real uid X covers the whole subtree and
+  never resets, and makes the protection explicit/robust. (Forward-reference the
+  2600 epic.)
+- **Why `cap_setuid` is acceptable** (mirror 2600's subsection): `underwrap-ns`
+  already holds `CAP_SYS_ADMIN` in the caller's process under a mandatory
+  drop-before-exec discipline; `CAP_SETUID` rides the same discipline; the
+  root-owned table + floor check (not a cap limit) defend against `X=0`; a
+  per-target setuid-X launcher is the bounded alternative.
+- **World-readable `/proc` residue that *no* mechanism here hides** (neither
+  `ptrace_scope`, dumpable, nor the 2600 uid boundary): `cmdline`, `comm`,
+  `stat`, `status`, `mounts`, `mountinfo`, `cgroup`, `limits`. None carry secret
+  values (secrets live in env/files/libsecret, never argv) — a scope statement,
+  not a hole. Conversely, the **positive**: `fd`/`fdinfo`/`cwd`/`root`/`exe`
+  links **are** ptrace-gated, so a same-UID caller cannot re-open a target's open
+  secret file or socket.
+
+### VM test harness — assert the TRUE baseline, by access class and by hop
 
 In `local_pid_namespace_proc_isolation`:
-- **Split the assertions by access class**, not by file: the READ-mode class
-  (`environ`, `maps`, `smaps`, `auxv`) is asserted separately from the
-  ATTACH-mode class (`mem`, ptrace-attach, `process_vm_readv`). Today the READ
-  class is **readable** and the ATTACH class is **denied** (by ptrace_scope=2).
-  Assert that *current* reality (see below).
-- **Remove the escape hatch**: if root cannot locate the target via `pgrep`,
-  that is `INCONCLUSIVE`/fail, not PASS. Root sees all PID namespaces; failure to
-  find the `sleep` target means the wrapper didn't start, which must fail loudly.
-  Delete the `"PASS: target process invisible from parent namespace"` branch.
-- Parameterize the assertion by whether the probed fixture's wrapper has
-  `isolate = true` (a `_assert_target_proc_access(host_pid, isolated=...)` helper),
-  so this one test asserts:
-  - unisolated wrapper (current default, e.g. `test-sleep`): READ class
-    (`environ`/`maps`/`smaps`/`auxv`) **readable**, ATTACH class
-    (`mem`/`process_vm_readv`/ptrace) **denied** — encode today's true behavior so
-    a regression in the ptrace_scope ATTACH protection is still caught. **Note:
-    this means the existing `assert rc_maps != 0` at `test.py:837` must flip to
-    asserting `maps` is *readable*** — it is, and the current "pass" is an
-    artifact of the escape hatch.
-  - isolated wrapper (`isolate = true`, after 2630): READ class **and** ATTACH
-    class **all denied** (the uid gate). (This branch is exercised by the fixtures
-    2630/2660 enable.)
 
-In `local_ancestor_attack`: hard-fail on `ENVIRON_READABLE_NO_SECRET` **when the
-fixture is expected to be protected**; keep the current behavior for the
-unprotected baseline. (The decisive secret-leak matrix moves to 2660.)
+- **Remove the escape hatch.** If root cannot locate the target, that is a HARD
+  failure (root sees all PID namespaces). Delete the `"invisible from parent
+  namespace" -> PASS` branch.
+- **Direct target, today (unisolated):** assert the whole READ class
+  (`environ`/`maps`/`smaps`/`auxv`) **AND** the ATTACH class (`mem`) are **denied**
+  to a same-UID caller — the target is non-dumpable. (This flips the previous,
+  wrong "READ class readable" assertion. Encode it via a
+  `_assert_target_proc_access(host_pid, isolated=...)` helper so the isolated
+  branch — added by 2630/2660 — asserts the same "all denied" with a *different*
+  cause, the uid boundary, including for descendants.)
+- **Descendant, today (unisolated) — the residual:** add a fixture whose target
+  spawns a **persistent child sub-process** (e.g. a script that backgrounds a
+  `sleep` and the test reads the child's `/proc/<child>/environ`). Assert the
+  child's `environ` **is readable** by a same-UID caller and **contains the
+  injected secret** — this is the exposure the epic closes, and it must be proven
+  to exist before 2630 closes it. (If empirically the descendant turns out
+  *also* protected, that is a new finding to record, not a silent skip.)
+- The non-exec'ing `underwrap-ns` supervisor must stay non-dumpable (it sets
+  `PR_SET_DUMPABLE=0` and never re-execs); keep asserting its `environ` is denied
+  to same-UID callers.
+
+In `local_ancestor_attack`: the ancestor is same-UID, so for the *unisolated*
+baseline it can read a **descendant's** dumpable `environ` — hard-fail only on
+`SECRET_LEAKED`; the decisive protected-case matrix moves to 2660.
 
 ## Acceptance
 
-- `hardenTargetHost` doc and `docs/security.md` no longer claim `ptrace_scope`
-  protects `environ` (or `maps`/`auxv`); they name the dumpable/UID-boundary
-  reality and describe ptrace_scope as defense-in-depth for the ATTACH vectors.
-- The VM test no longer has a code path where "target not found" yields PASS.
-- The VM test, on `main` with no other change, **passes** by asserting the honest
-  baseline (READ class `environ`/`maps`/`smaps`/`auxv` **readable**, ATTACH class
-  `mem`/`process_vm_readv`/ptrace **denied**) — proving the harness now actually
-  reads each file and distinguishes the two access classes.
-- `nix build .#<the VM test attr>` green; `cargo fmt --check`.
+- `docs/security.md`, the `hardenTargetHost` option doc, and the module
+  `ptrace_scope` comment no longer claim `ptrace_scope` protects `environ`, and
+  they carry the full corrected rationale above (direct target already non-dumpable
+  but incidentally/fragile; descendants are the real exposure; per-target uid is
+  the fix; `cap_setuid` rationale; world-readable residue + fd-link positive).
+- The VM test has no code path where "target not found" yields PASS.
+- On `main` with no other change the VM test **passes** by asserting the honest
+  baseline: **direct target — READ *and* ATTACH classes all denied** (non-dumpable);
+  **a descendant — `environ` readable and carrying the secret** (the residual).
+- `nix build .#checks.x86_64-linux.vm-test` green; `cargo fmt --check`.
 
 ## Out of scope
 
 - Adding the UID boundary (2620–2650) and the full proof matrix (2660). This
-  ticket only fixes documentation and de-masks the test.
+  ticket only corrects documentation/claims and de-masks the test onto the true
+  baseline.
