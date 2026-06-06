@@ -145,6 +145,26 @@ let
     ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
     exec ${pkgs.coreutils}/bin/ln -s /etc/passwd "$HOME/.config/underwrap-dir-a/evil"
   '';
+  # env-mode target whose DIRECT process is non-dumpable (incidental, via the
+  # wrapper cap/namespace chain) but which spawns a CLEAN child that resets to
+  # dumpable and inherits the secret env — the descendant exposure story 2600
+  # closes. The child uses a unique sleep duration so the test can locate it
+  # unambiguously, and `wait` keeps the direct target (this shell) alive so the
+  # background child is never exec-optimized into the shell's own process.
+  descendantScript = pkgs.writeShellScript "descendant-target" ''
+    ${pkgs.coreutils}/bin/sleep 4242 &
+    wait
+  '';
+  # Isolated (isolate = true) env-mode target. The shell itself is the direct
+  # target and runs as the dedicated sandbox uid X; it spawns a clean child sleep
+  # (also X), so a single invocation lets local_target_uid_isolation assert that
+  # BOTH the direct target and its descendant are denied to a same-UID (caller)
+  # reader, and that the target's real uid is the dedicated sandbox uid (never 0,
+  # never the caller). No $HOME access (works before idmapped home / 2640).
+  isoScript = pkgs.writeShellScript "iso-target" ''
+    ${pkgs.coreutils}/bin/sleep 5252 &
+    wait
+  '';
 in {
   imports = [ nixosModule ];
 
@@ -349,6 +369,23 @@ in {
             target = "${pkgs.coreutils}/bin/sleep";
             resource = "test/dumpable-tok";
             env = true;
+          };
+          # Spawns a clean child (sleep 4242) that inherits the secret env; used
+          # by local_pid_namespace_proc_isolation to prove the descendant
+          # exposure at baseline (direct target denied, descendant readable).
+          test-descendant = {
+            target = "${descendantScript}";
+            resource = "test/descendant-tok";
+            env = true;
+          };
+          # Per-target uid isolation (story 2600). Same shape as test-descendant
+          # but isolate = true: target + descendant run as a dedicated uid X, so
+          # a same-UID caller is denied the whole subtree's /proc secret surface.
+          test-iso = {
+            target = "${isoScript}";
+            resource = "test/iso-tok";
+            env = true;
+            isolate = true;
           };
           test-crash = {
             target = "${crashScript}";

@@ -12,6 +12,7 @@
 //! the end-of-run decision (`UsageSignal` / `Checkin` / drop+warn) on
 //! the channel.
 
+mod boundary;
 mod caps;
 mod directory_credential;
 mod env;
@@ -19,6 +20,7 @@ mod journal;
 mod libsecret;
 mod mounts;
 mod resource_channel;
+mod target_uid;
 mod writeback;
 
 use std::os::unix::process::CommandExt;
@@ -67,8 +69,26 @@ fn run() -> Result<(), String> {
     let target_identity =
         resolve_target_identity().map_err(|e| format!("resolving target identity: {e}"))?;
 
+    // Story 2600: does the root-owned table assign this target a dedicated uid?
+    // The uid is read directly from root state keyed on the target path — never
+    // from the wire (no escalation / confused-deputy path).
+    let isolation = target_uid::resolve_isolation(&target)
+        .map_err(|e| format!("resolving target isolation: {e}"))?;
+    // Files-slot / libsecret isolation needs the per-uid staging path (the
+    // child materializes/binds as X and the supervisor reads back under a single
+    // setfsuid window). That lands with the 2630 files-handling / 2640 work; until
+    // then, refuse rather than fall back to an unisolated target (which would put
+    // the secret back in a same-uid-readable env). Fail closed.
+    if isolation.is_some() && (has_files || libsecret_enabled) {
+        return Err(
+            "isolate is not yet supported together with files or libsecret slots; \
+             refusing to run rather than fall back to an unisolated target"
+                .to_string(),
+        );
+    }
+
     make_process_non_dumpable()?;
-    prepare_namespace(has_files)?;
+    prepare_namespace(has_files, isolation.is_some())?;
 
     let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
 
@@ -92,6 +112,7 @@ fn run() -> Result<(), String> {
             &resource_channel,
             libsecret_enabled,
             libsecret_state_path.as_deref(),
+            isolation,
         )
     } else {
         run_parent(
@@ -125,11 +146,19 @@ fn make_process_non_dumpable() -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_namespace(has_files: bool) -> Result<(), String> {
+fn prepare_namespace(has_files: bool, isolated: bool) -> Result<(), String> {
     // Always create a fresh PID + mount namespace. The mount namespace is
     // unconditional now so that every mode can remount /proc against the new
     // PID namespace (see remount_proc), limiting process discovery uniformly.
-    let ret = unsafe { libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS) };
+    // For an isolated target the boundary cuts both ways (story 2600/2645): a
+    // uid-X target sharing the caller's IPC namespace could read the caller's
+    // SysV IPC / POSIX mqueues, so add CLONE_NEWIPC (and CLONE_NEWUTS as cheap
+    // defense-in-depth). These need CAP_SYS_ADMIN, which we still hold here.
+    let mut flags = libc::CLONE_NEWPID | libc::CLONE_NEWNS;
+    if isolated {
+        flags |= libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
+    }
+    let ret = unsafe { libc::unshare(flags) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
         return Err(format!("unshare failed: {err}"));
@@ -185,6 +214,7 @@ fn fork_into_namespace() -> Result<libc::pid_t, String> {
     Ok(pid)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_child(
     target: String,
     target_args: Vec<String>,
@@ -193,6 +223,7 @@ fn run_child(
     resource_channel: &ResourceChannel,
     libsecret_enabled: bool,
     libsecret_state_path: Option<&Path>,
+    isolation: Option<target_uid::Isolation>,
 ) -> Result<(), String> {
     // Inside the new PID namespace: mount a fresh /proc in every mode so the
     // target only sees namespace-local PIDs.
@@ -202,10 +233,43 @@ fn run_child(
         setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
     }
 
+    // Story 2600: switch the target (and thus its whole subtree) to its dedicated
+    // uid X BEFORE dropping caps — the switch needs CAP_SETUID/CAP_SETGID, which
+    // are retained across it (no uid 0 on either side) and cleared by drop_caps
+    // below. A failed switch aborts the run (switch_to bails): never exec a target
+    // that did not drop to X.
+    if let Some(iso) = isolation {
+        target_uid::switch_to(iso)
+            .map_err(|e| format!("switching to dedicated target uid: {e}"))?;
+    }
+
     set_no_new_privs().map_err(|e| format!("setting no_new_privs: {e}"))?;
+
+    if isolation.is_some() {
+        // Boundary hardening (2645): the uid-X target must not reach the caller's
+        // session keyring.
+        boundary::join_session_keyring().map_err(|e| format!("joining session keyring: {e}"))?;
+    }
+
     drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
+
+    if isolation.is_some() {
+        // Verify the drop is real before exec (Setuid Demystified): ids fully
+        // switched, caps gone, regain impossible. Bail otherwise.
+        target_uid::verify_switched().map_err(|e| format!("verifying target uid switch: {e}"))?;
+    }
+
     disable_core_dumps()?;
+    // Belt-and-suspenders: the upcoming exec resets dumpable to SUID_DUMP_USER
+    // for an isolated (real==eff==saved==X) target — the uid gate (caller != X),
+    // not dumpable, is the real protection. This only covers the brief pre-exec
+    // window.
     make_process_non_dumpable()?;
+
+    if isolation.is_some() {
+        // Sever the controlling tty (TIOCSTI guard) just before building argv/env.
+        boundary::sever_controlling_tty().map_err(|e| format!("severing controlling tty: {e}"))?;
+    }
 
     let mut cmd = std::process::Command::new(&target);
     cmd.args(&target_args);
@@ -246,6 +310,13 @@ fn run_child(
     }
 
     resource_channel::close_channel_fd_for_exec(resource_channel);
+
+    if isolation.is_some() {
+        // Last fd touch before exec: sweep every inherited fd >= 3 to CLOEXEC so
+        // no privileged fd leaks across the boundary into the uid-X target.
+        boundary::close_inherited_fds_for_exec()
+            .map_err(|e| format!("closing inherited fds before exec: {e}"))?;
+    }
 
     let err = cmd.exec();
     Err(format!("exec failed: {err}"))

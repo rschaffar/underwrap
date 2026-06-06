@@ -1,0 +1,204 @@
+//! Per-target uid isolation (story 2600).
+//!
+//! Reads the root-owned target->uid authority table and resolves the dedicated
+//! sandbox identity for the target `underwrap-ns` is about to exec, then
+//! performs (and verifies) the switch to it.
+//!
+//! The uid is taken **only** from the root-owned table — never from the
+//! `ExecBundle`, env, argv, or the daemon response — which removes the
+//! escalation / confused-deputy vector structurally: the only uids reachable
+//! are the sandbox uids trusted root config assigned.
+
+use std::ffi::CString;
+
+/// Root-owned, non-secret authority table written by the NixOS module. One row
+/// per isolated target: `"<abs target path>\t<user>\t<group>"`. Read directly
+/// here, keyed on the daemon-chosen target path.
+const TARGET_UID_TABLE: &str = "/etc/underwrap/target-uids";
+
+/// Lowest uid we will ever switch a target to. `0` is root (escalation). The
+/// dedicated sandbox users are auto-allocated system users, so excluding `0` is
+/// the load-bearing check; the floor is defense-in-depth.
+const MIN_TARGET_UID: libc::uid_t = 1;
+
+/// The dedicated sandbox identity a target is isolated to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Isolation {
+    pub uid: libc::uid_t,
+    pub gid: libc::gid_t,
+}
+
+/// Resolve the dedicated sandbox identity for `target_path` from the root-owned
+/// table.
+///
+/// - table file absent → `Ok(None)` (no isolation configured on this host)
+/// - path not in table → `Ok(None)` (unisolated target; unchanged behaviour)
+/// - path in table → `Ok(Some(Isolation))` after resolving names → uid/gid and
+///   validating (reject `0` / sub-floor).
+///
+/// A path that **is** in the table but fails to resolve or validate is a hard
+/// error: we must NEVER run a target that should be isolated as the caller (it
+/// would expose the secret in a same-uid-readable env). Fail closed.
+pub(crate) fn resolve_isolation(target_path: &str) -> Result<Option<Isolation>, String> {
+    resolve_isolation_from(TARGET_UID_TABLE, target_path)
+}
+
+fn resolve_isolation_from(
+    table_path: &str,
+    target_path: &str,
+) -> Result<Option<Isolation>, String> {
+    let contents = match std::fs::read_to_string(table_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("reading {table_path}: {e}")),
+    };
+
+    for (idx, line) in contents.lines().enumerate() {
+        let lineno = idx + 1;
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let path = parts.next().unwrap_or("");
+        let user = parts.next();
+        let group = parts.next();
+        if parts.next().is_some() {
+            return Err(format!(
+                "{table_path}:{lineno}: malformed row (more than 3 tab-separated fields)"
+            ));
+        }
+        if path != target_path {
+            continue;
+        }
+        let (user, group) = match (user, group) {
+            (Some(u), Some(g)) if !u.is_empty() && !g.is_empty() => (u, g),
+            _ => {
+                return Err(format!(
+                    "{table_path}:{lineno}: row for {target_path:?} is missing user/group"
+                ));
+            }
+        };
+        let uid = resolve_uid(user)?;
+        let gid = resolve_gid(group)?;
+        if uid < MIN_TARGET_UID {
+            return Err(format!(
+                "refusing to isolate {target_path:?} to uid {uid} (user {user:?}): below the \
+                 minimum target uid {MIN_TARGET_UID} — never run a target as root or a \
+                 privileged id"
+            ));
+        }
+        if gid == 0 {
+            return Err(format!(
+                "refusing to isolate {target_path:?} to gid 0 (group {group:?})"
+            ));
+        }
+        return Ok(Some(Isolation { uid, gid }));
+    }
+    Ok(None)
+}
+
+fn resolve_uid(name: &str) -> Result<libc::uid_t, String> {
+    let c = CString::new(name).map_err(|_| format!("user name {name:?} has an interior NUL"))?;
+    // SAFETY: `c` is a valid NUL-terminated string; getpwnam returns a pointer
+    // into static storage or NULL.
+    let pw = unsafe { libc::getpwnam(c.as_ptr()) };
+    if pw.is_null() {
+        return Err(format!("getpwnam({name:?}) returned null (no such user)"));
+    }
+    Ok(unsafe { (*pw).pw_uid })
+}
+
+fn resolve_gid(name: &str) -> Result<libc::gid_t, String> {
+    let c = CString::new(name).map_err(|_| format!("group name {name:?} has an interior NUL"))?;
+    // SAFETY: as above for getgrnam.
+    let gr = unsafe { libc::getgrnam(c.as_ptr()) };
+    if gr.is_null() {
+        return Err(format!("getgrnam({name:?}) returned null (no such group)"));
+    }
+    Ok(unsafe { (*gr).gr_gid })
+}
+
+/// Switch the calling process to the dedicated sandbox identity `iso`.
+///
+/// gid before uid (so we still hold privilege to set the group ids), restricting
+/// supplementary groups to exactly the target's primary gid. Uses
+/// `setresgid`/`setresuid` (all three ids), checks every return, and bails on
+/// any failure — NEVER exec a target that failed to drop to X.
+///
+/// Capabilities are intentionally RETAINED across this switch: with no uid `0`
+/// on either side the kernel's setuid cap-fixup does not fire
+/// (`security/commoncap.c`), so the child keeps `CAP_SYS_ADMIN` for any
+/// remaining mount work. The caller MUST `drop_caps()` afterwards and
+/// [`verify_switched`] before exec.
+pub(crate) fn switch_to(iso: Isolation) -> Result<(), String> {
+    let Isolation { uid, gid } = iso;
+    let groups = [gid];
+    if unsafe { libc::setgroups(1, groups.as_ptr()) } != 0 {
+        return Err(format!(
+            "setgroups([{gid}]) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if unsafe { libc::setresgid(gid, gid, gid) } != 0 {
+        return Err(format!(
+            "setresgid({gid},{gid},{gid}) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if unsafe { libc::setresuid(uid, uid, uid) } != 0 {
+        return Err(format!(
+            "setresuid({uid},{uid},{uid}) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+/// Verify the identity switch + capability drop are real before exec (the
+/// "Setuid Demystified" check). Asserts the **userns-invariant** properties so
+/// it stays correct if a user namespace is added later (2650): all three uids
+/// equal and non-zero, all three gids equal, and a regain attempt fails. The
+/// literal "real uid == X, never 0/caller" check is the VM test's job (root
+/// reads `/proc/<pid>/status` from outside).
+pub(crate) fn verify_switched() -> Result<(), String> {
+    let (mut r, mut e, mut s): (libc::uid_t, libc::uid_t, libc::uid_t) = (0, 0, 0);
+    if unsafe { libc::getresuid(&mut r, &mut e, &mut s) } != 0 {
+        return Err(format!(
+            "getresuid failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if !(r == e && e == s) {
+        return Err(format!(
+            "uid not fully switched: real={r} eff={e} saved={s}"
+        ));
+    }
+    if r == 0 {
+        return Err("post-switch uid is 0 (root) — refusing to exec".to_string());
+    }
+    let (mut gr, mut ge, mut gs): (libc::gid_t, libc::gid_t, libc::gid_t) = (0, 0, 0);
+    if unsafe { libc::getresgid(&mut gr, &mut ge, &mut gs) } != 0 {
+        return Err(format!(
+            "getresgid failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if !(gr == ge && ge == gs) {
+        return Err(format!(
+            "gid not fully switched: real={gr} eff={ge} saved={gs}"
+        ));
+    }
+    // With caps cleared, a regain attempt MUST fail: setresuid(0,0,0) from a
+    // non-root uid without CAP_SETUID returns EPERM.
+    if unsafe { libc::setresuid(0, 0, 0) } == 0 {
+        return Err(
+            "SECURITY: setresuid(0,0,0) succeeded after the drop — capabilities were not \
+             fully cleared; refusing to exec"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

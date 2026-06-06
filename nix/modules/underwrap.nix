@@ -332,6 +332,23 @@ let
         default = false;
         description = "Expose this resource's libsecret slot through a private Secret Service.";
       };
+      isolate = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Run this wrapper's target under a dedicated, otherwise-unused system
+          UID (a per-target sandbox uid X, distinct from the caller), so a
+          same-UID caller cannot read the target's — or its descendants' —
+          <literal>/proc/&lt;pid&gt;/{environ,maps,auxv,mem}</literal> (story
+          2600). Isolation is keyed on the absolute <option>target</option>
+          path: every wrapper that runs the same target binary shares its uid
+          (same tool, same trust domain), and enabling <literal>isolate</literal>
+          on any one of them isolates that target for all. The authority for
+          which uid is the root-owned <filename>/etc/underwrap/target-uids.json</filename>
+          table, read directly by <literal>underwrap-ns</literal>; the uid is
+          never relayed over the wire. Off by default.
+        '';
+      };
       envPassthrough = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [];
@@ -445,6 +462,54 @@ let
       || (dev.encrypted.enable or false)
     ) config.swapDevices;
 
+  # --- Per-target uid isolation (story 2600) ---
+  # Distinct absolute target binary paths used by a wrapper with
+  # `isolate = true`, across every instance. Each gets its own dedicated system
+  # user/group (a sandbox uid X, distinct from any caller); underwrap-ns switches
+  # the target (and thus its whole subtree) to X. Wrappers sharing a target
+  # binary share its uid (same tool = same trust domain); finer granularity is
+  # future work (2670).
+  isolatedTargetPaths = lib.unique (lib.concatMap (inst:
+    map (w: w.target) (lib.filter (w: w.isolate) (lib.attrValues inst.wrappers))
+  ) (lib.attrValues cfg.instances));
+
+  anyTargetIsolated = isolatedTargetPaths != [];
+
+  # Stable, collision-free sandbox user name per target path: a hash of the
+  # absolute path (NOT a sequential index, so adding/removing isolated targets
+  # never reshuffles which uid a path maps to — NixOS persists uids by name).
+  # "underwrap-target-" (17) + 12 hex = 29 chars, under the 32-char limit.
+  targetUserName = path:
+    "underwrap-target-" + builtins.substring 0 12 (builtins.hashString "sha256" path);
+
+  # Per-target sandbox users/groups. isSystemUser => /sbin/nologin, no home. Each
+  # is a member of ONLY its own primary group — NEVER an instance group — so a
+  # uid-X target cannot satisfy a wrapper-socket egid gate and pull further
+  # secrets.
+  targetUsers = lib.listToAttrs (map (path:
+    let n = targetUserName path; in lib.nameValuePair n {
+      isSystemUser = true;
+      group = n;
+      description = "underwrap target sandbox uid for ${path}";
+    }) isolatedTargetPaths);
+  targetGroups = lib.listToAttrs (map (path:
+    lib.nameValuePair (targetUserName path) {}) isolatedTargetPaths);
+
+  # Root-owned authority table: one row per isolated target,
+  # "<abs target path>\t<user>\t<group>". underwrap-ns reads this directly (keyed
+  # on the path it is about to exec) and resolves the names to a numeric uid/gid
+  # via getpwnam/getgrnam at runtime, then validates (reject 0). Line-based TSV
+  # (not JSON) so the privileged, cap_setuid-holding parser needs no JSON library
+  # — minimal attack surface. Storing NAMES (not numbers) keeps the table fully
+  # declarative and lets NixOS auto-allocate + persist the uids stably by name;
+  # root-ownership is the trust anchor — a compromised unprivileged stage cannot
+  # influence it, so there is no uid-0 injection and no confused deputy. Absolute
+  # / nix-store paths contain no tab, so a split on '\t' is unambiguous. See
+  # docs/security.md and story 2600 "Authority for the uid".
+  targetUidTableText = lib.concatMapStrings (path:
+    "${path}\t${targetUserName path}\t${targetUserName path}\n"
+  ) isolatedTargetPaths;
+
 in {
   options.services.underwrap = {
     enable = lib.mkEnableOption "underwrap secret broker";
@@ -470,11 +535,15 @@ in {
           `PTRACE_MODE_ATTACH`, never on `PTRACE_MODE_READ`, so those files are
           gated solely by the target's *dumpable* flag. `ptrace_scope = 2` is
           therefore **defense-in-depth for the ATTACH vectors**, not the control
-          that protects a target's `environ`. A normal `execve` resets the
-          target to dumpable, so without a UID boundary an exec'd target's
-          `environ`/`maps`/`auxv` are readable by any same-UID process
-          regardless of `ptrace_scope`. Protecting those requires the dedicated
-          per-target UID added by the per-wrapper `isolate` option (story 2600).
+          that protects a target's `environ`. A clean `execve` resets a target
+          to dumpable, so any *dumpable* process in a target's subtree — in
+          particular the descendants an env-mode target spawns, which run at the
+          caller's uid — has its `environ`/`maps`/`auxv` readable by any same-UID
+          process regardless of `ptrace_scope`. (The *direct* target is
+          incidentally non-dumpable through the wrapper chain, but that is a
+          fragile side-effect, not a control.) Robustly protecting the whole
+          subtree requires the dedicated per-target UID added by the per-wrapper
+          `isolate` option (story 2600).
         - The build asserts that every configured swap device is encrypted
           (random-key or LUKS), so a token paged out of the target's memory
           cannot later surface as plaintext on disk. If you deliberately run
@@ -573,23 +642,37 @@ in {
         }
       ];
 
-    # Merge all instance users, plus per-user wrapper bin packages.
+    # Merge all instance users, plus per-user wrapper bin packages, plus the
+    # per-target sandbox users (story 2600).
     users.users = lib.mkMerge (
       (lib.mapAttrsToList (_: i: i.users) instances)
       ++ (lib.mapAttrsToList (user: entries:
         if entries == [] then {}
         else { ${user}.packages = [ (mkUserBin user entries) ]; }
       ) userBinEntries)
+      ++ [ targetUsers ]
     );
-    users.groups = lib.mkMerge (lib.mapAttrsToList (_: i: i.groups) instances);
+    users.groups = lib.mkMerge (
+      (lib.mapAttrsToList (_: i: i.groups) instances)
+      ++ [ targetGroups ]
+    );
 
-    # Shared underwrap-ns (one binary, all instances use it).
+    # Shared underwrap-ns (one binary, all instances use it). It gains
+    # cap_setuid/cap_setgid ONLY when at least one wrapper enables `isolate`,
+    # so the cap surface stays minimal otherwise. Both are needed transiently
+    # to switch the target to its dedicated uid (cap_setuid: setresuid;
+    # cap_setgid: setresgid+setgroups, and the idmap gid_map write in 2640) and
+    # are dropped before the target exec. The authority for *which* uid comes
+    # from the root-owned table, never from a credential underwrap-ns holds.
     security.wrappers = lib.mkMerge ([{
       underwrap-ns = {
         source = "${cfg.package}/bin/underwrap-ns";
         owner = "root";
         group = "root";
-        capabilities = "cap_sys_admin,cap_setpcap+ep";
+        capabilities =
+          if anyTargetIsolated
+          then "cap_sys_admin,cap_setpcap,cap_setuid,cap_setgid+ep"
+          else "cap_sys_admin,cap_setpcap+ep";
       };
     }] ++ lib.mapAttrsToList (_: i: i.securityWrappers) instances);
 
@@ -606,8 +689,21 @@ in {
       '')
     ];
 
-    # Sidecar configs.
-    environment.etc = lib.mkMerge (lib.mapAttrsToList (_: i: i.etcFiles) instances);
+    # Sidecar configs, plus the root-owned target->uid authority table (story
+    # 2600). The table is non-secret (absolute paths + system user/group names),
+    # root:root 0644, and is the SOLE source of truth for which uid a target
+    # runs as — read directly by underwrap-ns, never relayed over the wire.
+    environment.etc = lib.mkMerge (
+      (lib.mapAttrsToList (_: i: i.etcFiles) instances)
+      ++ lib.optional anyTargetIsolated {
+        "underwrap/target-uids" = {
+          text = targetUidTableText;
+          mode = "0644";
+          user = "root";
+          group = "root";
+        };
+      }
+    );
 
     # Tmpfiles.
     systemd.tmpfiles.rules = lib.mkMerge (lib.mapAttrsToList (_: i: i.tmpfiles) instances);
@@ -624,12 +720,14 @@ in {
     # only the ATTACH-mode vectors (/proc/<pid>/mem, ptrace, process_vm_readv);
     # Yama never consults PTRACE_MODE_READ, so it does NOT gate the READ-mode
     # files /proc/<pid>/{environ,maps,smaps,auxv} — those are gated by the
-    # target's dumpable flag, and a normal exec resets the target to dumpable.
-    # So this is defense-in-depth for the ATTACH vectors; environ confidentiality
-    # for an exec'd target comes from the dedicated per-target UID (the per-wrapper
-    # `isolate` option), not from here. The pin stays: it is still the ATTACH-mode
-    # protection (mem/ptrace) for UNISOLATED targets, and defense-in-depth for
-    # isolated ones. mkDefault so operators who genuinely need scope=1 for
+    # target's dumpable flag, and a clean exec resets a target to dumpable (so
+    # the descendants an env-mode target spawns are dumpable and caller-uid; the
+    # direct target is only incidentally non-dumpable via the chain). So this is
+    # defense-in-depth for the ATTACH vectors; robust environ confidentiality
+    # across the target subtree comes from the dedicated per-target UID (the
+    # per-wrapper `isolate` option), not from here. The pin stays: it is still
+    # the ATTACH-mode protection (mem/ptrace) for UNISOLATED targets, and
+    # defense-in-depth for isolated ones. mkDefault so operators who genuinely need scope=1 for
     # debugging workflows can lower it explicitly.
     boot.kernel.sysctl = lib.mkIf cfg.hardenTargetHost {
       "kernel.yama.ptrace_scope" = lib.mkDefault 2;
