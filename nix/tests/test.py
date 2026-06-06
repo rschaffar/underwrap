@@ -294,6 +294,7 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-sleep": "test/dumpable-tok",
     "test-descendant": "test/descendant-tok",
     "test-iso": "test/iso-tok",
+    "test-iso-home": "test/iso-home-tok",
     "test-crash": "test/crash-tok",
     "test-libsecret": "test/libsecret-store",
     "test-caps": "test/caps-tok",
@@ -573,6 +574,7 @@ def local_store_and_basic_ops():
         ("test-sleep", "test/dumpable-tok"),
         ("test-descendant", "test/descendant-tok"),
         ("test-iso", "test/iso-tok"),
+        ("test-iso-home", "test/iso-home-tok"),
         ("test-crash", "test/crash-tok"),
         ("test-libsecret", "test/libsecret-store"),
         ("test-caps", "test/caps-tok"),
@@ -587,6 +589,7 @@ def local_store_and_basic_ops():
     admin_write_secret(ADMIN_LOCAL, "local", "test-sleep", "test/dumpable-tok/env/DUMPABLE_SECRET", "dumpable_test_secret")
     admin_write_secret(ADMIN_LOCAL, "local", "test-descendant", "test/descendant-tok/env/DESC_SECRET", "desc_secret_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-iso", "test/iso-tok/env/ISO_SECRET", "iso_secret_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-iso-home", "test/iso-home-tok/env/HOME_ISO_SECRET", "home_iso_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-crash", "test/crash-tok/env/CRASH_SECRET", "crash_secret_value")
     admin_write_secret(ADMIN_LOCAL, "local", "test-caps", "test/caps-tok/env/CAPS_SECRET", "caps_test_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-ns-pids-env", "test/ns-pids-env-store/env/NSPIDS_SECRET", "nspids_env_val")
@@ -997,6 +1000,49 @@ def local_target_uid_isolation():
     machine.execute("pkill -f 'sleep 5252' || true")
     machine.execute("pkill -f iso-target || true")
     time.sleep(0.5)
+
+
+def local_target_uid_idmapped_home():
+    # ============================================================
+    # LOCAL INSTANCE: idmapped directory for an isolated target (story 2640)
+    # ============================================================
+    # An isolated target runs as the dedicated uid X but, through an idmapped
+    # `~/iso-data` mount that maps ONLY caller<->X, it reads a caller-owned file
+    # as owner and its writeback lands on disk owned by the CALLER (not X).
+    # Back iso-data with a tmpfs (owned by the caller): tmpfs fully supports
+    # idmapped mounts and lives in init_user_ns, so the test is deterministic
+    # regardless of what filesystem the VM's /home happens to be on. Production
+    # homes (ext4/btrfs/xfs) support idmapped mounts too; this only pins the test
+    # environment (see story 2660's "deterministic /home backing" note).
+    machine.succeed("mkdir -p /home/testuser/iso-data")
+    machine.execute("umount /home/testuser/iso-data 2>/dev/null || true")
+    machine.succeed(
+        "mount -t tmpfs -o mode=0755,uid=1099,gid=100 tmpfs /home/testuser/iso-data"
+    )
+    machine.succeed(
+        "su testuser -s /bin/sh -c '"
+        "printf %s caller-content-2640 > /home/testuser/iso-data/from-caller && "
+        "rm -f /home/testuser/iso-data/from-target'"
+    )
+    # Runs synchronously: the target reads from-caller, writes from-target, exits.
+    # A failure here (e.g. idmap read denied) propagates and fails the test.
+    machine.succeed(
+        "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-iso-home'"
+    )
+    out = machine.succeed("cat /home/testuser/iso-data/from-target").strip()
+    assert out == "caller-content-2640", (
+        f"FAIL: idmapped target did not reproduce the caller file content "
+        f"(got {out!r}) — the idmapped read did not work"
+    )
+    owner = machine.succeed("stat -c %U /home/testuser/iso-data/from-target").strip()
+    assert owner == "testuser", (
+        f"FAIL: idmapped writeback landed owned by {owner!r}, expected testuser — "
+        f"the caller<->X write mapping is wrong"
+    )
+    machine.log(
+        "PASS: idmapped dir (2640) — isolated target read the caller's file as "
+        "owner; its writeback is owned by the caller on disk"
+    )
 
 
 def local_ancestor_attack():
@@ -2551,6 +2597,7 @@ local_spoofing_resistance()
 local_daemon_restart_persistence()
 local_pid_namespace_proc_isolation()
 local_target_uid_isolation()
+local_target_uid_idmapped_home()
 local_proc_isolation_env_mode()
 local_ancestor_attack()
 local_core_dump_protection()

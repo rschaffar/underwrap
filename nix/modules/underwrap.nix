@@ -99,6 +99,7 @@ let
         libsecret = w.libsecret;
         env_passthrough = w.envPassthrough;
         env_set = w.envSet;
+        idmap_paths = w.idmapPaths;
       } // lib.optionalAttrs (w.files != null) {
         files = { inherit (w.files) paths; };
       })) inst.wrappers;
@@ -348,6 +349,25 @@ let
           table, read directly by <literal>underwrap-ns</literal>; the uid is
           never relayed over the wire. Off by default.
         '';
+      };
+      idmapPaths = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = ''
+          Directories to make available to an <option>isolate</option>d target
+          via idmapped bind mounts that map ONLY the calling user's uid/gid to
+          the target's dedicated uid/gid. Inside each listed directory, files
+          owned by the caller appear owned by (and are writable as) the target,
+          and the target's writes land back on disk owned by the caller;
+          everything else is left untouched. Each entry is either
+          <literal>~</literal> / <literal>~/&lt;rel&gt;</literal> (resolved
+          against the calling user's home directory) or an absolute path. Has no
+          effect unless the wrapper sets <option>isolate</option>. Use this to
+          give an isolated env-mode tool access to just the config/state
+          directories it needs (e.g. <literal>[ "~/.config/gh" ]</literal>)
+          instead of its whole home.
+        '';
+        example = [ "~/.config/gh" "~/.config/git" ];
       };
       envPassthrough = lib.mkOption {
         type = lib.types.listOf lib.types.str;

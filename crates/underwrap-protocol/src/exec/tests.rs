@@ -43,6 +43,7 @@ fn exec_bundle_roundtrip_minimal() {
             libsecret: false,
             files_target_paths: Vec::new(),
         },
+        idmap_paths: Vec::new(),
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -67,6 +68,7 @@ fn exec_bundle_roundtrip_populated() {
         ]),
         xdg_runtime_dir_base: "/run/underwrap-runtime".to_string(),
         resource: sample_binding(),
+        idmap_paths: vec!["~/.config/gh".to_string(), "/srv/data".to_string()],
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -82,6 +84,7 @@ fn exec_bundle_decode_rejects_trailing_bytes() {
         env_set: HashMap::new(),
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
+        idmap_paths: Vec::new(),
     };
 
     let mut encoded = encode_to_vec(&bundle).unwrap();

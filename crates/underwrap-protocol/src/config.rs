@@ -260,6 +260,15 @@ pub struct WrapperDef {
     /// Static environment variables injected into the target.
     #[serde(default)]
     pub env_set: HashMap<String, String>,
+
+    /// Directories to make available to an isolated (dedicated-uid) target via
+    /// idmapped bind mounts that map ONLY the caller's uid/gid to the target's
+    /// (story 2600/2640). Each entry is either `~`/`~/<rel>` (resolved against
+    /// the calling user's home) or an absolute path. Empty, or ignored entirely,
+    /// for an unisolated target. Lets a uid-X target read/write the caller's
+    /// files as the caller while everything else stays untouched.
+    #[serde(default)]
+    pub idmap_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

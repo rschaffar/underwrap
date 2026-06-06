@@ -16,6 +16,7 @@ mod boundary;
 mod caps;
 mod directory_credential;
 mod env;
+mod idmap;
 mod journal;
 mod libsecret;
 mod mounts;
@@ -87,8 +88,33 @@ fn run() -> Result<(), String> {
         );
     }
 
+    // Story 2640: build the caller<->X idmap user namespace BEFORE unsharing the
+    // PID namespace — a helper fork after CLONE_NEWPID would become PID 1 of the
+    // new namespace and break the real target fork. The idmapped mounts are
+    // applied below, after the private mount namespace exists. None when the
+    // target is unisolated or no idmap paths are configured.
+    let idmap_userns = match isolation {
+        Some(iso) if !exec_bundle.idmap_paths.is_empty() => {
+            let caller_gid = unsafe { libc::getgid() };
+            Some(
+                idmap::create_idmap_userns(target_identity.uid, caller_gid, iso)
+                    .map_err(|e| format!("creating idmap user namespace: {e}"))?,
+            )
+        }
+        _ => None,
+    };
+
     make_process_non_dumpable()?;
     prepare_namespace(has_files, isolation.is_some())?;
+
+    // Apply the idmapped bind mounts now: fsuid is still the caller (so open_tree
+    // traverses the caller's home as owner), caps are held, and we are inside the
+    // private mount namespace, so the forked child (which becomes X) inherits the
+    // mounts and the host's view is untouched.
+    if let Some(ref userns) = idmap_userns {
+        idmap::mount_idmapped_dirs(&exec_bundle.idmap_paths, &target_identity.home, userns)
+            .map_err(|e| format!("setting up idmapped directories: {e}"))?;
+    }
 
     let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
 

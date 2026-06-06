@@ -165,6 +165,14 @@ let
     ${pkgs.coreutils}/bin/sleep 5252 &
     wait
   '';
+  # Isolated target that exercises an idmapped directory (story 2640): it runs as
+  # the dedicated uid X but, through the idmapped `~/iso-data` mount, reads a
+  # caller-owned file (proving X sees caller files as owner) and writes one back
+  # (proving the write lands on disk owned by the caller, not X).
+  isoHomeScript = pkgs.writeShellScript "iso-home-target" ''
+    set -eu
+    ${pkgs.coreutils}/bin/cat "$HOME/iso-data/from-caller" > "$HOME/iso-data/from-target"
+  '';
 in {
   imports = [ nixosModule ];
 
@@ -180,10 +188,14 @@ in {
     mode = "0644";
   };
 
-  # Normal user who runs wrappers.
+  # Normal user who runs wrappers. Home is 0755 so an isolated (dedicated-uid)
+  # target can *traverse* the home to reach an idmapped subdirectory (the idmap
+  # makes the leaf accessible, but path resolution still needs search permission
+  # on each ancestor); see test-iso-home / local_target_uid_idmapped_home.
   users.users.testuser = {
     isNormalUser = true;
     uid = 1099;
+    homeMode = "0755";
   };
 
   # Backend operator user (simulates workstation side for remote test).
@@ -386,6 +398,14 @@ in {
             resource = "test/iso-tok";
             env = true;
             isolate = true;
+          };
+          # Isolated target with an idmapped directory (story 2640).
+          test-iso-home = {
+            target = "${isoHomeScript}";
+            resource = "test/iso-home-tok";
+            env = true;
+            isolate = true;
+            idmapPaths = [ "~/iso-data" ];
           };
           test-crash = {
             target = "${crashScript}";

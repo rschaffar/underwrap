@@ -93,6 +93,9 @@ pub enum WrapperResponse {
         env_set: std::collections::HashMap<String, String>,
         /// Base dir from which ns derives `XDG_RUNTIME_DIR`.
         xdg_runtime_dir_base: String,
+        /// Directories to idmap (caller<->dedicated uid) into an isolated
+        /// target's mount namespace (`~`/`~/rel`/absolute). Empty otherwise.
+        idmap_paths: Vec<String>,
     },
     Error {
         code: ErrorCode,
@@ -114,6 +117,7 @@ impl WireEncode for WrapperResponse {
                 env_passthrough,
                 env_set,
                 xdg_runtime_dir_base,
+                idmap_paths,
             } => {
                 0u8.encode(out)?;
                 env.encode(out)?;
@@ -125,7 +129,8 @@ impl WireEncode for WrapperResponse {
                 target.encode(out)?;
                 env_passthrough.encode(out)?;
                 env_set.encode(out)?;
-                xdg_runtime_dir_base.encode(out)
+                xdg_runtime_dir_base.encode(out)?;
+                idmap_paths.encode(out)
             }
             Self::Error { code, message } => {
                 1u8.encode(out)?;
@@ -150,6 +155,7 @@ impl WireDecode for WrapperResponse {
                 env_passthrough: Vec::<String>::decode(reader)?,
                 env_set: std::collections::HashMap::<String, String>::decode(reader)?,
                 xdg_runtime_dir_base: String::decode(reader)?,
+                idmap_paths: Vec::<String>::decode(reader)?,
             }),
             1 => Ok(Self::Error {
                 code: ErrorCode::decode(reader)?,
