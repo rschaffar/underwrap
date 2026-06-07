@@ -4,6 +4,25 @@ Parent: `2600_story_target_uid_isolation`
 Depends on: `2630`, `2640`, `2645` (hard); `2650` (optional — gate #10 on whether
 the userns relabel was actually implemented)
 
+## Status: partially proven inline; this ticket finishes the matrix
+
+Already landed in `nix/tests/test.py` (committed `2a2b57a`/`0834ce9`) and green:
+`local_target_uid_isolation` (isolated subtree direct + descendant: environ/maps/
+smaps/auxv/mem all denied to the same-UID caller; real uid is a dedicated
+`underwrap-target-*` uid, ≠0/≠caller, member of only its own group; secret
+unrecoverable), `local_target_uid_idmapped_home` (idmapped dir read-as-owner +
+writeback-owned-by-caller), and the corrected unisolated baseline contrast.
+
+**Still to add here** (the comprehensive matrix): explicit `process_vm_readv` and
+`ptrace(PTRACE_ATTACH)` probes; the **root-can-read** documented-limitation
+assertion; the **authority** hard checks from 2620/2630 (getcap shows
+cap_setuid+cap_setgid; root-owned `/etc/underwrap/target-uids` is `root:root` and
+not world-writable; a bogus fd-3 bundle cannot change which uid the target lands
+on; `ExecBundle` carries no target-uid field via a protocol round-trip test); and
+the **2645 boundary proofs** (TIOCSTI-injection denied, `/proc/<pid>/fd` hygiene,
+fresh IPC ns, anonymous session keyring). Once `2635` lands, add the files/
+libsecret-under-isolate proofs too.
+
 ## Goal
 
 A single decisive VM-test section that proves the whole property holds together:

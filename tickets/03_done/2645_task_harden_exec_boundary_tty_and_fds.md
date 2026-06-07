@@ -7,6 +7,16 @@ Blocks: `2660_task_comprehensive_isolation_vm_test`
 (Inserted between 2640 and 2650 in processing order — number `2645` so it sorts
 correctly; it must land with the uid switch, before production flips.)
 
+## Status: mechanisms DONE (committed `2a2b57a`)
+
+All required closures are implemented for isolated targets (`boundary.rs`:
+`setsid()`, `close_range(3,~0,CLOSE_RANGE_CLOEXEC)`, `keyctl(JOIN_SESSION_KEYRING)`;
+plus `CLONE_NEWIPC|CLONE_NEWUTS` on the unshare). The **dedicated VM proofs** in
+"Acceptance" below (TIOCSTI-injection denied, `/proc/<pid>/fd` hygiene, fresh IPC
+ns, anonymous session keyring) are **not yet written** — they are folded into the
+comprehensive matrix in `2660` (which remains in todo). The **seccomp** TIOCSTI
+deny is optional/deferred (needs a new dependency; see below).
+
 > **Placement:** every step below (`setsid`, `close_range`, `keyctl`,
 > `CLONE_NEWIPC`/`UTS`) slots into the **canonical ordering in 2630** ("the SPINE")
 > at its `[2645]` tag — consult that for exact position relative to the id switch,

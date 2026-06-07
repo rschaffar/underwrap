@@ -4,6 +4,21 @@ Parent: `2600_story_target_uid_isolation`
 Depends on: `2620_task_dedicated_target_uid_and_capset`
 Blocks: `2640`, `2645`, `2650`, `2660`
 
+## Status: DONE for env mode (committed `2a2b57a`)
+
+The uid switch — the protection this ticket exists to land — is implemented and
+VM-green for **env-mode** isolated targets (`target_uid.rs`: root-owned-table
+lookup keyed on the target path, `setresuid`/`setresgid`/`setgroups` to the
+dedicated uid before `drop_caps`, post-drop `verify_switched`; cap_setuid chosen
+over setuid-X per 2600). `local_target_uid_isolation` proves a same-UID caller is
+denied the whole isolated subtree's `/proc` + secret.
+
+The **files / libsecret** projection under `isolate` (the "Staging access — the
+single `setfsuid` window" design + the `[2630]` files-slot SPINE steps below) was
+**carved out to `2635_task_files_libsecret_under_isolate`** and is currently
+fail-closed in `underwrap-ns::run()`. The design below stays here as the reference
+2635 implements.
+
 ## Problem
 
 This is the ticket that lands the protection. When the root-owned target→uid
