@@ -186,6 +186,13 @@ let
       write)
         printf 'iso_files_secret_val' > "$HOME/iso-files/dir-a/token"
         ;;
+      rewrite)
+        # Write a DISTINCT value so the post-run blob differs from a
+        # 'write'-seeded baseline — used to drive the read-only-grant drop
+        # under isolate (the supervisor reads the changed X-owned staging
+        # through the setfsuid(X) window, then refuses to persist it).
+        printf 'iso_files_rewritten' > "$HOME/iso-files/dir-a/token"
+        ;;
       read)
         ${pkgs.coreutils}/bin/cat "$HOME/iso-files/dir-a/token"
         ${pkgs.coreutils}/bin/printf '\n'

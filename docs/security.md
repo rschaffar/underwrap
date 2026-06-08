@@ -229,6 +229,18 @@ target for a `Real` invocation, the debug tool for a `Debug`
 invocation, and only after the backend's policy has authorized that
 `(wrapper, resource, variant)`. The caller never names a target.
 
+**Which UID does the target run as?** The same authority shape applies to
+`isolate`. The dedicated sandbox uid/gid an isolated target is switched to come
+**only** from the root-owned `/etc/underwrap/target-uids` table, read directly by
+`underwrap-ns` and keyed on the daemon-chosen target path. They never travel on
+the wire — the `ExecBundle` carries no target id (pinned by the protocol test
+`exec_bundle_carries_no_target_identity`), and the uid is never derived from a
+credential, env var, argv, or the daemon response. So a compromised
+`underwrap-exec` cannot redirect the `cap_setuid` switch to root or another
+service's uid: the only uids reachable are the sandbox uids that trusted root
+config assigned. This is the confused-deputy guard for the uid switch, mirroring
+"the daemon, not the wrapper, chooses the target binary."
+
 The wrapper binaries are world-executable; any local user can invoke
 any wrapper. Access control lives in the policy layer, not the
 filesystem. The kernel gate (instance group egid) plus the daemon's
@@ -754,6 +766,22 @@ therefore rests on three preconditions:
 
 Loosening any of these preconditions narrows the guarantee
 correspondingly.
+
+**How this is proven.** The NixOS VM test
+(`nix/tests/test.py::local_target_uid_isolation` and the functions around it)
+encodes the whole property as a decisive matrix against a live isolated target
+**and its descendant**: a same-uid caller (peer or ancestor) is denied
+`environ`/`maps`/`smaps`/`auxv`/`mem`, `ptrace(PTRACE_ATTACH)`, `process_vm_readv`,
+and re-opening the target's `/proc/<pid>/{fd/*,cwd,root,exe}`; the world-readable
+`/proc` residue (`cmdline`/`status`/`cgroup`) stays readable but secret-free;
+**root** can still read the environ (the documented limitation — the boundary is
+against unprivileged same-uid callers, not root); the target runs as a dedicated
+`underwrap-target-*` uid (never `0`/caller) with zero capabilities; and a
+persisted file written through an idmapped path lands on disk owned by the
+**caller**. The contrast that proves the mechanism does something lives in
+`local_pid_namespace_proc_isolation`: an *unisolated* env-mode target's descendant
+has its `environ` (with the secret) readable, whereas the isolated descendant's is
+denied. See [Testing](testing.md).
 
 ### Files and libsecret projection under `isolate`
 

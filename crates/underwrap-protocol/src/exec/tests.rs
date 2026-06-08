@@ -77,6 +77,44 @@ fn exec_bundle_roundtrip_populated() {
 }
 
 #[test]
+fn exec_bundle_carries_no_target_identity() {
+    // Authority invariant (story 2600): the dedicated sandbox uid/gid an isolated
+    // target is switched to is resolved by underwrap-ns from the root-owned
+    // /etc/underwrap/target-uids table, keyed on the daemon-chosen target path —
+    // NEVER carried on this wire form (nor env/argv/daemon response). This test
+    // pins it: the encoded bundle is byte-exactly its six documented fields
+    // concatenated, with nothing extra (e.g. a smuggled uid/gid). If a field is
+    // ever added to ExecBundle, both this length check and the exhaustive struct
+    // literals in the round-trip tests above fail, forcing a deliberate review of
+    // whether the new field belongs on the wire and whether it weakens the
+    // confused-deputy guard.
+    let bundle = ExecBundle {
+        env: HashMap::new(),
+        env_passthrough: Vec::new(),
+        env_set: HashMap::new(),
+        xdg_runtime_dir_base: "/run/user".to_string(),
+        resource: sample_binding(),
+        idmap_paths: vec!["~/.config/gh".to_string()],
+    };
+
+    let encoded = encode_to_vec(&bundle).unwrap();
+
+    let mut expected = Vec::new();
+    bundle.env.encode(&mut expected).unwrap();
+    bundle.env_passthrough.encode(&mut expected).unwrap();
+    bundle.env_set.encode(&mut expected).unwrap();
+    bundle.xdg_runtime_dir_base.encode(&mut expected).unwrap();
+    bundle.resource.encode(&mut expected).unwrap();
+    bundle.idmap_paths.encode(&mut expected).unwrap();
+
+    assert_eq!(
+        encoded, expected,
+        "ExecBundle wire form must be exactly its six documented fields — no \
+         target uid/gid or other smuggled identity"
+    );
+}
+
+#[test]
 fn exec_bundle_decode_rejects_trailing_bytes() {
     let bundle = ExecBundle {
         env: HashMap::from([("GH_TOKEN".to_string(), b"ghp_test".as_slice().into())]),

@@ -20,6 +20,7 @@ def su(cmd):
 # Spoof script path is passed as an env var by the Nix test driver.
 import os
 SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
+PEER_PROBE_SCRIPT = os.environ.get("PEER_PROBE_SCRIPT", "/dev/null")
 PYTHON3 = os.environ.get("PYTHON3", "python3")
 
 # Each daemon now runs a single HTTPS listener that serves both the
@@ -736,6 +737,117 @@ def local_daemon_restart_persistence():
     machine.log("PASS: secrets persist across restart")
 
 
+def _status_uids(pid):
+    """Read the four uid fields (real, effective, saved, fs) from
+    `/proc/<pid>/status` as root. The status `Uid:` line is
+    `Uid:\\t<real>\\t<eff>\\t<saved>\\t<fs>`."""
+    line = machine.succeed(f"awk '/^Uid:/{{print $2, $3, $4, $5}}' /proc/{pid}/status").strip()
+    return [int(x) for x in line.split()]
+
+
+def _status_caps(pid):
+    """Read the four capability sets (Eff/Prm/Inh/Amb) from
+    `/proc/<pid>/status` as root, as a name→hex-string dict."""
+    out = machine.succeed(f"grep -E '^Cap(Eff|Prm|Inh|Amb):' /proc/{pid}/status")
+    caps = {}
+    for line in out.splitlines():
+        name, value = line.split(":", 1)
+        caps[name.strip()] = value.strip()
+    return caps
+
+
+def _peer_probe(pid):
+    """Run the non-ancestor peer probe (ptrace + process_vm_readv) as
+    `testuser` against `pid` and return the parsed RESULT: dict. The
+    probe is a freshly spawned peer — NOT an ancestor of the target."""
+    out = machine.succeed(su(f"{PYTHON3} {PEER_PROBE_SCRIPT} {pid}")).strip()
+    results = {}
+    for line in out.splitlines():
+        if not line.startswith("RESULT:"):
+            continue
+        key_val = line.split(":", 1)[1]
+        if "=" in key_val or "(" in key_val:
+            # e.g. PTRACE_DENIED(errno=1) — keep the bare token as the key.
+            token = key_val.split("(", 1)[0]
+            results[token] = key_val
+        else:
+            results[key_val] = "true"
+    return results
+
+
+def _assert_fd_reopen_denied(pid):
+    """As `testuser`: re-opening the isolated target's open objects via
+    `/proc/<pid>/{cwd,root,exe}` and `/proc/<pid>/fd/*` must be denied
+    (ptrace-gated readlink, `fs/proc/base.c`). This is the positive
+    boundary property: the caller cannot re-open the target's open
+    secret file or socket. Matrix #17."""
+    for link in ("cwd", "root", "exe"):
+        rc = machine.execute(
+            su(f"readlink /proc/{pid}/{link} >/dev/null 2>&1")
+        )[0]
+        assert rc != 0, (
+            f"FAIL: same-UID caller could readlink /proc/{pid}/{link} of the "
+            f"isolated target — fd/path re-open must be ptrace-denied"
+        )
+    # The fd symlinks are individually ptrace-gated; readlink of fd 0 must fail.
+    rc = machine.execute(su(f"readlink /proc/{pid}/fd/0 >/dev/null 2>&1"))[0]
+    assert rc != 0, (
+        f"FAIL: same-UID caller could re-open /proc/{pid}/fd/0 of the isolated target"
+    )
+    machine.log(f"PASS: fd/path re-open of isolated target PID {pid} denied to the caller (#17)")
+
+
+def _assert_world_readable_secret_free(pid, secret):
+    """As `testuser`: the world-readable `/proc` residue
+    (`cmdline`/`status`/`cgroup`) is readable regardless of uid, and the
+    less-certain `mounts`/`mountinfo` may or may not be — but the secret
+    marker must appear in NONE of them. Encodes the honest scope: the
+    boundary hides secret-bearing files, not process metadata; secrets
+    never live in argv or mount paths. Matrix #18."""
+    for f in ("cmdline", "status", "cgroup"):
+        rc, out = machine.execute(su(f"cat /proc/{pid}/{f} 2>/dev/null"))
+        assert rc == 0, (
+            f"FAIL: world-readable /proc/{pid}/{f} unexpectedly denied to the caller "
+            f"(it is not ptrace-gated)"
+        )
+        assert secret not in out, (
+            f"FAIL: secret {secret!r} leaked via world-readable /proc/{pid}/{f}"
+        )
+    for f in ("mounts", "mountinfo"):
+        _rc, out = machine.execute(su(f"cat /proc/{pid}/{f} 2>/dev/null"))
+        assert secret not in out, (
+            f"FAIL: secret {secret!r} leaked via /proc/{pid}/{f} (mount paths must be secret-free)"
+        )
+    machine.log(
+        f"PASS: world-readable /proc residue of PID {pid} is readable but secret-free (#18)"
+    )
+
+
+def _assert_no_leaked_fds(pid):
+    """As root, read the isolated target's `/proc/<pid>/fd/*` and assert
+    no privileged fd leaked across the exec boundary: nothing resolves to
+    a socket / pipe / anon_inode (the channel, ExecBundle pipe, idmap
+    `ns/user`, dbus/secretsd fds) and nothing points into the backend
+    secrets tree. The target may legitimately hold stdio and its own
+    on-disk script/binary fd. BONUS (2645 fd hygiene / matrix #20)."""
+    links = machine.succeed(
+        f"for f in /proc/{pid}/fd/*; do readlink \"$f\" 2>/dev/null || true; done"
+    ).strip()
+    for link in links.splitlines():
+        link = link.strip()
+        if not link:
+            continue
+        assert not (
+            link.startswith("socket:")
+            or link.startswith("pipe:")
+            or link.startswith("anon_inode:")
+        ), f"FAIL: isolated target PID {pid} leaked a privileged fd: {link!r}"
+        assert "/secrets/" not in link, (
+            f"FAIL: isolated target PID {pid} holds an fd into the backend secrets tree: {link!r}"
+        )
+    machine.log(f"PASS (bonus): isolated target PID {pid} inherited no leaked privileged fds (#20)")
+
+
 def _assert_target_proc_access(host_pid, *, isolated):
     # The DIRECT exec'd target is non-dumpable in BOTH cases, so its whole /proc
     # secret surface is DENIED to a same-UID (testuser) caller:
@@ -985,7 +1097,28 @@ def local_target_uid_isolation():
         f"only its own group"
     )
 
+    # --- Identity #10/#15: real==eff==saved==X, and zero capabilities ---
+    # Reading /proc/<pid>/status as root proves getuid()==geteuid()==X (and
+    # saved/fs too) without an in-target fixture — the non-relabel model
+    # (2650 is WON'T DO): the target displays as the dedicated user, never the
+    # caller. The capability sets must all be zero (drop_caps before exec).
+    for pid_label, pid in (("direct", direct_pid), ("descendant", child_pid)):
+        uids = _status_uids(pid)
+        assert uids == [x_uid, x_uid, x_uid, x_uid], (
+            f"FAIL: {pid_label} target uid fields {uids} != all-X ({x_uid}); "
+            f"getuid()==geteuid()==saved==fs==X must hold"
+        )
+    caps = _status_caps(direct_pid)
+    for name, value in caps.items():
+        assert value == "0000000000000000", (
+            f"FAIL: isolated target retains capability {name}={value}; all sets must be zero"
+        )
+    machine.log(
+        f"PASS: isolated subtree shows real==eff==saved==fs=={x_uid} and zero capabilities (#10/#15)"
+    )
+
     # --- Protection: same-UID caller denied for the WHOLE subtree ---
+    # READ-mode (environ/maps/smaps/auxv) + the /proc/<pid>/mem ATTACH vector.
     _assert_target_proc_access(direct_pid, isolated=True)
     _assert_target_proc_access(child_pid, isolated=True)
     rc, out = machine.execute(
@@ -999,8 +1132,85 @@ def local_target_uid_isolation():
         "PASS: caller cannot recover the isolated target's secret anywhere in its subtree"
     )
 
-    machine.execute("pkill -f 'sleep 5252' || true")
-    machine.execute("pkill -f iso-target || true")
+    # --- #5/#6: explicit ATTACH-class syscalls from a non-ancestor peer ---
+    # A separately spawned testuser process (NOT an ancestor) attempts
+    # ptrace(PTRACE_ATTACH) and process_vm_readv against the direct target and
+    # its descendant. Both are denied by the uid gate (and ptrace_scope=2), and
+    # neither recovers the secret. The ancestor variant lives in
+    # local_ancestor_attack; this is the same-host peer variant the matrix adds.
+    for pid_label, pid in (("direct", direct_pid), ("descendant", child_pid)):
+        probe = _peer_probe(pid)
+        assert "PTRACE_DENIED" in probe, (
+            f"CRITICAL: peer ptrace(PTRACE_ATTACH) on the {pid_label} isolated target "
+            f"was not denied: {probe}"
+        )
+        assert "PTRACE_ALLOWED" not in probe, (
+            f"CRITICAL: peer could ptrace-attach the {pid_label} isolated target: {probe}"
+        )
+        assert "VM_READV_DENIED" in probe, (
+            f"CRITICAL: peer process_vm_readv on the {pid_label} isolated target was not "
+            f"denied: {probe}"
+        )
+        assert "VM_READV_SECRET_LEAKED" not in probe and "VM_READV_ALLOWED" not in probe, (
+            f"CRITICAL: peer process_vm_readv reached the {pid_label} isolated target's "
+            f"memory: {probe}"
+        )
+    machine.log("PASS: non-ancestor peer ptrace + process_vm_readv both DENIED (#5/#6)")
+
+    # --- #17: fd/path re-open of the target's open objects is denied ---
+    _assert_fd_reopen_denied(direct_pid)
+    _assert_fd_reopen_denied(child_pid)
+
+    # --- #18: world-readable /proc residue is readable but secret-free ---
+    _assert_world_readable_secret_free(direct_pid, "iso_secret_val")
+    _assert_world_readable_secret_free(child_pid, "iso_secret_val")
+
+    # --- #8: root CAN read (documented limitation, not a defect) ---
+    # CAP_SYS_PTRACE bypasses the uid gate, so root reads the isolated target's
+    # environ (and recovers the secret). Asserting the success encodes the true
+    # threat model: the boundary is against UNPRIVILEGED same-uid callers, not root.
+    root_env = machine.succeed(
+        f"tr '\\0' '\\n' < /proc/{direct_pid}/environ 2>/dev/null || "
+        f"tr '\\0' '\\n' < /proc/{child_pid}/environ"
+    )
+    assert "iso_secret_val" in root_env, (
+        "FAIL: root could not read the isolated target's environ — the documented "
+        "root-can-read limitation does not hold; the fixture or assumption is wrong"
+    )
+    machine.log("PASS: root reads the isolated target's environ (documented limitation, #8)")
+
+    # --- Bonus (2645): setsid severed the controlling tty; fresh IPC ns; no
+    # leaked fds. These shrink the target's reach over the caller a little
+    # further — defense-in-depth by-products, NOT a goal (see docs/security.md
+    # "the target attacking back at the caller" non-goal).
+    # setsid: /proc/<pid>/stat session field == own pid, tty_nr == 0.
+    stat = machine.succeed(f"cat /proc/{direct_pid}/stat")
+    after_comm = stat.rpartition(")")[2].split()
+    # Fields after comm: [0]=state [1]=ppid [2]=pgrp [3]=session [4]=tty_nr ...
+    session, tty_nr = after_comm[3], after_comm[4]
+    assert session == direct_pid, (
+        f"FAIL (bonus): isolated target session {session} != its pid {direct_pid} — setsid did not run"
+    )
+    assert tty_nr == "0", (
+        f"FAIL (bonus): isolated target tty_nr {tty_nr} != 0 — controlling tty not severed (#19)"
+    )
+    machine.log("PASS (bonus): isolated target is a session leader with no controlling tty (#19)")
+
+    # Fresh IPC namespace (CLONE_NEWIPC): the target's ipc ns differs from root's.
+    target_ipc = machine.succeed(f"readlink /proc/{direct_pid}/ns/ipc").strip()
+    host_ipc = machine.succeed("readlink /proc/self/ns/ipc").strip()
+    assert target_ipc != host_ipc, (
+        f"FAIL (bonus): isolated target shares the host IPC namespace ({target_ipc})"
+    )
+    machine.log("PASS (bonus): isolated target has a fresh IPC namespace (2645)")
+
+    # fd hygiene: no leaked privileged fds inherited across the exec boundary.
+    _assert_no_leaked_fds(direct_pid)
+
+    # The direct target is PID 1 of its namespace (ignores SIGTERM) and runs as
+    # uid X (a testuser pkill cannot reach it): SIGKILL as root from the host ns.
+    machine.execute("pkill -KILL -f 'sleep 5252' || true")
+    machine.execute("pkill -KILL -f iso-target || true")
     time.sleep(0.5)
 
 
@@ -1183,6 +1393,142 @@ def local_target_uid_files_libsecret():
     machine.log("PASS: isolated libsecret private bus invisible to a same-UID host process")
     machine.execute("pkill -u testuser -x underwrap-ns || true")
     time.sleep(0.5)
+
+
+def local_target_uid_authority():
+    # ============================================================
+    # LOCAL INSTANCE: target-uid authority (stories 2620/2630/2660)
+    # ============================================================
+    # The dedicated sandbox uid is chosen by underwrap-ns from a ROOT-OWNED
+    # target-path -> uid table, NEVER from anything the caller or underwrap-exec
+    # supplies (the ExecBundle carries no uid field — see the protocol round-trip
+    # test exec_bundle_carries_no_target_identity). This mirrors "the daemon, not
+    # the wrapper, chooses the target binary": a compromised unprivileged stage
+    # cannot redirect the cap_setuid switch to root or another service. These are
+    # the static authority gates.
+
+    # underwrap-ns carries cap_setuid + cap_setgid (to perform the switch) on top
+    # of cap_sys_admin — and only because at least one wrapper sets isolate=true.
+    caps = machine.succeed("getcap /run/wrappers/bin/underwrap-ns").strip()
+    for needed in ("cap_setuid", "cap_setgid", "cap_sys_admin"):
+        assert needed in caps, (
+            f"FAIL: underwrap-ns is missing {needed} (needed for the uid switch): {caps}"
+        )
+    machine.log(f"PASS: underwrap-ns holds cap_setuid+cap_setgid+cap_sys_admin ({caps})")
+
+    # The authority table is the SOLE source of truth for which uid a target runs
+    # as. Root-owned and not writable by anyone but root, else an unprivileged
+    # user could redirect a target to an arbitrary (e.g. root) uid.
+    table = "/etc/underwrap/target-uids"
+    owner = machine.succeed(f"stat -c '%U:%G' {table}").strip()
+    assert owner == "root:root", f"FAIL: {table} owner {owner!r} != root:root"
+    mode = machine.succeed(f"stat -c %a {table}").strip()
+    assert mode == "644", (
+        f"FAIL: {table} mode {mode!r} != 644 — must not be group/other-writable"
+    )
+    machine.log(f"PASS: {table} is root:root {mode} (sole, unforgeable uid authority)")
+
+    # Each row maps an absolute target path to a dedicated sandbox user/group
+    # ("<path>\t<user>\t<group>"), never to root.
+    contents = machine.succeed(f"cat {table}")
+    iso_rows = [l for l in contents.splitlines() if l.strip()]
+    assert iso_rows, f"FAIL: {table} is empty but isolated wrappers exist"
+    for row in iso_rows:
+        fields = row.split("\t")
+        assert len(fields) == 3, f"FAIL: malformed authority row: {row!r}"
+        path, user, group = fields
+        assert path.startswith("/"), f"FAIL: non-absolute target path in table: {row!r}"
+        assert user.startswith("underwrap-target-"), (
+            f"FAIL: authority row maps {path} to non-sandbox user {user!r}"
+        )
+        assert user != "root" and group != "root", (
+            f"FAIL: authority row maps {path} to root: {row!r}"
+        )
+    machine.log(
+        f"PASS: target-uid table maps {len(iso_rows)} isolated target path(s) to dedicated "
+        f"underwrap-target-* users (never root)"
+    )
+
+
+def local_target_uid_readonly_writeback():
+    # ============================================================
+    # LOCAL INSTANCE: read-only-grant writeback drop UNDER isolate (story 2660)
+    # ============================================================
+    # local_atomic_writeback scenario 3 proves the read-only drop for an
+    # UNISOLATED files wrapper. Here we prove the same arm for an ISOLATED files
+    # target: the uid-X target writes a CHANGED value into its X-owned staging,
+    # the supervisor reads the staging back through the single setfsuid(X) window,
+    # sees the change, and DROPS it because the grant is read-only — the backend
+    # blob is unchanged and the structured audit event fires. So the cross-uid
+    # read still happens (exercising the setfsuid window); only the persist is
+    # refused.
+    DIR = "test/iso-dir-tok"
+
+    # Fresh caller-owned tmpfs for ~/iso-files (idmap-capable; see iso-home test).
+    machine.execute("umount /home/testuser/iso-files 2>/dev/null || true")
+    machine.succeed("mkdir -p /home/testuser/iso-files")
+    machine.succeed(
+        "mount -t tmpfs -o mode=0755,uid=1099,gid=100 tmpfs /home/testuser/iso-files"
+    )
+
+    # Seed a known baseline via a WRITABLE write, then flip the grant to read-only.
+    grant_local_unlocked("test-iso-dir")  # writable=True
+    machine.succeed(
+        "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-iso-dir write'"
+    )
+    baseline = admin_get_blob(ADMIN_LOCAL, "local", DIR)
+
+    admin_upsert_grant(
+        ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-iso-dir", DIR,
+        {"kind": "unlocked"}, writable=False,
+    )
+
+    # Snapshot the journal cursor so we can scope the audit-event grep.
+    cur_out = machine.succeed("journalctl -n 1 -o export --no-pager")
+    cursor = next(
+        l[len("__CURSOR="):] for l in cur_out.splitlines() if l.startswith("__CURSOR=")
+    )
+
+    # `rewrite` writes a DISTINCT value, so the post-run blob differs from the
+    # baseline — the change the read-only grant must drop.
+    stderr_capture = machine.succeed(
+        su(
+            "/run/wrappers/bin/underwrap-local test-iso-dir rewrite 2>/tmp/iso-ro-stderr.log "
+            "&& cat /tmp/iso-ro-stderr.log"
+        )
+    )
+    time.sleep(0.5)
+
+    after = admin_get_blob(ADMIN_LOCAL, "local", DIR)
+    assert after == baseline, (
+        "FAIL: isolated read-only grant persisted a change — the backend blob changed"
+    )
+
+    journal_after = machine.succeed(
+        f"journalctl --no-pager --after-cursor={shlex.quote(cursor)} "
+        "SYSLOG_IDENTIFIER=underwrap-ns --output=export || true"
+    )
+    assert "AUDIT=writeback_rejected" in journal_after, (
+        f"FAIL: isolated read-only drop missing writeback_rejected event: {journal_after!r}"
+    )
+    assert "REASON=grant_readonly" in journal_after, (
+        f"FAIL: isolated read-only drop missing grant_readonly reason: {journal_after!r}"
+    )
+    assert f"RESOURCE_NAME={DIR}" in journal_after, (
+        f"FAIL: isolated read-only drop journal event missing resource name: {journal_after!r}"
+    )
+    assert "grant is read-only" in stderr_capture, (
+        f"FAIL: isolated read-only drop missing human-readable stderr warning: {stderr_capture!r}"
+    )
+    assert f"resource '{DIR}'" in stderr_capture, (
+        f"FAIL: isolated read-only drop stderr warning missing resource name: {stderr_capture!r}"
+    )
+    machine.log(
+        "PASS: read-only grant under isolate drops the change after reading the X-owned "
+        "staging through the setfsuid(X) window; journal records grant_readonly"
+    )
+
+    machine.execute("umount /home/testuser/iso-files 2>/dev/null || true")
 
 
 def local_ancestor_attack():
@@ -2744,9 +3090,11 @@ local_isolation()
 local_spoofing_resistance()
 local_daemon_restart_persistence()
 local_pid_namespace_proc_isolation()
+local_target_uid_authority()
 local_target_uid_isolation()
 local_target_uid_idmapped_home()
 local_target_uid_files_libsecret()
+local_target_uid_readonly_writeback()
 local_proc_isolation_env_mode()
 local_ancestor_attack()
 local_core_dump_protection()

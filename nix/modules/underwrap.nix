@@ -345,9 +345,9 @@ let
           path: every wrapper that runs the same target binary shares its uid
           (same tool, same trust domain), and enabling <literal>isolate</literal>
           on any one of them isolates that target for all. The authority for
-          which uid is the root-owned <filename>/etc/underwrap/target-uids.json</filename>
-          table, read directly by <literal>underwrap-ns</literal>; the uid is
-          never relayed over the wire. Off by default.
+          which uid is the root-owned <filename>/etc/underwrap/target-uids</filename>
+          table (a line-based TSV), read directly by <literal>underwrap-ns</literal>;
+          the uid is never relayed over the wire. Off by default.
         '';
       };
       idmapPaths = lib.mkOption {

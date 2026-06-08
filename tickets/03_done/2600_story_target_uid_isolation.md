@@ -6,6 +6,22 @@ kernel claims were verified against `~/unsynced_projects/3rdparty/linux` (v7.1-r
 
 ## Status & design (read first)
 
+**EPIC COMPLETE + VM-GREEN (2026-06-08).** All child tickets
+(2610/2620/2630/2635/2640/2645/2650/2660) are in `tickets/03_done/`. Per-target
+uid isolation for env, files, and libsecret modes is implemented and proven by a
+comprehensive VM matrix (see `2660`): a same-uid caller (peer **and** ancestor)
+cannot inspect an isolated target or its descendants (`environ`/`maps`/`smaps`/
+`auxv`/`mem`, `ptrace`, `process_vm_readv`, `/proc/<pid>/{fd,cwd,root,exe}`
+re-open all denied); the world-readable `/proc` residue stays secret-free; root
+can still read (documented limitation); the target runs as a dedicated
+`underwrap-target-*` uid (never `0`/caller) chosen only from the root-owned
+`/etc/underwrap/target-uids` table; and persisted files land owned by the caller.
+**Sole goal achieved: hide the brokered secret from the same-uid caller.** The
+target→caller "punch-back" hardening (2645) and `2650` userns relabel are
+documented as bonus/WON'T-DO respectively (an unisolated target runs *as* the
+caller, so underwrap never made that direction worse). The historical "Status &
+design" notes below are retained for provenance.
+
 **Design settled (the *simplified* design), not yet implemented.** All child
 tickets are in `tickets/0{1,2}_*`; only 2610's doc/test groundwork is written.
 An earlier, more complex design (per-instance uid anchored on a kernel "egid

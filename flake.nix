@@ -243,7 +243,18 @@
           ancestorAttackScript = pkgs.writeScript "ancestor-attack.py"
             (builtins.readFile ./nix/tests/ancestor-attack.py);
 
-          testScript = builtins.readFile ./nix/tests/test.py;
+          peerProbeScript = pkgs.writeScript "peer-probe.py"
+            (builtins.readFile ./nix/tests/peer-probe.py);
+
+          # The main test script is large (>128 KB). Embedding it inline in the
+          # `testScript` attribute pushes that attribute past the kernel's
+          # single-argument/env-string limit (MAX_ARG_STRLEN = 128 KB), so the
+          # test-driver build fails to exec bash with "Argument list too long".
+          # Stage it as its own store file (builtins.toFile is a pure eval-time
+          # write — no builder, no argv) and `exec` it at runtime so the
+          # `testScript` attribute itself stays tiny.
+          mainTestScript = builtins.toFile "underwrap-vm-test.py"
+            (builtins.readFile ./nix/tests/test.py);
 
         in {
           checks.${system} = (perSystem.checks.${system} or {}) // {
@@ -260,8 +271,9 @@
                 import os
                 os.environ["SPOOF_SCRIPT"] = "${spoofScript}"
                 os.environ["ANCESTOR_ATTACK_SCRIPT"] = "${ancestorAttackScript}"
+                os.environ["PEER_PROBE_SCRIPT"] = "${peerProbeScript}"
                 os.environ["PYTHON3"] = "${pkgs.python3}/bin/python3"
-                ${testScript}
+                exec(compile(open("${mainTestScript}").read(), "${mainTestScript}", "exec"), globals())
               '';
             };
           };

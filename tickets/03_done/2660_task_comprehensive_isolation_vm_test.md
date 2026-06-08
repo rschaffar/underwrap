@@ -1,5 +1,59 @@
 # Task: Comprehensive VM test proving target + descendant isolation end to end
 
+## DONE + VM-GREEN (2026-06-08)
+
+The comprehensive matrix is implemented and the VM test passes end to end
+(`ALL TESTS PASSED`). What landed:
+
+- **`nix/tests/peer-probe.py`** (new, wired via `PEER_PROBE_SCRIPT` in
+  `flake.nix`): a non-ancestor same-host peer running `ptrace(PTRACE_ATTACH)` +
+  `process_vm_readv` against a given PID.
+- **`local_target_uid_isolation`** extended into the full matrix on the live
+  isolated subtree (direct + descendant): #10/#15 (real==eff==saved==fs==X +
+  zero caps, read as root), #1–4 + mem (existing `_assert_target_proc_access`),
+  #5/#6 (peer ptrace + `process_vm_readv` denied), #7 contrast (in
+  `local_pid_namespace_proc_isolation`), #8 (root CAN read — documented
+  limitation), #17 (fd/path re-open denied), #18 (world-readable residue
+  readable but secret-free). **Bonus, labeled as such:** #19 (setsid: session
+  leader, `tty_nr==0`), fresh IPC ns, #20 (no leaked privileged fds, read as
+  root).
+- **`local_target_uid_authority`** (new): `getcap` shows
+  `cap_setuid`+`cap_setgid`+`cap_sys_admin`; `/etc/underwrap/target-uids` is
+  `root:root 0644`; every row maps an absolute path to an `underwrap-target-*`
+  user, never root.
+- **`local_target_uid_readonly_writeback`** (new): read-only-grant drop *under
+  isolate* — the uid-X target writes a changed value, the supervisor reads the
+  X-owned staging through the single `setfsuid(X)` window, and the change is
+  dropped with `AUDIT=writeback_rejected REASON=grant_readonly`. Added a
+  `rewrite` mode to `isoDirScript` to drive a distinct value.
+- **Authority invariant pinned in code:** `exec.rs` doc + protocol test
+  `exec_bundle_carries_no_target_identity` (the `ExecBundle` carries no target
+  uid/gid — the uid comes only from the root-owned table).
+- **Docs:** `security.md` (target-uid authority rule + "How this is proven"
+  VM-proof pointer) and `testing.md` (matrix bullet); module doc string
+  `target-uids.json` → `target-uids`.
+- **Infra fix:** `test.py` crossed the kernel's `MAX_ARG_STRLEN` (128 KB) single
+  env-string limit, breaking the test-driver build ("Argument list too long").
+  Fixed structurally in `flake.nix`: stage `test.py` as a `builtins.toFile`
+  store file and `exec` it at runtime, so the `testScript` attribute stays tiny
+  (future-proof — the inline-embed approach would have re-broken on the next
+  addition).
+
+### Scope decisions (deliberately not implemented)
+
+- **#12 (socket connectivity)** — skipped. It is a pure "target still
+  functional" proof already covered by the idmapped-home read/write round-trip
+  (#11), and as written (a uid-X target connecting a `0700` *caller*-owned
+  socket) it is not even reachable without extra `XDG_RUNTIME_DIR` idmap
+  plumbing. Not core to secret-from-caller; adding a background-listener fixture
+  would only add VM flakiness.
+- **Full TIOCSTI injection pty harness (#19 as literally specced)** — deferred.
+  The load-bearing `setsid()` fix is proven decisively and deterministically by
+  the `/proc/<pid>/stat` session-leader + `tty_nr==0` check; a pty-relay
+  injection harness adds fragile machinery for a *bonus* (non-goal) property.
+- **#16 (kill semantics)** — skipped; the ticket itself marks it informational /
+  potentially flaky.
+
 Parent: `2600_story_target_uid_isolation`
 Depends on: `2630`, `2640`, `2645` (hard). `2650` (userns relabel) is **WON'T
 DO** for the first release (cosmetic; arms the userns LPE class — see its
