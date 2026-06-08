@@ -1,8 +1,10 @@
 # Task: Comprehensive VM test proving target + descendant isolation end to end
 
 Parent: `2600_story_target_uid_isolation`
-Depends on: `2630`, `2640`, `2645` (hard); `2650` (optional — gate #10 on whether
-the userns relabel was actually implemented)
+Depends on: `2630`, `2640`, `2645` (hard). `2650` (userns relabel) is **WON'T
+DO** for the first release (cosmetic; arms the userns LPE class — see its
+ticket), so gate #10 asserts the *non-relabel* case: `getuid()==X` and `$HOME`
+files display as the dedicated user, with the target still fully functional.
 
 ## Status: partially proven inline; this ticket finishes the matrix
 
@@ -101,11 +103,10 @@ Identity + functionality (ties in 2640/2650):
 9. Read as root: isolated target's real uid == the configured
    configured `underwrap-target-<n>` uid X — **and never `0`/caller/service id**
    (this doubles as the confused-deputy guard assertion from 2620/2630).
-10. **(only if 2650 implemented)** Inside the target:
-    `getuid()==geteuid()==1099` (the caller). If 2650 was deferred, assert the
-    opposite — `getuid()==X` and `$HOME` files display as the dedicated user —
-    and confirm the target is still functional (access works regardless of the
-    displayed identity).
+10. Inside the target: `getuid()==geteuid()==X` and `$HOME` files display as the
+    dedicated `underwrap-target-<n>` user — confirming the **non-relabel** model
+    (2650 is WON'T DO). Assert the target is still fully functional (file access
+    works regardless of the displayed identity — proven by the idmapped home).
 11. Home rw: target reads a pre-seeded `$HOME` file and writes one; the new file
     is on-disk owned by `testuser`; host `$HOME` ownership/mode unchanged (2640).
 12. Socket: target `connect()`s a `testuser`-owned `0700` socket in

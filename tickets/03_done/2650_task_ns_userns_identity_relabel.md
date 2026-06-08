@@ -3,6 +3,45 @@
 Parent: `2600_story_target_uid_isolation`
 Depends on: `2640_task_ns_idmapped_home_and_runtime`
 
+## Status: WON'T DO (first release) — closed 2026-06-08
+
+Decided **not** to implement for the first release. The benefit is cosmetic and
+the cost is a real, concentrated security regression:
+
+- **Benefit is thin.** Relabeling only changes what the target observes about
+  its *own* identity (`getuid()`/`geteuid()` → caller, `getpwuid(getuid())` →
+  caller name/home, displayed user in `whoami`/`id`/prompts). Protection and file
+  access are already fully delivered by 2630 (uid X) + 2640 (idmapped home).
+  Crucially, the case you'd expect to need it — ownership checks like ssh's
+  `st_uid == getuid()` on `~/.ssh` — **already passes** without it, because the
+  idmapped home presents files as owned by X and `getuid()==X`, so they match.
+  `$HOME`-env-driven tools (e.g. `aws-sso`) don't need it either. The only
+  residual benefit is the handful of tools that branch on `getuid()` directly or
+  resolve `$HOME` via `getpwuid(getuid())->pw_dir` instead of `$HOME`. It does
+  **not** fix peer-cred identity (real D-Bus/polkit see host kuid X regardless).
+- **Cost is real and concentrated on our target hosts.** Relabeling requires
+  giving a *deliberately sandboxed, possibly-malicious* target an owned user
+  namespace. A reachable userns is the dominant *enabling* primitive for the
+  modern unprivileged-LPE CVE class (CVE-2022-0185, CVE-2023-0386, CVE-2023-32233,
+  …): the kernel grants the userns creator a full *namespaced* capability set,
+  unlocking `mount`/`fs_context`/overlayfs/`nf_tables` code paths an unprivileged
+  process can't otherwise reach (`no_new_privs` doesn't block a fresh nested
+  `unshare(CLONE_NEWUSER)`). On the **hardened hosts underwrap targets**
+  (Ubuntu 24.04 `apparmor_restrict_unprivileged_userns=1`,
+  Debian `unprivileged_userns_clone=0`) an unprivileged uid-X target cannot create
+  a userns at all — but 2650's design would create it from the cap-holding stage,
+  re-arming the CVE class the operator deliberately disabled, for a cosmetic
+  `getuid()`.
+
+**Revivable** behind a per-wrapper opt-in (default off) if a concrete tool ever
+forces the issue — the design below stays as the reference. The cost/benefit
+discussion lives here and in `docs/security.md`. `2660`'s matrix asserts the
+*deferred* case (`getuid()==X`, target functional regardless of displayed id).
+
+---
+
+## (original design — retained for reference if revived)
+
 > **Optional / opt-in.** This ticket is **not** required for protection or for
 > file access — both are fully delivered by 2630 (uid X) + 2640 (idmapped
 > mounts). It only changes `getuid()`/displayed-name cosmetics. Because the
