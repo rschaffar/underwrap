@@ -28,7 +28,10 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use caps::{drop_caps, set_no_new_privs};
-use directory_credential::{DirectoryMount, cleanup_directory_mounts, prepare_directory_mounts};
+use directory_credential::{
+    DirectoryMount, DirectoryMountPlan, cleanup_directory_mounts, plan_directory_mounts,
+    realize_directory_mounts,
+};
 use env::build_target_env;
 use libsecret::setup_libsecret;
 use mounts::{
@@ -75,18 +78,7 @@ fn run() -> Result<(), String> {
     // from the wire (no escalation / confused-deputy path).
     let isolation = target_uid::resolve_isolation(&target)
         .map_err(|e| format!("resolving target isolation: {e}"))?;
-    // Files-slot / libsecret isolation needs the per-uid staging path (the
-    // child materializes/binds as X and the supervisor reads back under a single
-    // setfsuid window). That lands with the 2630 files-handling / 2640 work; until
-    // then, refuse rather than fall back to an unisolated target (which would put
-    // the secret back in a same-uid-readable env). Fail closed.
-    if isolation.is_some() && (has_files || libsecret_enabled) {
-        return Err(
-            "isolate is not yet supported together with files or libsecret slots; \
-             refusing to run rather than fall back to an unisolated target"
-                .to_string(),
-        );
-    }
+    let isolated = isolation.is_some();
 
     // Story 2640: build the caller<->X idmap user namespace BEFORE unsharing the
     // PID namespace — a helper fork after CLONE_NEWPID would become PID 1 of the
@@ -105,7 +97,7 @@ fn run() -> Result<(), String> {
     };
 
     make_process_non_dumpable()?;
-    prepare_namespace(has_files, isolation.is_some())?;
+    prepare_namespace(has_files, isolated)?;
 
     // Apply the idmapped bind mounts now: fsuid is still the caller (so open_tree
     // traverses the caller's home as owner), caps are held, and we are inside the
@@ -118,7 +110,18 @@ fn run() -> Result<(), String> {
 
     let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
 
-    let directory_mounts = prepare_files_mounts(&resource_channel, &target_identity.home)?;
+    // Compute the deterministic files-slot layout (pure — no filesystem side
+    // effects). The parent always keeps it to drive the end-of-run writeback
+    // walk. For an unisolated target the parent realizes the mounts now (at the
+    // caller's fsuid, as before); for an isolated target the child realizes them
+    // after switching to its dedicated uid X, where fsuid is naturally X and the
+    // X-owned staging is readable/writable by the target (story 2600 / 2635).
+    let directory_layout = plan_files_mounts(&resource_channel)?;
+    let directory_mounts = if isolated {
+        Vec::new()
+    } else {
+        realize_files_mounts(&resource_channel, &target_identity.home, &directory_layout)?
+    };
 
     let libsecret_state_path = if libsecret_enabled {
         Some(PathBuf::from(format!(
@@ -139,13 +142,17 @@ fn run() -> Result<(), String> {
             libsecret_enabled,
             libsecret_state_path.as_deref(),
             isolation,
+            has_files,
+            &directory_layout,
         )
     } else {
         run_parent(
             pid,
+            &directory_layout,
             &directory_mounts,
             &resource_channel,
             has_files,
+            isolation,
             libsecret_state_path.as_deref(),
         )
     }
@@ -193,7 +200,12 @@ fn prepare_namespace(has_files: bool, isolated: bool) -> Result<(), String> {
     make_mount_namespace_private()
         .map_err(|e| format!("making mount namespace private failed: {e}"))?;
 
-    if has_files {
+    // For an unisolated target, mount the files-slot staging tmpfs here in the
+    // parent (caller fsuid → caller-owned). An isolated target's staging must be
+    // owned by uid X, so its tmpfs is mounted by the child after the switch to X
+    // (see run_child); mounting it here would make it caller-owned and unreadable
+    // to the target.
+    if has_files && !isolated {
         setup_directory_staging_tmpfs(DIRECTORY_STAGING_ROOT)
             .map_err(|e| format!("directory staging setup failed: {e}"))?;
     }
@@ -201,15 +213,31 @@ fn prepare_namespace(has_files: bool, isolated: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Decode the Checkout blob and set up the resource's files-slot
-/// bind-mounts inside the namespace. Returns an empty `Vec` when the
-/// wrapper does not project files — empty `Vec` means "no files-slot
-/// staging to walk at writeback time."
-fn prepare_files_mounts(
+/// Compute the files-slot mount layout (pure). Returns an empty `Vec` when the
+/// wrapper does not project files.
+fn plan_files_mounts(
+    resource_channel: &ResourceChannel,
+) -> Result<Vec<DirectoryMountPlan>, String> {
+    if resource_channel.files_target_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    plan_directory_mounts(
+        &resource_channel.files_target_paths,
+        &PathBuf::from(DIRECTORY_STAGING_ROOT),
+    )
+    .map_err(|e| format!("planning files-slot mounts: {e}"))
+}
+
+/// Decode the Checkout blob and realize the planned files-slot bind-mounts
+/// (create + materialize + bind). Runs in the parent for an unisolated target
+/// and in the child (at fsuid X) for an isolated one. Returns an empty `Vec`
+/// when the wrapper does not project files.
+fn realize_files_mounts(
     resource_channel: &ResourceChannel,
     target_home: &Path,
+    plans: &[DirectoryMountPlan],
 ) -> Result<Vec<DirectoryMount>, String> {
-    if resource_channel.files_target_paths.is_empty() {
+    if plans.is_empty() {
         return Ok(Vec::new());
     }
     let blob = underwrap_protocol::resource_blob::ResourceBlob::from_canonical_bytes(
@@ -221,14 +249,13 @@ fn prepare_files_mounts(
             resource_channel.resource_id
         )
     })?;
-    prepare_directory_mounts(
+    realize_directory_mounts(
         resource_channel.resource_id.as_str(),
         &blob,
-        &resource_channel.files_target_paths,
         target_home,
-        &PathBuf::from(DIRECTORY_STAGING_ROOT),
+        plans,
     )
-    .map_err(|e| format!("preparing files-slot mounts: {e}"))
+    .map_err(|e| format!("realizing files-slot mounts: {e}"))
 }
 
 fn fork_into_namespace() -> Result<libc::pid_t, String> {
@@ -250,23 +277,40 @@ fn run_child(
     libsecret_enabled: bool,
     libsecret_state_path: Option<&Path>,
     isolation: Option<target_uid::Isolation>,
+    has_files: bool,
+    directory_layout: &[DirectoryMountPlan],
 ) -> Result<(), String> {
     // Inside the new PID namespace: mount a fresh /proc in every mode so the
     // target only sees namespace-local PIDs.
     remount_proc().map_err(|e| format!("remounting /proc failed: {e}"))?;
 
-    if libsecret_enabled {
-        setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
-    }
-
     // Story 2600: switch the target (and thus its whole subtree) to its dedicated
     // uid X BEFORE dropping caps — the switch needs CAP_SETUID/CAP_SETGID, which
     // are retained across it (no uid 0 on either side) and cleared by drop_caps
     // below. A failed switch aborts the run (switch_to bails): never exec a target
-    // that did not drop to X.
+    // that did not drop to X. The switch must precede every X-facing mount step
+    // below so they run at the natural fsuid X.
     if let Some(iso) = isolation {
         target_uid::switch_to(iso)
             .map_err(|e| format!("switching to dedicated target uid: {e}"))?;
+    }
+
+    // Isolated + files: realize the staging here, at fsuid X, so the tmpfs root,
+    // its materialized files, and the mountpoints are X-owned and the uid-X
+    // target can read/write them; the bind lands over the idmapped home set up
+    // pre-fork. (Unisolated targets realized this in the parent at caller fsuid.)
+    if isolation.is_some() && has_files {
+        setup_directory_staging_tmpfs(DIRECTORY_STAGING_ROOT)
+            .map_err(|e| format!("directory staging setup (isolated): {e}"))?;
+        realize_files_mounts(resource_channel, &target_identity.home, directory_layout)?;
+    }
+
+    // Private libsecret bus: for an isolated target this now runs after the
+    // switch, so the bus tmpfs is X-owned and the dbus-daemon / secretsd the
+    // child forks (also X) can create the socket and write the state file.
+    if libsecret_enabled {
+        setup_mount_namespace(isolation.is_some())
+            .map_err(|e| format!("mount namespace setup failed: {e}"))?;
     }
 
     set_no_new_privs().map_err(|e| format!("setting no_new_privs: {e}"))?;
@@ -386,12 +430,19 @@ fn disable_core_dumps() -> Result<(), String> {
 
 fn run_parent(
     pid: libc::pid_t,
+    directory_layout: &[DirectoryMountPlan],
     directory_mounts: &[DirectoryMount],
     resource_channel: &ResourceChannel,
     has_files: bool,
+    isolation: Option<target_uid::Isolation>,
     libsecret_state_path: Option<&Path>,
 ) -> Result<(), String> {
-    if !has_files {
+    let isolated = isolation.is_some();
+    // Keep CAP_SETUID/CAP_SETGID through writeback for an isolated target (the
+    // setfsuid(X) window reads X-owned staging/state), and CAP_SYS_ADMIN through
+    // cleanup for an unisolated files target (unmount). Otherwise drop now.
+    let retain_caps = has_files || isolated;
+    if !retain_caps {
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
     }
 
@@ -404,7 +455,8 @@ fn run_parent(
     // intact, so order is "walk first, then unmount".
     let writeback_input = WritebackInput {
         channel: resource_channel,
-        directory_mounts,
+        directory_layout,
+        hardened_walk: isolated,
         libsecret_state_path: if resource_channel.libsecret {
             libsecret_state_path
         } else {
@@ -412,10 +464,28 @@ fn run_parent(
         },
     };
 
-    let writeback_result = writeback::dispatch_writeback(&[writeback_input]);
+    // An isolated target's X-owned staging / libsecret state is read inside the
+    // single setfsuid(X) window (which also bounds the symlink-TOCTOU walk to
+    // uid X). An env-only isolated target has nothing X-owned to read and skips
+    // it; an unisolated target reads its own caller-owned files at caller fsuid.
+    let needs_fsuid_window = isolated && (has_files || resource_channel.libsecret);
+    let writeback_result = match isolation {
+        Some(iso) if needs_fsuid_window => {
+            target_uid::with_target_fsuid(iso, || writeback::dispatch_writeback(&[writeback_input]))
+                .and_then(|inner| inner)
+        }
+        _ => writeback::dispatch_writeback(&[writeback_input]),
+    };
 
-    // Always run mount cleanup, regardless of writeback success/failure.
-    let cleanup_result = cleanup_mount_state(directory_mounts, has_files);
+    // Cleanup: an isolated target's mounts live only in the private mount
+    // namespace and are torn down when the supervisor exits; the created
+    // mountpoint dirs (caller-owned via the idmap) are left in place. An
+    // unisolated target explicitly unmounts and removes what it created.
+    let cleanup_result = if isolated {
+        Ok(())
+    } else {
+        cleanup_mount_state(directory_mounts, has_files)
+    };
 
     match (writeback_result, cleanup_result) {
         (Ok(outcomes), Ok(())) => report_outcomes(&outcomes),
@@ -428,7 +498,7 @@ fn run_parent(
         }
     }
 
-    if has_files {
+    if retain_caps {
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
     }
 

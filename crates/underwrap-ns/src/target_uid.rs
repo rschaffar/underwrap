@@ -200,5 +200,69 @@ pub(crate) fn verify_switched() -> Result<(), String> {
     Ok(())
 }
 
+/// Run `f` with the process's **filesystem** uid/gid temporarily set to the
+/// isolated target's `iso`, then restore them — the single `setfsuid(X)` window
+/// the supervisor uses to read back an isolated target's X-owned staging /
+/// libsecret state at writeback (story 2600 / 2635).
+///
+/// `setfsuid`/`setfsgid` change only the credentials used for filesystem access
+/// checks; they do not affect process ownership, signal permissions, or the
+/// channel IPC (which operates on already-open fds). Entering the window needs
+/// `CAP_SETUID`/`CAP_SETGID` (the target id is not the caller's own); the
+/// supervisor retains those caps until after writeback for exactly this reason.
+/// Restoring to the caller's own ids needs no capability.
+///
+/// The window doubles as the symlink-TOCTOU defense: while the supervisor walks
+/// the target-controlled staging tree, its authority is bounded to uid X.
+///
+/// `f`'s value is returned on success. If restoring the ids fails the error is
+/// surfaced (a leaked fsuid would be a security problem) and `f`'s value is
+/// dropped.
+pub(crate) fn with_target_fsuid<T>(iso: Isolation, f: impl FnOnce() -> T) -> Result<T, String> {
+    let caller_uid = unsafe { libc::getuid() };
+    let caller_gid = unsafe { libc::getgid() };
+    enter_fsids(iso.uid, iso.gid)?;
+    let result = f();
+    restore_fsids(caller_uid, caller_gid)?;
+    Ok(result)
+}
+
+/// Set fsgid then fsuid to the target ids, verifying each took effect.
+/// `setfsuid`/`setfsgid` report no error directly (they return the *previous*
+/// id), so a follow-up query call (`-1`) confirms the change landed.
+fn enter_fsids(uid: libc::uid_t, gid: libc::gid_t) -> Result<(), String> {
+    // gid first, mirroring the gid-before-uid discipline of the real switch.
+    unsafe { libc::setfsgid(gid) };
+    if unsafe { libc::setfsgid(libc::gid_t::MAX) } as libc::gid_t != gid {
+        return Err(format!(
+            "setfsgid({gid}) did not take effect (missing CAP_SETGID?)"
+        ));
+    }
+    unsafe { libc::setfsuid(uid) };
+    if unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t != uid {
+        // Roll the gid back before bailing so we never leave a half-applied window.
+        let cur_gid = unsafe { libc::getgid() };
+        unsafe { libc::setfsgid(cur_gid) };
+        return Err(format!(
+            "setfsuid({uid}) did not take effect (missing CAP_SETUID?)"
+        ));
+    }
+    Ok(())
+}
+
+/// Restore the filesystem ids to the caller's own uid/gid (no capability
+/// needed) and verify. A failure here is fatal to the run.
+fn restore_fsids(uid: libc::uid_t, gid: libc::gid_t) -> Result<(), String> {
+    unsafe { libc::setfsuid(uid) };
+    if unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t != uid {
+        return Err(format!("failed to restore fsuid to {uid}"));
+    }
+    unsafe { libc::setfsgid(gid) };
+    if unsafe { libc::setfsgid(libc::gid_t::MAX) } as libc::gid_t != gid {
+        return Err(format!("failed to restore fsgid to {gid}"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

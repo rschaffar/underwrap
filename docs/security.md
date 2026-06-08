@@ -754,6 +754,48 @@ therefore rests on three preconditions:
 Loosening any of these preconditions narrows the guarantee
 correspondingly.
 
+### Files and libsecret projection under `isolate`
+
+An isolated target still projects `files` and `libsecret` slots; the secret
+just has to cross between the **uid-X target** (and its private dbus/secretsd,
+also uid X) and the **caller-uid supervisor** that reads it back at writeback.
+These tmpfs surfaces (the files staging and the private bus) are made
+`uid=X, gid=Xgid, mode=0700`, and the access asymmetry is resolved by *placing
+all X-facing work where the filesystem uid is naturally X*, not by scattering
+`setfsuid` calls:
+
+- **Child side — zero `setfsuid`.** The staging tmpfs is mounted, the files-slot
+  content is materialized, the bind mounts are laid over the idmapped home, and
+  the private bus is set up **after** `setresuid(X,X,X)` in `run_child`, where
+  fsuid is already X and `CAP_SYS_ADMIN` is still held (the `caller → X` switch
+  clears no caps — no uid 0 on either side). The dbus-daemon and secretsd the
+  child forks inherit uid X and write the bus socket and `libsecret-state.jcs`
+  as X.
+- **Supervisor side — exactly one `setfsuid(X)` window.** The only place the
+  caller-uid supervisor touches X-owned content is the post-`waitpid` writeback
+  walk (the staging tree plus `libsecret-state.jcs`). That walk runs inside a
+  single `setfsuid(X)`/`setfsgid(Xgid)` window (`target_uid::with_target_fsuid`),
+  which both grants the read and **bounds the supervisor's filesystem authority
+  to uid X** while it traverses a target-controlled tree — the symlink-TOCTOU
+  defense. As a second layer the walk resolves every entry with
+  `openat2(RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH)` and opens it
+  `O_NOFOLLOW | O_NONBLOCK` (skipping non-regular files), so a target-planted
+  symlink or FIFO can neither redirect the read outside the staging subtree nor
+  stall it. Entering the window needs `CAP_SETUID`/`CAP_SETGID`, so the
+  supervisor keeps those caps until writeback completes, then drops uniformly.
+
+Confidentiality of these surfaces rests on the **private mount namespace** (the
+caller cannot see or enter the staging / bus mounts from the host namespace;
+concurrent invocations get their own) plus dbus peer-cred for the bus.
+
+The staging and bus mountpoints are fixed paths on the shared `/tmp`
+(`/tmp/.underwrap-ns-directories`, `/tmp/.underwrap-ns-bus`); the tmpfs mounted
+over each is what the target and supervisor actually use, so the bare
+mountpoint dir's owner/mode is immaterial once mounted. After an isolated run
+the bare dir is left owned by the dedicated uid X (a later caller-uid run mounts
+over it and cannot `chmod`/`rmdir` it on sticky `/tmp` — handled best-effort);
+this is a harmless, reused, empty directory, never a secret-bearing artifact.
+
 ---
 
 ## Why not user namespaces?

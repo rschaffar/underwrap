@@ -173,6 +173,41 @@ let
     set -eu
     ${pkgs.coreutils}/bin/cat "$HOME/iso-data/from-caller" > "$HOME/iso-data/from-target"
   '';
+  # Isolated target projecting a FILES slot (story 2635). The files-slot staging
+  # is owned by the dedicated uid X and bound at `$HOME/iso-files/dir-a` under an
+  # idmapped `~/iso-files`, so the uid-X target reads/writes it directly. `write`
+  # seeds a file (persisted by the supervisor through the single setfsuid(X)
+  # window); `read` prints it back (materialized from the backend blob on the
+  # next run). `printf` is a shell builtin so no PATH is needed.
+  isoDirScript = pkgs.writeShellScript "iso-dir-target" ''
+    set -eu
+    mode="''${1:-read}"
+    case "$mode" in
+      write)
+        printf 'iso_files_secret_val' > "$HOME/iso-files/dir-a/token"
+        ;;
+      read)
+        ${pkgs.coreutils}/bin/cat "$HOME/iso-files/dir-a/token"
+        ${pkgs.coreutils}/bin/printf '\n'
+        ;;
+      sleep)
+        printf 'iso_files_secret_val' > "$HOME/iso-files/dir-a/token"
+        exec ${pkgs.coreutils}/bin/sleep 5353
+        ;;
+      *)
+        echo "unknown mode: $mode" >&2
+        exit 1
+        ;;
+    esac
+  '';
+  # secret-tool is also the unisolated `test-libsecret` target, and isolation is
+  # keyed on the target *path* (every wrapper running the same binary shares its
+  # uid). Give the isolated libsecret wrapper a DISTINCT path — a thin exec shim
+  # — so enabling isolate here does not also isolate the unisolated libsecret
+  # wrappers. `exec` with an absolute path needs no PATH in the cleared env.
+  isoSecretTool = pkgs.writeShellScript "iso-secret-tool" ''
+    exec ${pkgs.libsecret}/bin/secret-tool "$@"
+  '';
 in {
   imports = [ nixosModule ];
 
@@ -406,6 +441,27 @@ in {
             env = true;
             isolate = true;
             idmapPaths = [ "~/iso-data" ];
+          };
+          # Isolated target projecting a FILES slot (story 2635). The staging is
+          # owned by uid X and bound under an idmapped `~/iso-files`; the uid-X
+          # target reads/writes it and the supervisor persists the writeback
+          # through the single setfsuid(X) window.
+          test-iso-dir = {
+            target = "${isoDirScript}";
+            resource = "test/iso-dir-tok";
+            files.paths = [ "iso-files/dir-a" ];
+            isolate = true;
+            idmapPaths = [ "~/iso-files" ];
+          };
+          # Isolated LIBSECRET target (story 2635): dbus-daemon + secretsd run as
+          # the dedicated uid X on an X-owned private bus tmpfs; the supervisor
+          # reads the X-owned state file at writeback inside the setfsuid(X)
+          # window.
+          test-iso-libsecret = {
+            target = "${isoSecretTool}";
+            resource = "test/iso-libsecret-store";
+            libsecret = true;
+            isolate = true;
           };
           test-crash = {
             target = "${crashScript}";

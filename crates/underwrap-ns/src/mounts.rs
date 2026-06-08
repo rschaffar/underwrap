@@ -22,14 +22,34 @@ pub(crate) fn make_mount_namespace_private() -> Result<(), String> {
     Ok(())
 }
 
+/// Set a tmpfs mountpoint dir to `0000` as a pre-mount guard, **best-effort**.
+///
+/// The tmpfs mounted over this dir immediately shadows it, so the dir's own
+/// permissions are moot once the mount succeeds; the guard only matters in the
+/// brief single-threaded window before the mount, and only if the mount then
+/// fails (in which case the dir is empty — no secret is ever placed in the
+/// bare mountpoint). These mountpoints live on the shared `/tmp` at fixed
+/// paths, so a dir created by a prior invocation under a **different uid** —
+/// e.g. an isolated target's dedicated uid X created `/tmp/.underwrap-ns-*`
+/// before a later caller-uid run — cannot be `chmod`'d by the current process.
+/// That `EPERM` is expected and ignored: the tmpfs mount (with its own
+/// `mode=` and the mounting fsuid as owner) covers it regardless. Any other
+/// error is fatal.
+fn guard_mountpoint_mode(path: &str) -> Result<(), String> {
+    match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(()),
+        Err(e) => Err(format!("setting mountpoint permissions on {path}: {e}")),
+    }
+}
+
 /// Stage the files-slot tmpfs root. Only invoked when the wrapper projects a
 /// files slot; the mount-tree-private step is now a separate, unconditional
 /// concern (see `make_mount_namespace_private`).
 pub(crate) fn setup_directory_staging_tmpfs(staging_root_path: &str) -> Result<(), String> {
     std::fs::create_dir_all(staging_root_path)
         .map_err(|e| format!("creating directory staging mount point {staging_root_path}: {e}"))?;
-    std::fs::set_permissions(staging_root_path, std::fs::Permissions::from_mode(0o000))
-        .map_err(|e| format!("setting mountpoint permissions on {staging_root_path}: {e}"))?;
+    guard_mountpoint_mode(staging_root_path)?;
     let staging_root = std::ffi::CString::new(staging_root_path).unwrap();
     let tmpfs = std::ffi::CString::new("tmpfs").unwrap();
     let ret = unsafe {
@@ -78,12 +98,19 @@ pub(crate) fn remount_proc() -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn setup_mount_namespace() -> Result<(), String> {
+/// Set up the private libsecret bus mount namespace: a tmpfs at the bus dir
+/// (root owned by the current fsuid, so an isolated child running at uid X gets
+/// an X-owned bus the dbus-daemon / secretsd it forks can write to) plus, for
+/// an **unisolated** target, a bind of `/dev/null` over the caller's real
+/// session bus so a target that ignores `DBUS_SESSION_BUS_ADDRESS` cannot reach
+/// it. When `isolated`, the real-bus hide is skipped: the uid boundary already
+/// denies a uid-X target access to the caller's `/run/user/<caller>` runtime
+/// dir, and X cannot even traverse it to bind over the socket.
+pub(crate) fn setup_mount_namespace(isolated: bool) -> Result<(), String> {
     let bus_dir = "/tmp/.underwrap-ns-bus";
     std::fs::create_dir_all(bus_dir)
         .map_err(|e| format!("creating bus mount point {bus_dir}: {e}"))?;
-    std::fs::set_permissions(bus_dir, std::fs::Permissions::from_mode(0o000))
-        .map_err(|e| format!("setting mountpoint permissions on {bus_dir}: {e}"))?;
+    guard_mountpoint_mode(bus_dir)?;
     let bus_dir_c = std::ffi::CString::new(bus_dir).unwrap();
     let tmpfs_c = std::ffi::CString::new("tmpfs").unwrap();
     let ret = unsafe {
@@ -98,6 +125,10 @@ pub(crate) fn setup_mount_namespace() -> Result<(), String> {
     if ret != 0 {
         let err = std::io::Error::last_os_error();
         return Err(format!("mount tmpfs for private bus failed: {err}"));
+    }
+
+    if isolated {
+        return Ok(());
     }
 
     let uid = unsafe { libc::getuid() };
@@ -134,6 +165,15 @@ pub(crate) fn cleanup_directory_staging_root(staging_root_path: &str) -> Result<
             std::io::Error::last_os_error()
         ));
     }
-    std::fs::remove_dir(staging_root_path)
-        .map_err(|e| format!("removing directory staging mount point: {e}"))
+    // Remove the bare mountpoint, best-effort. The staging root is a fixed path
+    // on the shared, sticky `/tmp`; if a prior isolated run created it under its
+    // dedicated uid X, a later caller-uid run cannot remove that entry (sticky
+    // bit) — that EPERM is expected and ignored. The empty dir is harmless and
+    // is reused (mounted over) by the next run. Other errors are fatal.
+    match std::fs::remove_dir(staging_root_path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("removing directory staging mount point: {e}")),
+    }
 }

@@ -69,3 +69,45 @@ fn blank_lines_are_skipped() {
         "blank lines skipped, absent path => None, got {r:?}"
     );
 }
+
+#[test]
+fn with_target_fsuid_runs_closure_for_own_ids() {
+    // Switching the filesystem ids to our own uid/gid is always permitted (no
+    // capability needed), so the closure runs and its value is returned.
+    let me = unsafe { libc::getuid() };
+    let mygid = unsafe { libc::getgid() };
+    let iso = Isolation {
+        uid: me,
+        gid: mygid,
+    };
+    let out = with_target_fsuid(iso, || 41 + 1);
+    assert!(matches!(out, Ok(42)), "expected Ok(42), got {out:?}");
+}
+
+#[test]
+fn with_target_fsuid_fails_closed_without_cap() {
+    // As an unprivileged test process (no CAP_SETUID), setfsuid to a *foreign*
+    // uid is silently ignored by the kernel, so the verify step must catch it
+    // and the window must NOT run the closure. (If the suite somehow runs as
+    // root the switch would succeed; skip the assertion in that case.)
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipping: running as root, the switch would succeed");
+        return;
+    }
+    // Pick a uid/gid that is not our own. 1 (daemon/bin) is present on every
+    // system and is not the test user.
+    let foreign = if unsafe { libc::getuid() } == 1 { 2 } else { 1 };
+    let iso = Isolation {
+        uid: foreign,
+        gid: foreign,
+    };
+    let mut ran = false;
+    let out = with_target_fsuid(iso, || {
+        ran = true;
+    });
+    assert!(out.is_err(), "expected fail-closed Err, got {out:?}");
+    assert!(
+        !ran,
+        "closure must not run when the fsuid window cannot be entered"
+    );
+}

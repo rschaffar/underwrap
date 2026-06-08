@@ -23,7 +23,7 @@ use underwrap_protocol::message::{
 };
 use underwrap_protocol::resource_blob::{LibsecretSection, ResourceBlob};
 
-use crate::directory_credential::{DirectoryMount, collect_staging_files};
+use crate::directory_credential::{DirectoryMountPlan, collect_staging_files};
 use crate::resource_channel::ResourceChannel;
 
 /// Per-resource end-of-run outcome, surfaced to the caller so it can
@@ -52,10 +52,14 @@ pub enum WritebackOutcome {
 /// Per-resource input from the run's tmpfs/state side.
 pub struct WritebackInput<'a> {
     pub channel: &'a ResourceChannel,
-    /// Files-slot bind-mounts to walk when composing the post-run
-    /// blob. Empty when the wrapper does not project files; in that
-    /// case the Checkout's `files` section is preserved verbatim.
-    pub directory_mounts: &'a [DirectoryMount],
+    /// Files-slot layout to walk when composing the post-run blob.
+    /// Empty when the wrapper does not project files; in that case the
+    /// Checkout's `files` section is preserved verbatim.
+    pub directory_layout: &'a [DirectoryMountPlan],
+    /// When set, walk the staging with the hardened (openat2) collector
+    /// — used for an isolated target, whose staging is target-controlled
+    /// and read under a `setfsuid(X)` window.
+    pub hardened_walk: bool,
     /// Path to the libsecret state file written by secretsd, or `None`
     /// when this resource is not the libsecret resource. The path is
     /// only consulted when present.
@@ -81,10 +85,10 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
             )
         })?;
 
-    let new_files = if input.directory_mounts.is_empty() {
+    let new_files = if input.directory_layout.is_empty() {
         original.files.clone()
     } else {
-        collect_staging_files(input.directory_mounts).map_err(|e| {
+        collect_staging_files(input.directory_layout, input.hardened_walk).map_err(|e| {
             format!(
                 "walking staging directory for '{}': {e}",
                 channel.resource_id
@@ -92,11 +96,9 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
         })?
     };
 
-    let new_libsecret = if let Some(path) = input.libsecret_state_path
-        && path.exists()
-    {
-        match std::fs::read(path) {
-            Ok(bytes) => match LibsecretSection::from_canonical_bytes(&bytes) {
+    let new_libsecret = if let Some(path) = input.libsecret_state_path {
+        match read_state_no_follow(path) {
+            Ok(Some(bytes)) => match LibsecretSection::from_canonical_bytes(&bytes) {
                 Ok(section) => section,
                 Err(e) => {
                     eprintln!(
@@ -106,6 +108,7 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
                     original.libsecret.clone()
                 }
             },
+            Ok(None) => original.libsecret.clone(),
             Err(e) => {
                 eprintln!(
                     "underwrap-ns: reading libsecret state {} failed: {e}; falling back to Checkout bytes",
@@ -152,6 +155,29 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
             })
         }
     }
+}
+
+/// Read the libsecret state file refusing to follow a symlink at the final
+/// component (`O_NOFOLLOW`) and refusing to block on a planted FIFO
+/// (`O_NONBLOCK`). The bus tmpfs is writable by the target (it is uid X for an
+/// isolated run), so the state path is target-controllable; the supervisor reads
+/// it under a `setfsuid(X)` window, and this is the second layer. Returns
+/// `Ok(None)` when the file is absent.
+fn read_state_no_follow(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    Ok(Some(buf))
 }
 
 fn compose_blob(

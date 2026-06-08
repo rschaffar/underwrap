@@ -1,42 +1,50 @@
 #!/usr/bin/env python3
-"""Adversarial ancestor attack test.
+"""Adversarial ancestor attack test (story 2600).
 
-This script runs as a PARENT process that spawns the wrapper. The target
-(sleep 300) becomes a descendant. Under Yama ptrace_scope=1, ancestor→
-descendant tracing is allowed. This test determines whether the ancestor
-can read the target's /proc/environ and recover the secret.
+This script runs as a PARENT (ancestor) process that spawns an ISOLATED
+wrapper (`test-iso`, `isolate = true`). The wrapped target and the
+descendant it backgrounds (`sleep 5252`) run under a dedicated sandbox uid
+X, distinct from this caller. The dedicated UID is what makes
+`ptrace_may_access` fail the UID gate for BOTH the READ-mode files
+(`/proc/<pid>/environ`) and the ATTACH-mode vectors (`ptrace`,
+`/proc/<pid>/mem`), so even an ancestor cannot recover the secret.
+
+We deliberately attack the *isolated* fixture rather than an unisolated
+one: against an unisolated target the direct process is only *incidentally*
+non-dumpable (a fragile, non-deterministic side-effect of the wrapper
+chain, not a control — see docs/security.md "The awkward fact"), so a test
+that relied on it would flake. The UID boundary tested here is the real,
+deterministic protection story 2600 adds. The unique `sleep 5252` marker
+also means the /proc scan locates exactly this run's target, never a stale
+process from an earlier scenario.
 
 Output lines prefixed with RESULT: are parsed by the VM test.
 """
 import subprocess, time, os, sys, ctypes
 
-# Spawn the wrapper as our child.
+# Spawn the isolated wrapper as our child. isoScript backgrounds `sleep 5252`
+# (the descendant) and waits; the whole subtree runs as the dedicated uid X.
 wrapper = subprocess.Popen(
-    ["/run/wrappers/bin/underwrap-local", "test-sleep", "300"],
+    ["/run/wrappers/bin/underwrap-local", "test-iso"],
     stdout=subprocess.DEVNULL,
     stderr=subprocess.DEVNULL,
 )
 time.sleep(2)
 
-# Find the actual sleep process (our descendant).
+# Find the isolated descendant by its unique marker. It runs as uid X (NOT our
+# uid), so we deliberately do NOT filter on our own uid — we want to prove that
+# even though we can *see* the process exists, we cannot read its secret state.
 target_pid = None
 for pid_dir in os.listdir("/proc"):
     if not pid_dir.isdigit():
         continue
     try:
         cmdline = open(f"/proc/{pid_dir}/cmdline", "rb").read()
-        status = open(f"/proc/{pid_dir}/status").read()
-        if b"sleep\x00300" in cmdline:
-            for line in status.splitlines():
-                if line.startswith("Uid:"):
-                    uid = int(line.split()[1])
-                    if uid == os.getuid():
-                        target_pid = pid_dir
-                        break
+        if b"sleep\x005252" in cmdline:
+            target_pid = pid_dir
+            break
     except (PermissionError, FileNotFoundError, ProcessLookupError):
         continue
-    if target_pid:
-        break
 
 if not target_pid:
     print("RESULT:TARGET_NOT_FOUND")
@@ -46,11 +54,11 @@ if not target_pid:
 
 print(f"RESULT:TARGET_PID={target_pid}")
 
-# Try to read the target's environ as its ancestor.
+# Try to read the isolated target's environ as its ancestor.
 try:
     env_data = open(f"/proc/{target_pid}/environ", "rb").read()
     env_str = env_data.decode("utf-8", errors="replace")
-    if "DUMPABLE_SECRET" in env_str or "dumpable_test_secret" in env_str:
+    if "ISO_SECRET" in env_str or "iso_secret_val" in env_str:
         print("RESULT:SECRET_LEAKED")
     else:
         print("RESULT:ENVIRON_READABLE_NO_SECRET")

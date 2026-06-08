@@ -295,6 +295,8 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-descendant": "test/descendant-tok",
     "test-iso": "test/iso-tok",
     "test-iso-home": "test/iso-home-tok",
+    "test-iso-dir": "test/iso-dir-tok",
+    "test-iso-libsecret": "test/iso-libsecret-store",
     "test-crash": "test/crash-tok",
     "test-libsecret": "test/libsecret-store",
     "test-caps": "test/caps-tok",
@@ -1045,16 +1047,160 @@ def local_target_uid_idmapped_home():
     )
 
 
+def local_target_uid_files_libsecret():
+    # ============================================================
+    # LOCAL INSTANCE: files + libsecret projection under isolate (story 2635)
+    # ============================================================
+    # An isolated (dedicated-uid X) target can still project a files slot and a
+    # libsecret slot. The X-owned staging / private bus is created by the child
+    # AFTER the switch to X (so the uid-X target can read/write it), and the
+    # supervisor reads it back through the single setfsuid(X) window. This is the
+    # carved-out remainder of 2630.
+
+    # --- Files slot under isolate ---
+    grant_local_unlocked("test-iso-dir")
+    # Back ~/iso-files with a tmpfs (idmap-capable, caller-owned) so the test is
+    # deterministic regardless of the VM's /home filesystem (see iso-home test).
+    machine.execute("umount /home/testuser/iso-files 2>/dev/null || true")
+    machine.succeed("mkdir -p /home/testuser/iso-files")
+    machine.succeed(
+        "mount -t tmpfs -o mode=0755,uid=1099,gid=100 tmpfs /home/testuser/iso-files"
+    )
+
+    # Write run: the uid-X target writes a file into the X-owned staging; the
+    # supervisor persists it to the backend through the setfsuid(X) window.
+    machine.succeed(
+        "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-iso-dir write'"
+    )
+    blob_files = json.loads(
+        base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", "test/iso-dir-tok"))
+    )["files"]
+    assert "iso-files/dir-a/token" in blob_files, (
+        "FAIL: isolated files-slot writeback did not persist to the backend blob: "
+        f"{sorted(blob_files.keys())}"
+    )
+    machine.log("PASS: isolated files-slot writeback persisted via the setfsuid(X) window")
+
+    # Read run: the blob is materialized into the X-owned staging and the uid-X
+    # target reads it back, proving the round-trip end to end.
+    out = (
+        machine.succeed(
+            "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-iso-dir read'"
+        )
+        .strip()
+        .split("\n")[-1]
+        .strip()
+    )
+    assert out == "iso_files_secret_val", (
+        f"FAIL: isolated files-slot read did not return the persisted secret: {out!r}"
+    )
+    machine.log("PASS: isolated files-slot read round-trips the persisted content")
+
+    # While an isolated files target runs, a same-UID host process must not see
+    # the staged secret — the staging tmpfs lives only in the private mount ns.
+    machine.succeed(
+        "su testuser -s /bin/sh -c '"
+        "setsid /run/wrappers/bin/underwrap-local test-iso-dir sleep </dev/null >/dev/null 2>&1 &'"
+    )
+    time.sleep(1)
+    host_token = machine.execute(
+        "su testuser -s /bin/sh -c 'cat /home/testuser/iso-files/dir-a/token 2>/dev/null'"
+    )[1]
+    assert "iso_files_secret_val" not in host_token, (
+        "FAIL: same-UID host process read the isolated target's staged secret"
+    )
+    host_staging = machine.succeed(
+        "find /tmp/.underwrap-ns-directories -type f 2>/dev/null || true"
+    ).strip()
+    assert host_staging == "", (
+        f"FAIL: host view exposes isolated staging files: {host_staging}"
+    )
+    machine.log("PASS: isolated files staging is invisible to a same-UID host process")
+    # sleep 5353 is the isolated direct target (PID 1 of its namespace, runs as
+    # uid X), so it ignores SIGTERM and a testuser pkill can't reach it: SIGKILL
+    # as root from the host (ancestor) namespace.
+    machine.execute("pkill -KILL -f 'sleep 5353' || true")
+    machine.execute("pkill -u testuser -x underwrap-ns || true")
+    time.sleep(0.5)
+    machine.execute("umount /home/testuser/iso-files 2>/dev/null || true")
+
+    # --- libsecret slot under isolate ---
+    grant_local_unlocked("test-iso-libsecret")
+    import tempfile
+    import os
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".secret", delete=False) as f:
+        f.write("iso_libsecret_val")
+        secret_file = f.name
+    machine.copy_from_host(secret_file, "/tmp/.iso-libsecret-secret")
+    os.unlink(secret_file)
+    machine.succeed(
+        "chmod 600 /tmp/.iso-libsecret-secret && chown testuser /tmp/.iso-libsecret-secret"
+    )
+    machine.succeed(
+        'su testuser -s /bin/sh -c "'
+        "cat /tmp/.iso-libsecret-secret | "
+        "/run/wrappers/bin/underwrap-local test-iso-libsecret store "
+        '--label=IsoToken service iso-svc account iso-acct"'
+    )
+    machine.succeed("rm -f /tmp/.iso-libsecret-secret")
+    machine.log("PASS: isolated libsecret store via secretsd as uid X")
+
+    iso_out = machine.succeed(
+        'su testuser -s /bin/sh -c '
+        '"/run/wrappers/bin/underwrap-local test-iso-libsecret lookup '
+        'service iso-svc account iso-acct"'
+    ).strip()
+    iso_last = iso_out.split("\n")[-1].strip()
+    assert iso_last == "iso_libsecret_val", (
+        f"FAIL: isolated libsecret lookup returned {iso_last!r}, expected iso_libsecret_val"
+    )
+    machine.log("PASS: isolated libsecret lookup over the private bus")
+
+    # The libsecret state persisted to the backend (single-blob storage).
+    iso_ls_id = LOCAL_RESOURCE_IDS["test/iso-libsecret-store"]
+    have = machine.succeed(
+        "test -f "
+        f"/var/lib/underwrap-backend-local/secrets/resources/{iso_ls_id} "
+        "&& echo ok || echo none"
+    ).strip()
+    assert have == "ok", (
+        f"FAIL: isolated libsecret state not persisted at resources/{iso_ls_id}"
+    )
+    machine.log("PASS: isolated libsecret state persisted to the backend")
+
+    # While running, the private bus must be invisible to a same-UID host process.
+    machine.succeed(
+        'su testuser -s /bin/sh -c "'
+        "setsid /run/wrappers/bin/underwrap-local test-iso-libsecret lookup "
+        'service iso-svc account iso-acct </dev/null >/dev/null 2>&1 &"'
+    )
+    time.sleep(1)
+    iso_bus = machine.succeed(
+        "find /tmp/.underwrap-ns-bus -type s 2>/dev/null || true"
+    ).strip()
+    assert iso_bus == "", f"FAIL: isolated private bus socket visible on host: {iso_bus}"
+    machine.log("PASS: isolated libsecret private bus invisible to a same-UID host process")
+    machine.execute("pkill -u testuser -x underwrap-ns || true")
+    time.sleep(0.5)
+
+
 def local_ancestor_attack():
     # ============================================================
     # LOCAL INSTANCE: adversarial ancestor attack (CRITICAL TEST)
     # ============================================================
-    # This tests whether a PARENT process that spawns the wrapper can
-    # inspect its descendant target and recover the secret. With
-    # services.underwrap.hardenTargetHost = true (default), the module
-    # pins ptrace_scope=2 so even an ancestor needs CAP_SYS_PTRACE to
-    # ptrace or read /proc/<pid>/{environ,mem}. This test confirms the
-    # adversarial caller really cannot recover the token.
+    # A PARENT process spawns an ISOLATED wrapper (test-iso, isolate = true)
+    # and tries to inspect the dedicated-uid-X target subtree it spawned. The
+    # UID boundary (story 2600) makes `ptrace_may_access` fail the UID gate for
+    # BOTH the READ-mode files (/proc/<pid>/environ) and the ATTACH-mode vectors
+    # (ptrace, /proc/<pid>/mem), so even an ancestor cannot recover the secret.
+    #
+    # We deliberately attack the ISOLATED fixture: against an unisolated target
+    # the direct process is only *incidentally* non-dumpable (a fragile,
+    # non-deterministic side-effect of the wrapper chain — see docs/security.md
+    # "The awkward fact"), so a test relying on it would flake. The UID boundary
+    # is the real, deterministic protection. The unique `sleep 5252` marker also
+    # means the attack locates exactly this run's target, never a stale process.
 
     ANCESTOR_SCRIPT = os.environ.get("ANCESTOR_ATTACK_SCRIPT", "/dev/null")
     attack_output = machine.succeed(
@@ -1075,43 +1221,43 @@ def local_ancestor_attack():
 
     machine.log(f"Parsed attack results: {results}")
 
+    # The attack must actually have located the isolated target — otherwise the
+    # probes below are vacuous and a setup failure would masquerade as a pass.
+    assert "TARGET_PID" in results, (
+        "FAIL: ancestor could not locate the isolated test-iso descendant "
+        f"(sleep 5252) — the fixture did not start. Results: {results}"
+    )
+
     # The ancestor MUST NOT be able to read the secret.
-    if "SECRET_LEAKED" in results:
-        assert False, \
-            "CRITICAL: ancestor process CAN read descendant target's secret via /proc/environ!"
+    assert "SECRET_LEAKED" not in results, (
+        "CRITICAL: ancestor process recovered the isolated target's secret via "
+        "/proc/environ — the UID boundary failed!"
+    )
 
-    if "ENVIRON_READABLE_NO_SECRET" in results:
-        # On this UNPROTECTED baseline (test-sleep, unisolated env mode) the
-        # ancestor IS expected to be able to read the dumpable target's environ
-        # — it is a READ-mode file the ancestor passes as same-UID. So this is a
-        # warning, not a failure, here. The decisive "must NOT be readable"
-        # matrix runs against the PROTECTED (isolated) fixture in 2660,
-        # where a readable environ is a hard failure.
-        machine.log("WARNING: ancestor can read /proc/environ but secret not found in output")
-        machine.log("(expected for the unprotected baseline; 2660 asserts the protected case)")
+    # For an isolated target the READ-mode environ is denied by the UID gate.
+    # `ENVIRON_READABLE_NO_SECRET` would mean the gate let us read but the secret
+    # happened to be absent — still a boundary failure for an isolated target.
+    assert "ENVIRON_DENIED" in results, (
+        "FAIL: the isolated target's /proc/environ was not denied to its "
+        f"same-host ancestor (UID boundary expected to deny). Results: {results}"
+    )
+    machine.log("PASS: ancestor /proc/environ access DENIED (UID boundary)")
 
-    if "PTRACE_ALLOWED" in results:
-        machine.log("WARNING: ancestor can ptrace-attach to descendant target")
-
-    if "MEM_READABLE" in results:
-        machine.log("WARNING: ancestor can read /proc/mem of descendant target")
-
-    # Log the definitive outcome.
-    if "ENVIRON_DENIED" in results:
-        machine.log("PASS: ancestor /proc/environ access DENIED")
-    elif "TARGET_NOT_FOUND" in results:
-        machine.log("PASS: ancestor cannot find descendant target in /proc")
-    elif "PROC_NOT_FOUND" in results:
-        machine.log("PASS: descendant target /proc entry not found by ancestor")
-    else:
-        machine.log(f"INFO: ancestor attack outcome: {results}")
-
-    # Hard assertion: the secret must not leak.
-    assert "SECRET_LEAKED" not in results, \
-        "CRITICAL: adversarial ancestor recovered secret from descendant target"
+    # ATTACH-mode vectors must also be denied (UID gate + ptrace_scope=2).
+    assert "PTRACE_ALLOWED" not in results, (
+        "CRITICAL: ancestor could ptrace-attach to the isolated target"
+    )
+    assert "MEM_READABLE" not in results, (
+        "CRITICAL: ancestor could read the isolated target's /proc/<pid>/mem"
+    )
+    machine.log("PASS: ancestor ptrace-attach and /proc/mem both DENIED")
     machine.log("PASS: adversarial ancestor attack did not recover secret")
 
-    machine.execute("pkill -u testuser -x sleep || true")
+    # Clean up as root (the target subtree runs as uid X, so a testuser pkill
+    # could not reach it; SIGKILL because the isoScript shell is PID 1 of its
+    # namespace and ignores SIGTERM).
+    machine.execute("pkill -KILL -f 'sleep 5252' || true")
+    machine.execute("pkill -KILL -f iso-target || true")
     time.sleep(0.5)
 
 
@@ -2582,6 +2728,8 @@ def audit_and_no_secret_leaks():
     assert "secret_via_service" not in logs, "secret leaked!"
     assert "my_gh_token_value" not in logs, "libsecret secret leaked!"
     assert "libsecret_two_slot_value" not in logs, "two-slot secret leaked!"
+    assert "iso_files_secret_val" not in logs, "isolated files secret leaked!"
+    assert "iso_libsecret_val" not in logs, "isolated libsecret secret leaked!"
     machine.log("PASS: audit events present, no secrets in logs")
 
     machine.log("ALL TESTS PASSED")
@@ -2598,6 +2746,7 @@ local_daemon_restart_persistence()
 local_pid_namespace_proc_isolation()
 local_target_uid_isolation()
 local_target_uid_idmapped_home()
+local_target_uid_files_libsecret()
 local_proc_isolation_env_mode()
 local_ancestor_attack()
 local_core_dump_protection()

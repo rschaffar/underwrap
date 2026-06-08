@@ -13,15 +13,27 @@ smaps/auxv/mem all denied to the same-UID caller; real uid is a dedicated
 unrecoverable), `local_target_uid_idmapped_home` (idmapped dir read-as-owner +
 writeback-owned-by-caller), and the corrected unisolated baseline contrast.
 
+Also landed since (commit for 2635): `local_target_uid_files_libsecret`
+(isolated **files** write→persist→read round-trip via the setfsuid(X) window;
+isolated **libsecret** store/lookup as uid X with backend persistence; caller
+cannot see the staging tmpfs or the private bus from the host ns), and
+`local_ancestor_attack` was re-pointed at the **isolated** fixture (deterministic
+UID boundary denies an ancestor's environ/ptrace/mem; unique `sleep 5252`
+marker), replacing its earlier reliance on the incidental, non-deterministic
+non-dumpability of an unisolated target.
+
 **Still to add here** (the comprehensive matrix): explicit `process_vm_readv` and
-`ptrace(PTRACE_ATTACH)` probes; the **root-can-read** documented-limitation
-assertion; the **authority** hard checks from 2620/2630 (getcap shows
-cap_setuid+cap_setgid; root-owned `/etc/underwrap/target-uids` is `root:root` and
-not world-writable; a bogus fd-3 bundle cannot change which uid the target lands
-on; `ExecBundle` carries no target-uid field via a protocol round-trip test); and
-the **2645 boundary proofs** (TIOCSTI-injection denied, `/proc/<pid>/fd` hygiene,
-fresh IPC ns, anonymous session keyring). Once `2635` lands, add the files/
-libsecret-under-isolate proofs too.
+`ptrace(PTRACE_ATTACH)` probes against the isolated target itself (the ancestor
+variant now exists; the same-host non-ancestor variant is still TODO); the
+**root-can-read** documented-limitation assertion; the **authority** hard checks
+from 2620/2630 (getcap shows cap_setuid+cap_setgid; root-owned
+`/etc/underwrap/target-uids` is `root:root` and not world-writable; a bogus fd-3
+bundle cannot change which uid the target lands on; `ExecBundle` carries no
+target-uid field via a protocol round-trip test); and the **2645 boundary
+proofs** (TIOCSTI-injection denied, `/proc/<pid>/fd` hygiene, fresh IPC ns,
+anonymous session keyring). The files/libsecret-under-isolate functional proofs
+(2635) are in; the matrix should fold in the symlink-TOCTOU writeback proof and
+the read-only-grant drop under isolate.
 
 ## Goal
 

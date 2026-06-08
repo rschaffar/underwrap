@@ -4,6 +4,53 @@ Parent: `2600_story_target_uid_isolation`
 Depends on: `2630_task_ns_setresuid_target_uid` (done), `2640_task_ns_idmapped_home_and_runtime` (done)
 Blocks: `2660_task_comprehensive_isolation_vm_test`
 
+## Status: DONE + VM-GREEN
+
+Implemented exactly the 2630 "Staging access — the single `setfsuid` window"
+design and removed the fail-closed guard. Landed:
+
+- `directory_credential.rs` — split `prepare_directory_mounts` into the pure
+  `plan_directory_mounts` (parent, no fs side effects, kept for the writeback
+  walk) + `realize_directory_mounts` (create staging subdir / materialize / bind;
+  runs in the parent for an unisolated target, in the child at fsuid X for an
+  isolated one). Added an `openat2(RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH)` +
+  `O_NOFOLLOW | O_NONBLOCK` hardened walk (`collect_files_hardened`) used for the
+  isolated writeback; unit-tested (round-trip + symlink-refusal, skip on no
+  openat2).
+- `target_uid.rs` — `with_target_fsuid(iso, f)`: the single `setfsuid(X)` /
+  `setfsgid(Xgid)` window, entered with CAP_SETUID/SETGID and always restored,
+  verify-on-entry fail-closed. Unit-tested (own-ids run; foreign-ids fail-closed).
+- `main.rs` — child realizes the files staging + private bus **after**
+  `setresuid(X)`; `setup_mount_namespace(isolated)` moved after the switch; the
+  supervisor retains caps through writeback, wraps the writeback dispatch in the
+  setfsuid window when `isolated && (has_files || libsecret)`, and relies on
+  private-mount-ns teardown for isolated mount cleanup.
+- `mounts.rs` — `setup_mount_namespace(isolated)` skips the real-bus hide for
+  isolated targets (the UID boundary already denies the caller's runtime dir,
+  which X can't traverse to bind over). The pre-mount `0000` guard
+  (`guard_mountpoint_mode`) and the staging-root `rmdir` are now **best-effort**:
+  the fixed `/tmp/.underwrap-ns-{bus,directories}` mountpoints live on the shared
+  sticky `/tmp`, so a dir left by an isolated run under uid X can't be
+  chmod'd/rmdir'd by a later caller-uid run — the tmpfs mount shadows it anyway.
+- `writeback.rs` — `WritebackInput` carries the layout + `hardened_walk`; the
+  libsecret state read uses `O_NOFOLLOW | O_NONBLOCK`.
+
+VM: `test-iso-dir` (files, idmapped tmpfs-backed `~/iso-files`) and
+`test-iso-libsecret` (distinct target path so it doesn't isolate the unisolated
+libsecret wrappers) in `local_target_uid_files_libsecret()` — proves the files
+write→persist→read round-trip, the libsecret store/lookup as uid X, backend
+persistence, and that the caller can't see the staging/bus from the host ns.
+`local_ancestor_attack` was re-pointed at the **isolated** fixture (deterministic
+UID boundary + unique `sleep 5252` marker) — it previously relied on the
+incidental, non-deterministic non-dumpability of an unisolated target.
+
+### Known minor follow-up (not blocking)
+
+The staging/bus mountpoints are fixed paths on the shared `/tmp`; after an
+isolated run the bare (empty) mountpoint dir is left owned by uid X and reused.
+Functionally fine (best-effort chmod/rmdir), but a future cleanup could use
+per-invocation paths or an in-`setfsuid(X)`-window teardown to avoid the litter.
+
 ## Status / why this exists
 
 The env-mode per-target uid isolation epic is done and VM-green (2620/2630/2640/2645,

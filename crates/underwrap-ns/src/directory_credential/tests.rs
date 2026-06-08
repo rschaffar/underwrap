@@ -11,33 +11,28 @@ fn validate_relative_path_rejects_bad_inputs() {
     assert!(validate_relative_path(".config/gws").is_ok());
 }
 
-#[test]
-fn collect_staging_files_round_trips_files_section() {
-    let tempdir = tempfile::TempDir::new().unwrap();
-    let staging_a = tempdir.path().join("mount-0");
-    let staging_b = tempdir.path().join("mount-1");
+fn round_trip_plans(tempdir: &Path) -> Vec<DirectoryMountPlan> {
+    let staging_a = tempdir.join("mount-0");
+    let staging_b = tempdir.join("mount-1");
     std::fs::create_dir_all(&staging_a).unwrap();
     std::fs::create_dir_all(staging_a.join("sub")).unwrap();
     std::fs::create_dir_all(&staging_b).unwrap();
     std::fs::write(staging_a.join("a.txt"), b"alpha").unwrap();
     std::fs::write(staging_a.join("sub").join("b.bin"), b"\x00\x01\x02").unwrap();
     std::fs::write(staging_b.join("c.txt"), b"charlie").unwrap();
-
-    let mounts = vec![
-        DirectoryMount {
+    vec![
+        DirectoryMountPlan {
             mount_path: ".config/gh".to_string(),
-            mountpoint: PathBuf::new(),
             staging_path: staging_a,
-            created_dirs: Vec::new(),
         },
-        DirectoryMount {
+        DirectoryMountPlan {
             mount_path: ".config/git".to_string(),
-            mountpoint: PathBuf::new(),
             staging_path: staging_b,
-            created_dirs: Vec::new(),
         },
-    ];
-    let files = collect_staging_files(&mounts).unwrap();
+    ]
+}
+
+fn assert_round_trip(files: &std::collections::BTreeMap<String, SecretBytes>) {
     assert_eq!(files.len(), 3);
     assert_eq!(files.get(".config/gh/a.txt").unwrap().as_slice(), b"alpha");
     assert_eq!(
@@ -47,6 +42,63 @@ fn collect_staging_files_round_trips_files_section() {
     assert_eq!(
         files.get(".config/git/c.txt").unwrap().as_slice(),
         b"charlie"
+    );
+}
+
+#[test]
+fn collect_staging_files_round_trips_files_section() {
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let plans = round_trip_plans(tempdir.path());
+    let files = collect_staging_files(&plans, false).unwrap();
+    assert_round_trip(&files);
+}
+
+/// True when `openat2` is available on the test host (Linux 5.6+). The hardened
+/// walk relies on it; skip those tests on older kernels rather than fail.
+fn openat2_available() -> bool {
+    let root = std::ffi::CString::new("/").unwrap();
+    match openat2(
+        libc::AT_FDCWD,
+        &root,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        RESOLVE_NO_SYMLINKS,
+    ) {
+        Ok(_) => true,
+        Err(e) => e.raw_os_error() != Some(libc::ENOSYS),
+    }
+}
+
+#[test]
+fn collect_staging_files_hardened_round_trips_files_section() {
+    if !openat2_available() {
+        eprintln!("skipping: openat2 unavailable on this kernel");
+        return;
+    }
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let plans = round_trip_plans(tempdir.path());
+    let files = collect_staging_files(&plans, true).unwrap();
+    assert_round_trip(&files);
+}
+
+#[test]
+fn collect_staging_files_hardened_refuses_symlinks() {
+    if !openat2_available() {
+        eprintln!("skipping: openat2 unavailable on this kernel");
+        return;
+    }
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let staging = tempdir.path().join("mount-0");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join("ok.txt"), b"ok").unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", staging.join("evil")).unwrap();
+    let plans = vec![DirectoryMountPlan {
+        mount_path: ".config/gh".to_string(),
+        staging_path: staging,
+    }];
+    let err = collect_staging_files(&plans, true).unwrap_err();
+    assert!(
+        err.contains("symlinks") || err.contains("evil"),
+        "expected a symlink-refusal error, got: {err}"
     );
 }
 
