@@ -62,6 +62,7 @@ underwrap does **not** solve these problems:
 - **root compromise** — `root` can read memory, files, sockets, and process state
 - **kernel compromise** — the design depends on Linux kernel behavior
 - **malicious or overpowered target tools** — if the target program itself can reveal the secret, underwrap cannot prevent that
+- **the target "attacking back" at the caller** — underwrap's goal is to hide the *secret* from the caller, never to sandbox the target away from the caller's terminal, session, or GUI. A wrapped target can reach those the same way any program you run can. In fact, running a tool under `isolate` gives it a *dedicated* uid with **strictly less** reach over you than running it normally (where it simply runs *as* you, with all your power); the per-target uid plus the boundary hardening (`setsid`, fd hygiene, IPC namespace) only *shrink* that reach. Those are defense-in-depth by-products — protecting you from the target was never an objective, and underwrap never made that direction worse than not using it at all
 - **unreviewed descendant behavior** — if the target or its helpers execute broad or surprising follow-on behavior, underwrap does not sandbox that for you
 - **bad wrapper policy design** — if you wrap a broad CLI, you are still giving the caller broad CLI power
 - **all possible agent abuse** — underwrap helps with secret delivery; it does not turn arbitrary local execution into a safe sandbox
@@ -775,14 +776,18 @@ all X-facing work where the filesystem uid is naturally X*, not by scattering
   caller-uid supervisor touches X-owned content is the post-`waitpid` writeback
   walk (the staging tree plus `libsecret-state.jcs`). That walk runs inside a
   single `setfsuid(X)`/`setfsgid(Xgid)` window (`target_uid::with_target_fsuid`),
-  which both grants the read and **bounds the supervisor's filesystem authority
-  to uid X** while it traverses a target-controlled tree — the symlink-TOCTOU
-  defense. As a second layer the walk resolves every entry with
-  `openat2(RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH)` and opens it
-  `O_NOFOLLOW | O_NONBLOCK` (skipping non-regular files), so a target-planted
-  symlink or FIFO can neither redirect the read outside the staging subtree nor
-  stall it. Entering the window needs `CAP_SETUID`/`CAP_SETGID`, so the
-  supervisor keeps those caps until writeback completes, then drops uniformly.
+  which is what *grants* the read — the supervisor has no `CAP_DAC_OVERRIDE`, so
+  without it the X-owned `0700` staging would be unreadable. Entering the window
+  needs `CAP_SETUID`/`CAP_SETGID`, so the supervisor keeps those caps until
+  writeback completes, then drops uniformly. The walk reads only regular files
+  and aborts on any symlink. Note the window also *bounds* the supervisor's
+  filesystem authority to uid X while it traverses a target-controlled tree, so a
+  target-planted symlink could at worst redirect a read to content X already
+  controls, never to the caller's own files — but that is a defense-in-depth
+  by-product of a window we need for the read regardless, **not** a goal of the
+  design (see "What underwrap does not protect against": the target running back
+  *at* the caller is out of scope, and an isolated uid-X target has strictly less
+  reach over the caller than an unisolated one, which simply runs as the caller).
 
 Confidentiality of these surfaces rests on the **private mount namespace** (the
 caller cannot see or enter the staging / bus mounts from the host namespace;

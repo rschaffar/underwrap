@@ -456,7 +456,6 @@ fn run_parent(
     let writeback_input = WritebackInput {
         channel: resource_channel,
         directory_layout,
-        hardened_walk: isolated,
         libsecret_state_path: if resource_channel.libsecret {
             libsecret_state_path
         } else {

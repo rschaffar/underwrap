@@ -49,43 +49,16 @@ fn assert_round_trip(files: &std::collections::BTreeMap<String, SecretBytes>) {
 fn collect_staging_files_round_trips_files_section() {
     let tempdir = tempfile::TempDir::new().unwrap();
     let plans = round_trip_plans(tempdir.path());
-    let files = collect_staging_files(&plans, false).unwrap();
-    assert_round_trip(&files);
-}
-
-/// True when `openat2` is available on the test host (Linux 5.6+). The hardened
-/// walk relies on it; skip those tests on older kernels rather than fail.
-fn openat2_available() -> bool {
-    let root = std::ffi::CString::new("/").unwrap();
-    match openat2(
-        libc::AT_FDCWD,
-        &root,
-        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-        RESOLVE_NO_SYMLINKS,
-    ) {
-        Ok(_) => true,
-        Err(e) => e.raw_os_error() != Some(libc::ENOSYS),
-    }
-}
-
-#[test]
-fn collect_staging_files_hardened_round_trips_files_section() {
-    if !openat2_available() {
-        eprintln!("skipping: openat2 unavailable on this kernel");
-        return;
-    }
-    let tempdir = tempfile::TempDir::new().unwrap();
-    let plans = round_trip_plans(tempdir.path());
-    let files = collect_staging_files(&plans, true).unwrap();
+    let files = collect_staging_files(&plans).unwrap();
     assert_round_trip(&files);
 }
 
 #[test]
-fn collect_staging_files_hardened_refuses_symlinks() {
-    if !openat2_available() {
-        eprintln!("skipping: openat2 unavailable on this kernel");
-        return;
-    }
+fn collect_staging_files_refuses_symlinks() {
+    // A symlink in the staging aborts the writeback so it can never reach the
+    // backend (for an isolated target the walk also runs under setfsuid(X),
+    // which bounds any followed path to the target's own uid). Here we assert the
+    // static refusal.
     let tempdir = tempfile::TempDir::new().unwrap();
     let staging = tempdir.path().join("mount-0");
     std::fs::create_dir_all(&staging).unwrap();
@@ -95,9 +68,9 @@ fn collect_staging_files_hardened_refuses_symlinks() {
         mount_path: ".config/gh".to_string(),
         staging_path: staging,
     }];
-    let err = collect_staging_files(&plans, true).unwrap_err();
+    let err = collect_staging_files(&plans).unwrap_err();
     assert!(
-        err.contains("symlinks") || err.contains("evil"),
+        err.contains("symlink"),
         "expected a symlink-refusal error, got: {err}"
     );
 }

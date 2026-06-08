@@ -33,9 +33,11 @@ from 2620/2630 (getcap shows cap_setuid+cap_setgid; root-owned
 bundle cannot change which uid the target lands on; `ExecBundle` carries no
 target-uid field via a protocol round-trip test); and the **2645 boundary
 proofs** (TIOCSTI-injection denied, `/proc/<pid>/fd` hygiene, fresh IPC ns,
-anonymous session keyring). The files/libsecret-under-isolate functional proofs
-(2635) are in; the matrix should fold in the symlink-TOCTOU writeback proof and
-the read-only-grant drop under isolate.
+anonymous session keyring) — these are **bonus** (see gate #19/#20). The
+files/libsecret-under-isolate functional proofs (2635) are in; the matrix should
+fold in the read-only-grant drop under isolate, and may add a writeback symlink-
+refusal check (the walk rejects symlinks and runs under a `setfsuid(X)` window
+that bounds it to uid X — the earlier openat2 layer was dropped as redundant).
 
 ## Goal
 
@@ -153,7 +155,10 @@ fd-reopen vector and world-readable `/proc` scope (precision, not pretense):
     **none** of them. Encodes the honest scope: the boundary hides secret-bearing
     files, not process metadata; secrets never live in argv/mount-paths.
 
-target → caller escalation closed (the boundary's second direction, 2645):
+Defense-in-depth bonus — target → caller hardening (2645). **NOT a core goal:**
+the sole goal is secret-from-caller, and an isolated uid-X target has strictly
+less reach over the caller than an unisolated one (which runs as the caller).
+These assert the *bonus* closures hold; treat them as bonus, not guarantees:
 
 19. **TIOCSTI:** the isolated target's attempt to inject into the caller's
     controlling terminal returns EPERM/EIO and the injected sentinel never runs in

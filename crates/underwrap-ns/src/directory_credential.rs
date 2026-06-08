@@ -17,8 +17,6 @@
 //! target path to reconstruct the full keys for the Checkin blob.
 
 use std::collections::BTreeMap;
-use std::ffi::{CStr, CString};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -147,29 +145,23 @@ fn create_dir_mode(path: &Path, mode: u32) -> Result<(), String> {
 /// relative path is re-prefixed with the mount's `mount_path` so the
 /// emitted keys match the shape the backend originally handed us.
 ///
-/// `hardened` selects the symlink-TOCTOU-resistant walk used for an isolated
-/// target (the staging is target-controlled and the supervisor reads it under a
-/// `setfsuid(X)` window): every path is resolved with
-/// `openat2(RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH)` and each entry is opened
-/// `O_NOFOLLOW | O_NONBLOCK` so a planted symlink or FIFO cannot redirect or
-/// stall the read. The unisolated walk reads the caller's own files, where a
-/// path-based walk that rejects symlinks is sufficient (no privilege to abuse).
+/// The walk rejects symlinks (a symlink in the staging aborts the writeback) and
+/// reads only regular files. For an isolated target the supervisor performs this
+/// walk inside a `setfsuid(X)` window (see [`crate::run_parent`]), which bounds
+/// every read to the target's own uid X — so a target-planted symlink could only
+/// redirect to content X already controls, never to the caller's files. That
+/// uid bound, not a fancier resolver, is what keeps the cross-uid writeback safe.
 pub fn collect_staging_files(
     plans: &[DirectoryMountPlan],
-    hardened: bool,
 ) -> Result<BTreeMap<String, SecretBytes>, String> {
     let mut out = BTreeMap::new();
     for plan in plans {
-        if hardened {
-            collect_files_hardened(&plan.staging_path, &plan.mount_path, &mut out)?;
-        } else {
-            collect_files_with_prefix(
-                &plan.staging_path,
-                &plan.staging_path,
-                &plan.mount_path,
-                &mut out,
-            )?;
-        }
+        collect_files_with_prefix(
+            &plan.staging_path,
+            &plan.staging_path,
+            &plan.mount_path,
+            &mut out,
+        )?;
     }
     Ok(out)
 }
@@ -288,215 +280,6 @@ fn collect_files_with_prefix(
         }
     }
     Ok(())
-}
-
-// --- Hardened (openat2-rooted) staging walk for isolated targets ---
-//
-// The supervisor walks a *target-controlled* staging tree under a
-// `setfsuid(X)` window (story 2600 / 2635). The window already bounds the
-// supervisor's authority to uid X, but a lingering uid-X descendant could race
-// the walk; openat2 with `RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH` closes the
-// symlink-TOCTOU and subtree-escape vectors as a second layer.
-
-/// `openat2(2)` resolve flags (uapi/linux/openat2.h).
-const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-const RESOLVE_BENEATH: u64 = 0x08;
-
-#[repr(C)]
-struct OpenHow {
-    flags: u64,
-    mode: u64,
-    resolve: u64,
-}
-
-/// `openat2(dirfd, path, { flags, resolve })`, returning an owned fd.
-fn openat2(
-    dirfd: libc::c_int,
-    path: &CStr,
-    flags: libc::c_int,
-    resolve: u64,
-) -> std::io::Result<OwnedFd> {
-    let how = OpenHow {
-        flags: flags as u64,
-        mode: 0,
-        resolve,
-    };
-    // SAFETY: openat2 reads `how` for the given length and returns a new fd or
-    // -1; `path` is a valid NUL-terminated string.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            dirfd as libc::c_long,
-            path.as_ptr(),
-            &how as *const OpenHow,
-            std::mem::size_of::<OpenHow>() as libc::c_long,
-        )
-    };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: `fd` is a fresh, owned descriptor returned by openat2.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) })
-}
-
-/// Hardened counterpart to [`collect_files_with_prefix`]: open the staging root
-/// and recurse using fd-relative `openat2`, refusing symlinks and any escape
-/// from the staging subtree.
-fn collect_files_hardened(
-    staging_root: &Path,
-    mount_prefix: &str,
-    out: &mut BTreeMap<String, SecretBytes>,
-) -> Result<(), String> {
-    let root_c = path_to_cstring(staging_root)?;
-    let root_fd = openat2(
-        libc::AT_FDCWD,
-        &root_c,
-        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        RESOLVE_NO_SYMLINKS,
-    )
-    .map_err(|e| format!("opening staging dir {}: {e}", staging_root.display()))?;
-    walk_dir_fd(&root_fd, staging_root, mount_prefix, "", out)
-}
-
-/// Enumerate `dir_fd`'s entries and recurse. `relative` is the path of `dir_fd`
-/// relative to the staging root (empty at the root); emitted keys are
-/// `"{mount_prefix}/{entry-relative-to-root}"`.
-fn walk_dir_fd(
-    dir_fd: &OwnedFd,
-    dir_display: &Path,
-    mount_prefix: &str,
-    relative: &str,
-    out: &mut BTreeMap<String, SecretBytes>,
-) -> Result<(), String> {
-    // `fdopendir` takes ownership of the fd it is handed and `closedir` closes
-    // it, so give it a dup and keep `dir_fd` itself for the per-entry openat2
-    // anchor calls (openat2 ignores the directory stream's file position).
-    let dup_fd = unsafe { libc::dup(dir_fd.as_raw_fd()) };
-    if dup_fd < 0 {
-        return Err(format!(
-            "dup staging dir fd for {}: {}",
-            dir_display.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    let dirp = unsafe { libc::fdopendir(dup_fd) };
-    if dirp.is_null() {
-        let err = std::io::Error::last_os_error();
-        unsafe { libc::close(dup_fd) };
-        return Err(format!("fdopendir {}: {err}", dir_display.display()));
-    }
-    let result = walk_dirp(dir_fd, dirp, dir_display, mount_prefix, relative, out);
-    // closedir closes the underlying dup_fd.
-    unsafe { libc::closedir(dirp) };
-    result
-}
-
-fn walk_dirp(
-    dir_fd: &OwnedFd,
-    dirp: *mut libc::DIR,
-    dir_display: &Path,
-    mount_prefix: &str,
-    relative: &str,
-    out: &mut BTreeMap<String, SecretBytes>,
-) -> Result<(), String> {
-    loop {
-        // Reset errno so a NULL return can be distinguished: end-of-stream
-        // leaves errno unchanged, a read error sets it.
-        unsafe { *libc::__errno_location() = 0 };
-        let ent = unsafe { libc::readdir(dirp) };
-        if ent.is_null() {
-            let errno = unsafe { *libc::__errno_location() };
-            if errno != 0 {
-                return Err(format!(
-                    "readdir {}: {}",
-                    dir_display.display(),
-                    std::io::Error::from_raw_os_error(errno)
-                ));
-            }
-            return Ok(());
-        }
-        // SAFETY: `ent` is a valid dirent for the lifetime until the next
-        // readdir; `d_name` is NUL-terminated.
-        let name_c = unsafe { CStr::from_ptr((*ent).d_name.as_ptr()) };
-        let name_bytes = name_c.to_bytes();
-        if name_bytes == b"." || name_bytes == b".." {
-            continue;
-        }
-        let name = name_c
-            .to_str()
-            .map_err(|_| format!("non-UTF-8 entry name in {}", dir_display.display()))?;
-        let entry_relative = if relative.is_empty() {
-            name.to_string()
-        } else {
-            format!("{relative}/{name}")
-        };
-        let name_owned = CString::new(name_bytes).map_err(|_| {
-            format!(
-                "entry name in {} has an interior NUL",
-                dir_display.display()
-            )
-        })?;
-
-        // Open the single component relative to the directory fd, refusing
-        // symlinks (RESOLVE_NO_SYMLINKS + O_NOFOLLOW) and subtree escapes
-        // (RESOLVE_BENEATH); O_NONBLOCK so a planted FIFO cannot stall the open.
-        let child = openat2(
-            dir_fd.as_raw_fd(),
-            &name_owned,
-            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
-            RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH,
-        )
-        .map_err(|e| {
-            format!(
-                "opening staged entry {}/{name}: {e} (symlinks and subtree escapes are refused)",
-                dir_display.display()
-            )
-        })?;
-
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstat(child.as_raw_fd(), &mut st) } != 0 {
-            return Err(format!(
-                "fstat staged entry {}/{name}: {}",
-                dir_display.display(),
-                std::io::Error::last_os_error()
-            ));
-        }
-        match st.st_mode & libc::S_IFMT {
-            libc::S_IFDIR => {
-                walk_dir_fd(
-                    &child,
-                    &dir_display.join(name),
-                    mount_prefix,
-                    &entry_relative,
-                    out,
-                )?;
-            }
-            libc::S_IFREG => {
-                validate_relative_path(&entry_relative)?;
-                let bytes = read_fd_to_end(child).map_err(|e| {
-                    format!("reading staged file {}/{name}: {e}", dir_display.display())
-                })?;
-                out.insert(
-                    format!("{mount_prefix}/{entry_relative}"),
-                    SecretBytes::from(bytes),
-                );
-            }
-            _ => {
-                return Err(format!(
-                    "staged entry {}/{name} is not a regular file or directory",
-                    dir_display.display()
-                ));
-            }
-        }
-    }
-}
-
-fn read_fd_to_end(fd: OwnedFd) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let mut file = std::fs::File::from(fd);
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-    Ok(buf)
 }
 
 fn materialize_file(

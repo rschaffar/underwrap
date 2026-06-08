@@ -22,16 +22,30 @@ deny is optional/deferred (needs a new dependency; see below).
 > at its `[2645]` tag — consult that for exact position relative to the id switch,
 > `drop_caps`, and exec. This ticket details *what* each step does and *why*.
 
-## Why this is *required* by the epic, not optional
+## What this is: a cheap defense-in-depth bonus — NOT a goal
+
+> **Scope correction (2026-06-08).** Earlier drafts framed this ticket as
+> *required* because the uid boundary "creates" target→caller escalations. That
+> over-states it. The **sole goal** of the epic is hiding the brokered secret
+> from the *caller*; protecting the caller *from* the target was never an
+> objective. And underwrap does **not** make the target→caller direction worse:
+> an *unisolated* target runs **as the caller** and already has strictly **more**
+> reach over the caller than an isolated uid-X target. Per-target isolation only
+> *shrinks* the target's reach; the closures below shrink it a little further.
+> They are worth doing — they're nearly free and they make a strictly-better
+> setup better still — but they are **bonus hardening, not a guarantee**, and the
+> feature must not be sold on them.
+
+The technical detail below is accurate and the closures are implemented; only the
+framing is downgraded from "required" to "cheap bonus."
 
 Until 2630 the target runs as the caller's uid, so the caller and target are the
-**same trust domain** — a target that injects into the caller's shell, or
-inherits a runtime fd, gains nothing it didn't already have. The moment 2630
-gives the target a **different real uid X**, that changes: the caller (uid 1700)
-becomes a *more-privileged* peer, and any channel from the uid-X target back to
-the uid-1700 caller is now a **privilege escalation**. Two such channels are
-created by the boundary and are not yet closed. Research basis: bubblewrap
-CVE-2017-5226 (TIOCSTI), runc CVE-2024-21626 "Leaky Vessels" (leaked-fd escape).
+same trust domain. Once 2630 gives the target a **different real uid X**, a few
+narrow channels let the uid-X target act *as* the caller (e.g. TIOCSTI runs a
+command in the caller's shell as the caller) — technically an X→caller step up,
+though never beyond what the unisolated target already had directly. Closing them
+is cheap. Research basis: bubblewrap CVE-2017-5226 (TIOCSTI), runc
+CVE-2024-21626 "Leaky Vessels" (leaked-fd escape).
 
 ## Threat 1 — controlling-terminal input injection (TIOCSTI / TIOCLINUX)
 

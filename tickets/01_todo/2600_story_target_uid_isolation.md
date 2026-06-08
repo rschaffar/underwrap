@@ -236,25 +236,36 @@ anyone — 2610 corrects that false claim. `hardenTargetHost` also keeps its
 unencrypted swap; the uid boundary does not cover that) and the kernel-floor
 check.
 
-## The boundary cuts both ways — defend target → caller (2645)
+## Defense-in-depth bonus: shrinking the target → caller direction (2645)
 
-Giving the target a distinct uid X is what *creates* a privilege boundary, and a
-boundary has two sides: because the caller is now the *more-privileged* peer, any
-channel from the uid-X target back to the caller is an **escalation** that did not
-exist when target==caller. 2645 closes the cheap ones the boundary opens:
+**This is NOT a goal.** The sole goal of this epic is hiding the brokered secret
+from the *caller*; protecting the caller *from* the target was never an objective.
+Critically, underwrap does not make the target→caller direction worse: an
+*unisolated* target runs **as the caller** and already has strictly **more** reach
+over the caller (its files, fds, tty, ptrace of its processes) than an isolated
+uid-X target does. Per-target isolation only ever *shrinks* the target's reach
+over the caller. The cheap hardenings below shrink it a little further — they are
+**defense-in-depth by-products, not guarantees**, and must not be presented as the
+point of the feature:
 
-- **Controlling-terminal injection (TIOCSTI).** The target inherits the caller's
-  tty and could inject a command that runs in the caller's shell. → `setsid()`.
+- **Controlling-terminal injection (TIOCSTI).** A uid-X target inherits the
+  caller's tty and could inject a command into the caller's shell (an unisolated
+  target could too). → `setsid()`.
 - **Leaked fds (Leaky Vessels, CVE-2024-21626).** A privileged fd (the idmap
   userns fd from 2640, the ExecBundle pipe, helper fds) reachable via
-  `/proc/self/fd`. → `close_range` sweep + `O_CLOEXEC`.
-- **Shared IPC namespace + session keyring.** A uid-X target can read the
-  caller's session keyring (cached creds) and host SysV IPC. → `CLONE_NEWIPC`
-  (+`CLONE_NEWUTS`) and `keyctl(KEYCTL_JOIN_SESSION_KEYRING)`.
-- **setuid-bit planting via the idmapped writeback (CVE-2023-0386 class).** →
-  `MOUNT_ATTR_NOSUID|NODEV` on the idmapped mounts (2640).
-- **Symlink-TOCTOU on the files-slot writeback walk.** → walk under `setfsuid(X)`
-  + `openat2(RESOLVE_*)` (2630).
+  `/proc/self/fd`. → `close_range` sweep + `O_CLOEXEC`. (Closing underwrap's own
+  internal fds before exec is required regardless of isolation.)
+- **Shared IPC namespace + session keyring.** A uid-X target sharing the caller's
+  session keyring / host SysV IPC. → `CLONE_NEWIPC`(+`CLONE_NEWUTS`) and
+  `keyctl(KEYCTL_JOIN_SESSION_KEYRING)`.
+- **setuid-bit planting via the idmapped writeback.** → `MOUNT_ATTR_NOSUID|NODEV`
+  on the idmapped mounts (2640; also plain mount hygiene).
+- **Symlink-TOCTOU on the files-slot writeback walk.** The supervisor reads the
+  X-owned staging under a `setfsuid(X)` window — needed for the cross-uid read
+  *anyway* — which bounds the read to uid X, so a target-planted symlink can only
+  reach content X already controls, never the caller's files; the walk also
+  rejects symlinks outright. (An earlier `openat2(RESOLVE_*)` layer was **dropped
+  as redundant for the goal** — the setfsuid window already bounds it.)
 
 ## What this does NOT defend against (document, don't pretend)
 
