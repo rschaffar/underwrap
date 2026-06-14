@@ -786,13 +786,13 @@ def _assert_fd_reopen_denied(pid):
             su(f"readlink /proc/{pid}/{link} >/dev/null 2>&1")
         )[0]
         assert rc != 0, (
-            f"FAIL: same-UID caller could readlink /proc/{pid}/{link} of the "
-            f"isolated target — fd/path re-open must be ptrace-denied"
+            f"FAIL: same-caller process could readlink /proc/{pid}/{link} of the "
+            f"target — fd/path re-open must be ptrace-denied"
         )
     # The fd symlinks are individually ptrace-gated; readlink of fd 0 must fail.
     rc = machine.execute(su(f"readlink /proc/{pid}/fd/0 >/dev/null 2>&1"))[0]
     assert rc != 0, (
-        f"FAIL: same-UID caller could re-open /proc/{pid}/fd/0 of the isolated target"
+        f"FAIL: same-caller process could re-open /proc/{pid}/fd/0 of the target"
     )
     machine.log(f"PASS: fd/path re-open of isolated target PID {pid} denied to the caller (#17)")
 
@@ -848,18 +848,11 @@ def _assert_no_leaked_fds(pid):
     machine.log(f"PASS (bonus): isolated target PID {pid} inherited no leaked privileged fds (#20)")
 
 
-def _assert_target_proc_access(host_pid, *, isolated):
-    # The DIRECT exec'd target is non-dumpable in BOTH cases, so its whole /proc
-    # secret surface is DENIED to a same-UID (testuser) caller:
-    #   - unisolated: INCIDENTALLY — the wrapper cap/namespace chain ahead of the
-    #     target trips a secure-exec that forces dumpable=suid_dumpable. A fragile
-    #     side-effect, not a designed control (see docs/security.md "The awkward
-    #     fact" and story 2600).
-    #   - isolated: by the per-target UID boundary — ptrace_may_access requires
-    #     the caller's uid to equal all of the target's uids, which it does not.
-    # So READ-mode (environ/maps/smaps/auxv) AND ATTACH-mode (mem) are all denied
-    # either way. The meaningful isolated-vs-unisolated DIFFERENCE shows up on
-    # DESCENDANTS, not the direct target — see _assert_descendant_environ.
+def _assert_target_proc_access(host_pid):
+    # Every target now runs under a dedicated per-target uid X, not as the
+    # caller. That UID boundary makes ptrace_may_access fail for both READ-mode
+    # files (environ/maps/smaps/auxv) and ATTACH-mode memory access from another
+    # same-caller process.
     read_files = ["environ", "maps", "smaps", "auxv"]
     read_rcs = {
         f: machine.execute(
@@ -870,80 +863,53 @@ def _assert_target_proc_access(host_pid, *, isolated):
     rc_mem = machine.execute(
         f"su testuser -s /bin/sh -c 'dd if=/proc/{host_pid}/mem bs=1 count=1 >/dev/null 2>&1'"
     )[0]
-    cause = "the UID boundary" if isolated else "the incidental non-dumpable chain side-effect"
     machine.log(
-        f"same-UID access to DIRECT target PID {host_pid} (isolated={isolated}): "
-        f"READ={read_rcs} mem(ATTACH)={rc_mem}"
+        f"same-caller access to target PID {host_pid}: READ={read_rcs} mem(ATTACH)={rc_mem}"
     )
     for f in read_files:
         assert read_rcs[f] != 0, (
-            f"FAIL: direct target's /proc/{host_pid}/{f} is readable by a same-UID "
-            f"caller (rc=0); the direct target must be non-dumpable ({cause}). A "
-            f"regression here means the env-mode secret surface is exposed."
+            f"FAIL: target's /proc/{host_pid}/{f} is readable by another caller-owned "
+            f"process (rc=0); the dedicated target UID boundary must deny it."
         )
     assert rc_mem != 0, (
-        f"FAIL: same-UID can read /proc/{host_pid}/mem — the ATTACH-mode class must "
-        f"be denied (ptrace_scope=2, and {cause})"
+        f"FAIL: same-caller process can read /proc/{host_pid}/mem — the ATTACH-mode "
+        f"class must be denied by the UID boundary plus ptrace_scope=2"
     )
     machine.log(
-        f"PASS: direct target PID {host_pid} — READ and ATTACH classes both denied "
-        f"to the same-UID caller ({cause})"
+        f"PASS: target PID {host_pid} — READ and ATTACH classes both denied to "
+        f"the same-caller process (dedicated UID boundary)"
     )
 
 
-def _assert_descendant_environ(child_pid, *, isolated, secret):
-    # A subprocess the target spawns via a CLEAN exec resets to dumpable. On an
-    # unisolated wrapper it also runs as the caller's uid, so a same-UID caller
-    # CAN read its environ -> the secret it inherited leaks. This is the real,
-    # durable env-mode exposure story 2600 closes (the direct target alone is
-    # already non-dumpable). Under isolation the child runs as the dedicated uid
-    # X, so the same probe is denied — the boundary covers the whole subtree.
+def _assert_descendant_environ(child_pid, *, secret):
+    # A subprocess the target spawns via a clean exec resets to dumpable, but it
+    # still runs as the dedicated target uid X. The same-caller probe must be
+    # denied for the whole subtree, not only the direct target.
     rc, out = machine.execute(
         f"su testuser -s /bin/sh -c 'tr \"\\0\" \"\\n\" < /proc/{child_pid}/environ 2>/dev/null'"
     )
-    if isolated:
-        assert rc != 0, (
-            f"FAIL: isolated target's descendant /proc/{child_pid}/environ is "
-            f"readable by a same-UID caller (rc={rc}); the UID boundary must cover "
-            f"the whole subtree, not just the direct target"
-        )
-        machine.log(
-            f"PASS: isolated descendant PID {child_pid} — environ denied to the "
-            f"same-UID caller (UID boundary covers the subtree)"
-        )
-    else:
-        assert rc == 0, (
-            f"FAIL: expected the unisolated descendant /proc/{child_pid}/environ to "
-            f"be readable by a same-UID caller (it is a dumpable, caller-uid child), "
-            f"got rc={rc} — the harness is masking the real (descendant) exposure"
-        )
-        assert secret in out, (
-            f"FAIL: descendant environ is readable but does not contain the injected "
-            f"secret {secret!r} — the fixture is not exercising the inherited-secret "
-            f"path story 2600 closes"
-        )
-        machine.log(
-            f"PASS: unisolated descendant PID {child_pid} — environ readable and "
-            f"carrying the secret (the residual exposure story 2600 closes; the "
-            f"direct target is already denied)"
-        )
+    assert rc != 0, (
+        f"FAIL: target descendant /proc/{child_pid}/environ is readable by a "
+        f"same-caller process (rc={rc}); the UID boundary must cover the whole subtree"
+    )
+    assert secret not in out, (
+        f"CRITICAL: caller recovered secret {secret!r} from descendant environ"
+    )
+    machine.log(
+        f"PASS: descendant PID {child_pid} — environ denied to the same-caller "
+        f"process (UID boundary covers the subtree)"
+    )
 
 
 def local_pid_namespace_proc_isolation():
     # ============================================================
-    # LOCAL INSTANCE: /proc isolation baseline (DECISIVE TEST)
+    # LOCAL INSTANCE: mandatory per-target UID /proc baseline
     # ============================================================
-    # Asserts the HONEST current baseline for the unisolated `local` instance:
-    #   1. the DIRECT exec'd target is non-dumpable, so its whole /proc secret
-    #      surface (READ environ/maps/smaps/auxv + ATTACH mem) is DENIED to a
-    #      same-UID caller -- an incidental side-effect of the wrapper chain, not
-    #      a designed control (see docs/security.md "The awkward fact" + 2600);
-    #   2. a DESCENDANT the target spawns resets to dumpable and runs as the
-    #      caller's uid, so its environ (carrying the inherited secret) IS
-    #      readable by a same-UID caller -- the real exposure the per-target uid
-    #      (the `isolate` option) closes subtree-wide in 2630/2660.
+    # Every wrapper target runs as a dedicated underwrap-target-* uid. This
+    # baseline asserts that both a direct env-mode target and a clean-exec
+    # descendant are denied to another process owned by the original caller.
 
-    # --- (1) direct target: must be DENIED (non-dumpable) ---
+    # --- (1) direct target: must be DENIED by the UID boundary ---
     machine.succeed(
         "su testuser -s /bin/sh -c '"
         "setsid /run/wrappers/bin/underwrap-local test-sleep 300 </dev/null >/dev/null 2>&1 &"
@@ -952,37 +918,34 @@ def local_pid_namespace_proc_isolation():
     time.sleep(2)
 
     # As root (test instrumentation only), find the host-visible PID of the
-    # `sleep` target. Root sees every PID namespace, so if the target is not
-    # found the wrapper failed to start -- a HARD failure, never a pass. (The old
-    # "invisible from parent namespace -> PASS" branch is removed.)
+    # `sleep` target. It now runs as a dedicated uid X, not as testuser.
     host_pid = machine.succeed(
-        "pgrep -u testuser -x sleep || "
-        "pgrep -u testuser -f 'sleep 300' || "
+        "pgrep -f '[s]leep 300' || "
         "echo NONE"
     ).strip().split("\n")[0]
 
     if host_pid in ("NONE", ""):
         diag = machine.succeed(
-            "ps -u testuser -o pid,comm,args 2>/dev/null || echo 'no processes'"
+            "ps -eo pid,user,comm,args | grep -E 'sleep 300|underwrap' | grep -v grep || echo 'no matching processes'"
         ).strip()
         assert False, (
             "FAIL: root could not locate the test-sleep target. Root sees all PID "
             "namespaces, so a missing target means the wrapper did not start -- not "
-            f"isolation. testuser processes:\n{diag}"
+            f"isolation. matching processes:\n{diag}"
         )
 
     machine.log(f"Found direct target sleep process at host PID {host_pid}")
     cmdline = machine.succeed(
-        f"tr '\\0' ' ' < /proc/{host_pid}/cmdline 2>/dev/null || echo UNKNOWN"
+        f"tr '\0' ' ' < /proc/{host_pid}/cmdline 2>/dev/null || echo UNKNOWN"
     ).strip()
     assert "sleep" in cmdline, f"Host PID {host_pid} is not a sleep process: {cmdline}"
 
-    _assert_target_proc_access(host_pid, isolated=False)
+    _assert_target_proc_access(host_pid)
 
-    machine.execute("pkill -u testuser -x sleep || true")
+    machine.execute("pkill -KILL -f '[s]leep 300' || true")
     time.sleep(0.5)
 
-    # --- (2) descendant: must be READABLE and carry the secret (the residual) ---
+    # --- (2) descendant: clean exec still must be DENIED ---
     machine.succeed(
         "su testuser -s /bin/sh -c '"
         "setsid /run/wrappers/bin/underwrap-local test-descendant </dev/null >/dev/null 2>&1 &"
@@ -991,22 +954,22 @@ def local_pid_namespace_proc_isolation():
     time.sleep(2)
 
     child_pid = machine.succeed(
-        "pgrep -u testuser -f 'sleep 4242' || echo NONE"
+        "pgrep -f '[s]leep 4242' || echo NONE"
     ).strip().split("\n")[0]
     if child_pid in ("NONE", ""):
         diag = machine.succeed(
-            "ps -u testuser -o pid,comm,args 2>/dev/null || echo 'no processes'"
+            "ps -eo pid,user,comm,args | grep -E 'sleep 4242|descendant-target|underwrap' | grep -v grep || echo 'no matching processes'"
         ).strip()
         assert False, (
             "FAIL: root could not locate the test-descendant child (sleep 4242) -- "
-            f"the descendant fixture did not start. testuser processes:\n{diag}"
+            f"the descendant fixture did not start. matching processes:\n{diag}"
         )
     machine.log(f"Found descendant child process at host PID {child_pid}")
 
-    _assert_descendant_environ(child_pid, isolated=False, secret="desc_secret_val")
+    _assert_descendant_environ(child_pid, secret="desc_secret_val")
 
     # The non-exec'ing wrapper supervisor stays non-dumpable (PR_SET_DUMPABLE=0
-    # and never re-execs), so its environ is denied to same-UID callers.
+    # and never re-execs), so its environ is denied to same-caller processes too.
     wrapper_pids = machine.succeed(
         "pgrep -u testuser -f 'underwrap-local|underwrap' || echo none"
     ).strip()
@@ -1019,26 +982,23 @@ def local_pid_namespace_proc_isolation():
                 f"su testuser -s /bin/sh -c 'cat /proc/{pid_str}/environ >/dev/null 2>&1'"
             )[0]
             assert rc != 0, (
-                f"FAIL: same-UID read /proc/{pid_str}/environ (a non-dumpable "
+                f"FAIL: same-caller read /proc/{pid_str}/environ (a non-dumpable "
                 f"wrapper supervisor must stay protected)"
             )
         machine.log("PASS: wrapper supervisor processes also protected (dumpable=0)")
 
-    machine.execute("pkill -u testuser -f 'sleep 4242' || true")
-    machine.execute("pkill -u testuser -f descendant-target || true")
+    machine.execute("pkill -KILL -f '[s]leep 4242' || true")
+    machine.execute("pkill -KILL -f descendant-target || true")
     time.sleep(0.5)
-
 
 def local_target_uid_isolation():
     # ============================================================
-    # LOCAL INSTANCE: per-target uid isolation (story 2600) — THE FIX
+    # LOCAL INSTANCE: per-target uid isolation (story 2600 / 2670)
     # ============================================================
-    # An isolated (isolate = true) env-mode target AND its descendant run as a
-    # dedicated sandbox uid X (!= caller, != 0), so a same-UID caller is denied
-    # the WHOLE subtree's /proc secret surface. `test-iso` is a shell (the direct
-    # target) that backgrounds a child `sleep 5252`; both run as X. This flips the
-    # isolated branch from the 2610 baseline: where the unisolated descendant's
-    # environ was readable, here the whole subtree is denied.
+    # An env-mode target AND its descendant run as a dedicated sandbox uid X
+    # (!= caller, != 0), so a same-caller process is denied the WHOLE subtree's
+    # /proc secret surface. `test-iso` is a shell (the direct target) that
+    # backgrounds a child `sleep 5252`; both run as X.
     machine.succeed(
         "su testuser -s /bin/sh -c '"
         "setsid /run/wrappers/bin/underwrap-local test-iso </dev/null >/dev/null 2>&1 &"
@@ -1049,7 +1009,7 @@ def local_target_uid_isolation():
     # Find the descendant (sleep 5252) and, via its PPid, the direct target (the
     # iso-target shell). Root sees all PID namespaces and all uids.
     child_pid = machine.succeed(
-        "pgrep -f 'sleep 5252' || echo NONE"
+        "pgrep -f '[s]leep 5252' || echo NONE"
     ).strip().split("\n")[0]
     assert child_pid not in ("NONE", ""), (
         "FAIL: could not find the test-iso descendant (sleep 5252) — the isolated "
@@ -1117,10 +1077,10 @@ def local_target_uid_isolation():
         f"PASS: isolated subtree shows real==eff==saved==fs=={x_uid} and zero capabilities (#10/#15)"
     )
 
-    # --- Protection: same-UID caller denied for the WHOLE subtree ---
+    # --- Protection: same-caller process denied for the WHOLE subtree ---
     # READ-mode (environ/maps/smaps/auxv) + the /proc/<pid>/mem ATTACH vector.
-    _assert_target_proc_access(direct_pid, isolated=True)
-    _assert_target_proc_access(child_pid, isolated=True)
+    _assert_target_proc_access(direct_pid)
+    _assert_target_proc_access(child_pid)
     rc, out = machine.execute(
         f"su testuser -s /bin/sh -c 'tr \"\\0\" \"\\n\" < /proc/{child_pid}/environ 2>/dev/null'"
     )
@@ -1209,7 +1169,7 @@ def local_target_uid_isolation():
 
     # The direct target is PID 1 of its namespace (ignores SIGTERM) and runs as
     # uid X (a testuser pkill cannot reach it): SIGKILL as root from the host ns.
-    machine.execute("pkill -KILL -f 'sleep 5252' || true")
+    machine.execute("pkill -KILL -f '[s]leep 5252' || true")
     machine.execute("pkill -KILL -f iso-target || true")
     time.sleep(0.5)
 
@@ -1259,7 +1219,7 @@ def local_target_uid_idmapped_home():
 
 def local_target_uid_files_libsecret():
     # ============================================================
-    # LOCAL INSTANCE: files + libsecret projection under isolate (story 2635)
+    # LOCAL INSTANCE: files + libsecret projection under mandatory target UID
     # ============================================================
     # An isolated (dedicated-uid X) target can still project a files slot and a
     # libsecret slot. The X-owned staging / private bus is created by the child
@@ -1267,7 +1227,7 @@ def local_target_uid_files_libsecret():
     # supervisor reads it back through the single setfsuid(X) window. This is the
     # carved-out remainder of 2630.
 
-    # --- Files slot under isolate ---
+    # --- Files slot under mandatory target UID ---
     grant_local_unlocked("test-iso-dir")
     # Back ~/iso-files with a tmpfs (idmap-capable, caller-owned) so the test is
     # deterministic regardless of the VM's /home filesystem (see iso-home test).
@@ -1306,7 +1266,7 @@ def local_target_uid_files_libsecret():
     )
     machine.log("PASS: isolated files-slot read round-trips the persisted content")
 
-    # While an isolated files target runs, a same-UID host process must not see
+    # While a files target runs, a same-caller host process must not see
     # the staged secret — the staging tmpfs lives only in the private mount ns.
     machine.succeed(
         "su testuser -s /bin/sh -c '"
@@ -1317,7 +1277,7 @@ def local_target_uid_files_libsecret():
         "su testuser -s /bin/sh -c 'cat /home/testuser/iso-files/dir-a/token 2>/dev/null'"
     )[1]
     assert "iso_files_secret_val" not in host_token, (
-        "FAIL: same-UID host process read the isolated target's staged secret"
+        "FAIL: same-caller host process read the target's staged secret"
     )
     host_staging = machine.succeed(
         "find /tmp/.underwrap-ns-directories -type f 2>/dev/null || true"
@@ -1325,16 +1285,16 @@ def local_target_uid_files_libsecret():
     assert host_staging == "", (
         f"FAIL: host view exposes isolated staging files: {host_staging}"
     )
-    machine.log("PASS: isolated files staging is invisible to a same-UID host process")
+    machine.log("PASS: files staging is invisible to a same-caller host process")
     # sleep 5353 is the isolated direct target (PID 1 of its namespace, runs as
     # uid X), so it ignores SIGTERM and a testuser pkill can't reach it: SIGKILL
     # as root from the host (ancestor) namespace.
-    machine.execute("pkill -KILL -f 'sleep 5353' || true")
+    machine.execute("pkill -KILL -f '[s]leep 5353' || true")
     machine.execute("pkill -u testuser -x underwrap-ns || true")
     time.sleep(0.5)
     machine.execute("umount /home/testuser/iso-files 2>/dev/null || true")
 
-    # --- libsecret slot under isolate ---
+    # --- libsecret slot under mandatory target UID ---
     grant_local_unlocked("test-iso-libsecret")
     import tempfile
     import os
@@ -1379,7 +1339,7 @@ def local_target_uid_files_libsecret():
     )
     machine.log("PASS: isolated libsecret state persisted to the backend")
 
-    # While running, the private bus must be invisible to a same-UID host process.
+    # While running, the private bus must be invisible to a same-caller host process.
     machine.succeed(
         'su testuser -s /bin/sh -c "'
         "setsid /run/wrappers/bin/underwrap-local test-iso-libsecret lookup "
@@ -1390,7 +1350,7 @@ def local_target_uid_files_libsecret():
         "find /tmp/.underwrap-ns-bus -type s 2>/dev/null || true"
     ).strip()
     assert iso_bus == "", f"FAIL: isolated private bus socket visible on host: {iso_bus}"
-    machine.log("PASS: isolated libsecret private bus invisible to a same-UID host process")
+    machine.log("PASS: libsecret private bus invisible to a same-caller host process")
     machine.execute("pkill -u testuser -x underwrap-ns || true")
     time.sleep(0.5)
 
@@ -1407,8 +1367,8 @@ def local_target_uid_authority():
     # cannot redirect the cap_setuid switch to root or another service. These are
     # the static authority gates.
 
-    # underwrap-ns carries cap_setuid + cap_setgid (to perform the switch) on top
-    # of cap_sys_admin — and only because at least one wrapper sets isolate=true.
+    # underwrap-ns carries cap_setuid + cap_setgid (to perform the mandatory
+    # target uid switch) on top of cap_sys_admin.
     caps = machine.succeed("getcap /run/wrappers/bin/underwrap-ns").strip()
     for needed in ("cap_setuid", "cap_setgid", "cap_sys_admin"):
         assert needed in caps, (
@@ -1432,7 +1392,7 @@ def local_target_uid_authority():
     # ("<path>\t<user>\t<group>"), never to root.
     contents = machine.succeed(f"cat {table}")
     iso_rows = [l for l in contents.splitlines() if l.strip()]
-    assert iso_rows, f"FAIL: {table} is empty but isolated wrappers exist"
+    assert iso_rows, f"FAIL: {table} is empty but wrappers exist"
     for row in iso_rows:
         fields = row.split("\t")
         assert len(fields) == 3, f"FAIL: malformed authority row: {row!r}"
@@ -1445,23 +1405,21 @@ def local_target_uid_authority():
             f"FAIL: authority row maps {path} to root: {row!r}"
         )
     machine.log(
-        f"PASS: target-uid table maps {len(iso_rows)} isolated target path(s) to dedicated "
+        f"PASS: target-uid table maps {len(iso_rows)} target path(s) to dedicated "
         f"underwrap-target-* users (never root)"
     )
 
 
 def local_target_uid_readonly_writeback():
     # ============================================================
-    # LOCAL INSTANCE: read-only-grant writeback drop UNDER isolate (story 2660)
+    # LOCAL INSTANCE: read-only-grant writeback drop under mandatory target UID
     # ============================================================
-    # local_atomic_writeback scenario 3 proves the read-only drop for an
-    # UNISOLATED files wrapper. Here we prove the same arm for an ISOLATED files
-    # target: the uid-X target writes a CHANGED value into its X-owned staging,
-    # the supervisor reads the staging back through the single setfsuid(X) window,
-    # sees the change, and DROPS it because the grant is read-only — the backend
-    # blob is unchanged and the structured audit event fires. So the cross-uid
-    # read still happens (exercising the setfsuid window); only the persist is
-    # refused.
+    # Proves the read-only drop for a files target in the mandatory uid-X model:
+    # the target writes a CHANGED value into its X-owned staging, the supervisor
+    # reads the staging back through the single setfsuid(X) window, sees the
+    # change, and DROPS it because the grant is read-only — the backend blob is
+    # unchanged and the structured audit event fires. So the cross-uid read still
+    # happens (exercising the setfsuid window); only the persist is refused.
     DIR = "test/iso-dir-tok"
 
     # Fresh caller-owned tmpfs for ~/iso-files (idmap-capable; see iso-home test).
@@ -1524,8 +1482,8 @@ def local_target_uid_readonly_writeback():
         f"FAIL: isolated read-only drop stderr warning missing resource name: {stderr_capture!r}"
     )
     machine.log(
-        "PASS: read-only grant under isolate drops the change after reading the X-owned "
-        "staging through the setfsuid(X) window; journal records grant_readonly"
+        "PASS: read-only grant drops the change after reading the X-owned staging "
+        "through the setfsuid(X) window; journal records grant_readonly"
     )
 
     machine.execute("umount /home/testuser/iso-files 2>/dev/null || true")
@@ -1535,18 +1493,13 @@ def local_ancestor_attack():
     # ============================================================
     # LOCAL INSTANCE: adversarial ancestor attack (CRITICAL TEST)
     # ============================================================
-    # A PARENT process spawns an ISOLATED wrapper (test-iso, isolate = true)
-    # and tries to inspect the dedicated-uid-X target subtree it spawned. The
-    # UID boundary (story 2600) makes `ptrace_may_access` fail the UID gate for
-    # BOTH the READ-mode files (/proc/<pid>/environ) and the ATTACH-mode vectors
-    # (ptrace, /proc/<pid>/mem), so even an ancestor cannot recover the secret.
-    #
-    # We deliberately attack the ISOLATED fixture: against an unisolated target
-    # the direct process is only *incidentally* non-dumpable (a fragile,
-    # non-deterministic side-effect of the wrapper chain — see docs/security.md
-    # "The awkward fact"), so a test relying on it would flake. The UID boundary
-    # is the real, deterministic protection. The unique `sleep 5252` marker also
-    # means the attack locates exactly this run's target, never a stale process.
+    # A PARENT process spawns a wrapper (test-iso) and tries to inspect the
+    # dedicated-uid-X target subtree it spawned. The UID boundary (story 2600)
+    # makes `ptrace_may_access` fail the UID gate for BOTH the READ-mode files
+    # (/proc/<pid>/environ) and the ATTACH-mode vectors (ptrace,
+    # /proc/<pid>/mem), so even an ancestor cannot recover the secret. The unique
+    # `sleep 5252` marker also means the attack locates exactly this run's target,
+    # never a stale process.
 
     ANCESTOR_SCRIPT = os.environ.get("ANCESTOR_ATTACK_SCRIPT", "/dev/null")
     attack_output = machine.succeed(
@@ -1602,7 +1555,7 @@ def local_ancestor_attack():
     # Clean up as root (the target subtree runs as uid X, so a testuser pkill
     # could not reach it; SIGKILL because the isoScript shell is PID 1 of its
     # namespace and ignores SIGTERM).
-    machine.execute("pkill -KILL -f 'sleep 5252' || true")
+    machine.execute("pkill -KILL -f '[s]leep 5252' || true")
     machine.execute("pkill -KILL -f iso-target || true")
     time.sleep(0.5)
 
@@ -1906,7 +1859,7 @@ def local_directory_credentials():
     )
     machine.log("PASS: resource blob carries the writeback")
 
-    # While a wrapped target is running, a separate same-UID host process must not
+    # While a wrapped target is running, a separate same-caller host process must not
     # be able to access the mounted secret files from the host namespace view.
     machine.succeed(
         "su testuser -s /bin/sh -c '"
@@ -1917,20 +1870,20 @@ def local_directory_credentials():
     host_view = machine.execute(
         "su testuser -s /bin/sh -c 'cat $HOME/.config/underwrap-dir-a/token 2>/dev/null'"
     )[0]
-    assert host_view != 0, "FAIL: same-UID host process can read directory credential file"
+    assert host_view != 0, "FAIL: same-caller host process can read directory credential file"
 
     host_ls = machine.execute(
         "su testuser -s /bin/sh -c 'ls $HOME/.config/underwrap-dir-a >/dev/null 2>&1'"
     )[0]
-    assert host_ls != 0, "FAIL: same-UID host process can list mounted directory"
+    assert host_ls != 0, "FAIL: same-caller host process can list mounted directory"
 
     host_find = machine.succeed(
         "su testuser -s /bin/sh -c 'find $HOME/.config/underwrap-dir-a -maxdepth 2 -type f 2>/dev/null || true'"
     ).strip()
     assert host_find == "", f"FAIL: host view exposes mounted directory files: {host_find}"
-    machine.log("PASS: same-UID host processes cannot list mounted directory or access files in it")
+    machine.log("PASS: same-caller host processes cannot list mounted directory or access files in it")
 
-    machine.execute("pkill -u testuser -x sleep || true")
+    machine.execute("pkill -KILL -f '[s]leep 300' || true")
     time.sleep(0.5)
 
     # The mounted directory must disappear from normal host view after the wrapper exits.
@@ -1964,7 +1917,7 @@ def local_directory_credentials():
         grant_local_unlocked(wrapper)
 
     # While a libsecret wrapper is running, the private bus must also remain
-    # inaccessible to a same-UID host process.
+    # inaccessible to a same-caller host process.
     machine.succeed(
         'su testuser -s /bin/sh -c "'
         'setsid /run/wrappers/bin/underwrap-local test-libsecret lookup service gh account github.com '
@@ -1974,12 +1927,12 @@ def local_directory_credentials():
     libsecret_host_view = machine.succeed(
         "su testuser -s /bin/sh -c 'find /tmp/.underwrap-ns-bus -type s 2>/dev/null || true'"
     ).strip()
-    assert libsecret_host_view == "", f"FAIL: same-UID host process sees private bus socket: {libsecret_host_view}"
+    assert libsecret_host_view == "", f"FAIL: same-caller host process sees private bus socket: {libsecret_host_view}"
     libsecret_ls = machine.execute(
         "su testuser -s /bin/sh -c 'ls /tmp/.underwrap-ns-bus >/dev/null 2>&1'"
     )[0]
-    assert libsecret_ls != 0, "FAIL: same-UID host process can list private libsecret bus mountpoint"
-    machine.log("PASS: same-UID host process cannot list private libsecret runtime directories or see the bus socket")
+    assert libsecret_ls != 0, "FAIL: same-caller host process can list private libsecret bus mountpoint"
+    machine.log("PASS: same-caller host process cannot list private libsecret runtime directories or see the bus socket")
     machine.execute("pkill -u testuser -x underwrap-ns || true")
     time.sleep(0.5)
 

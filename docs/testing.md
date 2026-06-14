@@ -65,23 +65,22 @@ It boots a NixOS VM with real underwrap services and then checks properties such
 - spoofing resistance
 - lock and unlock behavior
 - target process isolation properties
-- per-target UID isolation (`isolate`): a full matrix proving that a same-UID
-  caller (peer **and** ancestor) cannot inspect an isolated target or its
-  descendants — `environ`/`maps`/`smaps`/`auxv`/`mem`, `ptrace(PTRACE_ATTACH)`,
+- mandatory per-target UID isolation: a full matrix proving that a caller-owned
+  peer **and** ancestor cannot inspect a target or its descendants —
+  `environ`/`maps`/`smaps`/`auxv`/`mem`, `ptrace(PTRACE_ATTACH)`,
   `process_vm_readv`, and `/proc/<pid>/{fd,cwd,root,exe}` re-open are all denied;
   the world-readable `/proc` residue is secret-free; **root** can still read
   (documented limitation); the target runs as a dedicated `underwrap-target-*`
   uid (never `0`/caller) with zero capabilities; and the dedicated uid comes
   only from the root-owned `/etc/underwrap/target-uids` table (`underwrap-ns`
-  holds `cap_setuid`/`cap_setgid`; the table is `root:root 0644`). The
-  unisolated-descendant contrast shows the mechanism actually does something.
+  holds `cap_setuid`/`cap_setgid`; the table is `root:root 0644`).
   Files/libsecret projection and read-only-grant writeback are also exercised
-  under `isolate`.
+  under the same mandatory target UID model.
 - core dump prevention
 - libsecret mode end to end
 - directory credential staging and sync
-- same-UID host-namespace inability to list mounted directory credential paths or read files from them
-- same-UID host-namespace inability to list private libsecret runtime mountpoints or reach private sockets
+- caller-owned host-namespace inability to list mounted directory credential paths or read files from them
+- caller-owned host-namespace inability to list private libsecret runtime mountpoints or reach private sockets
 - remote-style instance lifecycle (a second daemon talking to the backend over mTLS)
 - absence of secret values in logs
 

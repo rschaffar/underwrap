@@ -147,20 +147,20 @@ let
   '';
   # env-mode target whose DIRECT process is non-dumpable (incidental, via the
   # wrapper cap/namespace chain) but which spawns a CLEAN child that resets to
-  # dumpable and inherits the secret env — the descendant exposure story 2600
-  # closes. The child uses a unique sleep duration so the test can locate it
+  # dumpable and inherits the secret env; mandatory target UID isolation must
+  # still deny same-caller /proc reads. The child uses a unique sleep duration so the test can locate it
   # unambiguously, and `wait` keeps the direct target (this shell) alive so the
   # background child is never exec-optimized into the shell's own process.
   descendantScript = pkgs.writeShellScript "descendant-target" ''
     ${pkgs.coreutils}/bin/sleep 4242 &
     wait
   '';
-  # Isolated (isolate = true) env-mode target. The shell itself is the direct
-  # target and runs as the dedicated sandbox uid X; it spawns a clean child sleep
-  # (also X), so a single invocation lets local_target_uid_isolation assert that
-  # BOTH the direct target and its descendant are denied to a same-UID (caller)
-  # reader, and that the target's real uid is the dedicated sandbox uid (never 0,
-  # never the caller). No $HOME access (works before idmapped home / 2640).
+  # Env-mode target used to prove mandatory target UID isolation. The shell
+  # itself is the direct target and runs as the dedicated sandbox uid X; it
+  # spawns a clean child sleep (also X), so a single invocation lets
+  # local_target_uid_isolation assert that BOTH the direct target and its
+  # descendant are denied to a same-caller reader, and that the target's real uid
+  # is the dedicated sandbox uid (never 0, never the caller). No $HOME access.
   isoScript = pkgs.writeShellScript "iso-target" ''
     ${pkgs.coreutils}/bin/sleep 5252 &
     wait
@@ -189,8 +189,8 @@ let
       rewrite)
         # Write a DISTINCT value so the post-run blob differs from a
         # 'write'-seeded baseline — used to drive the read-only-grant drop
-        # under isolate (the supervisor reads the changed X-owned staging
-        # through the setfsuid(X) window, then refuses to persist it).
+        # under mandatory target UID isolation (the supervisor reads the changed
+        # X-owned staging through the setfsuid(X) window, then refuses to persist it).
         printf 'iso_files_rewritten' > "$HOME/iso-files/dir-a/token"
         ;;
       read)
@@ -207,10 +207,9 @@ let
         ;;
     esac
   '';
-  # secret-tool is also the unisolated `test-libsecret` target, and isolation is
-  # keyed on the target *path* (every wrapper running the same binary shares its
-  # uid). Give the isolated libsecret wrapper a DISTINCT path — a thin exec shim
-  # — so enabling isolate here does not also isolate the unisolated libsecret
+  # Isolation is keyed on the target *path* (every wrapper running the same
+  # binary shares its uid). Give this libsecret fixture a DISTINCT path — a thin
+  # exec shim — so it gets a separate dedicated uid from direct secret-tool
   # wrappers. `exec` with an absolute path needs no PATH in the cleared env.
   isoSecretTool = pkgs.writeShellScript "iso-secret-tool" ''
     exec ${pkgs.libsecret}/bin/secret-tool "$@"
@@ -425,16 +424,16 @@ in {
             env = true;
           };
           # Spawns a clean child (sleep 4242) that inherits the secret env; used
-          # by local_pid_namespace_proc_isolation to prove the descendant
-          # exposure at baseline (direct target denied, descendant readable).
+          # by local_pid_namespace_proc_isolation to prove the mandatory UID
+          # boundary covers descendants after a clean exec.
           test-descendant = {
             target = "${descendantScript}";
             resource = "test/descendant-tok";
             env = true;
           };
-          # Per-target uid isolation (story 2600). Same shape as test-descendant
-          # but isolate = true: target + descendant run as a dedicated uid X, so
-          # a same-UID caller is denied the whole subtree's /proc secret surface.
+          # Per-target uid isolation (story 2600). Target + descendant run as a
+          # dedicated uid X, so a same-caller process is denied the whole
+          # subtree's /proc secret surface.
           test-iso = {
             target = "${isoScript}";
             resource = "test/iso-tok";
@@ -498,50 +497,59 @@ in {
             target = "${dirWriteScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+            accessPaths = [ "~/.config" ];
           };
           test-dir-read = {
             target = "${dirReadScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+            accessPaths = [ "~/.config" ];
           };
           test-dir-readonly-write = {
             target = "${dirWriteScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+            accessPaths = [ "~/.config" ];
           };
           test-dir-sleep = {
             target = "${dirSleepScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+            accessPaths = [ "~/.config" ];
           };
           test-dir-symlink = {
             target = "${dirSymlinkScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+            accessPaths = [ "~/.config" ];
           };
           # Used by the atomic-writeback grant-flip scenario.
           test-dir-write-then-sleep = {
             target = "${dirWriteThenSleepScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+            accessPaths = [ "~/.config" ];
           };
           # Used by the always-writable namespace mount scenario.
           test-dir-touch = {
             target = "${dirTouchScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+            accessPaths = [ "~/.config" ];
           };
           # Used by the suppression-env-var-target-isolation scenario.
           test-dir-env-probe = {
             target = "${dirEnvProbeScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+            accessPaths = [ "~/.config" ];
           };
           # Used by the HOME/XDG forcing scenario.
           test-dir-env-override-probe = {
             target = "${dirEnvProbeScript}";
             resource = "test/dir-a";
             files.paths = [ ".config/underwrap-dir-a" ];
+            accessPaths = [ "~/.config" ];
             envSet = {
               HOME = "/tmp/underwrap-home-override";
               XDG_CONFIG_HOME = "/tmp/underwrap-config-override";

@@ -469,9 +469,13 @@ let
   # distinct from any caller); underwrap-ns switches the target (and thus its
   # whole subtree) to X. Wrappers sharing a target binary share its uid (same
   # tool = same trust domain); finer granularity is future work.
-  targetPaths = lib.unique (lib.concatMap (inst:
-    map (w: w.target) (lib.attrValues inst.wrappers)
-  ) (lib.attrValues cfg.instances));
+  targetPaths = lib.unique (
+    (lib.concatMap (inst:
+      map (w: w.target) (lib.attrValues inst.wrappers)
+    ) (lib.attrValues cfg.instances))
+    ++ lib.optional (lib.any (inst: inst.wrappers != {}) (lib.attrValues cfg.instances))
+      "${cfg.package}/bin/underwrap-debug-tool"
+  );
 
   # Stable, collision-free sandbox user name per target path: a hash of the
   # absolute path (NOT a sequential index, so adding/removing isolated targets

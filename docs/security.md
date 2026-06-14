@@ -62,7 +62,7 @@ underwrap does **not** solve these problems:
 - **root compromise** — `root` can read memory, files, sockets, and process state
 - **kernel compromise** — the design depends on Linux kernel behavior
 - **malicious or overpowered target tools** — if the target program itself can reveal the secret, underwrap cannot prevent that
-- **the target "attacking back" at the caller** — underwrap's goal is to hide the *secret* from the caller, never to sandbox the target away from the caller's terminal, session, or GUI. A wrapped target can reach those the same way any program you run can. In fact, running a tool under `isolate` gives it a *dedicated* uid with **strictly less** reach over you than running it normally (where it simply runs *as* you, with all your power); the per-target uid plus the boundary hardening (`setsid`, fd hygiene, IPC namespace) only *shrink* that reach. Those are defense-in-depth by-products — protecting you from the target was never an objective, and underwrap never made that direction worse than not using it at all
+- **the target "attacking back" at the caller** — underwrap's goal is to hide the *secret* from the caller, never to sandbox the target away from the caller's terminal, session, or GUI. A wrapped target runs under a dedicated uid with **strictly less** reach over you than running it normally (where it would simply run *as* you, with all your power); the per-target uid plus the boundary hardening (`setsid`, fd hygiene, IPC namespace) only *shrink* that reach. Those are defense-in-depth by-products — protecting you from the target was never an objective, and underwrap never made that direction worse than not using it at all
 - **unreviewed descendant behavior** — if the target or its helpers execute broad or surprising follow-on behavior, underwrap does not sandbox that for you
 - **bad wrapper policy design** — if you wrap a broad CLI, you are still giving the caller broad CLI power
 - **all possible agent abuse** — underwrap helps with secret delivery; it does not turn arbitrary local execution into a safe sandbox
@@ -107,41 +107,24 @@ The guarantee below applies when all of the following hold:
 The "narrow helper" precondition is the single most load-bearing element
 of the env-mode guarantee, and deserves more weight than its place in
 the list suggests. The cleared host environment stops the target from
-*inheriting* the caller's secrets, but note what does **not** robustly
-protect the target's own `environ` from a same-UID observer. Yama
+*inheriting* the caller's secrets, while mandatory per-target UID isolation
+protects the target's own `environ` from other caller-owned processes. Yama
 `ptrace_scope` gates only ATTACH-mode access (`/proc/<pid>/mem`, ptrace),
-**not** the READ-mode file `/proc/<pid>/environ`. The *direct* exec'd target
-does happen to come out **non-dumpable** in the current chain (an incidental
-secure-exec side-effect — see "Protecting the final target process"), so its
-`environ` is denied to same-UID callers today; but that is fragile, must not
-be relied on, and does **not** extend to the target's **descendants**: a
-subprocess the target spawns resets to dumpable and still runs as the caller's
-uid, so *its* `environ` (which inherited the secret) is readable by a same-UID
-process. This is exactly the gap story 2600 closes with a dedicated target UID,
-which covers the whole subtree. And **nothing in the design protects
-the secret from the target itself.** A helper that prints, logs, or
-persists the token defeats env-mode confidentiality regardless of how well
-the kernel isolates it. Use libsecret or files mode wherever the target
-supports it; reserve env mode for helpers you have audited against the
-three sub-bullets above, on a wrapper with `isolate` enabled.
+**not** the READ-mode file `/proc/<pid>/environ`; the dedicated target UID is
+what makes `ptrace_may_access` fail for the whole target subtree, including
+clean-exec descendants that reset to dumpable. And **nothing in the design
+protects the secret from the target itself.** A helper that prints, logs, or
+persists the token defeats env-mode confidentiality regardless of how well the
+kernel isolates it. Use libsecret or files mode wherever the target supports it;
+reserve env mode for helpers you have audited against the three sub-bullets
+above.
 
 ### Guarantee
 
-Under those preconditions — **and, for env mode, with `isolate`
-enabled on the wrapper** — there is no known kernel-mediated path by which
-a non-root local attacker can read the raw token value on the target host.
-
-Without `isolate`, the qualifier "including the caller itself"
-does **not** robustly hold for env mode. `ptrace_scope = 2` stops the caller
-from attaching to or reading the target's memory (`mem`/ptrace). The direct
-target is incidentally non-dumpable (so its `environ` is denied today), but
-that protection is a fragile side-effect and does not cover the target's
-descendants — a subprocess it spawns is dumpable and caller-UID, so the caller
-can read *that* process's `/proc/<pid>/environ` (a READ-mode file Yama never
-gates), recovering the secret it inherited. files/libsecret mode (the raw
-value never enters any `environ`) and `isolate` (a UID boundary that fails the
-`ptrace_may_access` check for the whole subtree, both access classes) each
-close that path; see "Protecting the final target process".
+Under those preconditions, there is no known kernel-mediated path by which a
+non-root local attacker can read the raw token value on the target host.
+Wrapped targets always run as dedicated per-target UIDs, so the caller's other
+processes are not same-UID peers of the target subtree.
 
 ### Residual risk
 
@@ -162,7 +145,8 @@ require these tools for normal operation can lower
 **ATTACH-mode** protection only — at `scope=1` ancestors regain `mem`/ptrace
 on their descendants, at `scope=0` any same-UID process does. It does not
 change the **READ-mode** exposure (`environ`/`maps`/`auxv`), which
-`ptrace_scope` never governed; that is addressed by `isolate`.
+`ptrace_scope` never governed; that is addressed by mandatory per-target UID
+isolation.
 
 ---
 
@@ -229,10 +213,10 @@ target for a `Real` invocation, the debug tool for a `Debug`
 invocation, and only after the backend's policy has authorized that
 `(wrapper, resource, variant)`. The caller never names a target.
 
-**Which UID does the target run as?** The same authority shape applies to
-`isolate`. The dedicated sandbox uid/gid an isolated target is switched to come
-**only** from the root-owned `/etc/underwrap/target-uids` table, read directly by
-`underwrap-ns` and keyed on the daemon-chosen target path. They never travel on
+**Which UID does the target run as?** The same authority shape applies to the
+mandatory target UID switch. The dedicated sandbox uid/gid a target is switched
+to come **only** from the root-owned `/etc/underwrap/target-uids` table, read
+directly by `underwrap-ns` and keyed on the daemon-chosen target path. They never travel on
 the wire — the `ExecBundle` carries no target id (pinned by the protocol test
 `exec_bundle_carries_no_target_identity`), and the uid is never derived from a
 credential, env var, argv, or the daemon response. So a compromised
@@ -569,75 +553,51 @@ That does not make memory disclosure impossible in every imaginable scenario, bu
 
 This is the part most likely to be misunderstood.
 
-### The awkward fact
+### Mandatory dedicated target UID
 
-`PR_SET_DUMPABLE=0` set by a parent does **not** survive into a child across a
-clean `execve`: for an ordinary exec with matching credentials and a readable
-binary, Linux resets the dumpable state to 1 (`fs/exec.c`,
-`begin_new_exec`/`setup_new_exec`; verified). It is forced back to
-`suid_dumpable` (same-UID-denied) only when the exec is a *secure-exec* — the
-binary is unreadable by the new creds, or `euid != ruid`, or `egid != rgid`.
+Every wrapped target is switched to a dedicated `underwrap-target-*` uid/gid
+chosen from the root-owned `/etc/underwrap/target-uids` table. The target and
+every descendant it spawns therefore have different real/effective/saved/fs uids
+from the original caller. That is the primary target-process confidentiality
+boundary.
 
-Empirically (NixOS VM, kernel 6.18), the **direct** target launched through the
-underwrap chain *does* come out non-dumpable — the credential/namespace
-transitions ahead of it (see mechanism 2) trip a secure-exec that forces
-`dumpable = suid_dumpable`, so a same-UID caller is denied its
-`environ`/`maps`/`smaps`/`auxv` (and `mem`) today. **Treat this as incidental,
-not a guarantee:** it is a side-effect we do not fully characterise at the
-source level, and it does **not** propagate. A subprocess the target spawns
-via a clean `execve` resets to dumpable *and still runs as the caller's uid*,
-so **the descendant's `environ` — carrying the inherited secret — is readable
-by a same-UID process.** That is the real, durable env-mode exposure.
-
-So the final target process — and crucially its whole subtree — needs
-protection from a different, explicit mechanism: a dedicated target UID
-(`isolate`), described below and in story 2600.
+This matters because Linux exposes different `/proc/<pid>` entries through
+different ptrace access classes. Yama `ptrace_scope` gates only ATTACH-mode
+access (`/proc/<pid>/mem`, `ptrace`, `process_vm_readv`). It does **not** gate
+READ-mode files such as `/proc/<pid>/environ`, `/proc/<pid>/maps`, or
+`/proc/<pid>/auxv`. The dedicated target UID makes the common
+`ptrace_may_access` UID check fail before Yama or the dumpable flag can become
+the deciding factor, and it covers clean-exec descendants as well as the direct
+target.
 
 ### What currently helps protect the target
 
-Three mechanisms together cover the same-UID inspection surface.
+Three mechanisms together cover the target inspection surface.
 
-#### 1. Yama LSM, pinned to `ptrace_scope=2` (ATTACH vectors only)
+#### 1. Dedicated target UID (READ and ATTACH classes)
 
-`services.underwrap.hardenTargetHost` defaults to `true`. The module
-sets `kernel.yama.ptrace_scope=2` on the target host. Yama's
+`underwrap-ns` resolves the target path in `/etc/underwrap/target-uids`, switches
+to the assigned uid/gid with `setresuid`/`setresgid`, restricts supplementary
+groups to the target's own group, and verifies before exec that the switch is
+complete and capabilities are gone. A missing table row is a hard error: there
+is no fallback to running as the caller.
+
+#### 2. Yama LSM, pinned to `ptrace_scope=2` (ATTACH vectors only)
+
+`services.underwrap.hardenTargetHost` defaults to `true`. The module sets
+`kernel.yama.ptrace_scope=2` on the target host. Yama's
 `yama_ptrace_access_check()` acts **only on `PTRACE_MODE_ATTACH`**
-(`security/yama/yama_lsm.c`), so at `scope=2` it rejects every tracer
-without `CAP_SYS_PTRACE` for the **ATTACH-mode** access paths — and only
-those:
+(`security/yama/yama_lsm.c`), so at `scope=2` it rejects every tracer without
+`CAP_SYS_PTRACE` for the **ATTACH-mode** access paths:
 
 - `/proc/<pid>/mem`
 - `ptrace(PTRACE_ATTACH)`, `strace`, `gdb`, `perf`
 - `process_vm_readv()`
 
-It does **not** gate the **READ-mode** files, which are opened
-`PTRACE_MODE_READ` and never reach Yama:
-
-- `/proc/<pid>/environ`
-- `/proc/<pid>/maps`, `/proc/<pid>/smaps`
-- `/proc/<pid>/auxv`
-
-Those are gated solely by the target's *dumpable* flag (see "The awkward
-fact" above): the direct target is incidentally non-dumpable today, but any
-**dumpable** process in the target's subtree — in particular the descendants
-it spawns — exposes these READ-mode files to a same-UID reader. Under
-`scope=2` the ATTACH check does not distinguish an ancestor of the target
-from an unrelated same-UID process — neither holds `CAP_SYS_PTRACE`, so
-neither can attach or read `mem`. That is the difference from the
-distribution default `scope=1`, where ancestors are exempted. But
-`ptrace_scope` of **any** value leaves the READ-mode files exposed for a
-dumpable process; an earlier version of this document wrongly listed
-`environ` (and `/proc/<pid>/fd/*`) as protected by `ptrace_scope`. Closing
-the READ-mode exposure across the subtree requires the dedicated target UID
-(`isolate`, story 2600), which makes the caller's UID differ from every
-process in the target's tree so the `ptrace_may_access` UID gate fails for
-**both** access classes before Yama or the dumpable flag is even consulted.
-
-Unprivileged use of `strace`, `gdb`, and `perf` against user processes is
-disabled by `scope=2`. Deployments that require these tools can lower the
-value explicitly; the sysctl is declared with `mkDefault`, so an overriding
-entry takes precedence. Lowering it re-opens the ATTACH vectors but does
-not change the READ-mode exposure either way.
+It does not protect READ-mode files. That is why the dedicated target UID is
+mandatory. Unprivileged use of `strace`, `gdb`, and `perf` against user
+processes is disabled by `scope=2`; deployments that require these tools can
+lower the value explicitly, accepting weaker ATTACH-mode protection.
 
 #### What the `/proc` boundary hides — by access class
 
@@ -646,42 +606,31 @@ It helps to classify `/proc/<pid>` entries by the check they pass through:
 - **READ-mode** (`environ`, `maps`, `smaps`, `auxv`, `pagemap`) and the
   **ptrace-gated links** (`fd/`, `fdinfo/`, `cwd`, `root`, `exe` — all
   `PTRACE_MODE_READ`, `fs/proc/base.c`) go through
-  `ptrace_may_access(PTRACE_MODE_READ)`. A same-UID caller **passes** this
-  for any *dumpable* process — so on an unisolated instance the caller can
-  read `environ`/`maps`/`auxv` of, and re-open the open files/sockets of, any
-  dumpable process in the target's subtree (the direct target is incidentally
-  non-dumpable, but its descendants are dumpable and caller-UID). The
-  dedicated target UID (`isolate`) makes the caller's UID differ from every
-  process in the target's tree, so this check fails for all of them: it hides
-  the READ-mode files **and** stops the fd-link re-open (a positive property
-  of the UID boundary).
+  `ptrace_may_access(PTRACE_MODE_READ)`. A same-UID caller would pass this for
+  any *dumpable* process, but underwrap's mandatory dedicated target UID makes
+  the caller's UID differ from every process in the target's tree. The check
+  therefore fails for all of them: it hides the READ-mode files **and** stops
+  the fd-link re-open (a positive property of the UID boundary).
 - **ATTACH-mode** (`mem`, `ptrace`, `process_vm_readv`) goes through
   `PTRACE_MODE_ATTACH` — the only class Yama `ptrace_scope` gates.
 - **World-readable** metadata (`cmdline`, `comm`, `stat`, `status`,
   `mounts`, `mountinfo`, `cgroup`, `limits`) has no ptrace check at all and
-  stays visible to any UID, **including after `isolate`**. None of
-  it carries secret values: underwrap secrets live in env/files/libsecret and
+  stays visible to any UID, including the caller. None of it carries secret
+  values: underwrap secrets live in env/files/libsecret and
   never in argv (a standing invariant), and mount-path names are not secret.
   Hiding even this would require host `hidepid`, which is out of underwrap's
   scope.
 
-#### 2. Credential transitions in the wrapper chain
+#### 3. Credential transitions and capability drop in the wrapper chain
 
 The target descends from a process tree that included:
 
 - an exec of a setgid binary (`underwrap-exec`)
 - an exec of a capability-bearing binary (`underwrap-ns`)
 
-Those privilege-affecting exec transitions matter for ptrace eligibility,
-and they are also what *incidentally* makes the direct target non-dumpable
-today: the setgid/capability exec ahead of the target trips a secure-exec, so
-the kernel forces the target's `dumpable` to `suid_dumpable` (see "The awkward
-fact"). This helps prevent straightforward tracing from the original ancestor
-even when scope is lowered — but, again, it is an incidental side-effect that
-does not propagate to cleanly-exec'd descendants, so it is not a substitute for
-`isolate`.
-
-Before exec'ing the target, `underwrap-ns` sets `PR_SET_NO_NEW_PRIVS=1`,
+Those privilege-affecting exec transitions matter for ptrace eligibility, but
+the mandatory UID boundary is the intended control. Before exec'ing the target,
+`underwrap-ns` sets `PR_SET_NO_NEW_PRIVS=1`,
 clears the ambient capability set, attempts to prune the capability
 bounding set, and uses `capset` to zero the permitted, effective, and
 inheritable sets. The bounding-set prune is best-effort: the NixOS
@@ -695,7 +644,7 @@ that clears permitted/effective/inheritable to empty plus
 capabilities and cannot regain any across later execs even if the
 bounding set is still populated.
 
-#### 3. Caller-controlled environment is cleared
+#### 4. Caller-controlled environment is cleared
 
 The target is launched with `env_clear()` and only the keys allowed by
 the wrapper config are reintroduced. underwrap also forces the most
@@ -729,15 +678,13 @@ libsecret-only):
   discovery from inside is limited to the namespace's own processes;
 - mount isolation where applicable (libsecret mode).
 
-What the PID namespace does **not** give you is confidentiality of the
-target subtree's `/proc/<pid>/environ` against a same-UID observer *outside*
-the namespace — the namespace contributes containment, not env
-confidentiality. Nor does Yama `ptrace_scope` provide it: that gates only
-ATTACH-mode access, while `environ` is a READ-mode file. Robust env
-confidentiality against a same-UID caller comes from the dedicated target
-UID (`isolate`, story 2600); for an unisolated wrapper the direct target is
-only incidentally protected (a non-dumpable side-effect) and its descendants'
-`environ` is readable by same-UID processes.
+What the PID namespace does **not** give you is confidentiality of the target
+subtree's `/proc/<pid>/environ` against a caller-owned observer *outside* the
+namespace — the namespace contributes containment, not env confidentiality. Nor
+does Yama `ptrace_scope` provide it: that gates only ATTACH-mode access, while
+`environ` is a READ-mode file. Robust env confidentiality comes from the
+mandatory dedicated target UID (story 2600), which makes the caller's UID differ
+from every process in the target subtree.
 
 ### Important caveats
 
@@ -746,14 +693,11 @@ target's lifetime. Env-injection requires this. The guarantee stated
 in [Guarantee under the hardened posture](#guarantee-under-the-hardened-posture)
 therefore rests on three preconditions:
 
-1. **`isolate` on the wrapper.** The dedicated target UID is what
-   *robustly* denies same-UID `environ`/`maps`/`auxv` reads across the whole
-   target subtree (story 2600), with **`ptrace_scope=2`** pinned by the module
-   as defense-in-depth for the ATTACH vectors (`mem`/ptrace). For a wrapper
-   *without* `isolate`, the direct target is only incidentally protected (a
-   fragile non-dumpable side-effect) and the same secret in its descendants'
-   `environ` is readable by same-UID processes; `ptrace_scope` does not change
-   that — use files/libsecret mode there.
+1. **Mandatory dedicated target UID.** Every wrapped target runs as a dedicated
+   `underwrap-target-*` uid, and that UID is what *robustly* denies
+   `environ`/`maps`/`auxv` reads across the whole target subtree (story 2600),
+   with **`ptrace_scope=2`** pinned by the module as defense-in-depth for the
+   ATTACH vectors (`mem`/ptrace).
 2. **Encrypted or absent swap.** Asserted by the module when
    `hardenTargetHost = true` so that a token paged out of the
    target's memory cannot surface as plaintext on disk.
@@ -769,23 +713,21 @@ correspondingly.
 
 **How this is proven.** The NixOS VM test
 (`nix/tests/test.py::local_target_uid_isolation` and the functions around it)
-encodes the whole property as a decisive matrix against a live isolated target
-**and its descendant**: a same-uid caller (peer or ancestor) is denied
+encodes the whole property as a decisive matrix against a live target **and its
+descendant**: a caller-owned peer or ancestor is denied
 `environ`/`maps`/`smaps`/`auxv`/`mem`, `ptrace(PTRACE_ATTACH)`, `process_vm_readv`,
 and re-opening the target's `/proc/<pid>/{fd/*,cwd,root,exe}`; the world-readable
 `/proc` residue (`cmdline`/`status`/`cgroup`) stays readable but secret-free;
 **root** can still read the environ (the documented limitation — the boundary is
-against unprivileged same-uid callers, not root); the target runs as a dedicated
-`underwrap-target-*` uid (never `0`/caller) with zero capabilities; and a
-persisted file written through an idmapped path lands on disk owned by the
-**caller**. The contrast that proves the mechanism does something lives in
-`local_pid_namespace_proc_isolation`: an *unisolated* env-mode target's descendant
-has its `environ` (with the secret) readable, whereas the isolated descendant's is
-denied. See [Testing](testing.md).
+against unprivileged caller-owned processes, not root); the target runs as a
+dedicated `underwrap-target-*` uid (never `0`/caller) with zero capabilities; and
+a persisted file written through an access path lands on disk owned by the
+**caller**. `local_pid_namespace_proc_isolation` also proves that a clean-exec
+descendant remains protected by the same UID boundary. See [Testing](testing.md).
 
-### Files and libsecret projection under `isolate`
+### Files and libsecret projection under mandatory target UID
 
-An isolated target still projects `files` and `libsecret` slots; the secret
+A dedicated-uid target still projects `files` and `libsecret` slots; the secret
 just has to cross between the **uid-X target** (and its private dbus/secretsd,
 also uid X) and the **caller-uid supervisor** that reads it back at writeback.
 These tmpfs surfaces (the files staging and the private bus) are made
@@ -814,8 +756,8 @@ all X-facing work where the filesystem uid is naturally X*, not by scattering
   controls, never to the caller's own files — but that is a defense-in-depth
   by-product of a window we need for the read regardless, **not** a goal of the
   design (see "What underwrap does not protect against": the target running back
-  *at* the caller is out of scope, and an isolated uid-X target has strictly less
-  reach over the caller than an unisolated one, which simply runs as the caller).
+  *at* the caller is out of scope, and a uid-X target has strictly less reach
+  over the caller than it would if run normally as the caller).
 
 Confidentiality of these surfaces rests on the **private mount namespace** (the
 caller cannot see or enter the staging / bus mounts from the host namespace;
@@ -824,8 +766,8 @@ concurrent invocations get their own) plus dbus peer-cred for the bus.
 The staging and bus mountpoints are fixed paths on the shared `/tmp`
 (`/tmp/.underwrap-ns-directories`, `/tmp/.underwrap-ns-bus`); the tmpfs mounted
 over each is what the target and supervisor actually use, so the bare
-mountpoint dir's owner/mode is immaterial once mounted. After an isolated run
-the bare dir is left owned by the dedicated uid X (a later caller-uid run mounts
+mountpoint dir's owner/mode is immaterial once mounted. After a run the bare dir
+is left owned by the dedicated uid X (a later caller-uid run mounts
 over it and cannot `chmod`/`rmdir` it on sticky `/tmp` — handled best-effort);
 this is a harmless, reused, empty directory, never a secret-bearing artifact.
 
