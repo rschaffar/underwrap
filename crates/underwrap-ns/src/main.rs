@@ -28,15 +28,12 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use caps::{drop_caps, set_no_new_privs};
-use directory_credential::{
-    DirectoryMount, DirectoryMountPlan, cleanup_directory_mounts, plan_directory_mounts,
-    realize_directory_mounts,
-};
+use directory_credential::{DirectoryMountPlan, plan_directory_mounts, realize_directory_mounts};
 use env::build_target_env;
 use libsecret::setup_libsecret;
 use mounts::{
-    cleanup_directory_staging_root, make_mount_namespace_private, remount_proc,
-    setup_directory_staging_tmpfs, setup_mount_namespace,
+    make_mount_namespace_private, remount_proc, setup_directory_staging_tmpfs,
+    setup_mount_namespace,
 };
 use resource_channel::ResourceChannel;
 use underwrap_protocol::exec::ExecBundle;
@@ -73,31 +70,30 @@ fn run() -> Result<(), String> {
     let target_identity =
         resolve_target_identity().map_err(|e| format!("resolving target identity: {e}"))?;
 
-    // Story 2600: does the root-owned table assign this target a dedicated uid?
-    // The uid is read directly from root state keyed on the target path — never
-    // from the wire (no escalation / confused-deputy path).
+    // Story 2600 / 2670: the root-owned table must assign this target a
+    // dedicated uid. The uid is read directly from root state keyed on the
+    // target path — never from the wire (no escalation / confused-deputy path).
+    // Missing table/row is a hard error: never fall back to running as the
+    // caller.
     let isolation = target_uid::resolve_isolation(&target)
         .map_err(|e| format!("resolving target isolation: {e}"))?;
-    let isolated = isolation.is_some();
 
     // Story 2640: build the caller<->X idmap user namespace BEFORE unsharing the
     // PID namespace — a helper fork after CLONE_NEWPID would become PID 1 of the
     // new namespace and break the real target fork. The idmapped mounts are
-    // applied below, after the private mount namespace exists. None when the
-    // target is unisolated or no idmap paths are configured.
-    let idmap_userns = match isolation {
-        Some(iso) if !exec_bundle.idmap_paths.is_empty() => {
-            let caller_gid = unsafe { libc::getgid() };
-            Some(
-                idmap::create_idmap_userns(target_identity.uid, caller_gid, iso)
-                    .map_err(|e| format!("creating idmap user namespace: {e}"))?,
-            )
-        }
-        _ => None,
+    // applied below, after the private mount namespace exists.
+    let idmap_userns = if exec_bundle.idmap_paths.is_empty() {
+        None
+    } else {
+        let caller_gid = unsafe { libc::getgid() };
+        Some(
+            idmap::create_idmap_userns(target_identity.uid, caller_gid, isolation)
+                .map_err(|e| format!("creating idmap user namespace: {e}"))?,
+        )
     };
 
     make_process_non_dumpable()?;
-    prepare_namespace(has_files, isolated)?;
+    prepare_namespace()?;
 
     // Apply the idmapped bind mounts now: fsuid is still the caller (so open_tree
     // traverses the caller's home as owner), caps are held, and we are inside the
@@ -111,17 +107,10 @@ fn run() -> Result<(), String> {
     let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
 
     // Compute the deterministic files-slot layout (pure — no filesystem side
-    // effects). The parent always keeps it to drive the end-of-run writeback
-    // walk. For an unisolated target the parent realizes the mounts now (at the
-    // caller's fsuid, as before); for an isolated target the child realizes them
-    // after switching to its dedicated uid X, where fsuid is naturally X and the
-    // X-owned staging is readable/writable by the target (story 2600 / 2635).
+    // effects). The parent keeps it to drive the end-of-run writeback walk; the
+    // child realizes it after switching to its dedicated uid X, where fsuid is
+    // naturally X and the staging is readable/writable by the target.
     let directory_layout = plan_files_mounts(&resource_channel)?;
-    let directory_mounts = if isolated {
-        Vec::new()
-    } else {
-        realize_files_mounts(&resource_channel, &target_identity.home, &directory_layout)?
-    };
 
     let libsecret_state_path = if libsecret_enabled {
         Some(PathBuf::from(format!(
@@ -149,7 +138,6 @@ fn run() -> Result<(), String> {
         run_parent(
             pid,
             &directory_layout,
-            &directory_mounts,
             &resource_channel,
             has_files,
             isolation,
@@ -179,18 +167,15 @@ fn make_process_non_dumpable() -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_namespace(has_files: bool, isolated: bool) -> Result<(), String> {
+fn prepare_namespace() -> Result<(), String> {
     // Always create a fresh PID + mount namespace. The mount namespace is
-    // unconditional now so that every mode can remount /proc against the new
-    // PID namespace (see remount_proc), limiting process discovery uniformly.
-    // For an isolated target the boundary cuts both ways (story 2600/2645): a
-    // uid-X target sharing the caller's IPC namespace could read the caller's
-    // SysV IPC / POSIX mqueues, so add CLONE_NEWIPC (and CLONE_NEWUTS as cheap
+    // unconditional so every mode can remount /proc against the new PID
+    // namespace (see remount_proc), limiting process discovery uniformly. The
+    // mandatory uid-X boundary cuts both ways (story 2600/2645): a target
+    // sharing the caller's IPC namespace could read the caller's SysV IPC /
+    // POSIX mqueues, so add CLONE_NEWIPC (and CLONE_NEWUTS as cheap
     // defense-in-depth). These need CAP_SYS_ADMIN, which we still hold here.
-    let mut flags = libc::CLONE_NEWPID | libc::CLONE_NEWNS;
-    if isolated {
-        flags |= libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
-    }
+    let flags = libc::CLONE_NEWPID | libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
     let ret = unsafe { libc::unshare(flags) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
@@ -199,16 +184,6 @@ fn prepare_namespace(has_files: bool, isolated: bool) -> Result<(), String> {
 
     make_mount_namespace_private()
         .map_err(|e| format!("making mount namespace private failed: {e}"))?;
-
-    // For an unisolated target, mount the files-slot staging tmpfs here in the
-    // parent (caller fsuid → caller-owned). An isolated target's staging must be
-    // owned by uid X, so its tmpfs is mounted by the child after the switch to X
-    // (see run_child); mounting it here would make it caller-owned and unreadable
-    // to the target.
-    if has_files && !isolated {
-        setup_directory_staging_tmpfs(DIRECTORY_STAGING_ROOT)
-            .map_err(|e| format!("directory staging setup failed: {e}"))?;
-    }
 
     Ok(())
 }
@@ -229,16 +204,16 @@ fn plan_files_mounts(
 }
 
 /// Decode the Checkout blob and realize the planned files-slot bind-mounts
-/// (create + materialize + bind). Runs in the parent for an unisolated target
-/// and in the child (at fsuid X) for an isolated one. Returns an empty `Vec`
-/// when the wrapper does not project files.
+/// (create + materialize + bind). Runs in the child after switching to the
+/// dedicated target uid, so fsuid is naturally X. No-ops when the wrapper does
+/// not project files.
 fn realize_files_mounts(
     resource_channel: &ResourceChannel,
     target_home: &Path,
     plans: &[DirectoryMountPlan],
-) -> Result<Vec<DirectoryMount>, String> {
+) -> Result<(), String> {
     if plans.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let blob = underwrap_protocol::resource_blob::ResourceBlob::from_canonical_bytes(
         &resource_channel.original_canonical,
@@ -276,7 +251,7 @@ fn run_child(
     resource_channel: &ResourceChannel,
     libsecret_enabled: bool,
     libsecret_state_path: Option<&Path>,
-    isolation: Option<target_uid::Isolation>,
+    isolation: target_uid::Isolation,
     has_files: bool,
     directory_layout: &[DirectoryMountPlan],
 ) -> Result<(), String> {
@@ -290,44 +265,37 @@ fn run_child(
     // below. A failed switch aborts the run (switch_to bails): never exec a target
     // that did not drop to X. The switch must precede every X-facing mount step
     // below so they run at the natural fsuid X.
-    if let Some(iso) = isolation {
-        target_uid::switch_to(iso)
-            .map_err(|e| format!("switching to dedicated target uid: {e}"))?;
-    }
+    target_uid::switch_to(isolation)
+        .map_err(|e| format!("switching to dedicated target uid: {e}"))?;
 
-    // Isolated + files: realize the staging here, at fsuid X, so the tmpfs root,
+    // Files projection: realize the staging here, at fsuid X, so the tmpfs root,
     // its materialized files, and the mountpoints are X-owned and the uid-X
-    // target can read/write them; the bind lands over the idmapped home set up
-    // pre-fork. (Unisolated targets realized this in the parent at caller fsuid.)
-    if isolation.is_some() && has_files {
+    // target can read/write them; the bind lands over any idmapped home set up
+    // pre-fork.
+    if has_files {
         setup_directory_staging_tmpfs(DIRECTORY_STAGING_ROOT)
             .map_err(|e| format!("directory staging setup (isolated): {e}"))?;
         realize_files_mounts(resource_channel, &target_identity.home, directory_layout)?;
     }
 
-    // Private libsecret bus: for an isolated target this now runs after the
-    // switch, so the bus tmpfs is X-owned and the dbus-daemon / secretsd the
-    // child forks (also X) can create the socket and write the state file.
+    // Private libsecret bus: this runs after the switch, so the bus tmpfs is
+    // X-owned and the dbus-daemon / secretsd the child forks (also X) can create
+    // the socket and write the state file.
     if libsecret_enabled {
-        setup_mount_namespace(isolation.is_some())
-            .map_err(|e| format!("mount namespace setup failed: {e}"))?;
+        setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
     }
 
     set_no_new_privs().map_err(|e| format!("setting no_new_privs: {e}"))?;
 
-    if isolation.is_some() {
-        // Boundary hardening (2645): the uid-X target must not reach the caller's
-        // session keyring.
-        boundary::join_session_keyring().map_err(|e| format!("joining session keyring: {e}"))?;
-    }
+    // Boundary hardening (2645): the uid-X target must not reach the caller's
+    // session keyring.
+    boundary::join_session_keyring().map_err(|e| format!("joining session keyring: {e}"))?;
 
     drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
 
-    if isolation.is_some() {
-        // Verify the drop is real before exec (Setuid Demystified): ids fully
-        // switched, caps gone, regain impossible. Bail otherwise.
-        target_uid::verify_switched().map_err(|e| format!("verifying target uid switch: {e}"))?;
-    }
+    // Verify the drop is real before exec (Setuid Demystified): ids fully
+    // switched, caps gone, regain impossible. Bail otherwise.
+    target_uid::verify_switched().map_err(|e| format!("verifying target uid switch: {e}"))?;
 
     disable_core_dumps()?;
     // Belt-and-suspenders: the upcoming exec resets dumpable to SUID_DUMP_USER
@@ -336,10 +304,8 @@ fn run_child(
     // window.
     make_process_non_dumpable()?;
 
-    if isolation.is_some() {
-        // Sever the controlling tty (TIOCSTI guard) just before building argv/env.
-        boundary::sever_controlling_tty().map_err(|e| format!("severing controlling tty: {e}"))?;
-    }
+    // Sever the controlling tty (TIOCSTI guard) just before building argv/env.
+    boundary::sever_controlling_tty().map_err(|e| format!("severing controlling tty: {e}"))?;
 
     let mut cmd = std::process::Command::new(&target);
     cmd.args(&target_args);
@@ -381,12 +347,10 @@ fn run_child(
 
     resource_channel::close_channel_fd_for_exec(resource_channel);
 
-    if isolation.is_some() {
-        // Last fd touch before exec: sweep every inherited fd >= 3 to CLOEXEC so
-        // no privileged fd leaks across the boundary into the uid-X target.
-        boundary::close_inherited_fds_for_exec()
-            .map_err(|e| format!("closing inherited fds before exec: {e}"))?;
-    }
+    // Last fd touch before exec: sweep every inherited fd >= 3 to CLOEXEC so no
+    // privileged fd leaks across the boundary into the uid-X target.
+    boundary::close_inherited_fds_for_exec()
+        .map_err(|e| format!("closing inherited fds before exec: {e}"))?;
 
     let err = cmd.exec();
     Err(format!("exec failed: {err}"))
@@ -431,28 +395,24 @@ fn disable_core_dumps() -> Result<(), String> {
 fn run_parent(
     pid: libc::pid_t,
     directory_layout: &[DirectoryMountPlan],
-    directory_mounts: &[DirectoryMount],
     resource_channel: &ResourceChannel,
     has_files: bool,
-    isolation: Option<target_uid::Isolation>,
+    isolation: target_uid::Isolation,
     libsecret_state_path: Option<&Path>,
 ) -> Result<(), String> {
-    let isolated = isolation.is_some();
-    // Keep CAP_SETUID/CAP_SETGID through writeback for an isolated target (the
-    // setfsuid(X) window reads X-owned staging/state), and CAP_SYS_ADMIN through
-    // cleanup for an unisolated files target (unmount). Otherwise drop now.
-    let retain_caps = has_files || isolated;
-    if !retain_caps {
+    // Keep CAP_SETUID/CAP_SETGID through writeback only when the supervisor must
+    // read X-owned files/libsecret state. Env-only targets have no X-owned
+    // checkout surface to read, so drop caps before waiting.
+    let needs_fsuid_window = has_files || resource_channel.libsecret;
+    if !needs_fsuid_window {
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
     }
 
     let status = wait_for_child(pid)?;
 
-    // Compose and dispatch the end-of-run write BEFORE the directory
-    // unmounts: the staging tmpfs lives in ns's mount namespace, but
-    // the writeback walks the staging path, which is unaffected by the
-    // unmounting of bind targets. We do however need the staging files
-    // intact, so order is "walk first, then unmount".
+    // Compose and dispatch the end-of-run write while the staging tmpfs still
+    // lives in this namespace. It will be torn down with the namespace when the
+    // supervisor exits.
     let writeback_input = WritebackInput {
         channel: resource_channel,
         directory_layout,
@@ -463,54 +423,30 @@ fn run_parent(
         },
     };
 
-    // An isolated target's X-owned staging / libsecret state is read inside the
-    // single setfsuid(X) window (which also bounds the symlink-TOCTOU walk to
-    // uid X). An env-only isolated target has nothing X-owned to read and skips
-    // it; an unisolated target reads its own caller-owned files at caller fsuid.
-    let needs_fsuid_window = isolated && (has_files || resource_channel.libsecret);
-    let writeback_result = match isolation {
-        Some(iso) if needs_fsuid_window => {
-            target_uid::with_target_fsuid(iso, || writeback::dispatch_writeback(&[writeback_input]))
-                .and_then(|inner| inner)
-        }
-        _ => writeback::dispatch_writeback(&[writeback_input]),
-    };
-
-    // Cleanup: an isolated target's mounts live only in the private mount
-    // namespace and are torn down when the supervisor exits; the created
-    // mountpoint dirs (caller-owned via the idmap) are left in place. An
-    // unisolated target explicitly unmounts and removes what it created.
-    let cleanup_result = if isolated {
-        Ok(())
+    // X-owned staging / libsecret state is read inside the single setfsuid(X)
+    // window (which also bounds the symlink-TOCTOU walk to uid X). Env-only
+    // targets have nothing X-owned to read and skip it.
+    let writeback_result = if needs_fsuid_window {
+        target_uid::with_target_fsuid(isolation, || {
+            writeback::dispatch_writeback(&[writeback_input])
+        })
+        .and_then(|inner| inner)
     } else {
-        cleanup_mount_state(directory_mounts, has_files)
+        writeback::dispatch_writeback(&[writeback_input])
     };
 
-    match (writeback_result, cleanup_result) {
-        (Ok(outcomes), Ok(())) => report_outcomes(&outcomes),
-        (Err(e), _) => {
+    match writeback_result {
+        Ok(outcomes) => report_outcomes(&outcomes),
+        Err(e) => {
             eprintln!("underwrap-ns: end-of-run writeback: {e}");
-        }
-        (Ok(outcomes), Err(e)) => {
-            report_outcomes(&outcomes);
-            return Err(format!("mount cleanup failed: {e}"));
         }
     }
 
-    if retain_caps {
+    if needs_fsuid_window {
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
     }
 
     propagate_exit_status(status)
-}
-
-fn cleanup_mount_state(directory_mounts: &[DirectoryMount], has_files: bool) -> Result<(), String> {
-    cleanup_directory_mounts(directory_mounts).map_err(|e| format!("directory cleanup: {e}"))?;
-    if has_files {
-        cleanup_directory_staging_root(DIRECTORY_STAGING_ROOT)
-            .map_err(|e| format!("directory staging cleanup: {e}"))?;
-    }
-    Ok(())
 }
 
 fn wait_for_child(pid: libc::pid_t) -> Result<libc::c_int, String> {

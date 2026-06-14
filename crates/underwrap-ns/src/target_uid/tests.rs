@@ -9,19 +9,16 @@ fn write_table(contents: &str) -> tempfile::NamedTempFile {
 }
 
 #[test]
-fn missing_table_is_unisolated() {
+fn missing_table_fails_closed() {
     let r = resolve_isolation_from("/nonexistent/underwrap/target-uids", "/usr/bin/target");
-    assert!(
-        matches!(r, Ok(None)),
-        "missing table => Ok(None), got {r:?}"
-    );
+    assert!(r.is_err(), "missing table must fail closed, got {r:?}");
 }
 
 #[test]
-fn path_not_in_table_is_unisolated() {
+fn path_not_in_table_fails_closed() {
     let t = write_table("/usr/bin/other\tunderwrap-target-x\tunderwrap-target-x\n");
     let r = resolve_isolation_from(t.path().to_str().unwrap(), "/usr/bin/target");
-    assert!(matches!(r, Ok(None)), "absent path => Ok(None), got {r:?}");
+    assert!(r.is_err(), "absent path must fail closed, got {r:?}");
 }
 
 #[test]
@@ -35,8 +32,8 @@ fn uid_zero_is_rejected() {
 
 #[test]
 fn unknown_user_is_hard_error() {
-    // A path present in the table but unresolvable must fail closed — never fall
-    // back to running the target unisolated.
+    // A path present in the table but unresolvable must fail closed — never run
+    // the target as the caller.
     let t =
         write_table("/usr/bin/target\tunderwrap-no-such-user-zzz\tunderwrap-no-such-group-zzz\n");
     let r = resolve_isolation_from(t.path().to_str().unwrap(), "/usr/bin/target");
@@ -65,8 +62,8 @@ fn blank_lines_are_skipped() {
     let t = write_table("\n/usr/bin/other\tu\tg\n\n");
     let r = resolve_isolation_from(t.path().to_str().unwrap(), "/usr/bin/target");
     assert!(
-        matches!(r, Ok(None)),
-        "blank lines skipped, absent path => None, got {r:?}"
+        r.is_err(),
+        "blank lines skipped, absent path must fail closed, got {r:?}"
     );
 }
 

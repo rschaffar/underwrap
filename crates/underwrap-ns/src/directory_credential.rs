@@ -26,10 +26,9 @@ use underwrap_protocol::resource_blob::ResourceBlob;
 /// The pure layout for one files-slot mount: where its staging tmpfs
 /// subdirectory lives and where it binds into the target's home. Computed by
 /// the parent with **no filesystem side effects** (see
-/// [`plan_directory_mounts`]) so the same layout drives both the realize step
-/// — which runs in the parent for an unisolated target but in the child (at
-/// fsuid X) for an isolated one — and the end-of-run writeback walk the parent
-/// performs (under a `setfsuid(X)` window when isolated).
+/// [`plan_directory_mounts`]) so the same layout drives both the child-side
+/// realize step (at fsuid X) and the parent-side end-of-run writeback walk
+/// (under a `setfsuid(X)` window).
 #[derive(Debug, Clone)]
 pub struct DirectoryMountPlan {
     /// Wrapper-configured relative path (e.g. `.config/gh`). Key prefix when
@@ -39,21 +38,6 @@ pub struct DirectoryMountPlan {
     /// Host-side staging tmpfs subdirectory (`<staging_root>/mount-{i}`)
     /// materialized into and bound at the mount path; walked at writeback.
     pub staging_path: PathBuf,
-}
-
-/// One realized bind-mount, carrying only what cleanup needs: the mountpoint to
-/// unmount and the directories created on the way to it. Only the **unisolated**
-/// path produces these in the parent and cleans them up explicitly; an isolated
-/// target's mounts are realized in the child and torn down with the private
-/// mount namespace at parent exit.
-pub struct DirectoryMount {
-    /// Absolute mountpoint inside the namespace, `<target_home>/<mount_path>`.
-    pub mountpoint: PathBuf,
-    /// Directories created on the way to `mountpoint` (zero to N
-    /// entries, including `mountpoint` itself iff it had to be
-    /// created). Cleanup `rmdir`s these in reverse order — entries
-    /// that already existed are not in this list and stay put.
-    pub created_dirs: Vec<PathBuf>,
 }
 
 /// Compute the deterministic files-slot layout — one [`DirectoryMountPlan`]
@@ -86,8 +70,7 @@ pub fn plan_directory_mounts(
 /// Realize the planned files-slot mounts: create each mount's tmpfs staging
 /// subdirectory, materialize the blob files routed to it, ensure the mountpoint
 /// exists, and bind-mount the staging over it. The staging tmpfs **root** must
-/// already be mounted (by the parent for an unisolated target, or by the child
-/// after switching to uid X for an isolated one — see
+/// already be mounted by the child after switching to uid X (see
 /// [`crate::mounts::setup_directory_staging_tmpfs`]); this only populates it.
 ///
 /// Errors when a blob file key has no matching mount path or equals a mount
@@ -98,7 +81,7 @@ pub fn realize_directory_mounts(
     blob: &ResourceBlob,
     target_home: &Path,
     plans: &[DirectoryMountPlan],
-) -> Result<Vec<DirectoryMount>, String> {
+) -> Result<(), String> {
     // Phase 1: create per-mount staging directories.
     for plan in plans {
         create_dir_mode(&plan.staging_path, 0o700)?;
@@ -118,19 +101,13 @@ pub fn realize_directory_mounts(
         )?;
     }
 
-    // Phase 3: bind-mount each staging dir at its target path and
-    // emit the final `DirectoryMount` records.
-    let mut mounts: Vec<DirectoryMount> = Vec::with_capacity(plans.len());
+    // Phase 3: bind-mount each staging dir at its target path.
     for plan in plans {
-        let (mountpoint, created_dirs) = ensure_mount_target(target_home, &plan.mount_path)?;
+        let mountpoint = ensure_mount_target(target_home, &plan.mount_path)?;
         bind_mount_dir(&plan.staging_path, &mountpoint)?;
-        mounts.push(DirectoryMount {
-            mountpoint,
-            created_dirs,
-        });
     }
 
-    Ok(mounts)
+    Ok(())
 }
 
 fn create_dir_mode(path: &Path, mode: u32) -> Result<(), String> {
@@ -208,28 +185,6 @@ fn strip_mount_prefix<'a>(key: &'a str, mount: &str) -> &'a str {
     &key[mount.len() + 1..]
 }
 
-pub fn cleanup_directory_mounts(mounts: &[DirectoryMount]) -> Result<(), String> {
-    let mut first_error = None;
-    for mount in mounts.iter().rev() {
-        if let Err(e) = unmount_path(&mount.mountpoint) {
-            first_error.get_or_insert(e);
-            continue;
-        }
-        for dir in mount.created_dirs.iter().rev() {
-            if let Err(e) = std::fs::remove_dir(dir)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                first_error.get_or_insert(format!("removing mountpoint {}: {e}", dir.display()));
-            }
-        }
-    }
-    if let Some(err) = first_error {
-        Err(err)
-    } else {
-        Ok(())
-    }
-}
-
 /// Walk the tmpfs subtree rooted at `current` (under `root`) and
 /// insert each regular file into `out` with key
 /// `"{mount_prefix}/{path_relative_to_root}"`. Symlinks and other
@@ -299,13 +254,9 @@ fn materialize_file(
     Ok(())
 }
 
-fn ensure_mount_target(
-    target_home: &Path,
-    relative_path: &str,
-) -> Result<(PathBuf, Vec<PathBuf>), String> {
+fn ensure_mount_target(target_home: &Path, relative_path: &str) -> Result<PathBuf, String> {
     validate_relative_path(relative_path)?;
     let mut current = target_home.to_path_buf();
-    let mut created = Vec::new();
     let components: Vec<&str> = relative_path.split('/').collect();
 
     for (index, component) in components.iter().enumerate() {
@@ -330,7 +281,6 @@ fn ensure_mount_target(
                     .map_err(|err| format!("creating mountpoint {}: {err}", next.display()))?;
                 let is_final = index + 1 == components.len();
                 set_mode(&next, if is_final { 0o000 } else { 0o700 })?;
-                created.push(next.clone());
             }
             Err(e) => {
                 return Err(format!("stat {}: {e}", next.display()));
@@ -339,7 +289,7 @@ fn ensure_mount_target(
         current = next;
     }
 
-    Ok((current, created))
+    Ok(current)
 }
 
 fn bind_mount_dir(source: &Path, target: &Path) -> Result<(), String> {
@@ -359,19 +309,6 @@ fn bind_mount_dir(source: &Path, target: &Path) -> Result<(), String> {
             "bind-mounting {} -> {} failed: {}",
             source.to_string_lossy(),
             target.to_string_lossy(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-
-fn unmount_path(path: &Path) -> Result<(), String> {
-    let path = path_to_cstring(path)?;
-    let ret = unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
-    if ret != 0 {
-        return Err(format!(
-            "unmounting {} failed: {}",
-            path.to_string_lossy(),
             std::io::Error::last_os_error()
         ));
     }

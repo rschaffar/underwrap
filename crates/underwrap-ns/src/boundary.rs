@@ -3,8 +3,7 @@
 //! Giving the target a distinct uid X makes the caller the *more*-privileged
 //! peer, so any channel from the uid-X target back to the caller becomes an
 //! escalation that did not exist when target == caller. These close the cheap,
-//! critical ones. They run only on the isolated path, in the child, right before
-//! the target exec.
+//! critical ones. They run in the child, right before the target exec.
 
 /// `CLOSE_RANGE_CLOEXEC` (linux/close_range.h) — mark the range close-on-exec
 /// rather than closing it immediately, so std's exec machinery is undisturbed.

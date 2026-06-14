@@ -99,14 +99,10 @@ pub(crate) fn remount_proc() -> Result<(), String> {
 }
 
 /// Set up the private libsecret bus mount namespace: a tmpfs at the bus dir
-/// (root owned by the current fsuid, so an isolated child running at uid X gets
-/// an X-owned bus the dbus-daemon / secretsd it forks can write to) plus, for
-/// an **unisolated** target, a bind of `/dev/null` over the caller's real
-/// session bus so a target that ignores `DBUS_SESSION_BUS_ADDRESS` cannot reach
-/// it. When `isolated`, the real-bus hide is skipped: the uid boundary already
-/// denies a uid-X target access to the caller's `/run/user/<caller>` runtime
-/// dir, and X cannot even traverse it to bind over the socket.
-pub(crate) fn setup_mount_namespace(isolated: bool) -> Result<(), String> {
+/// owned by the current fsuid. Under mandatory isolation this runs after the
+/// child switches to uid X, so dbus-daemon / secretsd can create the socket and
+/// write state there.
+pub(crate) fn setup_mount_namespace() -> Result<(), String> {
     let bus_dir = "/tmp/.underwrap-ns-bus";
     std::fs::create_dir_all(bus_dir)
         .map_err(|e| format!("creating bus mount point {bus_dir}: {e}"))?;
@@ -127,53 +123,5 @@ pub(crate) fn setup_mount_namespace(isolated: bool) -> Result<(), String> {
         return Err(format!("mount tmpfs for private bus failed: {err}"));
     }
 
-    if isolated {
-        return Ok(());
-    }
-
-    let uid = unsafe { libc::getuid() };
-    let real_bus = format!("/run/user/{uid}/bus");
-    if std::path::Path::new(&real_bus).exists() {
-        let devnull = std::ffi::CString::new("/dev/null").unwrap();
-        let target = std::ffi::CString::new(real_bus.as_str()).unwrap();
-        let ret = unsafe {
-            libc::mount(
-                devnull.as_ptr(),
-                target.as_ptr(),
-                std::ptr::null(),
-                libc::MS_BIND,
-                std::ptr::null(),
-            )
-        };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            return Err(format!(
-                "hiding real session bus at {real_bus} failed: {err}"
-            ));
-        }
-    }
-
     Ok(())
-}
-
-pub(crate) fn cleanup_directory_staging_root(staging_root_path: &str) -> Result<(), String> {
-    let staging_root = std::ffi::CString::new(staging_root_path).unwrap();
-    let ret = unsafe { libc::umount2(staging_root.as_ptr(), libc::MNT_DETACH) };
-    if ret != 0 {
-        return Err(format!(
-            "unmounting directory staging root failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    // Remove the bare mountpoint, best-effort. The staging root is a fixed path
-    // on the shared, sticky `/tmp`; if a prior isolated run created it under its
-    // dedicated uid X, a later caller-uid run cannot remove that entry (sticky
-    // bit) — that EPERM is expected and ignored. The empty dir is harmless and
-    // is reused (mounted over) by the next run. Other errors are fatal.
-    match std::fs::remove_dir(staging_root_path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("removing directory staging mount point: {e}")),
-    }
 }

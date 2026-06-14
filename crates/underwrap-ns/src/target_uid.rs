@@ -31,25 +31,21 @@ pub(crate) struct Isolation {
 /// Resolve the dedicated sandbox identity for `target_path` from the root-owned
 /// table.
 ///
-/// - table file absent → `Ok(None)` (no isolation configured on this host)
-/// - path not in table → `Ok(None)` (unisolated target; unchanged behaviour)
-/// - path in table → `Ok(Some(Isolation))` after resolving names → uid/gid and
-///   validating (reject `0` / sub-floor).
-///
-/// A path that **is** in the table but fails to resolve or validate is a hard
-/// error: we must NEVER run a target that should be isolated as the caller (it
-/// would expose the secret in a same-uid-readable env). Fail closed.
-pub(crate) fn resolve_isolation(target_path: &str) -> Result<Option<Isolation>, String> {
+/// Under the mandatory-isolation model, both a missing table and a missing row
+/// are hard errors: underwrap must never fall back to running the target as the
+/// caller.
+pub(crate) fn resolve_isolation(target_path: &str) -> Result<Isolation, String> {
     resolve_isolation_from(TARGET_UID_TABLE, target_path)
 }
 
-fn resolve_isolation_from(
-    table_path: &str,
-    target_path: &str,
-) -> Result<Option<Isolation>, String> {
+fn resolve_isolation_from(table_path: &str, target_path: &str) -> Result<Isolation, String> {
     let contents = match std::fs::read_to_string(table_path) {
         Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "mandatory target isolation table {table_path} is missing; refusing to run {target_path:?} as the caller"
+            ));
+        }
         Err(e) => return Err(format!("reading {table_path}: {e}")),
     };
 
@@ -92,9 +88,11 @@ fn resolve_isolation_from(
                 "refusing to isolate {target_path:?} to gid 0 (group {group:?})"
             ));
         }
-        return Ok(Some(Isolation { uid, gid }));
+        return Ok(Isolation { uid, gid });
     }
-    Ok(None)
+    Err(format!(
+        "mandatory target isolation table {table_path} has no row for {target_path:?}; refusing to run as the caller"
+    ))
 }
 
 fn resolve_uid(name: &str) -> Result<libc::uid_t, String> {
