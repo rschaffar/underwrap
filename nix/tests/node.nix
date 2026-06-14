@@ -439,14 +439,12 @@ in {
             target = "${isoScript}";
             resource = "test/iso-tok";
             env = true;
-            isolate = true;
           };
           # Isolated target with an idmapped directory (story 2640).
           test-iso-home = {
             target = "${isoHomeScript}";
             resource = "test/iso-home-tok";
             env = true;
-            isolate = true;
             idmapPaths = [ "~/iso-data" ];
           };
           # Isolated target projecting a FILES slot (story 2635). The staging is
@@ -457,7 +455,6 @@ in {
             target = "${isoDirScript}";
             resource = "test/iso-dir-tok";
             files.paths = [ "iso-files/dir-a" ];
-            isolate = true;
             idmapPaths = [ "~/iso-files" ];
           };
           # Isolated LIBSECRET target (story 2635): dbus-daemon + secretsd run as
@@ -468,7 +465,6 @@ in {
             target = "${isoSecretTool}";
             resource = "test/iso-libsecret-store";
             libsecret = true;
-            isolate = true;
           };
           test-crash = {
             target = "${crashScript}";

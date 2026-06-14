@@ -333,39 +333,20 @@ let
         default = false;
         description = "Expose this resource's libsecret slot through a private Secret Service.";
       };
-      isolate = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Run this wrapper's target under a dedicated, otherwise-unused system
-          UID (a per-target sandbox uid X, distinct from the caller), so a
-          same-UID caller cannot read the target's — or its descendants' —
-          <literal>/proc/&lt;pid&gt;/{environ,maps,auxv,mem}</literal> (story
-          2600). Isolation is keyed on the absolute <option>target</option>
-          path: every wrapper that runs the same target binary shares its uid
-          (same tool, same trust domain), and enabling <literal>isolate</literal>
-          on any one of them isolates that target for all. The authority for
-          which uid is the root-owned <filename>/etc/underwrap/target-uids</filename>
-          table (a line-based TSV), read directly by <literal>underwrap-ns</literal>;
-          the uid is never relayed over the wire. Off by default.
-        '';
-      };
       idmapPaths = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [];
         description = ''
-          Directories to make available to an <option>isolate</option>d target
-          via idmapped bind mounts that map ONLY the calling user's uid/gid to
-          the target's dedicated uid/gid. Inside each listed directory, files
-          owned by the caller appear owned by (and are writable as) the target,
-          and the target's writes land back on disk owned by the caller;
-          everything else is left untouched. Each entry is either
-          <literal>~</literal> / <literal>~/&lt;rel&gt;</literal> (resolved
-          against the calling user's home directory) or an absolute path. Has no
-          effect unless the wrapper sets <option>isolate</option>. Use this to
-          give an isolated env-mode tool access to just the config/state
-          directories it needs (e.g. <literal>[ "~/.config/gh" ]</literal>)
-          instead of its whole home.
+          Directories to make available to the target via idmapped bind mounts
+          that map ONLY the calling user's uid/gid to the target's dedicated
+          uid/gid. Inside each listed directory, files owned by the caller
+          appear owned by (and are writable as) the target, and the target's
+          writes land back on disk owned by the caller; everything else is left
+          untouched. Each entry is either <literal>~</literal> /
+          <literal>~/&lt;rel&gt;</literal> (resolved against the calling user's home
+          directory) or an absolute path. Use this to give a target access to
+          just the caller-owned config/state directories it needs (e.g.
+          <literal>[ "~/.config/gh" ]</literal>) instead of its whole home.
         '';
         example = [ "~/.config/gh" "~/.config/git" ];
       };
@@ -482,18 +463,15 @@ let
       || (dev.encrypted.enable or false)
     ) config.swapDevices;
 
-  # --- Per-target uid isolation (story 2600) ---
-  # Distinct absolute target binary paths used by a wrapper with
-  # `isolate = true`, across every instance. Each gets its own dedicated system
-  # user/group (a sandbox uid X, distinct from any caller); underwrap-ns switches
-  # the target (and thus its whole subtree) to X. Wrappers sharing a target
-  # binary share its uid (same tool = same trust domain); finer granularity is
-  # future work (2670).
-  isolatedTargetPaths = lib.unique (lib.concatMap (inst:
-    map (w: w.target) (lib.filter (w: w.isolate) (lib.attrValues inst.wrappers))
+  # --- Per-target uid isolation (story 2600 / 2670) ---
+  # Distinct absolute target binary paths used by wrappers across every
+  # instance. Each gets its own dedicated system user/group (a sandbox uid X,
+  # distinct from any caller); underwrap-ns switches the target (and thus its
+  # whole subtree) to X. Wrappers sharing a target binary share its uid (same
+  # tool = same trust domain); finer granularity is future work.
+  targetPaths = lib.unique (lib.concatMap (inst:
+    map (w: w.target) (lib.attrValues inst.wrappers)
   ) (lib.attrValues cfg.instances));
-
-  anyTargetIsolated = isolatedTargetPaths != [];
 
   # Stable, collision-free sandbox user name per target path: a hash of the
   # absolute path (NOT a sequential index, so adding/removing isolated targets
@@ -511,11 +489,11 @@ let
       isSystemUser = true;
       group = n;
       description = "underwrap target sandbox uid for ${path}";
-    }) isolatedTargetPaths);
+    }) targetPaths);
   targetGroups = lib.listToAttrs (map (path:
-    lib.nameValuePair (targetUserName path) {}) isolatedTargetPaths);
+    lib.nameValuePair (targetUserName path) {}) targetPaths);
 
-  # Root-owned authority table: one row per isolated target,
+  # Root-owned authority table: one row per target,
   # "<abs target path>\t<user>\t<group>". underwrap-ns reads this directly (keyed
   # on the path it is about to exec) and resolves the names to a numeric uid/gid
   # via getpwnam/getgrnam at runtime, then validates (reject 0). Line-based TSV
@@ -528,7 +506,7 @@ let
   # docs/security.md and story 2600 "Authority for the uid".
   targetUidTableText = lib.concatMapStrings (path:
     "${path}\t${targetUserName path}\t${targetUserName path}\n"
-  ) isolatedTargetPaths;
+  ) targetPaths;
 
 in {
   options.services.underwrap = {
@@ -546,24 +524,17 @@ in {
         Apply the target-host hardening posture underwrap relies on. When
         enabled:
 
-        - `kernel.yama.ptrace_scope` is pinned to `2`. This gates only the
+        - `kernel.yama.ptrace_scope` is pinned to `2`. This gates the
           **ATTACH-mode** inspection vectors — `/proc/<pid>/mem`,
           `ptrace(PTRACE_ATTACH)`, and `process_vm_readv` — behind
           `CAP_SYS_PTRACE`, blocking `strace`/`gdb`/`perf` and direct memory
           reads from same-UID callers. It does **not** gate the **READ-mode**
           files `/proc/<pid>/{environ,maps,smaps,auxv}`: Yama acts only on
-          `PTRACE_MODE_ATTACH`, never on `PTRACE_MODE_READ`, so those files are
-          gated solely by the target's *dumpable* flag. `ptrace_scope = 2` is
-          therefore **defense-in-depth for the ATTACH vectors**, not the control
-          that protects a target's `environ`. A clean `execve` resets a target
-          to dumpable, so any *dumpable* process in a target's subtree — in
-          particular the descendants an env-mode target spawns, which run at the
-          caller's uid — has its `environ`/`maps`/`auxv` readable by any same-UID
-          process regardless of `ptrace_scope`. (The *direct* target is
-          incidentally non-dumpable through the wrapper chain, but that is a
-          fragile side-effect, not a control.) Robustly protecting the whole
-          subtree requires the dedicated per-target UID added by the per-wrapper
-          `isolate` option (story 2600).
+          `PTRACE_MODE_ATTACH`, never on `PTRACE_MODE_READ`. Those READ-mode
+          files are protected by underwrap's mandatory dedicated per-target UID:
+          wrapped targets and their descendants do not run as the caller, so the
+          same-UID `/proc` access check fails for the caller's other processes.
+          `ptrace_scope = 2` remains defense-in-depth for the ATTACH vectors.
         - The build asserts that every configured swap device is encrypted
           (random-key or LUKS), so a token paged out of the target's memory
           cannot later surface as plaintext on disk. If you deliberately run
@@ -596,12 +567,13 @@ in {
                 (lib.filter (right: right != left) paths)
             ) paths;
           in {
-            assertion = wrapper.resource != ""
+            assertion = isAbsolutePathString wrapper.target
+              && wrapper.resource != ""
               && wrapperHasProjection wrapper
               && lib.length paths == lib.length (lib.unique paths)
               && lib.all (path: isCleanRelativePath path) paths
               && lib.all (pair: !pathsOverlap pair.left pair.right) pairs;
-            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: must declare a non-empty resource, enable at least one projection slot (env, files, or libsecret), and supply files paths that are clean, unique, and non-overlapping";
+            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: must declare an absolute target path, a non-empty resource, enable at least one projection slot (env, files, or libsecret), and supply files paths that are clean, unique, and non-overlapping";
           }
         ) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: wrapper: {
@@ -677,22 +649,19 @@ in {
       ++ [ targetGroups ]
     );
 
-    # Shared underwrap-ns (one binary, all instances use it). It gains
-    # cap_setuid/cap_setgid ONLY when at least one wrapper enables `isolate`,
-    # so the cap surface stays minimal otherwise. Both are needed transiently
-    # to switch the target to its dedicated uid (cap_setuid: setresuid;
-    # cap_setgid: setresgid+setgroups, and the idmap gid_map write in 2640) and
-    # are dropped before the target exec. The authority for *which* uid comes
-    # from the root-owned table, never from a credential underwrap-ns holds.
+    # Shared underwrap-ns (one binary, all instances use it). Targets are always
+    # switched to dedicated per-target uids, so cap_setuid/cap_setgid are part of
+    # the mandatory execution model. They are needed transiently to switch the
+    # target to its dedicated uid (cap_setuid: setresuid; cap_setgid:
+    # setresgid+setgroups, and the idmap gid_map write in 2640) and are dropped
+    # before the target exec. The authority for *which* uid comes from the
+    # root-owned table, never from a credential underwrap-ns holds.
     security.wrappers = lib.mkMerge ([{
       underwrap-ns = {
         source = "${cfg.package}/bin/underwrap-ns";
         owner = "root";
         group = "root";
-        capabilities =
-          if anyTargetIsolated
-          then "cap_sys_admin,cap_setpcap,cap_setuid,cap_setgid+ep"
-          else "cap_sys_admin,cap_setpcap+ep";
+        capabilities = "cap_sys_admin,cap_setpcap,cap_setuid,cap_setgid+ep";
       };
     }] ++ lib.mapAttrsToList (_: i: i.securityWrappers) instances);
 
@@ -715,7 +684,7 @@ in {
     # runs as — read directly by underwrap-ns, never relayed over the wire.
     environment.etc = lib.mkMerge (
       (lib.mapAttrsToList (_: i: i.etcFiles) instances)
-      ++ lib.optional anyTargetIsolated {
+      ++ lib.optional (targetPaths != []) {
         "underwrap/target-uids" = {
           text = targetUidTableText;
           mode = "0644";
@@ -739,16 +708,10 @@ in {
     # Target-host hardening: pin kernel.yama.ptrace_scope=2. NOTE this gates
     # only the ATTACH-mode vectors (/proc/<pid>/mem, ptrace, process_vm_readv);
     # Yama never consults PTRACE_MODE_READ, so it does NOT gate the READ-mode
-    # files /proc/<pid>/{environ,maps,smaps,auxv} — those are gated by the
-    # target's dumpable flag, and a clean exec resets a target to dumpable (so
-    # the descendants an env-mode target spawns are dumpable and caller-uid; the
-    # direct target is only incidentally non-dumpable via the chain). So this is
-    # defense-in-depth for the ATTACH vectors; robust environ confidentiality
-    # across the target subtree comes from the dedicated per-target UID (the
-    # per-wrapper `isolate` option), not from here. The pin stays: it is still
-    # the ATTACH-mode protection (mem/ptrace) for UNISOLATED targets, and
-    # defense-in-depth for isolated ones. mkDefault so operators who genuinely need scope=1 for
-    # debugging workflows can lower it explicitly.
+    # files /proc/<pid>/{environ,maps,smaps,auxv}. Those are protected by the
+    # mandatory per-target UID boundary instead. The pin stays as
+    # defense-in-depth for ATTACH-mode reads. mkDefault so operators who
+    # genuinely need scope=1 for debugging workflows can lower it explicitly.
     boot.kernel.sysctl = lib.mkIf cfg.hardenTargetHost {
       "kernel.yama.ptrace_scope" = lib.mkDefault 2;
     };
