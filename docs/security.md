@@ -1361,7 +1361,7 @@ These ideas were considered and rejected for the current design.
 | Combine setgid and namespace capability in one wrapper stage | Poor fit for the NixOS wrapper model used here |
 | Rely on `PR_SET_DUMPABLE=0` alone for the final target | Exec resets the relevant state for ordinary targets |
 | Fall back to weaker execution when isolation fails | Silent security degradation |
-| Per-wrapper dedicated UIDs for target execution | Breaks ordinary access to the invoking user's working context |
+| Per-wrapper target UIDs independent of target path | Too fine-grained for the first-release trust model; wrappers that execute the same target binary share one per-target UID, and caller-owned filesystem access is granted explicitly with `accessPaths` |
 | User-namespace-based redesign | In tension with the current setgid-based identity model |
 
 ---
