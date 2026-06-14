@@ -82,7 +82,7 @@ fn run() -> Result<(), String> {
     // PID namespace — a helper fork after CLONE_NEWPID would become PID 1 of the
     // new namespace and break the real target fork. The idmapped mounts are
     // applied below, after the private mount namespace exists.
-    let idmap_userns = if exec_bundle.idmap_paths.is_empty() {
+    let idmap_userns = if exec_bundle.access_paths.is_empty() {
         None
     } else {
         let caller_gid = unsafe { libc::getgid() };
@@ -100,7 +100,7 @@ fn run() -> Result<(), String> {
     // private mount namespace, so the forked child (which becomes X) inherits the
     // mounts and the host's view is untouched.
     if let Some(ref userns) = idmap_userns {
-        idmap::mount_idmapped_dirs(&exec_bundle.idmap_paths, &target_identity.home, userns)
+        idmap::mount_idmapped_dirs(&exec_bundle.access_paths, &target_identity.home, userns)
             .map_err(|e| format!("setting up idmapped directories: {e}"))?;
     }
 

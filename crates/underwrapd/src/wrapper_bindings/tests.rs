@@ -11,7 +11,7 @@ fn base() -> WrapperDef {
         libsecret: false,
         env_passthrough: Vec::new(),
         env_set: std::collections::HashMap::new(),
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     }
 }
 

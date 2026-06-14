@@ -99,7 +99,7 @@ let
         libsecret = w.libsecret;
         env_passthrough = w.envPassthrough;
         env_set = w.envSet;
-        idmap_paths = w.idmapPaths;
+        access_paths = w.accessPaths;
       } // lib.optionalAttrs (w.files != null) {
         files = { inherit (w.files) paths; };
       })) inst.wrappers;
@@ -333,7 +333,7 @@ let
         default = false;
         description = "Expose this resource's libsecret slot through a private Secret Service.";
       };
-      idmapPaths = lib.mkOption {
+      accessPaths = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [];
         description = ''

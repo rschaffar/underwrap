@@ -75,6 +75,7 @@ wrappers.gh = {
   env = true;
   files.paths = [ ".config/gh" ".config/git" ];
   libsecret = true;
+  accessPaths = [ "~/.config/git" "~/.ssh" ];
   envSet.PATH = lib.makeBinPath [ pkgs.git pkgs.openssh ];
 };
 ```
@@ -86,12 +87,16 @@ wrappers.gh = {
 | `env` | bool | `false` | Inject the resource's env-slot keys as environment variables |
 | `files` | nullable submodule | `null` | Mount the resource's files slot at one or more home-relative paths via `files.paths = [ ... ]` |
 | `libsecret` | bool | `false` | Run the target inside a private Secret Service session bus backed by the resource's libsecret slot |
+| `accessPaths` | list of str | `[]` | Caller-owned directories to expose to the dedicated target UID through idmapped bind mounts (`~`, `~/rel`, or absolute paths) |
 | `envPassthrough` | list of str | minimal allowlist | Caller-environment variables to preserve verbatim (does not name `HOME`, `XDG_*`, `LD_*`, or other dynamic-linker variables) |
 | `envSet` | attrset | `{}` | Fixed environment variables to set on the target (absolute paths only for `HOME` and base `XDG_*` overrides) |
 
 `target` must always be an absolute trusted path; underwrap does not use
 `PATH` lookup for the main exec target. Every wrapper must enable at
-least one projection slot (`env`, `files`, or `libsecret`).
+least one projection slot (`env`, `files`, or `libsecret`). Wrapped targets run
+under a dedicated target UID; use `accessPaths` to grant that UID explicit,
+selected access to caller-owned config or state directories. Only the caller's
+uid/gid is mapped through those mounts; other owners remain unmapped.
 
 The debug tool is **always** built alongside every wrapper. Whether an
 operator can actually invoke it is a runtime decision: set the

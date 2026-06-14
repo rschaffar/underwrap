@@ -70,7 +70,7 @@ struct ReadResult {
     env_passthrough: Vec<String>,
     env_set: std::collections::HashMap<String, String>,
     xdg_runtime_dir_base: String,
-    idmap_paths: Vec<String>,
+    access_paths: Vec<String>,
     resource_binding: ReceivedResourceBinding,
 }
 
@@ -254,7 +254,7 @@ fn request_secret(
         env_passthrough,
         env_set,
         xdg_runtime_dir_base,
-        idmap_paths,
+        access_paths,
     ) = match response {
         WrapperResponse::ReadOk {
             env,
@@ -267,7 +267,7 @@ fn request_secret(
             env_passthrough,
             env_set,
             xdg_runtime_dir_base,
-            idmap_paths,
+            access_paths,
         } => (
             env,
             resource_id,
@@ -279,7 +279,7 @@ fn request_secret(
             env_passthrough,
             env_set,
             xdg_runtime_dir_base,
-            idmap_paths,
+            access_paths,
         ),
         WrapperResponse::Error { code, message } => {
             if matches!(code, underwrap_protocol::message::ErrorCode::StoreLocked) {
@@ -301,7 +301,7 @@ fn request_secret(
         env_passthrough,
         env_set,
         xdg_runtime_dir_base,
-        idmap_paths,
+        access_paths,
         resource_binding: ReceivedResourceBinding {
             resource_id,
             resource_name,
@@ -438,7 +438,7 @@ fn exec_via_ns(
             env_set: read.env_set,
             xdg_runtime_dir_base: read.xdg_runtime_dir_base,
             resource: exec_resource,
-            idmap_paths: read.idmap_paths,
+            access_paths: read.access_paths,
         };
         write_frame_sync(&mut pipe, &payload).context("writing exec bundle to pipe")?;
         // pipe_write closed on drop.

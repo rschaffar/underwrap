@@ -27,7 +27,7 @@ pub fn wrapper(target: &str, resource_id: &str, _env_var: &str) -> WrapperDef {
         libsecret: false,
         env_passthrough: Vec::new(),
         env_set: std::collections::HashMap::new(),
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     }
 }
 
@@ -50,7 +50,7 @@ pub fn files_wrapper_paths(target: &str, resource_id: &str, paths: &[&str]) -> W
         libsecret: false,
         env_passthrough: Vec::new(),
         env_set: std::collections::HashMap::new(),
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     }
 }
 

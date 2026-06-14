@@ -445,7 +445,7 @@ in {
             target = "${isoHomeScript}";
             resource = "test/iso-home-tok";
             env = true;
-            idmapPaths = [ "~/iso-data" ];
+            accessPaths = [ "~/iso-data" ];
           };
           # Isolated target projecting a FILES slot (story 2635). The staging is
           # owned by uid X and bound under an idmapped `~/iso-files`; the uid-X
@@ -455,7 +455,7 @@ in {
             target = "${isoDirScript}";
             resource = "test/iso-dir-tok";
             files.paths = [ "iso-files/dir-a" ];
-            idmapPaths = [ "~/iso-files" ];
+            accessPaths = [ "~/iso-files" ];
           };
           # Isolated LIBSECRET target (story 2635): dbus-daemon + secretsd run as
           # the dedicated uid X on an X-owned private bus tmpfs; the supervisor

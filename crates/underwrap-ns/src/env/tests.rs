@@ -24,7 +24,7 @@ fn sample_exec_bundle() -> ExecBundle {
         env_set: HashMap::from([("PATH".to_string(), "/trusted/bin".to_string())]),
         xdg_runtime_dir_base: "/run/underwrap-runtime".to_string(),
         resource: sample_binding(),
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     }
 }
 
@@ -90,7 +90,7 @@ fn build_target_env_derives_base_xdg_dirs_from_env_set_home() {
         env_set: HashMap::from([("HOME".to_string(), "/srv/wrapped-home".to_string())]),
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     };
 
     let target_env = build_target_env(
@@ -149,7 +149,7 @@ fn build_target_env_honors_explicit_base_xdg_overrides() {
         ]),
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     };
     let host_env = HashMap::from([(
         "XDG_CONFIG_HOME".to_string(),
@@ -191,7 +191,7 @@ fn build_target_env_ignores_forced_names_in_passthrough_and_env_set() {
         )]),
         xdg_runtime_dir_base: "/run/secure-runtime".to_string(),
         resource: sample_binding(),
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     };
     let host_env = HashMap::from([
         ("HOME".to_string(), "/tmp/evil-home".to_string()),
@@ -228,7 +228,7 @@ fn build_target_env_rejects_relative_home_and_base_xdg_overrides() {
             env_set: HashMap::from([(name.to_string(), "relative/path".to_string())]),
             xdg_runtime_dir_base: "/run/user".to_string(),
             resource: sample_binding(),
-            idmap_paths: Vec::new(),
+            access_paths: Vec::new(),
         };
         let err = build_target_env(
             &HashMap::new(),
@@ -250,7 +250,7 @@ fn build_target_env_rejects_non_utf8_secret_values() {
         env_set: HashMap::new(),
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     };
 
     let err =

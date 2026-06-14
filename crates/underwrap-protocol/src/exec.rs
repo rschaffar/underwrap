@@ -72,10 +72,9 @@ pub struct ExecBundle {
     /// carrying the fd for the bulk-blob IPC channel
     /// (`Checkout` / `Checkin` / `UsageSignal`).
     pub resource: ExecResourceBinding,
-    /// Directories to idmap (caller<->dedicated uid) into an isolated target's
-    /// mount namespace (`~`/`~/rel`/absolute). Empty for an unisolated target;
-    /// `underwrap-ns` ignores them unless the target is isolated.
-    pub idmap_paths: Vec<String>,
+    /// Caller-owned directories to idmap (caller<->dedicated uid) into the
+    /// target's mount namespace (`~`/`~/rel`/absolute).
+    pub access_paths: Vec<String>,
 }
 
 impl WireEncode for ExecBundle {
@@ -85,7 +84,7 @@ impl WireEncode for ExecBundle {
         self.env_set.encode(out)?;
         self.xdg_runtime_dir_base.encode(out)?;
         self.resource.encode(out)?;
-        self.idmap_paths.encode(out)
+        self.access_paths.encode(out)
     }
 }
 
@@ -97,7 +96,7 @@ impl WireDecode for ExecBundle {
             env_set: HashMap::<String, String>::decode(reader)?,
             xdg_runtime_dir_base: String::decode(reader)?,
             resource: ExecResourceBinding::decode(reader)?,
-            idmap_paths: Vec::<String>::decode(reader)?,
+            access_paths: Vec::<String>::decode(reader)?,
         })
     }
 }

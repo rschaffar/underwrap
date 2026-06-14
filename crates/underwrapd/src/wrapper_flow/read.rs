@@ -199,7 +199,7 @@ pub(super) fn open_invocation(
         env_passthrough: wrapper_def.env_passthrough.clone(),
         env_set: wrapper_def.env_set.clone(),
         xdg_runtime_dir_base: state.config.xdg_runtime_dir_base.clone(),
-        idmap_paths: wrapper_def.idmap_paths.clone(),
+        access_paths: wrapper_def.access_paths.clone(),
     };
     ReadOutcome {
         response,

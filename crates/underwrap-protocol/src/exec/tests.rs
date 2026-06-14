@@ -43,7 +43,7 @@ fn exec_bundle_roundtrip_minimal() {
             libsecret: false,
             files_target_paths: Vec::new(),
         },
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -68,7 +68,7 @@ fn exec_bundle_roundtrip_populated() {
         ]),
         xdg_runtime_dir_base: "/run/underwrap-runtime".to_string(),
         resource: sample_binding(),
-        idmap_paths: vec!["~/.config/gh".to_string(), "/srv/data".to_string()],
+        access_paths: vec!["~/.config/gh".to_string(), "/srv/data".to_string()],
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -94,7 +94,7 @@ fn exec_bundle_carries_no_target_identity() {
         env_set: HashMap::new(),
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
-        idmap_paths: vec!["~/.config/gh".to_string()],
+        access_paths: vec!["~/.config/gh".to_string()],
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -105,7 +105,7 @@ fn exec_bundle_carries_no_target_identity() {
     bundle.env_set.encode(&mut expected).unwrap();
     bundle.xdg_runtime_dir_base.encode(&mut expected).unwrap();
     bundle.resource.encode(&mut expected).unwrap();
-    bundle.idmap_paths.encode(&mut expected).unwrap();
+    bundle.access_paths.encode(&mut expected).unwrap();
 
     assert_eq!(
         encoded, expected,
@@ -122,7 +122,7 @@ fn exec_bundle_decode_rejects_trailing_bytes() {
         env_set: HashMap::new(),
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
-        idmap_paths: Vec::new(),
+        access_paths: Vec::new(),
     };
 
     let mut encoded = encode_to_vec(&bundle).unwrap();
