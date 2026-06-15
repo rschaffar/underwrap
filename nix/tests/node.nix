@@ -173,6 +173,18 @@ let
     set -eu
     ${pkgs.coreutils}/bin/cat "$HOME/iso-data/from-caller" > "$HOME/iso-data/from-target"
   '';
+  # Isolated target that exercises `accessRuntimeDir` (idmap the caller's runtime
+  # dir). It mkdirs + writes a marker under XDG_RUNTIME_DIR and prints it back. With
+  # the flag the idmapped runtime dir is writable (and the marker lands owned by the
+  # caller); without it the dedicated uid X cannot traverse the caller's 0700
+  # /run/.../<uid> and the script fails at mkdir.
+  runtimeDirScript = pkgs.writeShellScript "runtime-dir-target" ''
+    set -eu
+    probe="$XDG_RUNTIME_DIR/uw-runtime-probe"
+    ${pkgs.coreutils}/bin/mkdir -p "$probe"
+    ${pkgs.coreutils}/bin/printf '%s' runtime_dir_ok > "$probe/marker"
+    ${pkgs.coreutils}/bin/cat "$probe/marker"
+  '';
   # Isolated target projecting a FILES slot (story 2635). The files-slot staging
   # is owned by the dedicated uid X and bound at `$HOME/iso-files/dir-a` under an
   # idmapped `~/iso-files`, so the uid-X target reads/writes it directly. `write`
@@ -445,6 +457,20 @@ in {
             resource = "test/iso-home-tok";
             env = true;
             accessPaths = [ "~/iso-data" ];
+          };
+          # accessRuntimeDir: idmap the caller's runtime dir so the isolated target
+          # can use XDG_RUNTIME_DIR. The denied twin omits the flag to prove it is
+          # load-bearing (the dedicated uid otherwise cannot reach the 0700 dir).
+          test-runtime-dir = {
+            target = "${runtimeDirScript}";
+            resource = "test/runtime-tok";
+            env = true;
+            accessRuntimeDir = true;
+          };
+          test-runtime-dir-denied = {
+            target = "${runtimeDirScript}";
+            resource = "test/runtime-denied-tok";
+            env = true;
           };
           # Isolated target projecting a FILES slot (story 2635). The staging is
           # owned by uid X and bound under an idmapped `~/iso-files`; the uid-X

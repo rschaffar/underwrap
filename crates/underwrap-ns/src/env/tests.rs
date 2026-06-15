@@ -25,6 +25,7 @@ fn sample_exec_bundle() -> ExecBundle {
         xdg_runtime_dir_base: "/run/underwrap-runtime".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
+        access_runtime_dir: false,
     }
 }
 
@@ -91,6 +92,7 @@ fn build_target_env_derives_base_xdg_dirs_from_env_set_home() {
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
+        access_runtime_dir: false,
     };
 
     let target_env = build_target_env(
@@ -150,6 +152,7 @@ fn build_target_env_honors_explicit_base_xdg_overrides() {
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
+        access_runtime_dir: false,
     };
     let host_env = HashMap::from([(
         "XDG_CONFIG_HOME".to_string(),
@@ -192,6 +195,7 @@ fn build_target_env_ignores_forced_names_in_passthrough_and_env_set() {
         xdg_runtime_dir_base: "/run/secure-runtime".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
+        access_runtime_dir: false,
     };
     let host_env = HashMap::from([
         ("HOME".to_string(), "/tmp/evil-home".to_string()),
@@ -229,6 +233,7 @@ fn build_target_env_rejects_relative_home_and_base_xdg_overrides() {
             xdg_runtime_dir_base: "/run/user".to_string(),
             resource: sample_binding(),
             access_paths: Vec::new(),
+            access_runtime_dir: false,
         };
         let err = build_target_env(
             &HashMap::new(),
@@ -251,6 +256,7 @@ fn build_target_env_rejects_non_utf8_secret_values() {
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
+        access_runtime_dir: false,
     };
 
     let err =

@@ -88,6 +88,7 @@ wrappers.gh = {
 | `files` | nullable submodule | `null` | Mount the resource's files slot at one or more home-relative paths via `files.paths = [ ... ]` |
 | `libsecret` | bool | `false` | Run the target inside a private Secret Service session bus backed by the resource's libsecret slot |
 | `accessPaths` | list of str | `[]` | Caller-owned directories to expose to the dedicated target UID through idmapped bind mounts (`~`, `~/rel`, or absolute paths) |
+| `accessRuntimeDir` | bool | `false` | Idmap the caller's runtime dir (`<xdgRuntimeDirBase>/<caller-uid>`, the path `XDG_RUNTIME_DIR` points at) into the namespace, like an `accessPaths` entry resolved from the caller's uid at invocation time |
 | `envPassthrough` | list of str | minimal allowlist | Caller-environment variables to preserve verbatim (does not name `HOME`, `XDG_*`, `LD_*`, or other dynamic-linker variables) |
 | `envSet` | attrset | `{}` | Fixed environment variables to set on the target (absolute paths only for `HOME` and base `XDG_*` overrides) |
 
@@ -112,7 +113,16 @@ restores only the allowlisted variables. The module enforces:
 - `HOME` is set to the trusted passwd home unless `envSet.HOME` overrides
   it with an absolute path
 - `XDG_RUNTIME_DIR` is set to `<xdgRuntimeDirBase>/<uid>` (an
-  `envSet.XDG_RUNTIME_DIR` override is rejected)
+  `envSet.XDG_RUNTIME_DIR` override is rejected). Because the target runs
+  under a dedicated UID, the caller's real `/run/user/<uid>` (mode `0700`)
+  is **not** accessible by default — `XDG_RUNTIME_DIR` points at a path the
+  target cannot use unless the wrapper sets `accessRuntimeDir = true`, which
+  idmaps that directory into the namespace. Enable it for targets that need
+  a writable runtime dir or the caller's session sockets (wayland,
+  ssh-agent, the session bus). On a `libsecret` wrapper it additionally
+  exposes the caller's real session bus at `$XDG_RUNTIME_DIR/bus`, so a
+  target that ignores `DBUS_SESSION_BUS_ADDRESS` could reach the caller's
+  real Secret Service instead of underwrap's brokered one.
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
   `XDG_STATE_HOME` are derived from the effective `HOME`
 - `envPassthrough` may not name `HOME`, any `XDG_*` variable, or any

@@ -12,6 +12,7 @@ fn base() -> WrapperDef {
         env_passthrough: Vec::new(),
         env_set: std::collections::HashMap::new(),
         access_paths: Vec::new(),
+        access_runtime_dir: false,
     }
 }
 

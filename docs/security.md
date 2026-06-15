@@ -653,7 +653,15 @@ the caller:
 
 - `HOME` comes from the trusted passwd entry (or an explicit trusted
   `envSet.HOME` override)
-- `XDG_RUNTIME_DIR` comes from `<xdgRuntimeDirBase>/<uid>`
+- `XDG_RUNTIME_DIR` comes from `<xdgRuntimeDirBase>/<uid>`. The dedicated
+  target UID cannot use the caller's real `/run/user/<uid>` (`0700`, caller-
+  owned) unless the wrapper opts in with `accessRuntimeDir = true`, which
+  idmaps that directory caller↔X into the namespace (same mechanism as
+  `accessPaths`, with the uid resolved at invocation time). This is a
+  deliberate per-wrapper grant: enabling it on a `libsecret` wrapper also
+  un-hides the caller's real session bus at `$XDG_RUNTIME_DIR/bus`, which a
+  target that bypasses `DBUS_SESSION_BUS_ADDRESS` could use to reach the
+  caller's real Secret Service rather than the brokered private bus
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
   `XDG_STATE_HOME` are derived from the effective `HOME` unless
   explicitly overridden via `envSet`

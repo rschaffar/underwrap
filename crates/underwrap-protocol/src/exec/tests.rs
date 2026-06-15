@@ -44,6 +44,7 @@ fn exec_bundle_roundtrip_minimal() {
             files_target_paths: Vec::new(),
         },
         access_paths: Vec::new(),
+        access_runtime_dir: false,
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -69,6 +70,7 @@ fn exec_bundle_roundtrip_populated() {
         xdg_runtime_dir_base: "/run/underwrap-runtime".to_string(),
         resource: sample_binding(),
         access_paths: vec!["~/.config/gh".to_string(), "/srv/data".to_string()],
+        access_runtime_dir: true,
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -82,12 +84,14 @@ fn exec_bundle_carries_no_target_identity() {
     // target is switched to is resolved by underwrap-ns from the root-owned
     // /etc/underwrap/target-uids table, keyed on the daemon-chosen target path —
     // NEVER carried on this wire form (nor env/argv/daemon response). This test
-    // pins it: the encoded bundle is byte-exactly its six documented fields
+    // pins it: the encoded bundle is byte-exactly its documented fields
     // concatenated, with nothing extra (e.g. a smuggled uid/gid). If a field is
     // ever added to ExecBundle, both this length check and the exhaustive struct
     // literals in the round-trip tests above fail, forcing a deliberate review of
     // whether the new field belongs on the wire and whether it weakens the
-    // confused-deputy guard.
+    // confused-deputy guard. `access_runtime_dir` is a plain bool selector (idmap
+    // the caller's runtime dir or not), NOT a target identity, so it belongs on
+    // the wire; the invariant is specifically that no target uid/gid is smuggled.
     let bundle = ExecBundle {
         env: HashMap::new(),
         env_passthrough: Vec::new(),
@@ -95,6 +99,7 @@ fn exec_bundle_carries_no_target_identity() {
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: vec!["~/.config/gh".to_string()],
+        access_runtime_dir: true,
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -106,10 +111,11 @@ fn exec_bundle_carries_no_target_identity() {
     bundle.xdg_runtime_dir_base.encode(&mut expected).unwrap();
     bundle.resource.encode(&mut expected).unwrap();
     bundle.access_paths.encode(&mut expected).unwrap();
+    bundle.access_runtime_dir.encode(&mut expected).unwrap();
 
     assert_eq!(
         encoded, expected,
-        "ExecBundle wire form must be exactly its six documented fields — no \
+        "ExecBundle wire form must be exactly its documented fields — no \
          target uid/gid or other smuggled identity"
     );
 }
@@ -123,6 +129,7 @@ fn exec_bundle_decode_rejects_trailing_bytes() {
         xdg_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
+        access_runtime_dir: false,
     };
 
     let mut encoded = encode_to_vec(&bundle).unwrap();

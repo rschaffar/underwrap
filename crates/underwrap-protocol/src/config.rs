@@ -269,6 +269,18 @@ pub struct WrapperDef {
     /// untouched.
     #[serde(default)]
     pub access_paths: Vec<String>,
+
+    /// Idmap the calling user's runtime directory
+    /// (`<xdg_runtime_dir_base>/<caller-uid>`, the same path the target's
+    /// `XDG_RUNTIME_DIR` points at) into the target's mount namespace, like an
+    /// `access_paths` entry. Unlike `access_paths`, the path is resolved from
+    /// the caller's runtime uid at invocation time, so it is correct for any
+    /// authorized caller. Leave `false` (the default) unless the target needs a
+    /// writable runtime dir or the caller's session sockets; enabling it on a
+    /// `libsecret` wrapper also exposes the caller's real session bus at
+    /// `$XDG_RUNTIME_DIR/bus`.
+    #[serde(default)]
+    pub access_runtime_dir: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

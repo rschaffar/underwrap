@@ -74,6 +74,12 @@ wrappers:
     target: /usr/bin/slack-cli
     resource: slack/xoxp
     env: true
+    # The target runs under a dedicated UID, so the caller's real
+    # /run/user/<uid> (mode 0700) is not reachable. Set this to idmap the
+    # caller's runtime dir into the namespace for tools that stage scratch
+    # under XDG_RUNTIME_DIR (or need the caller's session sockets). The uid
+    # is resolved per invocation, so it works for any authorized caller.
+    access_runtime_dir: true
 
   # Libsecret-backed gh wrappers can share one backend resource across
   # different wrappers; the backend pair table keeps them as distinct

@@ -96,6 +96,9 @@ pub enum WrapperResponse {
         /// Caller-owned directories to idmap (caller<->dedicated uid) into the
         /// target's mount namespace (`~`/`~/rel`/absolute).
         access_paths: Vec<String>,
+        /// Idmap the caller's runtime dir (`<xdg_runtime_dir_base>/<caller-uid>`)
+        /// into the target namespace; ns resolves the caller uid at invocation.
+        access_runtime_dir: bool,
     },
     Error {
         code: ErrorCode,
@@ -118,6 +121,7 @@ impl WireEncode for WrapperResponse {
                 env_set,
                 xdg_runtime_dir_base,
                 access_paths,
+                access_runtime_dir,
             } => {
                 0u8.encode(out)?;
                 env.encode(out)?;
@@ -130,7 +134,8 @@ impl WireEncode for WrapperResponse {
                 env_passthrough.encode(out)?;
                 env_set.encode(out)?;
                 xdg_runtime_dir_base.encode(out)?;
-                access_paths.encode(out)
+                access_paths.encode(out)?;
+                access_runtime_dir.encode(out)
             }
             Self::Error { code, message } => {
                 1u8.encode(out)?;
@@ -156,6 +161,7 @@ impl WireDecode for WrapperResponse {
                 env_set: std::collections::HashMap::<String, String>::decode(reader)?,
                 xdg_runtime_dir_base: String::decode(reader)?,
                 access_paths: Vec::<String>::decode(reader)?,
+                access_runtime_dir: bool::decode(reader)?,
             }),
             1 => Ok(Self::Error {
                 code: ErrorCode::decode(reader)?,

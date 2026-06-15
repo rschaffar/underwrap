@@ -100,6 +100,7 @@ let
         env_passthrough = w.envPassthrough;
         env_set = w.envSet;
         access_paths = w.accessPaths;
+        access_runtime_dir = w.accessRuntimeDir;
       } // lib.optionalAttrs (w.files != null) {
         files = { inherit (w.files) paths; };
       })) inst.wrappers;
@@ -349,6 +350,25 @@ let
           <literal>[ "~/.config/gh" ]</literal>) instead of its whole home.
         '';
         example = [ "~/.config/gh" "~/.config/git" ];
+      };
+      accessRuntimeDir = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Idmap the calling user's runtime directory
+          (<literal>''${xdgRuntimeDirBase}/&lt;caller-uid&gt;</literal>, the same path
+          the target's <literal>XDG_RUNTIME_DIR</literal> points at) into the
+          target's mount namespace, exactly like an <option>accessPaths</option>
+          entry. The caller uid is resolved at invocation time, so it is correct
+          for any authorized caller. Enable this for targets that need a writable
+          runtime directory (e.g. tools that stage downloads under
+          <literal>XDG_RUNTIME_DIR</literal>) or the caller's session sockets
+          (wayland, ssh-agent, the session D-Bus). Note: enabling this on a
+          <option>libsecret</option> wrapper also exposes the caller's real
+          session bus at <literal>$XDG_RUNTIME_DIR/bus</literal>, so a target that
+          ignores <literal>DBUS_SESSION_BUS_ADDRESS</literal> could reach the
+          caller's real Secret Service instead of underwrap's brokered one.
+        '';
       };
       envPassthrough = lib.mkOption {
         type = lib.types.listOf lib.types.str;

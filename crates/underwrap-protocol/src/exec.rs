@@ -75,6 +75,10 @@ pub struct ExecBundle {
     /// Caller-owned directories to idmap (caller<->dedicated uid) into the
     /// target's mount namespace (`~`/`~/rel`/absolute).
     pub access_paths: Vec<String>,
+    /// When set, ns also idmaps the caller's runtime dir
+    /// (`<xdg_runtime_dir_base>/<caller-uid>`), resolved from the caller uid ns
+    /// reads at invocation time.
+    pub access_runtime_dir: bool,
 }
 
 impl WireEncode for ExecBundle {
@@ -84,7 +88,8 @@ impl WireEncode for ExecBundle {
         self.env_set.encode(out)?;
         self.xdg_runtime_dir_base.encode(out)?;
         self.resource.encode(out)?;
-        self.access_paths.encode(out)
+        self.access_paths.encode(out)?;
+        self.access_runtime_dir.encode(out)
     }
 }
 
@@ -97,6 +102,7 @@ impl WireDecode for ExecBundle {
             xdg_runtime_dir_base: String::decode(reader)?,
             resource: ExecResourceBinding::decode(reader)?,
             access_paths: Vec::<String>::decode(reader)?,
+            access_runtime_dir: bool::decode(reader)?,
         })
     }
 }

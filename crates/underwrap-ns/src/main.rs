@@ -12,6 +12,10 @@
 //! the end-of-run decision (`UsageSignal` / `Checkin` / drop+warn) on
 //! the channel.
 
+#[cfg(test)]
+#[path = "main/tests.rs"]
+mod tests;
+
 mod boundary;
 mod caps;
 mod directory_credential;
@@ -78,11 +82,18 @@ fn run() -> Result<(), String> {
     let isolation = target_uid::resolve_isolation(&target)
         .map_err(|e| format!("resolving target isolation: {e}"))?;
 
+    // The caller-owned directories to idmap caller<->X into the target's mount
+    // namespace. `access_runtime_dir` appends the caller's runtime dir
+    // (`<xdg_runtime_dir_base>/<caller-uid>`) — the same path env.rs points
+    // XDG_RUNTIME_DIR at — resolved here from the caller's runtime uid so it is
+    // correct for any authorized caller (the uid is never taken from the wire).
+    let idmap_paths = build_idmap_paths(&exec_bundle, target_identity.uid);
+
     // Story 2640: build the caller<->X idmap user namespace BEFORE unsharing the
     // PID namespace — a helper fork after CLONE_NEWPID would become PID 1 of the
     // new namespace and break the real target fork. The idmapped mounts are
     // applied below, after the private mount namespace exists.
-    let idmap_userns = if exec_bundle.access_paths.is_empty() {
+    let idmap_userns = if idmap_paths.is_empty() {
         None
     } else {
         let caller_gid = unsafe { libc::getgid() };
@@ -100,7 +111,7 @@ fn run() -> Result<(), String> {
     // private mount namespace, so the forked child (which becomes X) inherits the
     // mounts and the host's view is untouched.
     if let Some(ref userns) = idmap_userns {
-        idmap::mount_idmapped_dirs(&exec_bundle.access_paths, &target_identity.home, userns)
+        idmap::mount_idmapped_dirs(&idmap_paths, &target_identity.home, userns)
             .map_err(|e| format!("setting up idmapped directories: {e}"))?;
     }
 
@@ -144,6 +155,20 @@ fn run() -> Result<(), String> {
             libsecret_state_path.as_deref(),
         )
     }
+}
+
+/// The caller-owned directories to idmap caller<->X, drawn from the configured
+/// `access_paths` plus — when `access_runtime_dir` is set — the caller's runtime
+/// dir derived as `<xdg_runtime_dir_base>/<caller_uid>` (identical to the
+/// `XDG_RUNTIME_DIR` env.rs sets). `caller_uid` is ns's own `getuid()`, never a
+/// wire-supplied value.
+fn build_idmap_paths(exec_bundle: &ExecBundle, caller_uid: libc::uid_t) -> Vec<String> {
+    let mut paths = exec_bundle.access_paths.clone();
+    if exec_bundle.access_runtime_dir {
+        let runtime_dir = Path::new(&exec_bundle.xdg_runtime_dir_base).join(caller_uid.to_string());
+        paths.push(runtime_dir.to_string_lossy().into_owned());
+    }
+    paths
 }
 
 fn parse_target_invocation(args: Vec<String>) -> Result<(String, Vec<String>), String> {

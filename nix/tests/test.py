@@ -296,6 +296,8 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-descendant": "test/descendant-tok",
     "test-iso": "test/iso-tok",
     "test-iso-home": "test/iso-home-tok",
+    "test-runtime-dir": "test/runtime-tok",
+    "test-runtime-dir-denied": "test/runtime-denied-tok",
     "test-iso-dir": "test/iso-dir-tok",
     "test-iso-libsecret": "test/iso-libsecret-store",
     "test-crash": "test/crash-tok",
@@ -578,6 +580,8 @@ def local_store_and_basic_ops():
         ("test-descendant", "test/descendant-tok"),
         ("test-iso", "test/iso-tok"),
         ("test-iso-home", "test/iso-home-tok"),
+        ("test-runtime-dir", "test/runtime-tok"),
+        ("test-runtime-dir-denied", "test/runtime-denied-tok"),
         ("test-crash", "test/crash-tok"),
         ("test-libsecret", "test/libsecret-store"),
         ("test-caps", "test/caps-tok"),
@@ -593,6 +597,8 @@ def local_store_and_basic_ops():
     admin_write_secret(ADMIN_LOCAL, "local", "test-descendant", "test/descendant-tok/env/DESC_SECRET", "desc_secret_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-iso", "test/iso-tok/env/ISO_SECRET", "iso_secret_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-iso-home", "test/iso-home-tok/env/HOME_ISO_SECRET", "home_iso_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-runtime-dir", "test/runtime-tok/env/RUNTIME_SECRET", "runtime_val")
+    admin_write_secret(ADMIN_LOCAL, "local", "test-runtime-dir-denied", "test/runtime-denied-tok/env/RUNTIME_SECRET", "runtime_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-crash", "test/crash-tok/env/CRASH_SECRET", "crash_secret_value")
     admin_write_secret(ADMIN_LOCAL, "local", "test-caps", "test/caps-tok/env/CAPS_SECRET", "caps_test_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-ns-pids-env", "test/ns-pids-env-store/env/NSPIDS_SECRET", "nspids_env_val")
@@ -1214,6 +1220,58 @@ def local_target_uid_idmapped_home():
     machine.log(
         "PASS: idmapped dir (2640) — isolated target read the caller's file as "
         "owner; its writeback is owned by the caller on disk"
+    )
+
+
+def local_target_uid_runtime_dir():
+    # ============================================================
+    # LOCAL INSTANCE: accessRuntimeDir idmaps the caller's runtime dir
+    # ============================================================
+    # The dedicated target uid cannot reach the caller's 0700 runtime dir
+    # (XDG_RUNTIME_DIR points at <xdgRuntimeDirBase>/<caller-uid>). The
+    # accessRuntimeDir flag idmaps that dir caller<->X into the namespace, like
+    # an accessPaths entry resolved from the caller's uid at invocation. Provision
+    # the caller-owned runtime dir exactly as logind would.
+    machine.succeed(
+        "mkdir -p /run/underwrap-test-runtime/1099 && "
+        "chown testuser:users /run/underwrap-test-runtime/1099 && "
+        "chmod 0700 /run/underwrap-test-runtime/1099 && "
+        "rm -rf /run/underwrap-test-runtime/1099/uw-runtime-probe"
+    )
+    # With the flag: the target mkdirs + writes under XDG_RUNTIME_DIR, and the
+    # marker lands on disk owned by the caller (idmapped write).
+    out = machine.succeed(
+        "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-runtime-dir'"
+    ).strip()
+    assert out == "runtime_dir_ok", (
+        f"FAIL: accessRuntimeDir target could not use XDG_RUNTIME_DIR (got {out!r})"
+    )
+    owner = machine.succeed(
+        "stat -c %U /run/underwrap-test-runtime/1099/uw-runtime-probe/marker"
+    ).strip()
+    assert owner == "testuser", (
+        f"FAIL: runtime-dir writeback owned by {owner!r}, expected testuser — "
+        f"the caller<->X mapping is wrong"
+    )
+    # Without the flag: the dedicated uid cannot traverse the caller's 0700
+    # runtime dir, so the identical target fails and writes nothing.
+    machine.succeed("rm -rf /run/underwrap-test-runtime/1099/uw-runtime-probe")
+    rc, _ = machine.execute(
+        "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-runtime-dir-denied'"
+    )
+    assert rc != 0, (
+        "FAIL: target without accessRuntimeDir wrote under the caller's runtime "
+        "dir — the flag is not load-bearing"
+    )
+    rc2, _ = machine.execute(
+        "test -e /run/underwrap-test-runtime/1099/uw-runtime-probe/marker"
+    )
+    assert rc2 != 0, (
+        "FAIL: target without accessRuntimeDir still created the runtime-dir marker"
+    )
+    machine.log(
+        "PASS: accessRuntimeDir — isolated target wrote under XDG_RUNTIME_DIR "
+        "(owned by the caller); the same target without the flag was denied"
     )
 
 
@@ -3046,6 +3104,7 @@ local_pid_namespace_proc_isolation()
 local_target_uid_authority()
 local_target_uid_isolation()
 local_target_uid_idmapped_home()
+local_target_uid_runtime_dir()
 local_target_uid_files_libsecret()
 local_target_uid_readonly_writeback()
 local_proc_isolation_env_mode()
