@@ -265,32 +265,27 @@ fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
 
     // Best-effort idmap each submount carried in by the recursive clone. We
     // address each by its path relative to `dir` (from /proc/self/mountinfo, read
-    // in this already-private mount namespace). A submount whose filesystem lacks
-    // FS_ALLOW_IDMAP (EINVAL) is skipped with a warning; anything else is fatal.
+    // in this already-private mount namespace). ANY failure to idmap a submount is
+    // skipped with a warning, never fatal: a submount can be un-idmappable for
+    // several reasons — its filesystem lacks FS_ALLOW_IDMAP (fuse → EINVAL), or
+    // its superblock is owned by a foreign user namespace we are not privileged
+    // over (e.g. a Steam pressure-vessel / sandbox mount → EACCES/EPERM). In every
+    // case skipping only leaves that subtree un-idmapped (its files present as
+    // their on-disk owner, simply not caller-mapped for the target) — never a
+    // failure of the whole access path, and never an exposure to the caller.
     for rel in submount_relpaths(dir) {
         let c_rel = match CString::new(rel.as_os_str().as_encoded_bytes()) {
             Ok(c) => c,
             Err(_) => continue, // interior NUL: cannot address it; leave un-idmapped.
         };
-        match set_mount_idmap(tree.as_raw_fd(), c_rel.as_ptr(), 0, &attr) {
-            Ok(()) => {}
-            Err(errno) if errno == libc::EINVAL => {
-                eprintln!(
-                    "underwrap-ns: skipping non-idmappable submount {} under {} \
-                     (its filesystem does not support idmapped mounts; the target \
-                     will not see it as the caller)",
-                    rel.display(),
-                    dir.display()
-                );
-            }
-            Err(errno) => {
-                return Err(format!(
-                    "mount_setattr(IDMAP) on submount {} under {}: {}",
-                    rel.display(),
-                    dir.display(),
-                    std::io::Error::from_raw_os_error(errno)
-                ));
-            }
+        if let Err(errno) = set_mount_idmap(tree.as_raw_fd(), c_rel.as_ptr(), 0, &attr) {
+            eprintln!(
+                "underwrap-ns: skipping submount {} under {} — could not idmap it \
+                 ({}); the target will not see it as the caller",
+                rel.display(),
+                dir.display(),
+                std::io::Error::from_raw_os_error(errno)
+            );
         }
     }
 
