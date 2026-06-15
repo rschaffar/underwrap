@@ -1189,10 +1189,14 @@ def local_target_uid_idmapped_home():
     # regardless of what filesystem the VM's /home happens to be on. Production
     # homes (ext4/btrfs/xfs) support idmapped mounts too; this only pins the test
     # environment (see story 2660's "deterministic /home backing" note).
+    # mode=0700 (a realistic home perm) is deliberate: it makes the idmap-setup
+    # path the same as a real 0700 home, where the caller cannot traverse the
+    # mount once it is idmapped — the condition behind the deepthought submount
+    # failure (see the idmappable-submount case below).
     machine.succeed("mkdir -p /home/testuser/iso-data")
     machine.execute("umount /home/testuser/iso-data 2>/dev/null || true")
     machine.succeed(
-        "mount -t tmpfs -o mode=0755,uid=1099,gid=100 tmpfs /home/testuser/iso-data"
+        "mount -t tmpfs -o mode=0700,uid=1099,gid=100 tmpfs /home/testuser/iso-data"
     )
     machine.succeed(
         "su testuser -s /bin/sh -c '"
@@ -1243,8 +1247,51 @@ def local_target_uid_idmapped_home():
     finally:
         machine.execute("umount /home/testuser/iso-data/portal 2>/dev/null || true")
     machine.log(
-        "PASS: best-effort submount idmap — a non-idmappable (proc) submount under "
-        "an accessPaths dir was skipped; the parent stayed idmapped and usable"
+        "PASS: non-idmappable (proc) submount under an accessPaths dir was detached; "
+        "the parent stayed idmapped and usable"
+    )
+
+    # Recursive submount idmap — the deepthought ZFS case (story 1000 / 1030). An
+    # IDMAPPABLE submount under a 0700 idmapped root MUST itself be idmapped. A
+    # nested tmpfs (idmap-capable, separate superblock — a faithful proxy for a
+    # ZFS dataset) holds a 0600 caller-owned file; the uid-X target can read it
+    # back only if that submount was idmapped caller<->X by the recursive idmap.
+    machine.succeed("mkdir -p /home/testuser/iso-data/sub")
+    machine.succeed(
+        "mount -t tmpfs -o mode=0700,uid=1099,gid=100 tmpfs /home/testuser/iso-data/sub"
+    )
+    try:
+        machine.succeed(
+            "su testuser -s /bin/sh -c '"
+            "printf %s caller-content-2640 > /home/testuser/iso-data/from-caller && "
+            "rm -f /home/testuser/iso-data/from-target && "
+            "printf %s sub-secret-content > /home/testuser/iso-data/sub/from-caller-sub && "
+            "chmod 0600 /home/testuser/iso-data/sub/from-caller-sub && "
+            "rm -f /home/testuser/iso-data/sub/from-target-sub'"
+        )
+        machine.succeed(
+            "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-iso-home'"
+        )
+        out_idsub = machine.succeed(
+            "cat /home/testuser/iso-data/sub/from-target-sub"
+        ).strip()
+        assert out_idsub == "sub-secret-content", (
+            f"FAIL: an idmappable submount under a 0700 idmapped root was not "
+            f"idmapped (got {out_idsub!r}) — the uid-X target could not read the "
+            f"caller's 0600 file through it"
+        )
+        owner = machine.succeed(
+            "stat -c %U /home/testuser/iso-data/sub/from-target-sub"
+        ).strip()
+        assert owner == "testuser", (
+            f"FAIL: submount writeback owned by {owner!r}, expected testuser"
+        )
+    finally:
+        machine.execute("umount /home/testuser/iso-data/sub 2>/dev/null || true")
+    machine.log(
+        "PASS: recursive submount idmap — an idmappable submount under a 0700 "
+        "idmapped root was itself idmapped; the target read the caller's 0600 "
+        "file through it"
     )
 
 

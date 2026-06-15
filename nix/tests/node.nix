@@ -172,6 +172,15 @@ let
   isoHomeScript = pkgs.writeShellScript "iso-home-target" ''
     set -eu
     ${pkgs.coreutils}/bin/cat "$HOME/iso-data/from-caller" > "$HOME/iso-data/from-target"
+    # If a nested (sub)mount with a caller-owned 0600 file is present, copy it
+    # back out. The target runs as uid X, so it can read that 0600 caller file
+    # only if the submount was idmapped caller<->X — i.e. this exercises the
+    # recursive submount idmap (an idmappable submount under a 0700 idmapped root
+    # must still map). Skipped when no such submount is set up.
+    if [ -e "$HOME/iso-data/sub/from-caller-sub" ]; then
+      ${pkgs.coreutils}/bin/cat "$HOME/iso-data/sub/from-caller-sub" \
+        > "$HOME/iso-data/sub/from-target-sub"
+    fi
   '';
   # Isolated target that exercises its OWN provisioned runtime dir (story 1000).
   # It mkdirs + writes a marker under XDG_RUNTIME_DIR (the dedicated uid's own

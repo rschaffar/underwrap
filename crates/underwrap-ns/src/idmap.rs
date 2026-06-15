@@ -196,30 +196,89 @@ fn write_proc(pid: libc::pid_t, name: &str, contents: &str) -> Result<(), String
         .map_err(|e| format!("writing {path}: {e}"))
 }
 
-/// `open_tree` (recursive clone) + best-effort per-mount
-/// `mount_setattr(IDMAP|NOSUID|NODEV)` + `move_mount` for one dir.
+/// The idmapping `mount_attr` for `userns_fd` (also NOSUID/NODEV-hardened).
+fn idmap_attr(userns_fd: libc::c_int) -> libc::mount_attr {
+    libc::mount_attr {
+        attr_set: libc::MOUNT_ATTR_IDMAP | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: userns_fd as u64,
+    }
+}
+
+/// Idmap one directory and as many of its submounts as the kernel allows.
 ///
-/// The clone is RECURSIVE so submounts under `dir` (e.g. nested ZFS datasets or
-/// bind mounts inside the caller's `~`) come along and can be idmapped too. The
-/// idmap itself is applied **per mount, not recursively**: a recursive
-/// `mount_setattr(AT_RECURSIVE)` is all-or-nothing and returns `EINVAL` for the
-/// whole tree the moment it meets a submount whose filesystem lacks
-/// `FS_ALLOW_IDMAP` (notably fuse — xdg-document-portal, gvfsd-fuse, sshfs,
-/// AppImage). Applying it per mount lets us idmap every filesystem that supports
-/// it (ext4/xfs/btrfs/zfs ≥ OpenZFS 2.2/…) and **skip** the ones that don't,
-/// with a warning, instead of failing the whole access path.
+/// The kernel will only set an idmap on the ROOT of an `open_tree` clone (via
+/// `AT_EMPTY_PATH`), and a recursive `mount_setattr(AT_RECURSIVE)` is
+/// all-or-nothing — it fails for the whole tree the moment it meets a submount
+/// whose filesystem lacks `FS_ALLOW_IDMAP` (fuse — portals, sshfs, AppImage) or
+/// whose superblock is owned by a foreign user namespace (a sandbox /
+/// pressure-vessel mount). So we cannot idmap submounts one-by-one (the kernel
+/// rejects idmapping a non-root mount of a detached tree), and we cannot blindly
+/// recurse over a tree that contains a non-idmappable mount.
 ///
-/// The named directory's own filesystem MUST support idmapping — if it does not
-/// the access path is pointless, so that is a hard error. Only submounts are
-/// best-effort: a skipped submount stays in the tree un-idmapped, so its files
-/// present as their on-disk (caller) owner and are simply not caller-mapped for
-/// the target — never a failure, never an exposure.
+/// Instead: first **detach the non-idmappable submounts from our private mount
+/// namespace** (it is a throwaway clone, invisible to the host and the caller's
+/// real session, so this is free and safe), then RECURSIVELY clone + idmap what
+/// remains in one shot. That maps `dir` and every idmappable submount under it
+/// (nested ZFS datasets ≥ OpenZFS 2.2, ext4/xfs/btrfs binds, …) while the
+/// genuinely-non-idmappable mounts simply aren't present for the target — never a
+/// failure of the access path, and never an exposure to the caller.
+///
+/// We classify each submount with a cheap probe (clone it standalone and try to
+/// idmap that clone — the same operation that idmaps the root, which the kernel
+/// *does* permit). If a non-idmappable submount cannot be detached, we fall back
+/// to idmapping `dir`'s own mount only (no submounts) rather than fail.
+///
+/// The named directory's own filesystem MUST support idmapping — if it does not,
+/// the access path is pointless, so that is a hard error.
 fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
     let c_dir = CString::new(dir.as_os_str().as_encoded_bytes())
         .map_err(|_| "directory path has an interior NUL".to_string())?;
     let empty = CString::new("").unwrap();
+    let attr = idmap_attr(userns_fd);
 
-    let flags = libc::OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | (libc::AT_RECURSIVE as libc::c_uint);
+    // Detach every non-idmappable submount from our private namespace so the
+    // recursive idmap below can succeed. Deepest-first (reverse of the ascending
+    // sort) so a child is detached before its parent. If any cannot be detached,
+    // we cannot safely recurse — fall back to the root mount only.
+    let submounts = submount_relpaths(dir);
+    let mut recursive = true;
+    for rel in submounts.iter().rev() {
+        let abs = dir.join(rel);
+        if is_idmappable(&abs, userns_fd) {
+            continue;
+        }
+        if detach_submount(&abs) {
+            eprintln!(
+                "underwrap-ns: detached non-idmappable submount {} under {} \
+                 (its filesystem does not support idmapped mounts; the target \
+                 will not see it)",
+                rel.display(),
+                dir.display()
+            );
+        } else {
+            recursive = false;
+            eprintln!(
+                "underwrap-ns: could not detach non-idmappable submount {} under \
+                 {}; idmapping only {} itself (its submounts will not be visible \
+                 to the target)",
+                rel.display(),
+                dir.display(),
+                dir.display()
+            );
+        }
+    }
+
+    // Clone the subtree (recursively unless a blocker survived) and idmap it.
+    // With AT_RECURSIVE the single mount_setattr idmaps `dir` AND every remaining
+    // submount; without it, only `dir`'s own mount.
+    let recursive_flag = if recursive {
+        libc::AT_RECURSIVE as libc::c_uint
+    } else {
+        0
+    };
+    let flags = libc::OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | recursive_flag;
     // SAFETY: open_tree(AT_FDCWD, path, flags) returns a detached-mount fd or -1.
     let tree_fd = unsafe {
         libc::syscall(
@@ -235,17 +294,8 @@ fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
     // SAFETY: tree_fd is a fresh, owned fd from open_tree.
     let tree = unsafe { OwnedFd::from_raw_fd(tree_fd as libc::c_int) };
 
-    let attr = libc::mount_attr {
-        attr_set: libc::MOUNT_ATTR_IDMAP | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
-        attr_clr: 0,
-        propagation: 0,
-        userns_fd: userns_fd as u64,
-    };
-
-    // Idmap the named directory's own mount (the root of the detached tree).
-    // AT_EMPTY_PATH targets the tree fd itself; no AT_RECURSIVE, so only this
-    // one mount. A non-idmappable root is fatal — the access path cannot work.
-    match set_mount_idmap(tree.as_raw_fd(), empty.as_ptr(), libc::AT_EMPTY_PATH, &attr) {
+    let setattr_flags = libc::AT_EMPTY_PATH | if recursive { libc::AT_RECURSIVE } else { 0 };
+    match set_mount_idmap(tree.as_raw_fd(), empty.as_ptr(), setattr_flags, &attr) {
         Ok(()) => {}
         Err(errno) if errno == libc::EINVAL => {
             return Err(format!(
@@ -260,32 +310,6 @@ fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
                 dir.display(),
                 std::io::Error::from_raw_os_error(errno)
             ));
-        }
-    }
-
-    // Best-effort idmap each submount carried in by the recursive clone. We
-    // address each by its path relative to `dir` (from /proc/self/mountinfo, read
-    // in this already-private mount namespace). ANY failure to idmap a submount is
-    // skipped with a warning, never fatal: a submount can be un-idmappable for
-    // several reasons — its filesystem lacks FS_ALLOW_IDMAP (fuse → EINVAL), or
-    // its superblock is owned by a foreign user namespace we are not privileged
-    // over (e.g. a Steam pressure-vessel / sandbox mount → EACCES/EPERM). In every
-    // case skipping only leaves that subtree un-idmapped (its files present as
-    // their on-disk owner, simply not caller-mapped for the target) — never a
-    // failure of the whole access path, and never an exposure to the caller.
-    for rel in submount_relpaths(dir) {
-        let c_rel = match CString::new(rel.as_os_str().as_encoded_bytes()) {
-            Ok(c) => c,
-            Err(_) => continue, // interior NUL: cannot address it; leave un-idmapped.
-        };
-        if let Err(errno) = set_mount_idmap(tree.as_raw_fd(), c_rel.as_ptr(), 0, &attr) {
-            eprintln!(
-                "underwrap-ns: skipping submount {} under {} — could not idmap it \
-                 ({}); the target will not see it as the caller",
-                rel.display(),
-                dir.display(),
-                std::io::Error::from_raw_os_error(errno)
-            );
         }
     }
 
@@ -307,10 +331,51 @@ fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
     Ok(())
 }
 
-/// `mount_setattr` on one mount within the detached tree. `path`/`at_flags`
-/// select the mount: `("", AT_EMPTY_PATH)` for the tree root, or a relative path
-/// with `0` for a submount. Never recursive. Returns the raw errno on failure so
-/// the caller can distinguish `EINVAL` (filesystem lacks `FS_ALLOW_IDMAP`).
+/// Probe whether the mount at `abs_path` can be idmapped: clone it as a
+/// standalone detached mount (non-recursive) and try to set the idmap on that
+/// clone — the same `AT_EMPTY_PATH` operation the kernel permits on a tree root.
+/// Returns true only if both the clone and the idmap succeed; the probe clone is
+/// discarded (its fd is dropped) and the live mount is untouched. Runs at the
+/// caller's fsuid while nothing is idmapped yet, so the path is traversable.
+fn is_idmappable(abs_path: &Path, userns_fd: libc::c_int) -> bool {
+    let Ok(c_path) = CString::new(abs_path.as_os_str().as_encoded_bytes()) else {
+        return false;
+    };
+    let empty = CString::new("").unwrap();
+    let flags = libc::OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC;
+    // SAFETY: open_tree of an existing path; returns a detached-mount fd or -1.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_open_tree,
+            libc::AT_FDCWD as libc::c_long,
+            c_path.as_ptr(),
+            flags as libc::c_long,
+        )
+    };
+    if fd < 0 {
+        return false;
+    }
+    // SAFETY: fd is a fresh, owned fd from open_tree; dropped at end of scope.
+    let tree = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
+    let attr = idmap_attr(userns_fd);
+    set_mount_idmap(tree.as_raw_fd(), empty.as_ptr(), libc::AT_EMPTY_PATH, &attr).is_ok()
+}
+
+/// Lazily detach the mount at `abs_path` from the current (private) namespace.
+/// `MNT_DETACH` so a mount with children still comes off. Returns true on
+/// success. Host mounts are unaffected — we are in an unshared, MS_PRIVATE ns.
+fn detach_submount(abs_path: &Path) -> bool {
+    let Ok(c_path) = CString::new(abs_path.as_os_str().as_encoded_bytes()) else {
+        return false;
+    };
+    // SAFETY: umount2 of an existing path with a valid flag.
+    unsafe { libc::umount2(c_path.as_ptr(), libc::MNT_DETACH) == 0 }
+}
+
+/// `mount_setattr` on a mount selected by `path`/`at_flags`: `("", AT_EMPTY_PATH)`
+/// for a detached tree's root (optionally `| AT_RECURSIVE` to cover its
+/// submounts). Returns the raw errno on failure so callers can distinguish
+/// `EINVAL` (filesystem lacks `FS_ALLOW_IDMAP`).
 fn set_mount_idmap(
     tree_fd: libc::c_int,
     path: *const libc::c_char,
