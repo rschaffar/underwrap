@@ -11,6 +11,27 @@ through a NixOS module that wires `security.wrappers`, declarative
 user/group management, and file capabilities. `underwrap-backend` is
 deployable on any Linux host.
 
+## Threat model and non-goals (read before any security judgment)
+
+- **The caller is the adversary.** underwrap's job is to keep the brokered
+  secret — and the private mounts, the libsecret bus, and the injected env —
+  hidden from the same-UID caller who launched the wrapper.
+- **The target is trusted with the secret.** We hand it the secret. We do
+  **not** sandbox or contain the target, and we do not defend against a
+  malicious or buggy target leaking the secret (it trivially could). The
+  PID/mount/IPC namespaces and the dedicated target UID exist to hide the
+  secret *from the caller*, not to confine the target.
+- **Baseline is target-runs-as-caller.** Before underwrap, the target ran as
+  the caller with full access to its home, session, sockets, and agents.
+  underwrap must not be *more* restrictive toward the target than that
+  baseline, except where the restriction is required to hide the secret from
+  the caller. Incidental loss of caller-session access (e.g.
+  `/run/user/<uid>`) is a bug to fix, not a feature to keep.
+- **"Does this weaken security?" must name a direction and an asset.** A change
+  weakens security only if it exposes a protected asset (secret / mounts / bus
+  / env) **to the caller**. Giving the target more access to the caller's own
+  resources is not a regression — it restores baseline.
+
 ## Release posture
 
 This project is still **greenfield**. It is being shaped for a strong **first
