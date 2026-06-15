@@ -202,6 +202,12 @@ fn default_storage_dir() -> PathBuf {
     PathBuf::from("/var/lib/underwrap/secrets")
 }
 
+/// Serde default for `WrapperDef::access_runtime_dir` (idmap the caller's
+/// runtime dir unless a wrapper opts out).
+fn default_true() -> bool {
+    true
+}
+
 /// Frontend backend-client configuration.
 ///
 /// The frontend talks to a central backend service over HTTPS with mTLS.
@@ -273,13 +279,21 @@ pub struct WrapperDef {
     /// Idmap the calling user's runtime directory
     /// (`<xdg_runtime_dir_base>/<caller-uid>`, the same path the target's
     /// `XDG_RUNTIME_DIR` points at) into the target's mount namespace, like an
-    /// `access_paths` entry. Unlike `access_paths`, the path is resolved from
-    /// the caller's runtime uid at invocation time, so it is correct for any
-    /// authorized caller. Leave `false` (the default) unless the target needs a
-    /// writable runtime dir or the caller's session sockets; enabling it on a
-    /// `libsecret` wrapper also exposes the caller's real session bus at
-    /// `$XDG_RUNTIME_DIR/bus`.
-    #[serde(default)]
+    /// `access_paths` entry. The path is resolved from the caller's runtime uid
+    /// at invocation time, so it is correct for any authorized caller, and is
+    /// skipped silently when that directory does not exist (e.g. a caller with
+    /// no logind session).
+    ///
+    /// Defaults to `true`: the isolated target should behave like it ran as the
+    /// caller (the threat model is hiding the secret *from* the caller, not
+    /// sandboxing the target), so it keeps the caller's runtime dir by default.
+    /// Set to `false` to deny it for a wrapper you deliberately want more
+    /// contained. Note: on a `libsecret` wrapper this makes the caller's real
+    /// session bus reachable at `$XDG_RUNTIME_DIR/bus`; a target that bypasses
+    /// `DBUS_SESSION_BUS_ADDRESS` could then hit the caller's real Secret
+    /// Service instead of the brokered one (a functional concern — the brokered
+    /// secret is not exposed to the caller).
+    #[serde(default = "default_true")]
     pub access_runtime_dir: bool,
 }
 

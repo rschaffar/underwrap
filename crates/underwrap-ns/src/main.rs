@@ -83,11 +83,13 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("resolving target isolation: {e}"))?;
 
     // The caller-owned directories to idmap caller<->X into the target's mount
-    // namespace. `access_runtime_dir` appends the caller's runtime dir
-    // (`<xdg_runtime_dir_base>/<caller-uid>`) — the same path env.rs points
-    // XDG_RUNTIME_DIR at — resolved here from the caller's runtime uid so it is
-    // correct for any authorized caller (the uid is never taken from the wire).
-    let idmap_paths = build_idmap_paths(&exec_bundle, target_identity.uid);
+    // namespace. `access_runtime_dir` (default on) appends the caller's runtime
+    // dir (`<xdg_runtime_dir_base>/<caller-uid>`) — the same path env.rs points
+    // XDG_RUNTIME_DIR at — resolved here from the caller's runtime uid (never the
+    // wire). Skipped when that dir is absent (e.g. a session-less caller) so the
+    // target falls back rather than hard-failing.
+    let runtime_dir_present = caller_runtime_dir(&exec_bundle, target_identity.uid).exists();
+    let idmap_paths = build_idmap_paths(&exec_bundle, target_identity.uid, runtime_dir_present);
 
     // Story 2640: build the caller<->X idmap user namespace BEFORE unsharing the
     // PID namespace — a helper fork after CLONE_NEWPID would become PID 1 of the
@@ -157,16 +159,31 @@ fn run() -> Result<(), String> {
     }
 }
 
+/// The caller's runtime dir, derived as `<xdg_runtime_dir_base>/<caller_uid>` —
+/// identical to the `XDG_RUNTIME_DIR` env.rs sets. `caller_uid` is ns's own
+/// `getuid()`, never a wire-supplied value.
+fn caller_runtime_dir(exec_bundle: &ExecBundle, caller_uid: libc::uid_t) -> PathBuf {
+    Path::new(&exec_bundle.xdg_runtime_dir_base).join(caller_uid.to_string())
+}
+
 /// The caller-owned directories to idmap caller<->X, drawn from the configured
-/// `access_paths` plus — when `access_runtime_dir` is set — the caller's runtime
-/// dir derived as `<xdg_runtime_dir_base>/<caller_uid>` (identical to the
-/// `XDG_RUNTIME_DIR` env.rs sets). `caller_uid` is ns's own `getuid()`, never a
-/// wire-supplied value.
-fn build_idmap_paths(exec_bundle: &ExecBundle, caller_uid: libc::uid_t) -> Vec<String> {
+/// `access_paths` plus — when `access_runtime_dir` is set (default) and the
+/// caller's runtime dir exists — that runtime dir. Skipping the runtime dir when
+/// it is absent keeps a session-less caller from hard-failing; per the threat
+/// model the target should keep the caller's baseline runtime dir, and a
+/// missing dir is strictly more restrictive (never an exposure).
+fn build_idmap_paths(
+    exec_bundle: &ExecBundle,
+    caller_uid: libc::uid_t,
+    runtime_dir_present: bool,
+) -> Vec<String> {
     let mut paths = exec_bundle.access_paths.clone();
-    if exec_bundle.access_runtime_dir {
-        let runtime_dir = Path::new(&exec_bundle.xdg_runtime_dir_base).join(caller_uid.to_string());
-        paths.push(runtime_dir.to_string_lossy().into_owned());
+    if exec_bundle.access_runtime_dir && runtime_dir_present {
+        paths.push(
+            caller_runtime_dir(exec_bundle, caller_uid)
+                .to_string_lossy()
+                .into_owned(),
+        );
     }
     paths
 }

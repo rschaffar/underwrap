@@ -458,19 +458,21 @@ in {
             env = true;
             accessPaths = [ "~/iso-data" ];
           };
-          # accessRuntimeDir: idmap the caller's runtime dir so the isolated target
-          # can use XDG_RUNTIME_DIR. The denied twin omits the flag to prove it is
-          # load-bearing (the dedicated uid otherwise cannot reach the 0700 dir).
+          # accessRuntimeDir (default true): the caller's runtime dir is idmapped
+          # so the isolated target can use XDG_RUNTIME_DIR. test-runtime-dir relies
+          # on the DEFAULT (no flag set); the denied twin sets it false explicitly
+          # to prove the opt-out is load-bearing (the dedicated uid otherwise
+          # cannot reach the 0700 dir even though it is present).
           test-runtime-dir = {
             target = "${runtimeDirScript}";
             resource = "test/runtime-tok";
             env = true;
-            accessRuntimeDir = true;
           };
           test-runtime-dir-denied = {
             target = "${runtimeDirScript}";
             resource = "test/runtime-denied-tok";
             env = true;
+            accessRuntimeDir = false;
           };
           # Isolated target projecting a FILES slot (story 2635). The staging is
           # owned by uid X and bound under an idmapped `~/iso-files`; the uid-X

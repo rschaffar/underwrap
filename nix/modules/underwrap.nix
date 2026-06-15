@@ -353,21 +353,28 @@ let
       };
       accessRuntimeDir = lib.mkOption {
         type = lib.types.bool;
-        default = false;
+        default = true;
         description = ''
           Idmap the calling user's runtime directory
           (<literal>''${xdgRuntimeDirBase}/&lt;caller-uid&gt;</literal>, the same path
           the target's <literal>XDG_RUNTIME_DIR</literal> points at) into the
           target's mount namespace, exactly like an <option>accessPaths</option>
           entry. The caller uid is resolved at invocation time, so it is correct
-          for any authorized caller. Enable this for targets that need a writable
-          runtime directory (e.g. tools that stage downloads under
-          <literal>XDG_RUNTIME_DIR</literal>) or the caller's session sockets
-          (wayland, ssh-agent, the session D-Bus). Note: enabling this on a
-          <option>libsecret</option> wrapper also exposes the caller's real
-          session bus at <literal>$XDG_RUNTIME_DIR/bus</literal>, so a target that
-          ignores <literal>DBUS_SESSION_BUS_ADDRESS</literal> could reach the
-          caller's real Secret Service instead of underwrap's brokered one.
+          for any authorized caller, and it is skipped silently when that
+          directory does not exist (e.g. a caller with no logind session).
+
+          Defaults to <literal>true</literal>: an isolated target should behave
+          like it ran as the caller (underwrap hides the secret <emphasis>from</emphasis>
+          the caller, it does not sandbox the target), so it keeps the caller's
+          runtime directory — needed for tools that stage scratch under
+          <literal>XDG_RUNTIME_DIR</literal> or use the caller's session sockets
+          (wayland, ssh-agent, the session D-Bus). Set to <literal>false</literal>
+          to deny it for a wrapper you deliberately want more contained. Note: on
+          a <option>libsecret</option> wrapper this makes the caller's real
+          session bus reachable at <literal>$XDG_RUNTIME_DIR/bus</literal>, so a
+          target that ignores <literal>DBUS_SESSION_BUS_ADDRESS</literal> could
+          hit the caller's real Secret Service rather than the brokered one (a
+          functional concern; the brokered secret is not exposed to the caller).
         '';
       };
       envPassthrough = lib.mkOption {

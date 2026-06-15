@@ -103,12 +103,13 @@ Also note:
   `XDG_CACHE_HOME`, and `XDG_STATE_HOME` are not passthrough knobs in
   underwrap's hardened model
 - use `envSet` only for intentional `HOME` / base `XDG_*` overrides, and keep those override values absolute
-- use the instance-level `xdgRuntimeDirBase` knob for the `XDG_RUNTIME_DIR`
-  path, and `accessRuntimeDir = true` if the target must actually read or
-  write that directory (the dedicated target UID cannot reach the caller's
-  real `/run/user/<uid>` otherwise). On a `libsecret` wrapper this also
-  exposes the caller's real session bus — only enable it if the target
-  genuinely needs the caller's runtime dir or session sockets
+- the `XDG_RUNTIME_DIR` path comes from the instance-level `xdgRuntimeDirBase`
+  knob; the caller's runtime dir is idmapped into the namespace by default
+  (`accessRuntimeDir`, default `true`), so the target can use it as if it ran
+  as the caller. Set `accessRuntimeDir = false` only if you deliberately want
+  to deny the target the caller's runtime dir / session sockets. Be aware that
+  on a `libsecret` wrapper, leaving it on makes the caller's real session bus
+  reachable at `$XDG_RUNTIME_DIR/bus`
 
 If you cannot explain why a passthrough is safe enough, do not add it.
 

@@ -23,20 +23,29 @@ fn bundle(access_paths: Vec<String>, access_runtime_dir: bool) -> ExecBundle {
 
 #[test]
 fn build_idmap_paths_omits_runtime_dir_when_flag_unset() {
+    // Even with the dir present, an opted-out wrapper gets only its access_paths.
     let b = bundle(vec!["~/.config/gh".to_string()], false);
     assert_eq!(
-        build_idmap_paths(&b, 1700),
+        build_idmap_paths(&b, 1700, true),
         vec!["~/.config/gh".to_string()]
     );
 }
 
 #[test]
-fn build_idmap_paths_appends_caller_runtime_dir_when_flag_set() {
+fn build_idmap_paths_appends_caller_runtime_dir_when_flag_set_and_present() {
     let b = bundle(vec!["~".to_string()], true);
     assert_eq!(
-        build_idmap_paths(&b, 1700),
+        build_idmap_paths(&b, 1700, true),
         vec!["~".to_string(), "/run/user/1700".to_string()],
     );
+}
+
+#[test]
+fn build_idmap_paths_skips_runtime_dir_when_absent() {
+    // Default-on but the caller has no runtime dir (e.g. no logind session):
+    // skip it rather than hard-fail, so the wrapper still runs.
+    let b = bundle(vec!["~".to_string()], true);
+    assert_eq!(build_idmap_paths(&b, 1700, false), vec!["~".to_string()]);
 }
 
 #[test]
@@ -45,7 +54,7 @@ fn build_idmap_paths_resolves_runtime_dir_from_caller_uid_not_wire() {
     // tracks the actual caller; nothing on the wire selects the uid.
     let b = bundle(Vec::new(), true);
     assert_eq!(
-        build_idmap_paths(&b, 31337),
+        build_idmap_paths(&b, 31337, true),
         vec!["/run/user/31337".to_string()]
     );
 }
@@ -63,7 +72,7 @@ fn build_idmap_paths_runtime_dir_matches_xdg_runtime_dir_env() {
     )
     .unwrap();
     assert_eq!(
-        build_idmap_paths(&b, 1700).last().map(String::as_str),
+        build_idmap_paths(&b, 1700, true).last().map(String::as_str),
         env.get("XDG_RUNTIME_DIR").map(String::as_str),
     );
 }
@@ -71,5 +80,5 @@ fn build_idmap_paths_runtime_dir_matches_xdg_runtime_dir_env() {
 #[test]
 fn build_idmap_paths_empty_when_nothing_requested() {
     let b = bundle(Vec::new(), false);
-    assert!(build_idmap_paths(&b, 1700).is_empty());
+    assert!(build_idmap_paths(&b, 1700, true).is_empty());
 }

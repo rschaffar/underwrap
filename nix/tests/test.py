@@ -1225,26 +1225,26 @@ def local_target_uid_idmapped_home():
 
 def local_target_uid_runtime_dir():
     # ============================================================
-    # LOCAL INSTANCE: accessRuntimeDir idmaps the caller's runtime dir
+    # LOCAL INSTANCE: accessRuntimeDir (default on) idmaps the caller's runtime dir
     # ============================================================
     # The dedicated target uid cannot reach the caller's 0700 runtime dir
-    # (XDG_RUNTIME_DIR points at <xdgRuntimeDirBase>/<caller-uid>). The
-    # accessRuntimeDir flag idmaps that dir caller<->X into the namespace, like
-    # an accessPaths entry resolved from the caller's uid at invocation. Provision
-    # the caller-owned runtime dir exactly as logind would.
+    # (XDG_RUNTIME_DIR points at <xdgRuntimeDirBase>/<caller-uid>) on its own.
+    # accessRuntimeDir defaults to true and idmaps that dir caller<->X into the
+    # namespace, resolved from the caller's uid at invocation. Provision the
+    # caller-owned runtime dir exactly as logind would.
     machine.succeed(
         "mkdir -p /run/underwrap-test-runtime/1099 && "
         "chown testuser:users /run/underwrap-test-runtime/1099 && "
         "chmod 0700 /run/underwrap-test-runtime/1099 && "
         "rm -rf /run/underwrap-test-runtime/1099/uw-runtime-probe"
     )
-    # With the flag: the target mkdirs + writes under XDG_RUNTIME_DIR, and the
-    # marker lands on disk owned by the caller (idmapped write).
+    # Default (test-runtime-dir sets no flag): the target mkdirs + writes under
+    # XDG_RUNTIME_DIR, and the marker lands on disk owned by the caller.
     out = machine.succeed(
         "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-runtime-dir'"
     ).strip()
     assert out == "runtime_dir_ok", (
-        f"FAIL: accessRuntimeDir target could not use XDG_RUNTIME_DIR (got {out!r})"
+        f"FAIL: default accessRuntimeDir target could not use XDG_RUNTIME_DIR (got {out!r})"
     )
     owner = machine.succeed(
         "stat -c %U /run/underwrap-test-runtime/1099/uw-runtime-probe/marker"
@@ -1253,25 +1253,29 @@ def local_target_uid_runtime_dir():
         f"FAIL: runtime-dir writeback owned by {owner!r}, expected testuser — "
         f"the caller<->X mapping is wrong"
     )
-    # Without the flag: the dedicated uid cannot traverse the caller's 0700
-    # runtime dir, so the identical target fails and writes nothing.
+    # Explicit opt-out (accessRuntimeDir = false) with the dir PRESENT: the
+    # dedicated uid is denied, proving the opt-out — not mere absence — contains
+    # it. The identical target fails and writes nothing.
     machine.succeed("rm -rf /run/underwrap-test-runtime/1099/uw-runtime-probe")
     rc, _ = machine.execute(
         "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-runtime-dir-denied'"
     )
     assert rc != 0, (
-        "FAIL: target without accessRuntimeDir wrote under the caller's runtime "
-        "dir — the flag is not load-bearing"
+        "FAIL: accessRuntimeDir=false target still wrote under the caller's "
+        "runtime dir — the opt-out is not load-bearing"
     )
     rc2, _ = machine.execute(
         "test -e /run/underwrap-test-runtime/1099/uw-runtime-probe/marker"
     )
     assert rc2 != 0, (
-        "FAIL: target without accessRuntimeDir still created the runtime-dir marker"
+        "FAIL: accessRuntimeDir=false target still created the runtime-dir marker"
     )
+    # Restore the absent state so every other (default-on) wrapper simply skips
+    # the runtime-dir idmap (dir not present) and stays unperturbed.
+    machine.succeed("rm -rf /run/underwrap-test-runtime/1099")
     machine.log(
-        "PASS: accessRuntimeDir — isolated target wrote under XDG_RUNTIME_DIR "
-        "(owned by the caller); the same target without the flag was denied"
+        "PASS: accessRuntimeDir default-on — isolated target wrote under "
+        "XDG_RUNTIME_DIR (owned by the caller); explicit opt-out was denied"
     )
 
 

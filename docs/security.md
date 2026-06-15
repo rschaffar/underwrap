@@ -653,15 +653,19 @@ the caller:
 
 - `HOME` comes from the trusted passwd entry (or an explicit trusted
   `envSet.HOME` override)
-- `XDG_RUNTIME_DIR` comes from `<xdgRuntimeDirBase>/<uid>`. The dedicated
-  target UID cannot use the caller's real `/run/user/<uid>` (`0700`, caller-
-  owned) unless the wrapper opts in with `accessRuntimeDir = true`, which
-  idmaps that directory caller↔X into the namespace (same mechanism as
-  `accessPaths`, with the uid resolved at invocation time). This is a
-  deliberate per-wrapper grant: enabling it on a `libsecret` wrapper also
-  un-hides the caller's real session bus at `$XDG_RUNTIME_DIR/bus`, which a
-  target that bypasses `DBUS_SESSION_BUS_ADDRESS` could use to reach the
-  caller's real Secret Service rather than the brokered private bus
+- `XDG_RUNTIME_DIR` comes from `<xdgRuntimeDirBase>/<uid>`. By default
+  (`accessRuntimeDir = true`) underwrap idmaps that caller-owned directory
+  caller↔X into the namespace (same mechanism as `accessPaths`, uid resolved at
+  invocation, skipped if absent), so the dedicated target UID keeps the caller's
+  runtime dir. This is *not* a weakening: per the threat model the target is
+  trusted and ran as the caller at baseline, and the protected secret stays
+  hidden from the caller regardless. A wrapper can set `accessRuntimeDir = false`
+  to deny it (extra containment of the target). On a `libsecret` wrapper,
+  leaving it on makes the caller's real session bus reachable at
+  `$XDG_RUNTIME_DIR/bus`; a target that bypasses `DBUS_SESSION_BUS_ADDRESS`
+  could then talk to the caller's real Secret Service rather than the brokered
+  private bus — a functional concern, not an exposure of the brokered secret to
+  the caller
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
   `XDG_STATE_HOME` are derived from the effective `HOME` unless
   explicitly overridden via `envSet`
