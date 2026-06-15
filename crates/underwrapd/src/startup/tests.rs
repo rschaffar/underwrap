@@ -15,7 +15,7 @@ fn minimal_config() -> DaemonConfig {
         debug_tool_target: std::path::PathBuf::from(
             "/run/current-system/sw/bin/underwrap-debug-tool",
         ),
-        xdg_runtime_dir_base: "/run/user".into(),
+        target_runtime_dir_base: "/run/user".into(),
         wrappers: std::collections::HashMap::new(),
     }
 }

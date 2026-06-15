@@ -653,19 +653,16 @@ the caller:
 
 - `HOME` comes from the trusted passwd entry (or an explicit trusted
   `envSet.HOME` override)
-- `XDG_RUNTIME_DIR` comes from `<xdgRuntimeDirBase>/<uid>`. By default
-  (`accessRuntimeDir = true`) underwrap idmaps that caller-owned directory
-  caller↔X into the namespace (same mechanism as `accessPaths`, uid resolved at
-  invocation, skipped if absent), so the dedicated target UID keeps the caller's
-  runtime dir. This is *not* a weakening: per the threat model the target is
-  trusted and ran as the caller at baseline, and the protected secret stays
-  hidden from the caller regardless. A wrapper can set `accessRuntimeDir = false`
-  to deny it (extra containment of the target). On a `libsecret` wrapper,
-  leaving it on makes the caller's real session bus reachable at
-  `$XDG_RUNTIME_DIR/bus`; a target that bypasses `DBUS_SESSION_BUS_ADDRESS`
-  could then talk to the caller's real Secret Service rather than the brokered
-  private bus — a functional concern, not an exposure of the brokered secret to
-  the caller
+- `XDG_RUNTIME_DIR` comes from the target's **own** provisioned runtime
+  directory, `<targetRuntimeDirBase>/<target-user-name>`. The target runs under a
+  dedicated UID with no logind session, so underwrap provisions it a private
+  `0700` dir (default base `/run/underwrap-runtime`) rather than the caller's
+  `/run/user/<uid>`. The caller's own session runtime dir is not wired into the
+  namespace; `accessPaths` is the mechanism for exposing specific caller-owned
+  directories. Submounts under an `accessPaths` entry are idmapped best-effort:
+  idmappable filesystems (ext4/xfs/btrfs/ZFS ≥ OpenZFS 2.2) are mapped,
+  non-idmappable ones (fuse) are skipped with a warning rather than failing the
+  whole mount, and a foreign filesystem is never pulled into the target
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
   `XDG_STATE_HOME` are derived from the effective `HOME` unless
   explicitly overridden via `envSet`
@@ -861,7 +858,7 @@ It enables or complicates things like:
 - if a wrapper needs `PATH`, it must be set explicitly from trusted configuration
 - helper-selection variables such as `EDITOR`, `VISUAL`, `PAGER`, and `BROWSER` should also be treated as risky and preferably set from trusted configuration rather than caller passthrough
 - extra passthrough variables may be allowed per wrapper
-- fixed variables may be set per wrapper from trusted configuration; for the forced home/XDG set, use `envSet` only for `HOME` and the base `XDG_*` dirs (with absolute paths), and use the instance-level `xdgRuntimeDirBase` knob for `XDG_RUNTIME_DIR`
+- fixed variables may be set per wrapper from trusted configuration; for the forced home/XDG set, use `envSet` only for `HOME` and the base `XDG_*` dirs (with absolute paths). `XDG_RUNTIME_DIR` cannot be set per wrapper — it is always the target's own provisioned dir; relocate the base via the top-level `services.underwrap.targetRuntimeDirBase`
 
 This is one of the least glamorous but most important parts of the design. A lot of real-world abuse happens through ambient environment control.
 

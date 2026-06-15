@@ -47,9 +47,12 @@ pub struct DaemonConfig {
     /// `Debug` invocation, never the wrapper.
     pub debug_tool_target: PathBuf,
 
-    /// Base directory from which the target `XDG_RUNTIME_DIR` is derived
-    /// as `<xdg_runtime_dir_base>/<uid>`.
-    pub xdg_runtime_dir_base: String,
+    /// Base directory under which each isolated target's own runtime
+    /// directory is provisioned by the system. The default target
+    /// `XDG_RUNTIME_DIR` is derived as
+    /// `<target_runtime_dir_base>/<target-user-name>` — the executing
+    /// dedicated uid's own dir, not the caller's.
+    pub target_runtime_dir_base: String,
 
     /// Wrapper definitions, keyed by the bare wrapper name. The map key
     /// is the canonical name registered with the backend and selected by
@@ -73,10 +76,10 @@ impl DaemonConfig {
         if self.instance.is_empty() {
             return Err("instance name must not be empty".to_string());
         }
-        if !std::path::Path::new(&self.xdg_runtime_dir_base).is_absolute() {
+        if !std::path::Path::new(&self.target_runtime_dir_base).is_absolute() {
             return Err(format!(
-                "xdg_runtime_dir_base must be an absolute path, got '{}'",
-                self.xdg_runtime_dir_base
+                "target_runtime_dir_base must be an absolute path, got '{}'",
+                self.target_runtime_dir_base
             ));
         }
         for (name, wrapper) in &self.wrappers {
@@ -102,7 +105,7 @@ impl DaemonConfig {
                     if passthrough == "XDG_RUNTIME_DIR" {
                         return Err(format!(
                             "wrapper '{name}' env_passthrough must not include \
-                             XDG_RUNTIME_DIR; use xdg_runtime_dir_base instead"
+                             XDG_RUNTIME_DIR; use target_runtime_dir_base instead"
                         ));
                     }
                     return Err(format!(
@@ -114,7 +117,7 @@ impl DaemonConfig {
             if wrapper.env_set.contains_key("XDG_RUNTIME_DIR") {
                 return Err(format!(
                     "wrapper '{name}' env_set must not include XDG_RUNTIME_DIR; \
-                     use xdg_runtime_dir_base instead"
+                     use target_runtime_dir_base instead"
                 ));
             }
             for forced in CONFIGURABLE_FORCED_TARGET_ENV_NAMES {
@@ -202,12 +205,6 @@ fn default_storage_dir() -> PathBuf {
     PathBuf::from("/var/lib/underwrap/secrets")
 }
 
-/// Serde default for `WrapperDef::access_runtime_dir` (idmap the caller's
-/// runtime dir unless a wrapper opts out).
-fn default_true() -> bool {
-    true
-}
-
 /// Frontend backend-client configuration.
 ///
 /// The frontend talks to a central backend service over HTTPS with mTLS.
@@ -275,26 +272,6 @@ pub struct WrapperDef {
     /// untouched.
     #[serde(default)]
     pub access_paths: Vec<String>,
-
-    /// Idmap the calling user's runtime directory
-    /// (`<xdg_runtime_dir_base>/<caller-uid>`, the same path the target's
-    /// `XDG_RUNTIME_DIR` points at) into the target's mount namespace, like an
-    /// `access_paths` entry. The path is resolved from the caller's runtime uid
-    /// at invocation time, so it is correct for any authorized caller, and is
-    /// skipped silently when that directory does not exist (e.g. a caller with
-    /// no logind session).
-    ///
-    /// Defaults to `true`: the isolated target should behave like it ran as the
-    /// caller (the threat model is hiding the secret *from* the caller, not
-    /// sandboxing the target), so it keeps the caller's runtime dir by default.
-    /// Set to `false` to deny it for a wrapper you deliberately want more
-    /// contained. Note: on a `libsecret` wrapper this makes the caller's real
-    /// session bus reachable at `$XDG_RUNTIME_DIR/bus`; a target that bypasses
-    /// `DBUS_SESSION_BUS_ADDRESS` could then hit the caller's real Secret
-    /// Service instead of the brokered one (a functional concern — the brokered
-    /// secret is not exposed to the caller).
-    #[serde(default = "default_true")]
-    pub access_runtime_dir: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

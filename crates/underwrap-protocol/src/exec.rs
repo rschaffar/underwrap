@@ -65,9 +65,11 @@ pub struct ExecBundle {
     pub env: HashMap<String, SecretBytes>,
     pub env_passthrough: Vec<String>,
     pub env_set: HashMap<String, String>,
-    /// Base directory from which ns derives the final target
-    /// `XDG_RUNTIME_DIR` as `<xdg_runtime_dir_base>/<uid>`.
-    pub xdg_runtime_dir_base: String,
+    /// Base directory under which each isolated target's own runtime
+    /// directory is provisioned by the system. ns derives the default
+    /// `XDG_RUNTIME_DIR` as `<target_runtime_dir_base>/<target-user-name>`
+    /// — the executing dedicated uid's own dir, not the caller's.
+    pub target_runtime_dir_base: String,
     /// The wrapper-resource binding for this run's single resource,
     /// carrying the fd for the bulk-blob IPC channel
     /// (`Checkout` / `Checkin` / `UsageSignal`).
@@ -75,10 +77,6 @@ pub struct ExecBundle {
     /// Caller-owned directories to idmap (caller<->dedicated uid) into the
     /// target's mount namespace (`~`/`~/rel`/absolute).
     pub access_paths: Vec<String>,
-    /// When set, ns also idmaps the caller's runtime dir
-    /// (`<xdg_runtime_dir_base>/<caller-uid>`), resolved from the caller uid ns
-    /// reads at invocation time.
-    pub access_runtime_dir: bool,
 }
 
 impl WireEncode for ExecBundle {
@@ -86,10 +84,9 @@ impl WireEncode for ExecBundle {
         self.env.encode(out)?;
         self.env_passthrough.encode(out)?;
         self.env_set.encode(out)?;
-        self.xdg_runtime_dir_base.encode(out)?;
+        self.target_runtime_dir_base.encode(out)?;
         self.resource.encode(out)?;
-        self.access_paths.encode(out)?;
-        self.access_runtime_dir.encode(out)
+        self.access_paths.encode(out)
     }
 }
 
@@ -99,10 +96,9 @@ impl WireDecode for ExecBundle {
             env: HashMap::<String, SecretBytes>::decode(reader)?,
             env_passthrough: Vec::<String>::decode(reader)?,
             env_set: HashMap::<String, String>::decode(reader)?,
-            xdg_runtime_dir_base: String::decode(reader)?,
+            target_runtime_dir_base: String::decode(reader)?,
             resource: ExecResourceBinding::decode(reader)?,
             access_paths: Vec::<String>::decode(reader)?,
-            access_runtime_dir: bool::decode(reader)?,
         })
     }
 }

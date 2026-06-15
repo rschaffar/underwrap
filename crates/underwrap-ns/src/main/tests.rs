@@ -2,12 +2,12 @@ use super::*;
 use std::collections::HashMap;
 use underwrap_protocol::exec::ExecResourceBinding;
 
-fn bundle(access_paths: Vec<String>, access_runtime_dir: bool) -> ExecBundle {
+fn bundle(access_paths: Vec<String>) -> ExecBundle {
     ExecBundle {
         env: HashMap::new(),
         env_passthrough: Vec::new(),
         env_set: HashMap::new(),
-        xdg_runtime_dir_base: "/run/user".to_string(),
+        target_runtime_dir_base: "/run/underwrap-runtime".to_string(),
         resource: ExecResourceBinding {
             resource_id: "res_x_y".to_string(),
             resource_name: "x/y".to_string(),
@@ -17,68 +17,38 @@ fn bundle(access_paths: Vec<String>, access_runtime_dir: bool) -> ExecBundle {
             files_target_paths: Vec::new(),
         },
         access_paths,
-        access_runtime_dir,
     }
 }
 
 #[test]
-fn build_idmap_paths_omits_runtime_dir_when_flag_unset() {
-    // Even with the dir present, an opted-out wrapper gets only its access_paths.
-    let b = bundle(vec!["~/.config/gh".to_string()], false);
+fn target_runtime_dir_is_base_plus_target_user_name() {
+    // ns derives the executing uid's own dir as <base>/<user-name>. uid 0 maps
+    // to "root" on every Unix, so this is a portable check of the scheme.
     assert_eq!(
-        build_idmap_paths(&b, 1700, true),
-        vec!["~/.config/gh".to_string()]
+        target_runtime_dir("/run/underwrap-runtime", 0).unwrap(),
+        "/run/underwrap-runtime/root",
     );
 }
 
 #[test]
-fn build_idmap_paths_appends_caller_runtime_dir_when_flag_set_and_present() {
-    let b = bundle(vec!["~".to_string()], true);
-    assert_eq!(
-        build_idmap_paths(&b, 1700, true),
-        vec!["~".to_string(), "/run/user/1700".to_string()],
-    );
+fn target_runtime_dir_rejects_relative_base() {
+    assert!(target_runtime_dir("run/underwrap-runtime", 0).is_err());
 }
 
 #[test]
-fn build_idmap_paths_skips_runtime_dir_when_absent() {
-    // Default-on but the caller has no runtime dir (e.g. no logind session):
-    // skip it rather than hard-fail, so the wrapper still runs.
-    let b = bundle(vec!["~".to_string()], true);
-    assert_eq!(build_idmap_paths(&b, 1700, false), vec!["~".to_string()]);
-}
-
-#[test]
-fn build_idmap_paths_resolves_runtime_dir_from_caller_uid_not_wire() {
-    // The appended runtime dir uses the uid passed in (ns's own getuid()), so it
-    // tracks the actual caller; nothing on the wire selects the uid.
-    let b = bundle(Vec::new(), true);
-    assert_eq!(
-        build_idmap_paths(&b, 31337, true),
-        vec!["/run/user/31337".to_string()]
-    );
-}
-
-#[test]
-fn build_idmap_paths_runtime_dir_matches_xdg_runtime_dir_env() {
-    // The idmapped path must be byte-identical to the XDG_RUNTIME_DIR env.rs
-    // sets, or the target would get a runtime dir it cannot use.
-    let b = bundle(Vec::new(), true);
+fn build_target_env_uses_the_resolved_runtime_dir_verbatim() {
+    // build_target_env does not derive the runtime dir; it exports exactly the
+    // value run() resolved (the target's own provisioned dir).
+    let b = bundle(Vec::new());
     let env = crate::env::build_target_env(
         &HashMap::new(),
         &b,
-        std::path::Path::new("/home/alice"),
-        1700,
+        Path::new("/home/alice"),
+        "/run/underwrap-runtime/underwrap-target-abc",
     )
     .unwrap();
     assert_eq!(
-        build_idmap_paths(&b, 1700, true).last().map(String::as_str),
         env.get("XDG_RUNTIME_DIR").map(String::as_str),
+        Some("/run/underwrap-runtime/underwrap-target-abc"),
     );
-}
-
-#[test]
-fn build_idmap_paths_empty_when_nothing_requested() {
-    let b = bundle(Vec::new(), false);
-    assert!(build_idmap_paths(&b, 1700, true).is_empty());
 }

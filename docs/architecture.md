@@ -217,6 +217,65 @@ silently drop content that has nowhere to go. Mount paths in
 unambiguous; the NixOS module rejects configurations that violate
 this.
 
+## Runtime directory for isolated targets
+
+Every wrapped target runs as a dedicated `underwrap-target-*` uid X (see the
+target-UID isolation work). A runtime directory (`XDG_RUNTIME_DIR`) is a
+**per-uid** resource — the kernel/desktop convention is one `0700` dir owned by
+the uid using it — so the honest reflection of running as X is that **X gets
+X's own runtime directory**, not the caller's. This is not sandboxing; it is
+just giving the executing uid the runtime dir that uid is entitled to.
+
+That directory has to be **provisioned by the system**. logind only creates
+`/run/user/<uid>` for *login sessions*, and X is a `nologin` system uid that
+never logs in, so it never gets one. `underwrap-ns` cannot create one at runtime
+either: it holds `cap_sys_admin,cap_setpcap,cap_setuid,cap_setgid` but **not**
+`CAP_DAC_OVERRIDE`/`CAP_CHOWN`, and `/run/user` is root-owned (logind's tree). So
+the NixOS module provisions, via `systemd-tmpfiles`, one `0700` self-owned dir
+per target user under a dedicated base (`services.underwrap.targetRuntimeDirBase`,
+default `/run/underwrap-runtime` — deliberately **not** under `/run/user`). The
+directory is keyed on the target user *name* (known at module-eval time);
+`underwrap-ns` derives the identical path from X via `getpwuid(X).pw_name`, so
+the two always agree without pinning a numeric uid. `XDG_RUNTIME_DIR` is then
+`<base>/<target-user-name>`, forced into the target environment (an `envSet`
+override is rejected).
+
+The caller's *own* session runtime dir is intentionally **not** wired into the
+namespace. If a tool needs specific caller-owned directories (config/state),
+list them in `accessPaths`: each is exposed through an idmapped bind mount that
+maps exactly the caller's uid/gid to X's, so the target reads and writes those
+files as the caller while every other owner stays unmapped. The idmap is applied
+**best-effort per submount**: the directory is cloned recursively (so nested
+mounts come along) and each mount is idmapped individually, so an idmappable
+submount (a nested ZFS dataset under `~`, an ext4/xfs/btrfs bind) is mapped while
+a non-idmappable one (fuse — desktop portals, sshfs, AppImage) is skipped with a
+warning instead of failing the whole mount with `EINVAL`. The named directory's
+own filesystem must be idmappable, or the access path is a hard error.
+
+This all sits on the right side of the threat model (see `CLAUDE.md`): none of it
+exposes the brokered secret to the caller. The target is handed a working
+runtime dir, so it is not made non-functional; only the caller's live *session*
+(its `/run/user` sockets — wayland, ssh-agent, the session D-Bus) is out of
+scope, by choice.
+
+### Rejected alternatives
+
+- **Idmap the caller's `/run/user/<uid>` into the namespace (the first attempt,
+  default-on).** A category mismatch: `/run/user` is a live session tree of
+  sockets and foreign fuse filesystems, not caller-owned config/state. It broke
+  in practice — a recursive `mount_setattr(IDMAP)` returns `EINVAL` on the fuse
+  portals (`xdg-document-portal`, `gvfsd-fuse`) a desktop session mounts there.
+  It also leaks target scratch into the caller's session, depends on the caller
+  having a session at all, and on a `libsecret` wrapper re-exposes the caller's
+  real session bus at `$XDG_RUNTIME_DIR/bus`. Even reduced to a default-off
+  opt-in it was removed entirely — not worth the surface until a concrete need
+  appears.
+- **A private per-invocation tmpfs.** A namespace-local hack for "X has no
+  runtime dir": ephemeral, and non-canonical — a provisioned per-uid directory
+  is what a runtime dir actually *is*.
+- **A shared `1777` base keyed on the caller uid.** World-writable, cross-uid
+  collisions, wrong ownership.
+
 ## Crate layout
 
 ```text
@@ -267,6 +326,9 @@ web/                       Vite + React + shadcn admin SPA (embedded into
 - `mounts.rs` — mount namespace setup and staging cleanup
 - `libsecret.rs` — private D-Bus + `underwrap-secretsd` orchestration
 - `directory_credential.rs` — directory materialization and sync
+- `target_uid.rs` — dedicated-uid resolution (root-owned table), switch, and the
+  target's own runtime-dir path derivation
+- `idmap.rs` — `accessPaths` idmapped bind mounts (best-effort per submount)
 
 ### `underwrap-secretsd` internals
 

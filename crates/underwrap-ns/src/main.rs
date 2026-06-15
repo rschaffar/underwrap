@@ -82,14 +82,15 @@ fn run() -> Result<(), String> {
     let isolation = target_uid::resolve_isolation(&target)
         .map_err(|e| format!("resolving target isolation: {e}"))?;
 
+    // Runtime-dir policy. An isolated target gets its OWN dedicated-uid runtime
+    // dir (`<base>/<target-user-name>`, provisioned by the system) — a runtime
+    // dir is a per-uid resource, so the target running as X gets X's. X's uid
+    // comes from the root-owned table (never the wire).
+    let xdg_runtime_dir = target_runtime_dir(&exec_bundle.target_runtime_dir_base, isolation.uid)?;
+
     // The caller-owned directories to idmap caller<->X into the target's mount
-    // namespace. `access_runtime_dir` (default on) appends the caller's runtime
-    // dir (`<xdg_runtime_dir_base>/<caller-uid>`) — the same path env.rs points
-    // XDG_RUNTIME_DIR at — resolved here from the caller's runtime uid (never the
-    // wire). Skipped when that dir is absent (e.g. a session-less caller) so the
-    // target falls back rather than hard-failing.
-    let runtime_dir_present = caller_runtime_dir(&exec_bundle, target_identity.uid).exists();
-    let idmap_paths = build_idmap_paths(&exec_bundle, target_identity.uid, runtime_dir_present);
+    // namespace (`~`/`~/rel`/absolute), straight from the wrapper config.
+    let idmap_paths = exec_bundle.access_paths.clone();
 
     // Story 2640: build the caller<->X idmap user namespace BEFORE unsharing the
     // PID namespace — a helper fork after CLONE_NEWPID would become PID 1 of the
@@ -140,6 +141,7 @@ fn run() -> Result<(), String> {
             target_args,
             &exec_bundle,
             &target_identity,
+            &xdg_runtime_dir,
             &resource_channel,
             libsecret_enabled,
             libsecret_state_path.as_deref(),
@@ -159,33 +161,23 @@ fn run() -> Result<(), String> {
     }
 }
 
-/// The caller's runtime dir, derived as `<xdg_runtime_dir_base>/<caller_uid>` —
-/// identical to the `XDG_RUNTIME_DIR` env.rs sets. `caller_uid` is ns's own
-/// `getuid()`, never a wire-supplied value.
-fn caller_runtime_dir(exec_bundle: &ExecBundle, caller_uid: libc::uid_t) -> PathBuf {
-    Path::new(&exec_bundle.xdg_runtime_dir_base).join(caller_uid.to_string())
-}
-
-/// The caller-owned directories to idmap caller<->X, drawn from the configured
-/// `access_paths` plus — when `access_runtime_dir` is set (default) and the
-/// caller's runtime dir exists — that runtime dir. Skipping the runtime dir when
-/// it is absent keeps a session-less caller from hard-failing; per the threat
-/// model the target should keep the caller's baseline runtime dir, and a
-/// missing dir is strictly more restrictive (never an exposure).
-fn build_idmap_paths(
-    exec_bundle: &ExecBundle,
-    caller_uid: libc::uid_t,
-    runtime_dir_present: bool,
-) -> Vec<String> {
-    let mut paths = exec_bundle.access_paths.clone();
-    if exec_bundle.access_runtime_dir && runtime_dir_present {
-        paths.push(
-            caller_runtime_dir(exec_bundle, caller_uid)
-                .to_string_lossy()
-                .into_owned(),
-        );
+/// The executing dedicated uid X's own provisioned runtime dir,
+/// `<base>/<target-user-name>` — matching exactly what the NixOS module
+/// provisions (keyed on the target user *name*, resolved here from X via
+/// `getpwuid`). This is the default `XDG_RUNTIME_DIR`: a runtime dir is a
+/// per-uid resource, so the target running as X gets X's own.
+fn target_runtime_dir(base: &str, target_uid: libc::uid_t) -> Result<String, String> {
+    if !Path::new(base).is_absolute() {
+        return Err(format!(
+            "target runtime dir base must be absolute, got {base:?}"
+        ));
     }
-    paths
+    let name = target_uid::user_name(target_uid)?;
+    Path::new(base)
+        .join(&name)
+        .to_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("target runtime dir under {base:?} is not valid UTF-8"))
 }
 
 fn parse_target_invocation(args: Vec<String>) -> Result<(String, Vec<String>), String> {
@@ -290,6 +282,7 @@ fn run_child(
     target_args: Vec<String>,
     exec_bundle: &ExecBundle,
     target_identity: &TargetIdentity,
+    xdg_runtime_dir: &str,
     resource_channel: &ResourceChannel,
     libsecret_enabled: bool,
     libsecret_state_path: Option<&Path>,
@@ -358,7 +351,7 @@ fn run_child(
         &host_env,
         exec_bundle,
         &target_identity.home,
-        target_identity.uid,
+        xdg_runtime_dir,
     )?;
 
     if libsecret_enabled {

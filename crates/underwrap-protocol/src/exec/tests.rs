@@ -34,7 +34,7 @@ fn exec_bundle_roundtrip_minimal() {
         env: HashMap::new(),
         env_passthrough: Vec::new(),
         env_set: HashMap::new(),
-        xdg_runtime_dir_base: "/run/user".to_string(),
+        target_runtime_dir_base: "/run/user".to_string(),
         resource: ExecResourceBinding {
             resource_id: "res_x_y".to_string(),
             resource_name: "x/y".to_string(),
@@ -44,7 +44,6 @@ fn exec_bundle_roundtrip_minimal() {
             files_target_paths: Vec::new(),
         },
         access_paths: Vec::new(),
-        access_runtime_dir: false,
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -67,10 +66,9 @@ fn exec_bundle_roundtrip_populated() {
             ("PATH".to_string(), "/run/current-system/sw/bin".to_string()),
             ("UNDERWRAP_LIBSECRET".to_string(), "1".to_string()),
         ]),
-        xdg_runtime_dir_base: "/run/underwrap-runtime".to_string(),
+        target_runtime_dir_base: "/run/underwrap-runtime".to_string(),
         resource: sample_binding(),
         access_paths: vec!["~/.config/gh".to_string(), "/srv/data".to_string()],
-        access_runtime_dir: true,
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -89,17 +87,16 @@ fn exec_bundle_carries_no_target_identity() {
     // ever added to ExecBundle, both this length check and the exhaustive struct
     // literals in the round-trip tests above fail, forcing a deliberate review of
     // whether the new field belongs on the wire and whether it weakens the
-    // confused-deputy guard. `access_runtime_dir` is a plain bool selector (idmap
-    // the caller's runtime dir or not), NOT a target identity, so it belongs on
-    // the wire; the invariant is specifically that no target uid/gid is smuggled.
+    // confused-deputy guard. `access_paths` is a plain list selector (which
+    // caller-owned dirs to idmap), NOT a target identity, so it belongs on the
+    // wire; the invariant is specifically that no target uid/gid is smuggled.
     let bundle = ExecBundle {
         env: HashMap::new(),
         env_passthrough: Vec::new(),
         env_set: HashMap::new(),
-        xdg_runtime_dir_base: "/run/user".to_string(),
+        target_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: vec!["~/.config/gh".to_string()],
-        access_runtime_dir: true,
     };
 
     let encoded = encode_to_vec(&bundle).unwrap();
@@ -108,10 +105,12 @@ fn exec_bundle_carries_no_target_identity() {
     bundle.env.encode(&mut expected).unwrap();
     bundle.env_passthrough.encode(&mut expected).unwrap();
     bundle.env_set.encode(&mut expected).unwrap();
-    bundle.xdg_runtime_dir_base.encode(&mut expected).unwrap();
+    bundle
+        .target_runtime_dir_base
+        .encode(&mut expected)
+        .unwrap();
     bundle.resource.encode(&mut expected).unwrap();
     bundle.access_paths.encode(&mut expected).unwrap();
-    bundle.access_runtime_dir.encode(&mut expected).unwrap();
 
     assert_eq!(
         encoded, expected,
@@ -126,10 +125,9 @@ fn exec_bundle_decode_rejects_trailing_bytes() {
         env: HashMap::from([("GH_TOKEN".to_string(), b"ghp_test".as_slice().into())]),
         env_passthrough: vec!["SSH_AUTH_SOCK".to_string()],
         env_set: HashMap::new(),
-        xdg_runtime_dir_base: "/run/user".to_string(),
+        target_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
-        access_runtime_dir: false,
     };
 
     let mut encoded = encode_to_vec(&bundle).unwrap();

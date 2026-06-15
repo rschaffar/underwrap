@@ -91,7 +91,7 @@ let
       group = instanceGroup;
       ns_binary = nsBinaryPath;
       debug_tool_target = "${cfg.package}/bin/underwrap-debug-tool";
-      xdg_runtime_dir_base = inst.xdgRuntimeDirBase;
+      target_runtime_dir_base = cfg.targetRuntimeDirBase;
       wrappers = lib.mapAttrs (_name: w: ({
         target = w.target;
         resource = w.resource;
@@ -100,7 +100,6 @@ let
         env_passthrough = w.envPassthrough;
         env_set = w.envSet;
         access_paths = w.accessPaths;
-        access_runtime_dir = w.accessRuntimeDir;
       } // lib.optionalAttrs (w.files != null) {
         files = { inherit (w.files) paths; };
       })) inst.wrappers;
@@ -351,32 +350,6 @@ let
         '';
         example = [ "~/.config/gh" "~/.config/git" ];
       };
-      accessRuntimeDir = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = ''
-          Idmap the calling user's runtime directory
-          (<literal>''${xdgRuntimeDirBase}/&lt;caller-uid&gt;</literal>, the same path
-          the target's <literal>XDG_RUNTIME_DIR</literal> points at) into the
-          target's mount namespace, exactly like an <option>accessPaths</option>
-          entry. The caller uid is resolved at invocation time, so it is correct
-          for any authorized caller, and it is skipped silently when that
-          directory does not exist (e.g. a caller with no logind session).
-
-          Defaults to <literal>true</literal>: an isolated target should behave
-          like it ran as the caller (underwrap hides the secret <emphasis>from</emphasis>
-          the caller, it does not sandbox the target), so it keeps the caller's
-          runtime directory — needed for tools that stage scratch under
-          <literal>XDG_RUNTIME_DIR</literal> or use the caller's session sockets
-          (wayland, ssh-agent, the session D-Bus). Set to <literal>false</literal>
-          to deny it for a wrapper you deliberately want more contained. Note: on
-          a <option>libsecret</option> wrapper this makes the caller's real
-          session bus reachable at <literal>$XDG_RUNTIME_DIR/bus</literal>, so a
-          target that ignores <literal>DBUS_SESSION_BUS_ADDRESS</literal> could
-          hit the caller's real Secret Service rather than the brokered one (a
-          functional concern; the brokered secret is not exposed to the caller).
-        '';
-      };
       envPassthrough = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [];
@@ -396,9 +369,10 @@ let
         description = ''
           Fixed environment variables to set on the target process.
           These override any inherited values. HOME and the base XDG directory
-          variables may be set here intentionally; XDG_RUNTIME_DIR may not and
-          is instead derived from the instance's xdgRuntimeDirBase plus the
-          target uid.
+          variables may be set here intentionally; XDG_RUNTIME_DIR may not — it
+          is managed by underwrap (each isolated target gets its own provisioned
+          runtime dir; relocate the base via
+          <option>services.underwrap.targetRuntimeDirBase</option>).
         '';
         example = { NO_COLOR = "1"; };
       };
@@ -445,19 +419,6 @@ let
         type = backendSubmodule;
         default = {};
         description = "Frontend backend client configuration for this instance.";
-      };
-      xdgRuntimeDirBase = lib.mkOption {
-        type = lib.types.str;
-        default = "/run/user";
-        description = ''
-          Base directory from which underwrap derives the target's
-          XDG_RUNTIME_DIR as <literal>''${xdgRuntimeDirBase}/&lt;uid&gt;</literal>.
-          Must be an absolute path. Use this instance-level knob instead of
-          envPassthrough or envSet when a wrapper needs a non-default runtime
-          directory root. underwrap exports the derived path but does not create
-          custom runtime-directory trees for you; if you override the default,
-          ensure the base exists and is usable by the target uid.
-        '';
       };
       wrappers = lib.mkOption {
         type = lib.types.attrsOf wrapperSubmodule;
@@ -539,6 +500,23 @@ let
     "${path}\t${targetUserName path}\t${targetUserName path}\n"
   ) targetPaths;
 
+  # Provision each isolated target its OWN runtime directory. A target runs as a
+  # dedicated nologin uid X with no logind session, so logind never makes it a
+  # /run/user/<uid>, and underwrap-ns cannot create one at runtime (it lacks
+  # CAP_DAC_OVERRIDE/CAP_CHOWN, and /run/user is root-owned and logind's tree).
+  # So the system provisions X its own dir here, keyed on the target user NAME
+  # (known at eval; underwrap-ns derives the same path from X via getpwuid).
+  # /run is a tmpfs, so tmpfiles recreates these every boot, before the first
+  # wrapper invocation. The base is 0755 root-owned; each per-target dir is 0700
+  # and self-owned (mode mirrors logind's /run/user/<uid>).
+  targetRuntimeTmpfiles =
+    lib.optionals (targetPaths != [])
+      ([ "d ${cfg.targetRuntimeDirBase} 0755 root root -" ]
+       ++ map (path:
+         let n = targetUserName path; in
+         "d ${cfg.targetRuntimeDirBase}/${n} 0700 ${n} ${n} -"
+       ) targetPaths);
+
 in {
   options.services.underwrap = {
     enable = lib.mkEnableOption "underwrap secret broker";
@@ -546,6 +524,25 @@ in {
     package = lib.mkOption {
       type = lib.types.package;
       description = "The underwrap package.";
+    };
+
+    targetRuntimeDirBase = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/underwrap-runtime";
+      description = ''
+        Base directory under which underwrap provisions each isolated target's
+        OWN runtime directory (one <literal>0700</literal>, self-owned dir per
+        target sandbox user). A wrapped target runs as a dedicated system uid
+        with no logind session, so it never gets a
+        <literal>/run/user/&lt;uid&gt;</literal>; underwrap provisions it one here
+        instead, and underwrap-ns exports it as the default
+        <literal>XDG_RUNTIME_DIR</literal>
+        (<literal>&lt;base&gt;/&lt;target-user-name&gt;</literal>). Must be an
+        absolute path, and must NOT be <literal>/run/user</literal> (that is
+        logind's per-login-session tree). This is system-wide rather than
+        per-instance because the target sandbox users are shared across
+        instances (keyed by target binary path).
+      '';
     };
 
     hardenTargetHost = lib.mkOption {
@@ -585,12 +582,21 @@ in {
 
   config = lib.mkIf cfg.enable {
     assertions =
-      (lib.flatten (lib.mapAttrsToList (instName: inst:
-        [{
-          assertion = isAbsolutePathString inst.xdgRuntimeDirBase;
-          message = "services.underwrap.instances.${instName}.xdgRuntimeDirBase: must be an absolute path";
-        }]
-        ++ (lib.mapAttrsToList (wrapperName: wrapper:
+      [
+        {
+          assertion = isAbsolutePathString cfg.targetRuntimeDirBase;
+          message = "services.underwrap.targetRuntimeDirBase: must be an absolute path";
+        }
+        {
+          # /run/user is logind's per-login-session tree; provisioning the
+          # target sandbox dirs there would collide with real user sessions.
+          assertion = cfg.targetRuntimeDirBase != "/run/user"
+            && !(lib.hasPrefix "/run/user/" cfg.targetRuntimeDirBase);
+          message = "services.underwrap.targetRuntimeDirBase: must not be under /run/user (that is logind's per-login-session tree); use a dedicated base such as the default /run/underwrap-runtime";
+        }
+      ]
+      ++ (lib.flatten (lib.mapAttrsToList (instName: inst:
+        (lib.mapAttrsToList (wrapperName: wrapper:
           let
             paths = wrapperDirectoryPaths wrapper;
             pairs = lib.concatMap (left:
@@ -613,7 +619,7 @@ in {
         }) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: wrapper: {
           assertion = !(lib.any (name: lib.elem name forcedTargetEnvNames) wrapper.envPassthrough);
-          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envPassthrough: HOME, XDG_RUNTIME_DIR, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, and XDG_STATE_HOME are forced by underwrap. Use envSet for HOME/base XDG overrides, and use xdgRuntimeDirBase for XDG_RUNTIME_DIR";
+          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envPassthrough: HOME, XDG_RUNTIME_DIR, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, and XDG_STATE_HOME are forced by underwrap. Use envSet for HOME/base XDG overrides; XDG_RUNTIME_DIR is managed by underwrap (each isolated target gets its own provisioned runtime dir; relocate the base via services.underwrap.targetRuntimeDirBase)";
         }) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: wrapper: {
           assertion = !(lib.any linkerLikeEnvPrefix (builtins.attrNames wrapper.envSet));
@@ -621,7 +627,7 @@ in {
         }) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: wrapper: {
           assertion = !(wrapper.envSet ? XDG_RUNTIME_DIR);
-          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: XDG_RUNTIME_DIR must not be set here; use services.underwrap.instances.${instName}.xdgRuntimeDirBase instead";
+          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: XDG_RUNTIME_DIR must not be set here; it is managed by underwrap (each isolated target gets its own provisioned runtime dir; relocate the base via services.underwrap.targetRuntimeDirBase)";
         }) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: wrapper:
           let
@@ -725,8 +731,12 @@ in {
       }
     );
 
-    # Tmpfiles.
-    systemd.tmpfiles.rules = lib.mkMerge (lib.mapAttrsToList (_: i: i.tmpfiles) instances);
+    # Tmpfiles: per-instance run/state dirs, plus each isolated target's own
+    # provisioned runtime directory (story 1000).
+    systemd.tmpfiles.rules = lib.mkMerge (
+      (lib.mapAttrsToList (_: i: i.tmpfiles) instances)
+      ++ [ targetRuntimeTmpfiles ]
+    );
 
     # One frontend service per instance.
     systemd.services = lib.mapAttrs' (name: _:

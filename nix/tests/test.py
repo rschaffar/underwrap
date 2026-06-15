@@ -297,7 +297,6 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-iso": "test/iso-tok",
     "test-iso-home": "test/iso-home-tok",
     "test-runtime-dir": "test/runtime-tok",
-    "test-runtime-dir-denied": "test/runtime-denied-tok",
     "test-iso-dir": "test/iso-dir-tok",
     "test-iso-libsecret": "test/iso-libsecret-store",
     "test-crash": "test/crash-tok",
@@ -581,7 +580,6 @@ def local_store_and_basic_ops():
         ("test-iso", "test/iso-tok"),
         ("test-iso-home", "test/iso-home-tok"),
         ("test-runtime-dir", "test/runtime-tok"),
-        ("test-runtime-dir-denied", "test/runtime-denied-tok"),
         ("test-crash", "test/crash-tok"),
         ("test-libsecret", "test/libsecret-store"),
         ("test-caps", "test/caps-tok"),
@@ -598,7 +596,6 @@ def local_store_and_basic_ops():
     admin_write_secret(ADMIN_LOCAL, "local", "test-iso", "test/iso-tok/env/ISO_SECRET", "iso_secret_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-iso-home", "test/iso-home-tok/env/HOME_ISO_SECRET", "home_iso_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-runtime-dir", "test/runtime-tok/env/RUNTIME_SECRET", "runtime_val")
-    admin_write_secret(ADMIN_LOCAL, "local", "test-runtime-dir-denied", "test/runtime-denied-tok/env/RUNTIME_SECRET", "runtime_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-crash", "test/crash-tok/env/CRASH_SECRET", "crash_secret_value")
     admin_write_secret(ADMIN_LOCAL, "local", "test-caps", "test/caps-tok/env/CAPS_SECRET", "caps_test_val")
     admin_write_secret(ADMIN_LOCAL, "local", "test-ns-pids-env", "test/ns-pids-env-store/env/NSPIDS_SECRET", "nspids_env_val")
@@ -1222,60 +1219,74 @@ def local_target_uid_idmapped_home():
         "owner; its writeback is owned by the caller on disk"
     )
 
+    # Best-effort submount idmap (story 1000 / 1030): a non-idmappable submount
+    # under an accessPaths dir must be SKIPPED, not fail the whole mount with
+    # EINVAL. proc lacks FS_ALLOW_IDMAP, a portable stand-in for the fuse-portal
+    # case that broke a real desktop session. The parent dir must stay idmapped.
+    machine.succeed("mkdir -p /home/testuser/iso-data/portal")
+    machine.succeed("mount -t proc proc /home/testuser/iso-data/portal")
+    try:
+        machine.succeed(
+            "su testuser -s /bin/sh -c '"
+            "printf %s caller-content-submount > /home/testuser/iso-data/from-caller && "
+            "rm -f /home/testuser/iso-data/from-target'"
+        )
+        machine.succeed(
+            "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-iso-home'"
+        )
+        out_sub = machine.succeed("cat /home/testuser/iso-data/from-target").strip()
+        assert out_sub == "caller-content-submount", (
+            f"FAIL: idmap of an accessPaths dir carrying a non-idmappable (proc) "
+            f"submount did not work (got {out_sub!r}) — the parent dir's idmap "
+            f"should still apply, with the submount skipped"
+        )
+    finally:
+        machine.execute("umount /home/testuser/iso-data/portal 2>/dev/null || true")
+    machine.log(
+        "PASS: best-effort submount idmap — a non-idmappable (proc) submount under "
+        "an accessPaths dir was skipped; the parent stayed idmapped and usable"
+    )
+
 
 def local_target_uid_runtime_dir():
     # ============================================================
-    # LOCAL INSTANCE: accessRuntimeDir (default on) idmaps the caller's runtime dir
+    # LOCAL INSTANCE: an isolated target gets its OWN provisioned runtime dir
     # ============================================================
-    # The dedicated target uid cannot reach the caller's 0700 runtime dir
-    # (XDG_RUNTIME_DIR points at <xdgRuntimeDirBase>/<caller-uid>) on its own.
-    # accessRuntimeDir defaults to true and idmaps that dir caller<->X into the
-    # namespace, resolved from the caller's uid at invocation. Provision the
-    # caller-owned runtime dir exactly as logind would.
-    machine.succeed(
-        "mkdir -p /run/underwrap-test-runtime/1099 && "
-        "chown testuser:users /run/underwrap-test-runtime/1099 && "
-        "chmod 0700 /run/underwrap-test-runtime/1099 && "
-        "rm -rf /run/underwrap-test-runtime/1099/uw-runtime-probe"
-    )
-    # Default (test-runtime-dir sets no flag): the target mkdirs + writes under
-    # XDG_RUNTIME_DIR, and the marker lands on disk owned by the caller.
-    out = machine.succeed(
+    # story 1000: the dedicated target uid X has no logind /run/user, so underwrap
+    # provisions it its own 0700 runtime dir at <targetRuntimeDirBase>/<X-name>
+    # and exports that as XDG_RUNTIME_DIR. It is X-owned, so the target writes it
+    # directly — no idmap, and the caller's /run/user is never involved (the
+    # caller here has no session dir, so this also proves the path is
+    # session-independent). The dir is created at boot by systemd-tmpfiles.
+    runtime_dir = machine.succeed(
         "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-runtime-dir'"
     ).strip()
-    assert out == "runtime_dir_ok", (
-        f"FAIL: default accessRuntimeDir target could not use XDG_RUNTIME_DIR (got {out!r})"
+    # The target printed its XDG_RUNTIME_DIR: it must be the provisioned per-
+    # target-uid dir, NOT the caller's /run/user and NOT keyed on the caller uid.
+    assert runtime_dir.startswith("/run/underwrap-test-runtime/underwrap-target-"), (
+        f"FAIL: XDG_RUNTIME_DIR was {runtime_dir!r}, expected the provisioned "
+        f"/run/underwrap-test-runtime/<target-user> dir"
     )
+    assert "/run/user/" not in runtime_dir, (
+        f"FAIL: XDG_RUNTIME_DIR {runtime_dir!r} points into the caller's session tree"
+    )
+    # The marker is owned by the dedicated target uid X (an underwrap-target-*
+    # system user), proving the target wrote its OWN dir — not the caller's.
     owner = machine.succeed(
-        "stat -c %U /run/underwrap-test-runtime/1099/uw-runtime-probe/marker"
+        f"stat -c %U {runtime_dir}/uw-runtime-probe/marker"
     ).strip()
-    assert owner == "testuser", (
-        f"FAIL: runtime-dir writeback owned by {owner!r}, expected testuser — "
-        f"the caller<->X mapping is wrong"
+    assert owner.startswith("underwrap-target-"), (
+        f"FAIL: runtime-dir marker owned by {owner!r}, expected the dedicated "
+        f"underwrap-target-* uid"
     )
-    # Explicit opt-out (accessRuntimeDir = false) with the dir PRESENT: the
-    # dedicated uid is denied, proving the opt-out — not mere absence — contains
-    # it. The identical target fails and writes nothing.
-    machine.succeed("rm -rf /run/underwrap-test-runtime/1099/uw-runtime-probe")
-    rc, _ = machine.execute(
-        "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-runtime-dir-denied'"
-    )
-    assert rc != 0, (
-        "FAIL: accessRuntimeDir=false target still wrote under the caller's "
-        "runtime dir — the opt-out is not load-bearing"
-    )
-    rc2, _ = machine.execute(
-        "test -e /run/underwrap-test-runtime/1099/uw-runtime-probe/marker"
-    )
-    assert rc2 != 0, (
-        "FAIL: accessRuntimeDir=false target still created the runtime-dir marker"
-    )
-    # Restore the absent state so every other (default-on) wrapper simply skips
-    # the runtime-dir idmap (dir not present) and stays unperturbed.
-    machine.succeed("rm -rf /run/underwrap-test-runtime/1099")
+    content = machine.succeed(
+        f"cat {runtime_dir}/uw-runtime-probe/marker"
+    ).strip()
+    assert content == "runtime_dir_ok", f"FAIL: runtime-dir marker content {content!r}"
+    machine.succeed(f"rm -rf {runtime_dir}/uw-runtime-probe")
     machine.log(
-        "PASS: accessRuntimeDir default-on — isolated target wrote under "
-        "XDG_RUNTIME_DIR (owned by the caller); explicit opt-out was denied"
+        "PASS: story 1000 — isolated target used its own provisioned runtime dir "
+        "(X-owned), independent of the caller's /run/user"
     )
 
 
@@ -2235,7 +2246,11 @@ def local_atomic_writeback():
         f"scenario 4: UNDERWRAP_* vars leaked into target environment: {leaked}"
     )
     assert "HOME=/home/testuser" in target_env, target_env
-    assert "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/1099" in target_env, target_env
+    # XDG_RUNTIME_DIR is the target's OWN provisioned dir
+    # (<base>/<target-user-name>), never the caller-supplied value.
+    assert (
+        "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in target_env
+    ), target_env
     assert "XDG_CONFIG_HOME=/home/testuser/.config" in target_env, target_env
     assert "XDG_DATA_HOME=/home/testuser/.local/share" in target_env, target_env
     assert "XDG_CACHE_HOME=/home/testuser/.cache" in target_env, target_env
@@ -2250,7 +2265,9 @@ def local_atomic_writeback():
         "/run/wrappers/bin/underwrap-local test-dir-env-override-probe'"
     )
     assert "HOME=/tmp/underwrap-home-override" in override_env, override_env
-    assert "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/1099" in override_env, override_env
+    assert (
+        "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in override_env
+    ), override_env
     assert "XDG_CONFIG_HOME=/tmp/underwrap-config-override" in override_env, override_env
     assert "XDG_DATA_HOME=/tmp/underwrap-home-override/.local/share" in override_env, override_env
     assert "XDG_CACHE_HOME=/tmp/underwrap-home-override/.cache" in override_env, override_env
@@ -2623,7 +2640,11 @@ def remote_service_lifecycle():
     # With backend service up: succeed.
     output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/underwrap-tunnel remote-echo"))
     assert "REMOTE_TOKEN=secret_via_service" in output, f"expected REMOTE_TOKEN: {output}"
-    assert "XDG_RUNTIME_DIR=/run/user/1099" in output, f"expected forced default XDG_RUNTIME_DIR: {output}"
+    # The remote target also gets its OWN provisioned runtime dir
+    # (<targetRuntimeDirBase>/<target-user-name>), not the caller-supplied value.
+    assert (
+        "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in output
+    ), f"expected forced provisioned XDG_RUNTIME_DIR: {output}"
     machine.log("PASS: remote secret via backend service")
 
     # No secret on local frontend store disk.
@@ -2642,7 +2663,9 @@ def remote_service_lifecycle():
     time.sleep(1)
     output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/underwrap-tunnel remote-echo"))
     assert "REMOTE_TOKEN=secret_via_service" in output
-    assert "XDG_RUNTIME_DIR=/run/user/1099" in output
+    assert (
+        "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in output
+    )
     machine.log("PASS: wrapper works after backend service restart")
 
 

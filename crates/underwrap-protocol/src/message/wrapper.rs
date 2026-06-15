@@ -91,14 +91,13 @@ pub enum WrapperResponse {
         env_passthrough: Vec<String>,
         /// Static env vars injected into the target (from the config).
         env_set: std::collections::HashMap<String, String>,
-        /// Base dir from which ns derives `XDG_RUNTIME_DIR`.
-        xdg_runtime_dir_base: String,
+        /// Base dir under which each isolated target's own runtime dir is
+        /// provisioned; ns derives the default `XDG_RUNTIME_DIR` as
+        /// `<target_runtime_dir_base>/<target-user-name>`.
+        target_runtime_dir_base: String,
         /// Caller-owned directories to idmap (caller<->dedicated uid) into the
         /// target's mount namespace (`~`/`~/rel`/absolute).
         access_paths: Vec<String>,
-        /// Idmap the caller's runtime dir (`<xdg_runtime_dir_base>/<caller-uid>`)
-        /// into the target namespace; ns resolves the caller uid at invocation.
-        access_runtime_dir: bool,
     },
     Error {
         code: ErrorCode,
@@ -119,9 +118,8 @@ impl WireEncode for WrapperResponse {
                 target,
                 env_passthrough,
                 env_set,
-                xdg_runtime_dir_base,
+                target_runtime_dir_base,
                 access_paths,
-                access_runtime_dir,
             } => {
                 0u8.encode(out)?;
                 env.encode(out)?;
@@ -133,9 +131,8 @@ impl WireEncode for WrapperResponse {
                 target.encode(out)?;
                 env_passthrough.encode(out)?;
                 env_set.encode(out)?;
-                xdg_runtime_dir_base.encode(out)?;
-                access_paths.encode(out)?;
-                access_runtime_dir.encode(out)
+                target_runtime_dir_base.encode(out)?;
+                access_paths.encode(out)
             }
             Self::Error { code, message } => {
                 1u8.encode(out)?;
@@ -159,9 +156,8 @@ impl WireDecode for WrapperResponse {
                 target: PathBuf::decode(reader)?,
                 env_passthrough: Vec::<String>::decode(reader)?,
                 env_set: std::collections::HashMap::<String, String>::decode(reader)?,
-                xdg_runtime_dir_base: String::decode(reader)?,
+                target_runtime_dir_base: String::decode(reader)?,
                 access_paths: Vec::<String>::decode(reader)?,
-                access_runtime_dir: bool::decode(reader)?,
             }),
             1 => Ok(Self::Error {
                 code: ErrorCode::decode(reader)?,

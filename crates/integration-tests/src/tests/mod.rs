@@ -148,7 +148,7 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
         group: crate::harness::current_group_name(),
         ns_binary: base.join("underwrap-ns"),
         debug_tool_target: base.join("underwrap-debug-tool"),
-        xdg_runtime_dir_base: "/run/user".to_string(),
+        target_runtime_dir_base: "/run/user".to_string(),
         wrappers: HashMap::from([("dir-wrapper".to_string(), wrapper_def)]),
     };
 

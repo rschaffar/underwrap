@@ -226,7 +226,7 @@ impl TestDaemon {
             group: builders::current_group_name(),
             ns_binary: base.join("underwrap-ns"),
             debug_tool_target: base.join("underwrap-debug-tool"),
-            xdg_runtime_dir_base: "/run/user".to_string(),
+            target_runtime_dir_base: "/run/user".to_string(),
             wrappers,
         };
         let client_instance = format!("inst_{accepted_principal}");

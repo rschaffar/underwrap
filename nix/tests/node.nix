@@ -173,17 +173,17 @@ let
     set -eu
     ${pkgs.coreutils}/bin/cat "$HOME/iso-data/from-caller" > "$HOME/iso-data/from-target"
   '';
-  # Isolated target that exercises `accessRuntimeDir` (idmap the caller's runtime
-  # dir). It mkdirs + writes a marker under XDG_RUNTIME_DIR and prints it back. With
-  # the flag the idmapped runtime dir is writable (and the marker lands owned by the
-  # caller); without it the dedicated uid X cannot traverse the caller's 0700
-  # /run/.../<uid> and the script fails at mkdir.
+  # Isolated target that exercises its OWN provisioned runtime dir (story 1000).
+  # It mkdirs + writes a marker under XDG_RUNTIME_DIR (the dedicated uid's own
+  # 0700 dir, so this just works with no idmap), then prints the runtime dir path
+  # so the test can confirm it is the provisioned per-target-uid dir and that the
+  # marker is owned by the target uid X, not the caller.
   runtimeDirScript = pkgs.writeShellScript "runtime-dir-target" ''
     set -eu
     probe="$XDG_RUNTIME_DIR/uw-runtime-probe"
     ${pkgs.coreutils}/bin/mkdir -p "$probe"
     ${pkgs.coreutils}/bin/printf '%s' runtime_dir_ok > "$probe/marker"
-    ${pkgs.coreutils}/bin/cat "$probe/marker"
+    ${pkgs.coreutils}/bin/printf '%s\n' "$XDG_RUNTIME_DIR"
   '';
   # Isolated target projecting a FILES slot (story 2635). The files-slot staging
   # is owned by the dedicated uid X and bound at `$HOME/iso-files/dir-a` under an
@@ -404,12 +404,14 @@ in {
   services.underwrap = {
     enable = true;
     package = underwrapPackage;
+    # Each isolated target gets its own provisioned runtime dir under this base
+    # (<base>/<target-user-name>). Custom base keeps the test off /run/user.
+    targetRuntimeDirBase = "/run/underwrap-test-runtime";
 
     instances = {
       # Local instance: frontend talks to a local backend socket.
       local = {
         allowedUsers = [ "testuser" ];
-        xdgRuntimeDirBase = "/run/underwrap-test-runtime";
         backend = {
           url = "https://127.0.0.1:18443";
           caFile = testCaPem;
@@ -458,21 +460,13 @@ in {
             env = true;
             accessPaths = [ "~/iso-data" ];
           };
-          # accessRuntimeDir (default true): the caller's runtime dir is idmapped
-          # so the isolated target can use XDG_RUNTIME_DIR. test-runtime-dir relies
-          # on the DEFAULT (no flag set); the denied twin sets it false explicitly
-          # to prove the opt-out is load-bearing (the dedicated uid otherwise
-          # cannot reach the 0700 dir even though it is present).
+          # Story 1000: an isolated target gets its OWN provisioned runtime dir
+          # as XDG_RUNTIME_DIR (<targetRuntimeDirBase>/<target-user-name>), owned
+          # by the dedicated uid X — not the caller's /run/user. No flag needed.
           test-runtime-dir = {
             target = "${runtimeDirScript}";
             resource = "test/runtime-tok";
             env = true;
-          };
-          test-runtime-dir-denied = {
-            target = "${runtimeDirScript}";
-            resource = "test/runtime-denied-tok";
-            env = true;
-            accessRuntimeDir = false;
           };
           # Isolated target projecting a FILES slot (story 2635). The staging is
           # owned by uid X and bound under an idmapped `~/iso-files`; the uid-X

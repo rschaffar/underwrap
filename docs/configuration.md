@@ -22,6 +22,7 @@ option schema.
 | --- | --- | --- | --- |
 | `enable` | bool | `false` | Enable the frontend service stack on this host |
 | `package` | package | flake package | Which underwrap package to install |
+| `targetRuntimeDirBase` | str | `/run/underwrap-runtime` | Base directory under which underwrap provisions each isolated target its own `0700` runtime dir (`<base>/<target-user-name>`), exported as the target's `XDG_RUNTIME_DIR`. Must be absolute and not under `/run/user` (logind's per-login-session tree) |
 | `hardenTargetHost` | bool | `true` | Pin `kernel.yama.ptrace_scope=2` (via `mkDefault`), require encrypted swap, and assert kernel ≥ 6.5 so the daemon's race-free `SO_PEERPIDFD` peer-auth path is always available. This is the posture the same-UID protection claim in `docs/security.md` depends on. |
 | `instances.<name>` | submodule | — | One frontend instance per attribute key (see below) |
 
@@ -37,7 +38,6 @@ services.underwrap.instances.work = {
     url = "https://backend.example.internal:18443";
     caFile = "/etc/underwrap/ca.pem";
   };
-  # xdgRuntimeDirBase = "/run/user";  # default
   wrappers = {
     # …
   };
@@ -49,7 +49,6 @@ services.underwrap.instances.work = {
 | `allowedUsers` | list of str | `[]` | Local users that get per-user shims (`<wrapper>` and `debug-<wrapper>`) on `PATH` |
 | `backend.url` | str | — | HTTPS URL of `underwrap-backend` |
 | `backend.caFile` | path | — | CA bundle the daemon uses to verify the backend's server cert |
-| `xdgRuntimeDirBase` | str | `/run/user` | Base for the target's `XDG_RUNTIME_DIR` (`<base>/<uid>`) |
 | `wrappers` | attrset | — | One entry per wrapper (see below) |
 
 The mTLS client credential is **not** a module option. The module
@@ -87,8 +86,7 @@ wrappers.gh = {
 | `env` | bool | `false` | Inject the resource's env-slot keys as environment variables |
 | `files` | nullable submodule | `null` | Mount the resource's files slot at one or more home-relative paths via `files.paths = [ ... ]` |
 | `libsecret` | bool | `false` | Run the target inside a private Secret Service session bus backed by the resource's libsecret slot |
-| `accessPaths` | list of str | `[]` | Caller-owned directories to expose to the dedicated target UID through idmapped bind mounts (`~`, `~/rel`, or absolute paths) |
-| `accessRuntimeDir` | bool | `true` | Idmap the caller's runtime dir (`<xdgRuntimeDirBase>/<caller-uid>`, the path `XDG_RUNTIME_DIR` points at) into the namespace, like an `accessPaths` entry resolved from the caller's uid at invocation (skipped if absent). On by default so the target keeps the caller's runtime dir; set `false` to deny it |
+| `accessPaths` | list of str | `[]` | Caller-owned directories to expose to the dedicated target UID through idmapped bind mounts (`~`, `~/rel`, or absolute paths). Submounts are handled best-effort: idmappable ones (nested ZFS datasets, ext4/xfs/btrfs binds) are mapped, non-idmappable ones (fuse) are skipped with a warning |
 | `envPassthrough` | list of str | minimal allowlist | Caller-environment variables to preserve verbatim (does not name `HOME`, `XDG_*`, `LD_*`, or other dynamic-linker variables) |
 | `envSet` | attrset | `{}` | Fixed environment variables to set on the target (absolute paths only for `HOME` and base `XDG_*` overrides) |
 
@@ -112,18 +110,15 @@ restores only the allowlisted variables. The module enforces:
 
 - `HOME` is set to the trusted passwd home unless `envSet.HOME` overrides
   it with an absolute path
-- `XDG_RUNTIME_DIR` is set to `<xdgRuntimeDirBase>/<uid>` (an
+- `XDG_RUNTIME_DIR` is set to the target's **own** provisioned runtime
+  directory, `<targetRuntimeDirBase>/<target-user-name>` (an
   `envSet.XDG_RUNTIME_DIR` override is rejected). The target runs under a
-  dedicated UID, so the caller's real `/run/user/<uid>` (mode `0700`) is only
-  reachable because `accessRuntimeDir` (default `true`) idmaps that directory
-  into the namespace — restoring the caller's runtime dir to the target, as it
-  would have had running as the caller. It is skipped if the dir doesn't exist.
-  Set `accessRuntimeDir = false` to deny it for a wrapper you want more
-  contained. On a `libsecret` wrapper, leaving it on makes the caller's real
-  session bus reachable at `$XDG_RUNTIME_DIR/bus`, so a target that ignores
-  `DBUS_SESSION_BUS_ADDRESS` could hit the caller's real Secret Service rather
-  than the brokered one (a functional concern — the brokered secret is not
-  exposed to the caller).
+  dedicated UID with no logind session, so underwrap provisions it a private
+  `0700` runtime dir (under the top-level `services.underwrap.targetRuntimeDirBase`,
+  default `/run/underwrap-runtime`) rather than handing it the caller's
+  `/run/user/<uid>`. The caller's own session runtime dir is **not** wired into
+  the namespace; if a tool needs specific caller-owned directories, list them in
+  `accessPaths`.
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
   `XDG_STATE_HOME` are derived from the effective `HOME`
 - `envPassthrough` may not name `HOME`, any `XDG_*` variable, or any

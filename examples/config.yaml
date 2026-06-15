@@ -36,9 +36,11 @@ group: underwrap-example
 ns_binary: /run/wrappers/bin/underwrap-ns
 debug_tool_target: /run/current-system/sw/bin/underwrap-debug-tool
 
-# Base directory from which the target XDG_RUNTIME_DIR is derived as
-# <xdg_runtime_dir_base>/<uid>.
-xdg_runtime_dir_base: /run/user
+# Base directory under which each isolated target's own runtime directory is
+# provisioned by the system. The target's XDG_RUNTIME_DIR is derived as
+# <target_runtime_dir_base>/<target-user-name> — the executing dedicated uid's
+# own dir, not the caller's. Must not be under /run/user (logind's tree).
+target_runtime_dir_base: /run/underwrap-runtime
 
 wrappers:
   # Each wrapper entry defines one underwrap-facing command, selected by
@@ -74,12 +76,11 @@ wrappers:
     target: /usr/bin/slack-cli
     resource: slack/xoxp
     env: true
-    # access_runtime_dir defaults to true: the caller's runtime dir (the path
-    # XDG_RUNTIME_DIR points at) is idmapped into the namespace so tools that
-    # stage scratch there — or use the caller's session sockets — behave as if
-    # run by the caller. It is resolved from the caller's uid per invocation and
-    # skipped if that dir does not exist. Set `access_runtime_dir: false` to deny
-    # it for a wrapper you deliberately want more contained.
+    # No runtime-dir knob is needed: every isolated target is given its own
+    # dedicated-uid runtime directory (provisioned by the system) as
+    # XDG_RUNTIME_DIR, so tools that just stage scratch there work out of the
+    # box. To grant access to specific caller-owned directories, list them under
+    # access_paths (idmapped caller<->target); see the gh examples below.
 
   # Libsecret-backed gh wrappers can share one backend resource across
   # different wrappers; the backend pair table keeps them as distinct

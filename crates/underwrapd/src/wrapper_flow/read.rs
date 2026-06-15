@@ -198,9 +198,8 @@ pub(super) fn open_invocation(
         target,
         env_passthrough: wrapper_def.env_passthrough.clone(),
         env_set: wrapper_def.env_set.clone(),
-        xdg_runtime_dir_base: state.config.xdg_runtime_dir_base.clone(),
+        target_runtime_dir_base: state.config.target_runtime_dir_base.clone(),
         access_paths: wrapper_def.access_paths.clone(),
-        access_runtime_dir: wrapper_def.access_runtime_dir,
     };
     ReadOutcome {
         response,

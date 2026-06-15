@@ -13,7 +13,7 @@ socket: /run/underwrap/local.sock
 group: underwrap-local
 ns_binary: /run/wrappers/bin/underwrap-ns
 debug_tool_target: /run/current-system/sw/bin/underwrap-debug-tool
-xdg_runtime_dir_base: /run/user
+target_runtime_dir_base: /run/user
 "#;
 
 fn with_header(body: &str) -> String {
@@ -31,7 +31,7 @@ fn minimal_config() {
         config.ns_binary,
         PathBuf::from("/run/wrappers/bin/underwrap-ns")
     );
-    assert_eq!(config.xdg_runtime_dir_base, "/run/user");
+    assert_eq!(config.target_runtime_dir_base, "/run/user");
     assert_eq!(config.backend.url, "https://backend.example.internal:8443");
 }
 

@@ -69,9 +69,8 @@ struct ReadResult {
     target: String,
     env_passthrough: Vec<String>,
     env_set: std::collections::HashMap<String, String>,
-    xdg_runtime_dir_base: String,
+    target_runtime_dir_base: String,
     access_paths: Vec<String>,
-    access_runtime_dir: bool,
     resource_binding: ReceivedResourceBinding,
 }
 
@@ -254,9 +253,8 @@ fn request_secret(
         target,
         env_passthrough,
         env_set,
-        xdg_runtime_dir_base,
+        target_runtime_dir_base,
         access_paths,
-        access_runtime_dir,
     ) = match response {
         WrapperResponse::ReadOk {
             env,
@@ -268,9 +266,8 @@ fn request_secret(
             target,
             env_passthrough,
             env_set,
-            xdg_runtime_dir_base,
+            target_runtime_dir_base,
             access_paths,
-            access_runtime_dir,
         } => (
             env,
             resource_id,
@@ -281,9 +278,8 @@ fn request_secret(
             target,
             env_passthrough,
             env_set,
-            xdg_runtime_dir_base,
+            target_runtime_dir_base,
             access_paths,
-            access_runtime_dir,
         ),
         WrapperResponse::Error { code, message } => {
             if matches!(code, underwrap_protocol::message::ErrorCode::StoreLocked) {
@@ -304,9 +300,8 @@ fn request_secret(
         target: target.to_string_lossy().into_owned(),
         env_passthrough,
         env_set,
-        xdg_runtime_dir_base,
+        target_runtime_dir_base,
         access_paths,
-        access_runtime_dir,
         resource_binding: ReceivedResourceBinding {
             resource_id,
             resource_name,
@@ -441,10 +436,9 @@ fn exec_via_ns(
             env: read.env,
             env_passthrough: read.env_passthrough,
             env_set: read.env_set,
-            xdg_runtime_dir_base: read.xdg_runtime_dir_base,
+            target_runtime_dir_base: read.target_runtime_dir_base,
             resource: exec_resource,
             access_paths: read.access_paths,
-            access_runtime_dir: read.access_runtime_dir,
         };
         write_frame_sync(&mut pipe, &payload).context("writing exec bundle to pipe")?;
         // pipe_write closed on drop.

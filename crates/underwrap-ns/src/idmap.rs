@@ -196,7 +196,24 @@ fn write_proc(pid: libc::pid_t, name: &str, contents: &str) -> Result<(), String
         .map_err(|e| format!("writing {path}: {e}"))
 }
 
-/// `open_tree` + `mount_setattr(IDMAP|NOSUID|NODEV)` + `move_mount` for one dir.
+/// `open_tree` (recursive clone) + best-effort per-mount
+/// `mount_setattr(IDMAP|NOSUID|NODEV)` + `move_mount` for one dir.
+///
+/// The clone is RECURSIVE so submounts under `dir` (e.g. nested ZFS datasets or
+/// bind mounts inside the caller's `~`) come along and can be idmapped too. The
+/// idmap itself is applied **per mount, not recursively**: a recursive
+/// `mount_setattr(AT_RECURSIVE)` is all-or-nothing and returns `EINVAL` for the
+/// whole tree the moment it meets a submount whose filesystem lacks
+/// `FS_ALLOW_IDMAP` (notably fuse — xdg-document-portal, gvfsd-fuse, sshfs,
+/// AppImage). Applying it per mount lets us idmap every filesystem that supports
+/// it (ext4/xfs/btrfs/zfs ≥ OpenZFS 2.2/…) and **skip** the ones that don't,
+/// with a warning, instead of failing the whole access path.
+///
+/// The named directory's own filesystem MUST support idmapping — if it does not
+/// the access path is pointless, so that is a hard error. Only submounts are
+/// best-effort: a skipped submount stays in the tree un-idmapped, so its files
+/// present as their on-disk (caller) owner and are simply not caller-mapped for
+/// the target — never a failure, never an exposure.
 fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
     let c_dir = CString::new(dir.as_os_str().as_encoded_bytes())
         .map_err(|_| "directory path has an interior NUL".to_string())?;
@@ -224,25 +241,61 @@ fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
         propagation: 0,
         userns_fd: userns_fd as u64,
     };
-    // SAFETY: mount_setattr on the detached tree fd with a valid mount_attr.
-    let ret = unsafe {
-        libc::syscall(
-            libc::SYS_mount_setattr,
-            tree.as_raw_fd() as libc::c_long,
-            empty.as_ptr(),
-            (libc::AT_EMPTY_PATH | libc::AT_RECURSIVE) as libc::c_long,
-            &attr as *const libc::mount_attr,
-            std::mem::size_of::<libc::mount_attr>() as libc::c_long,
-        )
-    };
-    if ret != 0 {
-        return Err(format!(
-            "mount_setattr(IDMAP): {}",
-            std::io::Error::last_os_error()
-        ));
+
+    // Idmap the named directory's own mount (the root of the detached tree).
+    // AT_EMPTY_PATH targets the tree fd itself; no AT_RECURSIVE, so only this
+    // one mount. A non-idmappable root is fatal — the access path cannot work.
+    match set_mount_idmap(tree.as_raw_fd(), empty.as_ptr(), libc::AT_EMPTY_PATH, &attr) {
+        Ok(()) => {}
+        Err(errno) if errno == libc::EINVAL => {
+            return Err(format!(
+                "{}: filesystem does not support idmapped mounts (FS_ALLOW_IDMAP); \
+                 cannot grant the target caller-owned access to it",
+                dir.display()
+            ));
+        }
+        Err(errno) => {
+            return Err(format!(
+                "mount_setattr(IDMAP) on {}: {}",
+                dir.display(),
+                std::io::Error::from_raw_os_error(errno)
+            ));
+        }
     }
 
-    // SAFETY: move_mount attaches the detached tree over `dir`.
+    // Best-effort idmap each submount carried in by the recursive clone. We
+    // address each by its path relative to `dir` (from /proc/self/mountinfo, read
+    // in this already-private mount namespace). A submount whose filesystem lacks
+    // FS_ALLOW_IDMAP (EINVAL) is skipped with a warning; anything else is fatal.
+    for rel in submount_relpaths(dir) {
+        let c_rel = match CString::new(rel.as_os_str().as_encoded_bytes()) {
+            Ok(c) => c,
+            Err(_) => continue, // interior NUL: cannot address it; leave un-idmapped.
+        };
+        match set_mount_idmap(tree.as_raw_fd(), c_rel.as_ptr(), 0, &attr) {
+            Ok(()) => {}
+            Err(errno) if errno == libc::EINVAL => {
+                eprintln!(
+                    "underwrap-ns: skipping non-idmappable submount {} under {} \
+                     (its filesystem does not support idmapped mounts; the target \
+                     will not see it as the caller)",
+                    rel.display(),
+                    dir.display()
+                );
+            }
+            Err(errno) => {
+                return Err(format!(
+                    "mount_setattr(IDMAP) on submount {} under {}: {}",
+                    rel.display(),
+                    dir.display(),
+                    std::io::Error::from_raw_os_error(errno)
+                ));
+            }
+        }
+    }
+
+    // SAFETY: move_mount attaches the detached tree (with its idmapped submounts)
+    // over `dir`.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_move_mount,
@@ -257,6 +310,92 @@ fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
         return Err(format!("move_mount: {}", std::io::Error::last_os_error()));
     }
     Ok(())
+}
+
+/// `mount_setattr` on one mount within the detached tree. `path`/`at_flags`
+/// select the mount: `("", AT_EMPTY_PATH)` for the tree root, or a relative path
+/// with `0` for a submount. Never recursive. Returns the raw errno on failure so
+/// the caller can distinguish `EINVAL` (filesystem lacks `FS_ALLOW_IDMAP`).
+fn set_mount_idmap(
+    tree_fd: libc::c_int,
+    path: *const libc::c_char,
+    at_flags: libc::c_int,
+    attr: &libc::mount_attr,
+) -> Result<(), i32> {
+    // SAFETY: mount_setattr on the detached tree fd with a valid mount_attr.
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            tree_fd as libc::c_long,
+            path,
+            at_flags as libc::c_long,
+            attr as *const libc::mount_attr,
+            std::mem::size_of::<libc::mount_attr>() as libc::c_long,
+        )
+    };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EIO));
+    }
+    Ok(())
+}
+
+/// Mountpoints strictly under `dir` in the current (private) mount namespace,
+/// as paths relative to `dir`. Reads `/proc/self/mountinfo`; returns an empty
+/// list if it cannot be read (best-effort — the root mount is idmapped
+/// regardless).
+fn submount_relpaths(dir: &Path) -> Vec<PathBuf> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    // Canonicalize so the prefix match lines up with the kernel's canonical
+    // mountpoint paths. Fall back to the given path if canonicalization fails.
+    let base = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    submounts_under(&mountinfo, &base)
+}
+
+/// Pure parser: relative mountpoints strictly under `base`, parsed from
+/// `mountinfo` contents. Field 5 (1-indexed) of each line is the mount point,
+/// with spaces/tabs/newlines/backslashes octal-escaped (`\040` etc.).
+fn submounts_under(mountinfo: &str, base: &Path) -> Vec<PathBuf> {
+    let mut rels = Vec::new();
+    for line in mountinfo.lines() {
+        let Some(field) = line.split(' ').nth(4) else {
+            continue;
+        };
+        let mountpoint = unescape_mountinfo(field);
+        let mp = Path::new(&mountpoint);
+        if let Ok(rel) = mp.strip_prefix(base)
+            && !rel.as_os_str().is_empty()
+        {
+            rels.push(rel.to_path_buf());
+        }
+    }
+    // Shallowest first (parents before children); not required for correctness
+    // since each idmap is independent, but tidy and deterministic.
+    rels.sort();
+    rels
+}
+
+/// Decode mountinfo octal escapes (`\040` space, `\011` tab, `\012` newline,
+/// `\134` backslash). Anything that is not a well-formed `\ooo` escape is copied
+/// through verbatim.
+fn unescape_mountinfo(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 4], 8)
+        {
+            out.push(v);
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]

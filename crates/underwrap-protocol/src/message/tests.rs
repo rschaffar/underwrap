@@ -38,9 +38,8 @@ fn wrapper_response_readok_roundtrip() {
         target: std::path::PathBuf::from("/run/current-system/sw/bin/gh"),
         env_passthrough: vec!["TERM".to_string()],
         env_set: std::collections::HashMap::from([("PATH".to_string(), "/bin".to_string())]),
-        xdg_runtime_dir_base: "/run/user".to_string(),
+        target_runtime_dir_base: "/run/user".to_string(),
         access_paths: vec!["~/.config/gh".to_string()],
-        access_runtime_dir: true,
     };
     let encoded = encode_to_vec(&resp).unwrap();
     let parsed: WrapperResponse = decode_from_slice(&encoded).unwrap();

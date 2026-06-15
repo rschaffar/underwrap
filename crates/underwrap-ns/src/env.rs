@@ -45,7 +45,7 @@ pub(crate) fn build_target_env(
     host_env: &HashMap<String, String>,
     exec_bundle: &ExecBundle,
     passwd_home: &Path,
-    uid: libc::uid_t,
+    xdg_runtime_dir: &str,
 ) -> Result<HashMap<String, String>, String> {
     let mut target_env = HashMap::new();
 
@@ -69,16 +69,15 @@ pub(crate) fn build_target_env(
             effective_home
         ));
     }
-    if !Path::new(&exec_bundle.xdg_runtime_dir_base).is_absolute() {
+    if !Path::new(xdg_runtime_dir).is_absolute() {
         return Err(format!(
-            "xdg runtime dir base must be absolute, got {:?}",
-            exec_bundle.xdg_runtime_dir_base
+            "XDG_RUNTIME_DIR must be absolute, got {:?}",
+            xdg_runtime_dir
         ));
     }
-    let xdg_runtime_dir = joined_path(&exec_bundle.xdg_runtime_dir_base, &uid.to_string())?;
 
     target_env.insert("HOME".to_string(), effective_home.clone());
-    target_env.insert("XDG_RUNTIME_DIR".to_string(), xdg_runtime_dir);
+    target_env.insert("XDG_RUNTIME_DIR".to_string(), xdg_runtime_dir.to_string());
     target_env.insert(
         "XDG_CONFIG_HOME".to_string(),
         joined_path(&effective_home, ".config")?,

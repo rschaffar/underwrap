@@ -22,10 +22,9 @@ fn sample_exec_bundle() -> ExecBundle {
         env: HashMap::from([("GH_TOKEN".to_string(), "ghp_test".into())]),
         env_passthrough: vec!["CUSTOM_PASSTHROUGH".to_string()],
         env_set: HashMap::from([("PATH".to_string(), "/trusted/bin".to_string())]),
-        xdg_runtime_dir_base: "/run/underwrap-runtime".to_string(),
+        target_runtime_dir_base: "/run/underwrap-runtime".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
-        access_runtime_dir: false,
     }
 }
 
@@ -49,14 +48,14 @@ fn build_target_env_forces_home_and_xdg_from_trusted_inputs() {
         &host_env,
         &sample_exec_bundle(),
         std::path::Path::new("/home/alice"),
-        1099,
+        "/run/underwrap-runtime/underwrap-target-abc",
     )
     .unwrap();
 
     assert_eq!(target_env.get("HOME"), Some(&"/home/alice".to_string()));
     assert_eq!(
         target_env.get("XDG_RUNTIME_DIR"),
-        Some(&"/run/underwrap-runtime/1099".to_string())
+        Some(&"/run/underwrap-runtime/underwrap-target-abc".to_string())
     );
     assert_eq!(
         target_env.get("XDG_CONFIG_HOME"),
@@ -89,17 +88,16 @@ fn build_target_env_derives_base_xdg_dirs_from_env_set_home() {
         env: HashMap::new(),
         env_passthrough: Vec::new(),
         env_set: HashMap::from([("HOME".to_string(), "/srv/wrapped-home".to_string())]),
-        xdg_runtime_dir_base: "/run/user".to_string(),
+        target_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
-        access_runtime_dir: false,
     };
 
     let target_env = build_target_env(
         &HashMap::new(),
         &bundle,
         std::path::Path::new("/home/alice"),
-        42,
+        "/run/underwrap-runtime/underwrap-target-abc",
     )
     .unwrap();
 
@@ -125,7 +123,7 @@ fn build_target_env_derives_base_xdg_dirs_from_env_set_home() {
     );
     assert_eq!(
         target_env.get("XDG_RUNTIME_DIR"),
-        Some(&"/run/user/42".to_string())
+        Some(&"/run/underwrap-runtime/underwrap-target-abc".to_string())
     );
 }
 
@@ -149,18 +147,22 @@ fn build_target_env_honors_explicit_base_xdg_overrides() {
                 "/srv/custom-state".to_string(),
             ),
         ]),
-        xdg_runtime_dir_base: "/run/user".to_string(),
+        target_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
-        access_runtime_dir: false,
     };
     let host_env = HashMap::from([(
         "XDG_CONFIG_HOME".to_string(),
         "/tmp/evil-config".to_string(),
     )]);
 
-    let target_env =
-        build_target_env(&host_env, &bundle, std::path::Path::new("/home/alice"), 42).unwrap();
+    let target_env = build_target_env(
+        &host_env,
+        &bundle,
+        std::path::Path::new("/home/alice"),
+        "/run/underwrap-runtime/underwrap-target-abc",
+    )
+    .unwrap();
 
     assert_eq!(
         target_env.get("XDG_CONFIG_HOME"),
@@ -192,10 +194,9 @@ fn build_target_env_ignores_forced_names_in_passthrough_and_env_set() {
             "XDG_RUNTIME_DIR".to_string(),
             "/tmp/evil-runtime".to_string(),
         )]),
-        xdg_runtime_dir_base: "/run/secure-runtime".to_string(),
+        target_runtime_dir_base: "/run/secure-runtime".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
-        access_runtime_dir: false,
     };
     let host_env = HashMap::from([
         ("HOME".to_string(), "/tmp/evil-home".to_string()),
@@ -209,13 +210,19 @@ fn build_target_env_ignores_forced_names_in_passthrough_and_env_set() {
         ),
     ]);
 
-    let target_env =
-        build_target_env(&host_env, &bundle, std::path::Path::new("/home/alice"), 7).unwrap();
+    let target_env = build_target_env(
+        &host_env,
+        &bundle,
+        std::path::Path::new("/home/alice"),
+        "/run/underwrap-runtime/underwrap-target-abc",
+    )
+    .unwrap();
 
     assert_eq!(target_env.get("HOME"), Some(&"/home/alice".to_string()));
+    // The env_set XDG_RUNTIME_DIR override is ignored; the resolved value wins.
     assert_eq!(
         target_env.get("XDG_RUNTIME_DIR"),
-        Some(&"/run/secure-runtime/7".to_string())
+        Some(&"/run/underwrap-runtime/underwrap-target-abc".to_string())
     );
     assert_eq!(
         target_env.get("XDG_CONFIG_HOME"),
@@ -230,16 +237,15 @@ fn build_target_env_rejects_relative_home_and_base_xdg_overrides() {
             env: HashMap::new(),
             env_passthrough: Vec::new(),
             env_set: HashMap::from([(name.to_string(), "relative/path".to_string())]),
-            xdg_runtime_dir_base: "/run/user".to_string(),
+            target_runtime_dir_base: "/run/user".to_string(),
             resource: sample_binding(),
             access_paths: Vec::new(),
-            access_runtime_dir: false,
         };
         let err = build_target_env(
             &HashMap::new(),
             &bundle,
             std::path::Path::new("/home/alice"),
-            1,
+            "/run/underwrap-runtime/underwrap-target-abc",
         )
         .unwrap_err();
         assert!(err.contains(&format!("{name} must be an absolute path")));
@@ -253,14 +259,18 @@ fn build_target_env_rejects_non_utf8_secret_values() {
         env: HashMap::from([("BAD".to_string(), vec![0xff, 0xfe].into())]),
         env_passthrough: Vec::new(),
         env_set: HashMap::new(),
-        xdg_runtime_dir_base: "/run/user".to_string(),
+        target_runtime_dir_base: "/run/user".to_string(),
         resource: sample_binding(),
         access_paths: Vec::new(),
-        access_runtime_dir: false,
     };
 
-    let err =
-        build_target_env(&host_env, &bundle, std::path::Path::new("/home/alice"), 1).unwrap_err();
+    let err = build_target_env(
+        &host_env,
+        &bundle,
+        std::path::Path::new("/home/alice"),
+        "/run/underwrap-runtime/underwrap-target-abc",
+    )
+    .unwrap_err();
     assert!(err.contains("not valid UTF-8"));
     assert!(err.contains("BAD"));
 }

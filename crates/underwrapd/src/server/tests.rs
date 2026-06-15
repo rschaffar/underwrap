@@ -16,7 +16,7 @@ fn config_with_backend_url(url: &str) -> DaemonConfig {
         debug_tool_target: std::path::PathBuf::from(
             "/run/current-system/sw/bin/underwrap-debug-tool",
         ),
-        xdg_runtime_dir_base: "/run/user".into(),
+        target_runtime_dir_base: "/run/user".into(),
         wrappers: Default::default(),
     }
 }

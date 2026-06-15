@@ -95,6 +95,22 @@ fn resolve_isolation_from(table_path: &str, target_path: &str) -> Result<Isolati
     ))
 }
 
+/// Resolve a uid to its user name via `getpwuid`. Used to derive the executing
+/// target's own runtime-dir path component — the NixOS module provisions that
+/// dir keyed on the target user *name*, so ns resolves the same name from X.
+pub(crate) fn user_name(uid: libc::uid_t) -> Result<String, String> {
+    // SAFETY: getpwuid returns a pointer into static storage or NULL.
+    let pw = unsafe { libc::getpwuid(uid) };
+    if pw.is_null() {
+        return Err(format!("getpwuid({uid}) returned null (no such uid)"));
+    }
+    // SAFETY: pw is non-null; pw_name is a valid NUL-terminated C string.
+    let name = unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) };
+    name.to_str()
+        .map(str::to_string)
+        .map_err(|e| format!("user name for uid {uid} is not valid UTF-8: {e}"))
+}
+
 fn resolve_uid(name: &str) -> Result<libc::uid_t, String> {
     let c = CString::new(name).map_err(|_| format!("user name {name:?} has an interior NUL"))?;
     // SAFETY: `c` is a valid NUL-terminated string; getpwnam returns a pointer

@@ -1,5 +1,18 @@
 # Story 1000: Runtime directory for isolated targets — give X its own, opt into the caller's
 
+## Decision update (2026-06-15)
+
+The "opt into the caller's" half of this story was **dropped**: the
+`accessRuntimeDir` opt-in is removed entirely rather than shipped default-off
+(user call — not worth the surface/complexity until a real need appears). The
+shipped behaviour is just: **every isolated target gets its own provisioned
+runtime dir** as `XDG_RUNTIME_DIR`. See `1030` for the removal + the recorded
+escape-hatch design if it returns.
+
+Additionally, the `accessPaths` idmap was made **best-effort per-submount**
+(recursive clone, idmap each mount individually, skip non-idmappable fuse
+submounts, keep idmappable ones like nested ZFS datasets) — also in `1030`.
+
 ## Context
 
 Under mandatory target-UID isolation, every wrapped target runs as a dedicated
