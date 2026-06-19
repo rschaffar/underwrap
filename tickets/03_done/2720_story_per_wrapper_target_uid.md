@@ -10,7 +10,9 @@ Children:
 - `2740_task_runtime_isolation_key_instance_wrapper`
 - `2750_task_docs_and_vm_tests_per_wrapper_uid`
 
-## Status: TODO
+## Status: DONE
+
+All three children landed (2730 module, 2740 runtime, 2750 docs+VM). VM test green (105 PASS, 0 failures): distinct sandbox uids per (instance, wrapper), proven across same-binary wrappers and across instances; Debug folds onto its wrapper`s uid; no host-wide debug uid. Commits 7aa5b59, e4b79df, 7d8a638 on branch feat/per-wrapper-target-uid.
 
 ## Problem
 
