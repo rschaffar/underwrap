@@ -74,12 +74,16 @@ fn run() -> Result<(), String> {
     let target_identity =
         resolve_target_identity().map_err(|e| format!("resolving target identity: {e}"))?;
 
-    // Story 2600 / 2670: the root-owned table must assign this target a
-    // dedicated uid. The uid is read directly from root state keyed on the
-    // target path — never from the wire (no escalation / confused-deputy path).
-    // Missing table/row is a hard error: never fall back to running as the
+    // Story 2600 (re-keyed 2720): the root-owned table must assign this
+    // (instance, wrapper) pair a dedicated uid. The selector is the
+    // kernel-enforced instance gate + the daemon-validated wrapper name, passed
+    // by underwrap-exec as internal env vars; the uid itself is read directly
+    // from root state (no escalation / confused-deputy path). Missing
+    // selector/table/row is a hard error: never fall back to running as the
     // caller.
-    let isolation = target_uid::resolve_isolation(&target)
+    let iso_instance = require_isolation_selector("UNDERWRAP_ISOLATION_INSTANCE")?;
+    let iso_wrapper = require_isolation_selector("UNDERWRAP_ISOLATION_WRAPPER")?;
+    let isolation = target_uid::resolve_isolation(&iso_instance, &iso_wrapper)
         .map_err(|e| format!("resolving target isolation: {e}"))?;
 
     // Runtime-dir policy. An isolated target gets its OWN dedicated-uid runtime
@@ -178,6 +182,20 @@ fn target_runtime_dir(base: &str, target_uid: libc::uid_t) -> Result<String, Str
         .to_str()
         .map(str::to_string)
         .ok_or_else(|| format!("target runtime dir under {base:?} is not valid UTF-8"))
+}
+
+/// Read a mandatory isolation selector env var (`UNDERWRAP_ISOLATION_INSTANCE`
+/// / `_WRAPPER`) set by underwrap-exec. Missing or empty is a hard error — under
+/// mandatory isolation we never fall back to running the target as the caller.
+fn require_isolation_selector(var: &str) -> Result<String, String> {
+    match std::env::var(var) {
+        Ok(v) if !v.is_empty() => Ok(v),
+        Ok(_) => Err(format!("isolation selector {var} is empty")),
+        Err(_) => Err(format!(
+            "isolation selector {var} is not set (underwrap-exec must provide it); \
+             refusing to run the target as the caller"
+        )),
+    }
 }
 
 fn parse_target_invocation(args: Vec<String>) -> Result<(String, Vec<String>), String> {

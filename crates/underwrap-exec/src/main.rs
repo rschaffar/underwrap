@@ -113,7 +113,14 @@ fn main() -> Result<()> {
         );
     }
 
-    exec_via_ns(ns_binary, &instance_config, &invocation.target_args, read)
+    exec_via_ns(
+        ns_binary,
+        &instance_config,
+        &instance,
+        &invocation.wrapper_name,
+        &invocation.target_args,
+        read,
+    )
 }
 
 /// Parse `[debug] <wrapper> [args...]`. The leading `debug` token selects
@@ -317,6 +324,8 @@ fn request_secret(
 fn exec_via_ns(
     ns_binary: &str,
     config: &InstanceConfig,
+    instance: &str,
+    wrapper: &str,
     args: &[String],
     read: ReadResult,
 ) -> Result<()> {
@@ -406,6 +415,20 @@ fn exec_via_ns(
         cmd.env_remove("UNDERWRAP_LIBSECRET");
         cmd.env_remove("UNDERWRAP_DBUS_DAEMON");
         cmd.env_remove("UNDERWRAP_SECRETSD");
+        cmd.env_remove("UNDERWRAP_ISOLATION_INSTANCE");
+        cmd.env_remove("UNDERWRAP_ISOLATION_WRAPPER");
+
+        // The (instance, wrapper) selector underwrap-ns resolves the dedicated
+        // sandbox uid from (story 2720). Sourced here, not over the wire: the
+        // instance is the kernel-enforced effective-GID gate and the wrapper is
+        // the name the daemon already validated for this read. This is a
+        // SELECTOR resolved against the root-owned /etc/underwrap/target-uids
+        // table — never the uid/gid itself — so the ExecBundle "no target
+        // identity" invariant is preserved. underwrap-ns strips both vars before
+        // exec'ing the target; they never reach the target's environment.
+        cmd.env("UNDERWRAP_ISOLATION_INSTANCE", instance);
+        cmd.env("UNDERWRAP_ISOLATION_WRAPPER", wrapper);
+
         if libsecret_in_scope {
             cmd.env("UNDERWRAP_LIBSECRET", "1");
             if let Some(ref bin) = config.dbus_daemon_binary {

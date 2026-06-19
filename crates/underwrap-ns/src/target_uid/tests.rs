@@ -10,40 +10,66 @@ fn write_table(contents: &str) -> tempfile::NamedTempFile {
 
 #[test]
 fn missing_table_fails_closed() {
-    let r = resolve_isolation_from("/nonexistent/underwrap/target-uids", "/usr/bin/target");
+    let r = resolve_isolation_from("/nonexistent/underwrap/target-uids", "local", "gh");
     assert!(r.is_err(), "missing table must fail closed, got {r:?}");
 }
 
 #[test]
-fn path_not_in_table_fails_closed() {
-    let t = write_table("/usr/bin/other\tunderwrap-target-x\tunderwrap-target-x\n");
-    let r = resolve_isolation_from(t.path().to_str().unwrap(), "/usr/bin/target");
-    assert!(r.is_err(), "absent path must fail closed, got {r:?}");
+fn pair_not_in_table_fails_closed() {
+    let t = write_table("local\tother\tunderwrap-target-x\tunderwrap-target-x\n");
+    let r = resolve_isolation_from(t.path().to_str().unwrap(), "local", "gh");
+    assert!(r.is_err(), "absent pair must fail closed, got {r:?}");
+}
+
+#[test]
+fn same_wrapper_different_instance_is_a_different_row() {
+    // The core property of the (instance, wrapper) re-keying: a wrapper name
+    // present under one instance must NOT match the same name under another.
+    // "root" rows resolve to uid 0 (rejected) — distinct outcomes prove the rows
+    // are matched independently rather than by wrapper name alone.
+    let t = write_table(
+        "local\tgh\troot\troot\n\
+         remote\tgh\tunderwrap-no-such-user-zzz\tunderwrap-no-such-group-zzz\n",
+    );
+    let local = resolve_isolation_from(t.path().to_str().unwrap(), "local", "gh");
+    let remote = resolve_isolation_from(t.path().to_str().unwrap(), "remote", "gh");
+    // local/gh matched the uid-0 row -> rejected for uid 0.
+    assert!(
+        local
+            .as_ref()
+            .is_err_and(|e| e.contains("uid 0") || e.contains("minimum")),
+        "local/gh must match the root row and be rejected, got {local:?}"
+    );
+    // remote/gh matched the unknown-user row -> rejected as unresolvable, NOT the
+    // local row.
+    assert!(
+        remote.as_ref().is_err_and(|e| e.contains("getpwnam")),
+        "remote/gh must match its own (unknown-user) row, got {remote:?}"
+    );
 }
 
 #[test]
 fn uid_zero_is_rejected() {
     // "root" resolves to uid 0 on every system => must be refused (no escalation,
     // even if the root-owned table were somehow made to name it).
-    let t = write_table("/usr/bin/target\troot\troot\n");
-    let r = resolve_isolation_from(t.path().to_str().unwrap(), "/usr/bin/target");
+    let t = write_table("local\tgh\troot\troot\n");
+    let r = resolve_isolation_from(t.path().to_str().unwrap(), "local", "gh");
     assert!(r.is_err(), "root/uid0 must be rejected, got {r:?}");
 }
 
 #[test]
 fn unknown_user_is_hard_error() {
-    // A path present in the table but unresolvable must fail closed — never run
+    // A pair present in the table but unresolvable must fail closed — never run
     // the target as the caller.
-    let t =
-        write_table("/usr/bin/target\tunderwrap-no-such-user-zzz\tunderwrap-no-such-group-zzz\n");
-    let r = resolve_isolation_from(t.path().to_str().unwrap(), "/usr/bin/target");
+    let t = write_table("local\tgh\tunderwrap-no-such-user-zzz\tunderwrap-no-such-group-zzz\n");
+    let r = resolve_isolation_from(t.path().to_str().unwrap(), "local", "gh");
     assert!(r.is_err(), "unknown user must fail closed, got {r:?}");
 }
 
 #[test]
 fn extra_fields_is_hard_error() {
-    let t = write_table("/usr/bin/target\ta\tb\tc\n");
-    let r = resolve_isolation_from(t.path().to_str().unwrap(), "/usr/bin/target");
+    let t = write_table("local\tgh\ta\tb\tc\n");
+    let r = resolve_isolation_from(t.path().to_str().unwrap(), "local", "gh");
     assert!(
         r.is_err(),
         "extra tab-separated fields must error, got {r:?}"
@@ -52,18 +78,18 @@ fn extra_fields_is_hard_error() {
 
 #[test]
 fn missing_group_field_is_hard_error() {
-    let t = write_table("/usr/bin/target\tonlyuser\n");
-    let r = resolve_isolation_from(t.path().to_str().unwrap(), "/usr/bin/target");
+    let t = write_table("local\tgh\tonlyuser\n");
+    let r = resolve_isolation_from(t.path().to_str().unwrap(), "local", "gh");
     assert!(r.is_err(), "missing group field must error, got {r:?}");
 }
 
 #[test]
 fn blank_lines_are_skipped() {
-    let t = write_table("\n/usr/bin/other\tu\tg\n\n");
-    let r = resolve_isolation_from(t.path().to_str().unwrap(), "/usr/bin/target");
+    let t = write_table("\nlocal\tother\tu\tg\n\n");
+    let r = resolve_isolation_from(t.path().to_str().unwrap(), "local", "gh");
     assert!(
         r.is_err(),
-        "blank lines skipped, absent path must fail closed, got {r:?}"
+        "blank lines skipped, absent pair must fail closed, got {r:?}"
     );
 }
 

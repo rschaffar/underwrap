@@ -86,3 +86,9 @@ that doc comment to say the identity is "resolved … from the root-owned
 
 - NixOS table/user generation (`2730`).
 - VM-test matrix + docs (`2750`).
+
+## Status: DONE (2720)
+
+`underwrap-exec` sources the `(instance, wrapper)` selector it already holds (instance from `instance_from_egid`, wrapper from the daemon-validated `parse_invocation`) and passes it to `underwrap-ns` as `UNDERWRAP_ISOLATION_INSTANCE`/`_WRAPPER` (env_remove + set, alongside the libsecret vars). `underwrap-ns` reads them via a fail-closed `require_isolation_selector` and calls `resolve_isolation(instance, wrapper)`. `target_uid.rs` now matches the 4-column `<instance>\t<wrapper>\t<user>\t<group>` table on columns 1+2; floor / gid-0 / unknown-user / malformed-row guards unchanged. `ExecBundle` untouched (no wire change) — the invariant holds because we relay a selector, not a uid.
+
+Tests: `target_uid/tests.rs` rewritten to 4-column keying incl. `same_wrapper_different_instance_is_a_different_row` (the core distinctness property). `cargo test -p underwrap-ns -p underwrap-exec -p underwrap-protocol`, workspace clippy, fmt all green. The target-environ-never-contains-selector assertion is covered end-to-end by the 2750 VM test (env_clear+whitelist is the existing mechanism; not unit-tested to avoid refactoring the fork/exec path).

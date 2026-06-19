@@ -1,19 +1,25 @@
-//! Per-target uid isolation (story 2600).
+//! Per-(instance, wrapper) uid isolation (story 2600, re-keyed in 2720).
 //!
-//! Reads the root-owned target->uid authority table and resolves the dedicated
-//! sandbox identity for the target `underwrap-ns` is about to exec, then
-//! performs (and verifies) the switch to it.
+//! Reads the root-owned authority table and resolves the dedicated sandbox
+//! identity for the `(instance, wrapper)` pair `underwrap-ns` is about to run,
+//! then performs (and verifies) the switch to it.
 //!
 //! The uid is taken **only** from the root-owned table — never from the
-//! `ExecBundle`, env, argv, or the daemon response — which removes the
-//! escalation / confused-deputy vector structurally: the only uids reachable
-//! are the sandbox uids trusted root config assigned.
+//! `ExecBundle`, the daemon response, or the target path. The lookup *key* is
+//! the `(instance, wrapper)` selector underwrap-exec passes via env (the
+//! kernel-enforced instance gate + the daemon-validated wrapper name); the
+//! resolved uid/gid is never relayed. This removes the escalation /
+//! confused-deputy vector structurally: the only uids reachable are the sandbox
+//! uids trusted root config assigned, and the worst a compromised exec stage can
+//! do is select a *different* legitimate sandbox uid (never root, never an
+//! arbitrary number — see the floor / `gid != 0` checks below).
 
 use std::ffi::CString;
 
 /// Root-owned, non-secret authority table written by the NixOS module. One row
-/// per isolated target: `"<abs target path>\t<user>\t<group>"`. Read directly
-/// here, keyed on the daemon-chosen target path.
+/// per `(instance, wrapper)` pair: `"<instance>\t<wrapper>\t<user>\t<group>"`.
+/// Read directly here, keyed on the daemon-validated `(instance, wrapper)`
+/// selector.
 const TARGET_UID_TABLE: &str = "/etc/underwrap/target-uids";
 
 /// Lowest uid we will ever switch a target to. `0` is root (escalation). The
@@ -28,22 +34,26 @@ pub(crate) struct Isolation {
     pub gid: libc::gid_t,
 }
 
-/// Resolve the dedicated sandbox identity for `target_path` from the root-owned
-/// table.
+/// Resolve the dedicated sandbox identity for the `(instance, wrapper)` pair
+/// from the root-owned table.
 ///
 /// Under the mandatory-isolation model, both a missing table and a missing row
 /// are hard errors: underwrap must never fall back to running the target as the
 /// caller.
-pub(crate) fn resolve_isolation(target_path: &str) -> Result<Isolation, String> {
-    resolve_isolation_from(TARGET_UID_TABLE, target_path)
+pub(crate) fn resolve_isolation(instance: &str, wrapper: &str) -> Result<Isolation, String> {
+    resolve_isolation_from(TARGET_UID_TABLE, instance, wrapper)
 }
 
-fn resolve_isolation_from(table_path: &str, target_path: &str) -> Result<Isolation, String> {
+fn resolve_isolation_from(
+    table_path: &str,
+    instance: &str,
+    wrapper: &str,
+) -> Result<Isolation, String> {
     let contents = match std::fs::read_to_string(table_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
-                "mandatory target isolation table {table_path} is missing; refusing to run {target_path:?} as the caller"
+                "mandatory target isolation table {table_path} is missing; refusing to run {instance}/{wrapper} as the caller"
             ));
         }
         Err(e) => return Err(format!("reading {table_path}: {e}")),
@@ -55,22 +65,23 @@ fn resolve_isolation_from(table_path: &str, target_path: &str) -> Result<Isolati
             continue;
         }
         let mut parts = line.split('\t');
-        let path = parts.next().unwrap_or("");
+        let row_instance = parts.next().unwrap_or("");
+        let row_wrapper = parts.next().unwrap_or("");
         let user = parts.next();
         let group = parts.next();
         if parts.next().is_some() {
             return Err(format!(
-                "{table_path}:{lineno}: malformed row (more than 3 tab-separated fields)"
+                "{table_path}:{lineno}: malformed row (more than 4 tab-separated fields)"
             ));
         }
-        if path != target_path {
+        if row_instance != instance || row_wrapper != wrapper {
             continue;
         }
         let (user, group) = match (user, group) {
             (Some(u), Some(g)) if !u.is_empty() && !g.is_empty() => (u, g),
             _ => {
                 return Err(format!(
-                    "{table_path}:{lineno}: row for {target_path:?} is missing user/group"
+                    "{table_path}:{lineno}: row for {instance}/{wrapper} is missing user/group"
                 ));
             }
         };
@@ -78,20 +89,20 @@ fn resolve_isolation_from(table_path: &str, target_path: &str) -> Result<Isolati
         let gid = resolve_gid(group)?;
         if uid < MIN_TARGET_UID {
             return Err(format!(
-                "refusing to isolate {target_path:?} to uid {uid} (user {user:?}): below the \
+                "refusing to isolate {instance}/{wrapper} to uid {uid} (user {user:?}): below the \
                  minimum target uid {MIN_TARGET_UID} — never run a target as root or a \
                  privileged id"
             ));
         }
         if gid == 0 {
             return Err(format!(
-                "refusing to isolate {target_path:?} to gid 0 (group {group:?})"
+                "refusing to isolate {instance}/{wrapper} to gid 0 (group {group:?})"
             ));
         }
         return Ok(Isolation { uid, gid });
     }
     Err(format!(
-        "mandatory target isolation table {table_path} has no row for {target_path:?}; refusing to run as the caller"
+        "mandatory target isolation table {table_path} has no row for {instance}/{wrapper}; refusing to run as the caller"
     ))
 }
 
